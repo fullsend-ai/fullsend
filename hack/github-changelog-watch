@@ -38,8 +38,9 @@ import urllib.parse
 import urllib.request
 
 # Feeds come from github.blog over HTTPS; expat in Python 3.12 does not fetch
-# external entities and limits entity expansion.
-import xml.etree.ElementTree as ET  # nosec B405
+# external entities and limits entity expansion. The script is stdlib-only, so
+# defusedxml is not available.
+import xml.etree.ElementTree as ET  # nosec B405  # nosemgrep: python.lang.security.use-defused-xml
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -153,8 +154,9 @@ def default_fetch(req: Request) -> Response:
 def _urllib_fetch(req: Request) -> Response:
     http_req = urllib.request.Request(req.target, headers={"User-Agent": USER_AGENT})
     try:
-        # Only https:// targets reach here (see default_fetch).
-        with urllib.request.urlopen(http_req, timeout=30) as resp:  # nosec B310
+        # Only https:// targets reach here (see default_fetch), so file:// and
+        # other schemes cannot be opened.
+        with urllib.request.urlopen(http_req, timeout=30) as resp:  # nosec B310  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected
             headers = {k.lower(): v for k, v in resp.headers.items()}
             return Response(resp.status, resp.read().decode("utf-8", "replace"), headers)
     except urllib.error.HTTPError as e:
