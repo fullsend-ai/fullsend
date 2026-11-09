@@ -11,6 +11,7 @@ fi
 FULLSEND_FAILURE_REPOSITORY="${FULLSEND_FAILURE_REPOSITORY:-}"
 FULLSEND_FAILURE_NUMBER="${FULLSEND_FAILURE_NUMBER:-}"
 FULLSEND_FAILURE_AGENT="${FULLSEND_FAILURE_AGENT:-}"
+FULLSEND_FAILURE_ROLE="${FULLSEND_FAILURE_ROLE:-${FULLSEND_FAILURE_AGENT}}"
 FULLSEND_FAILURE_RUN_URL="${FULLSEND_FAILURE_RUN_URL:-}"
 FULLSEND_FAILURE_CATEGORY="${FULLSEND_FAILURE_CATEGORY:-}"
 
@@ -24,6 +25,10 @@ if [[ ! "${FULLSEND_FAILURE_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 if [[ ! "${FULLSEND_FAILURE_AGENT}" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "::warning::Skipping startup failure comment: invalid agent" >&2
+  exit 1
+fi
+if [[ ! "${FULLSEND_FAILURE_ROLE}" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "::warning::Skipping startup failure comment: invalid role" >&2
   exit 1
 fi
 case "${FULLSEND_FAILURE_CATEGORY}" in
@@ -50,14 +55,7 @@ BODY_FILE="${RUNNER_TEMP:-/tmp}/fullsend-agent-startup-failure.md"
 BOT_LOGIN="$(gh api graphql -f query='{ viewer { login } }' --jq '.data.viewer.login')"
 COMMENTS_JSON="$(gh api --paginate --slurp \
   "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/${FULLSEND_FAILURE_NUMBER}/comments")"
-TRUSTED_BOT_LOGINS="github-actions"
-case "${FULLSEND_FAILURE_AGENT}" in
-  code|fix) TRUSTED_BOT_LOGINS+=",fullsend-ai-coder" ;;
-  review) TRUSTED_BOT_LOGINS+=",fullsend-ai-review" ;;
-  triage) TRUSTED_BOT_LOGINS+=",fullsend-ai-triage" ;;
-  retro) TRUSTED_BOT_LOGINS+=",fullsend-ai-retro" ;;
-  prioritize) TRUSTED_BOT_LOGINS+=",fullsend-ai-prioritize" ;;
-esac
+TRUSTED_BOT_LOGINS="github-actions,fullsend-ai-${FULLSEND_FAILURE_ROLE}"
 # FULLSEND_FAILURE_TRUSTED_BOTS contains app-set prefixes (for example,
 # "fullsend-ai" or "acme"), not arbitrary login prefixes. Expand each set to
 # the known agent identities so a lookalike app cannot update this comment.
@@ -65,12 +63,12 @@ TRUSTED_BOTS_JSON="$(jq -Rn \
   --arg current "${BOT_LOGIN}" \
   --arg logins "${TRUSTED_BOT_LOGINS}" \
   --arg app_sets "${FULLSEND_FAILURE_TRUSTED_BOTS:-}" \
+  --arg role "${FULLSEND_FAILURE_ROLE}" \
   '[ $current ]
    + ($logins | split(",") | map(select(length > 0)))
    + ($app_sets | split(",") | map(select(length > 0)
       | . as $set
-      | ["coder", "review", "triage", "retro", "prioritize"]
-      | map($set + "-" + .)) | add)
+      | [$set + "-" + $role]) | add)
    | map(sub("\\[bot\\]$"; ""))
    | unique')"
 COMMENT_ID="$(printf '%s' "${COMMENTS_JSON}" | jq -r \
