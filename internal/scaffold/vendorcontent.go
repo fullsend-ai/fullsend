@@ -174,13 +174,14 @@ func isVendoredReusableWorkflow(path string) bool {
 // and scripts/renovate/update-openshell-sha.sh) must stay at their
 // current path regardless of whether they are listed.
 var vendoredDefaultsScripts = map[string]bool{
-	".github/scripts/check-fix-eligibility.sh": true,
-	".github/scripts/count-fix-commits.jq":     true,
-	".github/scripts/install-openshell.sh":     true,
-	".github/scripts/install-podman.sh":        true,
-	".github/scripts/openshell-version.sh":     true,
-	".github/scripts/pre-fetch-review-body.sh": true,
-	".github/scripts/retry-with-backoff.sh":    true,
+	".github/scripts/check-fix-eligibility.sh":        true,
+	".github/scripts/count-fix-commits.jq":            true,
+	".github/scripts/install-openshell.sh":            true,
+	".github/scripts/install-podman.sh":               true,
+	".github/scripts/openshell-version.sh":            true,
+	".github/scripts/pre-fetch-review-body.sh":        true,
+	".github/scripts/retry-with-backoff.sh":           true,
+	".github/scripts/report-agent-startup-failure.sh": true,
 }
 
 // vendoredDefaultsActions is the explicit allowlist of .github/actions/

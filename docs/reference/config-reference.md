@@ -595,6 +595,13 @@ In `enabled` mode, a hard crash or cancellation that happens before the agent
 could post anything at all is also surfaced after the fact: a post-job cleanup
 step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
 
+If workflow setup fails before the agent process starts, the dispatch workflow
+posts a separate "Fullsend agent did not run" comment with the failure category
+and workflow-run link. This startup-failure comment is used only for
+GitHub-originated events and does not replace tracker-routed notifications for
+Jira-originated events. Repeated failures update the existing startup-failure
+comment instead of creating duplicates.
+
 **Reactions.** Emoji reactions don't generate a GitHub notification, so they
 are a lower-noise way to show that an agent is working and how the run turned
 out. Unlike comments, they default to `disabled`. When `reaction.start` is

@@ -40,6 +40,11 @@ inputs:
   status-number:
     description: Issue/PR number for status comments (optional).
     default: ""
+  source-system:
+    description: >-
+      Originating tracker for the event (github, gitlab, or jira). GitHub
+      startup-failure comments are not posted for non-GitHub-originated events.
+    default: github
   status-comment-id:
     description: >-
       ID of the comment that triggered this run via a slash command
@@ -275,6 +280,7 @@ runs:
         fi
 
     - name: Install vendored binary
+      id: install-vendored
       if: steps.detect.outputs.install-method == 'vendored'
       shell: bash
       env:
@@ -347,6 +353,7 @@ runs:
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
     - name: Clone fullsend at ref for source build
+      id: clone-source
       if: steps.detect.outputs.install-method == 'source' || steps.download-release.outcome == 'failure'
       shell: bash
       env:
@@ -417,6 +424,7 @@ runs:
         cache-dependency-path: ${{ runner.temp }}/fullsend-src/go.sum
 
     - name: Build fullsend from source
+      id: build-source
       if: steps.detect.outputs.install-method == 'source' || steps.download-release.outcome == 'failure'
       shell: bash
       run: |
@@ -428,6 +436,7 @@ runs:
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
     - name: Print fullsend version
+      id: print-version
       shell: bash
       run: fullsend --version
 
@@ -457,11 +466,13 @@ runs:
 
     - name: Install Podman
       if: steps.sandbox-host.outputs.local == 'true'
+      id: install-podman
       shell: bash
       run: "$GITHUB_ACTION_PATH/.github/scripts/install-podman.sh"
 
     - name: Configure rootless Podman
       if: steps.sandbox-host.outputs.local == 'true'
+      id: configure-podman
       shell: bash
       run: |
         test -f /sys/fs/cgroup/cgroup.controllers || { echo "::error::cgroups v2 required"; exit 1; }
@@ -496,6 +507,7 @@ runs:
     # a remote-gateway runner that already has the CLI skips it.
     - name: Install OpenShell CLI
       if: steps.sandbox-host.outputs.install-openshell == 'true'
+      id: install-openshell
       shell: bash
       run: "$GITHUB_ACTION_PATH/.github/scripts/install-openshell.sh"
 
@@ -688,12 +700,65 @@ runs:
         name: ${{ inputs.artifact-name || format('fullsend-{0}', inputs.agent) }}
         path: ${{ github.workspace }}/output
 
+    - name: Report pre-agent startup failure
+      if: always() && inputs.agent != '__install_only__' && inputs.source-system == 'github' && inputs.status-repo != '' && inputs.status-number != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        AGENT: ${{ inputs.agent }}
+        STATUS_REPO: ${{ inputs.status-repo }}
+        STATUS_NUMBER: ${{ inputs.status-number }}
+        RUN_URL: ${{ inputs.run-url }}
+        JOB_STATUS: ${{ job.status }}
+        INSTALL_CLI_OUTCOME: ${{ steps.detect.outcome }}
+        VENDORED_OUTCOME: ${{ steps.install-vendored.outcome }}
+        DOWNLOAD_RELEASE_OUTCOME: ${{ steps.download-release.outcome }}
+        CLONE_SOURCE_OUTCOME: ${{ steps.clone-source.outcome }}
+        BUILD_SOURCE_OUTCOME: ${{ steps.build-source.outcome }}
+        PRINT_VERSION_OUTCOME: ${{ steps.print-version.outcome }}
+        PODMAN_OUTCOME: ${{ steps.install-podman.outcome }}
+        CONFIGURE_PODMAN_OUTCOME: ${{ steps.configure-podman.outcome }}
+        OPENSHELL_OUTCOME: ${{ steps.install-openshell.outcome }}
+        RUN_OUTCOME: ${{ steps.run.outcome }}
+      run: |
+        set -euo pipefail
+        if [[ "${JOB_STATUS}" == "failure" && "${RUN_OUTCOME}" == "skipped" ]]; then
+          FAILURE_CATEGORY="workflow setup"
+          if [[ "${PODMAN_OUTCOME}" == "failure" \
+            || "${CONFIGURE_PODMAN_OUTCOME}" == "failure" \
+            || "${OPENSHELL_OUTCOME}" == "failure" ]]; then
+            FAILURE_CATEGORY="runtime setup"
+          elif [[ "${INSTALL_CLI_OUTCOME}" == "failure" \
+            || "${VENDORED_OUTCOME}" == "failure" \
+            || "${DOWNLOAD_RELEASE_OUTCOME}" == "failure" \
+            || "${CLONE_SOURCE_OUTCOME}" == "failure" \
+            || "${BUILD_SOURCE_OUTCOME}" == "failure" \
+            || "${PRINT_VERSION_OUTCOME}" == "failure" ]]; then
+            FAILURE_CATEGORY="CLI setup"
+          fi
+
+          FULLSEND_FAILURE_REPOSITORY="${STATUS_REPO}"
+          FULLSEND_FAILURE_NUMBER="${STATUS_NUMBER}"
+          FULLSEND_FAILURE_AGENT="${AGENT}"
+          FULLSEND_FAILURE_RUN_URL="${RUN_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
+          FULLSEND_FAILURE_CATEGORY="${FAILURE_CATEGORY}"
+          export FULLSEND_FAILURE_REPOSITORY FULLSEND_FAILURE_NUMBER \
+            FULLSEND_FAILURE_AGENT FULLSEND_FAILURE_RUN_URL \
+            FULLSEND_FAILURE_CATEGORY
+          if "$GITHUB_ACTION_PATH/.github/scripts/report-agent-startup-failure.sh"; then
+            echo "FULLSEND_STARTUP_FAILURE_REPORTED=true" >> "${GITHUB_ENV}"
+          else
+            echo "::warning::Could not post pre-agent failure comment"
+          fi
+        fi
+
     - name: Finalize orphaned status comment
       # Runs last (after all other always() steps) so job.status reflects
       # the job's true final outcome, not just the fullsend run outcome.
       if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != '' && inputs.mint-url != ''
       shell: bash
       env:
+        GH_TOKEN: ${{ inputs.github_token }}
         MINT_URL: ${{ inputs.mint-url }}
         AGENT: ${{ inputs.agent }}
         STATUS_REPO: ${{ inputs.status-repo }}
@@ -730,6 +795,11 @@ runs:
         # the deferred PostCompletion call never runs and the status comment
         # remains in "Started" state. This step runs unconditionally (if:
         # always()) to detect and finalize orphaned comments. See #2149.
+
+        if [[ "${FULLSEND_STARTUP_FAILURE_REPORTED:-}" == "true" ]]; then
+          echo "Startup failure was reported; skipping orphaned status reconciliation"
+          exit 0
+        fi
 
         # Resolve the correct commit SHA. Priority order:
         # 1. Explicit pr-head-sha input (per-repo workflow_call callers)

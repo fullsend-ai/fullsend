@@ -1859,6 +1859,8 @@ func TestReusableDispatchStatusCommentPassthrough(t *testing.T) {
 				"%s agent step must pass status-repo to action.yml", stage)
 			assert.Contains(t, section, "status-number:",
 				"%s agent step must pass status-number to action.yml", stage)
+			assert.Contains(t, section, "source-system:",
+				"%s agent step must pass source-system to action.yml", stage)
 		})
 	}
 
@@ -1871,6 +1873,17 @@ func TestReusableDispatchStatusCommentPassthrough(t *testing.T) {
 			"harness-run agent step must pass status-repo to action.yml")
 		assert.Contains(t, section, "status-number:",
 			"harness-run agent step must pass status-number to action.yml")
+		assert.Contains(t, section, "source-system:",
+			"harness-run agent step must pass source-system to action.yml")
+	})
+
+	t.Run("standalone prioritize", func(t *testing.T) {
+		content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-prioritize.yml"))
+		require.NoError(t, err)
+		section := extractStepSection(t, string(content), "Run prioritize agent")
+		assert.Contains(t, section, "status-repo:")
+		assert.Contains(t, section, "status-number:")
+		assert.Contains(t, section, "source-system:")
 	})
 }
 

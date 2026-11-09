@@ -171,6 +171,7 @@ jobs:
         run: mkdir -p target-repo
 
       - name: Run prioritize agent
+        id: run-agent
         uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
@@ -204,5 +205,37 @@ jobs:
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: .fullsend
           mint-url: ${{ inputs.mint_url }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ inputs.source_repo }}
+          status-number: ${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
+          source-system: ${{ fromJSON(inputs.event_payload)._normalized_event.source.system || 'github' }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Report prioritize launch failure
+        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && fromJSON(inputs.event_payload)._normalized_event.source.system != 'jira' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ inputs.source_repo }}
+          NUMBER: ${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="prioritize"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          export FULLSEND_FAILURE_CATEGORY="workflow setup"
+          bash "${script}"
