@@ -160,6 +160,20 @@ The repository's existing infrastructure provides all the coordination needed:
   combines source queries into one logical candidate search and routes each
   possible result locally. A bound run rechecks source-query membership,
   including when an event supplies the candidate.
+  [ADR 0079](../ADRs/0079-bind-entity-execution-through-named-sources.md)
+  binds named, typed harness entity slots to repository-owned source lists.
+  Harness provider filters further narrow those queries before full CEL
+  evaluation, with effective primary selections combined for discovery.
+  The configuration clone selects the native provider independently of where
+  agents execute. Provider-default connections can override its instance;
+  reserved source names supply queries and repository scopes, including
+  explicitly configured external providers.
+  Only the source slot schedules work; other slots supply scopes for the run
+  without automatic joins or broadcast outputs. It permits provider-native
+  membership with exact local checks or
+  batched remote checks; actor-filtered agent predicates remain independent.
+  CI supplies execution and verified recurring discovery, while coordination
+  stays in entity state and receipts rather than an agent workflow graph.
 
 No agent orchestrates other agents. Each agent independently observes the state of the PR and acts according to its role:
 

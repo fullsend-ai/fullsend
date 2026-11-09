@@ -261,6 +261,20 @@ resources; a non-empty list is unioned with the parent's list. See
 
 ### `tracker`
 
+The target replacement is specified in
+[ADR 0079](../ADRs/0079-bind-entity-execution-through-named-sources.md) and the
+[entity-source configuration contract](../normative/entity-source-configuration/v1/):
+named `connections`, `entity_sources`, and `agents[].entities` slot bindings,
+with connection-scoped creation policy, in-memory legacy translation, and
+deprecation warnings.
+The configuration clone selects the native entity provider independently of the
+execution platform. Provider-default connections (`github`, `gitlab`, `forgejo`)
+can override its instance, including GitHub.com to GitHub Enterprise. Reserved
+provider source names select queries and repository scopes and can be explicitly
+bound; defining a source named `native` is forbidden.
+These fields and the translation are not implemented yet; the current supported
+configuration remains the `tracker` mapping documented below.
+
 The issue tracker, as a single provider-discriminated mapping. `tracker` holds
 at most one provider block — `github`, `gitlab`, or `jira` — and the block that
 is present selects the provider. It is the default backend for the `--tracker`
