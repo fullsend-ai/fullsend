@@ -67,6 +67,13 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Install sandbox-pinned pi for offline runtime regressions
+        run: |
+          PI_VERSION=$(awk -F= '/^ARG PI_VERSION=/{print $2}' images/sandbox/Containerfile)
+          test -n "$PI_VERSION"
+          npm install --prefix "$RUNNER_TEMP/pi-test" --ignore-scripts "@earendil-works/pi-coding-agent@$PI_VERSION"
+          echo "FULLSEND_TEST_PI_BIN=$RUNNER_TEMP/pi-test/node_modules/.bin/pi" >> "$GITHUB_ENV"
+
       - run: make script-test
 
       - name: Upload coverage to Codecov

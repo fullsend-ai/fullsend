@@ -8,6 +8,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +17,25 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
+
+// piMCPExclusions closes pi 1.5.0's implicit MCP retention for explicit
+// non-MCP selections. Keep in sync with childArgs and the pinned-pi tests.
+func piMCPExclusions(tools []string) string {
+	if len(tools) == 0 || slices.ContainsFunc(tools, func(s string) bool { return strings.HasPrefix(s, "mcp__") }) {
+		return ""
+	}
+	excluded := []string{"mcp__*"}
+	for _, name := range []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"} {
+		selected := slices.ContainsFunc(tools, func(pattern string) bool {
+			matcher := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", ".*") + "$")
+			return matcher.MatchString(name)
+		})
+		if !selected {
+			excluded = append(excluded, name)
+		}
+	}
+	return strings.Join(excluded, ",")
+}
 
 // Model selection for pi. The fleet's harnesses name Claude-style aliases
 // (opus, sonnet, ...), mapped onto pi's `provider/id` form here; a harness
@@ -676,6 +696,9 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 			parts = append(parts, "--no-builtin-tools")
 		} else {
 			parts = append(parts, "--tools "+shellQuote(strings.Join(tools, ",")))
+			if excluded := piMCPExclusions(tools); excluded != "" {
+				parts = append(parts, "--exclude-tools "+shellQuote(excluded))
+			}
 		}
 	}
 

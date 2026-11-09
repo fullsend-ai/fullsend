@@ -519,9 +519,11 @@ export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
   args.push("--tools", tools.join(","));
   // pi 1.5.0 keeps MCP registrations when a nonempty --tools list has no
   // mcp__ entry. They remain callable through codemode/deferred exposure,
-  // even if inactive. Deny them explicitly, without a collidable sentinel.
+  // even if inactive. Resource tools are in the same MCP category. Deny
+  // unselected names explicitly, preserving any selected resources.
   if (tools.length > 0 && !tools.some((t) => t.startsWith("mcp__"))) {
-    args.push("--exclude-tools", "mcp__*");
+    const resources = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"];
+    args.push("--exclude-tools", ["mcp__*", ...resources.filter((name) => !tools.some((pattern) => toolMatches(pattern, name)))].join(","));
   }
   args.push("--model", modelSpec);
   args.push("--thinking", agent.thinking || DEFAULT_THINKING);

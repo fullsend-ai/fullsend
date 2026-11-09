@@ -383,7 +383,7 @@ test("childArgs mirrors the runner's pi command line, extensions in manifest ord
     "-e", "/usr/local/share/pi-extensions/xai-vertex",
     "-e", "/sandbox/pi-config/fullsend-hooks.js",
     "--tools", "read,grep",
-    "--exclude-tools", "mcp__*",
+    "--exclude-tools", "mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource",
     "--model", "anthropic-vertex/claude-sonnet-4-6",
     "--thinking", "medium",
     "--append-system-prompt", CHILD_SYSTEM_NOTE,
@@ -408,8 +408,19 @@ test("childArgs denies MCP registrations for non-MCP selections only", () => {
     const args = childArgs(manifest.agent, {seq: 1, modelSpec: "m", tools});
     const deny = args.indexOf("--exclude-tools");
     assert.equal(deny >= 0, tools.length > 0 && !tools.some((t) => t.startsWith("mcp__")));
-    if (deny >= 0) assert.equal(args[deny + 1], "mcp__*");
+    if (deny >= 0) assert.equal(args[deny + 1], "mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource");
     assert.equal(args[args.indexOf("--tools") + 1], tools.join(","));
+  }
+});
+
+test("childArgs preserves selected MCP resources only", () => {
+  const {manifest} = fixture();
+  for (const selected of ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+    const args = childArgs(manifest.agent, {seq: 1, modelSpec: "m", tools: ["codemode", selected]});
+    const excluded = args[args.indexOf("--exclude-tools") + 1].split(",");
+    for (const name of ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+      assert.equal(excluded.includes(name), name !== selected);
+    }
   }
 });
 

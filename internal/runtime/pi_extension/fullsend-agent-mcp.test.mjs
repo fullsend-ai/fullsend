@@ -21,8 +21,8 @@ export default function(pi) {
     fauxAssistantMessage("done"),
   ]);
   pi.registerProvider(faux.provider);
-  for (const exposure of ["codemode", "deferred"]) {
-    const name = "mcp__docs__" + exposure;
+  for (const name of ["mcp__docs__codemode", "mcp__docs__deferred", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+    const exposure = name.endsWith("deferred") ? "deferred" : "codemode";
     pi.registerTool({name, label: name, description: name, exposure, defaultActive: false,
       parameters: {type: "object", properties: {}},
       async execute() { console.error("EXECUTED:" + name); return {content: [{type: "text", text: "docs"}]}; }
@@ -32,8 +32,8 @@ export default function(pi) {
     parameters: {type: "object", properties: {}},
     async execute(id, params, signal, update, ctx) {
       console.error("PROBED:codemode");
-      for (const exposure of ["codemode", "deferred"]) {
-        try { await ctx.executeTool("mcp__docs__" + exposure, {}); } catch {}
+      for (const name of ["mcp__docs__codemode", "mcp__docs__deferred", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+        try { await ctx.executeTool(name, {}); } catch {}
       }
       return {content: [{type: "text", text: "done"}]};
     }
@@ -44,19 +44,21 @@ export default function(pi) {
     tools: ["codemode", "mcp__docs__search"], personas: {docs: {tools: ["codemode"]}}};
   const tools = childTools(agent, "docs", ["codemode", "mcp__docs__search"]);
   assert.deepEqual(tools, ["codemode"]);
-  for (const guarded of [false, true]) {
-    const args = childArgs(agent, {seq: guarded ? 2 : 1, modelSpec: "faux/faux-1", tools});
-    // Control recreates the pre-fix argv, proving the nested tools execute.
-    if (!guarded) args.splice(args.indexOf("--exclude-tools"), 2);
-    const result = spawnSync(process.env.FULLSEND_TEST_PI_BIN, args, {
-      cwd: home, input: "probe nested tools", encoding: "utf8", timeout: 45_000,
-      env: {PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: home},
-    });
-    assert.equal(result.error, undefined);
-    assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stderr, /PROBED:codemode/);
-    for (const exposure of ["codemode", "deferred"]) {
-      assert.equal(result.stderr.includes("EXECUTED:mcp__docs__" + exposure), !guarded, result.stderr);
+  for (const selected of [undefined, "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+    for (const guarded of [false, true]) {
+      const args = childArgs(agent, {seq: guarded ? 2 : 1, modelSpec: "faux/faux-1", tools: selected ? [...tools, selected] : tools});
+      // Control recreates the pre-fix argv, proving the nested tools execute.
+      if (!guarded) args.splice(args.indexOf("--exclude-tools"), 2);
+      const result = spawnSync(process.env.FULLSEND_TEST_PI_BIN, args, {
+        cwd: home, input: "probe nested tools", encoding: "utf8", timeout: 45_000,
+        env: {PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: home},
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /PROBED:codemode/);
+      for (const name of ["mcp__docs__codemode", "mcp__docs__deferred", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]) {
+        assert.equal(result.stderr.includes("EXECUTED:" + name), !guarded || name === selected, result.stderr);
+      }
     }
   }
 });
