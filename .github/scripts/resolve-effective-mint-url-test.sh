@@ -17,12 +17,43 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 run_resolve() {
   local fallback="${1:-}"
   local output_file="${TMPDIR}/github-output.txt"
+  local stderr_file="${TMPDIR}/resolve-stderr.txt"
   local oldpwd="${PWD}"
   : >"${output_file}"
+  : >"${stderr_file}"
   cd "${TMPDIR}/repo"
-  GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" "${BASH_ABS}" "${SCRIPT}"
+  GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" "${BASH_ABS}" "${SCRIPT}" 2>"${stderr_file}"
   cd "${oldpwd}"
   grep '^mint_url=' "${output_file}" | cut -d= -f2-
+}
+
+run_resolve_stderr() {
+  local fallback="${1:-}"
+  local output_file="${TMPDIR}/github-output.txt"
+  local stderr_file="${TMPDIR}/resolve-stderr.txt"
+  local oldpwd="${PWD}"
+  : >"${output_file}"
+  : >"${stderr_file}"
+  cd "${TMPDIR}/repo"
+  GITHUB_OUTPUT="${output_file}" FALLBACK_MINT_URL="${fallback}" "${BASH_ABS}" "${SCRIPT}" 2>"${stderr_file}"
+  cd "${oldpwd}"
+  cat "${stderr_file}"
+}
+
+assert_notice_contains() {
+  local name="$1" want="$2" stderr="$3"
+  if ! grep -F -- "${want}" <<<"${stderr}" >/dev/null; then
+    echo "FAIL: ${name}: expected notice containing ${want@Q}, stderr=${stderr@Q}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+assert_no_notice_override() {
+  local name="$1" stderr="$2"
+  if grep -F -- "overrides FULLSEND_MINT_URL" <<<"${stderr}" >/dev/null; then
+    echo "FAIL: ${name}: unexpected override notice in stderr=${stderr@Q}"
+    FAILURES=$((FAILURES + 1))
+  fi
 }
 
 run_resolve_expect_fail() {
@@ -76,6 +107,15 @@ assert_eq "fallback only" "https://fallback.example" "$(run_resolve "https://fal
 setup_repo
 printf 'version: "1"\nmint_url: https://overlay.example\n' >.fullsend/config.yaml
 assert_eq "overlay wins" "https://overlay.example" "$(run_resolve "https://fallback.example")"
+assert_notice_contains "overlay override notice" "mint host: overlay.example" "$(run_resolve_stderr "https://fallback.example")"
+
+setup_repo
+printf 'version: "1"\nmint_url: https://same.example\n' >.fullsend/config.yaml
+assert_eq "file matches fallback" "https://same.example" "$(run_resolve "https://same.example")"
+assert_no_notice_override "no notice when values match" "$(run_resolve_stderr "https://same.example")"
+
+setup_repo
+assert_no_notice_override "no notice for fallback only" "$(run_resolve_stderr "https://fallback.example")"
 
 setup_repo
 printf 'version: "1"\nmint_url: https://base.example\n' >.fullsend/config.base.yaml
