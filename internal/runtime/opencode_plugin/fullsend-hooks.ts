@@ -1,7 +1,7 @@
 // OpenCode 1.x adapter for security.HookPlan (ADR 0090). No SDK dependencies.
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, realpathSync, readlinkSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, readFileSync, readdirSync, readlinkSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const names = {
@@ -198,7 +198,7 @@ function checkPermission(cfg, tool, args, cwd, worktree, targets) {
       const paths = tool === "read" ? [args.filePath ?? args.file_path] : targets;
       values = paths.map((target) => {
         if (typeof target !== "string" || !target) deny("missing permission path");
-        const relative = path.relative(worktree, resolved(path.resolve(cwd, target)));
+        const relative = path.relative(worktree, resolved(target, cwd));
         return tool === "apply_patch" ? relative.replaceAll("\\", "/") : relative;
       });
     }
@@ -211,24 +211,50 @@ function checkPermission(cfg, tool, args, cwd, worktree, targets) {
   if (action === "deny" || action === "ask") deny("tool denied by trusted permission policy");
 }
 
-function resolved(target, depth = 0) {
-  if (depth > 40) deny("write path symlink loop");
-  try {
-    if (lstatSync(target).isSymbolicLink()) return resolved(path.resolve(path.dirname(target), readlinkSync(target)), depth + 1);
-    return realpathSync(target);
-  } catch (error) {
-    if (error.code !== "ENOENT") throw error;
-    const parent = path.dirname(target);
-    if (parent === target) throw error;
-    return path.join(resolved(parent, depth + 1), path.basename(target));
+const absolutePath = (target, cwd) => path.isAbsolute(target) ? target : cwd + path.sep + target;
+
+function resolved(target, cwd = process.cwd()) {
+  const absolute = absolutePath(target, cwd);
+  let dest = path.parse(absolute).root;
+  const pending = absolute.slice(dest.length).split(path.sep);
+  let links = 0;
+  // Follow symlinks before processing later '..' components, including inside
+  // link targets. Lexical normalization here can hide the actual destination.
+  while (pending.length) {
+    const component = pending.shift();
+    if (!component || component === ".") continue;
+    if (component === "..") {
+      dest = path.dirname(dest);
+      continue;
+    }
+    const next = path.join(dest, component);
+    let info;
+    try { info = lstatSync(next); } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+      // Native writes may create missing parents, but existing ancestors still
+      // need to be resolved before checking the prospective destination.
+      dest = next;
+      continue;
+    }
+    if (info.isSymbolicLink()) {
+      if (++links > 40) deny("write path symlink loop");
+      const link = readlinkSync(next);
+      const absoluteLink = path.isAbsolute(link);
+      if (absoluteLink) dest = path.parse(link).root;
+      pending.unshift(...(absoluteLink ? link.slice(dest.length) : link).split(path.sep));
+    } else {
+      if (!info.isDirectory() && pending.some((part) => part !== "")) deny("write path parent is not a directory");
+      dest = next;
+    }
   }
+  return dest;
 }
 
 function checkWrites(cfg, targets, cwd) {
   const workspace = resolved(cfg.workspace);
   for (const target of targets) {
     if (typeof target !== "string" || !target) deny("missing write path");
-    const dest = resolved(path.resolve(cwd, target));
+    const dest = resolved(target, cwd);
     const relative = path.relative(workspace, dest);
     if (!relative || relative === ".." || relative.startsWith("../") || path.isAbsolute(relative) ||
         [".env", ".env.d", ".fullsend", ".security", "runner-state", "bin"].some((p) => relative === p || relative.startsWith(p + "/"))) {
@@ -280,7 +306,7 @@ export default async ({ directory, worktree }) => {
         const target = args.filePath ?? args.file_path;
         if (typeof target !== "string" || !target) deny("missing read target");
         let info;
-        try { info = statSync(path.resolve(cwd, target)); } catch (error) {
+        try { info = statSync(absolutePath(target, cwd)); } catch (error) {
           if (error.code === "ENOENT" || error.code === "ENOTDIR") deny("read target does not exist");
           deny("read target could not be inspected");
         }
