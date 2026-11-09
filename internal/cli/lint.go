@@ -218,7 +218,17 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 
 	forgePlatform, err := detectForgePlatform(forgeFlag, cfg)
 	if err != nil {
-		return fmt.Errorf("invalid --forge flag: %w", err)
+		if forgeFlag != "" {
+			return fmt.Errorf("invalid --forge flag: %w", err)
+		}
+		// Invalid config.forge is a semantic config error, not a flag
+		// usage error. Leave the platform empty; do not invent a fallback.
+		emitter.diagnostic("config", harness.Diagnostic{
+			Code:     lintCodeConfigInvalid,
+			Severity: harness.SeverityError,
+			Field:    "forge",
+			Message:  err.Error(),
+		})
 	}
 
 	composeGitToken, tokenErr := resolveToken()
