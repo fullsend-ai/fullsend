@@ -40,7 +40,7 @@ for automation.
 
 A person's own Atlassian account authenticates the same way and is
 indistinguishable from a bot account to Fullsend. It is not a supported
-choice: the poller treats the account it authenticates as as itself, so
+choice: the poller treats the account it signs in with as itself, so
 that person's own comments and label changes never dispatch agents (see
 the Jira guide's
 [Use a dedicated account for the poller](../guides/user/jira-integration.md#use-a-dedicated-account-for-the-poller)).
@@ -102,7 +102,7 @@ host that rejects service accounts.
 default API URL is the gateway address for the site, built from the site's
 cloud ID, which Fullsend discovers from the site URL. Both account kinds
 work with no extra setting; the override remains for cloud variants with
-other hosts, or to pin the site URL. Costs a change of host for every
+other hosts. Costs a change of host for every
 existing deployment on upgrade, resting on observed rather than documented
 behaviour for bot tokens, and a discovery call at startup.
 
