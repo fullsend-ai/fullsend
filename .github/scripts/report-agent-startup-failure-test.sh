@@ -33,7 +33,7 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
 run_case() {
-  local name="$1" viewer="$2" comment_login="$3" trusted_bots="${4:-}" body_prefix="${5:-marker}" expected="${6:-patch}"
+  local name="$1" viewer="$2" comment_login="$3" trusted_bots="${4:-}" role="${5:-review}" body_prefix="${6:-marker}" expected="${7:-patch}"
   local marker='<!-- fullsend:agent-startup-failure:review:123 -->'
   local body="${marker}\n\nold comment"
   if [[ "${body_prefix}" == "embedded" ]]; then
@@ -49,6 +49,7 @@ run_case() {
     FULLSEND_FAILURE_REPOSITORY=org/repo \
     FULLSEND_FAILURE_NUMBER=123 \
     FULLSEND_FAILURE_AGENT=review \
+    FULLSEND_FAILURE_ROLE="${role}" \
     FULLSEND_FAILURE_TRUSTED_BOTS="${trusted_bots}" \
     FULLSEND_FAILURE_RUN_URL=https://github.com/org/repo/actions/runs/123 \
     FULLSEND_FAILURE_CATEGORY="workflow setup" \
@@ -68,5 +69,6 @@ run_case "job token finds app-bot comment" "github-actions" "fullsend-ai-review[
 run_case "app token finds job-bot comment" "fullsend-ai-review" "github-actions[bot]"
 run_case "custom app set finds job-bot comment" "acme-review" "github-actions[bot]" "acme"
 run_case "job token finds custom app-set comment" "github-actions" "acme-review[bot]" "acme"
-run_case "lookalike app is not trusted" "github-actions" "acme-reviewer[bot]" "acme" "marker" "post"
-run_case "marker must start the comment" "github-actions" "fullsend-ai-review[bot]" "" "embedded" "post"
+run_case "non-listed role is trusted" "github-actions" "acme-scribe[bot]" "acme" "scribe"
+run_case "lookalike app is not trusted" "github-actions" "acme-reviewer[bot]" "acme" "review" "marker" "post"
+run_case "marker must start the comment" "github-actions" "fullsend-ai-review[bot]" "" "review" "embedded" "post"

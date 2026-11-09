@@ -2500,6 +2500,7 @@ jobs:
           REPOSITORY: ${{ matrix.status_repo }}
           NUMBER: ${{ matrix.status_number }}
           AGENT: ${{ matrix.agent }}
+          ROLE: ${{ matrix.role }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -2518,6 +2519,7 @@ jobs:
           export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
           export FULLSEND_FAILURE_NUMBER="${NUMBER}"
           export FULLSEND_FAILURE_AGENT="${AGENT}"
+          export FULLSEND_FAILURE_ROLE="${ROLE}"
           export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
           FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
           export FULLSEND_FAILURE_CATEGORY

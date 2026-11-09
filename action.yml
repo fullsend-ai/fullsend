@@ -47,7 +47,7 @@ inputs:
     description: Issue/PR number for startup-failure comments (optional).
     default: ""
   failure-trusted-bots:
-    description: Comma-separated custom bot login prefixes trusted for startup-failure comments (optional).
+    description: Comma-separated custom app-set prefixes used to derive trusted startup-failure bot identities (optional).
     default: ""
   failure-token:
     description: >-
@@ -581,6 +581,7 @@ runs:
       shell: bash
       env:
         AGENT: ${{ inputs.agent }}
+        ROLE: ${{ inputs.role || inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         TARGET_REPO: ${{ inputs.target-repo }}
         GH_TOKEN: ${{ inputs.github_token }}
@@ -757,10 +758,11 @@ runs:
         FULLSEND_FAILURE_REPOSITORY="${FAILURE_REPO}"
         FULLSEND_FAILURE_NUMBER="${FAILURE_NUMBER}"
         FULLSEND_FAILURE_AGENT="${AGENT}"
+        FULLSEND_FAILURE_ROLE="${ROLE}"
         FULLSEND_FAILURE_RUN_URL="${RUN_URL:-${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}}"
         FULLSEND_FAILURE_CATEGORY="${FAILURE_CATEGORY}"
         export FULLSEND_FAILURE_REPOSITORY FULLSEND_FAILURE_NUMBER \
-          FULLSEND_FAILURE_AGENT FULLSEND_FAILURE_RUN_URL \
+          FULLSEND_FAILURE_AGENT FULLSEND_FAILURE_ROLE FULLSEND_FAILURE_RUN_URL \
           FULLSEND_FAILURE_CATEGORY
         if "$GITHUB_ACTION_PATH/.github/scripts/report-agent-startup-failure.sh"; then
           echo "FULLSEND_STARTUP_FAILURE_REPORTED=true" >> "${GITHUB_ENV}"
