@@ -90,7 +90,7 @@ artifacts:
 | Level | Artifact holds |
 |---|---|
 | `all` | Everything in `output/`, as today. This is the default. |
-| `metadata` | Only the run-level files: `metrics.json`, `eval-measurements.jsonl`, `security/findings.jsonl`, and `run-telemetry.jsonl` with conversation content removed. Every `iteration-<N>/` directory and any other file is left out. |
+| `metadata` | Only the run-level files: `metrics.json`, `eval-measurements.jsonl`, and `run-telemetry.jsonl` with conversation content removed. Every `iteration-<N>/` directory, `security/findings.jsonl` and any other file is left out. |
 | `none` | No artifact is uploaded. |
 
 - **It lives in `config.yaml`, not in agent YAML.** The setting applies the
@@ -110,6 +110,9 @@ artifacts:
   an explicit declaration.
 - **Metadata is an allowlist.** `metadata` copies only the files named above.
   A file added to `output/` later stays excluded until this list names it.
+  `security/findings.jsonl` stays out: a finding's `detail` can quote tool
+  output, and a copy with that field stripped would break the file's hash
+  chain. It stays on the runner for local checks.
 - **Filtering happens after local use, and fails closed.** The runner leaves
   `output/` untouched, so `fullsend eval-measure` and post-scripts read the
   full run. A step after them builds a staged copy, and the runner uploads
