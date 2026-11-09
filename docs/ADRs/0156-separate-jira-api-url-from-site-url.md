@@ -58,8 +58,9 @@ protect, least-privilege scopes, and administration separate from people.
 Its weaknesses are that it requires organization-administrator provisioning
 and that a site must have the feature enabled.
 
-The two tokens look alike and are used the same way, as a password
-alongside the account's email. What differs is the host. The gateway accepts
+The two tokens look alike. A bot account's token is sent with the
+account's email, and a service account's token is sent on its own as a
+Bearer token. The bigger difference is the host. The gateway accepts
 both kinds: Atlassian documents it for scoped and service-account tokens,
 and a classic bot token has been observed to work there as well, though
 Atlassian's documentation does not promise it. The site URL accepts only the
