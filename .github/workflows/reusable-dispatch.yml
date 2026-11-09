@@ -1558,7 +1558,7 @@ jobs:
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report triage launch failure
-        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system != 'jira' }}
+        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
@@ -1726,7 +1726,7 @@ jobs:
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report code launch failure
-        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system != 'jira' }}
+        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
@@ -1935,7 +1935,7 @@ jobs:
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report review launch failure
-        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system != 'jira' }}
+        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
@@ -2235,7 +2235,7 @@ jobs:
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report fix launch failure
-        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system != 'jira' }}
+        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
@@ -2381,7 +2381,7 @@ jobs:
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report retro launch failure
-        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system != 'jira' }}
+        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
@@ -2511,7 +2511,7 @@ jobs:
           mint-url: ${{ inputs.mint_url }}
 
       - name: Report prioritize launch failure
-        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system != 'jira' }}
+        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -2936,7 +2936,7 @@ jobs:
           pr-head-sha: ${{ matrix.event_payload.pull_request.head.sha || '' }}
           artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}
       - name: Report harness launch failure
-        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && matrix.status_number != '' && fromJSON(matrix.event_payload)._normalized_event.source.system != 'jira' }}
+        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && matrix.status_number != '' && (fromJSON(matrix.event_payload)._normalized_event.source.system || 'github') == 'github' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
