@@ -487,6 +487,22 @@ func TestConverge_GitLabExistingWIFOptionsOnInstalledRepo(t *testing.T) {
 	assert.Contains(t, gitlabAgentTemplate(t, spy.files), "aud: \""+testExistingAudience+"\"")
 }
 
+// A deleted agent template is restored with the configured audience, not the
+// shipped "fullsend" one, so the repaired agent job can still federate.
+func TestConverge_GitLabExistingWIFRepairsMissingAgentTemplateWithAudience(t *testing.T) {
+	fc, m := installedGitLabExistingWIF(t)
+	delete(fc.FileContents, "group/project/"+fullsendAgentTemplatePath)
+	spy := &spyScaffoldCommit{}
+
+	result, err := Converge(context.Background(), ConvergeConfig{Manifest: m, MaxConcurrency: 4, Direct: true},
+		newTestClientFactory(fc), spy.fn(), noopProgress)
+	require.NoError(t, err)
+	require.Empty(t, result.Failed(), "results: %+v", result.Results)
+	agent := gitlabAgentTemplate(t, spy.files)
+	assert.Contains(t, agent, "aud: \""+testExistingAudience+"\"")
+	assert.NotContains(t, agent, `aud: "fullsend"`)
+}
+
 // installedGitLabWithLeftoverServiceAccount is an installed GitLab
 // repository that still carries FULLSEND_GCP_SERVICE_ACCOUNT under a
 // manifest that no longer declares inference.service_account.
