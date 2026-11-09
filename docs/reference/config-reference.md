@@ -602,6 +602,18 @@ GitHub-originated events and does not replace tracker-routed notifications for
 Jira-originated events. Repeated failures update the existing startup-failure
 comment instead of creating duplicates.
 
+Because this fallback runs specifically when the Fullsend CLI may not have been
+installed, it uses the workflow's GitHub comment API directly and does not read
+`status_notifications`. Therefore, a startup-failure comment can still be
+posted when status comments are disabled; this is intentional because the
+comment reports that the requested agent did not run at all.
+
+When the startup-failure fallback has successfully posted, the action skips
+orphaned-status reconciliation. No Fullsend run was started in that case, so
+there is no start comment to reconcile; skipping it also prevents a second,
+misleading "Interrupted" comment. Other status side effects are consequently
+not run for that pre-agent failure.
+
 **Reactions.** Emoji reactions don't generate a GitHub notification, so they
 are a lower-noise way to show that an agent is working and how the run turned
 out. Unlike comments, they default to `disabled`. When `reaction.start` is

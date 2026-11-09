@@ -5,7 +5,6 @@
 set -euo pipefail
 
 : "${GH_TOKEN:?GH_TOKEN is required}"
-: "${FULLSEND_FAILURE_REPOSITORY:?FULLSEND_FAILURE_REPOSITORY is required}"
 FULLSEND_FAILURE_REPOSITORY="${FULLSEND_FAILURE_REPOSITORY:-}"
 FULLSEND_FAILURE_NUMBER="${FULLSEND_FAILURE_NUMBER:-}"
 FULLSEND_FAILURE_AGENT="${FULLSEND_FAILURE_AGENT:-}"
@@ -31,7 +30,7 @@ case "${FULLSEND_FAILURE_CATEGORY}" in
     exit 0
     ;;
 esac
-if [[ ! "${FULLSEND_FAILURE_RUN_URL}" =~ ^https://[^/]+/.*/actions/runs/[1-9][0-9]*$ ]]; then
+if [[ ! "${FULLSEND_FAILURE_RUN_URL}" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[1-9][0-9]*$ ]]; then
   echo "::warning::Skipping startup failure comment: invalid workflow URL" >&2
   exit 0
 fi
