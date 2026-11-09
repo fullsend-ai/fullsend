@@ -98,6 +98,8 @@ function bashCommands(command, allowParameterExpansion = false) {
       deny("Bash policy rejects substitutions, groups, redirections, backgrounding and escapes");
     } else if (!allowParameterExpansion && ["*", "?", "["].includes(char)) {
       deny("Bash policy rejects pathname expansion with trusted patterns");
+    } else if (!allowParameterExpansion && char === "~") {
+      deny("Bash policy rejects tilde expansion with trusted patterns");
     } else if (char === " " || char === "\t") finishWord();
     else if (char === "\n" || char === ";" || char === "|") {
       finishCommand();

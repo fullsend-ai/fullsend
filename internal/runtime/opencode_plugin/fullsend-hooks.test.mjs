@@ -73,6 +73,22 @@ test("trusted Bash patterns reject unquoted argument globs", async (t) => {
   for (const command of commands) await programOnly.before("bash", { command });
 });
 
+test("trusted Bash patterns reject unquoted tilde expansion", async (t) => {
+  for (const bashAllowlist of [null, ["cat"]]) {
+    const h = await setup(t, { bashAllowlist, permission: { bash: {
+      "*": "deny", "cat *": "allow", "cat /sandbox/private*": "deny",
+    } } });
+    await assert.rejects(h.before("bash", { command: "cat /sandbox/private.txt" }), /trusted permission/);
+    await assert.rejects(h.before("bash", { command: "cat ~/private.txt" }), /tilde expansion/);
+    await assert.rejects(h.before("bash", { command: "cat ~root/private.txt" }), /tilde expansion/);
+    for (const quote of ["'", '"']) {
+      await h.before("bash", { command: `cat ${quote}~/private.txt${quote}` });
+    }
+  }
+  const programOnly = await setup(t, { bashAllowlist: ["cat"], permission: { bash: "allow" } });
+  await programOnly.before("bash", { command: "cat ~/private.txt" });
+});
+
 test("trusted permission patterns use native values and trailing wildcard semantics", async (t) => {
   const patterns = { "*": "deny", "safe *": "allow" };
   const h = await setup(t, { permission: { bash: { "*": "deny", "printf *": "allow" }, skill: patterns, glob: patterns, grep: patterns, websearch: patterns } });
