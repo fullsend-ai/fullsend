@@ -43,7 +43,7 @@ BODY_FILE="${RUNNER_TEMP:-/tmp}/fullsend-agent-startup-failure.md"
 {
   printf '%s\n\n' "${MARKER}"
   printf '⚠️ **Fullsend %s agent did not run**\n\n' "${FULLSEND_FAILURE_AGENT}"
-  printf 'The agent could not start because of a **%s** failure during workflow setup.\n\n' "${FULLSEND_FAILURE_CATEGORY}"
+  printf 'The agent could not start because of a **%s** failure.\n\n' "${FULLSEND_FAILURE_CATEGORY}"
   printf '[View the workflow run](%s)\n\n' "${FULLSEND_FAILURE_RUN_URL}"
 } > "${BODY_FILE}"
 
