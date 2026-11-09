@@ -426,6 +426,86 @@ func TestRunDispatch_GHAEventBotRoleRoute(t *testing.T) {
 	}
 }
 
+// TestRunDispatch_GHAEventBotRolePullRequest checks that a bot-authored
+// pull_request event (sent by per-repo shims on the pull_request trigger)
+// behaves like the pull_request_target one: the bot-role lookup runs and
+// decides the dispatch matrix and the --route decision the same way.
+func TestRunDispatch_GHAEventBotRolePullRequest(t *testing.T) {
+	writePullRequestBotEvent := func(t *testing.T, action, label string) {
+		t.Helper()
+		writeGHABotPREvent(t, action, label)
+		t.Setenv("GITHUB_EVENT_NAME", "pull_request")
+	}
+
+	matrixCases := []struct {
+		name        string
+		action      string
+		label       string
+		resolver    *fakeBotRoleResolver
+		wantProbe   bool
+		wantQueried bool
+	}{
+		{name: "recognized bot dispatches", action: "opened", resolver: &fakeBotRoleResolver{role: "coder"}, wantProbe: true, wantQueried: true},
+		{name: "unregistered bot is denied", action: "opened", resolver: &fakeBotRoleResolver{}, wantQueried: true},
+		{name: "lookup failure is denied without an error", action: "opened", resolver: &fakeBotRoleResolver{err: errFakeLookup}, wantQueried: true},
+		{name: "label added by an unregistered bot is the control", action: "labeled", label: "ready-for-probe", resolver: &fakeBotRoleResolver{err: errFakeLookup}, wantProbe: true},
+	}
+	for _, tc := range matrixCases {
+		t.Run("matrix/"+tc.name, func(t *testing.T) {
+			dir := writeBotProbeFixture(t)
+			writePullRequestBotEvent(t, tc.action, tc.label)
+			useBotRoleResolver(t, tc.resolver)
+
+			out, err := captureDispatch(t, dispatchOpts{inputDriver: "gha-event", outputDriver: "gha-matrix", configDir: dir})
+			require.NoError(t, err)
+			var matrix struct {
+				Include []map[string]any `json:"include"`
+			}
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &matrix), "matrix: %q", out)
+			if tc.wantProbe {
+				require.Len(t, matrix.Include, 1)
+				assert.Equal(t, "bot-probe", matrix.Include[0]["agent"])
+			} else {
+				assert.Empty(t, matrix.Include)
+			}
+			assert.Equal(t, tc.wantQueried, len(tc.resolver.queries) == 1, "queries: %v", tc.resolver.queries)
+		})
+	}
+
+	routeCases := []struct {
+		name         string
+		resolver     *fakeBotRoleResolver
+		wantDecision string
+		wantReason   string
+	}{
+		{name: "recognized bot runs", resolver: &fakeBotRoleResolver{role: "coder"}, wantDecision: routeRun, wantReason: "trigger matched"},
+		{name: "unregistered bot skips", resolver: &fakeBotRoleResolver{}, wantDecision: routeSkip, wantReason: "bot has no registered role"},
+		{name: "lookup failure skips", resolver: &fakeBotRoleResolver{err: errFakeLookup}, wantDecision: routeSkip, wantReason: "bot-role lookup failed"},
+	}
+	for _, tc := range routeCases {
+		t.Run("route/"+tc.name, func(t *testing.T) {
+			dir := writeRouteFixture(t, routeFixture{
+				agents: []config.AgentEntry{{
+					Name:    "review",
+					Source:  "harness/review.yaml",
+					Trigger: `event.entity.kind == "change_proposal" && event.transition.kind == "opened"`,
+				}},
+				files: map[string]string{"harness/review.yaml": routeTestHarnessBody},
+			})
+			writePullRequestBotEvent(t, "opened", "")
+			useBotRoleResolver(t, tc.resolver)
+
+			out, err := captureDispatch(t, dispatchOpts{inputDriver: "gha-event", configDir: dir, route: "review"})
+			require.NoError(t, err)
+			var got routeDecision
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &got), "decision: %q", out)
+			assert.Equal(t, tc.wantDecision, got.Decision)
+			assert.Equal(t, tc.wantReason, got.Reason)
+			require.Len(t, tc.resolver.queries, 1)
+		})
+	}
+}
+
 // envMintServers serves the Actions OIDC token endpoint and a mint that
 // recognizes every bot as coder, points FULLSEND_MINT_URL and the Actions OIDC
 // environment at them, and returns a counter of mint lookups. A lookup that

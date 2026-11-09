@@ -529,10 +529,10 @@ role and review state are accepted.
 ### Legacy lifecycle close (pull\_request\_target.closed)
 
 **Current bash compatibility behavior:** The GitHub bash dispatcher routes
-`pull_request_target.closed` to retro without a separate collaborator-role
-check, so any closer may trigger it. This is not a read-only capability:
-retro's token can write issues and pull requests, and its post-script can
-file issues, comment, and apply labels. The Go CEL path has no close-event
+`pull_request.closed` and `pull_request_target.closed` to retro without a
+separate collaborator-role check, so any closer may trigger it. This is not
+a read-only capability: retro's token can write issues and pull requests,
+and its post-script can file issues, comment, and apply labels. The Go CEL path has no close-event
 exception and applies the selected harness's role-derived default; a `retro`
 role requires `write`.
 

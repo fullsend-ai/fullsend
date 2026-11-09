@@ -332,16 +332,18 @@ role and review state are accepted.
 
 ### Lifecycle close (pull\_request\_target.closed)
 
-The `pull_request_target.closed` event that triggers the retro stage is
-intentionally ungated: any closer may trigger read-only lifecycle
-accounting. The retro agent performs only observation work and does not
-mutate repository state. This exception is implemented in the bash
-dispatch path and, on GitHub, by `fullsend dispatch --route retro`
-(`IsLifecycleCloseAuthorized()` in `harnessdispatch`), which admits a
-`pull_request_target` close, merged or not, whoever closed it, for the
-retro role only. Any pull request author can close their own pull request,
-so no other harness role gets the exception. The route applies it only when
-routing retro, keyed on the resolved harness `role: retro`; when the harness
+The `pull_request.closed` or `pull_request_target.closed` event that
+triggers the retro stage is intentionally ungated: any closer may trigger
+read-only lifecycle accounting. Per-repo shims on the `pull_request`
+trigger send `pull_request`; shims that have not been upgraded keep sending
+`pull_request_target`, and the exception covers both. The retro agent
+performs only observation work and does not mutate repository state. This
+exception is implemented in the bash dispatch path and, on GitHub, by
+`fullsend dispatch --route retro` (`IsLifecycleCloseAuthorized()` in
+`harnessdispatch`), which admits a `pull_request` or `pull_request_target`
+close, merged or not, whoever closed it, for the retro role only. Any pull
+request author can close their own pull request, so no other harness role
+gets the exception. The route applies it only when routing retro, keyed on the resolved harness `role: retro`; when the harness
 cannot be loaded, it is keyed on the routed agent's own role (the Retro job
 mints the retro role either way). CEL harness dispatch has no
 special handling for closed transitions: the retro harness role resolves to

@@ -432,7 +432,10 @@ func TestReviewRouteAccepts(t *testing.T) {
 		event string
 		want  bool
 	}{
-		"PR opened":           {routePROpened, true},
+		"PR opened": {routePROpened, true},
+		"PR opened (pull_request)": {
+			strings.Replace(routePROpened, `"raw_type": "pull_request_target"`, `"raw_type": "pull_request"`, 1), true,
+		},
 		"comment on a PR":     {routeReviewComment, true},
 		"comment on an issue": {routeIssueReviewComment, false},
 	}
@@ -929,6 +932,9 @@ func TestRouteBuiltinAgent_ErrorsAndEvaluationFailures(t *testing.T) {
 		"retro": {
 			"write actor":  routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroWriter, "pull_request_target", "closed"),
 			"triage actor": routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroTriager, "pull_request_target", "closed"),
+			// Shims on the pull_request trigger send pull_request closes.
+			"write actor (pull_request)":  routeRetroEvent(routeRetroPR, routeRetroMerged, routeRetroWriter, "pull_request", "closed"),
+			"triage actor (pull_request)": routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroTriager, "pull_request", "closed"),
 		},
 		"triage": {
 			"write actor":  routeIssueTriageComment,

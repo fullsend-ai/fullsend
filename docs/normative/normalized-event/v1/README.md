@@ -416,9 +416,11 @@ contract):
 | `run-url` | Runtime-only; set by the dispatch workflow, not projected from `NormalizedEvent` |
 
 **`event_type` / `pull_request_target`:** v1 preserves the GitHub Actions event
-name in `source.raw_type`. When the workflow runs on `pull_request_target`,
-adapters emit `raw_type: "pull_request_target"` (not normalized to
-`pull_request`) so downstream routing matches today's dispatch behavior.
+name in `source.raw_type`, never normalized. When the workflow runs on
+`pull_request_target`, adapters emit `raw_type: "pull_request_target"`; when it
+runs on `pull_request`, they emit `raw_type: "pull_request"`. Both map to the
+same entity, transition, actor and state, so downstream routing treats them
+alike; only `raw_type` tells them apart.
 
 **`trigger_source` (fix agent only):** this field is emitted only for the fix
 harness execution ref. When `transition.kind == "review_submitted"`, set

@@ -640,8 +640,9 @@ func (p *Poller) filterBotEvents(events []RoutableEvent) []RoutableEvent {
 		}
 		// Bot-authored MR opens must dispatch review — the code agent
 		// opens MRs as the project access token bot, matching GitHub's
-		// [bot] exception on pull_request_target.opened. Bot-authored
-		// closes and merges are both filtered: they are the enrolled
+		// [bot] exception on pull_request.opened /
+		// pull_request_target.opened. Bot-authored closes and merges
+		// are both filtered: they are the enrolled
 		// bot's own lifecycle actions (e.g. closeStaleScaffoldPRs
 		// closing the bot's own stale scaffold MRs) and must not spawn
 		// retro pipelines for the bot's own cleanup. A human close is

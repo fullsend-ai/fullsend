@@ -231,8 +231,11 @@ func IsRecognizedBot(actor normevent.Actor) bool {
 const lifecycleCloseRole = "retro"
 
 // IsLifecycleCloseAuthorized reports whether event is a GitHub
-// pull_request_target close (merged or not) and harnessRole, the resolved
-// harness role: of the agent being routed, is the retro role. Such an event
+// pull_request or pull_request_target close (merged or not) and harnessRole,
+// the resolved harness role: of the agent being routed, is the retro role.
+// Both event names are accepted: per-repo shims that have moved to the
+// pull_request trigger send pull_request, older shims keep sending
+// pull_request_target. Such an event
 // is authorized for that harness whoever closed the pull request: the
 // authorization contract's lifecycle-close exception, which the bash router
 // applies by starting a retro for any closer. Like the label exception it
@@ -245,7 +248,7 @@ func IsLifecycleCloseAuthorized(event *normevent.Event, harnessRole string) bool
 		return false
 	}
 	return event.Source.System == normevent.SystemGitHub &&
-		event.Source.RawType == "pull_request_target" &&
+		(event.Source.RawType == "pull_request_target" || event.Source.RawType == "pull_request") &&
 		event.Entity.Kind == normevent.EntityChangeProposal &&
 		(event.Transition.Kind == normevent.TransitionClosed || event.Transition.Kind == normevent.TransitionMerged)
 }
