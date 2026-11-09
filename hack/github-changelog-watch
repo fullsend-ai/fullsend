@@ -1,0 +1,858 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""Watch the GitHub changelog for Actions platform changes and file issues.
+
+Each run polls three sources for items modified since --since (default: now
+minus 26 hours) and merges them by post id or issue number:
+
+1. The github.blog changelog REST API, labels actions, platform-governance
+   and supply-chain-security.
+2. The same API, deprecations type.
+3. actions/runner-images issues labelled Announcement.
+
+The changelog REST API is github.blog's WordPress backend, not a documented
+GitHub API. If it fails or returns a non-JSON body, the matching RSS feeds
+are read instead, without edit detection.
+
+Tier-1 items get their own `platform-change` issue. Tier-2 items, and tier-1
+items over the per-run cap, go into a weekly `platform-change-digest` issue.
+Hidden markers in issue bodies and comments keep reruns from duplicating
+them. Exits nonzero only when every source fails or GitHub calls fail.
+
+Usage: github-changelog-watch [--repo OWNER/NAME] [--since ISO-8601]
+                              [--dry-run] [--max-issues N]
+"""
+
+import argparse
+import html
+import json
+import re
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+# Feeds come from github.blog over HTTPS; expat in Python 3.12 does not fetch
+# external entities and limits entity expansion.
+import xml.etree.ElementTree as ET  # nosec B405
+from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
+from email.utils import parsedate_to_datetime
+from typing import Any
+
+CHANGELOG_API = "https://github.blog/wp-json/wp/v2/changelogs"
+# date_gmt/modified_gmt are requested because date/modified are site-local.
+CHANGELOG_FIELDS = "id,date,modified,date_gmt,modified_gmt,link,title,content,type,label"
+LABEL_IDS = "1836,3628,3630"  # actions, platform-governance, supply-chain-security
+DEPRECATIONS_TYPE = 3523
+FEED_BASE = "https://github.blog/changelog"
+LABEL_FEEDS = (
+    f"{FEED_BASE}/label/actions/feed/",
+    f"{FEED_BASE}/label/platform-governance/feed/",
+    f"{FEED_BASE}/label/supply-chain-security/feed/",
+)
+DEPRECATIONS_FEED = f"{FEED_BASE}/type/deprecations/feed/"
+# RSS changelog-type names for the deprecations type.
+DEPRECATION_TYPE_NAMES = {"retired", "deprecation", "deprecations"}
+RUNNER_IMAGES_ISSUES = "repos/actions/runner-images/issues"
+MAX_WP_PAGES = 20
+USER_AGENT = "fullsend-github-changelog-watch"
+
+ISSUE_LABEL = "platform-change"
+DIGEST_LABEL = "platform-change-digest"
+LABELS = {
+    ISSUE_LABEL: ("d93f0b", "GitHub platform change that may affect fullsend"),
+    DIGEST_LABEL: ("fbca04", "Weekly digest of GitHub platform changes"),
+}
+TITLE_PREFIX = "[platform-change]"
+MAX_TITLE = 256
+MAX_SENTENCES = 5
+MAX_SENTENCE_CHARS = 400
+
+TIER1_TERMS = (
+    "pull_request_target",
+    "workflow_run",
+    "GITHUB_TOKEN",
+    "brownout",
+    "default rule",
+    "evaluate mode",
+    "event polic",
+    "execution protection",
+    "installation token",
+    "closing down",
+    "retired",
+    "OIDC",
+    "id-token",
+)
+TIER2_TERMS = (
+    "deprecat",
+    "no longer",
+    "by default",
+    "enforce",
+    "runner",
+    "ruleset",
+    "GitHub App",
+    "reusable workflow",
+    "actions/checkout",
+    "actions/cache",
+    "artifact",
+)
+NODE_RE = re.compile(r"\bNode (\d+)\b", re.I)
+EDITOR_NOTE_RE = re.compile(r"Editor['’]s note\s*\(([^)]{1,40})\)\s*:?\s*(.*)", re.I)
+MONTH_RE = re.compile(
+    r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\b"
+)
+DATE_CHANGE_RE = re.compile(r"\b(moved|postpone\w*|updated|delay\w*)\b", re.I)
+BLOCK_END_RE = re.compile(
+    r"</(?:p|li|h[1-6]|tr|div|blockquote|pre|ul|ol|table)\s*>|<br\s*/?>", re.I
+)
+TAG_RE = re.compile(r"<[^>]*>")
+SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+ISSUE_MARKER_RE = re.compile(r"<!-- platform-change:source=([\w-]+):id=(\d+) -->")
+DIGEST_MARKER_RE = re.compile(r"<!-- platform-change-digest:(\d{4}-W\d{2}) -->")
+DIGEST_LINK_RE = re.compile(r"^- .*?\]\((\S+?)\)")
+OVER_CAP = "(over the per-run cap)"
+
+
+# --- fetching -------------------------------------------------------------
+
+
+@dataclass
+class Request:
+    target: str  # https URL (github.blog via urllib) or API path (gh api)
+    method: str = "GET"
+    data: dict[str, Any] | None = None
+    paginate: bool = False
+
+
+@dataclass
+class Response:
+    status: int  # 0 when the request could not be made
+    body: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+Fetch = Callable[[Request], Response]
+
+
+def default_fetch(req: Request) -> Response:
+    """Fetch github.blog URLs with urllib and GitHub API paths with gh api."""
+    if req.target.startswith("https://"):
+        return _urllib_fetch(req)
+    return _gh_fetch(req)
+
+
+def _urllib_fetch(req: Request) -> Response:
+    http_req = urllib.request.Request(req.target, headers={"User-Agent": USER_AGENT})
+    try:
+        # Only https:// targets reach here (see default_fetch).
+        with urllib.request.urlopen(http_req, timeout=30) as resp:  # nosec B310
+            headers = {k.lower(): v for k, v in resp.headers.items()}
+            return Response(resp.status, resp.read().decode("utf-8", "replace"), headers)
+    except urllib.error.HTTPError as e:
+        return Response(e.code, "")
+    except (urllib.error.URLError, OSError) as e:
+        return Response(0, str(e))
+
+
+def _gh_fetch(req: Request) -> Response:
+    gh = shutil.which("gh")
+    if gh is None:
+        return Response(0, "gh not found on PATH")
+    cmd = [gh, "api", "-X", req.method, req.target]
+    if req.paginate:
+        cmd.append("--paginate")
+    stdin = None
+    if req.data is not None:
+        cmd += ["--input", "-"]
+        stdin = json.dumps(req.data)
+    try:
+        proc = subprocess.run(
+            cmd, input=stdin, capture_output=True, text=True, timeout=120, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return Response(0, str(e))
+    if proc.returncode == 0:
+        return Response(200, proc.stdout)
+    m = re.search(r"HTTP (\d{3})", proc.stderr)
+    return Response(int(m.group(1)) if m else 0, proc.stderr.strip())
+
+
+def parse_json_pages(text: str) -> list[Any]:
+    """Parse gh api --paginate output: one merged array or one array per page."""
+    decoder = json.JSONDecoder()
+    out: list[Any] = []
+    text = text.strip()
+    i = 0
+    while i < len(text):
+        obj, i = decoder.raw_decode(text, i)
+        out.extend(obj if isinstance(obj, list) else [obj])
+        while i < len(text) and text[i].isspace():
+            i += 1
+    return out
+
+
+# --- items ----------------------------------------------------------------
+
+
+def parse_time(value: str) -> datetime:
+    dt = datetime.fromisoformat(value.strip())
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+def fmt_time(dt: datetime) -> str:
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def html_to_text(s: str) -> str:
+    """Strip tags and unescape entities, keeping one line per block element."""
+    s = BLOCK_END_RE.sub("\n", s)
+    s = TAG_RE.sub(" ", s)
+    s = html.unescape(s)
+    s = re.sub(r"[^\S\n]+", " ", s)
+    return "\n".join(ln.strip() for ln in s.split("\n") if ln.strip())
+
+
+def inline_text(s: str) -> str:
+    return " ".join(html_to_text(s).split())
+
+
+@dataclass
+class Item:
+    source: str  # changelog | runner-images
+    id: int
+    title: str
+    link: str
+    published: datetime
+    modified: datetime
+    types: list[int]
+    body: str  # HTML or Markdown
+
+    @property
+    def key(self) -> tuple[str, int]:
+        return (self.source, self.id)
+
+    def text(self) -> str:
+        return f"{self.title}\n{html_to_text(self.body)}"
+
+    def describe(self) -> str:
+        return f'{self.source}:{self.id} "{self.title}"'
+
+
+def item_from_post(post: dict[str, Any]) -> Item:
+    # Use the GMT pair when present; otherwise treat the local pair as UTC.
+    if post.get("date_gmt") and post.get("modified_gmt"):
+        published, modified = post["date_gmt"], post["modified_gmt"]
+    else:
+        published, modified = post["date"], post.get("modified") or post["date"]
+    return Item(
+        source="changelog",
+        id=int(post["id"]),
+        title=inline_text(post["title"]["rendered"]),
+        link=post["link"],
+        published=parse_time(published),
+        modified=parse_time(modified),
+        types=[int(t) for t in post.get("type") or []],
+        body=post.get("content", {}).get("rendered", ""),
+    )
+
+
+RSS_NS = {
+    "content": "http://purl.org/rss/1.0/modules/content/",
+    "wp": "com-wordpress:feed-additions:1",
+}
+
+
+def items_from_rss(xml_text: str, deprecations: bool) -> list[Item]:
+    """Parse a changelog RSS feed. RSS has no modified date, so modified = published."""
+    # See the xml.etree import comment.
+    root = ET.fromstring(xml_text)  # nosec B314
+    items = []
+    for node in root.iter("item"):
+        post_id = node.findtext("wp:post-id", namespaces=RSS_NS)
+        pub = node.findtext("pubDate")
+        if not post_id or not pub:
+            continue
+        types = [DEPRECATIONS_TYPE] if deprecations else []
+        for cat in node.findall("category"):
+            name = (cat.text or "").strip().lower()
+            if cat.get("domain") == "changelog-type" and name in DEPRECATION_TYPE_NAMES:
+                types = [DEPRECATIONS_TYPE]
+        published = parsedate_to_datetime(pub).astimezone(UTC)
+        body = node.findtext("content:encoded", namespaces=RSS_NS) or node.findtext(
+            "description", ""
+        )
+        items.append(
+            Item(
+                source="changelog",
+                id=int(post_id),
+                title=inline_text(node.findtext("title", "")),
+                link=(node.findtext("link") or "").strip(),
+                published=published,
+                modified=published,
+                types=types,
+                body=body,
+            )
+        )
+    return items
+
+
+def item_from_runner_issue(issue: dict[str, Any]) -> Item | None:
+    if "pull_request" in issue:
+        return None
+    return Item(
+        source="runner-images",
+        id=int(issue["number"]),
+        title=issue["title"],
+        link=issue["html_url"],
+        published=parse_time(issue["created_at"]),
+        modified=parse_time(issue.get("updated_at") or issue["created_at"]),
+        types=[],
+        body=issue.get("body") or "",
+    )
+
+
+# --- classification -------------------------------------------------------
+
+
+@dataclass
+class Note:
+    date_text: str
+    when: date | None
+    text: str
+
+    def reason(self) -> str:
+        return f"editor's note ({self.date_text})"
+
+
+@dataclass
+class Verdict:
+    kind: str  # new | edit | cosmetic | stale
+    tier: int  # 0 (none), 1 or 2
+    reasons: list[str]
+    notes: list[Note]
+
+
+def parse_note_date(s: str) -> date | None:
+    s = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", s.strip())
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%B %d %Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def editor_notes(text: str) -> list[Note]:
+    return [
+        Note(m.group(1).strip(), parse_note_date(m.group(1)), m.group(2).strip())
+        for m in EDITOR_NOTE_RE.finditer(text)
+    ]
+
+
+def mentions_date_change(note: Note) -> bool:
+    return bool(MONTH_RE.search(note.text) or DATE_CHANGE_RE.search(note.text))
+
+
+def find_terms(text: str, terms: tuple[str, ...]) -> list[str]:
+    low = text.casefold()
+    return [t for t in terms if t.casefold() in low]
+
+
+def tier2_reasons(text: str) -> list[str]:
+    reasons = find_terms(text, TIER2_TERMS)
+    nodes = sorted({f"Node {m.group(1)}" for m in NODE_RE.finditer(text)})
+    return reasons + nodes
+
+
+def classify(item: Item, since: datetime) -> Verdict:
+    """Classify an item; edits count only with an editor's note dated on or after since."""
+    text = item.text()
+    notes = editor_notes(text)
+    tier1 = ["deprecations type"] if DEPRECATIONS_TYPE in item.types else []
+    tier1 += find_terms(text, TIER1_TERMS)
+    if item.published >= since:
+        dated = [n for n in notes if mentions_date_change(n)]
+        tier1 += [n.reason() for n in dated]
+        if tier1:
+            return Verdict("new", 1, tier1, dated)
+        tier2 = tier2_reasons(text)
+        return Verdict("new", 2 if tier2 else 0, tier2, [])
+    if item.modified < since:
+        return Verdict("stale", 0, [], [])
+    fresh = [n for n in notes if n.when is not None and n.when >= since.date()]
+    if not fresh:
+        return Verdict("cosmetic", 0, [], [])
+    return Verdict("edit", 1, [n.reason() for n in fresh] + tier1, fresh)
+
+
+def matched_sentences(item: Item, verdict: Verdict) -> list[str]:
+    needles = [r for r in verdict.reasons if r in TIER1_TERMS or r in TIER2_TERMS]
+    if verdict.notes:
+        needles += ["editor's note", "editor’s note"]
+    needles = [n.casefold() for n in needles]
+    lines = item.text().split("\n")[1:]  # skip the title line
+    sentences = list(dict.fromkeys(s for ln in lines for s in SENTENCE_SPLIT_RE.split(ln) if s))
+
+    # Editor's notes first, then sentences matching the most terms; keep text order.
+    def score(s: str) -> int:
+        low = s.casefold()
+        return sum(n in low for n in needles) + (10 if EDITOR_NOTE_RE.search(s) else 0)
+
+    ranked = sorted(
+        (i for i, s in enumerate(sentences) if score(s)), key=lambda i: -score(sentences[i])
+    )
+    picked = sorted(ranked[:MAX_SENTENCES]) or list(range(min(2, len(sentences))))
+    return [shorten(sentences[i], MAX_SENTENCE_CHARS) for i in picked]
+
+
+# --- rendering ------------------------------------------------------------
+
+
+def shorten(s: str, limit: int) -> str:
+    return s if len(s) <= limit else s[: limit - 1].rstrip() + "…"
+
+
+def md_safe(s: str) -> str:
+    """Escape external text so it cannot fake markers or mention users."""
+    s = s.replace("<", "&lt;").replace(">", "&gt;")
+    return re.sub(r"@(?=\w)", "@\u200b", s)
+
+
+def quote(s: str) -> str:
+    return "> " + md_safe(s)
+
+
+def edit_marker(item: Item) -> str:
+    return f"<!-- platform-change:id={item.id}:modified={fmt_time(item.modified)} -->"
+
+
+def issue_title(item: Item) -> str:
+    return shorten(f"{TITLE_PREFIX} {item.title}", MAX_TITLE)
+
+
+def issue_body(item: Item, verdict: Verdict) -> str:
+    lines = [
+        f"**Source:** {item.link}",
+        f"**Published:** {fmt_time(item.published)}",
+        f"**Modified:** {fmt_time(item.modified)}",
+        f"**Matched:** {md_safe(', '.join(verdict.reasons))}",
+        "",
+        "### Matched sentences",
+        "",
+    ]
+    for s in matched_sentences(item, verdict):
+        lines += [quote(s), ""]
+    lines += [
+        "### Checklist",
+        "",
+        "- [ ] Does this affect fullsend's shim, reusable workflows, actions or consumers?",
+        "- [ ] Owner?",
+        "- [ ] Deadline?",
+        "",
+        f"<!-- platform-change:source={item.source}:id={item.id} -->",
+    ]
+    if verdict.kind == "edit":
+        lines.append(edit_marker(item))
+    return "\n".join(lines) + "\n"
+
+
+def edit_comment(item: Item, notes: list[Note]) -> str:
+    lines = [f"The source was edited. New modified: {fmt_time(item.modified)}.", ""]
+    for n in notes:
+        lines += [quote(f"Editor's note ({n.date_text}): {n.text}"), ""]
+    lines += [f"Source: {item.link}", "", edit_marker(item)]
+    return "\n".join(lines) + "\n"
+
+
+def iso_week(now: datetime) -> str:
+    year, week, _ = now.isocalendar()
+    return f"{year}-W{week:02d}"
+
+
+def digest_title(week: str) -> str:
+    return f"{TITLE_PREFIX} Weekly digest {week}"
+
+
+def digest_line(item: Item, reasons: list[str], over_cap: bool) -> str:
+    title = md_safe(item.title).replace("[", "(").replace("]", ")")
+    suffix = f" {OVER_CAP}" if over_cap else ""
+    return (
+        f"- {item.published:%Y-%m-%d} [{title}]({item.link}) — "
+        f"{md_safe(', '.join(reasons))}{suffix}"
+    )
+
+
+def digest_lines(body: str) -> dict[str, str]:
+    lines = {}
+    for line in body.splitlines():
+        m = DIGEST_LINK_RE.match(line)
+        if m:
+            lines[m.group(1)] = line
+    return lines
+
+
+def digest_body(week: str, lines: dict[str, str]) -> str:
+    return (
+        f"Tier-2 GitHub platform changes for {week}. "
+        "`hack/github-changelog-watch` rewrites this list on each run.\n\n"
+        + "\n".join(sorted(lines.values()))
+        + f"\n\n<!-- platform-change-digest:{week} -->\n"
+    )
+
+
+# --- watcher --------------------------------------------------------------
+
+
+class GhError(RuntimeError):
+    pass
+
+
+class Watcher:
+    def __init__(
+        self,
+        fetch: Fetch,
+        repo: str,
+        since: datetime,
+        now: datetime,
+        dry_run: bool,
+        max_issues: int,
+    ) -> None:
+        self.fetch = fetch
+        self.repo = repo
+        self.since = since
+        self.now = now
+        self.dry_run = dry_run
+        self.max_issues = max_issues
+        self.counts: Counter[str] = Counter()
+        self.issues: dict[tuple[str, int], dict[str, Any]] = {}
+        self.digests: list[tuple[str, dict[str, Any]]] = []
+        self.labels_ready = False
+
+    def log(self, action: str, detail: str, count: bool = True) -> None:
+        prefix = "DRY-RUN " if self.dry_run else ""
+        print(f"{prefix}{action} {detail}")
+        if count:
+            self.counts[action] += 1
+
+    # GitHub
+
+    def gh(
+        self,
+        path: str,
+        method: str = "GET",
+        data: dict[str, Any] | None = None,
+        paginate: bool = False,
+    ) -> Any:
+        resp = self.fetch(Request(path, method, data, paginate))
+        if not 200 <= resp.status < 300:
+            raise GhError(f"gh api -X {method} {path}: HTTP {resp.status} {resp.body[:300]}")
+        if paginate:
+            return parse_json_pages(resp.body)
+        return json.loads(resp.body) if resp.body.strip() else None
+
+    def ensure_labels(self) -> None:
+        if self.labels_ready:
+            return
+        for name, (color, description) in LABELS.items():
+            data = {"name": name, "color": color, "description": description}
+            resp = self.fetch(Request(f"repos/{self.repo}/labels", "POST", data))
+            if not (200 <= resp.status < 300 or resp.status == 422):  # 422: already exists
+                raise GhError(f"create label {name}: HTTP {resp.status} {resp.body[:300]}")
+        self.labels_ready = True
+
+    def create_issue(self, title: str, body: str, label: str) -> dict[str, Any]:
+        self.ensure_labels()
+        data = {"title": title, "body": body, "labels": [label]}
+        return self.gh(f"repos/{self.repo}/issues", "POST", data)
+
+    def list_issues(self, label: str) -> list[dict[str, Any]]:
+        path = f"repos/{self.repo}/issues?labels={label}&state=all&per_page=100"
+        return [i for i in self.gh(path, paginate=True) if "pull_request" not in i]
+
+    def load_existing(self) -> None:
+        for issue in self.list_issues(ISSUE_LABEL):
+            for m in ISSUE_MARKER_RE.finditer(issue.get("body") or ""):
+                self.issues.setdefault((m.group(1), int(m.group(2))), issue)
+        for issue in self.list_issues(DIGEST_LABEL):
+            m = DIGEST_MARKER_RE.search(issue.get("body") or "")
+            if m:
+                self.digests.append((m.group(1), issue))
+
+    # Sources
+
+    def wp_query(self, params: dict[str, str]) -> list[Item] | None:
+        # modified_after compares site-local time; widen by a day and filter locally.
+        after = (self.since - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+        posts: list[Any] = []
+        page, pages = 1, 1
+        while page <= min(pages, MAX_WP_PAGES):
+            query = {
+                **params,
+                "modified_after": after,
+                "orderby": "modified",
+                "per_page": "100",
+                "page": str(page),
+                "_fields": CHANGELOG_FIELDS,
+            }
+            url = f"{CHANGELOG_API}?{urllib.parse.urlencode(query, safe=',')}"
+            resp = self.fetch(Request(url))
+            if resp.status != 200:
+                print(f"::warning::changelog REST API returned HTTP {resp.status} for {url}")
+                return None
+            try:
+                data = json.loads(resp.body)
+            except ValueError:
+                print(f"::warning::changelog REST API returned a non-JSON body for {url}")
+                return None
+            if not isinstance(data, list):
+                print(f"::warning::changelog REST API returned a non-list body for {url}")
+                return None
+            posts.extend(data)
+            try:
+                pages = int(resp.headers.get("x-wp-totalpages", "1"))
+            except ValueError:
+                pages = 1
+            page += 1
+        try:
+            return [item_from_post(p) for p in posts]
+        except (KeyError, TypeError, ValueError) as e:
+            print(f"::warning::changelog REST API returned a malformed post: {e!r}")
+            return None
+
+    def read_feeds(self, urls: tuple[str, ...], deprecations: bool) -> list[Item] | None:
+        items: list[Item] = []
+        ok = False
+        for url in urls:
+            resp = self.fetch(Request(url))
+            if resp.status != 200:
+                print(f"::warning::RSS feed {url} returned HTTP {resp.status}")
+                continue
+            try:
+                items += items_from_rss(resp.body, deprecations)
+            except (ET.ParseError, ValueError, TypeError) as e:
+                print(f"::warning::RSS feed {url} could not be parsed: {e}")
+                continue
+            ok = True
+        return items if ok else None
+
+    def changelog_source(
+        self, params: dict[str, str], feeds: tuple[str, ...], deprecations: bool
+    ) -> list[Item] | None:
+        items = self.wp_query(params)
+        if items is not None:
+            return items
+        print(f"::warning::reading RSS feeds instead, without edit detection: {', '.join(feeds)}")
+        return self.read_feeds(feeds, deprecations)
+
+    def runner_images_source(self) -> list[Item] | None:
+        path = (
+            f"{RUNNER_IMAGES_ISSUES}?labels=Announcement&since={fmt_time(self.since)}"
+            "&state=all&per_page=100"
+        )
+        resp = self.fetch(Request(path, paginate=True))
+        if resp.status != 200:
+            print(f"::warning::runner-images announcements returned HTTP {resp.status}")
+            return None
+        try:
+            issues = parse_json_pages(resp.body)
+            items = [item_from_runner_issue(i) for i in issues]
+        except (KeyError, TypeError, ValueError) as e:
+            print(f"::warning::runner-images announcements could not be parsed: {e!r}")
+            return None
+        return [i for i in items if i is not None]
+
+    def collect(self) -> list[Item] | None:
+        labels = {"label": LABEL_IDS}
+        deprecations = {"type": str(DEPRECATIONS_TYPE)}
+        deprecation_feeds = (DEPRECATIONS_FEED,)
+        sources = (
+            ("changelog labels", lambda: self.changelog_source(labels, LABEL_FEEDS, False)),
+            (
+                "changelog deprecations",
+                lambda: self.changelog_source(deprecations, deprecation_feeds, True),
+            ),
+            ("runner-images announcements", self.runner_images_source),
+        )
+        merged: dict[tuple[str, int], Item] = {}
+        ok = 0
+        for name, load in sources:
+            items = load()
+            if items is None:
+                print(f"::warning::source failed: {name}")
+                continue
+            ok += 1
+            for item in items:
+                prev = merged.get(item.key)
+                if prev is None or item.modified > prev.modified:
+                    if prev is not None:
+                        item.types = sorted(set(item.types) | set(prev.types))
+                    merged[item.key] = item
+                else:
+                    prev.types = sorted(set(item.types) | set(prev.types))
+        if ok == 0:
+            return None
+        return sorted(merged.values(), key=lambda i: (i.modified, i.source, i.id))
+
+    # Actions
+
+    def open_issue(self, item: Item, verdict: Verdict) -> None:
+        if self.dry_run:
+            self.log("OPEN", f"{item.describe()} reasons: {', '.join(verdict.reasons)}")
+            return
+        issue = self.create_issue(issue_title(item), issue_body(item, verdict), ISSUE_LABEL)
+        self.issues[item.key] = issue
+        self.log("OPEN", f"{item.describe()} #{issue['number']}")
+
+    def comment_on_edit(self, issue: dict[str, Any], item: Item, verdict: Verdict) -> None:
+        number = issue["number"]
+        marker = edit_marker(item)
+        comments = self.gh(
+            f"repos/{self.repo}/issues/{number}/comments?per_page=100", paginate=True
+        )
+        bodies = [issue.get("body") or ""] + [c.get("body") or "" for c in comments]
+        if any(marker in b for b in bodies):
+            self.log("SKIP-DUP", f"{item.describe()} #{number} edit {fmt_time(item.modified)}")
+            return
+        if not self.dry_run:
+            body = edit_comment(item, verdict.notes)
+            self.gh(f"repos/{self.repo}/issues/{number}/comments", "POST", {"body": body})
+        self.log("COMMENT", f"{item.describe()} #{number} modified {fmt_time(item.modified)}")
+
+    def update_digest(self, entries: list[tuple[Item, list[str], bool]]) -> None:
+        week = iso_week(self.now)
+        current = next((i for w, i in self.digests if w == week), None)
+        lines = digest_lines(current.get("body") or "") if current else {}
+        changed = False
+        for item, reasons, over_cap in entries:
+            line = digest_line(item, reasons, over_cap)
+            if lines.get(item.link) == line:
+                self.log("SKIP-DUP", f"{item.describe()} digest {week}")
+                continue
+            lines[item.link] = line
+            changed = True
+            self.log("DIGEST", f"{item.describe()}{' ' + OVER_CAP if over_cap else ''}")
+        if not changed:
+            return
+        body = digest_body(week, lines)
+        if current is not None:
+            if not self.dry_run:
+                self.gh(f"repos/{self.repo}/issues/{current['number']}", "PATCH", {"body": body})
+                current["body"] = body
+            self.log("DIGEST", f"{week} #{current['number']} updated ({len(lines)} items)", False)
+            return
+        new_ref = "the new digest"
+        if not self.dry_run:
+            issue = self.create_issue(digest_title(week), body, DIGEST_LABEL)
+            self.digests.append((week, issue))
+            new_ref = f"#{issue['number']}"
+        self.log("DIGEST", f"{week} {new_ref} created ({len(lines)} items)", False)
+        for old_week, old in self.digests:
+            if old_week == week or old.get("state") != "open":
+                continue
+            if not self.dry_run:
+                path = f"repos/{self.repo}/issues/{old['number']}"
+                self.gh(f"{path}/comments", "POST", {"body": f"Superseded by {new_ref}."})
+                self.gh(path, "PATCH", {"state": "closed"})
+                old["state"] = "closed"
+            self.log(
+                "DIGEST", f"{old_week} #{old['number']} closed (superseded by {new_ref})", False
+            )
+
+    def run(self) -> int:
+        items = self.collect()
+        if items is None:
+            print("::error::every source failed")
+            return 1
+        self.load_existing()
+        opens: list[tuple[Item, Verdict]] = []
+        digest: list[tuple[Item, list[str], bool]] = []
+        for item in items:
+            verdict = classify(item, self.since)
+            if verdict.kind == "cosmetic":
+                self.log("IGNORE-COSMETIC", item.describe())
+            elif verdict.tier == 2:
+                digest.append((item, verdict.reasons, False))
+            elif verdict.tier == 1:
+                issue = self.issues.get(item.key)
+                if issue is None:
+                    opens.append((item, verdict))
+                elif verdict.kind == "edit":
+                    self.comment_on_edit(issue, item, verdict)
+                else:
+                    self.log("SKIP-DUP", f"{item.describe()} #{issue['number']}")
+        # The cap keeps the items with the most matched signals, newest first.
+        opens.sort(key=lambda p: (-len(p[1].reasons), -p[0].modified.timestamp(), p[0].id))
+        for n, (item, verdict) in enumerate(opens):
+            if n < self.max_issues:
+                self.open_issue(item, verdict)
+            else:
+                digest.append((item, verdict.reasons, True))
+        if digest:
+            self.update_digest(digest)
+        summary = " ".join(
+            f"{a.lower()}={self.counts[a]}"
+            for a in ("OPEN", "COMMENT", "DIGEST", "SKIP-DUP", "IGNORE-COSMETIC")
+        )
+        self.log("SUMMARY", summary, False)
+        return 0
+
+
+# --- command line ---------------------------------------------------------
+
+
+def since_arg(value: str) -> datetime:
+    try:
+        return parse_time(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"not an ISO-8601 time: {value}") from e
+
+
+def repo_arg(value: str) -> str:
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", value):
+        raise argparse.ArgumentTypeError(f"not OWNER/NAME: {value}")
+    return value
+
+
+def max_issues_arg(value: str) -> int:
+    n = int(value)
+    if n < 0:
+        raise argparse.ArgumentTypeError("must be 0 or more")
+    return n
+
+
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Watch the GitHub changelog for platform changes.")
+    p.add_argument("--repo", type=repo_arg, default="fullsend-ai/fullsend")
+    p.add_argument("--since", type=since_arg, help="ISO-8601; default now minus 26 hours")
+    p.add_argument("--dry-run", action="store_true", help="read only; write nothing")
+    p.add_argument("--max-issues", type=max_issues_arg, default=5)
+    return p.parse_args(argv)
+
+
+def main(
+    argv: list[str] | None = None,
+    fetch: Fetch = default_fetch,
+    now: datetime | None = None,
+) -> int:
+    args = parse_args(argv)
+    now = now or datetime.now(UTC)
+    since = args.since or now - timedelta(hours=26)
+    watcher = Watcher(fetch, args.repo, since, now, args.dry_run, args.max_issues)
+    try:
+        return watcher.run()
+    except GhError as e:
+        print(f"::error::{e}")
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -224,6 +224,7 @@ script-test:
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
 	$(call run-timed,python3 -m pytest hack/check_gateway_doc_configs_test.py -q)
 	$(call run-timed,python3 -m pytest hack/tool_fetch_pins_test.py -q)
+	$(call run-timed,python3 -m pytest hack/github_changelog_watch_test.py -q)
 	$(call run-timed,python3 -m pytest internal/security/hooks/ -q)
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 
