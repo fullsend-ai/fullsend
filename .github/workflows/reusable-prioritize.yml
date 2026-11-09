@@ -252,4 +252,4 @@ jobs:
 
       - name: Warn when cross-repository failure cannot be reported
         if: ${{ always() && steps.run-agent.outcome == 'skipped' && (fromJSON(inputs.event_payload)._normalized_event.source.system || 'github') == 'github' && inputs.source_repo != github.repository && steps.app-token.outcome != 'success' }}
-        run: echo "::warning::Prioritize startup failure could not be reported because no token authorized for ${{ inputs.source_repo }} was available"
+        run: echo "::warning::Prioritize startup failure could not be reported because no token authorized for the target repository was available"

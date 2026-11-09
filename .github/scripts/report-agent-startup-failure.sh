@@ -13,26 +13,26 @@ FULLSEND_FAILURE_CATEGORY="${FULLSEND_FAILURE_CATEGORY:-}"
 
 if [[ ! "${FULLSEND_FAILURE_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "::warning::Skipping startup failure comment: invalid repository" >&2
-  exit 0
+  exit 1
 fi
 if [[ ! "${FULLSEND_FAILURE_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
   echo "::warning::Skipping startup failure comment: invalid issue number" >&2
-  exit 0
+  exit 1
 fi
 if [[ ! "${FULLSEND_FAILURE_AGENT}" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "::warning::Skipping startup failure comment: invalid agent" >&2
-  exit 0
+  exit 1
 fi
 case "${FULLSEND_FAILURE_CATEGORY}" in
   "workflow setup"|"runtime setup"|"CLI setup"|"token mint") ;;
   *)
     echo "::warning::Skipping startup failure comment: invalid category" >&2
-    exit 0
+    exit 1
     ;;
 esac
 if [[ ! "${FULLSEND_FAILURE_RUN_URL}" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[1-9][0-9]*$ ]]; then
   echo "::warning::Skipping startup failure comment: invalid workflow URL" >&2
-  exit 0
+  exit 1
 fi
 
 MARKER="<!-- fullsend:agent-startup-failure:${FULLSEND_FAILURE_AGENT}:${FULLSEND_FAILURE_NUMBER} -->"
@@ -47,9 +47,19 @@ BODY_FILE="${RUNNER_TEMP:-/tmp}/fullsend-agent-startup-failure.md"
 BOT_LOGIN="$(gh api graphql -f query='{ viewer { login } }' --jq '.data.viewer.login')"
 COMMENTS_JSON="$(gh api --paginate --slurp \
   "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/${FULLSEND_FAILURE_NUMBER}/comments")"
+TRUSTED_BOT_LOGINS="${FULLSEND_FAILURE_TRUSTED_BOTS:-github-actions}"
+case "${FULLSEND_FAILURE_AGENT}" in
+  code|fix) TRUSTED_BOT_LOGINS+=",fullsend-ai-coder" ;;
+  review) TRUSTED_BOT_LOGINS+=",fullsend-ai-review" ;;
+  triage) TRUSTED_BOT_LOGINS+=",fullsend-ai-triage" ;;
+  retro) TRUSTED_BOT_LOGINS+=",fullsend-ai-retro" ;;
+  prioritize) TRUSTED_BOT_LOGINS+=",fullsend-ai-prioritize" ;;
+esac
+TRUSTED_BOTS_JSON="$(jq -Rn --arg current "${BOT_LOGIN}" --arg logins "${TRUSTED_BOT_LOGINS}" \
+  '[ $current ] + ($logins | split(",") | map(select(length > 0))) | unique')"
 COMMENT_ID="$(printf '%s' "${COMMENTS_JSON}" | jq -r \
-  --arg marker "${MARKER}" --arg bot "${BOT_LOGIN}" \
-  'add | map(select(.user.login == $bot and (.body | contains($marker)))) | last | .id // empty')"
+  --arg marker "${MARKER}" --argjson trusted "${TRUSTED_BOTS_JSON}" \
+  'add | map(select((.user.type == "Bot") and ((.user.login) as $login | ($trusted | index($login)) != null) and (.body | contains($marker)))) | last | .id // empty')"
 
 if [[ -n "${COMMENT_ID}" ]]; then
   gh api --method PATCH "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/comments/${COMMENT_ID}" \

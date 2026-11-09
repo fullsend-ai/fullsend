@@ -2476,7 +2476,7 @@ jobs:
           pr-head-sha: ${{ fromJSON(matrix.event_payload).pull_request.head.sha || '' }}
           artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}
       - name: Report harness launch failure
-        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && matrix.status_number != '' && (fromJSON(matrix.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        if: ${{ failure() && steps.run-agent.outcome == 'skipped' && matrix.status_number != '' && (fromJSON(matrix.event_payload)._normalized_event.source.system || 'github') == 'github' && (matrix.status_repo == github.repository || steps.app-token.outcome == 'success') }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
@@ -2505,3 +2505,7 @@ jobs:
           FULLSEND_FAILURE_CATEGORY="$([[ "${MINT_OUTCOME}" == "failure" ]] && echo 'token mint' || echo 'workflow setup')"
           export FULLSEND_FAILURE_CATEGORY
           bash "${script}"
+
+      - name: Warn when cross-repository harness failure cannot be reported
+        if: ${{ always() && steps.run-agent.outcome == 'skipped' && matrix.status_number != '' && (fromJSON(matrix.event_payload)._normalized_event.source.system || 'github') == 'github' && matrix.status_repo != github.repository && steps.app-token.outcome != 'success' }}
+        run: echo "::warning::Harness startup failure could not be reported because no token authorized for the target repository was available"
