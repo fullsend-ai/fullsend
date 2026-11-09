@@ -959,7 +959,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if orgCfg != nil {
 		issueTracking = orgCfg.IssueTracking()
 	}
-	for k, v := range resolveJiraRunEnv(ctx, sOpts.trackerSource, issueTracking, discoverJiraGatewayURL, printer.StepWarn) {
+	for k, v := range resolveJiraRunEnv(ctx, sOpts.trackerSource, issueTracking, rFlags.offline, discoverJiraGatewayURL, printer.StepWarn) {
 		setFlagEnv(k, v)
 	}
 

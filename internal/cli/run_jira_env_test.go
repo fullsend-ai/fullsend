@@ -48,7 +48,7 @@ func TestResolveJiraRunEnv_Jira(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var gotCfg jira.ScopedConfig
 			var warnings []string
-			env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, tt.apiURL),
+			env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, tt.apiURL), false,
 				stubJiraGateway(&gotCfg), func(s string) { warnings = append(warnings, s) })
 
 			assert.Equal(t, map[string]string{
@@ -69,7 +69,7 @@ func TestResolveJiraRunEnv_NonJiraSource(t *testing.T) {
 				called = true
 				return jira.DefaultAPIURL + "/ex/jira/x", nil
 			}
-			env := resolveJiraRunEnv(context.Background(), source, jiraTracking(testJiraSite, ""),
+			env := resolveJiraRunEnv(context.Background(), source, jiraTracking(testJiraSite, ""), false,
 				discover, func(s string) { t.Errorf("unexpected warning: %s", s) })
 			assert.Nil(t, env)
 			assert.False(t, called, "no discovery for non-Jira runs")
@@ -82,7 +82,7 @@ func TestResolveJiraRunEnv_DiscoveryFails(t *testing.T) {
 		return "", errors.New("jira: discover cloud ID: unexpected status 404")
 	}
 	var warnings []string
-	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""),
+	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), false,
 		discover, func(s string) { warnings = append(warnings, s) })
 
 	assert.Equal(t, map[string]string{
@@ -90,28 +90,70 @@ func TestResolveJiraRunEnv_DiscoveryFails(t *testing.T) {
 		envJiraAPIURL:  "",
 	}, env, "JIRA_API_URL is cleared so agents fall back to JIRA_BASE_URL")
 	require.Len(t, warnings, 1)
-	assert.Contains(t, warnings[0], testJiraSite)
+	assert.Contains(t, warnings[0], "example.atlassian.net")
 	assert.Contains(t, warnings[0], envJiraAPIURL)
 }
 
-func TestResolveJiraRunEnv_NoBaseURL(t *testing.T) {
+func TestResolveJiraRunEnv_EmptyDiscoveryResult(t *testing.T) {
+	discover := func(context.Context, jira.ScopedConfig) (string, error) { return "", nil }
+	var warnings []string
+	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), false,
+		discover, func(s string) { warnings = append(warnings, s) })
+	assert.Equal(t, map[string]string{envJiraBaseURL: testJiraSite, envJiraAPIURL: ""}, env)
+	require.Len(t, warnings, 1)
+}
+
+// TestResolveJiraRunEnv_ClearsWithoutUsableBaseURL checks that a Jira run
+// without a usable tracker.jira.base_url clears both variables, so an
+// inherited repository variable or workflow value never takes effect
+// (#8906), and that the warning never echoes embedded credentials.
+func TestResolveJiraRunEnv_ClearsWithoutUsableBaseURL(t *testing.T) {
 	for name, tracking := range map[string]*config.TrackingConfig{
-		"nil tracking":   nil,
-		"no jira block":  {},
-		"empty base_url": jiraTracking("", ""),
+		"nil tracking":         nil,
+		"no jira block":        {},
+		"empty base_url":       jiraTracking("", ""),
+		"http base_url":        jiraTracking("http://example.atlassian.net", ""),
+		"credentials in base":  jiraTracking("https://user:s3cret@example.atlassian.net", ""),
+		"unparseable base_url": jiraTracking("https://exa mple.atlassian.net", ""),
 	} {
 		t.Run(name, func(t *testing.T) {
 			discover := func(context.Context, jira.ScopedConfig) (string, error) {
-				t.Error("discovery must not run without a base URL")
+				t.Error("discovery must not run without a usable base URL")
 				return "", nil
 			}
 			var warnings []string
-			env := resolveJiraRunEnv(context.Background(), "jira", tracking, discover, func(s string) { warnings = append(warnings, s) })
-			assert.Nil(t, env)
+			env := resolveJiraRunEnv(context.Background(), "jira", tracking, false, discover, func(s string) { warnings = append(warnings, s) })
+			assert.Equal(t, map[string]string{envJiraBaseURL: "", envJiraAPIURL: ""}, env)
 			require.Len(t, warnings, 1)
 			assert.Contains(t, warnings[0], "tracker.jira.base_url")
+			assert.NotContains(t, warnings[0], "s3cret")
 		})
 	}
+}
+
+func TestResolveJiraRunEnv_Offline(t *testing.T) {
+	discover := func(context.Context, jira.ScopedConfig) (string, error) {
+		t.Error("discovery must not run offline")
+		return "", nil
+	}
+	var warnings []string
+	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), true,
+		discover, func(s string) { warnings = append(warnings, s) })
+	assert.Equal(t, map[string]string{envJiraBaseURL: testJiraSite, envJiraAPIURL: ""}, env)
+	require.Len(t, warnings, 1)
+}
+
+func TestResolveJiraRunEnv_TrimsTrailingSlash(t *testing.T) {
+	var gotCfg jira.ScopedConfig
+	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite+"/", ""), false,
+		stubJiraGateway(&gotCfg), func(s string) { t.Errorf("unexpected warning: %s", s) })
+	assert.Equal(t, testJiraSite, env[envJiraBaseURL])
+	assert.Equal(t, testJiraSite, gotCfg.BaseURL)
+}
+
+func TestRunnerSecretNameRefused_JiraAPIURL(t *testing.T) {
+	assert.True(t, runnerSecretNameRefused(envJiraAPIURL), "fullsend run sets JIRA_API_URL; a runner secret must not override it")
+	assert.True(t, runnerSecretNameRefused(envJiraBaseURL))
 }
 
 // TestDiscoverJiraGatewayURL checks that the production discoverer uses the
@@ -129,7 +171,7 @@ func TestDiscoverJiraGatewayURL(t *testing.T) {
 // what a host_files expand:true template resolves ${JIRA_API_URL} to.
 func TestJiraRunEnv_HostFileExpansion(t *testing.T) {
 	var gotCfg jira.ScopedConfig
-	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""),
+	env := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), false,
 		stubJiraGateway(&gotCfg), func(string) {})
 	for k, v := range env {
 		t.Setenv(k, v)

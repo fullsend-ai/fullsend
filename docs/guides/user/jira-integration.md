@@ -240,7 +240,18 @@ For a Jira-sourced run, `fullsend run` also sets two Jira URLs before harness en
 
 The built-in agents send Jira REST calls to `${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/...`. A service account's scoped API token or OAuth 2.0 access token works only through the gateway, so these runs need `JIRA_API_URL`. Bot-user Basic auth also works against the site URL.
 
-If cloud-ID discovery fails, the run continues: `fullsend run` prints a warning that names the base URL and leaves `JIRA_API_URL` empty, so agents fall back to `JIRA_BASE_URL`. If `tracker.jira.base_url` is not configured, `fullsend run` warns and sets neither variable. Runs from GitHub or GitLab are unchanged. Both values are URLs, not credentials.
+Both variables are always set for a Jira-sourced run, so an inherited value never takes effect:
+
+| Case | `JIRA_BASE_URL` | `JIRA_API_URL` | Warning |
+|---|---|---|---|
+| Discovery succeeds | site URL | gateway base | none |
+| Discovery fails (10-second limit) | site URL | empty, so agents fall back to the site URL, where only bot-user Basic auth works | names the site host |
+| `fullsend run --offline` | site URL | empty, with no network call | yes |
+| `tracker.jira.base_url` missing, not `https`, or with embedded credentials | empty | empty | yes; credentials are never printed |
+
+Empty, not unset, is deliberate: it clears any inherited value, and an unset `${JIRA_API_URL}` would fail harness env validation. For the same reason, reference these variables only in a harness overlay that applies to Jira runs (`when: 'has(event.source) && event.source.system == "jira"'`). On a GitHub- or GitLab-sourced run, fullsend leaves them as they are, and an unset reference fails the run. Both values are URLs, not credentials, and a runner secret cannot override `JIRA_API_URL` or `JIRA_BASE_URL`.
+
+For sandboxed use, the network profile must allow the gateway host. The built-in agents' `jira-ro` provider profile allows `api.atlassian.com`. The legacy `atlassian-cloud` profile below allows only `*.atlassian.net`, so it serves bot-user calls to the site URL only.
 
 ### Where built-in agent results appear
 
@@ -1078,7 +1089,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap are permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
 | GitLab Jira dispatch fails with `does not accept Jira work items` | The project's scaffold predates Jira dispatch | Rerun `fullsend repos install` for the project and merge the scaffold update. See [GitLab runtime](#gitlab-runtime) |
 | Triage or code results do not appear on the Jira issue | The built-in agents are pinned to a release that predates Jira result writes | Use built-in agents from the agents release that follows v0.52.0, or later. Re-pin a harness registered with `source:` or composed with `base:` with `fullsend agent update <name>`. See [Where built-in agent results appear](#where-built-in-agent-results-appear) |
-| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm `JIRA_USER_EMAIL`, `JIRA_TOKEN`, and `JIRA_BASE_URL` reach the agent job and the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
+| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm the Jira credentials reach the agent job, that `tracker.jira.base_url` is set (it is the source of `JIRA_BASE_URL` and `JIRA_API_URL`; check the run log for a warning about them), and that the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
 
 ## See also
 
