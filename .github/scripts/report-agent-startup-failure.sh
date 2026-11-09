@@ -50,7 +50,7 @@ BODY_FILE="${RUNNER_TEMP:-/tmp}/fullsend-agent-startup-failure.md"
 BOT_LOGIN="$(gh api graphql -f query='{ viewer { login } }' --jq '.data.viewer.login')"
 COMMENTS_JSON="$(gh api --paginate --slurp \
   "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/${FULLSEND_FAILURE_NUMBER}/comments")"
-TRUSTED_BOT_LOGINS="${FULLSEND_FAILURE_TRUSTED_BOTS:-github-actions}"
+TRUSTED_BOT_LOGINS="github-actions${FULLSEND_FAILURE_TRUSTED_BOTS:+,${FULLSEND_FAILURE_TRUSTED_BOTS}}"
 case "${FULLSEND_FAILURE_AGENT}" in
   code|fix) TRUSTED_BOT_LOGINS+=",fullsend-ai-coder" ;;
   review) TRUSTED_BOT_LOGINS+=",fullsend-ai-review" ;;
@@ -66,7 +66,8 @@ COMMENT_ID="$(printf '%s' "${COMMENTS_JSON}" | jq -r \
   --arg marker "${MARKER}" --argjson trusted "${TRUSTED_BOTS_JSON}" \
   'add | map(select((.user.type == "Bot")
     and (((.user.login | sub("\\[bot\\]$"; "")) as $login
-      | ($trusted | index($login)) != null))
+      | any($trusted[]; . as $prefix
+        | ($login == $prefix or ($login | startswith($prefix + "-"))))))
     and (.body | contains($marker)))) | last | .id // empty')"
 
 if [[ -n "${COMMENT_ID}" ]]; then

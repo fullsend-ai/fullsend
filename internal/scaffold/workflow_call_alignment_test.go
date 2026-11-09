@@ -1902,15 +1902,21 @@ func TestReusableDispatchStatusCommentPassthrough(t *testing.T) {
 			"harness-run agent step must pass status-number to action.yml")
 		assert.Contains(t, section, "source-system:",
 			"harness-run agent step must pass source-system to action.yml")
+		assert.Contains(t, section, "github_token: ${{ github.token }}",
+			"harness-run must keep the workflow token as github_token")
+		assert.Contains(t, section, "failure-token: ${{ steps.app-token.outputs.token || github.token }}",
+			"harness-run must pass the minted token only to failure reporting")
 	})
 
 	t.Run("standalone prioritize", func(t *testing.T) {
 		content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-prioritize.yml"))
 		require.NoError(t, err)
 		section := extractStepSection(t, string(content), "Run prioritize agent")
-		assert.Contains(t, section, "status-repo:")
-		assert.Contains(t, section, "status-number:")
+		assert.Contains(t, section, "failure-repo:")
+		assert.Contains(t, section, "failure-number:")
 		assert.Contains(t, section, "source-system:")
+		assert.Contains(t, section, "github_token: ${{ github.token }}")
+		assert.Contains(t, section, "failure-token: ${{ steps.app-token.outputs.token || github.token }}")
 	})
 }
 

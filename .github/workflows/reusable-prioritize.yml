@@ -213,7 +213,8 @@ jobs:
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: .fullsend
-          github_token: ${{ steps.app-token.outputs.token || github.token }}
+          github_token: ${{ github.token }}
+          failure-token: ${{ steps.app-token.outputs.token || github.token }}
           mint-url: ${{ inputs.mint_url }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           failure-repo: ${{ inputs.source_repo }}

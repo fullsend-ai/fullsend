@@ -49,6 +49,12 @@ inputs:
   failure-trusted-bots:
     description: Comma-separated custom bot login prefixes trusted for startup-failure comments (optional).
     default: ""
+  failure-token:
+    description: >-
+      Optional token used only for startup-failure reporting. Keep github_token
+      as the workflow token so installation, cloning, provider credentials, and
+      fullsend run do not receive a reporting-only App token.
+    default: ""
   source-system:
     description: >-
       Originating tracker for the event (github, gitlab, or jira). GitHub
@@ -717,7 +723,7 @@ runs:
         (inputs.status-repo != '' && inputs.status-number != ''))
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github_token }}
+        GH_TOKEN: ${{ inputs.failure-token || inputs.github_token }}
         AGENT: ${{ inputs.agent }}
         FAILURE_REPO: ${{ inputs.failure-repo || inputs.status-repo }}
         FAILURE_NUMBER: ${{ inputs.failure-number || inputs.status-number }}
