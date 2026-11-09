@@ -1,0 +1,60 @@
+name: GitHub Changelog Watch
+
+# Daily poll of the GitHub changelog and runner-images announcements for
+# Actions platform changes; see hack/github-changelog-watch.
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Start of the window, ISO-8601 (default: 26 hours ago)"
+        required: false
+        type: string
+      dry_run:
+        description: "Print the planned actions without writing issues"
+        required: false
+        type: boolean
+        default: true
+  pull_request:
+    paths:
+      - ".github/workflows/github-changelog-watch.yml"
+      - "hack/github-changelog-watch"
+      - "hack/github_changelog_watch_test.py"
+      - "hack/testdata/github-changelog-watch/**"
+
+permissions: {}
+
+concurrency:
+  group: github-changelog-watch-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Poll sources and file platform-change issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SINCE: ${{ inputs.since }}
+          # Pull requests and non-main refs only ever dry-run.
+          DRY_RUN: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' || inputs.dry_run == true }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY")
+          if [[ -n "${SINCE:-}" ]]; then
+            args+=(--since "$SINCE")
+          fi
+          if [[ "$DRY_RUN" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          python3 hack/github-changelog-watch "${args[@]}"
