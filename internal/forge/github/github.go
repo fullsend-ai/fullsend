@@ -847,8 +847,8 @@ func checkStatus(resp *http.Response, acceptable ...int) error {
 }
 
 // get performs a GET request and checks for success.
-func (c *LiveClient) get(ctx context.Context, path string) (*http.Response, error) {
-	resp, err := c.do(ctx, http.MethodGet, path, nil)
+func (c *LiveClient) get(ctx context.Context, path string, headers ...requestHeader) (*http.Response, error) {
+	resp, err := c.do(ctx, http.MethodGet, path, nil, headers...)
 	if err != nil {
 		return nil, err
 	}
@@ -2250,18 +2250,40 @@ func escapePathSegments(p string) string {
 // GetFileContentAtRef retrieves the content of a file at a specific ref
 // (commit SHA, branch, or tag). Unlike GetFileContent which reads from
 // the default branch, this reads from the specified ref.
+//
+// The file is requested with the raw media type, so files the base64
+// JSON representation cannot carry (GitHub serves those as content: "",
+// encoding: "none" — every file over 1 MiB) are still returned. A server
+// that ignores the media type and answers with the JSON representation
+// is handled too, failing explicitly when that representation cannot
+// carry the file instead of silently returning empty bytes.
 func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s",
-		url.PathEscape(owner), url.PathEscape(repo), escapePathSegments(path), url.QueryEscape(ref)))
+		url.PathEscape(owner), url.PathEscape(repo), escapePathSegments(path), url.QueryEscape(ref)),
+		withHeader("Accept", "application/vnd.github.raw"))
 	if err != nil {
 		return nil, fmt.Errorf("get file content at ref: %w", err)
 	}
 
+	if !strings.Contains(resp.Header.Get("Content-Type"), "json") {
+		defer resp.Body.Close()
+		data, err := readLimitedBytes(resp.Body, maxFileContentBytes)
+		if err != nil {
+			return nil, fmt.Errorf("read file content at ref: %w", err)
+		}
+		return data, nil
+	}
+
 	var file struct {
-		Content string `json:"content"`
+		Content  string `json:"content"`
+		Encoding string `json:"encoding"`
+		Size     int64  `json:"size"`
 	}
 	if err := decodeJSON(resp, &file); err != nil {
 		return nil, fmt.Errorf("decode file content: %w", err)
+	}
+	if (file.Encoding != "" && file.Encoding != "base64") || (file.Content == "" && file.Size > 0) {
+		return nil, fmt.Errorf("file %s at %s: the contents response carries no base64 content (encoding %q, size %d); files over 1 MiB need the raw media type", path, ref, file.Encoding, file.Size)
 	}
 
 	cleaned := strings.ReplaceAll(strings.ReplaceAll(file.Content, "\n", ""), "\r", "")
@@ -2271,6 +2293,11 @@ func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path,
 	}
 	return data, nil
 }
+
+// maxFileContentBytes bounds a raw-media file read, matching the 100 MiB
+// ceiling GitHub documents for raw contents requests; callers apply their
+// own policy bounds on top.
+const maxFileContentBytes = 100 << 20
 
 const (
 	maxDirDepth    = 10

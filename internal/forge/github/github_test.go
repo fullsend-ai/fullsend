@@ -8028,3 +8028,62 @@ func TestGetIssuePullRequestMarker(t *testing.T) {
 		})
 	}
 }
+
+func TestGetFileContentAtRef_RawMediaType(t *testing.T) {
+	var gotAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/repos/acme/widgets/contents/harness/triage.yaml", r.URL.Path)
+		require.Equal(t, "deadbeef", r.URL.Query().Get("ref"))
+		gotAccept = r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte("role: triage\n"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "harness/triage.yaml", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, "application/vnd.github.raw", gotAccept,
+		"the raw media type is requested so files over the 1 MiB JSON limit are served")
+	assert.Equal(t, "role: triage\n", string(data))
+}
+
+func TestGetFileContentAtRef_JSONFallback(t *testing.T) {
+	// A server that ignores the raw media type and answers with the JSON
+	// representation (the GitHub API-compatible emulators do) still works.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content":  base64.StdEncoding.EncodeToString([]byte("role: triage\n")),
+			"encoding": "base64",
+			"size":     len("role: triage\n"),
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "harness/triage.yaml", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, "role: triage\n", string(data))
+}
+
+func TestGetFileContentAtRef_EmptyContentForNonEmptyFileFails(t *testing.T) {
+	// The over-1-MiB JSON representation: GitHub returns encoding "none"
+	// and empty content. That must fail explicitly, not decode to empty
+	// bytes that then get cached as an empty file.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"content":  "",
+			"encoding": "none",
+			"size":     2 << 20,
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "big.bin", "deadbeef")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "raw media type")
+	assert.Contains(t, err.Error(), "encoding \"none\"")
+}
