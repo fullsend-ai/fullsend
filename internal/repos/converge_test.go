@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"slices"
@@ -2301,7 +2302,7 @@ func TestConverge_GitLabOnlyReleaseDefaultRefWithoutGitHubClient(t *testing.T) {
 func populateGitLabInstalled(fc *forge.FakeClient, owner, repo string) {
 	full := owner + "/" + repo
 	fc.FileContents[full+"/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
-	for _, path := range append(gitlabAuxiliaryScriptPaths(), gitlabDispatcherPaths()...) {
+	for _, path := range slices.Concat(gitlabJobTemplatePaths(), gitlabAuxiliaryScriptPaths(), gitlabDispatcherPaths()) {
 		content, _ := scaffold.GitLabPerRepoFile(path)
 		fc.FileContents[full+"/"+path] = content
 	}
@@ -2434,6 +2435,53 @@ func TestConverge_GitLab_RepairsTemplateOnlyDispatcherDeletion(t *testing.T) {
 	}
 }
 
+// TestConverge_GitLab_RepairsMissingJobTemplate verifies that deleting only
+// the poll or agent template from a fully converged install is detected and
+// the template is redelivered with its expected content, while a complete
+// install leaves both templates untouched (#9232).
+func TestConverge_GitLab_RepairsMissingJobTemplate(t *testing.T) {
+	for _, path := range gitlabJobTemplatePaths() {
+		t.Run(path, func(t *testing.T) {
+			fc := newFakeClientForBatch("acme/api")
+			populateGitLabInstalled(fc, "acme", "api")
+			populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
+			want := fc.FileContents["acme/api/"+path]
+			delete(fc.FileContents, "acme/api/"+path)
+
+			sc := &spyScaffoldCommit{}
+			result, err := Converge(context.Background(), gitlabConvergeCfg("acme/api"), newTestClientFactory(fc), sc.fn(), noopProgress)
+			if err != nil {
+				t.Fatalf("Converge() error: %v", err)
+			}
+			if len(result.Failed()) != 0 {
+				t.Fatalf("unexpected failure: %v", result.Failed()[0].Error)
+			}
+			sc.mu.Lock()
+			defer sc.mu.Unlock()
+			idx := slices.IndexFunc(sc.files, func(f forge.TreeFile) bool { return f.Path == path && !f.Delete })
+			if idx < 0 {
+				t.Fatalf("convergence did not redeliver %s; files: %+v", path, sc.files)
+			}
+			if got := sc.files[idx].Content; !bytes.Equal(got, want) {
+				t.Errorf("redelivered %s content differs from the scaffold:\n got: %q\nwant: %q", path, got, want)
+			}
+		})
+	}
+
+	t.Run("complete install", func(t *testing.T) {
+		fc := newFakeClientForBatch("acme/api")
+		populateGitLabInstalled(fc, "acme", "api")
+		populateGitLabScaffoldContent(t, fc, "acme", "api", "v2.5.0")
+
+		committed := convergeGitLabFilesCommitted(t, fc)
+		for _, path := range gitlabJobTemplatePaths() {
+			if committed[path] {
+				t.Errorf("complete install must not recommit %s; committed: %v", path, committed)
+			}
+		}
+	})
+}
+
 // TestConverge_GitLab_UnchangedRefRolloutDeliversDispatcherFiles verifies an
 // unchanged-ref rollout from a pre-dispatcher wrapper delivers both the
 // dispatcher template and script together with the rewritten wrapper.
@@ -2452,6 +2500,28 @@ func TestConverge_GitLab_UnchangedRefRolloutDeliversDispatcherFiles(t *testing.T
 		if !committed[path] {
 			t.Errorf("unchanged-ref rollout did not deliver %s; committed: %v", path, committed)
 		}
+	}
+}
+
+func TestProbeComponents_GitLab_DetectsMissingJobTemplate(t *testing.T) {
+	for _, path := range gitlabJobTemplatePaths() {
+		t.Run(path, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			populateGitLabInstalled(fc, "acme", "api")
+			delete(fc.FileContents, "acme/api/"+path)
+
+			components, err := ProbeComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
+			if err != nil {
+				t.Fatalf("ProbeComponents() error: %v", err)
+			}
+			idx := slices.IndexFunc(components, func(c ComponentStatus) bool { return c.Name == "scaffold:"+path })
+			if idx < 0 {
+				t.Fatalf("probe did not report scaffold:%s; components: %+v", path, components)
+			}
+			if c := components[idx]; c.Present || c.Match {
+				t.Errorf("scaffold:%s = Present %v, Match %v; want both false", path, c.Present, c.Match)
+			}
+		})
 	}
 }
 

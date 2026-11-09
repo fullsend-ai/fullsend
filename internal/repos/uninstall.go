@@ -138,6 +138,17 @@ func gitlabAuxiliaryScriptPaths() []string {
 	}
 }
 
+// gitlabJobTemplatePaths returns the poll and agent job templates the
+// pipeline wrapper includes. Every scaffold version ships both, so probe
+// and converge treat each as its own scaffold component and a missing
+// template is detected and repaired.
+func gitlabJobTemplatePaths() []string {
+	return []string{
+		fullsendPollTemplatePath,
+		fullsendAgentTemplatePath,
+	}
+}
+
 // gitlabDispatcherPaths returns the webhook dispatcher scaffold files (#7771):
 // the job template the pipeline wrapper includes and the script it sources.
 // Scaffold versions that predate the dispatcher ship neither, so they are

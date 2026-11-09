@@ -104,12 +104,12 @@ func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, rep
 		Match:   workflowPresent,
 	})
 
-	// Auxiliary GitLab scripts are sourced by the poll and agent templates
-	// but are not themselves the workflow component. Probe them separately
-	// so status and converge can detect and repair installs missing only
-	// these files.
+	// The poll and agent templates included by the pipeline wrapper and
+	// the auxiliary GitLab scripts they source are not themselves the
+	// workflow component. Probe them separately so status and converge
+	// can detect and repair installs missing only these files.
 	if forgeName == ForgeGitLab {
-		scriptPaths := gitlabAuxiliaryScriptPaths()
+		scriptPaths := append(gitlabJobTemplatePaths(), gitlabAuxiliaryScriptPaths()...)
 		// The webhook dispatcher template and script exist only in
 		// scaffold versions whose pipeline wrapper includes them, so a
 		// pre-dispatcher install must not report them missing. An
