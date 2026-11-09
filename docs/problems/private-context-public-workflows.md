@@ -27,10 +27,15 @@ an agent to repeat or summarize protected material.
 [ADR 0021](../ADRs/0021-jsonl-reasoning-trace-exposure.md) chooses access control
 for full-fidelity transcripts rather than relying on heuristic sanitization.
 ADR 0021's owner-scoped storage has not been implemented for any repository.
-GitHub runs upload transcripts and other run output as forge-native artifacts,
-readable by anyone with repository read access. For a public repository, that
-means any signed-in GitHub user. Private-repository artifacts are available to
-repository readers, not just owners.
+The [GitHub action](https://github.com/fullsend-ai/fullsend/blob/823f3c22b66bdbb4e8d046e3ca1bf787ce5330ff/action.yml#L573-L578)
+and [GitLab CI template](https://github.com/fullsend-ai/fullsend/blob/823f3c22b66bdbb4e8d046e3ca1bf787ce5330ff/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml#L203-L207)
+upload run output, including transcripts, as forge-native artifacts. On GitHub,
+any signed-in user can download artifacts from a public repository;
+private-repository artifacts are available to repository readers, not just
+owners. The GitLab template sets no `artifacts:access` restriction. GitLab's
+[`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess) defaults
+to `all`, so artifacts in public pipelines are downloadable by anyone,
+including anonymous users.
 [#6734](https://github.com/fullsend-ai/fullsend/issues/6734) tracks alternative
 artifact storage, including disabling forge-native uploads.
 
@@ -193,6 +198,13 @@ different choices: the former removes retained evidence needed for debugging,
 retro analysis and resumption; the latter can preserve an authorized private
 copy. Neither prevents disclosure through logs, public comments or generated
 code. An artifact switch is a partial mitigation, not a confidential mode.
+
+GitLab's `artifacts:access` setting can restrict artifact downloads through the
+UI and API. This is a partial, forge-specific mitigation: it does not prevent
+forwarding artifacts to downstream pipelines or access through runner APIs
+using job tokens. Job-token access requires separate project CI/CD visibility
+controls. Artifact access restrictions also leave logs, public comments and
+generated code outside their protection.
 
 ### Separate private planning and public contribution loops
 
