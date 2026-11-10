@@ -376,6 +376,20 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		status.Error = fmt.Sprintf("probing components for %s/%s: %v", owner, repo, probeErr)
 		return status
 	}
+	// jiraAuthorizationEnvError is the configuration error install would fail
+	// on: the release the repository's jobs run cannot load a config that uses
+	// groups_from or accounts_from.
+	jiraAuthorizationEnvError := func() error {
+		if !presetLoaded {
+			return nil
+		}
+		jira, err := effectiveJiraPollState(cfg, cfg.ProposedBase)
+		if err != nil {
+			return nil
+		}
+		d := convergeDiscovery{resolved: cfg, components: components, jira: jira}
+		return checkJiraAuthorizationEnvSupport(ctx, d, ConvergeConfig{UpstreamRef: dcfg.UpstreamRef, UpstreamTag: dcfg.UpstreamTag}, resolver)
+	}
 	if !anyComponentPresent(components) {
 		// Leftover credentials of an unselected method are drift even
 		// when none of the selected method's components exist.
@@ -391,6 +405,12 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 		cfg.FreshInstall = true
 		checkPresetDrift(ctx, cfg, store, &status)
 		if status.Error != "" {
+			return status
+		}
+		// Before the drift check, which would report the config as
+		// compatible with the pinned ref's schema.
+		if err := jiraAuthorizationEnvError(); err != nil {
+			status.Error = err.Error()
 			return status
 		}
 		checkManagedConfigDrift(ctx, cfg, &status)
@@ -435,6 +455,11 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			Expected: expected,
 			Actual:   actual,
 		})
+	}
+
+	if err := jiraAuthorizationEnvError(); err != nil {
+		status.Error = err.Error()
+		return status
 	}
 
 	// Report the configuration error install would fail on: nothing will

@@ -205,7 +205,7 @@ authorization:
   - provider: jira
     write:
       groups: [example-team-developers]
-      accounts: ["5f7c012e0b2a4c001f3d9876"]
+      accounts: ["712020:00000000-0000-0000-0000-000000000000"]
     triage:
       groups: [example-team]
       accounts: []
@@ -216,7 +216,7 @@ authorization:
 	ja := cfg.JiraAuthorization()
 	require.NotNil(t, ja)
 	assert.Equal(t, []string{"example-team-developers"}, ja.Write.Groups)
-	assert.Equal(t, []string{"5f7c012e0b2a4c001f3d9876"}, ja.Write.Accounts)
+	assert.Equal(t, []string{"712020:00000000-0000-0000-0000-000000000000"}, ja.Write.Accounts)
 	assert.Equal(t, []string{"example-team"}, ja.Triage.Groups)
 	assert.True(t, ja.HasJiraLists())
 	assert.Equal(t, JiraLabelsAllowlist, ja.EffectiveJiraLabels())
@@ -225,6 +225,66 @@ authorization:
 	// The accessor returns a copy: mutating it does not change the config.
 	ja.Write.Groups[0] = "mutated"
 	assert.Equal(t, []string{"example-team-developers"}, cfg.JiraAuthorization().Write.Groups)
+}
+
+func TestParsePerRepoConfig_JiraAuthorizationFromEnv(t *testing.T) {
+	cfg, err := ParsePerRepoConfig([]byte(`
+authorization:
+  - provider: jira
+    write:
+      groups_from: FULLSEND_JIRA_WRITE_GROUPS
+      accounts_from: FULLSEND_JIRA_WRITE_ACCOUNTS
+    triage:
+      groups_from: FULLSEND_JIRA_TRIAGE_GROUPS
+      accounts: ["712020:00000000-0000-0000-0000-000000000000"]
+    labels: allowlist
+`))
+	require.NoError(t, err)
+	require.NoError(t, cfg.(PerRepoConfigWriter).Validate())
+	ja := cfg.JiraAuthorization()
+	require.NotNil(t, ja)
+	assert.Equal(t, &JiraActorList{GroupsFrom: "FULLSEND_JIRA_WRITE_GROUPS", AccountsFrom: "FULLSEND_JIRA_WRITE_ACCOUNTS"}, ja.Write)
+	// Different fields of one role may use different forms.
+	assert.Equal(t, &JiraActorList{GroupsFrom: "FULLSEND_JIRA_TRIAGE_GROUPS", Accounts: []string{"712020:00000000-0000-0000-0000-000000000000"}}, ja.Triage)
+	assert.False(t, ja.Write.IsEmpty())
+	assert.Equal(t, []string{"FULLSEND_JIRA_TRIAGE_GROUPS", "FULLSEND_JIRA_WRITE_ACCOUNTS", "FULLSEND_JIRA_WRITE_GROUPS"}, ja.JiraEnvNames())
+}
+
+func TestJiraActorList_Resolved(t *testing.T) {
+	env := map[string]string{
+		"GROUPS":   " gid-1 , gid-2,,  ,gid-3 ",
+		"ACCOUNTS": "712020:00000000-0000-0000-0000-000000000000",
+		"LINES":    "gid-1\r\ngid-2\n",
+		"BLANK":    " , ",
+		"EMPTY":    "",
+	}
+	getenv := func(k string) string { return env[k] }
+
+	groups, accounts := (&JiraActorList{GroupsFrom: "GROUPS", AccountsFrom: "ACCOUNTS"}).Resolved(getenv)
+	assert.Equal(t, []string{"gid-1", "gid-2", "gid-3"}, groups)
+	assert.Equal(t, []string{"712020:00000000-0000-0000-0000-000000000000"}, accounts)
+
+	groups, _ = (&JiraActorList{GroupsFrom: "LINES"}).Resolved(getenv)
+	assert.Equal(t, []string{"gid-1", "gid-2"}, groups, "one entry per line")
+
+	groups, accounts = (&JiraActorList{Groups: []string{"devs"}, Accounts: []string{"acct"}}).Resolved(getenv)
+	assert.Equal(t, []string{"devs"}, groups)
+	assert.Equal(t, []string{"acct"}, accounts)
+
+	for _, name := range []string{"UNSET", "EMPTY", "BLANK"} {
+		groups, accounts = (&JiraActorList{GroupsFrom: name, AccountsFrom: name}).Resolved(getenv)
+		assert.Empty(t, groups, name)
+		assert.Empty(t, accounts, name)
+	}
+}
+
+func TestJiraEnvNames_Deduplicates(t *testing.T) {
+	p := &AuthorizationProvider{
+		Provider: AuthProviderJira,
+		Write:    &JiraActorList{GroupsFrom: "SHARED"},
+		Triage:   &JiraActorList{GroupsFrom: "SHARED"},
+	}
+	assert.Equal(t, []string{"SHARED"}, p.JiraEnvNames())
 }
 
 func TestParsePerRepoConfig_JiraAuthorizationDefaults(t *testing.T) {
@@ -273,6 +333,31 @@ func TestParsePerRepoConfig_JiraAuthorizationRejectsInvalid(t *testing.T) {
 			name:    "empty account ID",
 			yaml:    "authorization:\n  - provider: jira\n    triage:\n      accounts: [\" \"]\n",
 			wantErr: "empty account ID",
+		},
+		{
+			name:    "groups and groups_from on one role",
+			yaml:    "authorization:\n  - provider: jira\n    write:\n      groups: [g]\n      groups_from: WRITE_GROUPS\n",
+			wantErr: "jira provider write: set groups or groups_from, not both",
+		},
+		{
+			name:    "empty inline list with its _from form",
+			yaml:    "authorization:\n  - provider: jira\n    write:\n      accounts: []\n      accounts_from: WRITE_ACCOUNTS\n",
+			wantErr: "jira provider write: set accounts or accounts_from, not both",
+		},
+		{
+			name:    "env name written as an expansion",
+			yaml:    "authorization:\n  - provider: jira\n    write:\n      groups_from: ${WRITE_GROUPS}\n",
+			wantErr: `jira provider write.groups_from: invalid environment variable name "${WRITE_GROUPS}"`,
+		},
+		{
+			name:    "empty groups_from",
+			yaml:    "authorization:\n  - provider: jira\n    write:\n      groups_from: \"\"\n",
+			wantErr: "jira provider write.groups_from: empty environment variable name",
+		},
+		{
+			name:    "null accounts_from",
+			yaml:    "authorization:\n  - provider: jira\n    triage:\n      accounts_from:\n",
+			wantErr: "jira provider triage.accounts_from: empty environment variable name",
 		},
 	}
 	for _, tt := range tests {
@@ -408,6 +493,17 @@ func TestPerRepoConfigValidate_JiraAuthorization(t *testing.T) {
 	err = jiraFieldsOnOwners.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "only valid for provider")
+
+	bothForms := &perRepoConfig{
+		Version: "1",
+		Authorization: []AuthorizationProvider{{
+			Provider: AuthProviderJira,
+			Triage:   &JiraActorList{Groups: []string{"g"}, GroupsFrom: "TRIAGE_GROUPS"},
+		}},
+	}
+	err = bothForms.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authorization[0]: jira provider triage: set groups or groups_from, not both")
 }
 
 func TestParsePerRepoConfig(t *testing.T) {

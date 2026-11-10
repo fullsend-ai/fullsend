@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -11,7 +12,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 const (
@@ -496,7 +499,7 @@ func TestProbeJiraPollSecrets(t *testing.T) {
 	}
 }
 
-func TestEffectiveJiraTracking(t *testing.T) {
+func TestEffectiveJiraPollState(t *testing.T) {
 	resolve := func(t *testing.T, raw string) ResolvedConfig {
 		t.Helper()
 		m := jiraManifest(t, raw)
@@ -506,37 +509,37 @@ func TestEffectiveJiraTracking(t *testing.T) {
 	}
 
 	t.Run("managed config enables polling", func(t *testing.T) {
-		jira, err := effectiveJiraTracking(resolve(t, jiraPollEnabledConfig), nil)
+		st, err := effectiveJiraPollState(resolve(t, jiraPollEnabledConfig), nil)
 		require.NoError(t, err)
-		assert.True(t, jira.PollEnabled())
+		assert.True(t, st.enabled)
 	})
 
 	t.Run("preset enables polling", func(t *testing.T) {
-		jira, err := effectiveJiraTracking(resolve(t, ""), []byte(jiraPollEnabledConfig))
+		st, err := effectiveJiraPollState(resolve(t, ""), []byte(jiraPollEnabledConfig))
 		require.NoError(t, err)
-		assert.True(t, jira.PollEnabled())
+		assert.True(t, st.enabled)
 	})
 
 	t.Run("managed config overrides preset", func(t *testing.T) {
-		jira, err := effectiveJiraTracking(resolve(t, jiraPollDisabledConfig), []byte(jiraPollEnabledConfig))
+		st, err := effectiveJiraPollState(resolve(t, jiraPollDisabledConfig), []byte(jiraPollEnabledConfig))
 		require.NoError(t, err)
-		assert.False(t, jira.PollEnabled())
+		assert.False(t, st.enabled)
 	})
 
 	t.Run("other provider", func(t *testing.T) {
-		jira, err := effectiveJiraTracking(resolve(t, "tracker:\n  github: {}\n"), nil)
+		st, err := effectiveJiraPollState(resolve(t, "tracker:\n  github: {}\n"), nil)
 		require.NoError(t, err)
-		assert.Nil(t, jira)
+		assert.Nil(t, st.jira)
 	})
 
 	t.Run("enabled with incomplete connection", func(t *testing.T) {
-		_, err := effectiveJiraTracking(resolve(t, ""), []byte("tracker:\n  jira:\n    poll:\n      enabled: true\n"))
+		_, err := effectiveJiraPollState(resolve(t, ""), []byte("tracker:\n  jira:\n    poll:\n      enabled: true\n"))
 		require.Error(t, err)
 		assert.True(t, strings.Contains(err.Error(), "tracker.jira.poll.enabled is true"), err.Error())
 	})
 
 	t.Run("invalid preset", func(t *testing.T) {
-		_, err := effectiveJiraTracking(resolve(t, ""), []byte("tracker: [\n"))
+		_, err := effectiveJiraPollState(resolve(t, ""), []byte("tracker: [\n"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "reading the effective configuration")
 	})
@@ -791,4 +794,109 @@ func TestConverge_JiraPoll_GitHubAcceptsOAuth(t *testing.T) {
 		forge.SecretJiraClientID:     testJiraClientID,
 		forge.SecretJiraClientSecret: testJiraClientSecret,
 	}, jiraSecretWrites(fc))
+}
+
+func TestCheckJiraAuthorizationEnvSupport(t *testing.T) {
+	const pin = "v0.54.0"
+	const upstreamPoll = shimOwner + "/" + shimRepo + "/" + reusableJiraPollWorkflowPath
+	serve := func(content string) func(*forge.FakeClient) {
+		return func(fc *forge.FakeClient) {
+			fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@"+pin] = []byte(content)
+		}
+	}
+	tests := []struct {
+		name      string
+		setup     func(*forge.FakeClient)
+		authEnv   []string
+		ref       string
+		installed string // ref the installed scaffold is stamped with
+		enabled   bool
+		vendored  bool   // a vendored GitHub install
+		uses      string // poll workflow a user-owned GitHub caller calls
+		wantErr   string
+	}{
+		{name: "config reads no list from the environment", authEnv: nil, ref: pin, enabled: true},
+		{name: "unpinned repository runs the current release", authEnv: []string{"WRITE_GROUPS"}, enabled: true},
+		{name: "pin that supports the keys", setup: serve(jiraAuthListsWorkflowFixture), authEnv: []string{"WRITE_GROUPS"}, ref: pin, enabled: true},
+		// Agent runs load the config too, so the check does not depend on polling.
+		{name: "pin that predates the keys, polling disabled", setup: serve(jiraOAuthWorkflowFixture), authEnv: []string{"MY_GROUPS"}, ref: pin,
+			wantErr: `config.yaml reads MY_GROUPS with groups_from/accounts_from, which pinned fullsend_ref "v0.54.0" does not support`},
+		{name: "pin without the Jira poll workflow", authEnv: []string{"WRITE_GROUPS"}, ref: pin, enabled: true, wantErr: "does not support"},
+		{name: "fetch error fails closed", setup: func(fc *forge.FakeClient) { fc.Errors["GetFileContentAtRef"] = errors.New("upstream unavailable") },
+			authEnv: []string{"WRITE_GROUPS"}, ref: pin, enabled: true, wantErr: "upstream unavailable"},
+		// With no fullsend_ref and no release ref, install leaves a stamped scaffold where it is.
+		{name: "installed scaffold that predates the keys", setup: serve(jiraOAuthWorkflowFixture), authEnv: []string{"WRITE_GROUPS"}, installed: pin, enabled: true,
+			wantErr: `which the installed scaffold's ref "v0.54.0" does not support`},
+		{name: "installed scaffold that supports the keys", setup: serve(jiraAuthListsWorkflowFixture), authEnv: []string{"WRITE_GROUPS"}, installed: pin, enabled: true},
+		// A vendored install runs its own binary, but its managed poll caller calls upstream at the pin.
+		{name: "vendored, polling disabled", setup: serve(jiraOAuthWorkflowFixture), authEnv: []string{"FULLSEND_JIRA_WRITE_GROUPS"}, ref: pin, vendored: true},
+		{name: "vendored, caller passes no list secret", setup: serve(jiraOAuthWorkflowFixture), authEnv: []string{"MY_GROUPS"}, ref: pin, enabled: true, vendored: true},
+		{name: "vendored, caller passes a list secret", setup: serve(jiraOAuthWorkflowFixture), authEnv: []string{"FULLSEND_JIRA_WRITE_GROUPS"}, ref: pin, enabled: true, vendored: true,
+			wantErr: "does not support"},
+		// The reusable poll workflow installs the CLI at the ref the caller pins, not at fullsend_ref.
+		{name: "user-owned caller pins a poll workflow that predates the keys", setup: serve(jiraOAuthWorkflowFixture), authEnv: []string{"WRITE_GROUPS"}, enabled: true, uses: upstreamPoll + "@" + pin,
+			wantErr: `which "fullsend-ai/fullsend/.github/workflows/reusable-poll-jira.yml@v0.54.0", called by .github/workflows/fullsend-poll-jira.yml, does not support`},
+		{name: "user-owned caller pins a poll workflow that supports the keys", setup: serve(jiraAuthListsWorkflowFixture), authEnv: []string{"WRITE_GROUPS"}, enabled: true, uses: upstreamPoll + "@" + pin},
+		{name: "user-owned caller calls its own copy that predates the keys", setup: func(fc *forge.FakeClient) {
+			fc.FileContents["group/project/"+reusableJiraPollWorkflowPath] = []byte(jiraOAuthWorkflowFixture)
+		}, authEnv: []string{"WRITE_GROUPS"}, enabled: true, uses: "./" + reusableJiraPollWorkflowPath, wantErr: "does not support"},
+		{name: "user-owned caller whose reference has no ref is not checked", authEnv: []string{"WRITE_GROUPS"}, enabled: true, uses: upstreamPoll},
+		// The old workflow then runs the vendored binary, which supports the keys.
+		{name: "vendored, user-owned caller pins a poll workflow that predates the keys", setup: serve(jiraOAuthWorkflowFixture), authEnv: []string{"FULLSEND_JIRA_WRITE_GROUPS"}, enabled: true, vendored: true, uses: upstreamPoll + "@" + pin},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			if tt.setup != nil {
+				tt.setup(fc)
+			}
+			d := gitlabJiraDiscovery(fc, jiraPollState{authEnv: tt.authEnv})
+			d.jira.enabled = tt.enabled
+			d.resolved.FullsendRef = tt.ref
+			if tt.vendored {
+				d.resolved.Vendor, d.resolved.Forge = true, ForgeGitHub
+			}
+			if tt.uses != "" {
+				d.resolved.Forge = ForgeGitHub
+				fc.FileContents["group/project/"+scaffold.JiraPollCallerPath] = []byte("jobs:\n  poll:\n    uses: " + tt.uses + "\n    secrets: inherit\n")
+			}
+			if tt.installed != "" {
+				d.components = []ComponentStatus{{Name: "workflow", Present: true, Actual: tt.installed}}
+			}
+			err := checkJiraAuthorizationEnvSupport(context.Background(), d, ConvergeConfig{}, NewRefResolver(fc))
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+
+	// The check finds supporting refs by this marker, so the workflow must keep it.
+	t.Run("the current workflow carries the marker", func(t *testing.T) {
+		content, err := os.ReadFile("../../" + reusableJiraPollWorkflowPath)
+		require.NoError(t, err)
+		assert.Contains(t, string(content), jiraAuthorizationEnvMarker)
+	})
+
+	t.Run("pin without an upstream client", func(t *testing.T) {
+		d := gitlabJiraDiscovery(forge.NewFakeClient(), jiraPollState{authEnv: []string{"WRITE_GROUPS"}})
+		d.resolved.FullsendRef = pin
+		require.ErrorContains(t, checkJiraAuthorizationEnvSupport(context.Background(), d, ConvergeConfig{}, nil), "cannot be checked")
+	})
+
+	t.Run("stamped scaffold without an upstream client", func(t *testing.T) {
+		d := gitlabJiraDiscovery(forge.NewFakeClient(), jiraPollState{authEnv: []string{"WRITE_GROUPS"}})
+		d.components = []ComponentStatus{{Name: "workflow", Present: true, Actual: pin}}
+		require.NoError(t, checkJiraAuthorizationEnvSupport(context.Background(), d, ConvergeConfig{}, nil))
+	})
+}
+
+func TestEffectiveJiraPollState_CollectsListVariablesForAnyTracker(t *testing.T) {
+	managed, err := config.ParsePerRepoConfigWriter([]byte("authorization:\n  - provider: jira\n    write:\n      groups_from: WRITE_GROUPS\n"))
+	require.NoError(t, err)
+	st, err := effectiveJiraPollState(ResolvedConfig{Owner: "acme", Repo: "api", Managed: managed}, nil)
+	require.NoError(t, err)
+	assert.Nil(t, st.jira)
+	assert.Equal(t, []string{"WRITE_GROUPS"}, st.authEnv)
 }

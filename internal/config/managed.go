@@ -590,10 +590,10 @@ func cloneAuthorizationProvider(p AuthorizationProvider) AuthorizationProvider {
 		if l == nil {
 			return nil
 		}
-		return &JiraActorList{
-			Groups:   slices.Clone(l.Groups),
-			Accounts: slices.Clone(l.Accounts),
-		}
+		out := *l
+		out.Groups = slices.Clone(l.Groups)
+		out.Accounts = slices.Clone(l.Accounts)
+		return &out
 	}
 	p.Write = cloneList(p.Write)
 	p.Triage = cloneList(p.Triage)

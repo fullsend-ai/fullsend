@@ -322,15 +322,84 @@ type AuthorizationProvider struct {
 // JiraActorList names the Jira actors granted one Fullsend role by the
 // jira authorization provider. Groups are Jira group names (or group IDs);
 // accounts are Jira account IDs.
+//
+// GroupsFrom and AccountsFrom name an environment variable that holds the
+// list instead, as comma-separated values, so the list stays out of a
+// public repository. The poller reads the variable on every run (see
+// Resolved). A list sets either Groups or GroupsFrom, and either Accounts
+// or AccountsFrom, not both.
 type JiraActorList struct {
-	Groups   []string `yaml:"groups,omitempty"`
-	Accounts []string `yaml:"accounts,omitempty"`
+	Groups       []string `yaml:"groups,omitempty"`
+	GroupsFrom   string   `yaml:"groups_from,omitempty"`
+	Accounts     []string `yaml:"accounts,omitempty"`
+	AccountsFrom string   `yaml:"accounts_from,omitempty"`
 }
 
-// IsEmpty reports whether l lists no group and no account.
+// IsEmpty reports whether l lists no group and no account, and names no
+// environment variable to read them from.
 func (l *JiraActorList) IsEmpty() bool {
-	return l == nil || (len(l.Groups) == 0 && len(l.Accounts) == 0)
+	return l == nil || (len(l.Groups) == 0 && len(l.Accounts) == 0 && l.GroupsFrom == "" && l.AccountsFrom == "")
 }
+
+// Resolved returns the groups and accounts l grants. Inline entries are
+// returned as configured. A GroupsFrom or AccountsFrom variable is read
+// with getenv and split on commas and newlines; blank entries are dropped, so an unset
+// or empty variable grants no one. The values can identify people: callers
+// must never log or print them.
+func (l *JiraActorList) Resolved(getenv func(string) string) (groups, accounts []string) {
+	if l == nil {
+		return nil, nil
+	}
+	groups, accounts = l.Groups, l.Accounts
+	if l.GroupsFrom != "" {
+		groups = splitJiraActorEnv(getenv(l.GroupsFrom))
+	}
+	if l.AccountsFrom != "" {
+		accounts = splitJiraActorEnv(getenv(l.AccountsFrom))
+	}
+	return groups, accounts
+}
+
+// splitJiraActorEnv splits a *_from variable's value on commas and
+// newlines, trimming each entry and dropping blank ones. Newlines separate
+// entries so a secret stored one ID per line still matches. Spaces do not,
+// because a Jira group name can contain them.
+func splitJiraActorEnv(value string) []string {
+	var out []string
+	for _, entry := range strings.FieldsFunc(value, func(r rune) bool { return r == ',' || r == '\n' }) {
+		if entry = strings.TrimSpace(entry); entry != "" {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// JiraEnvNames returns the sorted, de-duplicated environment variable
+// names that the jira provider's write: and triage: lists read through
+// groups_from and accounts_from. It returns nil when p is nil or names none.
+func (p *AuthorizationProvider) JiraEnvNames() []string {
+	if p == nil {
+		return nil
+	}
+	var names []string
+	for _, l := range []*JiraActorList{p.Write, p.Triage} {
+		if l == nil {
+			continue
+		}
+		for _, name := range []string{l.GroupsFrom, l.AccountsFrom} {
+			if name != "" && !slices.Contains(names, name) {
+				names = append(names, name)
+			}
+		}
+	}
+	slices.Sort(names)
+	return names
+}
+
+// validJiraEnvName matches a groups_from or accounts_from value: a portable
+// environment variable name, using only the characters that GitHub Actions
+// secret names and GitLab CI/CD variable keys allow.
+var validJiraEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // HasJiraLists reports whether the jira provider sets a write: or triage:
 // list, even an empty one. When it does, the lists are authoritative for
@@ -354,7 +423,7 @@ var jiraProviderKeys = map[string]bool{"provider": true, "write": true, "triage"
 
 // jiraActorListKeys are the keys allowed in a jira provider write:/triage:
 // mapping.
-var jiraActorListKeys = map[string]bool{"groups": true, "accounts": true}
+var jiraActorListKeys = map[string]bool{"groups": true, "groups_from": true, "accounts": true, "accounts_from": true}
 
 // UnmarshalYAML implements yaml.Unmarshaler. Per-repo config is decoded
 // without strict field checking, so a jira provider entry's keys (and its
@@ -389,6 +458,13 @@ func (p *AuthorizationProvider) UnmarshalYAML(value *yaml.Node) error {
 				}
 				if err := checkMappingKeys(v, jiraActorListKeys, "authorization: jira provider "+key); err != nil {
 					return err
+				}
+				// An empty or null *_from decodes to "", which would read
+				// as "not set" and silently drop the key.
+				for _, from := range []string{"groups_from", "accounts_from"} {
+					if f := mappingNode(v, from); f != nil && f.Kind == yaml.ScalarNode && (f.Tag == "!!null" || strings.TrimSpace(f.Value) == "") {
+						return managedFieldError(f, fmt.Sprintf("authorization: jira provider %s.%s: empty environment variable name", key, from))
+					}
 				}
 			}
 		}
@@ -484,6 +560,24 @@ func validateJiraProvider(p AuthorizationProvider) error {
 	}{{"write", p.Write}, {"triage", p.Triage}} {
 		if l.list == nil {
 			continue
+		}
+		for _, f := range []struct {
+			field, from string
+			inline      bool
+		}{
+			// A present inline key conflicts even when its list is empty.
+			{"groups", l.list.GroupsFrom, l.list.Groups != nil},
+			{"accounts", l.list.AccountsFrom, l.list.Accounts != nil},
+		} {
+			if f.from == "" {
+				continue
+			}
+			if f.inline {
+				return fmt.Errorf("jira provider %s: set %s or %s_from, not both", l.name, f.field, f.field)
+			}
+			if !validJiraEnvName.MatchString(f.from) {
+				return fmt.Errorf("jira provider %s.%s_from: invalid environment variable name %q: use letters, digits and underscores, not starting with a digit", l.name, f.field, f.from)
+			}
 		}
 		for _, g := range l.list.Groups {
 			if strings.TrimSpace(g) == "" {

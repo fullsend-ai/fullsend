@@ -348,6 +348,11 @@ Secrets and variables are deployed on the target repository.
   not by `github setup`)
 - `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL` — Jira API token and optional account email for repos whose effective `tracker.jira.poll.enabled` is `true`, used by the poller and Jira-originated agent status updates (written by `repos install --jira-token` / `--jira-email`; an omitted flag keeps the existing secret; deleted by `repos uninstall`; not set by `github setup`)
 - `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` — a service account's OAuth 2.0 credential, an alternative to `FULLSEND_JIRA_TOKEN` (never both). GitHub poll and Jira-originated dispatch workflows forward them to the Jira client, and `repos install` writes them on GitHub and GitLab; `repos uninstall` deletes them
+- `FULLSEND_JIRA_WRITE_GROUPS`, `FULLSEND_JIRA_WRITE_ACCOUNTS`,
+  `FULLSEND_JIRA_TRIAGE_GROUPS`, `FULLSEND_JIRA_TRIAGE_ACCOUNTS` — optional,
+  set by you: the Jira group or account IDs that the `jira` authorization
+  entry reads with `groups_from` or `accounts_from`
+  ([setup](../user/jira-integration.md#keeping-the-lists-out-of-the-repository))
 - `FULLSEND_TRACE_SIGNING_KEY` — reserved for the trace-context signing key
   ([ADR 0154](../../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)).
   Fullsend does not provision it yet. `fullsend run` keeps it from harnesses.
