@@ -177,8 +177,13 @@ stages:
       value: $[[ inputs.event_payload_chunk_08 ]]
       expand: false
   before_script:
+    # Clear the trace-context signing seed first, so the before_script and
+    # script commands after it do not inherit it. GitLab passes a
+    # protected, wildcard-scoped variable to every job on a protected ref;
+    # no fullsend job reads this one.
+    - unset FULLSEND_TRACE_SIGNING_KEY
     # Reconstruct EVENT_PAYLOAD_B64 from the fixed event_payload_chunk_NN
-    # variables before anything else runs: run-agent-job.sh (sourced
+    # variables after the artifact cleanup below: run-agent-job.sh (sourced
     # from script: below) and the HMAC verification it performs both
     # expect a plain EVENT_PAYLOAD_B64 environment variable, unchanged
     # from before #7850. This sequence of printf statements is fixed —

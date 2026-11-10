@@ -48,6 +48,11 @@
   variables:
     FULLSEND_FORGE: "gitlab"
   before_script:
+    # Clear the trace-context signing seed first, so the before_script and
+    # script commands after it do not inherit it. GitLab passes a
+    # protected, wildcard-scoped variable to every job on a protected ref;
+    # no fullsend job reads this one.
+    - unset FULLSEND_TRACE_SIGNING_KEY
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/install-fullsend-cli.sh"
   script:
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/run-dispatcher-job.sh"
