@@ -100,9 +100,10 @@ those properties.
 pool size restores next-cycle latency. But a raised N raises the cost of
 every cycle, quiet ones included: each selected issue costs the lock write,
 verify and release round trips, a checkpoint read, and a full comment and
-changelog listing, and N bounds the dispatch blast radius (N times the
-per-issue event cap). Operators would have to guess a pool size that the
-agent's own comments inflate. Necessary, not sufficient on its own.
+changelog listing, and N bounds how many events one cycle can route (N
+times the per-issue event cap, each event dispatching to every harness it
+matches). Operators would have to guess a pool size that the agent's own
+comments inflate. Necessary, not sufficient on its own.
 
 **B. Spend slots only on candidates with new activity.** The search result
 already carries each candidate's `updated` field. Reading the candidate's
@@ -245,9 +246,12 @@ their own discovery and are unaffected. Forgejo has no Jira poll target.
   fullsend fails to load its config and stops polling; the keys are adopted
   after the upgrade, and the config reference names the version that
   introduced them.
-- The per-cycle dispatch ceiling is N times the per-issue cap of 100
-  events: 500 at the default N and 5,000 at the maximum, which an operator
-  raising N accepts.
+- One cycle routes at most N times the per-issue cap of 100 events: 500
+  events at the default N and 5,000 at the maximum. That bounds events, not
+  dispatches: each event produces one dispatch record per harness it
+  matches, so the dispatch count is that figure times the number of
+  matching harnesses, and nothing caps it separately. An operator raising
+  N accepts the larger event ceiling.
 - Overlapping pollers see the same active set and still pick at random
   under the unchanged lock protocol; when the active set is N or smaller
   they all pick everything, exactly as today when the pool is small.
