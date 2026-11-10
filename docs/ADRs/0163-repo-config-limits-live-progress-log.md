@@ -66,7 +66,7 @@ progress:
 | Level | The log shows |
 |---|---|
 | `full` | Everything, as today. This is the default. |
-| `tools` | Tool lines, progress, token counts and the result. Reasoning and replies are left out. |
+| `tools` | Tool lines, progress, token counts and the result. Reasoning and replies are left out. Tool lines and task labels can still carry text from the source, so use `quiet` for a source that is not public. |
 | `quiet` | Only lines fullsend writes from its own fields: heartbeat, event kinds and states, iteration and token counts, cost, error types, validation passed or failed, and the result. Leaves out reasoning, replies, tool lines, task labels, status details, error message text, validation output, and the annotations that carry them. |
 
 - **`by_source` keys name where the run started.** Each key is the value
