@@ -883,6 +883,49 @@ func TestRunLastRetrySurfacesDrop(t *testing.T) {
 	}
 }
 
+// TestRunTransportBudgetRefusalDropsEventWithoutRetry verifies a dispatch
+// refused by the transport budget — deterministic, so a retry can never
+// succeed — is dropped without spending its retry budget: no failure count
+// is recorded and the watermark advances past the event, instead of three
+// retries (plus a webhook handoff) of a permanent refusal.
+func TestRunTransportBudgetRefusalDropsEventWithoutRetry(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
+	mc.issues = []Issue{
+		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+	}
+	// A /fs-* command body past the transport budget: buildEventPayload
+	// fails closed (a command note is never dispatched without its
+	// complete event) and dispatch() wraps ErrTransportBudget.
+	mc.notes[1] = []Note{
+		{ID: 10, Body: "/fs-triage " + strings.Repeat("<", 6000), CreatedAt: now, Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
+
+	router := &stubRouter{stages: []string{"triage", "code"}}
+	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v, want a clean cycle: the refusal is permanent, not a retryable failure", err)
+	}
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines, got %d", mc.pipelineCounter)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state to be persisted")
+	}
+	if n := got.FailedKeysFull["note-10"]; n != 0 {
+		t.Errorf("failed keys = %v, want no retry count recorded for note-10", got.FailedKeysFull)
+	}
+	if got.LastPollAtFull == "" || got.LastPollAtFull == since.Format(time.RFC3339) {
+		t.Error("watermark should advance past the refused event so the poller does not retry it forever")
+	}
+}
+
 func TestRunAlreadyDroppedEventDoesNotFailCycle(t *testing.T) {
 	mc, p, since := slashNoteFixture(t, maxEventRetries, nil)
 

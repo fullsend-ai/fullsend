@@ -43,9 +43,14 @@ var jiraRawTypePattern = regexp.MustCompile(`^[a-z][a-z_]*$`)
 
 // jiraCommentLimits are the successive rune limits DispatchJiraEvent tries
 // for the comment body and instruction until the payload fits the
-// event_payload_chunk_NN budget (see maxEventPayloadChunks). The first
-// matches noteBodyTransportLimit, buildEventPayload's bound for
-// non-command GitLab note bodies.
+// event_payload_chunk_NN budget (see maxEventPayloadChunks). The first is
+// the 800 of earlier releases, not the GitLab transport's
+// noteBodyTransportLimit: this door has no comment-only fallback to keep
+// small (every retry re-checks the chunk budget and the dispatch fails
+// closed when nothing fits), so the first limit only decides how much
+// comment text survives. The last step, 0, carries no comment text at all
+// — unlike truncateNoteBody(s, 0), which would still append the
+// truncation notice.
 var jiraCommentLimits = []int{800, 400, 200, 100, 0}
 
 // DispatchJiraEvent starts the protected agent pipeline for stage with a
@@ -180,16 +185,45 @@ func gitlabWrapperAcceptsResourceKey(content []byte, rk string) bool {
 // dispatch: the event type and the normalized event, which run-agent-job.sh
 // hands to fullsend run as its --event-file. The comment body and
 // instruction are shortened, with noteBodyTruncationNotice appended, until
-// the payload fits the maxEventPayloadChunks transport budget. It returns
-// an error when the event does not fit even without comment text.
+// the payload fits the maxEventPayloadChunks transport budget, and
+// state.labels are bounded to transportLabelsLimit like on the GitLab
+// transport, so both doors treat the work item's labels alike. A /fs-*
+// command body is exempt from the shortening, like on the GitLab transport
+// (buildEventPayload): the dispatcher never runs an agent on a shortened
+// instruction, so a command payload that does not fit the budget fails
+// closed instead. It returns an error when the event does not fit even
+// without comment text. Unlike the GitLab transport's
+// boundTransportEventStrings, only state.labels is bounded here: every
+// other attacker-shaped single string is carried as-is, so an oversized
+// one fails this budget check rather than being truncated — a deliberate
+// divergence, since this door has no comment-only fallback whose no-event
+// shape a truncated string could shape; keep any change to
+// transportStringRefLimit or the bounded-field list mirrored on both doors.
 func encodeJiraEventPayload(eventType string, event *normevent.Event) (string, error) {
 	budget := maxEventPayloadChunks * dispatchPayloadChunkSize
+	commandBody := event.Transition.Comment != nil && isFullsendCommandBody(event.Transition.Comment.Body)
+	// Bound once, before the ladder: the bound does not depend on the
+	// comment limit, and hoisting it keeps the cut WARNING to one line
+	// per dispatch instead of one per ladder step.
+	where := fmt.Sprintf("%s event on %s", eventType, event.Entity.Key)
+	labels := LogBoundTransportLabels(where, event.State.Labels)
 	for _, limit := range jiraCommentLimits {
 		ev := *event
+		ev.State.Labels = labels
 		if event.Transition.Comment != nil {
 			c := *event.Transition.Comment
-			c.Body = truncateNoteBody(c.Body, limit)
-			c.Instruction = truncateNoteBody(c.Instruction, limit)
+			if !commandBody {
+				if limit == 0 {
+					// The last ladder step carries no comment text at
+					// all, so an event within notice-length bytes of the
+					// budget still dispatches; truncateNoteBody(s, 0)
+					// would append the 13-rune notice instead.
+					c.Body, c.Instruction = "", ""
+				} else {
+					c.Body = truncateNoteBody(c.Body, limit)
+					c.Instruction = truncateNoteBody(c.Instruction, limit)
+				}
+			}
 			ev.Transition.Comment = &c
 		}
 		normMap, err := ev.ToMap()
@@ -207,9 +241,13 @@ func encodeJiraEventPayload(eventType string, event *normevent.Event) (string, e
 		if len(encoded) <= budget {
 			return encoded, nil
 		}
-		if event.Transition.Comment == nil {
+		if event.Transition.Comment == nil || commandBody {
+			// No comment to shorten, or a /fs-* command body that is
+			// carried untruncated and so cannot shrink to fit: fail
+			// closed now instead of retrying the same payload at every
+			// limit.
 			break
 		}
 	}
-	return "", fmt.Errorf("event payload exceeds the %d-character dispatch budget", budget)
+	return "", fmt.Errorf("event payload exceeds the %d-character dispatch budget: %w", budget, ErrTransportBudget)
 }

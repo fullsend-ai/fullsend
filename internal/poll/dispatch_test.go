@@ -1,6 +1,7 @@
 package poll
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -11,10 +12,13 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -1259,15 +1263,16 @@ func TestDispatch_OriginatingURLWithSubgroup(t *testing.T) {
 
 // --- pipeline-inputs transport tests (#7850) ---
 
-// TestEventPayloadChunks_ChunksUnderGitLabInputLimit verifies a payload
+// TestEventPayloadChunks_ChunksUnderScaffoldInputPattern verifies a payload
 // long enough to need multiple chunks (a 4096-byte note body
 // base64-encodes to ~5.6 KB) is split into several pieces, each
-// comfortably under GitLab's ~1 KB per-pipeline-input-string-value limit
-// (https://docs.gitlab.com/ci/inputs/), and that the chunks round-trip
+// comfortably under the 1000-character chunk-input pattern the scaffold's
+// own configuration enforces (dispatchPayloadChunkSize; GitLab's
+// documented input limits are far larger), and that the chunks round-trip
 // back to the original string by plain concatenation (#7850 injection-vuln
 // fix: chunks are raw data, not shell statements, so no parsing step is
 // needed to recover them).
-func TestEventPayloadChunks_ChunksUnderGitLabInputLimit(t *testing.T) {
+func TestEventPayloadChunks_ChunksUnderScaffoldInputPattern(t *testing.T) {
 	payload := strings.Repeat("A", 5600)
 	chunks, err := eventPayloadChunks(payload)
 	if err != nil {
@@ -1281,7 +1286,7 @@ func TestEventPayloadChunks_ChunksUnderGitLabInputLimit(t *testing.T) {
 	var rebuilt strings.Builder
 	for _, chunk := range chunks {
 		if len(chunk) >= 1024 {
-			t.Errorf("chunk is %d bytes, want < 1024 (GitLab's per-input-string limit): %q", len(chunk), chunk)
+			t.Errorf("chunk is %d bytes, want < 1024 (the scaffold's chunk-input pattern bound): %q", len(chunk), chunk)
 		}
 		rebuilt.WriteString(chunk)
 	}
@@ -1597,4 +1602,309 @@ func withoutKey(vars map[string]string, key string) map[string]string {
 		}
 	}
 	return out
+}
+
+// worstCaseAttackerEvent builds the worst attacker-shaped event the
+// transport bounds have to contain: an escape-heavy note body at
+// noteBodyTransportLimit, state.labels at the labels bound, maximal
+// escape-heavy branch refs and logins, schema-maximal repo paths and entity
+// URLs, the linked change proposal, a review — and the maximal
+// transition.label.name a work item can carry beside its comment
+// (TestBuildEventPayload_WorstCaseFitsTransportBudget, the frozen pin of
+// this shape, predates the label name; this helper includes it so the
+// non-frozen worst-case tests pay for it too).
+func worstCaseAttackerEvent() (RoutableEvent, dispatch.NormalizedEvent) {
+	event, ne := mrNote(strings.Repeat("<", noteBodyTransportLimit))
+	labels := make([]string, 2000)
+	for i := range labels {
+		labels[i] = "label-number-" + strings.Repeat("z", 5)
+	}
+	ne.State.Labels = labels
+	event.Labels = labels
+	event.SourceBranch = strings.Repeat("<", 255)
+	event.TargetBranch = strings.Repeat("<", 255)
+	if cp := ne.State.ChangeProposal; cp != nil {
+		cp.HeadRef = strings.Repeat("<", 255)
+		cp.BaseRef = strings.Repeat("<", 255)
+		cp.AuthorID = strings.Repeat("<", 255)
+		cp.HeadRepo = strings.Repeat("<", 512)
+		cp.BaseRepo = strings.Repeat("<", 512)
+	}
+	ne.Repo = strings.Repeat("<", 512)
+	ne.Actor.ID = strings.Repeat("<", 255)
+	ne.Entity.Kind = "work_item"
+	ne.Entity.URL = strings.Repeat("<", 2048)
+	ne.Entity.LinkedChangeProposal = &dispatch.LinkedChangeProposal{
+		ID:  12,
+		URL: strings.Repeat("<", 2048),
+	}
+	ne.Transition.Review = &dispatch.TransitionReview{
+		State:      "approved",
+		ReviewerID: strings.Repeat("<", 255),
+	}
+	ne.Transition.Label = &dispatch.TransitionLabel{Action: "added", Name: strings.Repeat("<", 255)}
+	return event, ne
+}
+
+// TestBuildEventPayload_WorstCaseWithLabelNameFitsBudget pins the worst-case
+// budget arithmetic the three transport bounds exist for, including the
+// maximal transition.label.name the frozen worst-case test predates: with
+// every bounded attacker-shaped field at its transported bound
+// simultaneously — label name included — the complete form must still fit
+// the chunk budget, so a bound raise, or a newly classified bounded field
+// that consumes the remaining margin, reopens the comment-only fallback
+// (the attacker-chosen "no event" routing channel) here instead of silently.
+func TestBuildEventPayload_WorstCaseWithLabelNameFitsBudget(t *testing.T) {
+	event, ne := worstCaseAttackerEvent()
+
+	data, err := buildEventPayload(event, &ne)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	// The complete form, not the comment-only fallback: it validates as a
+	// normalized event and carries the bounded label name.
+	ev := payloadEvent(t, data)
+	if label := ev.Transition.Label; label == nil || len(label.Name) != (transportStringRefLimit-2)/6 {
+		t.Errorf("transported label = %+v, want the %d-rune bounded label name carried", ev.Transition.Label, (transportStringRefLimit-2)/6)
+	}
+	if n := base64.StdEncoding.EncodedLen(len(data)); n > maxEventPayloadChunks*dispatchPayloadChunkSize {
+		t.Errorf("worst-case payload with label name is %d base64 characters, over the %d budget", n, maxEventPayloadChunks*dispatchPayloadChunkSize)
+	}
+}
+
+// TestBuildEventPayload_OverBudgetNonCommandFallsBackBounded covers the
+// comment-only fallback's over-budget branch: a valid complete normalized
+// event that does not fit the transport budget with a non-command body must
+// return the comment-only payload — never a partial _normalized_event — and
+// the fallback's flat labels copy must be bounded like state.labels. The
+// attacker-shaped bounds keep every attacker-shaped worst case inside the
+// budget (TestBuildEventPayload_WorstCaseFitsTransportBudget and
+// TestBuildEventPayload_WorstCaseWithLabelNameFitsBudget pin that), so
+// the branch is forced here the way it can still be forced: a forge-assigned
+// string no transport bound owns (entity.key, classified by the drift
+// guards) padded past the budget. The branch is the payload path dispatch()'s
+// outer budget check guards, so a future field or bound drift that reopens
+// it fails here instead of shipping an untested fallback.
+func TestBuildEventPayload_OverBudgetNonCommandFallsBackBounded(t *testing.T) {
+	// The worst attacker-shaped shape, so only the padded forge-assigned
+	// key decides whether the complete form fits.
+	event, ne := worstCaseAttackerEvent()
+	// entity.key is forge-assigned (the forge, not the event author, picks
+	// it), so no transport bound owns it; padded past the budget it makes
+	// the valid complete form untransportable.
+	ne.Entity.Key = strings.Repeat("k", 2000)
+
+	data, err := buildEventPayload(event, &ne)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	// The fallback is the comment-only payload, byte for byte: the same
+	// event without a normalized event marshals the same map.
+	want, err := buildEventPayload(event, nil)
+	if err != nil {
+		t.Fatalf("buildEventPayload without event: %v", err)
+	}
+	if !bytes.Equal(data, want) {
+		t.Errorf("payload = %s\nwant the comment-only payload %s", data, want)
+	}
+	// The fallback's flat labels copy is bounded like state.labels: a
+	// strict prefix of the event's labels whose JSON fits
+	// transportLabelsLimit, so the fallback itself always fits the budget.
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	raw, ok := m["labels"].([]any)
+	if !ok || len(raw) == 0 || len(raw) == len(event.Labels) {
+		t.Fatalf("flat labels = %v, want a strict non-empty prefix of %d labels", raw, len(event.Labels))
+	}
+	got := make([]string, len(raw))
+	for i, v := range raw {
+		got[i], ok = v.(string)
+		if !ok {
+			t.Fatalf("flat label %d = %T, want a string", i, v)
+		}
+	}
+	if !slices.Equal(got, event.Labels[:len(got)]) {
+		t.Errorf("flat labels are not a prefix of the event's labels")
+	}
+	if enc, err := json.Marshal(got); err != nil || len(enc) > transportLabelsLimit {
+		t.Errorf("flat labels are %d JSON bytes (err %v), want at most %d", len(enc), err, transportLabelsLimit)
+	}
+	if n := base64.StdEncoding.EncodedLen(len(data)); n > maxEventPayloadChunks*dispatchPayloadChunkSize {
+		t.Errorf("fallback payload is %d base64 characters, over the %d budget", n, maxEventPayloadChunks*dispatchPayloadChunkSize)
+	}
+}
+
+// jiraBoundedFields are the string paths encodeJiraEventPayload bounds on
+// the Jira door: state.labels through boundTransportLabels (exactly like the
+// GitLab door), and the comment body and instruction through the
+// jiraCommentLimits shortening ladder (a /fs-* command body is exempt and
+// fails the dispatch closed when it does not fit).
+var jiraBoundedFields = map[string]bool{
+	"state.labels":                   true,
+	"transition.comment.body":        true,
+	"transition.comment.instruction": true,
+}
+
+// jiraCarriedAsIs are the attacker-shaped single strings the Jira door
+// carries as-is — the recorded deliberate divergence from the GitLab door's
+// boundTransportEventStrings: this door has no comment-only fallback whose
+// no-event shape a truncated string could shape, so an oversized one fails
+// the budget check and the dispatch errors before a pipeline is created
+// (frozen TestEncodeJiraEventPayload_TooLargeWithoutComment pins that).
+// Keep any change to transportStringRefLimit or this list mirrored on both
+// doors, the way the GitLab door's drift guard
+// (TestBoundTransportEventStrings_CoversEveryStringField) enforces its side.
+var jiraCarriedAsIs = map[string]bool{
+	"repo":                              true,
+	"entity.url":                        true,
+	"entity.linked_change_proposal.url": true,
+	"transition.label.name":             true,
+	"transition.review.reviewer_id":     true,
+	"actor.id":                          true,
+	"state.change_proposal.head_repo":   true,
+	"state.change_proposal.base_repo":   true,
+	"state.change_proposal.head_ref":    true,
+	"state.change_proposal.base_ref":    true,
+	"state.change_proposal.author_id":   true,
+}
+
+// jiraForgeOrEnum are the strings the forge, a closed schema enum or a
+// derived token picks; the Jira event author cannot pad them.
+var jiraForgeOrEnum = map[string]bool{
+	"entity.kind":             true,
+	"entity.key":              true,
+	"transition.kind":         true,
+	"transition.label.action": true,
+	// extractCommand derives command from the comment body: empty or a
+	// short /fs-* token.
+	"transition.comment.command": true,
+	// backend-native message ids (ADR 0086).
+	"transition.comment.id":              true,
+	"transition.comment.parent_id":       true,
+	"transition.review.state":            true,
+	"actor.kind":                         true,
+	"actor.role":                         true,
+	"actor.bot_role":                     true,
+	"state.change_proposal.head_sha":     true,
+	"state.conversation.category.id":     true,
+	"state.conversation.category.name":   true,
+	"state.conversation.category.slug":   true,
+	"state.conversation.category.format": true,
+	"source.system":                      true,
+	"source.raw_type":                    true,
+	"source.raw_action":                  true,
+}
+
+// TestEncodeJiraEventPayload_ClassifiesEveryStringField is the Jira door's
+// drift guard, mirroring the GitLab door's
+// TestBoundTransportEventStrings_CoversEveryStringField over normevent.Event
+// (the struct the Jira door transports). A string field added to
+// normevent.Event or one of its nested structs fails this test until it is
+// classified: bounded in encodeJiraEventPayload, carried as-is under the
+// recorded fail-closed divergence, or forge-assigned/enum — so a new
+// attacker-shaped field cannot ship unbounded on one door unnoticed.
+func TestEncodeJiraEventPayload_ClassifiesEveryStringField(t *testing.T) {
+	seen := map[string]bool{}
+	collectStringFieldPaths(reflect.TypeOf(normevent.Event{}), "", seen)
+	for _, path := range slices.Sorted(maps.Keys(seen)) {
+		if jiraBoundedFields[path] || jiraCarriedAsIs[path] || jiraForgeOrEnum[path] {
+			continue
+		}
+		t.Errorf("unclassified string field %q: bound it in encodeJiraEventPayload, classify it as carried as-is under the recorded GitLab-door divergence, or as forge-assigned/enum", path)
+	}
+	for _, classified := range []map[string]bool{jiraBoundedFields, jiraCarriedAsIs, jiraForgeOrEnum} {
+		for path := range classified {
+			if !seen[path] {
+				t.Errorf("classified string field %q no longer exists on normevent.Event", path)
+			}
+		}
+	}
+}
+
+// TestBoundTransportStringQuoteAndControlRunesFitRefLimit covers
+// jsonRuneLen's default arm — the quote, the backslash and ASCII control
+// characters such as newline — which TestBoundTransportString's escape-heavy
+// and invalid-UTF-8 cases do not reach. The arm is load-bearing for the
+// "never estimate longer than the encoder writes" invariant: if it were
+// simplified to utf8.RuneLen(r), a quote- or control-heavy branch name or
+// label would silently exceed transportStringRefLimit and eat the worst-case
+// budget margin.
+func TestBoundTransportStringQuoteAndControlRunesFitRefLimit(t *testing.T) {
+	s := strings.Repeat("\"\\\n", 128)
+	got := boundTransportString(s)
+	if want := (transportStringRefLimit - 2) / 6; len(got) != want {
+		t.Errorf("boundTransportString(quote/control-heavy) = %d runes, want the %d-rune prefix", len(got), want)
+	}
+	if enc, err := json.Marshal(got); err != nil || len(enc) > transportStringRefLimit {
+		t.Errorf("bounded string is %d JSON bytes (err %v), want at most %d", len(enc), err, transportStringRefLimit)
+	}
+}
+
+// TestBoundTransportLabelsSingleOverBoundLabelDropsAll covers
+// boundTransportLabels' kept==0 arm: when the first label alone exceeds
+// transportLabelsLimit, nothing fits and the bound returns an empty,
+// non-nil slice — the payload travels with state.labels: [] rather than a
+// nil list or a cut single label. TestBoundTransportLabels (in
+// dispatch_normalized_test.go) covers the fitting, nil and many-labels
+// cases but never this one.
+func TestBoundTransportLabelsSingleOverBoundLabelDropsAll(t *testing.T) {
+	got := boundTransportLabels([]string{strings.Repeat("x", 1500)})
+	if got == nil || len(got) != 0 {
+		t.Errorf("boundTransportLabels(single over-bound label) = %v (len %d), want an empty non-nil slice", got, len(got))
+	}
+}
+
+// TestEncodeJiraEventPayload_LastLadderStepCarriesNoCommentText pins the
+// ladder's 0 step: at the largest comment ballast that still
+// dispatches, the ladder has walked to its last step, and the dispatched
+// comment body must be empty — not the 13-rune truncation notice. The
+// ballast is the comment's id and parent_id (carried as-is, escape-heavy);
+// one more ballast rune pair costs 12 JSON bytes, less than the notice's
+// ~15, so a notice-carrying last step would fail this dispatch instead of
+// fitting: a step-100 body costs far more than that, so the maximal
+// fitting ballast always lands on step 0.
+func TestEncodeJiraEventPayload_LastLadderStepCarriesNoCommentText(t *testing.T) {
+	base := jiraTestEvent("group/sub/project")
+	base.Transition.Comment.Body = "please review " + strings.Repeat("<", 900)
+	base.Transition.Comment.Command = ""
+	fits := func(n int) bool {
+		ev := *base
+		c := *ev.Transition.Comment
+		c.ID = strings.Repeat("<", n)
+		c.ParentID = strings.Repeat("<", n)
+		ev.Transition.Comment = &c
+		encoded, err := encodeJiraEventPayload("jira_comment", &ev)
+		return err == nil && len(encoded) <= maxEventPayloadChunks*dispatchPayloadChunkSize
+	}
+	lo, hi := 0, 4096
+	if !fits(lo) {
+		t.Fatal("the unpadded event does not dispatch")
+	}
+	if fits(hi) {
+		t.Fatal("the maximally padded event still dispatches; the search range is wrong")
+	}
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if fits(mid) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	ev := *base
+	c := *ev.Transition.Comment
+	c.ID = strings.Repeat("<", lo)
+	c.ParentID = strings.Repeat("<", lo)
+	ev.Transition.Comment = &c
+	encoded, err := encodeJiraEventPayload("jira_comment", &ev)
+	if err != nil {
+		t.Fatalf("encodeJiraEventPayload at the largest fitting ballast %d: %v", lo, err)
+	}
+	_, got := decodeJiraPayload(t, encoded)
+	if got.Transition.Comment.Body != "" || got.Transition.Comment.Instruction != "" {
+		t.Errorf("last ladder step body = %q, instruction = %q, want both empty (no truncation notice)",
+			got.Transition.Comment.Body, got.Transition.Comment.Instruction)
+	}
 }

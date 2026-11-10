@@ -401,6 +401,20 @@ func (p *Poller) Run(ctx context.Context) error {
 			}
 			allSkipped = false
 			if err := p.dispatch(ctx, p.owner, p.repo, stage, event, &normalizedEvent); err != nil {
+				if errors.Is(err, ErrTransportBudget) {
+					// The refusal is deterministic — the same
+					// event re-marshals to the same oversized
+					// payload, for every stage — so a retry can
+					// never succeed: drop the occurrence without
+					// spending its retry budget, like an
+					// exhausted budget is dropped above, instead
+					// of wedging it behind three retries (plus a
+					// webhook handoff) of a permanent refusal.
+					log.Printf("WARNING: dropping %s for %s: %v (transport-budget refusal is permanent)", stage, eventKey, err)
+					observe(event)
+					resolvedPending[eventKey] = true
+					break
+				}
 				log.Printf("dispatch %s for %s failed: %v", stage, eventKey, err)
 				recordEventFailure(&cycleErrs, failedKeys, mirrors, event, &minFailedAt, failedLabelEvents,
 					fmt.Errorf("dispatch %s for %s failed: %w", stage, eventKey, err))

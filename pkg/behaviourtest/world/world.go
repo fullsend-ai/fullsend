@@ -256,6 +256,13 @@ type World struct {
 	JiraPollCLIExitCode   int
 	JiraPollCLIOutputPath string
 
+	// JiraTransport holds the GitLab-target transport-bounds scenario
+	// state (steps/jirapoll_transport.go): the local harnesses registered
+	// for the production CEL matcher, the target project, and the agent
+	// pipelines the fake GitLab transport recorded. Set by the "the Jira
+	// poller dispatches to the GitLab project" step; nil otherwise.
+	JiraTransport *JiraTransportState
+
 	// PlaybackEntries accumulates the ordered list of canned-result
 	// directories a playback scenario will serve, built up by "a <agent>
 	// agent that returns <result>" steps before the triggering issue is
@@ -319,6 +326,38 @@ type World struct {
 	// repositories it lists; the probe's shim branch is tracked in
 	// CreatedBranches.
 	BotRoleProbe *BotRoleProbe
+}
+
+// JiraTransportState is the GitLab-target transport-bounds scenario state
+// (steps/jirapoll_transport.go). The scenarios run the real Jira poller
+// against the mock Jira server with the production CEL matcher over local
+// harness files, and dispatch through the real GitLab dispatch door
+// (poll.Poller.DispatchJiraEvent) onto a fake GitLab API that records the
+// agent pipelines it is asked to create.
+type JiraTransportState struct {
+	// Project is the GitLab project path the poller dispatches to.
+	Project string
+	// Harnesses are the local harnesses registered in the scenario's
+	// .fullsend config, one per "a local harness" step.
+	Harnesses []JiraTransportHarness
+	// Pipelines records every agent pipeline the dispatch door asked the
+	// GitLab API to create, in order.
+	Pipelines []JiraTransportPipeline
+}
+
+// JiraTransportHarness is one local harness registered for a Jira
+// transport scenario: its agent name, role, and CEL trigger.
+type JiraTransportHarness struct {
+	Name    string
+	Role    string
+	Trigger string
+}
+
+// JiraTransportPipeline is one agent pipeline creation the fake GitLab
+// transport recorded: the stage and the RESOURCE_KEY the dispatch carried.
+type JiraTransportPipeline struct {
+	Stage       string
+	ResourceKey string
 }
 
 // MintStatus is the state of one CLI mint status scenario: the mint
