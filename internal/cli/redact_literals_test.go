@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -134,6 +136,58 @@ func TestMaskSecretLiterals_AdjacentAndContained(t *testing.T) {
 func TestMaskSecretLiterals_SelfOverlap(t *testing.T) {
 	got, _ := maskSecretLiterals("x ababababab y", []secretLiteral{{"abababab", "[S]"}})
 	assert.Equal(t, "x [S] y", got)
+}
+
+// Validation output is unbounded, so masking must not hold memory
+// proportional to the number of matches. A long self-overlapping run
+// matches at nearly every byte, and a large periodic output overlaps itself
+// across the whole text; both collapse to one range, whose result is
+// correct and whose allocation stays far below one tracked span per byte.
+func TestMaskSecretLiterals_LongRunBoundedAllocation(t *testing.T) {
+	const size = 8 << 20
+	for name, tc := range map[string]struct {
+		text     string
+		literals []secretLiteral
+		want     string
+		maxAlloc uint64
+	}{
+		"single-byte run": {
+			text:     "head " + strings.Repeat("a", size) + " tail",
+			literals: []secretLiteral{{"aaaaaaaa", "[S]"}},
+			want:     "head [S] tail",
+			maxAlloc: size / 8,
+		},
+		"large periodic output with two overlapping values": {
+			text: "head " + strings.Repeat("ab", size/2) + "-end",
+			literals: []secretLiteral{
+				{"abababababababab", "[L]"},
+				{"ab-end-x", "[K]"},
+				{"babababa", "[M]"},
+			},
+			want:     "head [L]-end",
+			maxAlloc: size / 8,
+		},
+		"repeated secret in separated large output": {
+			text:     strings.Repeat("v=abcdefgh;", size/11),
+			literals: []secretLiteral{{"abcdefgh", "[R]"}},
+			want:     strings.Repeat("v=[R];", size/11),
+			// Distinct matches cannot merge, so only the growing result is
+			// allocated: linear in the output, with no span list on top.
+			maxAlloc: 4 * size,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			got, found := maskSecretLiterals(tc.text, tc.literals)
+			runtime.ReadMemStats(&after)
+			assert.True(t, got == tc.want, "masked result differs (got %d bytes, want %d)", len(got), len(tc.want))
+			assert.True(t, found[0])
+			// The old per-match span list took 24 bytes per match start:
+			// over 190 MiB for the runs here.
+			assert.Less(t, after.TotalAlloc-before.TotalAlloc, tc.maxAlloc, "allocation grew with the number of matches")
+		})
+	}
 }
 
 // No match, and an empty value, leave the text unchanged.

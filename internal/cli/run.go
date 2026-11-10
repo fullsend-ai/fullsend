@@ -4500,7 +4500,7 @@ type secretLiteral struct{ value, mask string }
 // reports, by index, which literals occurred. literals must be sorted
 // longest first.
 //
-// Match ranges are all found in the original text before anything is
+// Match ranges are located in the original text before anything is
 // replaced, overlapping ranges are merged, and each merged range is
 // masked once (#8165). Replacing one literal at a time would leave a
 // fragment of two values that overlap in the text without either
@@ -4509,52 +4509,71 @@ type secretLiteral struct{ value, mask string }
 // in literals on a tie), so a value inside a longer one is masked as the
 // longer one. Ranges that only touch are not merged and keep their own
 // masks.
+//
+// The output is unbounded (a script can print 100 MB of one repeated
+// secret), so matches are merged as they are found instead of being
+// collected: each literal keeps one cursor at its next match, and only the
+// range being built is held. Memory beyond the result is O(len(literals)).
 func maskSecretLiterals(text string, literals []secretLiteral) (string, []bool) {
-	type span struct{ start, end, lit int }
-	var spans []span
 	found := make([]bool, len(literals))
-	for i, l := range literals {
-		if l.value == "" {
-			continue
+	// next[i] is the start of literal i's first match not yet consumed,
+	// or -1 when it has none left.
+	next := make([]int, len(literals))
+	nextMatch := func(i, from int) int {
+		if literals[i].value == "" || from > len(text) {
+			return -1
 		}
-		// Advance one byte past each match start, not past the match, so a
-		// value that overlaps itself in the text ("aaaa" in "aaaaa") is
-		// covered whole.
-		for off := 0; off < len(text); {
-			j := strings.Index(text[off:], l.value)
-			if j < 0 {
-				break
-			}
-			start := off + j
-			spans = append(spans, span{start, start + len(l.value), i})
-			found[i] = true
-			off = start + 1
+		j := strings.Index(text[from:], literals[i].value)
+		if j < 0 {
+			return -1
 		}
+		return from + j
 	}
-	if len(spans) == 0 {
-		return text, found
+	for i := range literals {
+		next[i] = nextMatch(i, 0)
 	}
-	slices.SortFunc(spans, func(a, b span) int {
-		return cmp.Or(cmp.Compare(a.start, b.start), cmp.Compare(a.lit, b.lit))
-	})
 	var b strings.Builder
 	last := 0
-	cur := spans[0]
-	flush := func() {
-		b.WriteString(text[last:cur.start])
-		b.WriteString(literals[cur.lit].mask)
-		last = cur.end
-	}
-	for _, s := range spans[1:] {
-		if s.start < cur.end {
-			cur.end = max(cur.end, s.end)
-			cur.lit = min(cur.lit, s.lit)
-			continue
+	for {
+		first := -1
+		for i, s := range next {
+			if s >= 0 && (first < 0 || s < next[first]) {
+				first = i
+			}
 		}
-		flush()
-		cur = s
+		if first < 0 {
+			break
+		}
+		start := next[first]
+		end := start + len(literals[first].value)
+		lit := first
+		// Consume every match that starts inside the range, growing it.
+		// The search resumes one byte past each match start, not past the
+		// match, so a value that overlaps itself in the text ("aaaa" in
+		// "aaaaa") is covered whole. Repeat until a pass leaves the end
+		// where it was: a literal visited early may match inside a range
+		// a later one has since grown.
+		for grew := true; grew; {
+			grew = false
+			for i := range next {
+				for next[i] >= 0 && next[i] < end {
+					found[i] = true
+					if e := next[i] + len(literals[i].value); e > end {
+						end = e
+						grew = true
+					}
+					lit = min(lit, i)
+					next[i] = nextMatch(i, next[i]+1)
+				}
+			}
+		}
+		b.WriteString(text[last:start])
+		b.WriteString(literals[lit].mask)
+		last = end
 	}
-	flush()
+	if last == 0 {
+		return text, found
+	}
 	b.WriteString(text[last:])
 	return b.String(), found
 }
