@@ -493,6 +493,7 @@ HEAD_SHA="1111111111111111111111111111111111111111"
 write_cmd_pr() {
   jq -n --arg sha "${HEAD_SHA}" '{
     user: {login: "forker"}, labels: [], updated_at: "2026-06-01T10:00:00Z",
+    created_at: "2026-06-01T08:00:00Z",
     head: {sha: $sha, ref: "feature", repo: {full_name: "forker/fullsend"}}
   }' >"${PR_JSON}"
 }
@@ -602,7 +603,21 @@ write_events '[{"event":"head_ref_force_pushed","created_at":"2026-06-01T11:30:0
 run_cmd_case "force push after the head run is stale" "false" "stale_ok_to_test" "${HEAD_SHA}"
 write_events '[{"event":"head_ref_force_pushed","created_at":"2026-06-01T10:30:00Z"},{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:45:00Z"}]'
 run_cmd_case "force push before the head run is ignored" "true" "ok_to_test" "${HEAD_SHA}"
+# A force push to the head sha in the same second as its run is not a move away.
+write_events "[{\"event\":\"head_ref_force_pushed\",\"created_at\":\"2026-06-01T11:00:00Z\",\"commit_id\":\"${HEAD_SHA}\"}]"
+run_cmd_case "force push to the head sha at its run time authorizes" "true" "ok_to_test" "${HEAD_SHA}"
+# A force push to another commit after the head's run, even with commit ids.
+write_events '[{"event":"head_ref_force_pushed","created_at":"2026-06-01T11:30:00Z","commit_id":"2222222222222222222222222222222222222222"}]'
+run_cmd_case "force push to another commit after the head run is stale" "false" "stale_ok_to_test" "${HEAD_SHA}"
 write_events '[]'
+
+# Runs from before this PR was opened (an earlier PR on the same branch) do
+# not date the head: the seeded-commit fast-forward attack.
+write_runs "2026-06-01T07:00:00Z"
+run_cmd_case "run from before the PR was opened is ignored" "false" "unknown_head_time" "${HEAD_SHA}"
+write_runs "2026-06-01T07:00:00Z" "2026-06-01T11:00:00Z"
+run_cmd_case "run after the PR was opened dates the head" "true" "ok_to_test" "${HEAD_SHA}"
+write_runs "2026-06-01T11:00:00Z"
 
 # Comment id: created_at and commenter come from the API.
 export COMMENT_ID="900"

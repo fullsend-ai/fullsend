@@ -836,9 +836,10 @@ comment. It does not trust commit dates, which the PR author sets. Instead it
 uses two times that GitHub records:
 
 - the creation time of the latest `pull_request` workflow run for that sha on
-  the PR's head repository and branch, which is when the commit was last
-  pushed to the PR; and
-- any `head_ref_force_pushed` event on the PR at or after that time.
+  the PR's head repository and branch, created after the PR was opened, which
+  is when the commit was last pushed to this PR; and
+- any `head_ref_force_pushed` event on the PR at or after that time that moved
+  the head to a different commit.
 
 Any later push needs a new `/ok-to-test` from a user with write access after
 reviewing the new changes. Other `pull_request` activity between the comment

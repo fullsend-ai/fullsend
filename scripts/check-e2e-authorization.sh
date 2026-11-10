@@ -22,9 +22,10 @@
 # script resolves the PR head sha and refuses it (reason=stale_ok_to_test)
 # when the head moved at or after the comment. The time the head sha became
 # the head is the latest pull_request workflow run created for that sha on the
-# PR's head repository and branch (set by GitHub, not by the PR author). A
-# head_ref_force_pushed event at or after that time also makes it stale,
-# because the sha may have come back by a push that left no run yet. When no
+# PR's head repository and branch after the PR was opened (set by GitHub, not
+# by the PR author). A head_ref_force_pushed event at or after that time that
+# moved the head to another commit also makes it stale, because the sha may
+# have come back by a push that left no run yet. When no
 # such run exists the sha is refused (reason=unknown_head_time).
 #
 # Usage: check-e2e-authorization.sh PR_NUMBER OWNER/REPO
@@ -220,24 +221,34 @@ if [[ "${EVENT_NAME:-}" == "issue_comment" ]]; then
     head_sha="$(jq -er '.head.sha' <<<"${pr_json}")"
     head_ref="$(jq -r '.head.ref // empty' <<<"${pr_json}")"
     head_repo="$(jq -r '.head.repo.full_name // empty' <<<"${pr_json}")"
+    pr_created_at="$(jq -r '.created_at // empty' <<<"${pr_json}")"
 
-    # Latest pull_request run for this sha on the PR's own head branch. Runs
-    # from other branches or forks that carried the same sha do not count.
+    # Latest pull_request run for this sha on the PR's own head branch, created
+    # after this PR was opened. Runs from other branches or forks that carried
+    # the same sha do not count, and neither do runs from an earlier PR on the
+    # same branch: an author could seed a run for a commit there, open a new PR
+    # at an ancestor, and fast-forward to the seeded commit after /ok-to-test.
     runs_json="$(gh api "repos/${REPOSITORY}/actions/runs?event=pull_request&head_sha=${head_sha}&per_page=100" --paginate |
       jq -s '[.[].workflow_runs[]?]')"
-    head_at="$(jq -r --arg ref "${head_ref}" --arg repo "${head_repo}" '
-      [.[] | select(.head_branch == $ref and (.head_repository.full_name // "") == $repo)
+    head_at="$(jq -r --arg ref "${head_ref}" --arg repo "${head_repo}" --arg opened "${pr_created_at}" '
+      [.[] | select(.head_branch == $ref and (.head_repository.full_name // "") == $repo
+                    and (.created_at // "") >= $opened)
            | .created_at // empty] | max // empty
     ' <<<"${runs_json}")"
 
-    if [[ -z "${head_ref}" || -z "${head_repo}" || -z "${head_at}" ]]; then
+    if [[ -z "${head_ref}" || -z "${head_repo}" || -z "${pr_created_at}" || -z "${head_at}" ]]; then
       reason="unknown_head_time"
     elif [[ ! "${head_at}" < "${comment_at}" ]]; then
       reason="stale_ok_to_test"
     else
       events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')"
-      forced="$(jq -r --arg at "${head_at}" '
-        [.[] | select(.event == "head_ref_force_pushed" and (.created_at // "") >= $at)] | length
+      # A force push at or after the head's run that moved the head to another
+      # commit (commit_id is the new head) means the head left and may have
+      # come back without a new run. A force push to the head sha itself can
+      # share the run's second and must not refuse it forever.
+      forced="$(jq -r --arg at "${head_at}" --arg sha "${head_sha}" '
+        [.[] | select(.event == "head_ref_force_pushed" and (.created_at // "") >= $at
+                      and (.commit_id // "") != $sha)] | length
       ' <<<"${events_json}")"
       if [[ "${forced}" != "0" ]]; then
         reason="stale_ok_to_test"
