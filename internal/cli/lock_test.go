@@ -318,6 +318,38 @@ skills:
 	assert.True(t, os.IsNotExist(err), "lock file should not be created for local-only harness")
 }
 
+func TestRunLock_FetchOnlyHarnessRemoteResourcesNotSubset(t *testing.T) {
+	// A harness with no URL references that opts into runtime fetching
+	// (allow_runtime_fetch + allowed_remote_resources) still starts the
+	// fetch service at run time, so lock must check its allowlist against
+	// config.yaml's — not only when HasURLReferences() is true (#7395801).
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	harnessContent := `agent: agents/code.md
+role: test
+allow_runtime_fetch: true
+allowed_remote_resources:
+  - "https://disallowed.example.com/"
+`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "local.yaml"),
+		[]byte(harnessContent),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\nallowed_remote_resources:\n  - \"https://allowed.example.com/\"\n"),
+		0o644,
+	))
+
+	printer := ui.New(os.Stdout)
+	err := runLock(context.Background(), "local", dir, "", false, resolveFlags{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validating allowed remote resources")
+	assert.Contains(t, err.Error(), `"https://disallowed.example.com/" is not covered by the org allowlist`)
+}
+
 func TestRunLock_AlreadyUpToDate(t *testing.T) {
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
