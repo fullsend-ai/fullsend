@@ -128,7 +128,16 @@ than depending on either.
 
 - `state.labels` — label names from `fields.labels` at event time; see
   [Validation and skipping](#validation-and-skipping) for how an issue served
-  without the field is treated.
+  without the field is treated. The
+  dispatch door bounds them to a 1024-byte JSON prefix, like the
+  [GitLab dispatch payload](README.md#gitlab-dispatch-payload), so labels
+  past the bound never reach the harness on this transport; an `/fs-*`
+  command body that does not fit the dispatch budget fails the dispatch
+  instead of arriving shortened. On the GitLab target the same bound is
+  applied before trigger matching, so a trigger keyed on a label past the
+  bound does not match: the matcher and the transported payload agree on
+  the work item's labels. The GitHub target matches on the full label
+  set.
 - `state.change_proposal` — omitted. Change-proposal stages (`fix`, PR-linked
   `review`, merge `retro`) are forge-scoped; harness CEL triggers for those
   stages MUST require `entity.kind == 'change_proposal'` or equivalent guards.

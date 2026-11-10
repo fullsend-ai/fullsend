@@ -700,7 +700,7 @@ typed pipeline inputs signed by the `FULLSEND_DISPATCH_SECRET` HMAC:
 | `originating_url` | The Jira browse URL |
 | `repo_full_name` | The full GitLab project path |
 | `is_fork` | `false` |
-| event payload | `{"type": ..., "_normalized_event": ...}`. The comment body and instruction are shortened, ending in `[…truncated]`, when needed to fit GitLab's pipeline input limits |
+| event payload | `{"type": ..., "_normalized_event": ...}`. The comment body and instruction are shortened, ending in `[…truncated]` when shortened and dropped entirely (no marker) at the shortening ladder's last step, when needed to fit the dispatch chunk budget — except a `/fs-*` command body, which is carried untruncated and fails the dispatch when it does not fit, exactly as on the GitLab transport. On this transport the carried event's `state.labels` is bounded to a 1024-byte JSON prefix (entries past the bound are dropped), like on the GitLab transport, so an overlay keyed on a label past the bound does not match |
 
 `actor_id` and `status_iid` are empty: a Jira actor has no GitLab user ID, and
 a Jira issue has no GitLab IID.
@@ -735,7 +735,14 @@ when:
 
 When any dispatch for a Jira issue fails, that issue's `lastCheck` is not
 advanced and the cycle exits non-zero. The next cycle retries the issue, which
-can dispatch again any of its records that already succeeded.
+can dispatch again any of its records that already succeeded. The exception is
+a transport-budget refusal (`dispatch transport budget exceeded`, logged as a
+WARNING): the refusal is deterministic — the same record re-marshals to the
+same oversized payload — so the refused record never holds the checkpoint
+back; the checkpoint advances past it once the issue's other records have
+dispatched. That event's activity is lost, not repeated: an
+oversized `/fs-*` command, for example, never runs and leaves only the
+WARNING log line.
 
 GitLab targets keep their lock and checkpoint properties in their own
 namespace, `fullsend.poll.gitlab.{instance}.{group path}.{project}.*`, where

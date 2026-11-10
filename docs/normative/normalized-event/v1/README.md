@@ -527,10 +527,29 @@ two forms:
   `source.system` set to `gitlab` and, for merge request events,
   `state.change_proposal` (including `head_sha` where the poller discovered
   it). `run-agent-job.sh` passes it to `fullsend run --event-file`, so
-  overlays and root-span telemetry see the same fields as on GitHub.
+  overlays and root-span telemetry see the same fields as on GitHub — with
+  two bounds: `state.labels` is truncated to a 1024-byte JSON prefix
+  (entries past the bound are dropped), and each other attacker-shaped
+  single string the event carries (branch refs, repo paths, entity URLs,
+  logins, the label name) to a 258-byte JSON prefix, both like the
+  comment-body bound below, so a trigger or overlay keyed on a value past
+  either bound does not match on this transport. The label-name bound is
+  stricter than a single `state.labels` entry: `transition.label.name` is
+  cut at 258 JSON bytes while the same label inside `state.labels` can
+  travel whole at up to about 1020 bytes, so for a label longer than 258
+  bytes a trigger keyed on the transition label and one keyed on
+  `state.labels` see different values. A label past the bound is
+  invisible, so a negative-label guard (`!("hold" in event.state.labels)`)
+  is unsafe: any label the forge returns before the guarded one can push it
+  past the bound and make the guard match. The payload's flat top-level
+  `labels` key is dropped in this form — labels travel only at
+  `_normalized_event.state.labels`.
 - **Comment-only fallback.** Otherwise, for a note event, `_normalized_event`
   is a **partial** map containing only `transition`, with `transition.kind`
   set to `comment_added` and `transition.comment.body` set to the note body.
+  The payload's top-level `labels` key carries the bounded label list in
+  this form (the complete form drops it in favour of
+  `_normalized_event.state.labels`).
   Non-note events then carry no `_normalized_event`. `run-agent-job.sh` passes
   no `--event-file`, and the run behaves as it did before the complete form
   existed.
@@ -541,10 +560,16 @@ as a full NormalizedEvent. Both forms carry the note body at
 the `/fs-fix` instruction and the retro comment.
 
 A body that starts with `/fs-` is carried untruncated, and dispatch fails closed
-when the payload exceeds the chunk budget. Any other body is bounded to 800
-Unicode code points, with a truncation marker appended when it is cut. In the
-complete form, `transition.comment.command` and `instruction` are derived from
-the transported body, so they always match what `run-agent-job.sh` reads.
+when the payload exceeds the chunk budget. Any other body is bounded to 270
+Unicode code points, with a truncation marker appended when it is cut. The
+bound came down from the 800 of earlier releases. The chunk budget is the sum
+of every attacker-controlled field: an escape-heavy body, a full labels bound
+and maximal — separately bounded — branch refs, repo paths, entity URLs, the
+linked change proposal URL, logins and the label name must still fit it
+together. `TestBuildEventPayload_WorstCaseFitsTransportBudget` pins that
+worst case. In the complete form,
+`transition.comment.command` and `instruction` are derived from the transported
+body, so they always match what `run-agent-job.sh` reads.
 
 ## GitLab adapter notes
 
