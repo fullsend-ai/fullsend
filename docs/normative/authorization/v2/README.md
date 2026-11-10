@@ -582,15 +582,26 @@ It applies to an entity-source harness's CEL predicate whether a verified
 prompting event is present or `event == null`; legacy event-only dispatch is
 unchanged. The entity-source path is not yet implemented by `fullsend dispatch`,
 `fullsend poll`, or bound `fullsend run`. Entity-first execution MUST NOT be
-enabled until the versioned normalized-entity contract defines CEL-eligible and
-prompt-eligible fields and their coverage states. That contract is a platform
-allowlist; a harness may request fewer fields but cannot expand it.
+enabled for a source and kind until both the versioned normalized-entity
+contract defines its CEL-eligible fields and coverage states and an applicable
+model-facing input contract defines its prompt-eligible fields. The CEL field
+gate is a platform allowlist; a harness may request fewer fields but cannot
+expand it. [Normalized entity v1](../../normalized-entity/v1/README.md)
+defines that gate. For the Git-forge work items and change proposals in its scope,
+[entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
+defines the model-facing field gate. That snapshot does not cover Jira issues
+or GitHub Discussions; their entity-first paths require an applicable
+prompt-field gate before implementation is enabled.
+
+> **Revision note:** The entity-first prerequisite now checks separate CEL
+> and model-facing field contracts for each source and kind. This tightens the
+> future enablement gate; entity-first execution remains unimplemented.
 
 > **Planned:** Entity-source CEL is not implemented and remains disabled until
-> the [normalized-entity contract tracked by issue #8420](https://github.com/fullsend-ai/fullsend/issues/8420)
-> and the run-time authorization and launch checks described here are
-> implemented. Legacy non-CEL, non-entity workflows remain on Authorization
-> v1.
+> [Normalized entity v1](../../normalized-entity/v1/README.md),
+> the applicable prompt-field gate, and the run-time authorization and launch
+> checks described here are implemented. Legacy non-CEL, non-entity workflows
+> remain on Authorization v1.
 
 With a prompting event, the event-actor authorization gate for the selected
 harness still runs before its CEL predicate; neither discovery nor an

@@ -397,10 +397,22 @@ This is the future path adopted by
 [ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md) and clarified
 by [ADR 0144](../../../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md);
 it is not yet implemented by `fullsend dispatch`, `fullsend poll`, or eventless
-bound `fullsend run`. Entity-first execution MUST NOT be enabled until the
-versioned normalized-entity contract defines CEL-eligible and prompt-eligible
-fields. That contract is a platform allowlist; a harness may request fewer
-fields but cannot expand it.
+bound `fullsend run`. Entity-first execution MUST NOT be enabled for a source
+and kind until both the versioned normalized-entity contract defines its
+CEL-eligible fields and partial-data semantics and an applicable model-facing
+input contract defines its prompt-eligible fields. The CEL field gate is a
+platform allowlist; a harness may request fewer fields but cannot expand it.
+[Normalized entity v1](../../normalized-entity/v1/README.md) defines that
+gate, including the representation of action-indicating elements, current
+actor permissions, and incomplete enumeration. For the Git-forge work items
+and change proposals in its scope, [entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
+defines the model-facing field gate. That snapshot does not cover Jira issues
+or GitHub Discussions; their entity-first paths require an applicable
+prompt-field gate before implementation is enabled.
+
+> **Revision note:** The entity-first prerequisite now checks separate CEL
+> and model-facing field contracts for each source and kind. This tightens the
+> future enablement gate; entity-first execution remains unimplemented.
 
 `fullsend poll` may enumerate candidates without synthesizing a
 `NormalizedEvent` or event actor. A bound `fullsend run` may instead recheck

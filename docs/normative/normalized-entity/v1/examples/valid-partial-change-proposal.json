@@ -1,0 +1,181 @@
+{
+  "schema_version": "normalized-entity/v1",
+  "entity": {
+    "kind": "change_proposal",
+    "source": {
+      "system": "github",
+      "host": "github.com",
+      "repository": "fullsend-ai/demo",
+      "repository_id": "R_kgDOExample"
+    },
+    "id": "fullsend:entity:v1:github:github.com:change_proposal:PR_kwDOExample53",
+    "source_id": "PR_kwDOExample53",
+    "key": "#53",
+    "number": 53,
+    "url": "https://github.com/fullsend-ai/demo/pull/53",
+    "state": "open",
+    "title": {
+      "$unknown": "not_loaded"
+    },
+    "author": {
+      "id": "U_kgDOBob",
+      "login": "bob",
+      "kind": "human",
+      "role": "write",
+      "role_verified": true
+    },
+    "created_at": "2026-10-12T09:00:00.000000000Z",
+    "updated_at": "2026-10-13T11:20:00.000000000Z",
+    "body": null,
+    "comments": [
+      {
+        "id": "PRRC_kwDOExamplePartial",
+        "created_at": "2026-10-13T10:05:00.000000000Z",
+        "revised_at": {
+          "$unknown": "not_loaded"
+        },
+        "actor": {
+          "id": "U_kgDOBob",
+          "login": "bob",
+          "kind": "human",
+          "role": "write",
+          "role_verified": true
+        },
+        "text": {
+          "$unknown": "not_loaded"
+        },
+        "command": {
+          "$unknown": "not_loaded"
+        },
+        "thread_id": "PRRT_kwDOExamplePartial",
+        "is_entity_author": true
+      }
+    ],
+    "label_applications": [],
+    "reviews": [],
+    "threads": [
+      {
+        "id": "PRRT_kwDOExamplePartial",
+        "created_at": "2026-10-13T10:05:00.000000000Z",
+        "comment_ids": [
+          "PRRC_kwDOExamplePartial"
+        ],
+        "resolved": {
+          "$unknown": "not_loaded"
+        },
+        "outdated": {
+          "$unknown": "not_loaded"
+        },
+        "review_id": {
+          "$unknown": "not_loaded"
+        },
+        "location": {
+          "$unknown": "not_loaded"
+        }
+      }
+    ],
+    "labels": [],
+    "change_proposal": {
+      "base_repository": "fullsend-ai/demo",
+      "head_repository": {
+        "$unknown": "not_loaded"
+      },
+      "base_ref": "main",
+      "head_ref": {
+        "$unknown": "not_loaded"
+      },
+      "head_sha": {
+        "$unknown": "not_loaded"
+      },
+      "is_fork": {
+        "$unknown": "not_loaded"
+      },
+      "draft": false,
+      "approval": {
+        "gate": {
+          "$unknown": "not_loaded"
+        }
+      },
+      "changed_files": [],
+      "commits": []
+    },
+    "checks": [],
+    "reviewers": [],
+    "current_approvals": [],
+    "assignees": [],
+    "reactions": [],
+    "lifecycle": {
+      "closed_at": {
+        "$unknown": "not_loaded"
+      },
+      "closed_by": {
+        "$unknown": "not_loaded"
+      },
+      "merged_at": {
+        "$unknown": "not_loaded"
+      },
+      "merged_by": {
+        "$unknown": "not_loaded"
+      }
+    }
+  },
+  "coverage": {
+    "labels": {
+      "status": "complete"
+    },
+    "comments": {
+      "status": "partial",
+      "reason": "later_comments_not_requested"
+    },
+    "label_applications": {
+      "status": "complete"
+    },
+    "reviews": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "threads": {
+      "status": "partial",
+      "reason": "later_threads_not_requested"
+    },
+    "thread_comments": [
+      {
+        "thread_id": "PRRT_kwDOExamplePartial",
+        "status": "partial",
+        "reason": "later_replies_not_requested"
+      }
+    ],
+    "checks": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "check_logs": [],
+    "check_annotations": [],
+    "reviewers": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "current_approvals": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "changed_files": {
+      "status": "not_loaded"
+    },
+    "commits": {
+      "status": "not_loaded"
+    },
+    "assignees": {
+      "status": "not_loaded"
+    },
+    "reactions": {
+      "status": "not_loaded"
+    },
+    "extension_lists": []
+  },
+  "view": {
+    "human_min_role": "triage",
+    "resolved_at": "2026-10-14T06:00:02.000000000Z",
+    "filter_version": "example-filter-v1"
+  }
+}
