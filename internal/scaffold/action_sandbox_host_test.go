@@ -129,8 +129,7 @@ func TestActionDetectSandboxHostStep(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			outputs, envWrites, err := runDetectSandboxHost(t, detect.Run, tc.endpoint, tc.pathDir, tc.workflowEndpoint)
 			if tc.wantErr {
-				require.Error(t, err, string([]rune{}))
-				assert.NotNil(t, err)
+				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
