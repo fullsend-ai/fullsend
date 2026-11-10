@@ -2254,9 +2254,11 @@ func escapePathSegments(p string) string {
 // The file is requested with the raw media type, so files the base64
 // JSON representation cannot carry (GitHub serves those as content: "",
 // encoding: "none" — every file over 1 MiB) are still returned. A server
-// that ignores the media type and answers with the JSON representation
-// is handled too, failing explicitly when that representation cannot
-// carry the file instead of silently returning empty bytes.
+// that ignores the media type and answers with the JSON envelope is
+// handled too — but a JSON body is only treated as that envelope when it
+// carries the envelope's encoding key, because the raw media type can also
+// serve a raw JSON file as application/json (JSON schemas, manifests), and
+// decoding that as an envelope would silently return empty bytes.
 func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s",
 		url.PathEscape(owner), url.PathEscape(repo), escapePathSegments(path), url.QueryEscape(ref)),
@@ -2264,29 +2266,37 @@ func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path,
 	if err != nil {
 		return nil, fmt.Errorf("get file content at ref: %w", err)
 	}
+	defer resp.Body.Close()
 
+	body, err := readLimitedBytes(resp.Body, maxFileContentBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read file content at ref: %w", err)
+	}
 	if !strings.Contains(resp.Header.Get("Content-Type"), "json") {
-		defer resp.Body.Close()
-		data, err := readLimitedBytes(resp.Body, maxFileContentBytes)
-		if err != nil {
-			return nil, fmt.Errorf("read file content at ref: %w", err)
-		}
-		return data, nil
+		return body, nil
 	}
 
 	var file struct {
-		Content  string `json:"content"`
-		Encoding string `json:"encoding"`
-		Size     int64  `json:"size"`
+		Content  *string `json:"content"`
+		Encoding *string `json:"encoding"`
+		Size     int64   `json:"size"`
 	}
-	if err := decodeJSON(resp, &file); err != nil {
-		return nil, fmt.Errorf("decode file content: %w", err)
+	// The envelope is recognized by the encoding key being present, not by
+	// its value: every contents envelope carries encoding ("base64", or
+	// "none" over 1 MiB), while a lone type, size or content key is common
+	// in ordinary JSON files (JSON schemas, manifests) and is not evidence
+	// of an envelope.
+	if err := json.Unmarshal(body, &file); err != nil || file.Encoding == nil {
+		// Not a contents envelope: with the raw media type requested, a
+		// JSON Content-Type can also be a raw JSON file served with its
+		// own type. Its bytes are the file's content.
+		return body, nil
 	}
-	if (file.Encoding != "" && file.Encoding != "base64") || (file.Content == "" && file.Size > 0) {
-		return nil, fmt.Errorf("file %s at %s: the contents response carries no base64 content (encoding %q, size %d); files over 1 MiB need the raw media type", path, ref, file.Encoding, file.Size)
+	if *file.Encoding != "base64" || file.Content == nil || (*file.Content == "" && file.Size > 0) {
+		return nil, fmt.Errorf("file %s at %s: the contents response carries no base64 content (encoding %q, size %d); files over 1 MiB need the raw media type", path, ref, *file.Encoding, file.Size)
 	}
 
-	cleaned := strings.ReplaceAll(strings.ReplaceAll(file.Content, "\n", ""), "\r", "")
+	cleaned := strings.ReplaceAll(strings.ReplaceAll(*file.Content, "\n", ""), "\r", "")
 	data, err := base64.StdEncoding.DecodeString(cleaned)
 	if err != nil {
 		return nil, fmt.Errorf("decode base64 content: %w", err)

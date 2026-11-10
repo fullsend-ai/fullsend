@@ -8087,3 +8087,54 @@ func TestGetFileContentAtRef_EmptyContentForNonEmptyFileFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "raw media type")
 	assert.Contains(t, err.Error(), "encoding \"none\"")
 }
+
+func TestGetFileContentAtRef_RawJSONFileIsNotAnEnvelope(t *testing.T) {
+	// With the raw media type requested, a JSON Content-Type can also be a
+	// raw JSON file served with its own type. It must be returned as the
+	// file's bytes, not decoded as a (field-less) contents envelope that
+	// silently yields empty content.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"labels":["bug","documentation"],"count":2}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "config/labels.json", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, `{"labels":["bug","documentation"],"count":2}`, string(data))
+}
+
+func TestGetFileContentAtRef_JSONWithCommonKeysIsNotAnEnvelope(t *testing.T) {
+	// A top-level "type" or "size" key is common in ordinary JSON files
+	// (JSON schemas say "type":"object"; manifests carry sizes). With the
+	// raw media type requested such a file can be served as
+	// application/json; it must be returned verbatim, not decoded as a
+	// contents envelope that silently yields empty content.
+	body := `{"type":"object","properties":{"labels":{"type":"array"}},"size":3}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "schemas/labels.schema.json", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, body, string(data))
+}
+
+func TestGetFileContentAtRef_NonBase64EncodingKeyFails(t *testing.T) {
+	// A JSON body that carries the envelope's encoding key but not base64
+	// content fails explicitly rather than silently returning empty bytes.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"encoding":"utf-8"}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "config.json", "deadbeef")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `encoding "utf-8"`)
+}
