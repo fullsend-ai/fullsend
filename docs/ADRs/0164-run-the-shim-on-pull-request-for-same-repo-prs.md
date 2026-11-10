@@ -130,9 +130,11 @@ event-policy exception.
   by an agent cannot edit the shim.
 - **Forwarded secrets.** The shim forwards only the secrets a run needs and
   keeps that set to the minimum.
-- **Out of scope.** Keeping secrets out of PR-modifiable code entirely, for
-  example by fetching them at run time with mint-issued tokens, is out of
-  scope for this ADR and not decided here.
+- **Out of scope.** Two follow-up decisions are not made here:
+  - restoring automatic review for authorized fork authors, for example with
+    option D;
+  - keeping secrets out of PR-modifiable code entirely, for example by
+    fetching them at run time with mint-issued tokens.
 
 ## Forge scope
 
@@ -154,8 +156,8 @@ event-policy exception.
   review today because they pass authorization. Someone authorized for
   `/fs-review` (rule 3) must comment it to get a review. Authors who want
   automatic review can push their branch to the repository instead of a fork.
-  The webhook receiver of option D stays open as the route back to automatic
-  review for authorized fork authors.
+  Restoring automatic review for authorized fork authors (for example with
+  the webhook receiver of option D) is a separate follow-up decision.
 - Retro on `closed` now runs only for same-repo PRs, whose authors already
   have write access, so an external author closing their own fork PR no longer
   triggers retro.
