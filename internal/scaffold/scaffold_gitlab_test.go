@@ -2,12 +2,15 @@ package scaffold
 
 import (
 	"io"
+	"path"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 const (
@@ -1250,6 +1253,65 @@ func TestGitLabGeneratedCIYAMLRemainsValid(t *testing.T) {
 		return nil
 	})
 	require.NoError(t, err)
+}
+
+// gitlabCINonJobKeys are the top-level keys of a GitLab CI file that do not
+// define a job: the spec: header of a file with inputs, the global keywords
+// and the deprecated top-level job defaults. internal/repos keeps the same
+// keywords as nonJobTopLevelKeys. Any other key that does not start with "."
+// (a hidden job) is a job.
+var gitlabCINonJobKeys = map[string]bool{
+	"spec": true, "default": true, "include": true, "stages": true,
+	"variables": true, "workflow": true, "image": true, "services": true,
+	"cache": true, "before_script": true, "after_script": true,
+}
+
+// TestGitLabJobsUnsetTraceSigningKeyFirst checks that every job in the GitLab
+// CI templates clears FULLSEND_TRACE_SIGNING_KEY on the first line of its
+// before_script. GitLab passes the protected variable to every job on a
+// protected ref, and before_script sources install-fullsend-cli.sh (curl, tar,
+// possibly go build) before the job script starts, so an unset in a job
+// script comes too late. An after_script runs in a new shell that receives the
+// variable again, so it must clear it first too. The jobs are read from the
+// YAML rather than a fixed list, so a new job fails here until it complies.
+func TestGitLabJobsUnsetTraceSigningKeyFirst(t *testing.T) {
+	const unset = "unset " + forge.SecretTraceSigningKey
+	var jobs []string
+	err := WalkGitLabPerRepo(func(p string, content []byte) error {
+		if ciFile, _ := path.Match(".gitlab/ci/*.yml", p); !ciFile && p != ".gitlab-ci.yml" {
+			return nil
+		}
+		dec := yaml.NewDecoder(strings.NewReader(string(content)))
+		for {
+			var doc map[string]any
+			err := dec.Decode(&doc)
+			if err == io.EOF {
+				return nil
+			}
+			require.NoError(t, err, "%s must be valid YAML", p)
+			for name, body := range doc {
+				if gitlabCINonJobKeys[name] || strings.HasPrefix(name, ".") {
+					continue
+				}
+				jobs = append(jobs, p+": "+name)
+				job, _ := body.(map[string]any)
+				for _, key := range []string{"before_script", "after_script"} {
+					value, present := job[key]
+					if !present && key == "after_script" {
+						continue
+					}
+					lines, _ := value.([]any)
+					if assert.NotEmpty(t, lines, "%s: job %q needs a %s list", p, name, key) {
+						assert.Equal(t, unset, lines[0], "%s: job %q must clear %s on the first %s line", p, name, forge.SecretTraceSigningKey, key)
+					}
+				}
+			}
+		}
+	})
+	require.NoError(t, err)
+	// The poll, dispatcher and agent jobs exist today; the floor keeps a
+	// broken file filter from passing with nothing scanned.
+	require.GreaterOrEqual(t, len(jobs), 3, "found only these GitLab jobs: %v", jobs)
 }
 
 func TestGitLabJobsSourceExtractedScripts(t *testing.T) {

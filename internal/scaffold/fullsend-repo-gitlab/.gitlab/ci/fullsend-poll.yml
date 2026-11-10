@@ -39,6 +39,11 @@ spec:
     FULLSEND_FORGE: "gitlab"
     FULLSEND_POLL_MODE: "events"
   before_script:
+    # Clear the trace-context signing seed first, so the before_script and
+    # script commands after it do not inherit it. GitLab passes the
+    # protected variable to every job on a protected ref; no fullsend job
+    # reads it.
+    - unset FULLSEND_TRACE_SIGNING_KEY
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/install-fullsend-cli.sh"
   script:
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/run-poll-job.sh"
