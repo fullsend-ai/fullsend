@@ -103,7 +103,9 @@ github:
 // FULLSEND_MINT_URL 3 → 2, FULLSEND_APP_SET 4 → 3. The remaining reads of
 // each key are convergence's own, made after the manifest write. Since
 // #9109 convergence also reads the managed Jira poll caller once, to keep
-// it absent while Jira polling is disabled (27 and 26).
+// it absent while Jira polling is disabled. The trace-key preflight
+// (ADR 0154) adds one FULLSEND_TRACE_SIGNING_KEY_ID read, and a normal
+// install reads it again just before writing the key: 29 and 27.
 func TestRunReposInstall_PreflightReadsOnceConvergenceRechecks(t *testing.T) {
 	overlayKey := "file:acme/api/" + preset.OverlayPath
 	baseKey := "file:acme/api/" + preset.BasePath
@@ -115,15 +117,16 @@ func TestRunReposInstall_PreflightReadsOnceConvergenceRechecks(t *testing.T) {
 		name     string
 		manifest string
 		dryRun   bool
-		// writeback is whether the install persists the initial
-		// tracking default (a manifest write before convergence).
+		// writeback is whether the install persists a manifest edit
+		// before convergence: the initial tracking default, or the
+		// trace_context every fresh install records (ADR 0154).
 		writeback bool
 		total     int
 	}{
-		{name: "pristine no-preset install", manifest: githubUnmanagedManifestYAML, writeback: true, total: 27},
-		{name: "pristine no-preset dry run", manifest: githubUnmanagedManifestYAML, dryRun: true, writeback: true, total: 26},
-		{name: "behaviour-test manifest", manifest: behaviourTestManifestYAML, total: 27},
-		{name: "behaviour-test manifest dry run", manifest: behaviourTestManifestYAML, dryRun: true, total: 26},
+		{name: "pristine no-preset install", manifest: githubUnmanagedManifestYAML, writeback: true, total: 29},
+		{name: "pristine no-preset dry run", manifest: githubUnmanagedManifestYAML, dryRun: true, writeback: true, total: 27},
+		{name: "behaviour-test manifest", manifest: behaviourTestManifestYAML, writeback: true, total: 29},
+		{name: "behaviour-test manifest dry run", manifest: behaviourTestManifestYAML, dryRun: true, writeback: true, total: 27},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

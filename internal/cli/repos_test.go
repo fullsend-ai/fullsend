@@ -2595,11 +2595,20 @@ func TestCheckAllForgeScopes_MissingScopes(t *testing.T) {
 	assert.Contains(t, err.Error(), "workflow")
 }
 
+// newInstalledGitLabPipelineFake is group/project with the fullsend pipeline
+// on its default branch and no trace_context: install plans no trace key for
+// it, so convergence is what reads the pinned templates.
+func newInstalledGitLabPipelineFake() *forge.FakeClient {
+	fc := newInstallFakeClient("group/project")
+	fc.FileContents["group/project/.gitlab/ci/fullsend-pipeline.yml"] = []byte("  ref: v1.0.0\n")
+	return fc
+}
+
 func TestRunReposInstall_GitLabPinRejectsMissingUpstreamClient(t *testing.T) {
 	manifestPath := writeTestManifest(t, mixedForgeManifestYAML)
 	factory := &filterForgeFactory{
 		clients: map[string]forge.Client{
-			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+			repos.ForgeGitLab: newInstalledGitLabPipelineFake(),
 		},
 		errs: map[string]error{
 			repos.ForgeGitHub: errors.New("no GitHub token found"),
@@ -2647,7 +2656,7 @@ func TestRunReposInstall_GitLabFilterSkipsGitHubGlobExpansion(t *testing.T) {
 	manifestPath := writeTestManifest(t, globForgeManifestYAML)
 	factory := &filterForgeFactory{
 		clients: map[string]forge.Client{
-			repos.ForgeGitLab: newInstallFakeClient("group/project"),
+			repos.ForgeGitLab: newInstalledGitLabPipelineFake(),
 		},
 		errs: map[string]error{
 			repos.ForgeGitHub: errors.New("github client should not be requested"),
