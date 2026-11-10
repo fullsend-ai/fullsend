@@ -25,9 +25,10 @@ type checkE2EAuthOpts struct {
 	dryRun          bool
 }
 
-// newE2EAuthGate builds the GitHub gate used by check-e2e-authorization.
-// Tests override this to inject a FakeClient.
-var newE2EAuthGate = func(explicitToken string) (e2eauth.GitHubGate, error) {
+// newE2EAuthGateFn builds the GitHub gate
+// `fullsend ci check-e2e-authorization` uses. Override in tests to inject a
+// FakeClient.
+var newE2EAuthGateFn = func(explicitToken string) (e2eauth.GitHubGate, error) {
 	client, err := newAuthenticatedGitHubClient(explicitToken, "")
 	if err != nil {
 		if errors.Is(err, errGitHubTokenMissing) {
@@ -63,16 +64,18 @@ on the pull request.
 
 Writes authorized, reason, and label_removed to GITHUB_OUTPUT when that
 file is set, and prints the same values on one stdout line. After a
-completed check the command exits 0; callers inspect the outputs. A
-missing PR number or repository is a usage error and exits non-zero.`,
+completed check or a gate setup failure the command exits 0; callers
+inspect the outputs. A missing PR number or repository is a usage error
+and exits non-zero.`,
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := resolveCheckE2EAuthOpts(&opts, args, cmd.Flags().Changed("dry-run")); err != nil {
 				return err
 			}
-			gate, err := newE2EAuthGate(forgeToken)
+			gate, err := newE2EAuthGateFn(forgeToken)
 			if err != nil {
-				return err
+				fmt.Fprintf(cmd.ErrOrStderr(), "check-e2e-authorization: %v\n", err)
+				return writeE2EAuthOutput(cmd.OutOrStdout(), os.Getenv("GITHUB_OUTPUT"), e2eauth.Result{Reason: "error", APIError: true})
 			}
 			return runCheckE2EAuthorization(cmd.Context(), gate, opts, cmd.OutOrStdout(), cmd.ErrOrStderr(), os.Getenv("GITHUB_OUTPUT"))
 		},
@@ -128,7 +131,7 @@ func resolveCheckE2EAuthOpts(opts *checkE2EAuthOpts, args []string, dryRunChange
 	opts.labelActorLogin = firstNonEmpty(opts.labelActorLogin, os.Getenv("LABEL_ACTOR_LOGIN"))
 	opts.eventLabel = firstNonEmpty(opts.eventLabel, os.Getenv("EVENT_LABEL"))
 	if !dryRunChanged {
-		opts.dryRun = strings.EqualFold(strings.TrimSpace(os.Getenv("CHECK_E2E_AUTH_DRY_RUN")), "true")
+		opts.dryRun = strings.TrimSpace(os.Getenv("CHECK_E2E_AUTH_DRY_RUN")) == "true"
 	}
 	return nil
 }

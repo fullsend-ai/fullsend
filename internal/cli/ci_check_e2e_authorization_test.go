@@ -299,9 +299,9 @@ func TestCiCheckE2EAuthorizationCmd_ExecuteTrustedAuthor(t *testing.T) {
 	fc.CollaboratorPermissions[e2eAuthCollabKey("author")] = "write"
 	fc.PullRequestAuthContexts[e2eAuthKey] = forge.PullRequestAuthorizationContext{AuthorLogin: "author"}
 
-	orig := newE2EAuthGate
-	t.Cleanup(func() { newE2EAuthGate = orig })
-	newE2EAuthGate = func(string) (e2eauth.GitHubGate, error) {
+	orig := newE2EAuthGateFn
+	t.Cleanup(func() { newE2EAuthGateFn = orig })
+	newE2EAuthGateFn = func(string) (e2eauth.GitHubGate, error) {
 		return e2eAuthGate(t, fc), nil
 	}
 
@@ -328,16 +328,20 @@ func TestCiCheckE2EAuthorizationCmd_MissingToken(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("PATH", "/nonexistent")
 
+	var stdout, stderr strings.Builder
 	cmd := newCiCheckE2EAuthorizationCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"42", "fullsend-ai/fullsend"})
 	err := cmd.Execute()
-	require.Error(t, err)
-	assert.ErrorIs(t, err, errGitHubTokenMissing)
-	assert.Contains(t, err.Error(), "--forge-token")
+	require.NoError(t, err)
+	assert.Equal(t, "authorized=false reason=error label_removed=false\n", stdout.String())
+	assert.Contains(t, stderr.String(), "check-e2e-authorization:")
+	assert.Contains(t, stderr.String(), "--forge-token")
 }
 
 func TestCiNewE2EAuthGate_WithToken(t *testing.T) {
-	gate, err := newE2EAuthGate("ghp-test")
+	gate, err := newE2EAuthGateFn("ghp-test")
 	require.NoError(t, err)
 	require.NotNil(t, gate)
 }

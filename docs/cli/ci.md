@@ -7,7 +7,13 @@ sidebar_label: fullsend ci
 CI helper commands. These run inside GitHub Actions. They are not
 interactive operator tools.
 
-## fullsend ci check-e2e-authorization
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `fullsend ci check-e2e-authorization` | Decide whether a pull request may run credentialed e2e tests |
+
+## `ci check-e2e-authorization`
 
 Decide whether a pull request may run credentialed e2e tests.
 
@@ -20,10 +26,10 @@ pull request.
 
 This is the Go replacement for
 [`scripts/check-e2e-authorization.sh`](../../scripts/check-e2e-authorization.sh).
-Production e2e workflows still run that script. A later change will
-point
-[`.github/actions/check-e2e-authorization`](../../.github/actions/check-e2e-authorization/action.yml)
-at this command ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371)).
+
+> **Planned:** Wire
+> [`.github/actions/check-e2e-authorization`](../../.github/actions/check-e2e-authorization/action.yml)
+> to this CLI instead of the bash script ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371) part 3).
 
 For the policy itself, see [E2E testing](../guides/dev/e2e-testing.md)
 and [CI workflows](../contributing/ci-workflows.md#gate-job-mitigation).
@@ -48,7 +54,7 @@ and `--repo`, or set `PR_NUMBER` and `GITHUB_REPOSITORY`.
 | `--pr-author-login` | Pull request author login (default: `PR_AUTHOR_LOGIN`) |
 | `--label-actor-login` | Who applied the label on labeled events (default: `LABEL_ACTOR_LOGIN`) |
 | `--event-label` | `github.event.label.name` on labeled events (default: `EVENT_LABEL`) |
-| `--dry-run` | Report label removal without calling the API (default: `CHECK_E2E_AUTH_DRY_RUN=true`) |
+| `--dry-run` | Report label removal without calling the API (env: set `CHECK_E2E_AUTH_DRY_RUN=true` to enable when the flag is omitted) |
 | `--forge-token` | GitHub token (default: `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`) |
 
 ### Outputs
@@ -71,8 +77,9 @@ It also prints one stdout line:
 authorized=<bool> reason=<reason> label_removed=<bool>
 ```
 
-If the GitHub API fails, `reason` is `error`, the cause is written to
-stderr, and the command still exits 0.
+If the GitHub API fails or the gate cannot be constructed (for example a
+missing token), `reason` is `error`, the cause is written to stderr, and
+the command still exits 0.
 
 `reason` values match the bash script (`trusted_bot`, `trusted_author`,
 `ok_to_test`, `fresh_ok_to_test`, `stale_ok_to_test`,
