@@ -2150,8 +2150,11 @@ func (d *Driver) DispatchWorkflow(ctx context.Context, owner, repo, workflowFile
 // replacement's, not the cancelled run's. A replacement can lag in the
 // run listings by seconds, so the wait keeps re-listing for a short
 // grace (replacementListWait) before returning a cancelled run as final.
-// Every poll on the path — detection listing, run lookup, grace relist
-// — is bounded by the remaining wait budget (withPollBudget), so the
+// A grace that expires without a single completed listing is reported as
+// an inconclusive lookup (the cancelled run with an error), not read as
+// the cancelled run being final. Every poll on the path — detection
+// listing, run lookup, grace relist — is bounded by the remaining wait
+// budget (withPollBudget), so the
 // client's rate-limit retries cannot stretch a poll past the deadline
 // (the #6647 shape harnessPollOnce fixed for the harness path).
 func (d *Driver) WaitForWorkflowConclusion(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error) {
@@ -2187,6 +2190,7 @@ func (d *Driver) WaitForWorkflowConclusion(ctx context.Context, owner, repo, wor
 			relistDeadline = deadline
 		}
 		var lastListErr error
+		listed := false
 		for {
 			// List directly (not through latestRuns) so a listing that
 			// keeps failing — a #6647-style secondary rate limit — is
@@ -2207,6 +2211,7 @@ func (d *Driver) WaitForWorkflowConclusion(ctx context.Context, owner, repo, wor
 				}
 			} else {
 				lastListErr = nil
+				listed = true
 				if replacement := selectWorkflowRun(runs, after, event); replacement != nil && replacement.ID > found.ID {
 					found = replacement
 					break
@@ -2215,6 +2220,14 @@ func (d *Driver) WaitForWorkflowConclusion(ctx context.Context, owner, repo, wor
 			if !d.now().Before(relistDeadline) {
 				if lastListErr != nil {
 					return run, fmt.Errorf("workflow %s run %d concluded with %q, but the replacement listing kept failing: %w", workflowFile, run.ID, run.Conclusion, lastListErr)
+				}
+				if !listed {
+					// A grace that expired without a single completed
+					// listing — every call cut short by the budget — is
+					// no observation at all: report the lookup as
+					// inconclusive instead of reading the cancelled run
+					// as final.
+					return run, fmt.Errorf("workflow %s run %d concluded with %q, but no replacement listing completed within its grace, so a replacement may have been missed", workflowFile, run.ID, run.Conclusion)
 				}
 				return run, nil
 			}

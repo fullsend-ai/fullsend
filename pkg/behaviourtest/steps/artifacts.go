@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
@@ -24,6 +25,25 @@ func triageWorkflowEvent(w *world.World) string {
 		return w.TriageTriggerEvent
 	}
 	return issueOpenEvent
+}
+
+// recordHarnessRun records the harness run a wait step resolved, taking
+// the scenario back to harness semantics after a dispatch (see
+// errDispatchedWorkflow): harness steps reading w.WorkflowRun are legal
+// again from here on. The artifact cache belongs to the run it was
+// downloaded for, so recording a different run drops the earlier run's
+// directory — removed the way scenario cleanup removes it — and the next
+// artifact assertion downloads the new run's instead of passing on the
+// old one's output.
+func recordHarnessRun(w *world.World, run *forge.WorkflowRun) {
+	if w.ArtifactDir != "" && (w.WorkflowRun == nil || w.WorkflowRun.ID != run.ID) {
+		if shouldRemoveArtifactDir(w.ArtifactDir, os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) {
+			_ = os.RemoveAll(w.ArtifactDir)
+		}
+		w.ArtifactDir = ""
+	}
+	w.WorkflowRun = run
+	w.DispatchedWorkflow = false
 }
 
 func ensureTriageWorkflowComplete(w *world.World) error {

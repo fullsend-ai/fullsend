@@ -118,10 +118,9 @@ func thenHarnessWorkflowFailsWithLog(ctx context.Context, w *world.World, agent,
 	if err != nil {
 		return err
 	}
-	w.WorkflowRun = run
 	// A harness wait step re-resolves the harness run after a dispatch:
 	// harness steps reading w.WorkflowRun are legal again from here on.
-	w.DispatchedWorkflow = false
+	recordHarnessRun(w, run)
 	subject := fmt.Sprintf("harness %q", agent)
 	// The saved artifact keeps the bare agent name, the directory the
 	// "completes successfully" step saves the same run to.

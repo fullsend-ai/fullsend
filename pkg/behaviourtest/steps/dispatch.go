@@ -418,10 +418,9 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 		saveWorkflowRunLogs(ctx, w, agent, run)
 		return err
 	}
-	w.WorkflowRun = run
 	// A harness wait step re-resolves the harness run after a dispatch:
 	// harness steps reading w.WorkflowRun are legal again from here on.
-	w.DispatchedWorkflow = false
+	recordHarnessRun(w, run)
 	saveWorkflowRunLogs(ctx, w, agent, run)
 	return ensureHarnessArtifacts(w, agent)
 }
