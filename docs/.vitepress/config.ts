@@ -281,6 +281,7 @@ export default defineConfig({
             { text: "Fix", link: "/agents/fix" },
             { text: "Retro", link: "/agents/retro" },
             { text: "Prioritize", link: "/agents/prioritize" },
+            { text: "Scribe", link: "/agents/scribe" },
           ],
         },
         {
