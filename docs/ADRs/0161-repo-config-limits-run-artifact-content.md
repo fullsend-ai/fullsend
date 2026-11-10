@@ -55,7 +55,6 @@ customer names or private business text
 This ADR aims to let a repo owner stop publishing conversation content in the
 run artifact for runs started from a source that is not public.
 
-
 ## Options
 
 - **Key by provider as well as source**, for example `jira-ro`, the
@@ -112,10 +111,11 @@ artifacts:
   A file added to `output/` later stays excluded until this list names it.
   `security/findings.jsonl` stays out: a finding's `detail` can quote tool
   output, and a copy with that field stripped would break the file's hash
-  chain. It stays on the runner for local checks. In the staged
-  `run-telemetry.jsonl`, "conversation content removed" means every
-  attribute and event that content capture adds (ADR 0050) is dropped. If a
-  record can't be parsed or stripped, the file is left out.
+  chain. It stays on the runner for local checks.
+- **The telemetry copy drops captured content.** In the staged
+  `run-telemetry.jsonl`, every attribute and event that content capture adds
+  (ADR 0050) is dropped. If a record can't be parsed or stripped, the file is
+  left out.
 - **Filtering happens after local use, and fails closed.** The runner leaves
   `output/` untouched, so `fullsend eval-measure` and post-scripts read the
   full run. A step after them builds a staged copy, and the runner uploads
@@ -146,8 +146,8 @@ All forges read the same `config.yaml` setting.
 - A custom agent that reads private data on runs from every source is covered
   only by `content`, which applies to the whole repo.
 - The retro agent, session resumption and follow-up workflows that download
-  the artifact get no transcripts under `metadata` and no artifact under
-  `none`, which the user guide must document.
+  the artifact get no transcripts or security findings under `metadata` and
+  no artifact under `none`, which the user guide must document.
 - When the setting is unset, the artifact is the same as today.
 - Changing the level is a `config.yaml` change, so it goes through the repo's
   normal review and CODEOWNERS.
