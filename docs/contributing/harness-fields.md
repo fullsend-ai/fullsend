@@ -81,6 +81,19 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `schema_version`   | Schema contract version (ADR-0127); absent = `1`; malformed, zero, negative or unsupported values fail load |
 | `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** ([#8722](https://github.com/fullsend-ai/fullsend/issues/8722)) |
 
+The config-level `allowed_remote_resources` (the `config.yaml` layer over
+`config.base.yaml`) bounds the harness-level field, and every command
+family resolves it by one rule: the layered chain is resolved as-is (an
+omitted key falls through to the parent, an explicit `[]` denies all remote
+resources with no fallthrough, a non-empty list unions with the parent's),
+then fullsend's default prefixes are ensured on top of a non-empty result.
+`fullsend run`, `lint`, `lock` and eval-measure (`loadLockConfig`), harness
+dispatch (`ListTriggeredHarnesses`), `fullsend dispatch --route`
+(`routeBuiltinAgent`) and the Jira poll therefore resolve the same list: a
+non-empty `config.yaml` list over a base layer's `allowed_remote_resources:
+[]` carries the default prefixes everywhere alike, and an explicit `[]` as
+the resolved effective value stays deny-all everywhere alike.
+
 ## Semantic types (ADR 0127)
 
 Each harness field has a semantic type that governs how fullsend interprets
