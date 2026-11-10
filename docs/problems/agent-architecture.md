@@ -178,6 +178,12 @@ This principle aligns with what Yegge's Gas City project calls "Zero Framework C
 
 [OpenAI Symphony](../landscape.md#openai-symphony) is the other useful contrast: a long-running central daemon that owns scheduling state, candidate selection, and retry. Where Gas City puts a controller on the path but forbids it from containing judgment, Symphony's orchestrator visibly contains it (priority sort, blocker rules, reconciliation). Fullsend can borrow Symphony's workspace safety invariants and continuation-turn semantics without adopting the daemon.
 
+Cross-host scheduling and partial external writes need deterministic recovery
+without adding a coordinator agent; see
+[durable work recovery](durable-work-recovery.md).
+[ADR 0165](../ADRs/0165-recover-work-through-repository-owned-operation-journals.md)
+chooses repository-owned operation journals; implementation remains open.
+
 ### How agents communicate
 
 Agents interact through GitHub's existing mechanisms:

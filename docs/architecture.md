@@ -618,6 +618,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
   [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
 
+- Decided, not yet implemented: repository-owned operation journals retain
+  separate dispatch, execution and publication receipts. Conditional state
+  updates and ownership generations support cross-host recovery while domain
+  adapters retain operation and completion semantics
+  ([ADR 0165](ADRs/0165-recover-work-through-repository-owned-operation-journals.md)).
+
 **Open questions:**
 
 - What provider query plans can support entity-first evaluation over the
@@ -632,7 +638,8 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
-  lock refresh; ADR 0098 does not resolve this question.)
+  lock refresh; ADR 0165 chooses an operation journal for recoverable effects,
+  while adapter implementation and external-system guarantees remain open.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - How should explicit cancellation, retry, and reassignment interact with the
   automatic event-coalescing policy in
