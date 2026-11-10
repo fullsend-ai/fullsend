@@ -19,6 +19,8 @@ type Memory struct {
 	invalidated map[ActorID]time.Time // most recent invalidation per actor
 	size        int                   // total entries across all actors
 	sweepAt     int                   // size at which Put prunes expired state
+
+	invalidSweepAt int // invalidation-record count at which Invalidate prunes
 }
 
 var _ Cache = (*Memory)(nil)
@@ -40,6 +42,8 @@ func NewMemory(maxAge time.Duration) *Memory {
 		entries:     make(map[ActorID]map[Key]Entry),
 		invalidated: make(map[ActorID]time.Time),
 		sweepAt:     minSweepThreshold,
+
+		invalidSweepAt: minSweepThreshold,
 	}
 }
 
@@ -56,10 +60,12 @@ func (m *Memory) Get(key Key) (Entry, bool) {
 	if !m.enabled() || key.validate() != nil {
 		return Entry{}, false
 	}
-	now := m.now()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Read the clock under the lock so a Get that waited for the mutex
+	// never judges expiry against a stale time.
+	now := m.now()
 	scopes := m.entries[key.Actor]
 	e, ok := scopes[key]
 	if !ok {
@@ -83,6 +89,11 @@ func (m *Memory) Put(key Key, entry Entry) error {
 	if !m.enabled() {
 		return nil
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Read the clock under the lock so every time-based check, including the
+	// sweep, uses a reading taken after any wait for the mutex.
 	now := m.now()
 	if now.Before(entry.LookupStart) {
 		return ErrUncertainAge
@@ -90,9 +101,6 @@ func (m *Memory) Put(key Key, entry Entry) error {
 	if !m.usable(entry, now) {
 		return nil
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if t, ok := m.invalidated[key.Actor]; ok && !entry.LookupStart.After(t) {
 		return ErrInvalidated
 	}
@@ -122,14 +130,17 @@ func (m *Memory) Invalidate(actor ActorID) {
 	if !m.enabled() {
 		return
 	}
-	now := m.now()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := m.now()
 	m.size -= len(m.entries[actor])
 	delete(m.entries, actor)
 	if t, ok := m.invalidated[actor]; !ok || now.After(t) {
 		m.invalidated[actor] = now
+	}
+	if len(m.invalidated) >= m.invalidSweepAt {
+		m.pruneInvalidatedLocked(now)
 	}
 }
 
@@ -158,6 +169,14 @@ func (m *Memory) sweepLocked(now time.Time) {
 			delete(m.entries, actor)
 		}
 	}
+	m.pruneInvalidatedLocked(now)
+	m.sweepAt = max(2*m.size, minSweepThreshold)
+}
+
+// pruneInvalidatedLocked drops invalidation records that can no longer reject
+// a storable verdict, then raises the next prune threshold so pruning stays
+// amortized. m.mu must be held.
+func (m *Memory) pruneInvalidatedLocked(now time.Time) {
 	// A verdict whose lookup started at or before t expires by t+maxAge,
 	// so Put rejects it as expired before consulting this record.
 	for actor, t := range m.invalidated {
@@ -165,5 +184,5 @@ func (m *Memory) sweepLocked(now time.Time) {
 			delete(m.invalidated, actor)
 		}
 	}
-	m.sweepAt = max(2*m.size, minSweepThreshold)
+	m.invalidSweepAt = max(2*len(m.invalidated), minSweepThreshold)
 }

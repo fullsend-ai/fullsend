@@ -26,6 +26,7 @@ package actorcache
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -73,7 +74,23 @@ func (id ActorID) valid() bool {
 		return false
 	}
 	parts := strings.Split(rest, ":")
-	return len(parts) == 3 && !slices.Contains(parts, "")
+	if len(parts) != 3 || slices.Contains(parts, "") {
+		return false
+	}
+	// Decode each component, rebuild through NewActorID, and require an
+	// exact match so every actor has exactly one spelling. Malformed or
+	// lowercase-hex escapes, raw reserved bytes, and uppercase hosts all
+	// fail the comparison.
+	var decoded [3]string
+	for i, p := range parts {
+		d, err := url.PathUnescape(p)
+		if err != nil {
+			return false
+		}
+		decoded[i] = d
+	}
+	canonical, err := NewActorID(decoded[0], decoded[1], decoded[2])
+	return err == nil && canonical == id
 }
 
 // escapeComponent percent-encodes every byte that is not an RFC 3986

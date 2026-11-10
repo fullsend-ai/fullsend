@@ -16,11 +16,17 @@ func TestMemoryConcurrentAccess(t *testing.T) {
 	base := humanKey(t)
 
 	const goroutines = 12
+	// Build the actor IDs on the test goroutine: mustActorID asserts with
+	// require, which must not run in spawned goroutines.
+	actors := make([]ActorID, 3)
+	for i := range actors {
+		actors[i] = mustActorID(t, fmt.Sprintf("actor-%d", i))
+	}
 	var wg sync.WaitGroup
 	for g := range goroutines {
 		wg.Go(func() {
 			key := base
-			key.Actor = mustActorID(t, fmt.Sprintf("actor-%d", g%3))
+			key.Actor = actors[g%len(actors)]
 			for i := range 100 {
 				key.Repository = fmt.Sprintf("R_%d", i%10)
 				_ = m.Put(key, Entry{Role: normevent.RoleWrite, RoleVerified: true, LookupStart: time.Now()})

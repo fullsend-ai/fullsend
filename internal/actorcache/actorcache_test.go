@@ -89,9 +89,29 @@ func TestActorIDValid(t *testing.T) {
 		"fullsend:actor:v1:github:github.com",
 		"fullsend:actor:v1:github::12345",
 		"fullsend:actor:v1:github:github.com:1:2",
+		// Non-canonical spellings of otherwise well-formed IDs.
+		"fullsend:actor:v1:github:GitHub.com:12345",
+		"fullsend:actor:v1:github:%47ithub.com:12345",
+		"fullsend:actor:v1:github:github.com:a/b",
+		"fullsend:actor:v1:github:github.com:a b",
+		"fullsend:actor:v1:github:github.com:a%2fb",
+		"fullsend:actor:v1:github:github.com:a%2",
+		"fullsend:actor:v1:github:github.com:a%ZZb",
+		"fullsend:actor:v1:github:github.com:%41",
+		"fullsend:actor:v1:github:github.com:a+b",
 	} {
 		assert.False(t, id.valid(), "%q", id)
 	}
+	assert.True(t, ActorID("fullsend:actor:v1:github:github.com:a%2Fb").valid())
+}
+
+func TestInvalidate_NonCanonicalActorCannotBypass(t *testing.T) {
+	m, _ := newTestMemory(t, HardMaxAge)
+	key := humanKey(t)
+	key.Actor = "fullsend:actor:v1:github:GitHub.com:12345"
+	require.ErrorIs(t, m.Put(key, verified(normevent.RoleWrite, t0)), ErrInvalidKey)
+	_, ok := m.Get(key)
+	assert.False(t, ok)
 }
 
 func TestPutGet_AbsoluteExpiry(t *testing.T) {
@@ -355,4 +375,59 @@ func TestPut_SweepsExpiredState(t *testing.T) {
 	assert.Len(t, m.entries, 1)
 	assert.Empty(t, m.invalidated)
 	assert.Equal(t, minSweepThreshold, m.sweepAt)
+}
+
+// clockHeldProbe overrides m.now so each reading records whether m.mu was
+// held at that moment. It returns a function reporting whether every reading
+// so far happened under the lock.
+func clockHeldProbe(m *Memory, at time.Time) func() bool {
+	reads, held := 0, 0
+	m.now = func() time.Time {
+		reads++
+		if !m.mu.TryLock() {
+			held++
+		} else {
+			m.mu.Unlock()
+		}
+		return at
+	}
+	return func() bool { return reads > 0 && reads == held }
+}
+
+func TestMemory_ReadsClockUnderLock(t *testing.T) {
+	key := humanKey(t)
+	tests := map[string]func(m *Memory){
+		"Get": func(m *Memory) {
+			m.Get(key)
+		},
+		"Put": func(m *Memory) {
+			require.NoError(t, m.Put(key, verified(normevent.RoleWrite, t0)))
+		},
+		"Invalidate": func(m *Memory) {
+			m.Invalidate(key.Actor)
+		},
+	}
+	for name, op := range tests {
+		t.Run(name, func(t *testing.T) {
+			m := NewMemory(HardMaxAge)
+			// Seed an entry so Get reaches the expiry check.
+			m.entries[key.Actor] = map[Key]Entry{key: verified(normevent.RoleWrite, t0)}
+			m.size = 1
+			allHeld := clockHeldProbe(m, t0)
+			op(m)
+			assert.True(t, allHeld(), "clock must be read while holding the mutex")
+		})
+	}
+}
+
+func TestInvalidate_PrunesRecordsWithoutVerdictGrowth(t *testing.T) {
+	m, clock := newTestMemory(t, time.Minute)
+	// Many distinct invalidations across several max-age intervals, never
+	// holding a verdict, so the verdict sweep threshold is never reached.
+	for i := range 20 * minSweepThreshold {
+		clock.now = t0.Add(time.Duration(i) * time.Minute / minSweepThreshold)
+		m.Invalidate(mustActorID(t, fmt.Sprintf("actor-%d", i)))
+		assert.LessOrEqual(t, len(m.invalidated), 2*minSweepThreshold+1, "after %d invalidations", i+1)
+	}
+	assert.Zero(t, m.size)
 }
