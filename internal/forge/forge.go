@@ -1168,10 +1168,11 @@ type Client interface {
 	// this allows the caller to specify an explicit starting point — for
 	// example, an upstream HEAD when creating a branch on a stale fork.
 	// Returns forge.ErrAlreadyExists if the branch already exists,
-	// and forge.ErrForbidden on insufficient permissions. GitLab also
-	// returns forge.ErrNotFound when the SHA is not present in the target
-	// repository (for example, an upstream commit on a fork that has not
-	// been synced).
+	// and forge.ErrForbidden on insufficient permissions. Returns
+	// forge.ErrNotFound when the commit or the target repository is not
+	// found (for example, GitLab reports an upstream commit on a fork that
+	// has not been synced this way, and GitHub maps any HTTP 404, including
+	// an inaccessible repository, to it).
 	CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error
 
 	// DeleteBranch deletes the named git branch.

@@ -529,23 +529,31 @@ func checkUnsyncedForkFallback(ctx context.Context, client forge.Client,
 	}
 
 	forkRepo, err := client.GetRepo(ctx, targetOwner, targetRepo)
-	if err != nil || forkRepo.DefaultBranch == "" {
-		return "", nil, fmt.Errorf("fork %s/%s does not contain upstream commit %s and its default branch could not be resolved (error: %v); %s",
+	if err != nil {
+		return "", nil, fmt.Errorf("fork %s/%s does not contain upstream commit %s and its default branch could not be resolved (%w); %s",
 			targetOwner, targetRepo, upstreamSHA, err, syncHint)
+	}
+	if forkRepo.DefaultBranch == "" {
+		return "", nil, fmt.Errorf("fork %s/%s does not contain upstream commit %s and its default branch could not be resolved (empty default branch); %s",
+			targetOwner, targetRepo, upstreamSHA, syncHint)
 	}
 	forkBranch := forkRepo.DefaultBranch
 	forkSHA, err := client.GetBranchRef(ctx, targetOwner, targetRepo, forkBranch)
 	if err != nil {
-		return "", nil, fmt.Errorf("fork %s/%s does not contain upstream commit %s and its %s branch could not be resolved (%w); %s",
+		return "", nil, fmt.Errorf("fork %s/%s does not contain upstream commit %s and its %q branch could not be resolved (%w); %s",
 			targetOwner, targetRepo, upstreamSHA, forkBranch, err, syncHint)
 	}
 	// The fork tip must be an ancestor of (or identical to) the upstream
 	// commit. A fork-only commit is unknown to upstream, so the comparison
 	// fails or reports a non-linear history — both refuse the fallback.
 	status, err := client.CompareCommits(ctx, upstreamOwner, upstreamRepo, forkSHA, upstreamSHA)
-	if err != nil || (status != "ahead" && status != "identical") {
-		return "", nil, fmt.Errorf("fork %s/%s does not contain upstream commit %s and its %s branch (%s) is not an ancestor of upstream (comparison status %q, error: %v); %s",
-			targetOwner, targetRepo, upstreamSHA, forkBranch, forkSHA, status, err, syncHint)
+	if err != nil {
+		return "", nil, fmt.Errorf("fork %s/%s does not contain upstream commit %s and its %q branch (%s) is not an ancestor of upstream: comparison failed (%w); %s",
+			targetOwner, targetRepo, upstreamSHA, forkBranch, forkSHA, err, syncHint)
+	}
+	if status != "ahead" && status != "identical" {
+		return "", nil, fmt.Errorf("fork %s/%s does not contain upstream commit %s and its %q branch (%s) is not an ancestor of upstream (comparison status %q); %s",
+			targetOwner, targetRepo, upstreamSHA, forkBranch, forkSHA, status, syncHint)
 	}
 
 	// The change request diff is computed from the merge base (the fork
