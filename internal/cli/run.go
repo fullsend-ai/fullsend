@@ -7636,7 +7636,11 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		return "", nil, fmt.Errorf("resolving agent %q: no config and agents-repo fallback unavailable", agentName)
 	}
 
-	if err := config.ValidateAgentEntries(orgCfg.AgentEntries(), orgCfg.AllowedResources()); err != nil {
+	// A caller may hand a raw layered config (dispatch --route); the
+	// helper resolves the same list as the loaders that ensure the
+	// defaults.
+	allowlist := config.EffectiveAllowedResources(orgCfg)
+	if err := config.ValidateAgentEntries(orgCfg.AgentEntries(), allowlist); err != nil {
 		return "", nil, fmt.Errorf("invalid agent config: %w", err)
 	}
 
@@ -7665,7 +7669,7 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 	if harness.IsURL(entry.Source) {
 		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agentName))
 	}
-	resolved, err := harness.ResolveRegisteredPath(ctx, fullsendDir, *entry, orgCfg.AllowedResources(), composeOpts)
+	resolved, err := harness.ResolveRegisteredPath(ctx, fullsendDir, *entry, allowlist, composeOpts)
 	if err != nil {
 		if harness.IsURL(entry.Source) {
 			printer.StepFail("Failed to fetch agent harness")

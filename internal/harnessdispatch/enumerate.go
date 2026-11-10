@@ -46,10 +46,7 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		return nil, nil
 	}
 
-	allowlist := cfg.AllowedResources()
-	if allowlist == nil {
-		allowlist = config.DefaultAllowedRemoteResources()
-	}
+	allowlist := config.EffectiveAllowedResources(cfg)
 
 	policy := fetch.DefaultPolicy
 	if fetchPolicy != nil {

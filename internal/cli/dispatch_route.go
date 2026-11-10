@@ -223,19 +223,17 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		return withDecision(d, routeSkip, "bot comments do not start "+o.agent), nil
 	}
 
+	allowlist := config.EffectiveAllowedResources(cfg)
+
 	// Same check as resolveAgentSource, so an invalid entry is an error
 	// rather than a failed harness resolution.
-	if err := config.ValidateAgentEntries(cfg.AgentEntries(), cfg.AllowedResources()); err != nil {
+	if err := config.ValidateAgentEntries(cfg.AgentEntries(), allowlist); err != nil {
 		return d, fmt.Errorf("invalid agent config: %w", err)
 	}
 
 	absConfigDir, err := filepath.Abs(o.configDir)
 	if err != nil {
 		return d, fmt.Errorf("resolving config dir: %w", err)
-	}
-	allowlist := cfg.AllowedResources()
-	if allowlist == nil {
-		allowlist = config.DefaultAllowedRemoteResources()
 	}
 	policy := fetch.DefaultPolicy
 	if o.fetchPolicy != nil {

@@ -890,6 +890,54 @@ func TestRouteBuiltinAgent_HarnessRoleThreshold(t *testing.T) {
 	})
 }
 
+// TestRouteBuiltinAgent_AllowlistParityOverBaseEmptyList pins the route
+// path's half of AISDLC-512: a non-empty config.yaml list over a base
+// layer's allowed_remote_resources: [] resolves fullsend's default
+// prefixes in `fullsend dispatch --route` exactly as in run/lint/lock, so
+// an agent whose source is covered only by a default prefix is validated
+// and resolved end-to-end instead of failing closed as an unavailable
+// harness. The harness content is pre-cached, so the default-prefix URL
+// resolves without the network.
+func TestRouteBuiltinAgent_AllowlistParityOverBaseEmptyList(t *testing.T) {
+	commentOnly := strings.TrimPrefix(routeTestCommentOnlyTrigger, "trigger: >\n")
+
+	content := []byte(routeTestHarnessBody + routeTestCommentOnlyTrigger)
+	hash := fetch.ComputeSHA256(content)
+	source := "https://raw.githubusercontent.com/fullsend-ai/fullsend/" + routeTestSHA +
+		"/harness/review.yaml#sha256=" + hash
+
+	// The overlay lists a prefix of its own; the base layer denies all, so
+	// the agent source is covered only by a fullsend default prefix.
+	dir := writeRouteFixture(t, routeFixture{
+		allowlist: []string{"https://overlay.example.com/"},
+		agents:    []config.AgentEntry{{Name: "review", Source: source, Trigger: commentOnly}},
+	})
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, config.BaseConfigFile), []byte("allowed_remote_resources: []\n"), 0o644))
+	require.NoError(t, fetch.CachePut(dir, source, content))
+
+	// The harness's agent: file resolves relative to the source URL, also
+	// under a default prefix: cache it and record it in the URL index, so
+	// the route resolves fully offline.
+	agentURL := "https://raw.githubusercontent.com/fullsend-ai/fullsend/" + routeTestSHA + "/agents/review.md"
+	agentHash := fetch.ComputeSHA256([]byte("# review\n"))
+	require.NoError(t, fetch.CachePut(dir, agentURL, []byte("# review\n")))
+	indexPath := filepath.Join(dir, ".fullsend-cache", "url-index.json")
+	indexBytes, err := json.MarshalIndent(map[string]string{agentURL: agentHash}, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(indexPath, indexBytes, 0o600))
+
+	got, err := routeBuiltinAgent(context.Background(), routeOpts{
+		agent: "review", configDir: dir, event: routeEvent(t, routeTriageReviewComment),
+		forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, routeRun, got.Decision,
+		"a default-prefix-only source over a base layer's [] must resolve like run/lint/lock (reason: %s)", got.Reason)
+	assert.Equal(t, "trigger matched", got.Reason)
+	assert.Equal(t, "config:"+source, got.Harness)
+}
+
 const (
 	routeTestTriageHarness = `agent: agents/triage.md
 role: triage

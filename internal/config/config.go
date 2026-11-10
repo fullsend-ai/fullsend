@@ -690,6 +690,15 @@ func githubServerBaseURL(serverURL string) string {
 	return "https://" + strings.ToLower(u.Host)
 }
 
+// EffectiveAllowedResources returns the config-level allowlist every
+// command family resolves: the layered chain as-is (an omitted key falls
+// through to the parent, an explicit [] denies all remote resources, a
+// non-empty list unions with the parent's), then fullsend's default
+// prefixes ensured on top of a non-empty result (AISDLC-512).
+func EffectiveAllowedResources(cfg ConfigReader) []string {
+	return EnsureDefaultAllowedRemoteResources(cfg.AllowedResources())
+}
+
 // EnsureDefaultAllowedRemoteResources returns a new slice with default
 // allowed-remote-resources prefixes merged into the provided list.
 // Nil input (field omitted from YAML) returns defaults alone.
