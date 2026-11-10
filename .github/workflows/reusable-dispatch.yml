@@ -154,8 +154,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # checkout@v7 blocks fork PR checkouts on pull_request_target by
-          # default. Safe here: only .fullsend/ config is read, no fork code
-          # is executed, and credentials are not persisted. Pin to base branch
+          # default. Safe here: trusted config under .fullsend/ is read; the
+          # vendored or workflow-pinned mint URL resolver may run later with
+          # id-token scope. Credentials are not persisted. Pin to base branch
           # SHA for PR-scoped events so kill-switch / role gating always reads
           # trusted config — PR authors cannot self-authorize.
           ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
@@ -164,7 +165,6 @@ jobs:
           sparse-checkout: |
             .fullsend/config.yaml
             .fullsend/config.base.yaml
-            .github/scripts/resolve-effective-mint-url.sh
             .defaults/.github/scripts/resolve-effective-mint-url.sh
             /OWNERS
             /OWNERS_ALIASES
@@ -916,12 +916,9 @@ jobs:
         run: |
           set -euo pipefail
           RESOLVER=""
-          for candidate in .github/scripts/resolve-effective-mint-url.sh .defaults/.github/scripts/resolve-effective-mint-url.sh; do
-            if [[ -f "${candidate}" ]]; then
-              RESOLVER="${candidate}"
-              break
-            fi
-          done
+          if [[ -f .defaults/.github/scripts/resolve-effective-mint-url.sh ]]; then
+            RESOLVER=".defaults/.github/scripts/resolve-effective-mint-url.sh"
+          fi
           if [[ -n "${RESOLVER}" ]]; then
             echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
             echo "fetched=false" >> "${GITHUB_OUTPUT}"
@@ -954,7 +951,7 @@ jobs:
             RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
           fi
           if [[ ! -f "${RESOLVER}" ]]; then
-            echo "::error::resolve-effective-mint-url.sh is missing from caller and workflow repository"
+            echo "::error::resolve-effective-mint-url.sh is missing from vendored defaults and workflow repository"
             exit 1
           fi
           bash "${RESOLVER}"
@@ -1996,7 +1993,6 @@ jobs:
             .defaults/action.yml
             .defaults/.github/actions/install-fullsend-cli/
             .fullsend/.defaults/action.yml
-            .github/scripts/resolve-effective-mint-url.sh
             .defaults/.github/scripts/resolve-effective-mint-url.sh
           sparse-checkout-cone-mode: false
 
@@ -2025,12 +2021,9 @@ jobs:
         run: |
           set -euo pipefail
           RESOLVER=""
-          for candidate in .github/scripts/resolve-effective-mint-url.sh .defaults/.github/scripts/resolve-effective-mint-url.sh; do
-            if [[ -f "${candidate}" ]]; then
-              RESOLVER="${candidate}"
-              break
-            fi
-          done
+          if [[ -f .defaults/.github/scripts/resolve-effective-mint-url.sh ]]; then
+            RESOLVER=".defaults/.github/scripts/resolve-effective-mint-url.sh"
+          fi
           if [[ -n "${RESOLVER}" ]]; then
             echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
             echo "fetched=false" >> "${GITHUB_OUTPUT}"
@@ -2063,7 +2056,7 @@ jobs:
             RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
           fi
           if [[ ! -f "${RESOLVER}" ]]; then
-            echo "::error::resolve-effective-mint-url.sh is missing from caller and workflow repository"
+            echo "::error::resolve-effective-mint-url.sh is missing from vendored defaults and workflow repository"
             exit 1
           fi
           bash "${RESOLVER}"
@@ -2238,12 +2231,9 @@ jobs:
         run: |
           set -euo pipefail
           RESOLVER=""
-          for candidate in .github/scripts/resolve-effective-mint-url.sh .defaults/.github/scripts/resolve-effective-mint-url.sh; do
-            if [[ -f "${candidate}" ]]; then
-              RESOLVER="${candidate}"
-              break
-            fi
-          done
+          if [[ -f .defaults/.github/scripts/resolve-effective-mint-url.sh ]]; then
+            RESOLVER=".defaults/.github/scripts/resolve-effective-mint-url.sh"
+          fi
           if [[ -n "${RESOLVER}" ]]; then
             echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
             echo "fetched=false" >> "${GITHUB_OUTPUT}"
@@ -2275,7 +2265,7 @@ jobs:
             RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
           fi
           if [[ ! -f "${RESOLVER}" ]]; then
-            echo "::error::resolve-effective-mint-url.sh is missing from caller and workflow repository"
+            echo "::error::resolve-effective-mint-url.sh is missing from vendored defaults and workflow repository"
             exit 1
           fi
           bash "${RESOLVER}"

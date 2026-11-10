@@ -1137,6 +1137,88 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 		"the workflow must not copy the OIDC request token into logs or matrix data")
 }
 
+// TestReusableDispatchStageJobsResolvedMintURL ensures inline stage jobs use the
+// route-resolved mint URL, not the workflow-call input snapshot (#8672).
+func TestReusableDispatchStageJobsResolvedMintURL(t *testing.T) {
+	type workflowStep struct {
+		Uses string            `yaml:"uses"`
+		With map[string]string `yaml:"with"`
+	}
+	type workflowJob struct {
+		Steps []workflowStep `yaml:"steps"`
+	}
+	var workflow struct {
+		Jobs map[string]workflowJob `yaml:"jobs"`
+	}
+
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	wantRoute := "${{ needs.route.outputs.mint_url }}"
+	for _, jobName := range []string{"triage", "code", "review", "fix", "retro", "prioritize"} {
+		t.Run(jobName, func(t *testing.T) {
+			job, ok := workflow.Jobs[jobName]
+			require.True(t, ok, "job %q must exist", jobName)
+			var sawMintToken, sawAgent bool
+			for _, step := range job.Steps {
+				if step.Uses == "./.defaults/.github/actions/mint-token" {
+					sawMintToken = true
+					assert.Equal(t, wantRoute, step.With["mint_url"],
+						"job %q mint-token must use route output", jobName)
+					assert.NotEqual(t, "${{ inputs.mint_url }}", step.With["mint_url"],
+						"job %q mint-token must not use workflow input", jobName)
+				}
+				if step.Uses == "./.defaults/" {
+					sawAgent = true
+					assert.Equal(t, wantRoute, step.With["mint-url"],
+						"job %q agent action must use route output", jobName)
+				}
+			}
+			if jobName != "prioritize" {
+				assert.True(t, sawMintToken, "job %q must mint an app token", jobName)
+			}
+			assert.True(t, sawAgent, "job %q must run the agent composite", jobName)
+		})
+	}
+
+	wantHarness := "${{ steps.resolve-mint.outputs.mint_url }}"
+	harnessRun, ok := workflow.Jobs["harness-run"]
+	require.True(t, ok, "harness-run job must exist")
+	for _, step := range harnessRun.Steps {
+		if step.Uses == "./.defaults/.github/actions/mint-token" {
+			assert.Equal(t, wantHarness, step.With["mint_url"],
+				"harness-run mint-token must use job-local resolve output")
+		}
+		if step.Uses == "./.defaults/" {
+			assert.Equal(t, wantHarness, step.With["mint-url"],
+				"harness-run agent action must use job-local resolve output")
+		}
+	}
+
+	prioritizePath := filepath.Join("..", "..", ".github", "workflows", "reusable-prioritize.yml")
+	prioritizeContent, err := os.ReadFile(prioritizePath)
+	require.NoError(t, err)
+	var prioritizeWF struct {
+		Jobs map[string]struct {
+			Steps []workflowStep `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(prioritizeContent, &prioritizeWF))
+	wantPrioritize := "${{ steps.resolve-mint.outputs.mint_url }}"
+	for jobName, job := range prioritizeWF.Jobs {
+		for _, step := range job.Steps {
+			if step.Uses != "./.defaults/" {
+				continue
+			}
+			assert.Equal(t, wantPrioritize, step.With["mint-url"],
+				"reusable-prioritize job %q must use resolve-mint output", jobName)
+			assert.NotEqual(t, "${{ inputs.mint_url }}", step.With["mint-url"],
+				"reusable-prioritize job %q must not use workflow input", jobName)
+		}
+	}
+}
+
 // TestReusableDispatchMintResolverFetchesFromWorkflow ensures upstream-mode
 // callers without a vendored resolver can sparse-checkout the script from
 // job.workflow_repository (#9104).
@@ -1208,6 +1290,14 @@ func TestReusableDispatchMintResolverFetchesFromWorkflow(t *testing.T) {
 	assert.Contains(t, prioritize, "Prepare mint URL resolver script")
 	assert.Contains(t, prioritize, "path: .workflow-mint-resolver")
 	assert.NotContains(t, prioritize, "runner.temp }}/workflow-mint-resolver")
+
+	w := string(content)
+	assert.NotContains(t, w, "for candidate in .github/scripts/resolve-effective-mint-url.sh",
+		"resolver must not prefer a caller-root script copy")
+	assert.Contains(t, w, "if [[ -f .defaults/.github/scripts/resolve-effective-mint-url.sh ]]",
+		"resolver must read vendored defaults before workflow fetch")
+	assert.NotContains(t, w, ".fullsend/config.base.yaml\n            .github/scripts/resolve-effective-mint-url.sh\n",
+		"route sparse checkout must not pull caller-root resolver")
 }
 
 // TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch

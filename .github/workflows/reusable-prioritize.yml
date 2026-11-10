@@ -105,8 +105,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # checkout@v7 blocks fork PR checkouts on pull_request_target by default.
-          # Safe here: only .fullsend/ config is read, no fork code is executed,
-          # and credentials are not persisted.
+          # Safe here: trusted config under .fullsend/ is read; the vendored or
+          # workflow-pinned mint URL resolver may run later with id-token scope.
+          # Credentials are not persisted.
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
@@ -145,12 +146,9 @@ jobs:
         run: |
           set -euo pipefail
           RESOLVER=""
-          for candidate in .github/scripts/resolve-effective-mint-url.sh .defaults/.github/scripts/resolve-effective-mint-url.sh; do
-            if [[ -f "${candidate}" ]]; then
-              RESOLVER="${candidate}"
-              break
-            fi
-          done
+          if [[ -f .defaults/.github/scripts/resolve-effective-mint-url.sh ]]; then
+            RESOLVER=".defaults/.github/scripts/resolve-effective-mint-url.sh"
+          fi
           if [[ -n "${RESOLVER}" ]]; then
             echo "path=${RESOLVER}" >> "${GITHUB_OUTPUT}"
             echo "fetched=false" >> "${GITHUB_OUTPUT}"
@@ -182,7 +180,7 @@ jobs:
             RESOLVER=".workflow-mint-resolver/.github/scripts/resolve-effective-mint-url.sh"
           fi
           if [[ ! -f "${RESOLVER}" ]]; then
-            echo "::error::resolve-effective-mint-url.sh is missing from caller and workflow repository"
+            echo "::error::resolve-effective-mint-url.sh is missing from vendored defaults and workflow repository"
             exit 1
           fi
           bash "${RESOLVER}"
