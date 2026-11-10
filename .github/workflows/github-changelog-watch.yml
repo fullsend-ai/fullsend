@@ -1,0 +1,83 @@
+name: GitHub Changelog Watch
+
+# Daily poll of the GitHub changelog and runner-images announcements for
+# Actions platform changes; see hack/github-changelog-watch. A missed run is
+# covered by the next one (74-hour window); to backfill further, dispatch
+# with `since` set to the last good run.
+
+on:
+  schedule:
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Start of the window, ISO-8601 (default: 74 hours ago)"
+        required: false
+        type: string
+      dry_run:
+        description: "Print the planned actions without writing issues"
+        required: false
+        type: boolean
+        default: true
+
+permissions: {}
+
+# One run at a time, so two runs cannot both open an issue for the same post.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  # Dispatches from other branches run that branch's copy of the script, so
+  # they get a read-only token and always dry-run.
+  dry-run:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Dry-run the watcher
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SINCE: ${{ inputs.since }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY" --dry-run)
+          if [[ -n "${SINCE:-}" ]]; then
+            args+=(--since "$SINCE")
+          fi
+          python3 hack/github-changelog-watch "${args[@]}"
+
+  watch:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Poll sources and file platform-change issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SINCE: ${{ inputs.since }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY")
+          if [[ -n "${SINCE:-}" ]]; then
+            args+=(--since "$SINCE")
+          fi
+          if [[ "$DRY_RUN" == "true" ]]; then
+            args+=(--dry-run)
+          fi
+          python3 hack/github-changelog-watch "${args[@]}"
