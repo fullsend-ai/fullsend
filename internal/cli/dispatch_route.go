@@ -145,7 +145,9 @@ type routeOpts struct {
 	// forgeClient resolves the agents-repo ref for the fallback. When nil,
 	// an unauthenticated GitHub client is used (fullsend-ai/agents is public).
 	forgeClient forge.Client
-	// fetchPolicy overrides fetch.DefaultPolicy (tests).
+	// fetchPolicy overrides fetch.DefaultPolicy. The dispatch command
+	// passes its host-admitting policy (newDispatchFetchPolicy); tests
+	// inject their own.
 	fetchPolicy *fetch.FetchPolicy
 	printer     *ui.Printer
 }
@@ -266,6 +268,11 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		d.Harness = routeHarnessLabel(cfg, o.agent, deps)
 		if len(deps) > 0 && deps[0].URL != "" {
 			composeOpts.SourceURL = deps[0].URL
+			// Same as runAgent: a harness resolved from the agents repo on
+			// the configured host reads its relative companion files and
+			// directory resources through that host's API, or composition
+			// fails and the route's threshold wrongly fails closed.
+			useAgentsRepoHostFetch(&composeOpts, forgeClient)
 		}
 		if h, _, err := harness.LoadWithBase(ctx, path, composeOpts); err == nil {
 			harnessRole = h.Role

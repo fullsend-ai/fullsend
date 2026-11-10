@@ -198,3 +198,64 @@ func TestListTriggeredHarnesses_BaseChainOnConfiguredHost(t *testing.T) {
 		assert.Contains(t, err.Error(), "domain not in allowlist")
 	})
 }
+
+// A harness the route resolves through the agents-repo fallback on the
+// configured host reads its relative companion files and directory
+// resources through that host, so the route can read the harness's real
+// role: threshold instead of failing closed to write.
+func TestRouteBuiltinAgent_FallbackCompanionsOnConfiguredHost(t *testing.T) {
+	commentOnly := strings.TrimPrefix(routeTestCommentOnlyTrigger, "trigger: >\n")
+
+	sha := strings.Repeat("d4e5f6a7", 5)
+	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{
+		"harness/review.yaml": []byte(
+			"agent: agents/review.md\nrole: code\nskills:\n  - skills/issue-labels\n"),
+		"agents/review.md":               []byte("# review\n"),
+		"skills/issue-labels/SKILL.md":   []byte("# issue labels\n"),
+		"skills/issue-labels/labels.txt": []byte("bug\ndocumentation\n"),
+	})
+	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+
+	// A fresh config dir per case: the fetch cache lives under it, so the
+	// second case starts cold and its requests are attributable.
+	route := func(t *testing.T, rawEvent string) routeDecision {
+		t.Helper()
+		dir := writeRouteFixture(t, routeFixture{
+			allowlist: []string{srv.URL + "/fullsend-ai/agents/raw/"},
+			agents: []config.AgentEntry{{
+				Name:    "review",
+				Trigger: commentOnly,
+			}},
+		})
+		got, err := routeBuiltinAgent(context.Background(), routeOpts{
+			agent: "review", configDir: dir, event: routeEvent(t, rawEvent),
+			printer: ui.New(io.Discard),
+		})
+		require.NoError(t, err)
+		return got
+	}
+
+	t.Run("triage actor is denied by the harness role", func(t *testing.T) {
+		got := route(t, routeTriageReviewComment)
+		assert.Equal(t, routeSkip, got.Decision)
+		assert.Equal(t, "actor not authorized", got.Reason,
+			"the fallback harness's companions loaded from the configured host, so its role: was read and the triage actor is denied")
+	})
+
+	t.Run("write actor runs, proving the role was read", func(t *testing.T) {
+		got := route(t, routeReviewComment)
+		assert.Equal(t, routeRun, got.Decision)
+	})
+
+	// The companions and the skill directory must have been read through
+	// the configured host's contents API, never through a raw fetch.
+	paths, _ := srv.requests()
+	require.NotEmpty(t, paths, "the configured host's API should have served the harness and its resources")
+	for _, p := range paths {
+		assert.True(t, strings.HasPrefix(p, "/api/v3/repos/fullsend-ai/agents/"),
+			"every request must go through the host's contents API, got %s", p)
+	}
+	joined := strings.Join(paths, "\n")
+	assert.Contains(t, joined, "/contents/agents/review.md")
+	assert.Contains(t, joined, "/contents/skills/issue-labels")
+}
