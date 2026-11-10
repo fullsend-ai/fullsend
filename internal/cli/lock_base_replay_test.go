@@ -213,6 +213,97 @@ func TestResolveFromLock_URLBaseScriptsKeepChildScripts(t *testing.T) {
 	assert.NotZero(t, info.Mode()&0o111, "the inherited post_script is executable")
 }
 
+// A URL base's api_servers[].script is recorded in the lock as
+// api_servers[N].script, and lock replay restores it: the replayed entry
+// names the cached, executable copy fetched from the base's source, not a
+// path resolved against the local .fullsend directory (AISDLC-545 ac_2).
+func TestResolveFromLock_URLBaseAPIServerScriptRestored(t *testing.T) {
+	apiScript := []byte("#!/bin/sh\necho base api\n")
+	policyContent := []byte("# child policy\n")
+	baseContent := []byte("role: test\napi_servers:\n  - name: api\n    script: scripts/api.sh\n")
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/harness/base.yaml": baseContent,
+		"/scripts/api.sh":    apiScript,
+		"/policies/p.yaml":   policyContent,
+	})
+
+	dir := t.TempDir()
+	writeTestFiles(t, dir, map[string]string{
+		"agents/mine.md": "# my agent\n",
+		"harness/code.yaml": fmt.Sprintf("base: %q\nagent: agents/mine.md\npolicy: %q\nallowed_remote_resources:\n  - %q\n",
+			srv.URL+"/harness/base.yaml#sha256="+fetch.ComputeSHA256(baseContent),
+			srv.URL+"/policies/p.yaml#sha256="+fetch.ComputeSHA256(policyContent),
+			srv.URL+"/"),
+		"config.yaml": fmt.Sprintf("allowed_remote_resources:\n  - %q\n", srv.URL+"/"),
+	})
+
+	before, after := lockThenReplay(t, dir, policy, []string{srv.URL + "/"}, nil)
+
+	// fullsend lock records the script as a dependency.
+	lf, err := lock.Load(filepath.Join(dir, "lock.yaml"))
+	require.NoError(t, err)
+	entry := lf.Lookup("code")
+	require.NotNil(t, entry)
+	var scriptDep *lock.DependencyEntry
+	for i := range entry.Dependencies {
+		if entry.Dependencies[i].Field == "api_servers[0].script" {
+			scriptDep = &entry.Dependencies[i]
+		}
+	}
+	require.NotNil(t, scriptDep, "the lock must record api_servers[0].script as a dependency")
+	assert.Equal(t, srv.URL+"/scripts/api.sh", scriptDep.URL)
+	assert.Equal(t, fetch.ComputeSHA256(apiScript), scriptDep.SHA256)
+
+	// Replay restores the cached copy.
+	require.Len(t, after.APIServers, 1)
+	assert.Equal(t, "api", after.APIServers[0].Name)
+	assert.False(t, harness.IsURL(after.APIServers[0].Script))
+	got, err := os.ReadFile(after.APIServers[0].Script)
+	require.NoError(t, err, "the replayed api_servers[0].script must name a readable local file")
+	assert.Equal(t, apiScript, got)
+	info, err := os.Stat(after.APIServers[0].Script)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&0o111, "the replayed api server script is executable")
+	assert.Equal(t, before.APIServers[0].Script, after.APIServers[0].Script,
+		"replay keeps the cached path LoadWithBase resolved")
+}
+
+// The lock entry api_servers[0].script was recorded for the base's slot 0.
+// When the merged list also holds the child's own entry, replay must restore
+// only the base's slot and leave the child's local script alone.
+func TestResolveFromLock_URLBaseAPIServerScriptKeepsChildEntry(t *testing.T) {
+	apiScript := []byte("#!/bin/sh\necho base api\n")
+	policyContent := []byte("# child policy\n")
+	baseContent := []byte("role: test\napi_servers:\n  - name: api\n    script: scripts/api.sh\n")
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/harness/base.yaml": baseContent,
+		"/scripts/api.sh":    apiScript,
+		"/policies/p.yaml":   policyContent,
+	})
+
+	dir := t.TempDir()
+	writeTestFiles(t, dir, map[string]string{
+		"agents/mine.md":      "# my agent\n",
+		"scripts/mine-api.sh": "#!/bin/sh\necho child api\n",
+		"harness/code.yaml": fmt.Sprintf("base: %q\nagent: agents/mine.md\npolicy: %q\napi_servers:\n  - name: mine\n    script: scripts/mine-api.sh\nallowed_remote_resources:\n  - %q\n",
+			srv.URL+"/harness/base.yaml#sha256="+fetch.ComputeSHA256(baseContent),
+			srv.URL+"/policies/p.yaml#sha256="+fetch.ComputeSHA256(policyContent),
+			srv.URL+"/"),
+		"config.yaml": fmt.Sprintf("allowed_remote_resources:\n  - %q\n", srv.URL+"/"),
+	})
+
+	before, after := lockThenReplay(t, dir, policy, []string{srv.URL + "/"}, nil)
+
+	require.Len(t, before.APIServers, 2)
+	require.Len(t, after.APIServers, 2)
+	assert.Equal(t, "mine", after.APIServers[1].Name)
+	assert.Equal(t, filepath.Join(dir, "scripts", "mine-api.sh"), after.APIServers[1].Script,
+		"the child's own api server script must keep its local path")
+	got, err := os.ReadFile(after.APIServers[0].Script)
+	require.NoError(t, err)
+	assert.Equal(t, apiScript, got, "the base's api server script is restored from the lock")
+}
+
 // Script entries replace a field that holds their URL and nothing else.
 func TestResolveFromLock_ScriptEntriesReplaceOnlyMatchingFields(t *testing.T) {
 	content := []byte("#!/bin/sh\necho locked\n")
