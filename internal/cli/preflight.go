@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,10 +21,12 @@ import (
 // child through an env.runner/runner_env declaration.
 var preflightHostEnvNames = []string{"PATH", "HOME", "TMPDIR"}
 
-// preflightBraceRef matches ${VAR} references with shell-portable names.
-// Bare $VAR references are deliberately not matched by the rejection scan:
-// they are expanded inside the child shell, where an unset variable is
-// empty (design D3 of the preflight-check-credential-safety change).
+// preflightBraceRef matches plain ${VAR} references with shell-portable
+// names. These are the only brace forms the runner validates and
+// substitutes; any other ${...} form is rejected (#8771). Bare $VAR
+// references are deliberately not matched: they are left untouched and
+// expanded inside the child shell, where an unset variable is empty (design
+// D3 of the preflight-check-credential-safety change).
 var preflightBraceRef = regexp.MustCompile(`\$\{[A-Za-z_][A-Za-z0-9_]*\}`)
 
 // preflightCredentialRefusedNames is the minted-credential inventory: the
@@ -52,12 +55,15 @@ var preflightCredentialRefusedNames = func() map[string]bool {
 }()
 
 // preflightCredentialRefused reports whether a runner-env key is refused
-// from the preflight environment. Forge, mint, and provider credential
-// names never reach a preflight child, regardless of whether they arrive
-// from the process environment or a harness declaration under their own
-// names: the minted-token inventory above, the harness expansion deny set
-// (OIDC request variables, OPENAI_API_KEY, GH_WORKFLOW_TOKEN, trigger and
-// runner-secret names), and the GitLab registered-role routing prefix.
+// from the preflight environment. The names in this refusal set never reach
+// a preflight child, whether they arrive from the process environment or a
+// harness declaration under their own names: the minted-token inventory
+// above, the harness expansion deny set (OIDC request variables,
+// OPENAI_API_KEY, GH_WORKFLOW_TOKEN, trigger and runner-secret names), and
+// the GitLab registered-role routing prefix. A credential name outside this
+// set (for example a provider key such as ANTHROPIC_API_KEY) is absent from
+// the host allowlist, so it reaches the child only when a harness
+// explicitly declares it under env.runner/runner_env.
 func preflightCredentialRefused(key string) bool {
 	if preflightCredentialRefusedNames[key] {
 		return true
@@ -71,7 +77,11 @@ func preflightCredentialRefused(key string) bool {
 // credential names. On collision the harness declaration wins for
 // PATH/HOME/TMPDIR; FULLSEND_DIR and PYTHONDONTWRITEBYTECODE are pinned to
 // the runner-forced values and a harness declaration of either is dropped,
-// mirroring the pinned-key precedent in childScriptEnv (#7137).
+// mirroring the pinned-key precedent in childScriptEnv (#7137). Runner-env
+// keys that are not valid POSIX identifiers are skipped before the refusal
+// and pinned-key checks: a key such as "GH_TOKEN=" would otherwise pass the
+// name-based refusal and be read by the child as GH_TOKEN, or override a
+// pinned key the same way (#8771).
 func preflightEnv(runnerEnv map[string]string, fullsendDir string) map[string]string {
 	env := make(map[string]string)
 	for _, name := range preflightHostEnvNames {
@@ -82,6 +92,9 @@ func preflightEnv(runnerEnv map[string]string, fullsendDir string) map[string]st
 	env["FULLSEND_DIR"] = fullsendDir
 	env["PYTHONDONTWRITEBYTECODE"] = "1"
 	for k, v := range runnerEnv {
+		if !validEnvKeyRe.MatchString(k) {
+			continue
+		}
 		if preflightCredentialRefused(k) {
 			continue
 		}
@@ -101,25 +114,43 @@ func buildPreflightEnv(runnerEnv map[string]string, fullsendDir string) []string
 	return envToList(preflightEnv(runnerEnv, fullsendDir))
 }
 
-// expandPreflightCommand expands ${VAR} references in a raw preflight
-// command against env. Every brace reference must resolve in env before any
+// preflightNonPlainBraceErr is returned when a preflight command contains a
+// ${...} form other than a plain ${NAME} reference. It deliberately omits
+// the offending text: operator words such as ${X:-word} can carry literal
+// values, and the raw command must never reach diagnostics (design D3).
+const preflightNonPlainBraceErr = "contains a ${...} form other than a plain ${NAME} reference; parameter-expansion operators such as ${NAME:-default} or ${NAME:?message} are not supported (use a plain ${NAME} reference, or a bare $NAME left to the shell)"
+
+// expandPreflightCommand expands plain ${VAR} references in a raw preflight
+// command against env. Every ${ in the command must begin a plain ${NAME}
+// reference, and every such reference must resolve in env, before any
 // substitution happens: rejection occurs before execution, so no part of
 // the command runs, and the error names the variable, never a value or the
 // raw command (a literal secret beside a rejected reference must not reach
-// diagnostics, design D3). Bare $VAR references are left to the child
-// shell, where unset means empty; because os.Expand resolves them against
-// env, they can only ever splice allowlisted or declared values (design D3).
+// diagnostics, design D3). Non-plain forms such as ${VAR:-default} are
+// rejected rather than silently expanded to empty (#8771). Only the
+// validated ${NAME} matches are substituted; bare $VAR, $? and $1
+// references are left verbatim for the child shell, where unset means
+// empty.
 func expandPreflightCommand(raw string, env map[string]string) (string, error) {
 	if !strings.Contains(raw, "${") {
 		return raw, nil
 	}
-	for _, ref := range preflightBraceRef.FindAllString(raw, -1) {
+	plain := preflightBraceRef.FindAllStringIndex(raw, -1)
+	// Each plain match holds exactly one "${", at its start, so equal counts
+	// mean every "${" in the command begins a plain ${NAME} reference.
+	if strings.Count(raw, "${") != len(plain) {
+		return "", errors.New(preflightNonPlainBraceErr)
+	}
+	for _, loc := range plain {
+		ref := raw[loc[0]:loc[1]]
 		name := ref[2 : len(ref)-1]
 		if _, ok := env[name]; !ok {
 			return "", fmt.Errorf("references %s, which is not in the preflight environment (allowlisted host variables: PATH, HOME, TMPDIR; runner-forced: FULLSEND_DIR, PYTHONDONTWRITEBYTECODE; declare other variables via env.runner or runner_env)", ref)
 		}
 	}
-	return os.Expand(raw, func(key string) string { return env[key] }), nil
+	return preflightBraceRef.ReplaceAllStringFunc(raw, func(ref string) string {
+		return env[ref[2:len(ref)-1]]
+	}), nil
 }
 
 // runPreflightCheck runs one preflight dependency check: it expands the raw
