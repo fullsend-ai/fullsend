@@ -13,7 +13,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
-var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID})
+// uninstallVariables also deletes the FULLSEND_TRACE_SIGNING_KEY_ID ledger
+// that convergeTraceSigningKey writes outside managedVarsForForge.
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID, forge.VarTraceSigningKeyID})
 
 // uninstallSecrets deletes every Fullsend-managed inference secret of
 // every inference.auth method (managedInferenceSecrets), independent of
@@ -29,7 +31,10 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 // whose effective tracker.jira.poll.enabled is true. Install deliberately
 // keeps them while polling is disabled, but teardown must not leave a
 // long-lived Jira credential behind.
-var uninstallSecrets = append(managedInferenceSecrets(), jiraManagedSecrets...)
+//
+// It also deletes the trace signing key (FULLSEND_TRACE_SIGNING_KEY,
+// ADR 0154), so a torn-down repository keeps no private key.
+var uninstallSecrets = slices.Concat(managedInferenceSecrets(), jiraManagedSecrets, []string{forge.SecretTraceSigningKey})
 
 // jiraManagedSecrets are the Jira polling credentials written by install
 // (convergeJiraPoll) outside installSecretsForForge.
@@ -61,6 +66,7 @@ var gitlabUninstallVars = []string{
 	forge.SecretGitLabPollerToken,
 	forge.SecretGitLabAnalystToken,
 	forge.SecretGitLabCoderToken,
+	forge.VarTraceSigningKeyID,
 }
 
 // gitlabUninstallSecrets intentionally does NOT include GitLab's
@@ -79,8 +85,8 @@ var gitlabUninstallVars = []string{
 // wildcard-scoped variable, which is the one Fullsend creates.
 //
 // It also includes the Jira polling credentials, which GitLab injects into
-// every protected-branch job while they exist.
-var gitlabUninstallSecrets = slices.Concat(managedInferenceSecrets(), []string{forge.SecretTriggerToken, forge.SecretWebhookSecret}, jiraManagedSecrets)
+// every protected-branch job while they exist, and the trace signing key.
+var gitlabUninstallSecrets = slices.Concat(managedInferenceSecrets(), []string{forge.SecretTriggerToken, forge.SecretWebhookSecret}, jiraManagedSecrets, []string{forge.SecretTraceSigningKey})
 
 // gitlabScaffoldPaths is the full set of files uninstall removes. It is
 // a superset of the current install set: fullsend-dispatch.yml is no
