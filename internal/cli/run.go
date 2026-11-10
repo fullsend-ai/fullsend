@@ -784,17 +784,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// (shouldStartFetchService: an explicit allow_runtime_fetch, URL-dir
 	// resources, or a bare allowed_remote_resources declaration): a harness
 	// whose fetch service starts would otherwise grant its agent fetch
-	// prefixes the organization never allowed (#7395801). The service start
+	// prefixes the organization never allowed (#9291). The service start
 	// below uses the same shouldStartFetchService, so the gate cannot drift
 	// from it.
 	if h.HasURLReferences() || shouldStartFetchService(h) {
 		if orgCfg == nil {
 			var err error
-			orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+			if h.HasURLReferences() {
+				orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+			} else {
+				// A fetch-capable harness without URL references names its
+				// own requirement when the config is missing; an unreadable
+				// or unparsable config keeps its own error instead of being
+				// reported as missing.
+				orgCfg, err = requireOrgConfigFor(orgConfigPath, printer, "runtime fetch requires")
+			}
 			if err != nil {
-				if !h.HasURLReferences() {
-					return fmt.Errorf("runtime fetch requires a config.yaml with allowed_remote_resources (expected at %s)", orgConfigPath)
-				}
 				return err
 			}
 		}

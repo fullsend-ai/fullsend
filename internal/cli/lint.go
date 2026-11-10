@@ -372,7 +372,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		// subset check runs for URL-referencing harnesses (as before) and
 		// for every harness whose runtime fetch service can start
 		// (shouldStartFetchService: allow_runtime_fetch, URL-dir resources,
-		// or a bare allowed_remote_resources declaration) (#7395801).
+		// or a bare allowed_remote_resources declaration) (#9291).
 		if h.HasURLReferences() || shouldStartFetchService(h) {
 			if err := h.ValidateAllowedRemoteResources(cfg.AllowedResources()); err != nil {
 				wrapped := fmt.Errorf("validating allowed remote resources for agent %q: %w", agentName, err)
