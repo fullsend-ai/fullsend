@@ -17,6 +17,8 @@ mkdir -p "${MOCK_BIN}"
 
 PR_JSON="${TMPDIR}/pr.json"
 EVENTS_JSON="${TMPDIR}/events.json"
+COMMENT_JSON="${TMPDIR}/comment.json"
+RUNS_JSON="${TMPDIR}/runs.json"
 COLLAB_ROLE="${TMPDIR}/collab_role"
 ROLES_DIR="${TMPDIR}/roles"
 GH_LOG="${TMPDIR}/gh.log"
@@ -73,6 +75,10 @@ if [[ "\${GH_FAIL}" == "delete_404" && "\$*" == *DELETE* ]]; then
   echo "gh: Label does not exist (HTTP 404)" >&2
   exit 1
 fi
+if [[ "\${GH_FAIL}" == "runs" && "\$*" == *"/actions/runs"* ]]; then
+  echo "simulated workflow runs API failure" >&2
+  exit 1
+fi
 if [[ "\${GH_FAIL}" == "permission" && "\$*" == *"/collaborators/"* ]]; then
   echo "simulated permission API failure" >&2
   exit 1
@@ -119,6 +125,12 @@ case "\$*" in
     else
       echo "{\"role_name\": \"\${role}\", \"permission\": \"\${role}\"}"
     fi
+    ;;
+  *"/issues/comments/"*)
+    cat "${COMMENT_JSON}"
+    ;;
+  *"/actions/runs"*)
+    cat "${RUNS_JSON}"
     ;;
   *"/issues/"*"/events"*)
     cat "${EVENTS_JSON}"
@@ -473,6 +485,163 @@ write_pr "NONE" '[{"name":"ok-to-test"}]'
 run_case "author permission lookup API failure returns error" "false" "error" "false"
 export GH_FAIL="false"
 unset PR_AUTHOR_LOGIN
+
+# --- /ok-to-test command mode (EVENT_NAME=issue_comment) ---
+
+HEAD_SHA="1111111111111111111111111111111111111111"
+
+write_cmd_pr() {
+  jq -n --arg sha "${HEAD_SHA}" '{
+    user: {login: "forker"}, labels: [], updated_at: "2026-06-01T10:00:00Z",
+    head: {sha: $sha, ref: "feature", repo: {full_name: "forker/fullsend"}}
+  }' >"${PR_JSON}"
+}
+
+write_comment() {
+  local login="$1" created_at="$2" issue="${3:-42}"
+  jq -n --arg login "${login}" --arg at "${created_at}" --arg issue "${issue}" '{
+    id: 900, user: {login: $login}, created_at: $at,
+    issue_url: ("https://api.github.com/repos/fullsend-ai/fullsend/issues/" + $issue)
+  }' >"${COMMENT_JSON}"
+}
+
+# Each argument: created_at[,head_branch[,head_repo]]; one workflow run each.
+write_runs() {
+  local runs="[]" spec at ref repo
+  for spec in "$@"; do
+    IFS=, read -r at ref repo <<<"${spec}"
+    runs="$(jq --arg at "${at}" --arg ref "${ref:-feature}" --arg repo "${repo:-forker/fullsend}" \
+      '. + [{created_at: $at, head_branch: $ref, head_repository: {full_name: $repo}}]' <<<"${runs}")"
+  done
+  jq -n --argjson runs "${runs}" '{total_count: ($runs | length), workflow_runs: $runs}' >"${RUNS_JSON}"
+}
+
+run_cmd_case() {
+  local name="$1" expected_auth="$2" expected_reason="$3" expected_sha="$4"
+  : >"${GH_LOG}"
+  local output auth reason sha
+  output="$("${AUTH_SCRIPT}" 42 "fullsend-ai/fullsend")"
+  auth="$(grep -o 'authorized=[^ ]*' <<<"${output}" | cut -d= -f2)"
+  reason="$(grep -o 'reason=[^ ]*' <<<"${output}" | cut -d= -f2)"
+  sha="$(grep -o 'head_sha=[^ ]*' <<<"${output}" | cut -d= -f2)"
+  if [[ "${auth}" != "${expected_auth}" || "${reason}" != "${expected_reason}" || "${sha}" != "${expected_sha}" ]]; then
+    echo "FAIL: ${name}"
+    echo "  expected authorized=${expected_auth} reason=${expected_reason} head_sha=${expected_sha}"
+    echo "  got      authorized=${auth} reason=${reason} head_sha=${sha}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${name}"
+}
+
+unset PR_AUTHOR_LOGIN EVENT_ACTION PR_UPDATED_AT LABEL_ACTOR_LOGIN
+echo "" >"${COLLAB_ROLE}"
+export EVENT_NAME="issue_comment"
+export COMMENTER_LOGIN="maint"
+export COMMENT_CREATED_AT="2026-06-01T12:00:00Z"
+unset COMMENT_ID
+set_role "maint" "write"
+set_role "forker" "read"
+write_cmd_pr
+write_runs "2026-06-01T11:00:00Z"
+write_events '[]'
+
+run_cmd_case "/ok-to-test from write commenter authorizes head sha" "true" "ok_to_test" "${HEAD_SHA}"
+if grep -q DELETE "${GH_LOG}"; then
+  echo "FAIL: /ok-to-test must not touch labels"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: /ok-to-test does not touch labels"
+fi
+
+set_role "maint" "maintain"
+run_cmd_case "/ok-to-test from maintain commenter authorizes" "true" "ok_to_test" "${HEAD_SHA}"
+set_role "maint" "admin"
+run_cmd_case "/ok-to-test from admin commenter authorizes" "true" "ok_to_test" "${HEAD_SHA}"
+
+set_role "maint" "triage"
+run_cmd_case "/ok-to-test from triage commenter denied" "false" "untrusted_commenter" ""
+set_role "maint" "read"
+run_cmd_case "/ok-to-test from read commenter denied" "false" "untrusted_commenter" ""
+set_role "maint" "mismatch:write:read"
+run_cmd_case "/ok-to-test from mismatched role denied" "false" "untrusted_commenter" ""
+echo "" >"${ROLES_DIR}/maint"
+run_cmd_case "/ok-to-test from non-collaborator denied" "false" "untrusted_commenter" ""
+set_role "maint" "write"
+
+# The PR author's own permission is irrelevant: a fork author with write
+# access still needs a write+ commenter.
+set_role "forker" "write"
+export COMMENTER_LOGIN="forker"
+write_runs "2026-06-01T11:00:00Z"
+run_cmd_case "/ok-to-test from write fork author authorizes own head" "true" "ok_to_test" "${HEAD_SHA}"
+set_role "forker" "read"
+run_cmd_case "/ok-to-test from read fork author denied" "false" "untrusted_commenter" ""
+export COMMENTER_LOGIN="maint"
+
+# Head moved at or after the comment.
+write_runs "2026-06-01T11:00:00Z" "2026-06-01T12:30:00Z"
+run_cmd_case "head pushed after the comment is stale" "false" "stale_ok_to_test" "${HEAD_SHA}"
+write_runs "2026-06-01T12:00:00Z"
+run_cmd_case "head pushed at the comment time is stale" "false" "stale_ok_to_test" "${HEAD_SHA}"
+
+# A run on another branch or fork with the same sha does not date this head.
+write_runs "2026-06-01T09:00:00Z,other-branch" "2026-06-01T09:00:00Z,feature,attacker/fullsend"
+run_cmd_case "runs from other branches or forks are ignored" "false" "unknown_head_time" "${HEAD_SHA}"
+write_runs "2026-06-01T09:00:00Z,other-branch" "2026-06-01T11:00:00Z"
+run_cmd_case "matching run dates the head when others exist" "true" "ok_to_test" "${HEAD_SHA}"
+
+write_runs
+run_cmd_case "no pull_request run for head sha is refused" "false" "unknown_head_time" "${HEAD_SHA}"
+
+# Force pushes: after the comment, or after the head's run (sha came back).
+write_runs "2026-06-01T11:00:00Z"
+write_events '[{"event":"head_ref_force_pushed","created_at":"2026-06-01T12:01:00Z"}]'
+run_cmd_case "force push after the comment is stale" "false" "stale_ok_to_test" "${HEAD_SHA}"
+write_events '[{"event":"head_ref_force_pushed","created_at":"2026-06-01T11:30:00Z"}]'
+run_cmd_case "force push after the head run is stale" "false" "stale_ok_to_test" "${HEAD_SHA}"
+write_events '[{"event":"head_ref_force_pushed","created_at":"2026-06-01T10:30:00Z"},{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-06-01T11:45:00Z"}]'
+run_cmd_case "force push before the head run is ignored" "true" "ok_to_test" "${HEAD_SHA}"
+write_events '[]'
+
+# Comment id: created_at and commenter come from the API.
+export COMMENT_ID="900"
+unset COMMENT_CREATED_AT
+write_comment "maint" "2026-06-01T12:00:00Z"
+run_cmd_case "comment id supplies created_at" "true" "ok_to_test" "${HEAD_SHA}"
+write_comment "maint" "2026-06-01T10:30:00Z"
+run_cmd_case "comment id created_at before the head run is stale" "false" "stale_ok_to_test" "${HEAD_SHA}"
+export COMMENT_CREATED_AT="2026-06-01T12:00:00Z"
+run_cmd_case "comment id created_at wins over the payload time" "false" "stale_ok_to_test" "${HEAD_SHA}"
+unset COMMENT_CREATED_AT
+write_comment "someone-else" "2026-06-01T12:00:00Z"
+run_cmd_case "comment by another user fails closed" "false" "error" ""
+write_comment "maint" "2026-06-01T12:00:00Z" "43"
+run_cmd_case "comment on another PR fails closed" "false" "error" ""
+unset COMMENTER_LOGIN
+write_comment "maint" "2026-06-01T12:00:00Z"
+run_cmd_case "comment id supplies the commenter" "true" "ok_to_test" "${HEAD_SHA}"
+export COMMENTER_LOGIN="maint"
+export COMMENT_ID="900/../../pulls/1"
+run_cmd_case "non-numeric comment id fails closed" "false" "error" ""
+unset COMMENT_ID
+
+unset COMMENT_CREATED_AT
+run_cmd_case "missing comment time fails closed" "false" "error" ""
+export COMMENT_CREATED_AT="2026-06-01T12:00:00Z"
+unset COMMENTER_LOGIN
+run_cmd_case "missing commenter fails closed" "false" "error" ""
+export COMMENTER_LOGIN="maint"
+
+export GH_FAIL="permission"
+run_cmd_case "commenter permission API failure returns error" "false" "error" ""
+export GH_FAIL="runs"
+run_cmd_case "workflow runs API failure returns error" "false" "error" ""
+export GH_FAIL="events"
+run_cmd_case "events API failure returns error" "false" "error" ""
+export GH_FAIL="false"
+
+unset EVENT_NAME COMMENTER_LOGIN COMMENT_CREATED_AT COMMENT_ID
 
 # Clean up
 unset PR_AUTHOR_ASSOCIATION PR_AUTHOR_LOGIN
