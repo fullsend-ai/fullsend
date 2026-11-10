@@ -232,7 +232,7 @@ variables (`GITHUB_ACTIONS`, `GITLAB_CI`).
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
-**Tip**: use `--sync-workspace` (or `FULLSEND_SYNC_WORKSPACE=true`) if you want modified files from the sandbox synchronized back into your local repository upon successful agent completion.
+**Tip**: use `--sync-target-repo` (or `FULLSEND_SYNC_TARGET_REPO=true`) if you want modified files from the sandbox synchronized back into your local repository upon successful agent completion.
 
 **Tip**: `fullsend run` uses multiple tools on your system. Instead of
 installing them all, you can use a container image fullsend publishes —
@@ -330,15 +330,15 @@ fullsend run code \
 
 By default, `fullsend run` operates in an isolated sandbox and leaves your local target repository untouched. When developing, testing, or inspecting changes locally, you can automatically synchronize modified, added, and deleted files back to your local checkout upon success:
 
-1. **Run with `--sync-workspace`**:
+1. **Run with `--sync-target-repo`**:
    ```bash
    fullsend run code \
      --fullsend-dir /tmp/fullsend-agents/ \
      --target-repo /tmp/target-repo/ \
      --env-file fullsend-code.env \
-     --sync-workspace
+     --sync-target-repo
    ```
-   Or enable it via environment variable (`FULLSEND_SYNC_WORKSPACE=true` in your shell or dotenv file).
+   Or enable it via environment variable (`FULLSEND_SYNC_TARGET_REPO=true` in your shell or dotenv file).
 
 2. **Inspect synchronized changes**:
    Once the agent finishes and validation passes, file additions, modifications, and deletions from the sandbox are mirrored into `/tmp/target-repo/`:
@@ -348,7 +348,7 @@ By default, `fullsend run` operates in an isolated sandbox and leaves your local
    git diff
    ```
 
-*Note*: Synchronization is strictly success-gated. If the agent run, validation loop, or transcript encounters an error, or if the run times out, synchronization is skipped to ensure the target repository remains untouched. Critical paths like `.git/` and configured output directories are excluded from synchronization and protected against pruning.
+*Note*: Synchronization is strictly success-gated. If the agent run, validation loop, or transcript encounters an error, or if the run times out, synchronization is skipped to ensure the target repository remains untouched. Critical paths like `.git/` (at any depth) and configured output directories are excluded from synchronization and protected against pruning. Runner-injected files (`AGENTS.md`, `CLAUDE.md`) and uncommitted agent working directories (`.agentready/`, `.fullsend-workspace/`) are also excluded when they did not exist on the host prior to the run. Atomic file writes are used to break hardlinks and prevent modifying shared inodes outside the target repository.
 
 ### Choosing the runtime
 

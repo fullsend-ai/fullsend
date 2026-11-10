@@ -133,21 +133,21 @@ func TestResolveRunOverrides_Precedence(t *testing.T) {
 			want:    runOverrides{model: "opus", modelSource: envPiModel},
 		},
 		{
-			name: "FULLSEND_SYNC_WORKSPACE enables sync when flags absent",
-			env:  map[string]string{envSyncWorkspace: "true"},
-			want: runOverrides{syncWorkspace: true, syncWorkspaceSource: envSyncWorkspace},
+			name: "FULLSEND_SYNC_TARGET_REPO enables sync when flags absent",
+			env:  map[string]string{envSyncTargetRepo: "true"},
+			want: runOverrides{syncTargetRepo: true, syncTargetRepoSource: envSyncTargetRepo},
 		},
 		{
-			name:  "--sync-workspace flag beats FULLSEND_SYNC_WORKSPACE",
-			flags: runOverrideFlags{syncWorkspace: false, syncWorkspaceSet: true},
-			env:   map[string]string{envSyncWorkspace: "true"},
-			want:  runOverrides{syncWorkspace: false, syncWorkspaceSource: sourceFlagSyncWorkspace},
+			name:  "--sync-target-repo flag beats FULLSEND_SYNC_TARGET_REPO",
+			flags: runOverrideFlags{syncTargetRepo: false, syncTargetRepoSet: true},
+			env:   map[string]string{envSyncTargetRepo: "true"},
+			want:  runOverrides{syncTargetRepo: false, syncTargetRepoSource: sourceFlagSyncTargetRepo},
 		},
 		{
-			name:  "--sync-workspace=true beats FULLSEND_SYNC_WORKSPACE=false",
-			flags: runOverrideFlags{syncWorkspace: true, syncWorkspaceSet: true},
-			env:   map[string]string{envSyncWorkspace: "false"},
-			want:  runOverrides{syncWorkspace: true, syncWorkspaceSource: sourceFlagSyncWorkspace},
+			name:  "--sync-target-repo=true beats FULLSEND_SYNC_TARGET_REPO=false",
+			flags: runOverrideFlags{syncTargetRepo: true, syncTargetRepoSet: true},
+			env:   map[string]string{envSyncTargetRepo: "false"},
+			want:  runOverrides{syncTargetRepo: true, syncTargetRepoSource: sourceFlagSyncTargetRepo},
 		},
 	}
 	for _, tc := range cases {

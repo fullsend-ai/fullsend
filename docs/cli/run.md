@@ -544,9 +544,10 @@ When running locally or in CI pipelines (such as GitLab CI), downstream jobs or 
 By default, `fullsend run` downloads the modified repository from the sandbox into a temporary directory (`/tmp/fs-*`) and deletes it on exit unless `--keep-sandbox` is set.
 
 Passing `--sync-target-repo` (or setting `FULLSEND_SYNC_TARGET_REPO=true`):
-- Safely copies additions, edits, and deletions from the sanitized sandbox download back to the `--target-repo` directory.
-- Strictly protects `.git/` (at any depth) and output directories so local git configurations, branches, and histories are never corrupted or overwritten.
-- Only executes if the agent run and validation loop succeed, preventing broken or partially written iterations from polluting your working tree.
+- Safely copies additions, edits, and deletions from the sanitized sandbox download back to the `--target-repo` directory using atomic file writes to prevent modifying shared hardlink inodes outside the target repository.
+- Strictly protects `.git/` metadata at any depth (including root Git metadata, submodules, and nested repositories) and configured output directories from being modified or pruned.
+- Automatically excludes runner-injected files (such as `AGENTS.md` and `CLAUDE.md`) and uncommitted agent working directories (such as `.agentready/` and `.fullsend-workspace/`) when they were not present in the host checkout before the run.
+- Only executes if the agent run, transcript, and validation loop succeed without timeout, preventing broken or partially written iterations from polluting your working tree.
 
 ## Related
 

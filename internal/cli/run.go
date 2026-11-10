@@ -449,7 +449,7 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			oFlags.syncWorkspaceSet = cmd.Flags().Changed("sync-workspace")
+			oFlags.syncTargetRepoSet = cmd.Flags().Changed("sync-target-repo")
 			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
@@ -461,7 +461,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringArrayVar(&envFiles, "env-file", nil, "load environment variables from a dotenv file (repeatable)")
 	cmd.Flags().BoolVar(&noPostScript, "no-post-script", false, "skip post-script execution (agent still runs full inference)")
 	cmd.Flags().BoolVar(&keepSandbox, "keep-sandbox", false, "skip sandbox and download directory deletion after the run (useful for post-failure inspection)")
-	cmd.Flags().BoolVar(&oFlags.syncWorkspace, "sync-workspace", false, "synchronize sanitized modified files from the sandbox back to the target repository directory upon completion (also $FULLSEND_SYNC_WORKSPACE)")
+	cmd.Flags().BoolVar(&oFlags.syncTargetRepo, "sync-target-repo", false, "synchronize sanitized modified files from the sandbox back to the target repository directory upon completion (also $FULLSEND_SYNC_TARGET_REPO)")
 	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable agent runtime debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
@@ -2473,6 +2473,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// guidelines. Skills already instruct agents to read AGENTS.md from
 	// the project root — this ensures there is something to read even
 	// when the target repo has not authored its own.
+	var runnerInjectedSyncExcludes []string
 	agentsMDAvailable := hasAgentsMD(hostRepositoryDir)
 	if !agentsMDAvailable {
 		orgAgentsMD := filepath.Join(absFullsendDir, "AGENTS.md")
@@ -2481,6 +2482,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepWarn("Could not inject org AGENTS.md: " + err.Error())
 			} else {
 				agentsMDAvailable = true
+				runnerInjectedSyncExcludes = append(runnerInjectedSyncExcludes, "AGENTS.md")
 				// Hide the injected file from git status so agents don't stage it.
 				excludeCmd := fmt.Sprintf("echo 'AGENTS.md' >> %s/.git/info/exclude", remoteRepositoryDir)
 				if _, _, _, err := sandbox.Exec(sandboxName, excludeCmd, 5*time.Second); err != nil {
@@ -2498,6 +2500,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// repos that only have AGENTS.md. Runtimes opt in via ContextBridger.
 	if agentruntime.WantsClaudeMDBridge(rt) && agentsMDAvailable && !hasClaudeMD(hostRepositoryDir) {
 		injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer)
+		runnerInjectedSyncExcludes = append(runnerInjectedSyncExcludes, "CLAUDE.md")
 	}
 
 	// 8a.2. Copy AGENTS.md to where a runtime that does not read it from
@@ -2510,6 +2513,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Agents may create working directories (e.g. .agentready/) during
 	// execution. These must never appear in commits. Adding them to
 	// .git/info/exclude ensures git status/add ignores them entirely.
+	for _, pattern := range agentWorkingDirExcludes {
+		clean := strings.TrimSuffix(pattern, "/")
+		if _, err := os.Stat(filepath.Join(hostRepositoryDir, clean)); os.IsNotExist(err) {
+			runnerInjectedSyncExcludes = append(runnerInjectedSyncExcludes, clean)
+		}
+	}
 	if err := excludeAgentWorkingDirs(sandboxName, remoteRepositoryDir, gitExtraExcludes, printer); err != nil {
 		printer.StepWarn("Could not exclude agent working dirs: " + err.Error())
 	}
@@ -3160,19 +3169,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// 9g. Synchronize sandbox changes to workspace if requested.
-	if shouldSyncWorkspace(overrides.syncWorkspace, repoExtractedOK, h.ValidationLoop != nil, validationPassed, lastIterTimedOut, transcriptErrorOverride, lastExitCode) {
+	// 9g. Synchronize sandbox changes to target repository if requested.
+	if shouldSyncTargetRepo(overrides.syncTargetRepo, repoExtractedOK, h.ValidationLoop != nil, validationPassed, lastIterTimedOut, transcriptErrorOverride, lastExitCode) {
 		syncStart := time.Now()
-		printer.StepStart("Synchronizing sandbox changes to workspace")
+		printer.StepStart("Synchronizing sandbox changes to target repository")
 		syncExcludes := []string{".git"}
 		if rel, ok := syncOutputExcludeRel(hostRepositoryDir, outputBase); ok {
 			syncExcludes = append(syncExcludes, rel)
 		}
-		if err := syncWorkspaceDir(hostRepositoryDownloadDir, hostRepositoryDir, syncExcludes); err != nil {
-			printer.StepFail("Workspace synchronization failed: " + err.Error())
-			return fmt.Errorf("syncing workspace: %w", err)
+		syncExcludes = append(syncExcludes, runnerInjectedSyncExcludes...)
+		if err := syncTargetRepoDir(hostRepositoryDownloadDir, hostRepositoryDir, syncExcludes); err != nil {
+			printer.StepFail("Target repository synchronization failed: " + err.Error())
+			return fmt.Errorf("syncing target repository: %w", err)
 		}
-		printer.StepDone(fmt.Sprintf("Workspace synchronized to %s (%.1fs)", hostRepositoryDir, time.Since(syncStart).Seconds()))
+		printer.StepDone(fmt.Sprintf("Target repository synchronized to %s (%.1fs)", hostRepositoryDir, time.Since(syncStart).Seconds()))
 	}
 
 	// 10. Print results.
@@ -3194,11 +3204,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.KeyValue("Validation", "failed")
 		}
 	}
-	if overrides.syncWorkspace {
-		if shouldSyncWorkspace(true, repoExtractedOK, h.ValidationLoop != nil, validationPassed, lastIterTimedOut, transcriptErrorOverride, lastExitCode) {
-			printer.KeyValue("Workspace sync", fmt.Sprintf("synchronized to %s", hostRepositoryDir))
+	if overrides.syncTargetRepo {
+		if shouldSyncTargetRepo(true, repoExtractedOK, h.ValidationLoop != nil, validationPassed, lastIterTimedOut, transcriptErrorOverride, lastExitCode) {
+			printer.KeyValue("Target repo sync", fmt.Sprintf("synchronized to %s", hostRepositoryDir))
 		} else {
-			printer.KeyValue("Workspace sync", "skipped (run or validation failed)")
+			printer.KeyValue("Target repo sync", "skipped (run or validation failed)")
 		}
 	}
 	printer.Blank()
@@ -6231,12 +6241,12 @@ func syncOutputExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
 	return filepath.Clean(rel), true
 }
 
-// shouldSyncWorkspace returns whether sandbox changes should be synchronized
+// shouldSyncTargetRepo returns whether sandbox changes should be synchronized
 // back to the host repository. Synchronization is strictly gated: the user must
 // have enabled it, repository extraction must have succeeded, validation must
 // have passed (if configured), and neither timeouts, transcript errors, nor
 // non-zero exit codes must have occurred.
-func shouldSyncWorkspace(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool, exitCode int) bool {
+func shouldSyncTargetRepo(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool, exitCode int) bool {
 	if !syncEnabled || !repoExtractedOK || timedOut || transcriptErr || exitCode != 0 {
 		return false
 	}
@@ -6246,10 +6256,10 @@ func shouldSyncWorkspace(syncEnabled, repoExtractedOK, hasValidationLoop, valida
 	return true
 }
 
-// syncWorkspaceDir synchronizes files from srcDir into dstDir, mirroring additions,
+// syncTargetRepoDir synchronizes files from srcDir into dstDir, mirroring additions,
 // modifications, and deletions, while strictly preserving paths matching excludes
-// (such as ".git").
-func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
+// (such as ".git" at any depth, runner-injected files, and nested output directories).
+func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
 	absSrc, err := filepath.Abs(srcDir)
 	if err != nil {
 		return fmt.Errorf("resolving source directory: %w", err)
@@ -6266,6 +6276,26 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 		return fmt.Errorf("creating destination directory: %w", err)
 	}
 
+	// Pre-scan absDst for any nested .git entries (submodules, nested git repos, gitlinks)
+	// and record their relative paths in allExcludes so their parent directories are recognized
+	// as ancestors of excluded paths and protected from deletion or replacement.
+	allExcludes := append([]string(nil), excludes...)
+	_ = filepath.WalkDir(absDst, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if d.Name() == ".git" {
+			rel, rerr := filepath.Rel(absDst, path)
+			if rerr == nil && rel != "." && rel != ".git" {
+				allExcludes = append(allExcludes, rel)
+			}
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+		}
+		return nil
+	})
+
 	// 1. Copy / update all files from srcDir to dstDir (skipping excludes).
 	err = filepath.WalkDir(absSrc, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -6278,7 +6308,7 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 		if rel == "." {
 			return nil
 		}
-		if isExcludedPath(rel, excludes) {
+		if isExcludedPath(rel, allExcludes) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -6292,6 +6322,9 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 			if readErr != nil {
 				return readErr
 			}
+			if isAncestorOfExcludedPath(rel, allExcludes) {
+				return fmt.Errorf("cannot replace ancestor of excluded path %q with symlink", rel)
+			}
 			_ = os.RemoveAll(targetPath)
 			if err := os.Symlink(target, targetPath); err != nil {
 				return err
@@ -6301,6 +6334,9 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 
 		if d.IsDir() {
 			if fi, statErr := os.Lstat(targetPath); statErr == nil && !fi.IsDir() {
+				if isAncestorOfExcludedPath(rel, allExcludes) {
+					return fmt.Errorf("cannot replace ancestor of excluded path %q with directory", rel)
+				}
 				if err := os.Remove(targetPath); err != nil {
 					return err
 				}
@@ -6313,12 +6349,12 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 		}
 
 		if fi, statErr := os.Lstat(targetPath); statErr == nil && !fi.Mode().IsRegular() {
+			if isAncestorOfExcludedPath(rel, allExcludes) {
+				return fmt.Errorf("cannot replace ancestor of excluded path %q with file", rel)
+			}
 			if err := os.RemoveAll(targetPath); err != nil {
 				return err
 			}
-		}
-		if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-			return err
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -6328,20 +6364,14 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(targetPath, data, info.Mode().Perm()); err != nil {
-			_ = os.Remove(targetPath)
-			if retryErr := os.WriteFile(targetPath, data, info.Mode().Perm()); retryErr != nil {
-				return retryErr
-			}
-		}
-		if err := os.Chmod(targetPath, info.Mode().Perm()); err != nil {
+		if err := writeAtomicFile(targetPath, data, info.Mode().Perm()); err != nil {
 			return err
 		}
 		_ = os.Chtimes(targetPath, time.Now(), info.ModTime())
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("copying files to workspace: %w", err)
+		return fmt.Errorf("copying files to target repository: %w", err)
 	}
 
 	// 2. Prune files from dstDir that do not exist in srcDir (skipping excludes).
@@ -6359,7 +6389,7 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 		if rel == "." {
 			return nil
 		}
-		if isExcludedPath(rel, excludes) {
+		if isExcludedPath(rel, allExcludes) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -6368,7 +6398,7 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 
 		srcPath := filepath.Join(absSrc, rel)
 		if _, statErr := os.Lstat(srcPath); os.IsNotExist(statErr) {
-			if d.IsDir() && isAncestorOfExcludedPath(rel, excludes) {
+			if isAncestorOfExcludedPath(rel, allExcludes) {
 				return nil
 			}
 			if err := os.RemoveAll(path); err != nil {
@@ -6381,14 +6411,62 @@ func syncWorkspaceDir(srcDir, dstDir string, excludes []string) error {
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("pruning deleted files from workspace: %w", err)
+		return fmt.Errorf("pruning deleted files from target repository: %w", err)
 	}
 
 	return nil
 }
 
+// writeAtomicFile writes data to targetPath atomically by writing to a temporary file
+// in the same directory, fsyncing, setting permissions, and renaming over targetPath.
+// This breaks existing hardlinks to prevent modifying inodes outside dstDir.
+func writeAtomicFile(targetPath string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(targetPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".tmp-sync-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, targetPath); err != nil {
+		return err
+	}
+	cleanup = false
+	return nil
+}
+
 func isExcludedPath(relPath string, excludes []string) bool {
 	relClean := filepath.Clean(relPath)
+	// Match any path segment named ".git" (submodules, nested git repos, root .git)
+	for _, part := range strings.Split(relClean, string(filepath.Separator)) {
+		if part == ".git" {
+			return true
+		}
+	}
 	for _, ex := range excludes {
 		exClean := filepath.Clean(ex)
 		if relClean == exClean || strings.HasPrefix(relClean, exClean+string(filepath.Separator)) {

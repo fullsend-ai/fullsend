@@ -30,23 +30,23 @@ const (
 	// editing each harness.
 	envCodexModel = "FULLSEND_CODEX_MODEL"
 
-	envSyncWorkspace = "FULLSEND_SYNC_WORKSPACE"
+	envSyncTargetRepo = "FULLSEND_SYNC_TARGET_REPO"
 
-	sourceFlagRuntime       = "--runtime flag"
-	sourceFlagModel         = "--model flag"
-	sourceFlagEffort        = "--effort flag"
-	sourceFlagSyncWorkspace = "--sync-workspace flag"
-	sourceHarness           = "harness"
-	sourceDefault           = "default"
+	sourceFlagRuntime        = "--runtime flag"
+	sourceFlagModel          = "--model flag"
+	sourceFlagEffort         = "--effort flag"
+	sourceFlagSyncTargetRepo = "--sync-target-repo flag"
+	sourceHarness            = "harness"
+	sourceDefault            = "default"
 )
 
 // runOverrideFlags are the per-run override flags of `fullsend run`.
 type runOverrideFlags struct {
-	runtime          string
-	model            string
-	effort           string
-	syncWorkspace    bool
-	syncWorkspaceSet bool
+	runtime           string
+	model             string
+	effort            string
+	syncTargetRepo    bool
+	syncTargetRepoSet bool
 }
 
 // runOverrides is the resolved per-run override set. Empty *Source fields
@@ -65,8 +65,8 @@ type runOverrides struct {
 	fallbackModels []string
 	fallbackSource string
 
-	syncWorkspace       bool
-	syncWorkspaceSource string
+	syncTargetRepo       bool
+	syncTargetRepoSource string
 }
 
 // runtimeModelEnv returns the runtime-scoped model override variable for a
@@ -133,13 +133,13 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 			o.fallbackSource = envFallbackModels
 		}
 	}
-	if flags.syncWorkspaceSet {
-		o.syncWorkspace = flags.syncWorkspace
-		o.syncWorkspaceSource = sourceFlagSyncWorkspace
-	} else if v := env(envSyncWorkspace); v != "" {
+	if flags.syncTargetRepoSet {
+		o.syncTargetRepo = flags.syncTargetRepo
+		o.syncTargetRepoSource = sourceFlagSyncTargetRepo
+	} else if v := env(envSyncTargetRepo); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
-			o.syncWorkspace = b
-			o.syncWorkspaceSource = envSyncWorkspace
+			o.syncTargetRepo = b
+			o.syncTargetRepoSource = envSyncTargetRepo
 		}
 	}
 
