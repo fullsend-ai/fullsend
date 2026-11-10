@@ -301,6 +301,24 @@ func TestResolveRelativeTo_HostFileTraversalRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "resolves outside fullsend directory")
 }
 
+// A local harness's api_servers[].script keeps resolving against the harness
+// directory, as today: only a URL-fetched base's entries are rewritten to the
+// cached copy at composition time (AISDLC-545 ac_3).
+func TestResolveRelativeTo_APIServers(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		APIServers: []APIServer{
+			{Name: "api", Script: "scripts/api.sh", Port: 8080},
+			{Name: "empty-script", Script: ""},
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.Equal(t, "/base/dir/scripts/api.sh", h.APIServers[0].Script)
+	assert.Equal(t, "", h.APIServers[1].Script, "an empty script stays empty")
+}
+
 func TestLoad_FileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path.yaml")
 	require.Error(t, err)
