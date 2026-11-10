@@ -1,26 +1,154 @@
 name: E2E ok-to-test
 
-# Thin labeled-only entry point for fork / ok-to-test authorization.
-# Calls E2E Tests via workflow_call so non-ok-to-test labels (e.g. ready-for-review)
-# do not start skipped runs under the "E2E Tests" workflow name.
+# Maintainer-authorized e2e for fork PRs (#9245). Fork PRs get no secrets on
+# pull_request, so E2E Tests skips their suites. A user with write access
+# reviews the latest push and comments /ok-to-test on the PR. This is gh-aw's
+# inline slash-command model: issue_comment plus a commenter role gate, with
+# the workflow file always taken from the default branch.
 #
-# No caller-level concurrency on the e2e-{n} group — sharing that group between
-# this caller and the reusable e2e.yml deadlocks.
+# Called jobs report as "run / behaviour" on the default-branch commit, which
+# the main ruleset does not read. So `authorize` creates check runs named
+# behaviour and playback on the authorized head sha, and `report` completes
+# them from the suite results. Only these two jobs hold write scopes; the
+# suite jobs that run PR code never do (gh-aw's safe-outputs split).
+#
+# No caller-level concurrency: e2e.yml queues /ok-to-test runs in its own
+# e2e-ok-to-test-{n} group, and sharing a group with the callee deadlocks.
 
 permissions: {}
 
 on:
-  pull_request_target:
-    types: [labeled]
+  issue_comment:
+    types: [created]
 
 jobs:
+  authorize:
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      !github.event.repository.fork &&
+      startsWith(github.event.comment.body, '/ok-to-test')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
+      head_sha: ${{ steps.auth.outputs.head_sha }}
+      behaviour_check_id: ${{ steps.checks.outputs.behaviour }}
+      playback_check_id: ${{ steps.checks.outputs.playback }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}  # Default branch only — never check out PR head here
+          persist-credentials: false
+
+      # Commenter must have write+; authorizes the head sha only when it became
+      # the head before the comment. Posts the refusal comment itself.
+      - name: Check /ok-to-test authorization
+        id: auth
+        uses: ./.github/actions/check-e2e-authorization
+        with:
+          pr_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          event_name: ${{ github.event_name }}
+          commenter_login: ${{ github.event.comment.user.login }}
+          comment_id: ${{ github.event.comment.id }}
+
+      - name: Validate authorized head sha
+        if: steps.auth.outputs.authorized == 'true'
+        env:
+          HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
+        run: |
+          [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad head sha '${HEAD_SHA}'"; exit 1; }
+
+      - name: Create behaviour and playback check runs on the PR head
+        id: checks
+        if: steps.auth.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for name in behaviour playback; do
+            id=$(gh api -X POST "repos/${REPO}/check-runs" \
+              -f name="${name}" -f head_sha="${HEAD_SHA}" -f status=in_progress \
+              -f details_url="${RUN_URL}" \
+              -f 'output[title]=Running after /ok-to-test' \
+              -f "output[summary]=E2E ok-to-test run: ${RUN_URL}" \
+              --jq .id)
+            echo "${name}=${id}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Reply on the PR
+        if: steps.checks.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="E2E authorized for \`${HEAD_SHA}\` ([run](${RUN_URL})). A new push needs a new \`/ok-to-test\`."
+          gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" -f body="${body}" --silent
+
   run:
-    if: github.event.label.name == 'ok-to-test'
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
     # Caller permissions are a ceiling for the reusable workflow — must grant
-    # the union of job perms in e2e.yml (gate / behaviour / playback).
+    # the union of job perms in e2e.yml (gate / behaviour / playback), even
+    # for the gate job that skips on issue_comment.
     permissions:
       contents: read
       pull-requests: write
       id-token: write
     uses: ./.github/workflows/e2e.yml
+    with:
+      pr_number: ${{ github.event.issue.number }}
+      head_sha: ${{ needs.authorize.outputs.head_sha }}
     secrets: inherit
+
+  report:
+    needs: [authorize, run]
+    if: always() && needs.authorize.outputs.authorized == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      checks: write
+    steps:
+      - name: Complete behaviour and playback check runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_RESULT: ${{ needs.run.result }}
+          BEHAVIOUR_ID: ${{ needs.authorize.outputs.behaviour_check_id }}
+          BEHAVIOUR_RESULT: ${{ needs.run.outputs.behaviour_result }}
+          PLAYBACK_ID: ${{ needs.authorize.outputs.playback_check_id }}
+          PLAYBACK_RESULT: ${{ needs.run.outputs.playback_result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # job.status is success, failure or cancelled. An empty result means
+          # the job never reported (the call failed to start or was cancelled).
+          conclusion() {
+            case "$1" in
+              success|failure|cancelled) echo "$1" ;;
+              *) [[ "${RUN_RESULT}" == cancelled ]] && echo cancelled || echo failure ;;
+            esac
+          }
+          status=0
+          for pair in "behaviour:${BEHAVIOUR_ID}:${BEHAVIOUR_RESULT}" "playback:${PLAYBACK_ID}:${PLAYBACK_RESULT}"; do
+            IFS=: read -r name id result <<<"${pair}"
+            [[ -n "${id}" ]] || { echo "::error::no ${name} check run id"; status=1; continue; }
+            c=$(conclusion "${result}")
+            gh api -X PATCH "repos/${REPO}/check-runs/${id}" \
+              -f status=completed -f conclusion="${c}" \
+              -f "output[title]=${name}: ${c}" \
+              -f "output[summary]=E2E ok-to-test run: ${RUN_URL}" --silent
+            echo "${name}: ${c}"
+          done
+          exit "${status}"
