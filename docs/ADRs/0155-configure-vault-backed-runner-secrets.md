@@ -123,18 +123,24 @@ secrets:
   by secret name. A more-specific definition replaces the entire matching
   entry; fields within that entry and Vault candidate lists are not merged.
   This keeps connection identity and secret-path precedence explicit.
+- Connection definitions and secret entries must come from trusted
+  configuration revisions. This includes each secret's `connection` selection
+  and complete ordered `vault_secrets` list. A PR-head or event-provided layer
+  cannot define or override these entries, including by removing a trusted
+  Vault selection or omitting its `connection` to restore the native default.
+  A more-specific layer may replace an entry only when that layer is trusted.
+  Fullsend rejects an untrusted override before using the job's OIDC token.
 
 Service-specific endpoint and authentication fields live on the connection;
 secret locators, such as `vault_secrets`, live on each secret entry. Future
 secret services can add their own connection kinds and fields without
 changing the top-level `connections` and `secrets` shape. Connection settings
-must come from trusted configuration: the job's OIDC token is a bearer
-credential, and Fullsend must not send it to an address selected by untrusted
-PR-head or event-provided configuration. The Vault address must also pass
-deployment egress policy. Fullsend requests a short-lived Vault token for the
-current invocation, reads the configured values, and neither persists that
-token nor caches values between invocations. There is no static `VAULT_TOKEN`
-or AppRole-secret fallback.
+include the Vault address, so the job's bearer OIDC token is never sent to an
+address selected by untrusted PR-head or event-provided configuration. The
+Vault address must also pass deployment egress policy. Fullsend requests a
+short-lived Vault token for the current invocation, reads the configured
+values, and neither persists that token nor caches values between
+invocations. There is no static `VAULT_TOKEN` or AppRole-secret fallback.
 
 Vault paths may use `{{forge}}`, `{{repo.host}}`, `{{repo.owner}}`,
 `{{repo.name}}`, `{{repo.full_name}}`, and `{{org}}`. `repo.owner` is the
@@ -145,11 +151,19 @@ paths must include both `repo.host` and `repo.full_name`, preserving every
 nested namespace segment. Organization-shared paths use a separate
 `organizations/` prefix so they cannot collide with repository paths or a
 repository named `shared`. Values come from the trusted target-repository
-context, not PR-head or event-supplied repository names. The host is validated
-as one path component, and `repo.full_name` is expanded into individually
-validated path components. An unknown or unavailable variable fails closed
-before Vault access. The variable syntax is reserved for path interpolation
-and is distinct from shell environment expansion.
+context, not PR-head or event-supplied repository names. `forge`, `repo.host`,
+`repo.owner`, `repo.name`, and `org` each form one path component. Fullsend
+splits `repo.full_name` on `/` and handles each namespace/project component
+separately, preserving nested groups. Every component must be non-empty, must
+not be `.` or `..`, and must not contain `/`, `\`, or control characters.
+Fullsend encodes each validated component using path-segment semantics and
+joins the encoded components; it never inserts raw template values into the
+Vault request URL. After expansion, Fullsend validates the complete relative
+KV v2 API path: it has no leading `/`, scheme, authority, query, fragment,
+empty component, `.` or `..` component, or path escape. Unknown or unavailable
+variables and invalid paths fail closed before Vault access. The variable
+syntax is reserved for path interpolation and is distinct from shell
+environment expansion.
 
 The initial Vault-eligible set is user-managed runner secrets whose lifecycle
 Fullsend does not create or rotate: `JIRA_TOKEN`,

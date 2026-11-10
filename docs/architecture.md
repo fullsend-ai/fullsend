@@ -169,9 +169,14 @@ repo baseline and overrides)
   and settings, while `secrets` entries select a connection (native when
   omitted). A Vault connection has an address and JWT role/audience, defaulting
   to `fullsend-runner` and `https://fullsend.sh/vault`; secret paths are ordered
-  and templated from trusted repository context. Vault access uses job
-  OIDC/WIF, and connection settings must come from trusted configuration.
-  Native remains the default only when no Vault connection is selected;
+  and templated from trusted repository context. Connection definitions and
+  secret entries, including source selection and path order, must come from
+  trusted configuration revisions; PR-head and event-provided config cannot
+  define or override these entries, including removing a trusted Vault
+  selection or omitting its `connection` to restore native. Fullsend validates
+  and encodes every path component and validates the completed relative KV API
+  path before access. Vault access uses job OIDC/WIF. Native remains the
+  default only when no Vault connection is selected;
   an explicit Vault selection fails closed when WIF or Vault resolution is
   unavailable. Installer-managed GitLab credentials remain native until Vault
   write and rotation behavior is decided
