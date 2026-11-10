@@ -73,7 +73,7 @@ exception.
 | Option | Fork PRs | Works by 2026-12-02 | Why not chosen |
 |---|---|---|---|
 | A. Keep `pull_request_target`, allow it with an event policy | Automatic | Yes | Every adopting repository or organization must create and maintain an allow policy for one workflow file. GitHub's default points the other way |
-| **B. `pull_request` with a same-repo guard; forks via `/fs-review`** | Maintainer command | Yes, as a normal release upgrade | **Chosen** |
+| **B. `pull_request` with a same-repo guard; forks via `/fs-review`** | `/fs-review` comment | Yes, as a normal release upgrade | **Chosen** |
 | C. `pull_request` plus a `workflow_run` follow-up job | Automatic | Yes | Runs the same privileged agent on fork input, just behind another event. Ruled out in #9221 |
 | D. Platform-service webhook receiver (GitHub App) that authorizes, then starts `workflow_dispatch` | Automatic, with authorization | No (weeks of work) | Brings back automatic fork review, but needs a hosted receiver. Not decided here |
 
@@ -99,8 +99,10 @@ event-policy exception.
    install mode, private repositories must keep both "send secrets to
    workflows from fork pull requests" and "send write tokens to workflows from
    fork pull requests" turned off.
-3. **Fork PRs.** A maintainer comments `/fs-review` to review a fork PR. That
-   runs on `issue_comment` from the base branch, with the authorization of
+3. **Fork PRs.** To review a fork PR, someone authorized for `/fs-review`
+   comments it: a person (not a bot) with triage access or higher, or, with
+   the `owners_file` provider on, an OWNERS approver or reviewer. That runs on
+   `issue_comment` from the base branch, with the authorization of
    [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
    unchanged. Fork PRs get no automatic retro.
 4. **Base checkout.** Every checkout in the dispatch workflow takes the base
@@ -147,16 +149,21 @@ event-policy exception.
   App as today, so inference setup and where reviews appear do not change;
   public repositories that do not upgrade lose both, while `/fs-*` commands,
   triage and the fix loop keep working.
-- Fork PRs lose automatic review and retro until a maintainer comments
-  `/fs-review`; the webhook receiver of option D stays open as a follow-up to
-  restore automatic fork review.
+- Fork PRs lose automatic review and retro, whoever the author is. This
+  includes members and maintainers working from forks, who get automatic
+  review today because they pass authorization. Someone authorized for
+  `/fs-review` (rule 3) must comment it to get a review. Authors who want
+  automatic review can push their branch to the repository instead of a fork.
+  The webhook receiver of option D stays open as the route back to automatic
+  review for authorized fork authors.
 - Retro on `closed` now runs only for same-repo PRs, whose authors already
   have write access, so an external author closing their own fork PR no longer
   triggers retro.
-- Two kinds of same-repo PR get no automatic review, and a maintainer
-  comments `/fs-review` instead. GitHub runs no `pull_request` workflow while
-  a PR has merge conflicts. Dependabot-triggered runs get only Dependabot
-  secrets, so dispatch skips them with a notice.
+- Two kinds of same-repo PR get no automatic review: GitHub runs no
+  `pull_request` workflow while a PR has merge conflicts, and
+  Dependabot-triggered runs get only Dependabot secrets, so dispatch skips
+  them with a notice. Someone authorized for `/fs-review` comments it
+  instead.
 - Base checkout and the fork refusal become the dispatch workflow's security
   invariants, replacing ADR 0009's "the shim never checks out PR code".
   Same-repo PR authors are trusted with the secrets the shim receives, as
