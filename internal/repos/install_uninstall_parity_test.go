@@ -21,11 +21,12 @@ import (
 // asserted. The uninstall lists intentionally carry names install never
 // writes, so that repositories installed by earlier versions are still cleaned
 // up: the superseded poller variables in gitlabRetiredLegacyVars, the
-// forge.VarLegacy* names, and the GitLab role-credential secrets. Two further
-// omissions are deliberate and documented at their definitions —
-// gitlabUninstallVars excludes the legacy shared forge token, and
-// gitlabUninstallSecrets excludes the unprefixed OPENAI_API_KEY because other
-// jobs in the same project may depend on it.
+// forge.VarLegacy* names, and the GitLab role-credential secrets. They also
+// carry the trace signing key and its key ID variable (ADR 0154), which
+// install does not write. Two further omissions are deliberate and documented
+// at their definitions — gitlabUninstallVars excludes the legacy shared forge
+// token, and gitlabUninstallSecrets excludes the unprefixed OPENAI_API_KEY
+// because other jobs in the same project may depend on it.
 //
 // One consequence worth stating: the secret check does not catch a name added
 // to inferenceSecretsForAuth that installSecretsForForge never writes. Only

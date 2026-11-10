@@ -101,17 +101,18 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if !r.WorkflowDeleted {
 		t.Error("WorkflowDeleted = false, want true")
 	}
-	if r.VarsDeleted != 5 {
-		t.Errorf("VarsDeleted = %d, want 5", r.VarsDeleted)
+	// 5 managed variables plus the FULLSEND_TRACE_SIGNING_KEY_ID ledger.
+	if r.VarsDeleted != 6 {
+		t.Errorf("VarsDeleted = %d, want 6", r.VarsDeleted)
 	}
 	// 2 required secrets plus the opt-in FULLSEND_OPENAI_API_KEY, which
 	// uninstall always attempts to delete (idempotent: a 404 for a repo
 	// that never set it is not an error) so a repo that did set it
 	// doesn't keep a long-lived key around after teardown, plus the four
 	// Jira polling credentials (token, email, OAuth client ID and
-	// secret), deleted the same way.
-	if r.SecretsDeleted != 7 {
-		t.Errorf("SecretsDeleted = %d, want 7", r.SecretsDeleted)
+	// secret) and the trace signing key, deleted the same way.
+	if r.SecretsDeleted != 8 {
+		t.Errorf("SecretsDeleted = %d, want 8", r.SecretsDeleted)
 	}
 
 	deleted := collectDeletedPaths(client)
@@ -130,11 +131,11 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 			t.Errorf("thin caller %s was not in deleted files", tcPath)
 		}
 	}
-	if len(client.DeletedVariables) != 5 {
-		t.Errorf("deleted %d variables, want 5", len(client.DeletedVariables))
+	if len(client.DeletedVariables) != 6 {
+		t.Errorf("deleted %d variables, want 6", len(client.DeletedVariables))
 	}
-	if len(client.DeletedSecrets) != 7 {
-		t.Errorf("deleted %d secrets, want 7", len(client.DeletedSecrets))
+	if len(client.DeletedSecrets) != 8 {
+		t.Errorf("deleted %d secrets, want 8", len(client.DeletedSecrets))
 	}
 	for _, ref := range client.DeletedRefs {
 		if strings.Contains(ref, poll.PollStateBranchSlash) || strings.Contains(ref, poll.PollStateBranchEvents) {
@@ -1181,13 +1182,102 @@ func TestUninstallSecretsForForge_GitLab_DeletesPrefixedOpenAIKeyOnly(t *testing
 	// The webhook fast-path credentials (#7772) are provisioned by install
 	// and must be deleted with the webhook and trigger token.
 	// The Jira polling credentials (#9076) are provisioned by install for
-	// Jira-enabled repos and must not outlive teardown.
-	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretJiraToken, forge.SecretJiraEmail, forge.SecretJiraClientID, forge.SecretJiraClientSecret}
+	// Jira-enabled repos and must not outlive teardown, nor may the trace
+	// signing key (ADR 0154).
+	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretJiraToken, forge.SecretJiraEmail, forge.SecretJiraClientID, forge.SecretJiraClientSecret, forge.SecretTraceSigningKey}
 	if !slices.Equal(got, want) {
 		t.Errorf("UninstallSecretsForForge(GitLab) = %v, want %v", got, want)
 	}
 	if slices.Contains(got, "OPENAI_API_KEY") {
 		t.Error("GitLab uninstall must not delete the unprefixed OPENAI_API_KEY")
+	}
+}
+
+// Uninstall deletes the trace signing key and its ledger on both forges
+// (ADR 0154): a torn-down repository keeps no private key.
+func TestUninstall_DeletesTraceSigningKeyAndLedger(t *testing.T) {
+	for _, tc := range []struct {
+		forgeName string
+		client    *forge.FakeClient
+		manifest  *Manifest
+	}{
+		{ForgeGitHub, newInstalledFakeClient("acme/api"), testManifest("acme/api")},
+		{ForgeGitLab, newInstalledFakeGitLabClient("acme/api"), testGitLabManifest("acme/api")},
+	} {
+		t.Run(tc.forgeName, func(t *testing.T) {
+			client := tc.client
+			client.Secrets["acme/api/"+forge.SecretTraceSigningKey] = true
+			client.VariableValues["acme/api/"+forge.VarTraceSigningKeyID] = "0123456789abcdef"
+			client.VariablesExist["acme/api/"+forge.VarTraceSigningKeyID] = true
+
+			results, err := Uninstall(context.Background(), UninstallConfig{
+				Manifest:       tc.manifest,
+				Repos:          []string{"acme/api"},
+				Direct:         true,
+				MaxConcurrency: 4,
+			}, newTestClientFactory(client), uninstallCommitFn(client), nil)
+			if err != nil {
+				t.Fatalf("Uninstall() error = %v", err)
+			}
+			if len(results) != 1 || !results[0].Success {
+				t.Fatalf("Uninstall() results = %+v, want one success", results)
+			}
+			if !slices.Contains(UninstallSecretsForForge(tc.forgeName), forge.SecretTraceSigningKey) {
+				t.Errorf("UninstallSecretsForForge(%s) does not include %s", tc.forgeName, forge.SecretTraceSigningKey)
+			}
+			if !slices.Contains(UninstallVarsForForge(tc.forgeName), forge.VarTraceSigningKeyID) {
+				t.Errorf("UninstallVarsForForge(%s) does not include %s", tc.forgeName, forge.VarTraceSigningKeyID)
+			}
+			if client.Secrets["acme/api/"+forge.SecretTraceSigningKey] {
+				t.Errorf("%s still present after uninstall", forge.SecretTraceSigningKey)
+			}
+			if _, ok := client.VariableValues["acme/api/"+forge.VarTraceSigningKeyID]; ok {
+				t.Errorf("%s still present after uninstall", forge.VarTraceSigningKeyID)
+			}
+		})
+	}
+}
+
+// No redactor knows the trace signing key's value during uninstall, so a
+// failed delete withholds the server's error text, as it does for the
+// webhook credentials.
+func TestUninstall_TraceSigningKeyDeleteErrorWithholdsServerText(t *testing.T) {
+	const canary = "CANARY-SEED-7f3a9c"
+	for _, tc := range []struct {
+		forgeName string
+		client    *forge.FakeClient
+		manifest  *Manifest
+	}{
+		{ForgeGitHub, newInstalledFakeClient("acme/api"), testManifest("acme/api")},
+		{ForgeGitLab, newInstalledFakeGitLabClient("acme/api"), testGitLabManifest("acme/api")},
+	} {
+		t.Run(tc.forgeName, func(t *testing.T) {
+			client := echoDeleteSecretClient{FakeClient: tc.client, failName: forge.SecretTraceSigningKey, echo: canary}
+			var progressMsgs []string
+			progress := func(_, _, msg string) { progressMsgs = append(progressMsgs, msg) }
+
+			results, err := Uninstall(context.Background(), UninstallConfig{
+				Manifest:       tc.manifest,
+				Repos:          []string{"acme/api"},
+				Direct:         true,
+				MaxConcurrency: 4,
+			}, newTestClientFactory(client), uninstallCommitFn(tc.client), progress)
+			if err != nil {
+				t.Fatalf("Uninstall() error = %v", err)
+			}
+			r := results[0]
+			if r.Success || r.Error == nil {
+				t.Fatalf("Success = %v, Error = %v, want a failed cleanup", r.Success, r.Error)
+			}
+			if msg := r.Error.Error(); !strings.Contains(msg, "deleting secret "+forge.SecretTraceSigningKey+": ") || !strings.Contains(msg, "server error text withheld") {
+				t.Errorf("Error = %q, want the delete error for %s with the server text withheld", msg, forge.SecretTraceSigningKey)
+			}
+			for _, msg := range append(progressMsgs, r.Error.Error()) {
+				if strings.Contains(msg, canary) {
+					t.Errorf("uninstall output carries the server's error text: %q", msg)
+				}
+			}
+		})
 	}
 }
 
