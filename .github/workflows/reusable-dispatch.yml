@@ -157,6 +157,9 @@ jobs:
           # is executed, and credentials are not persisted. Pin to base branch
           # SHA for PR-scoped events so kill-switch / role gating always reads
           # trusted config — PR authors cannot self-authorize.
+          # The .defaults markers and .fullsend/bin/ vendored binary feed the
+          # CLI install for the event payload step below (same trusted ref);
+          # nothing under them is executed here.
           ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
@@ -165,6 +168,9 @@ jobs:
             .fullsend/config.base.yaml
             /OWNERS
             /OWNERS_ALIASES
+            .defaults/action.yml
+            .fullsend/.defaults/action.yml
+            .fullsend/bin/
           sparse-checkout-cone-mode: false
 
       - name: Determine stage
@@ -1015,11 +1021,119 @@ jobs:
             echo "${DELIM}"
           } >> "${GITHUB_OUTPUT}"
 
+      # AISDLC-505: the built-in stage jobs run `fullsend run` with no event
+      # because the route job's payload carries no normalized event. Install
+      # the CLI (the CEL route steps above may already have) so the payload
+      # step below can embed the event's complete normalized form, the way
+      # harness dispatch does (buildEventPayload, #6748).
+      #
+      # This ladder is the third copy of the CLI install/cache machinery:
+      # keep a cache-key or path change in sync with the CEL route ladder
+      # above and the harness-dispatch ladder below. Unlike the cel-* steps
+      # it is NOT continue-on-error: the payload embed below is essential to
+      # the stage jobs' event contract, so an install or normalization
+      # failure fails closed here where the CEL ladder degrades to bash
+      # routing (a vendored binary too old for --print-event blocks the
+      # stages until the repo re-vendors, by the same policy).
+      - name: Detect CLI install mode for event payload
+        id: payload-cli
+        if: steps.route.outputs.stage != '' && steps.agent-check.outputs.skipped != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v fullsend >/dev/null 2>&1; then
+            echo "installed=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "installed=false" >> "${GITHUB_OUTPUT}"
+          fi
+          if [[ -f .defaults/action.yml || -f .fullsend/.defaults/action.yml ]]; then
+            echo "mode=vendored" >> "${GITHUB_OUTPUT}"
+          else
+            echo "mode=upstream" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Restore fullsend CLI cache for event payload
+        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream'
+        id: payload-cli-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ job.workflow_sha }}
+
+      - name: Install fullsend CLI for event payload (vendored)
+        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'vendored'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f .fullsend/bin/fullsend ]]; then
+            echo "::error::broken --vendor install: vendored marker present but .fullsend/bin/fullsend is missing"
+            exit 1
+          fi
+          mkdir -p "${RUNNER_TEMP}/fullsend"
+          cp .fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
+          chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
+          echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+
+      - name: Checkout upstream install action for event payload
+        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-actions
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/install-fullsend-cli/
+          sparse-checkout-cone-mode: false
+
+      - name: Install fullsend CLI for event payload (upstream workflow)
+        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        uses: ./.workflow-actions/.github/actions/install-fullsend-cli
+        with:
+          mode: upstream
+          workflow_repository: ${{ job.workflow_repository }}
+          workflow_sha: ${{ job.workflow_sha }}
+          github_token: ${{ github.token }}
+
+      - name: Expose cached fullsend CLI for event payload
+        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/fullsend"
+          mkdir -p "${install_dir}"
+          cp "${RUNNER_TEMP}/fullsend-cache/fullsend" "${install_dir}/fullsend"
+          chmod +x "${install_dir}/fullsend"
+          echo "${install_dir}" >> "${GITHUB_PATH}"
+
+      - name: Prepare fullsend CLI cache artifact for event payload
+        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/fullsend-cache"
+          cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+
+      - name: Save fullsend CLI cache for event payload
+        if: steps.route.outputs.stage != '' && steps.payload-cli.outputs.installed != 'true' && steps.payload-cli.outputs.mode == 'upstream' && steps.payload-cli-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.payload-cli.outputs.mode }}-${{ job.workflow_sha }}
+
       - name: Build event payload
         id: payload
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && steps.agent-check.outputs.skipped != 'true'
         env:
           PR_HEAD_JSON: ${{ steps.pr-head.outputs.pr_json }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ inputs.event_action }}
+          # The bot-role lookup `fullsend dispatch` applies to GitHub bot
+          # actors resolves its mint URL from config or this env var, the
+          # same channel the CEL route and harness-dispatch steps use, so
+          # the embedded event carries the same resolved actor.bot_role.
+          FULLSEND_MINT_URL: ${{ inputs.mint_url }}
         run: |
           set -euo pipefail
           EVENT_PAYLOAD=$(jq -c '{
@@ -1043,6 +1157,24 @@ jobs:
             echo "::error::Event payload is empty after extraction"
             exit 1
           fi
+
+          # Embed the event's complete normalized form so the built-in stage
+          # jobs can write it to the dispatch file `fullsend run` reads
+          # (AISDLC-505), the way harness dispatch embeds it (#6748). This
+          # fails closed on purpose: a stage job running without its event
+          # is the defect this fixes, so a normalization failure stops the
+          # route job rather than emitting a payload with no event.
+          NORMALIZED_EVENT=$(fullsend dispatch \
+            --input-driver gha-event \
+            --config-dir .fullsend \
+            --event-action "${EVENT_ACTION}" \
+            --print-event) || {
+            echo "::error::Failed to normalize the event for the routed stage"
+            exit 1
+          }
+          EVENT_PAYLOAD=$(printf '%s' "${EVENT_PAYLOAD}" \
+            | jq -c --argjson normalized "${NORMALIZED_EVENT}" '._normalized_event = $normalized')
+
           DELIM="PAYLOAD_$(openssl rand -hex 8)"
           {
             echo "event_payload<<${DELIM}"
@@ -1091,6 +1223,19 @@ jobs:
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
           source_repo: ${{ github.repository }}
+
+      # AISDLC-505: hand `fullsend run` the routed event. The payload from
+      # the route job embeds the event's complete normalized form; writing
+      # it to the dispatch file is how the harness-run job passes an event
+      # (extractNormalizedEventFromDispatch in internal/cli/run.go).
+      - name: Write dispatch event payload
+        shell: bash
+        env:
+          EVENT_PAYLOAD: ${{ needs.route.outputs.event_payload }}
+        run: |
+          set -euo pipefail
+          mkdir -p .fullsend/dispatch
+          printf '%s' "${EVENT_PAYLOAD}" > .fullsend/dispatch/event-payload.json
 
       - name: Mint triage token
         id: app-token
@@ -1206,6 +1351,19 @@ jobs:
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
           source_repo: ${{ github.repository }}
+
+      # AISDLC-505: hand `fullsend run` the routed event. The payload from
+      # the route job embeds the event's complete normalized form; writing
+      # it to the dispatch file is how the harness-run job passes an event
+      # (extractNormalizedEventFromDispatch in internal/cli/run.go).
+      - name: Write dispatch event payload
+        shell: bash
+        env:
+          EVENT_PAYLOAD: ${{ needs.route.outputs.event_payload }}
+        run: |
+          set -euo pipefail
+          mkdir -p .fullsend/dispatch
+          printf '%s' "${EVENT_PAYLOAD}" > .fullsend/dispatch/event-payload.json
 
       - name: Mint coder token
         id: app-token
@@ -1342,6 +1500,19 @@ jobs:
         with:
           source_repo: ${{ github.repository }}
 
+      # AISDLC-505: hand `fullsend run` the routed event. The payload from
+      # the route job embeds the event's complete normalized form; writing
+      # it to the dispatch file is how the harness-run job passes an event
+      # (extractNormalizedEventFromDispatch in internal/cli/run.go).
+      - name: Write dispatch event payload
+        shell: bash
+        env:
+          EVENT_PAYLOAD: ${{ needs.route.outputs.event_payload }}
+        run: |
+          set -euo pipefail
+          mkdir -p .fullsend/dispatch
+          printf '%s' "${EVENT_PAYLOAD}" > .fullsend/dispatch/event-payload.json
+
       - name: Mint review token
         id: app-token
         uses: ./.defaults/.github/actions/mint-token
@@ -1476,6 +1647,19 @@ jobs:
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
           source_repo: ${{ github.repository }}
+
+      # AISDLC-505: hand `fullsend run` the routed event. The payload from
+      # the route job embeds the event's complete normalized form; writing
+      # it to the dispatch file is how the harness-run job passes an event
+      # (extractNormalizedEventFromDispatch in internal/cli/run.go).
+      - name: Write dispatch event payload
+        shell: bash
+        env:
+          EVENT_PAYLOAD: ${{ needs.route.outputs.event_payload }}
+        run: |
+          set -euo pipefail
+          mkdir -p .fullsend/dispatch
+          printf '%s' "${EVENT_PAYLOAD}" > .fullsend/dispatch/event-payload.json
 
       - name: Mint coder token
         id: app-token
@@ -1743,6 +1927,19 @@ jobs:
         with:
           source_repo: ${{ github.repository }}
 
+      # AISDLC-505: hand `fullsend run` the routed event. The payload from
+      # the route job embeds the event's complete normalized form; writing
+      # it to the dispatch file is how the harness-run job passes an event
+      # (extractNormalizedEventFromDispatch in internal/cli/run.go).
+      - name: Write dispatch event payload
+        shell: bash
+        env:
+          EVENT_PAYLOAD: ${{ needs.route.outputs.event_payload }}
+        run: |
+          set -euo pipefail
+          mkdir -p .fullsend/dispatch
+          printf '%s' "${EVENT_PAYLOAD}" > .fullsend/dispatch/event-payload.json
+
       - name: Mint retro token
         id: app-token
         uses: ./.defaults/.github/actions/mint-token
@@ -1856,6 +2053,19 @@ jobs:
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
           source_repo: ${{ github.repository }}
+
+      # AISDLC-505: hand `fullsend run` the routed event. The payload from
+      # the route job embeds the event's complete normalized form; writing
+      # it to the dispatch file is how the harness-run job passes an event
+      # (extractNormalizedEventFromDispatch in internal/cli/run.go).
+      - name: Write dispatch event payload
+        shell: bash
+        env:
+          EVENT_PAYLOAD: ${{ needs.route.outputs.event_payload }}
+        run: |
+          set -euo pipefail
+          mkdir -p .fullsend/dispatch
+          printf '%s' "${EVENT_PAYLOAD}" > .fullsend/dispatch/event-payload.json
 
       - name: Setup agent environment
         env:
