@@ -12,6 +12,15 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 <optional trailers>
 ```
 
+Trailers appear at the end of the commit message, separated from the body by
+a blank line. Human-proposed commits must include a
+`Signed-off-by: Your Name <email>` trailer certifying the [Developer
+Certificate of Origin (DCO)](https://developercertificate.org/); use
+`git commit -s` to append it. A local `commit-msg` hook enforces this before
+commits are created. See
+[CONTRIBUTING.md § DCO](CONTRIBUTING.md#dco-developer-certificate-of-origin)
+for details.
+
 ## Types
 
 | Type | Purpose | Appears in release notes? |
