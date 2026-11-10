@@ -1,7 +1,9 @@
 name: GitHub Changelog Watch
 
 # Daily poll of the GitHub changelog and runner-images announcements for
-# Actions platform changes; see hack/github-changelog-watch.
+# Actions platform changes; see hack/github-changelog-watch. A missed run is
+# covered by the next one (74-hour window); to backfill further, dispatch
+# with `since` set to the last good run.
 
 on:
   schedule:
@@ -9,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       since:
-        description: "Start of the window, ISO-8601 (default: 26 hours ago)"
+        description: "Start of the window, ISO-8601 (default: 74 hours ago)"
         required: false
         type: string
       dry_run:
@@ -17,21 +19,43 @@ on:
         required: false
         type: boolean
         default: true
-  pull_request:
-    paths:
-      - ".github/workflows/github-changelog-watch.yml"
-      - "hack/github-changelog-watch"
-      - "hack/github_changelog_watch_test.py"
-      - "hack/testdata/github-changelog-watch/**"
 
 permissions: {}
 
+# One run at a time, so two runs cannot both open an issue for the same post.
 concurrency:
-  group: github-changelog-watch-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  group: ${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
+  # Dispatches from other branches run that branch's copy of the script, so
+  # they get a read-only token and always dry-run.
+  dry-run:
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Dry-run the watcher
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SINCE: ${{ inputs.since }}
+        run: |
+          set -euo pipefail
+          args=(--repo "$GITHUB_REPOSITORY" --dry-run)
+          if [[ -n "${SINCE:-}" ]]; then
+            args+=(--since "$SINCE")
+          fi
+          python3 hack/github-changelog-watch "${args[@]}"
+
   watch:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -46,8 +70,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SINCE: ${{ inputs.since }}
-          # Pull requests and non-main refs only ever dry-run.
-          DRY_RUN: ${{ github.event_name == 'pull_request' || github.ref != 'refs/heads/main' || inputs.dry_run == true }}
+          DRY_RUN: ${{ inputs.dry_run == true }}
         run: |
           set -euo pipefail
           args=(--repo "$GITHUB_REPOSITORY")
