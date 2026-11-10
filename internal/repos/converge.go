@@ -1348,6 +1348,28 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			continue
 		}
 
+		// The admin-set gateway key must also be usable by jobs; an
+		// existing but unusable variable (file-type, unmasked, unprotected)
+		// is rejected before any writes, without naming the value.
+		gatewayKeyDefect := ""
+		if d.resolved.requiresGatewayAPIKey() {
+			for _, c := range d.components {
+				if c.Name == "secret:"+forge.SecretInferenceGatewayAPIKey && c.Present && !c.Match {
+					gatewayKeyDefect = c.Actual
+					break
+				}
+			}
+		}
+		if gatewayKeyDefect != "" {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("%s/%s: the existing %s variable is not a masked, protected environment variable available to all environments (%s); fix it before installing",
+					d.repo.Owner, d.repo.Repo, forge.SecretInferenceGatewayAPIKey, gatewayKeyDefect),
+			}
+			continue
+		}
+
 		// Reusing an existing GitLab key that is unmasked or unprotected
 		// would expose it to unprotected branches or job logs; reject it
 		// without naming the value.

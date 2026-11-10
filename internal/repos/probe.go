@@ -294,7 +294,8 @@ func probeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 		}
 	}
 	for _, secretName := range probedSecrets {
-		if auth == InferenceAuthOpenAIAPIKey && secretName == forge.SecretOpenAIAPIKey {
+		if (auth == InferenceAuthOpenAIAPIKey && secretName == forge.SecretOpenAIAPIKey) ||
+			(gatewayOnly && secretName == forge.SecretInferenceGatewayAPIKey) {
 			// Existence alone is not readiness: jobs only get a masked,
 			// protected, wildcard-scoped environment variable. Present
 			// keeps meaning "exists"; Match reports usability.
