@@ -15,8 +15,8 @@ import (
 
 // codexDelegates is part one of the ADR 0126 gate: an agent gets native
 // sub-agent roles when its tools include Agent (an absent tools: includes
-// it, as on Claude Code and pi; Task is the alias codexToolMatcher already
-// maps to spawn_agent) and the harness has sandbox security enabled, because
+// it, as on Claude Code and pi; Task is the alias codexToolMatcher maps to
+// the same calls) and the harness has sandbox security enabled, because
 // the spawn guard that admits only registered roles is installed with the
 // hooks. Part two, codexParentResolvesV1, needs the pinned CLI's catalog and
 // is decided in Bootstrap.

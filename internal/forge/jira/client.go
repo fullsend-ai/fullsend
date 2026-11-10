@@ -143,17 +143,7 @@ func checkRedirect(req *http.Request, via []*http.Request) error {
 // uses it for OAuth 2.0 client credentials, which take the place of the
 // token.
 func New(token string, opts ...Option) (*LiveClient, error) {
-	c := &LiveClient{
-		httpClient: &http.Client{
-			Timeout:       30 * time.Second,
-			CheckRedirect: checkRedirect,
-		},
-		token:    token,
-		cloudSem: make(chan struct{}, 1),
-	}
-	for _, o := range opts {
-		o(c)
-	}
+	c := newLiveClient(token, opts)
 	if c.oauth == nil && token == "" {
 		return nil, fmt.Errorf("jira: token must not be empty")
 	}
@@ -166,18 +156,44 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 			return nil, fmt.Errorf("jira: OAuth token URL: %w", err)
 		}
 	}
+	if err := c.validateEndpoints(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+// newLiveClient returns a client with the default HTTP client and opts
+// applied, without validating it.
+func newLiveClient(token string, opts []Option) *LiveClient {
+	c := &LiveClient{
+		httpClient: &http.Client{
+			Timeout:       30 * time.Second,
+			CheckRedirect: checkRedirect,
+		},
+		token:    token,
+		cloudSem: make(chan struct{}, 1),
+	}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
+}
+
+// validateEndpoints checks that the site URL is set and that the site and
+// API gateway URLs pass ValidateBaseURL.
+func (c *LiveClient) validateEndpoints() error {
 	if c.baseURL == "" {
-		return nil, fmt.Errorf("jira: base URL must be set via WithBaseURL")
+		return fmt.Errorf("jira: base URL must be set via WithBaseURL")
 	}
 	if err := ValidateBaseURL(c.baseURL); err != nil {
-		return nil, err
+		return err
 	}
 	if c.gatewayURL != "" {
 		if err := ValidateBaseURL(c.gatewayURL); err != nil {
-			return nil, fmt.Errorf("jira: API gateway URL: %w", err)
+			return fmt.Errorf("jira: API gateway URL: %w", err)
 		}
 	}
-	return c, nil
+	return nil
 }
 
 // APIError represents an error response from the Jira API.
@@ -222,11 +238,21 @@ func (c *LiveClient) apiURL(ctx context.Context, path string) (string, error) {
 	if c.gatewayURL == "" {
 		return c.baseURL + "/rest/api/3" + path, nil
 	}
+	base, err := c.gatewaySiteURL(ctx)
+	if err != nil {
+		return "", err
+	}
+	return base + "/rest/api/3" + path, nil
+}
+
+// gatewaySiteURL returns the per-site gateway base
+// {gatewayURL}/ex/jira/{cloudId}, discovering the cloud ID on first use.
+func (c *LiveClient) gatewaySiteURL(ctx context.Context) (string, error) {
 	cloudID, err := c.resolveCloudID(ctx)
 	if err != nil {
 		return "", err
 	}
-	return c.gatewayURL + "/ex/jira/" + cloudID + "/rest/api/3" + path, nil
+	return c.gatewayURL + "/ex/jira/" + cloudID, nil
 }
 
 // maxTenantInfoBytes bounds the tenant_info response body.

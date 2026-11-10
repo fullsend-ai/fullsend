@@ -54,8 +54,8 @@ var runnerSecretRefusedPrefixes = []string{
 // one, so each name has a single source.
 // TestRunnerSecretNameRefused_CoversWorkflowSetNames keeps the step env:
 // part of the list in step with the workflows. GIT_BOT_EMAIL and the
-// OPENSHELL_* names arrive through GITHUB_ENV, and TARGET_REPO_DIR is set
-// by fullsend run itself, so the test cannot see them.
+// OPENSHELL_* names arrive through GITHUB_ENV, and TARGET_REPO_DIR and
+// JIRA_API_URL are set by fullsend run itself, so the test cannot see them.
 var workflowSetEnvNames = []string{
 	"AGENT", "CODE_ALLOWED_TARGET_BRANCHES", "COMMENT_BODY", "FIX_ITERATION",
 	"HUMAN_INSTRUCTION", "ISSUE_NUMBER", "JIRA_BASE_URL", "JIRA_TOKEN",
@@ -66,6 +66,7 @@ var workflowSetEnvNames = []string{
 	"STATUS_REPO", "STATUS_RUN_URL", "TARGET_BRANCH", "TARGET_REPO",
 	"TRIGGER_SOURCE",
 	"GIT_BOT_EMAIL", "OPENSHELL_VERSION", "OPENSHELL_SHA", "TARGET_REPO_DIR",
+	"JIRA_API_URL",
 }
 
 // runnerSecretRefusedNames are minted role tokens and other runner-owned

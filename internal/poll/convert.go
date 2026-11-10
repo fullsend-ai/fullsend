@@ -14,6 +14,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
+var errMissingMRCloserIdentity = errors.New("closed merge request has no closer identity")
+var errMissingMRMergerIdentity = errors.New("merged merge request has no merger identity")
+
 // toNormalizedEvent converts a RoutableEvent into a dispatch.NormalizedEvent
 // suitable for stage matching and dispatch. The returned int is the resolved
 // numeric actor ID (e.g. from the label-events API for issue_label events).
@@ -96,7 +99,7 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 	case "mr_event":
 		authorID = event.NoteAuthorID
 		switch event.Action {
-		case "opened", "closed", "synchronized":
+		case "opened", "synchronized":
 			actorLogin = event.NoteAuthorLogin
 			if actorLogin == "" {
 				actorLogin = event.MRAuthorLogin
@@ -105,8 +108,17 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 				authorID = event.MRAuthorID
 			}
 			isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
+		case "closed":
+			actorLogin = event.NoteAuthorLogin
+			if authorID == 0 || actorLogin == "" {
+				return dispatch.NormalizedEvent{}, 0, errMissingMRCloserIdentity
+			}
+			isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
 		default:
 			actorLogin = event.MergedByLogin
+			if authorID == 0 || actorLogin == "" {
+				return dispatch.NormalizedEvent{}, 0, errMissingMRMergerIdentity
+			}
 			isBot = event.IsBot || (p.botUserID != 0 && event.NoteAuthorID == p.botUserID) || isProjectAccessTokenBot(event.MergedByLogin)
 		}
 	}
@@ -390,12 +402,29 @@ func (p *Poller) buildChangeProposalState(ctx context.Context, event RoutableEve
 		BaseRepo: baseRepo,
 		HeadRef:  event.SourceBranch,
 		BaseRef:  event.TargetBranch,
-		// Set only where discovery read it (a synchronized event's diff
-		// version); empty otherwise and omitted from the event.
-		HeadSHA:  event.HeadSHA,
+		HeadSHA:  p.changeProposalHeadSHA(ctx, event),
 		AuthorID: event.MRAuthorLogin,
 		IsFork:   event.MRSource == 0 || event.MRTarget == 0 || event.MRSource != event.MRTarget,
 	}, nil
+}
+
+// changeProposalHeadSHA returns the head commit for an MR event's
+// change_proposal state. Discovery normally sets it: a synchronized event
+// from its diff version, every other MR event from the MR's sha. When an
+// event reaches here without one, the MR is read once more for its sha.
+// A synchronized event is never filled this way: its head keys the event
+// and must stay the diff-version head. A failed lookup is logged and leaves
+// the SHA empty (omitted from the event) rather than failing the event.
+func (p *Poller) changeProposalHeadSHA(ctx context.Context, event RoutableEvent) string {
+	if event.HeadSHA != "" || event.Action == "synchronized" {
+		return event.HeadSHA
+	}
+	mr, err := p.client.GetMergeRequest(ctx, p.owner, p.repo, event.IID)
+	if err != nil {
+		log.Printf("WARNING: get MR !%d for head SHA of %s: %v (head_sha left empty)", event.IID, event.Type, err)
+		return ""
+	}
+	return mr.SHA
 }
 
 func truncate(s string, maxLen int) string {

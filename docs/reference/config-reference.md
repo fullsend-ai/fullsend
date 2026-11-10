@@ -312,10 +312,14 @@ tracker:
   `{api_url}/ex/jira/{cloudId}/rest/api/3/...`. It discovers the cloud ID
   from `{base_url}/_edge/tenant_info` and keeps `base_url` for issue browse
   links. An override must serve the same gateway path layout. The Jira
-  poller (`fullsend poll --input-driver jira-poll`) uses this client.
-  `fullsend issues`, run-status updates, and reconciliation do not use this
-  setting yet. They switch to the shared client in
-  [#9078](https://github.com/fullsend-ai/fullsend/issues/9078).
+  poller (`fullsend poll --input-driver jira-poll`), `fullsend issues`,
+  run-status updates, and `fullsend reconcile-status` all use this client.
+  `api_url` holds only the gateway host. It is not the same as the
+  `JIRA_API_URL` variable that `fullsend run` sets for Jira-sourced agent
+  runs. That variable is the full per-site base `{api_url}/ex/jira/{cloudId}`
+  that agents append `/rest/api/3/...` to. For those runs `fullsend run` also
+  sets `JIRA_BASE_URL` to `base_url`. See
+  [Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
 - **`tracker.jira.project`** — The key of the single Jira project for this
   repository. It is not a fallback project, and it has no default.
 - **`tracker.jira.poll.enabled`** — Controls the managed poll workflow. `true`

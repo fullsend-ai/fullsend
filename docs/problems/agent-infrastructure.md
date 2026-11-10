@@ -143,7 +143,10 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
   runner's sandbox environment — its injected env vars, per-runtime values,
   and keys reserved from harness override — is published as a generated,
   machine-checkable contract in
-  [ADR 0146](../ADRs/0146-sandbox-environment-contract-manifest.md). Other
+  [ADR 0146](../ADRs/0146-sandbox-environment-contract-manifest.md). Jira
+  access for bot and Atlassian-managed service accounts uses the separate API
+  URL decided in
+  [ADR 0156](../ADRs/0156-separate-jira-api-url-from-site-url.md). Other
   agent resource access remains open.
 - Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
 - ~~How do we preserve end-to-end traceability for event-driven agent dispatch in GitHub Actions?~~ Decided in [ADR 0041](../ADRs/0041-synchronous-workflow-call-event-dispatch.md) (synchronous `workflow_call` dispatch for the event path).
