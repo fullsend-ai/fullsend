@@ -208,3 +208,30 @@ func TestGatewayOnlyCredentialHelpers(t *testing.T) {
 	assert.Equal(t, forge.VarGCPServiceAccount, vars[0].name)
 	assert.Equal(t, "inference is routed through inference.gateway", vars[0].reason)
 }
+
+// TestProbeComponentsForAuth_GatewayOnlyIgnoresLeftoverGCPSecrets covers a
+// gateway-only repository (empty auth past RequireInferenceAuth) that keeps
+// a leftover Vertex secret: the probe reports no secret component, so
+// status shows no drift convergence could never clear.
+func TestProbeComponentsForAuth_GatewayOnlyIgnoresLeftoverGCPSecrets(t *testing.T) {
+	for _, leftover := range [][]string{
+		{forge.SecretGCPProjectID},
+		{forge.SecretGCPWIFProvider},
+		{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider},
+	} {
+		fc := newFakeClientForBatch("acme/api")
+		markFullyInstalled(fc, "acme", "api")
+		delete(fc.Secrets, "acme/api/"+forge.SecretGCPProjectID)
+		delete(fc.Secrets, "acme/api/"+forge.SecretGCPWIFProvider)
+		for _, name := range leftover {
+			fc.Secrets["acme/api/"+name] = true
+		}
+
+		components, err := ProbeComponentsForAuth(context.Background(), fc, "acme", "api", ForgeGitHub, "", defaultForgeConfig, nil)
+		require.NoError(t, err)
+		for _, c := range components {
+			assert.False(t, strings.HasPrefix(c.Name, "secret:"), "leftover %v: unexpected %s", leftover, c.Name)
+		}
+		assert.True(t, AllMatch(components), "leftover %v: %+v", leftover, components)
+	}
+}
