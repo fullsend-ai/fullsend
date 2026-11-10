@@ -174,8 +174,9 @@ The "coordination logic" is the repository's branch protection configuration —
 
 A request that spans several source targets needs an explicit coverage and
 isolation boundary; see [multi-target execution](multi-target-execution.md).
-[ADR 0167](../ADRs/0167-execute-authorized-multi-target-plans.md) chooses
-host-admitted plans while preserving independent worker roles.
+[ADR 0167](../ADRs/0167-use-tracker-first-dispatch.md) chooses one target
+tracker before ordinary triage, preserving independent worker roles while an
+adapter retains case-wide coordination.
 
 This principle aligns with what Yegge's Gas City project calls "Zero Framework Cognition" (ZFC): the orchestration layer should handle mechanics only, while all judgment is deferred to the LLM via prompts. Gas City enforces this with a testable invariant — "does any line of Go contain a judgment call? If yes, it's a violation" — and extends it with the Bitter Lesson test: anything a smarter model would handle better from the prompt doesn't belong in the framework. (See [landscape.md](../landscape.md#gas-town--gas-city).) Fullsend's repo-as-coordinator model naturally satisfies ZFC: branch protection rules, CODEOWNERS, and status checks are deterministic infrastructure. The judgment happens in the review and implementation agents, mediated through GitHub's existing mechanisms. Note the architectural distinction: Gas City *does* have a controller process (reconciliation, health patrol), but enforces that it contain zero cognition. Fullsend's model goes further by eliminating the controller entirely and using the forge's native mechanisms instead.
 

@@ -96,8 +96,9 @@ ACP may still be useful for **narrow experiments** where those constraints are a
 Independent source targets also need isolated contexts and target-aware
 scheduling keys. [Multi-target execution](multi-target-execution.md) explores
 that boundary;
-[ADR 0167](../ADRs/0167-execute-authorized-multi-target-plans.md) chooses
-bounded host-admitted plans that reuse existing scheduling mechanisms.
+[ADR 0167](../ADRs/0167-use-tracker-first-dispatch.md) chooses target-specific
+trackers and existing single-target triage; an adapter retains case-wide bounds
+and recovery rather than requiring a native multi-target scheduler.
 
 ## Hybrid and incremental options
 
