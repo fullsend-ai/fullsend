@@ -3,6 +3,8 @@ package steps
 import (
 	"context"
 	"errors"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -416,4 +418,68 @@ func TestThenWorkflowFailsLogging_RefetchErrorAndCancel(t *testing.T) {
 	err := thenWorkflowFailsLogging(ctx, &world.World{Org: "org", RepoName: "repo", ScenarioStart: start, CI: f, DispatchedWorkflowFile: "prioritize.yml", DispatchedWorkflowAt: start}, "prioritize.yml", "needle")
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.ErrorContains(t, err, "returned no log output")
+}
+
+// artifactCacheCI answers the harness wait with a fixed successful run
+// and records which run's artifacts were downloaded, so a test can tell
+// a cached artifact directory from a fresh download.
+type artifactCacheCI struct {
+	fakeHarnessResolveCI
+
+	mu          sync.Mutex
+	downloadIDs []int
+}
+
+func (f *artifactCacheCI) DownloadNamedArtifactFromRun(_ context.Context, _, _ string, runID int, _, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.downloadIDs = append(f.downloadIDs, runID)
+	return nil
+}
+
+func (f *artifactCacheCI) downloadedRunIDs() []int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int(nil), f.downloadIDs...)
+}
+
+// A harness wait that re-resolves a different harness run drops the
+// artifact directory cached for the earlier run: artifact assertions
+// after it must download the new run's artifacts, not pass on the old
+// run's output while w.WorkflowRun names the new run. Re-resolving the
+// same run keeps the cache.
+func TestWorkflowDispatchSteps_HarnessWaitDropsStaleArtifactCache(t *testing.T) {
+	fake := &artifactCacheCI{fakeHarnessResolveCI: fakeHarnessResolveCI{
+		run: &forge.WorkflowRun{ID: 9, Status: "completed", Conclusion: "success"},
+	}}
+	w := &world.World{
+		Org:                    "org",
+		RepoName:               "repo",
+		ScenarioStart:          time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		CI:                     fake,
+		DispatchedWorkflow:     true,
+		DispatchedWorkflowFile: "prioritize.yml",
+		DispatchedWorkflowAt:   time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		Logf:                   func(string, ...any) {},
+	}
+
+	// The state the dispatch step leaves behind: an earlier run's
+	// artifacts were downloaded before it, and the scenario's run is not
+	// the harness run the wait is about to record.
+	staleDir := t.TempDir()
+	w.ArtifactDir = staleDir
+	w.WorkflowRun = &forge.WorkflowRun{ID: 4, Status: "completed", Conclusion: "success"}
+
+	require.NoError(t, thenHarnessWorkflowCompletes(w, "agent"))
+	assert.Equal(t, 9, w.WorkflowRun.ID)
+	assert.NotEqual(t, staleDir, w.ArtifactDir, "the earlier run's cached artifact directory must not survive a different run")
+	assert.Equal(t, []int{9}, fake.downloadedRunIDs(), "the new run's artifacts must be downloaded")
+	_, statErr := os.Stat(staleDir)
+	assert.True(t, os.IsNotExist(statErr), "the dropped artifact directory is removed, not left behind")
+
+	// Re-resolving the same run keeps the cache: no second download.
+	cached := w.ArtifactDir
+	require.NoError(t, thenHarnessWorkflowCompletes(w, "agent"))
+	assert.Equal(t, cached, w.ArtifactDir)
+	assert.Equal(t, []int{9}, fake.downloadedRunIDs())
 }

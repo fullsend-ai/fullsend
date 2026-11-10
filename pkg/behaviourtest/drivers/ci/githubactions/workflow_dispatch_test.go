@@ -516,3 +516,50 @@ func TestDispatchedRunWaits_PollsAreBounded(t *testing.T) {
 		assert.Zero(t, unbounded, "every poll must run under a deadline-bounded context")
 	})
 }
+
+// graceExhaustedListingClient serves the cancelled run on its first
+// listing (detection) and then blocks every replacement listing until its
+// bounded context expires: the shape of a listing that spends the whole
+// grace inside the client's rate-limit retries, so not one replacement
+// observation completes before the grace runs out.
+type graceExhaustedListingClient struct {
+	*forge.FakeClient
+	mu        sync.Mutex
+	listed    bool
+	cancelled forge.WorkflowRun
+}
+
+func (c *graceExhaustedListingClient) ListWorkflowRuns(ctx context.Context, _, _, _ string) ([]forge.WorkflowRun, error) {
+	c.mu.Lock()
+	first := !c.listed
+	c.listed = true
+	c.mu.Unlock()
+	if first {
+		return []forge.WorkflowRun{c.cancelled}, nil
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (c *graceExhaustedListingClient) GetWorkflowRun(_ context.Context, _, _ string, _ int) (*forge.WorkflowRun, error) {
+	return &c.cancelled, nil
+}
+
+// A replacement grace that expires without a single completed listing is
+// not evidence that the cancelled run is final: the wait reports an
+// inconclusive replacement lookup instead of returning the cancelled run
+// with no error.
+func TestWaitForWorkflowConclusion_ReplacementListingNeverCompletes(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := &graceExhaustedListingClient{FakeClient: forge.NewFakeClient(), cancelled: forge.WorkflowRun{ID: 10, Status: "completed", Conclusion: "cancelled", Event: "workflow_dispatch", CreatedAt: "2026-01-02T00:00:00Z"}}
+	d := newTestDriver(client)
+	// The re-list grace is bounded by the wait's deadline, so the clock
+	// must advance for the wait to give up on a replacement.
+	d.nowFunc = steppingClock(after, time.Minute)
+	got, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "no replacement listing completed")
+	assert.Equal(t, 10, got.ID)
+}

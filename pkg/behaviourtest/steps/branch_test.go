@@ -281,10 +281,15 @@ func TestThenHarnessWorkflowFailsReporting(t *testing.T) {
 	w.RepoName = "test-repo"
 	w.CI = &fakeBranchCI{run: &forge.WorkflowRun{ID: 9}}
 	w.DispatchedWorkflow = true
+	// An artifact directory cached for an earlier run must not survive
+	// the re-resolution: it belongs to the run it was downloaded for.
+	w.WorkflowRun = &forge.WorkflowRun{ID: 4, Status: "completed", Conclusion: "success"}
+	w.ArtifactDir = t.TempDir()
 
 	require.NoError(t, thenHarnessWorkflowFailsReporting(context.Background(), w, "fix", "Refusing to push"))
 	assert.False(t, w.DispatchedWorkflow, "a harness wait step re-resolves the harness run and clears the guard")
 	assert.Equal(t, 9, w.WorkflowRun.ID)
+	assert.Empty(t, w.ArtifactDir, "a re-resolved different run drops the earlier run's cached artifact directory")
 
 	err := thenHarnessWorkflowFailsReporting(context.Background(), w, "fix", "not-present-text")
 	require.Error(t, err)
