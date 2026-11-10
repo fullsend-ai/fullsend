@@ -22,7 +22,7 @@ base: harness/common-base.yaml      # Inherit from another harness (local or URL
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
-readonly_repo: false                # Mount repo as read-only in sandbox
+# readonly_repo: true               # make the checkout read-only (chmod a-w, .git/ excluded); absent = inherit from base; false overrides a base true
 providers:                           # Network access via provider profiles
   - vertex-ai                       # Bare builtin name: resolves to fullsend's embedded definition
   - github                          # Same; or a providers/<name>.yaml path for a local/custom definition
@@ -147,6 +147,8 @@ security:
 Most fields are self-explanatory from the inline comments above. This section expands on fields where additional context helps.
 
 **`image`** — The sandbox container image. On GitHub Actions a private `ghcr.io` package works on code and fix harnesses, whose shipped workflows grant `packages: read`; see [GitHub Packages credentials](../cli/run.md#github-packages-credentials).
+
+**`readonly_repo`** — When `true`, the runner makes the checkout read-only in the sandbox before the agent starts: it removes write permission (`chmod a-w`) from every file and directory in the checkout except `.git/`. A harness that leaves the field out inherits it from its `base:`, and gets a writable checkout when no base sets it. An explicit `false` keeps the checkout writable, even when the base sets `true`. **Top level only** — a `readonly_repo` key placed under `overlays:`/`forge:` is silently ignored. The step also runs `chown -R sandbox:sandbox` on `.git/`. If the step fails, for example on an image that has no `sandbox` user, the run stops with `read-only repo enforcement failed`. That applies to a harness that inherits `true` as well. To fix it, build the image on the fullsend sandbox image, which has that user (see [Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image)), or set `readonly_repo: false` in the harness to keep a writable checkout.
 
 **`role`** — The agent's identity within fullsend. Dispatch uses the role to match config-registered agents to built-in defaults (same-name config agents take precedence). The role also determines which GitHub App credentials **and permissions** the mint service issues. It must be a role the mint serves: on the hosted mint that is the fixed built-in set (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); custom roles require your own mint. An unserved role returns `403`. See [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
@@ -555,6 +557,7 @@ More-specific entries go last so they override broader defaults.
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
+| `readonly_repo` | Child wins if set, including `false`; inherited when absent. Top-level only — a `readonly_repo` key under `overlays:`/`forge:` is silently ignored |
 | `schema_version` | NOT inherited — the merged harness keeps the child's own declaration (absent stays absent, version `1`). Every composed `base:` layer must share one effective version, or the load fails naming both versions and the layer. Top-level only — a `schema_version` key under `overlays:`/`forge:` is silently ignored |
 | `skills` | Merged with deduplication by skill identity (declared `SKILL.md` name when on disk, otherwise basename). Child overrides a matching base entry; sibling nested dirs that share a leaf name are kept; two entries with one identity in a single list are both kept and fail at bootstrap; when a child entry replaces a base entry, their per-file override maps merge (child keys win); a map-form child entry whose path has no `SKILL.md` keeps the base entry's source (and, with no other match, the one pinned-URL base entry of its name; two or more such entries are an error that asks for the full base URL as the map key) |
 | `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |

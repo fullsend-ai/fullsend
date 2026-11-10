@@ -2890,6 +2890,29 @@ model: opus
 	assert.Equal(t, `event.entity.kind == "work_item"`, h.Trigger)
 }
 
+// A base two levels up that makes the checkout read-only keeps it read-only,
+// unless the child says readonly_repo: false (#7360).
+func TestLoadWithBase_ReadonlyRepoChainedInheritance(t *testing.T) {
+	for _, tc := range []struct {
+		name, child string
+		want        bool
+	}{
+		{"child is silent", "base: parent.yaml\nmodel: opus\n", true},
+		{"child says false", "base: parent.yaml\nreadonly_repo: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestHarness(t, dir, "grandparent.yaml", "agent: agents/base.md\nrole: test\nreadonly_repo: true\n")
+			writeTestHarness(t, dir, "parent.yaml", "base: grandparent.yaml\nmodel: sonnet\n")
+			path := writeTestHarness(t, dir, "child.yaml", tc.child)
+
+			h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, h.RepoReadonly())
+		})
+	}
+}
+
 func TestLoadWithBase_TriggerChildWins(t *testing.T) {
 	dir := t.TempDir()
 
@@ -6299,6 +6322,25 @@ func TestMergeBaseIntoChild_TriggerEmptyBaseNoEffect(t *testing.T) {
 	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, `event.entity.kind == "work_item"`, child.Trigger)
+}
+
+func TestMergeBaseIntoChild_ReadonlyRepo(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name        string
+		base, child *bool
+		want        bool
+	}{
+		{"inherited", &yes, nil, true},
+		{"child turns it on", nil, &yes, true},
+		{"child turns it off", &yes, &no, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			child := &Harness{ReadonlyRepo: tc.child}
+			require.NoError(t, mergeBaseIntoChild(&Harness{ReadonlyRepo: tc.base}, child))
+			assert.Equal(t, tc.want, child.RepoReadonly())
+		})
+	}
 }
 
 func TestFetchBaseSkill_FullDirectory(t *testing.T) {
