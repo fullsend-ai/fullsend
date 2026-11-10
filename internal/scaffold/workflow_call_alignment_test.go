@@ -927,20 +927,34 @@ func TestJiraSecretsActionWiring(t *testing.T) {
 // TestJiraPollWorkflowSecretThreading validates the GitHub poller workflow
 // contract and its scaffold caller. OAuth credentials must reach the poll
 // step, while the caller also forwards them to reusable-dispatch for Jira
-// run-status updates.
+// run-status updates. The jira authorization list secrets (#9132) reach the
+// poll step under their own names.
 func TestJiraPollWorkflowSecretThreading(t *testing.T) {
 	content := string(loadRepoFile(".github/workflows/reusable-poll-jira.yml")(t))
 	var parsed reusableWorkflow
 	require.NoError(t, yaml.Unmarshal([]byte(content), &parsed))
-	for _, name := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+	credentials := []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"}
+	names := append(append([]string{}, credentials...), JiraAuthorizationSecrets...)
+	// Scoped to the step: the check step also reads the credentials.
+	pollStep := extractStepSection(t, content, "Poll Jira")
+	for _, name := range names {
 		secret, ok := parsed.On.WorkflowCall.Secrets[name]
 		require.True(t, ok, "reusable-poll-jira.yml must declare %s", name)
-		assert.False(t, secret.Required, "%s must be optional so either credential type can be used", name)
-		assert.Contains(t, content, name+": ${{ secrets."+name+" }}", "poll step must receive %s", name)
+		assert.False(t, secret.Required, "%s must be optional: either credential type can be used, and the lists are opt-in", name)
+		assert.Contains(t, pollStep, name+": ${{ secrets."+name+" }}", "poll step must receive %s", name)
+	}
+	// The check step looks for every credential in the dispatches. It must
+	// not get a list secret: a list holds the ID of the account that acted.
+	checkStep := extractStepSection(t, content, "Check dispatches")
+	for _, name := range credentials {
+		assert.Contains(t, checkStep, name+": ${{ secrets."+name+" }}", "check step must receive %s", name)
+	}
+	for _, name := range JiraAuthorizationSecrets {
+		assert.NotContains(t, checkStep, name, "check step must not look for %s", name)
 	}
 
 	caller := string(loadScaffoldFile("templates/jira-poll-per-repo.yaml")(t))
-	for _, name := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+	for _, name := range names {
 		assert.Contains(t, caller, name+": ${{ secrets."+name+" }}", "managed poll caller must forward %s", name)
 	}
 }
