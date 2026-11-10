@@ -1,5 +1,5 @@
 ---
-title: "160. Require per-agent approval for mint privilege levels"
+title: "162. Require per-agent approval for mint privilege levels"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -12,7 +12,7 @@ topics:
   - mint
 ---
 
-# 160. Require per-agent approval for mint privilege levels
+# 162. Require per-agent approval for mint privilege levels
 
 Date: 2026-11-10
 
