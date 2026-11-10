@@ -160,6 +160,9 @@ func resetScenarioWorld(w *world.World) {
 	w.TriageWorkflow = ""
 	w.TriageTriggerEvent = ""
 	w.WorkflowRun = nil
+	w.DispatchedWorkflow = false
+	w.DispatchedWorkflowFile = ""
+	w.DispatchedWorkflowAt = time.Time{}
 	w.ArtifactDir = ""
 	w.ForkOwner = ""
 	w.ForkRepo = ""

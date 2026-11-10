@@ -327,6 +327,9 @@ var dispatchVisibilityRetryDelay = 15 * time.Second
 // out a dispatch that has not become visible through the CI API yet.
 // Not-found errors are retried too (#8123).
 func thenAgentIsTriggered(w *world.World, agent string) error {
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	agent = strings.TrimSpace(agent)
 	if w.ScenarioStart.IsZero() {
 		return fmt.Errorf("no workflow trigger time recorded")
@@ -423,6 +426,9 @@ func thenAgentCompletes(w *world.World, agent string) error {
 	}
 	saveWorkflowRunLogs(ctx, w, agent, run)
 	w.WorkflowRun = run
+	// A harness wait step re-resolves the harness run after a dispatch:
+	// harness steps reading w.WorkflowRun are legal again from here on.
+	w.DispatchedWorkflow = false
 	if err := ensureRoundArtifacts(w, agent, run); err != nil {
 		return err
 	}
@@ -588,6 +594,9 @@ func pinCodeStagePublishedSHA(ctx context.Context, w *world.World) error {
 // actually intended first; the live review is then checked for a
 // matching (or since-dismissed) submission.
 func thenAgentSubmittedReview(w *world.World, agent, expectedState string) error {
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	if w.PRNumber == 0 {
 		return fmt.Errorf("no pull request recorded; call 'a pull request exists' first")
 	}

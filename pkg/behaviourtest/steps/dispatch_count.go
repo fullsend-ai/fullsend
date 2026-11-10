@@ -17,6 +17,12 @@ func registerDispatchCountSteps(sc *godog.ScenarioContext) {
 }
 
 func thenHarnessDispatchedExactly(w *world.World, agent string, expected int) error {
+	// The dispatch step moves ScenarioStart, so the count window would
+	// silently exclude pre-dispatch harness runs (a wrong "exactly 0"
+	// pass); fail fast like the other harness-semantics steps.
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	agent = strings.TrimSpace(agent)
 	if agent == "" {
 		return fmt.Errorf("harness agent name is required")

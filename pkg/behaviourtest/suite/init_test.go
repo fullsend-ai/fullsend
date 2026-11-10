@@ -171,6 +171,9 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		PRNumber:                   99,
 		DispatchAgent:              "dispatch",
 		IssueNumber:                1,
+		DispatchedWorkflow:         true,
+		DispatchedWorkflowFile:     "prioritize.yml",
+		DispatchedWorkflowAt:       time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		ArtifactDir:                "/tmp/x",
 		ForkOwner:                  "org",
 		ForkRepo:                   "repo-fork",
@@ -205,6 +208,9 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Equal(t, 0, w.PRNumber)
 	assert.Equal(t, "", w.DispatchAgent)
 	assert.Equal(t, 0, w.IssueNumber)
+	assert.False(t, w.DispatchedWorkflow)
+	assert.Equal(t, "", w.DispatchedWorkflowFile)
+	assert.True(t, w.DispatchedWorkflowAt.IsZero())
 	assert.Equal(t, "", w.ArtifactDir)
 	assert.False(t, w.ScenarioStart.IsZero())
 	assert.Equal(t, "", w.ForkOwner)

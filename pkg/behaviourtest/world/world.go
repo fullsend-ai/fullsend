@@ -56,6 +56,29 @@ type World struct {
 	WorkflowRun    *forge.WorkflowRun
 	TriageWorkflow string
 
+	// DispatchedWorkflow records that the workflow dispatch step ran:
+	// WorkflowRun then holds the dispatched caller workflow's run, not a
+	// harness agent run, so harness log, artifact and negative-assertion
+	// steps fail fast instead of reading it with harness semantics, until
+	// a harness wait step re-resolves the harness run.
+	DispatchedWorkflow bool
+
+	// DispatchedWorkflowFile is the workflow file the dispatch step
+	// dispatched, empty when no dispatch step ran in the scenario. Unlike
+	// DispatchedWorkflow it is never cleared: the workflow-failure step
+	// uses it to fail fast when no dispatch step ran (or a different file
+	// was dispatched) even after a harness wait re-resolved the harness
+	// run and cleared the fail-fast flag.
+	DispatchedWorkflowFile string
+
+	// DispatchedWorkflowAt is the time the dispatch step last dispatched
+	// a workflow, zero when no dispatch step ran. Like
+	// DispatchedWorkflowFile it is never cleared: the workflow-failure
+	// step scopes its run detection window from it, so a later trigger
+	// step moving ScenarioStart forward cannot exclude the dispatched
+	// run from it.
+	DispatchedWorkflowAt time.Time
+
 	DispatchAgent string
 	PRNumber      int
 

@@ -214,6 +214,88 @@ func runLogsComplete(run forge.WorkflowRun, logs string) bool {
 	return run.Status == "completed" && partialLogMarker(logs).marker == ""
 }
 
+// logPollWindow and logPollInterval bound fetchUsableSubjectLogs: logs
+// fetched just after a run completes have come back unusable, cause not
+// confirmed. Logs that are complete, or truncated at a size or page cap,
+// are final and are not fetched again. Variables (not constants) so unit
+// tests can shrink the window. The harness and workflow-dispatch log
+// steps share them.
+var logPollWindow = 60 * time.Second
+
+var logPollInterval = 5 * time.Second
+
+// rejectBlankNeedle reports the authoring mistake of a blank quoted text
+// in a log-assertion step: an empty or whitespace-only needle would
+// otherwise match any log output with a space in it — like every other
+// empty input the steps package rejects (the file names). The log steps
+// that build their own verdict call it before the
+// run is resolved, ahead of their waits; checkRunLogsNeedle wraps it
+// with its subject and run ID for the callers that route through it.
+func rejectBlankNeedle(needle string) error {
+	if strings.TrimSpace(needle) == "" {
+		return fmt.Errorf("the expected log text is empty; write the text to find in the run's logs")
+	}
+	return nil
+}
+
+// checkRunLogsNeedle reports whether logs hold needle, and whether the
+// logs were unusable in a way a later fetch can change (worth fetching
+// again) rather than final. subject names the run in the error, in the
+// caller's label (for example `harness "agent"` or `workflow "file"`). A
+// truncation note is final: the client cuts each log at a fixed size and
+// reads one page of jobs.
+func checkRunLogsNeedle(run *forge.WorkflowRun, subject, needle, logs string, fetchErr error) (retry bool, err error) {
+	if err := rejectBlankNeedle(needle); err != nil {
+		return false, fmt.Errorf("%s run %d: %w", subject, run.ID, err)
+	}
+	switch {
+	case fetchErr != nil:
+		return true, fmt.Errorf("%s run %d failed, but its logs could not be fetched, so %q was not checked (url=%s): %w", subject, run.ID, needle, run.HTMLURL, fetchErr)
+	case strings.Contains(logs, needle):
+		return false, nil
+	case strings.TrimSpace(logs) == "":
+		return true, fmt.Errorf("%s run %d failed, but the forge returned no log output, so %q was not checked (url=%s)", subject, run.ID, needle, run.HTMLURL)
+	}
+	if note := partialLogMarker(logs); note.marker != "" {
+		return !note.truncation, fmt.Errorf("%s run %d failed and its logs do not contain %q, but they are incomplete (they hold %q), so the text may be in the part not fetched (url=%s)", subject, run.ID, needle, note.marker, run.HTMLURL)
+	}
+	return false, fmt.Errorf("%s run %d failed, but its logs do not contain %q (url=%s)", subject, run.ID, needle, run.HTMLURL)
+}
+
+// fetchUsableSubjectLogs fetches run's logs, fetching again while the
+// result is unusable — a fetch error, an empty body or a fetch-failure
+// note — until logPollWindow passes or ctx ends; checkRunLogsNeedle under
+// subject is the retry predicate, so a snapshot that holds needle, is
+// complete or is truncated at a cap is final. The last fetch is saved as
+// the debug artifact under artifactLabel, unless it is partial and a
+// complete snapshot is already saved for the run: the harness steps pass
+// the bare agent name, so their logs land in the same directory the
+// "completes successfully" step saves to (one directory per run), while
+// subject keeps the fuller error-message label. The harness log steps
+// and the workflow-dispatch failure step share it. stopped is non-nil
+// when ctx ended the wait; the caller keeps its own diagnosis —
+// checkRunLogsNeedle's verdict is derivable by running it on the
+// returned pair — and wraps it.
+func fetchUsableSubjectLogs(ctx context.Context, w *world.World, subject, artifactLabel, needle string, run *forge.WorkflowRun) (logs string, fetchErr error, stopped error) {
+	deadline := time.Now().Add(logPollWindow)
+	for stopped == nil {
+		fetchCtx, cancel := context.WithTimeout(ctx, logFetchTimeout)
+		logs, fetchErr = w.CI.GetRunLogs(fetchCtx, w.Org, w.RepoName, run.ID)
+		cancel()
+		retry, _ := checkRunLogsNeedle(run, subject, needle, logs, fetchErr)
+		if !retry || time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			stopped = ctx.Err()
+		case <-time.After(logPollInterval):
+		}
+	}
+	saveFetchedWorkflowRunLogs(w, artifactLabel, run, logs, fetchErr)
+	return logs, fetchErr, stopped
+}
+
 // partialLogMarker returns the note logs holds, a fetch-failure note before
 // a truncation note, or the zero note when the text carries none.
 func partialLogMarker(logs string) partialLogNote {

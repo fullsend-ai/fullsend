@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -150,53 +149,28 @@ func TestDeleteRunnerSecretsSecret_ErrorKeepsFlagForRetry(t *testing.T) {
 	assert.True(t, w.RunnerSecretsSecretSet, "a failed delete is retried by cleanupRetry")
 }
 
-// fakeFailedRunLogsCI implements WaitForFailedHarnessAgent and GetRunLogs;
-// other ci.Driver methods panic when called.
-type fakeFailedRunLogsCI struct {
-	ci.Driver
-
-	run      *forge.WorkflowRun
-	waitErr  error
-	logs     string
-	logsErr  error
-	logCalls int
-	// logsSeq, when set, is returned one entry per call (the last repeats).
-	logsSeq []string
-}
-
-func (f *fakeFailedRunLogsCI) WaitForFailedHarnessAgent(context.Context, string, string, string, time.Time) (*forge.WorkflowRun, error) {
-	return f.run, f.waitErr
-}
-
-func (f *fakeFailedRunLogsCI) GetRunLogs(context.Context, string, string, int) (string, error) {
-	f.logCalls++
-	if len(f.logsSeq) > 0 {
-		i := min(f.logCalls, len(f.logsSeq)) - 1
-		return f.logsSeq[i], nil
-	}
-	return f.logs, f.logsErr
-}
-
-// shrinkHarnessLogPoll makes the log poll retry at once and give up fast.
-func shrinkHarnessLogPoll(t *testing.T, window time.Duration) {
+// shrinkLogPoll makes the log poll retry at once and give up fast.
+func shrinkLogPoll(t *testing.T, window time.Duration) {
 	t.Helper()
-	oldWindow, oldInterval := harnessLogPollWindow, harnessLogPollInterval
-	harnessLogPollWindow, harnessLogPollInterval = window, time.Millisecond
-	t.Cleanup(func() { harnessLogPollWindow, harnessLogPollInterval = oldWindow, oldInterval })
+	oldWindow, oldInterval := logPollWindow, logPollInterval
+	logPollWindow, logPollInterval = window, time.Millisecond
+	t.Cleanup(func() { logPollWindow, logPollInterval = oldWindow, oldInterval })
 }
 
 func TestThenHarnessWorkflowFailsWithLog(t *testing.T) {
 	artifacts := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifacts)
-	newWorld := func(c *fakeFailedRunLogsCI) *world.World {
+	newWorld := func(c *fakeDispatcherCI) *world.World {
 		return &world.World{Org: "org", RepoName: "repo", ScenarioStart: time.Now(), CI: c}
 	}
 	logs := "Error: invalid harness: overlays[0] references runner secret(s) PROBE_TOKEN, but its when: reads more than runtime.forge and config"
 	failedRun := func() *forge.WorkflowRun { return &forge.WorkflowRun{ID: 7, Status: "completed"} }
 
-	c := &fakeFailedRunLogsCI{run: failedRun(), logs: logs}
+	c := &fakeDispatcherCI{run: failedRun(), logs: logs}
 	w := newWorld(c)
+	w.DispatchedWorkflow = true
 	require.NoError(t, thenHarnessWorkflowFailsWithLog(context.Background(), w, "probe", "references runner secret(s) PROBE_TOKEN"))
+	assert.False(t, w.DispatchedWorkflow, "a harness wait step re-resolves the harness run and clears the guard")
 	assert.Equal(t, 7, w.WorkflowRun.ID)
 	assert.Equal(t, 1, c.logCalls, "logs that hold the text are fetched once")
 	assert.FileExists(t, filepath.Join(artifacts, "debug-probe-run-7", "workflow-logs.txt"))
@@ -207,11 +181,19 @@ func TestThenHarnessWorkflowFailsWithLog(t *testing.T) {
 	assert.NotContains(t, err.Error(), "incomplete")
 	assert.Equal(t, 1, c.logCalls, "complete logs without the text are final, not fetched again")
 
-	w = newWorld(&fakeFailedRunLogsCI{waitErr: errors.New("run 7 concluded successfully; expected failure")})
+	w = newWorld(&fakeDispatcherCI{waitErr: errors.New("run 7 concluded successfully; expected failure")})
 	assert.ErrorContains(t, thenHarnessWorkflowFailsWithLog(context.Background(), w, "probe", "x"), "concluded successfully")
 
-	w = &world.World{CI: &fakeFailedRunLogsCI{}}
+	w = &world.World{CI: &fakeDispatcherCI{}}
 	assert.ErrorContains(t, thenHarnessWorkflowFailsWithLog(context.Background(), w, "probe", "x"), "no workflow trigger time")
+
+	// A blank needle is an authoring mistake, not a wait: the step
+	// rejects it before the harness wait, so a blank quoted text cannot
+	// burn the dispatch budget first.
+	w = newWorld(&fakeDispatcherCI{waitErr: errors.New("wait was reached")})
+	err = thenHarnessWorkflowFailsWithLog(context.Background(), w, "probe", " ")
+	assert.ErrorContains(t, err, "the expected log text is empty; write the text to find in the run's logs")
+	assert.NotContains(t, err.Error(), "wait was reached")
 }
 
 // A log-fetch problem is reported as one, not as the run lacking the text.
@@ -220,7 +202,7 @@ func TestThenHarnessWorkflowFailsWithLog_FetchProblemIsNamed(t *testing.T) {
 	// The window must survive a scheduler or GC pause between the deadline
 	// set and the first check, so the retryable cases still fetch again on
 	// a loaded runner; the 1ms interval keeps the test fast regardless.
-	shrinkHarnessLogPoll(t, 200*time.Millisecond)
+	shrinkLogPoll(t, 200*time.Millisecond)
 	cases := []struct {
 		name    string
 		logs    string
@@ -247,7 +229,7 @@ func TestThenHarnessWorkflowFailsWithLog_FetchProblemIsNamed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fc := &fakeFailedRunLogsCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"}, logs: tc.logs, logsErr: tc.logsErr}
+			fc := &fakeDispatcherCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"}, logs: tc.logs, logsErr: tc.logsErr}
 			w := &world.World{Org: "org", RepoName: "repo", ScenarioStart: time.Now(), CI: fc}
 			err := thenHarnessWorkflowFailsWithLog(context.Background(), w, "probe", "needle")
 			require.Error(t, err)
@@ -269,8 +251,8 @@ func TestThenHarnessWorkflowFailsWithLog_FetchProblemIsNamed(t *testing.T) {
 // every fetch, so the step does not wait out the window.
 func TestThenHarnessWorkflowFailsWithLog_TruncationIsFinal(t *testing.T) {
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", t.TempDir())
-	shrinkHarnessLogPoll(t, time.Minute)
-	c := &fakeFailedRunLogsCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"},
+	shrinkLogPoll(t, time.Minute)
+	c := &fakeDispatcherCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"},
 		logs: "setup ok\n[log truncated: job 1 exceeds 1048576 bytes]\n"}
 	w := &world.World{Org: "org", RepoName: "repo", ScenarioStart: time.Now(), CI: c}
 	err := thenHarnessWorkflowFailsWithLog(context.Background(), w, "probe", "needle")
@@ -283,10 +265,10 @@ func TestThenHarnessWorkflowFailsWithLog_TruncationIsFinal(t *testing.T) {
 func TestThenHarnessWorkflowFailsWithLog_CancelKeepsDiagnosis(t *testing.T) {
 	artifacts := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifacts)
-	shrinkHarnessLogPoll(t, time.Minute)
-	harnessLogPollInterval = time.Hour
+	shrinkLogPoll(t, time.Minute)
+	logPollInterval = time.Hour
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &fakeFailedRunLogsCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"}, logs: "setup ok\n[logs unavailable: HTTP 404]\n"}
+	c := &fakeDispatcherCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"}, logs: "setup ok\n[logs unavailable: HTTP 404]\n"}
 	w := &world.World{Org: "org", RepoName: "repo", ScenarioStart: time.Now(), CI: c}
 	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
 	err := thenHarnessWorkflowFailsWithLog(ctx, w, "probe", "needle")
@@ -300,8 +282,8 @@ func TestThenHarnessWorkflowFailsWithLog_CancelKeepsDiagnosis(t *testing.T) {
 // fetch.
 func TestThenHarnessWorkflowFailsWithLog_RetriesUntilLogsArrive(t *testing.T) {
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", t.TempDir())
-	shrinkHarnessLogPoll(t, time.Minute)
-	c := &fakeFailedRunLogsCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"},
+	shrinkLogPoll(t, time.Minute)
+	c := &fakeDispatcherCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"},
 		logsSeq: []string{"", "setup ok\n[logs unavailable: HTTP 404]\n", "Error: needle here"}}
 	w := &world.World{Org: "org", RepoName: "repo", ScenarioStart: time.Now(), CI: c}
 	artifacts := os.Getenv("BEHAVIOUR_ARTIFACT_DIR")

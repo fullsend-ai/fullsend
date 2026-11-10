@@ -405,14 +405,12 @@ func (d *Driver) runHasAgentJob(ctx context.Context, owner, repo string, runID i
 }
 
 // isTerminalFailure reports whether a pipeline conclusion represents a
-// real failure that should trigger fail-fast.
+// real failure that should trigger fail-fast. The rule itself is shared
+// with the other drivers and the workflow dispatch steps
+// (ci.IsTerminalFailure), so the conclusions cannot drift apart between
+// them.
 func isTerminalFailure(conclusion string) bool {
-	switch conclusion {
-	case "failure", "timed_out", "startup_failure":
-		return true
-	default:
-		return false
-	}
+	return ci.IsTerminalFailure(conclusion)
 }
 
 // isConcurrencySuperseded reports whether a job conclusion indicates

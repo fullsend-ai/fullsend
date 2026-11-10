@@ -105,6 +105,9 @@ func checkPersonaRegistration(logs, want, notWant string) error {
 // the harness run's logs. Only the block must be intact; truncation
 // elsewhere in the logs does not matter.
 func thenHarnessLogsRegisterPersona(w *world.World, agent, want, notWant string) error {
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	agent = strings.TrimSpace(agent)
 	if w.WorkflowRun == nil {
 		if err := thenHarnessWorkflowCompletes(w, agent); err != nil {

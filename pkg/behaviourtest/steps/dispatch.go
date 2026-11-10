@@ -419,6 +419,9 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 		return err
 	}
 	w.WorkflowRun = run
+	// A harness wait step re-resolves the harness run after a dispatch:
+	// harness steps reading w.WorkflowRun are legal again from here on.
+	w.DispatchedWorkflow = false
 	saveWorkflowRunLogs(ctx, w, agent, run)
 	return ensureHarnessArtifacts(w, agent)
 }
@@ -427,13 +430,24 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 // (want) or its absence (!want). It reads the run recorded by "the harness
 // ... workflow completes successfully", waiting for it first when no run is
 // recorded yet. Logs that could not be fetched, were empty or hold a
-// fetch-failure note are fetched again until harnessLogPollWindow passes
-// (fetchUsableHarnessLogs, shared with the fails-with-log step). A log
+// fetch-failure note are fetched again until logPollWindow passes
+// (fetchUsableSubjectLogs, shared with the fails-with-log and
+// workflow-dispatch failure steps). A log
 // snapshot with a job missing or truncated cannot prove absence, so a
 // negative check on one fails instead of passing, and a window that ends
 // with no log output proves nothing either: the check fails saying the
 // forge returned no logs, whatever the expected outcome.
 func thenHarnessWorkflowLogsContain(ctx context.Context, w *world.World, agent, needle string, want bool) error {
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
+	// This caller builds its own verdict below, so the shared guard in
+	// checkRunLogsNeedle never surfaces here: reject the blank needle
+	// before the run is resolved. The workflow-failure step rejects it
+	// before its wait too (workflow_dispatch.go).
+	if err := rejectBlankNeedle(needle); err != nil {
+		return err
+	}
 	agent = strings.TrimSpace(agent)
 	if w.WorkflowRun == nil {
 		if err := thenHarnessWorkflowCompletes(w, agent); err != nil {
@@ -441,7 +455,7 @@ func thenHarnessWorkflowLogsContain(ctx context.Context, w *world.World, agent, 
 		}
 	}
 	run := w.WorkflowRun
-	logs, fetchErr, stopped := fetchUsableHarnessLogs(ctx, w, agent, needle, run)
+	logs, fetchErr, stopped := fetchUsableSubjectLogs(ctx, w, fmt.Sprintf("harness %q", agent), agent, needle, run)
 	found := strings.Contains(logs, needle)
 	complete := runLogsComplete(*run, logs)
 	var checkErr error
@@ -449,7 +463,7 @@ func thenHarnessWorkflowLogsContain(ctx context.Context, w *world.World, agent, 
 	case fetchErr != nil:
 		checkErr = fmt.Errorf("reading harness %q workflow logs (run %d): %w", agent, run.ID, fetchErr)
 	// An empty body with no error is not a log snapshot
-	// (writeFetchedWorkflowRunLogs, checkHarnessRunLogs): it proves
+	// (writeFetchedWorkflowRunLogs, checkRunLogsNeedle): it proves
 	// neither presence nor absence.
 	case strings.TrimSpace(logs) == "":
 		checkErr = fmt.Errorf("the forge returned no log output for harness %q run %d, so %q was not checked", agent, run.ID, needle)
@@ -501,6 +515,9 @@ func negativeSettleDuration(w *world.World, now time.Time) time.Duration {
 }
 
 func thenHarnessAgentDidNotRun(w *world.World, agent string) error {
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	if w.ScenarioStart.IsZero() {
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
@@ -525,6 +542,12 @@ func thenHarnessAgentDidNotRun(w *world.World, agent string) error {
 // it waits for the run and fails when the dispatch job errored, so a
 // denial is not inferred from a missing or failed run.
 func thenHarnessDispatchEmptyMatrix(w *world.World) error {
+	// The dispatch step moves ScenarioStart, so this wait would block
+	// its whole budget on a harness run that may never come; fail fast
+	// like the other harness-semantics steps.
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	if w.ScenarioStart.IsZero() {
 		return fmt.Errorf("no workflow trigger time recorded")
 	}

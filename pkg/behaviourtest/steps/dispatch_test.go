@@ -672,7 +672,7 @@ func TestCommitLocalHarnessResources_CommitsScaffoldProfilesAndProviders(t *test
 func TestThenHarnessWorkflowLogsContain(t *testing.T) {
 	// The step retries log fetches that come back unusable, so the poll
 	// window must be short for the fetch-error case below.
-	shrinkHarnessLogPoll(t, 200*time.Millisecond)
+	shrinkLogPoll(t, 200*time.Millisecond)
 	const logs = "2026-10-31T00:00:00Z subagents: correctness → google-vertex/claude-opus (from frontmatter)\n"
 	completed := &forge.WorkflowRun{ID: 9, Status: "completed", Conclusion: "success"}
 	newWorld := func(run *forge.WorkflowRun, logs string, logsErr error) *world.World {
@@ -686,6 +686,17 @@ func TestThenHarnessWorkflowLogsContain(t *testing.T) {
 
 	require.NoError(t, thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, logs, nil), "pi", "subagents: correctness →", true))
 	require.NoError(t, thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, logs, nil), "pi", "subagents: user-experience →", false))
+
+	// A blank needle is an authoring mistake, not a pass: this caller
+	// builds its own verdict below, so the shared checkRunLogsNeedle
+	// guard cannot deliver the rejection — the step rejects the needle
+	// itself, before the run is resolved.
+	for _, needle := range []string{"", " ", "\t"} {
+		for _, want := range []bool{true, false} {
+			err := thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, logs, nil), "pi", needle, want)
+			require.ErrorContains(t, err, "the expected log text is empty; write the text to find in the run's logs")
+		}
+	}
 
 	err := thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, logs, nil), "pi", "subagents: user-experience →", true)
 	require.ErrorContains(t, err, `do not contain "subagents: user-experience →"`)
@@ -726,10 +737,10 @@ func TestThenHarnessWorkflowLogsContain(t *testing.T) {
 func TestThenHarnessWorkflowLogsContain_CancelKeepsDiagnosis(t *testing.T) {
 	artifacts := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifacts)
-	shrinkHarnessLogPoll(t, time.Minute)
-	harnessLogPollInterval = time.Hour
+	shrinkLogPoll(t, time.Minute)
+	logPollInterval = time.Hour
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &fakeFailedRunLogsCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"}, logs: "setup ok\n[logs unavailable: HTTP 404]\n"}
+	c := &fakeDispatcherCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"}, logs: "setup ok\n[logs unavailable: HTTP 404]\n"}
 	w := &world.World{Org: "org", RepoName: "repo", ScenarioStart: time.Now(), WorkflowRun: &forge.WorkflowRun{ID: 7, Status: "completed"}, CI: c}
 	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
 	err := thenHarnessWorkflowLogsContain(ctx, w, "probe", "needle", true)

@@ -221,6 +221,9 @@ func thenTriageAgentDidNotRun(w *world.World) error {
 }
 
 func thenDispatchRunDoesNotAuthorizeViaOwners(w *world.World) error {
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	run, err := waitForDispatchRun(w)
 	if err != nil {
 		return err

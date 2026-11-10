@@ -281,6 +281,9 @@ func thenHarnessWorkflowFailsReporting(ctx context.Context, w *world.World, agen
 		return err
 	}
 	w.WorkflowRun = run
+	// A harness wait step re-resolves the harness run after a dispatch:
+	// harness steps reading w.WorkflowRun are legal again from here on.
+	w.DispatchedWorkflow = false
 	saveWorkflowRunLogs(ctx, w, agent, run)
 
 	deadline := time.Now().Add(failureCommentPollWindow)

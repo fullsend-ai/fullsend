@@ -27,6 +27,9 @@ func triageWorkflowEvent(w *world.World) string {
 }
 
 func ensureTriageWorkflowComplete(w *world.World) error {
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	if w.WorkflowRun != nil {
 		return nil
 	}
@@ -55,6 +58,14 @@ func ensureArtifacts(w *world.World) error {
 // dummy runtime; metrics.json for any runtime), so a partial or wrong
 // artifact is retried rather than accepted.
 func ensureRunArtifacts(w *world.World, marker string) error {
+	// Ahead of the cache check: an artifact assertion must not reuse a
+	// pre-dispatch harness artifact after the dispatch step ran (the
+	// cache return would otherwise bypass the guard in
+	// ensureTriageWorkflowComplete). A re-resolved harness wait clears
+	// the flag, so the cached artifact stays usable in the legal flow.
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	if w.ArtifactDir != "" {
 		return nil
 	}

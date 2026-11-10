@@ -280,8 +280,10 @@ func TestThenHarnessWorkflowFailsReporting(t *testing.T) {
 	w.ScenarioStart = time.Now()
 	w.RepoName = "test-repo"
 	w.CI = &fakeBranchCI{run: &forge.WorkflowRun{ID: 9}}
+	w.DispatchedWorkflow = true
 
 	require.NoError(t, thenHarnessWorkflowFailsReporting(context.Background(), w, "fix", "Refusing to push"))
+	assert.False(t, w.DispatchedWorkflow, "a harness wait step re-resolves the harness run and clears the guard")
 	assert.Equal(t, 9, w.WorkflowRun.ID)
 
 	err := thenHarnessWorkflowFailsReporting(context.Background(), w, "fix", "not-present-text")

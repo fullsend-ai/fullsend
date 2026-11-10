@@ -38,6 +38,9 @@ func registerPreScriptSkipSteps(sc *godog.ScenarioContext) {
 // succeeds, so neither the artifact's presence nor the run's conclusion
 // can tell a skip from a run where the agent ran.
 func thenHarnessRunSkippedByPreScript(w *world.World, agent string) error {
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	agent = strings.TrimSpace(agent)
 	if w.WorkflowRun == nil {
 		return fmt.Errorf("no workflow run recorded; assert the harness %q workflow completed first", agent)

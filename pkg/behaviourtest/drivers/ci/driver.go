@@ -126,3 +126,36 @@ func DownloadAgentArtifactsAfter(ctx context.Context, d Driver, owner, repo, age
 	}
 	return d.DownloadNamedArtifactAfter(ctx, owner, repo, "fullsend-"+agent, after, destDir)
 }
+
+// WorkflowDispatcher is an optional extension of Driver for scenarios
+// that start a workflow themselves with chosen inputs, the way an external
+// scheduler or custom poller does, rather than through forge activity. It
+// is a separate interface so that external Driver implementations keep
+// compiling; a scenario that uses it on a Driver without it fails with an
+// explanatory error. A wrapper that embeds Driver hides it unless the
+// wrapper implements it too.
+type WorkflowDispatcher interface {
+	// DispatchWorkflow starts workflowFile on ref with the given inputs.
+	DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error
+	// WaitForWorkflowConclusion waits for the newest run of workflowFile
+	// for event created at or after the given time to complete, and
+	// returns it whatever its conclusion, so a scenario can assert a
+	// failure and read the failed run's logs.
+	WaitForWorkflowConclusion(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error)
+}
+
+// IsTerminalFailure reports whether a CI run or pipeline conclusion
+// represents a real failure that fail-fast waits treat as terminal:
+// failure, timed_out and startup_failure. Skipped and cancelled runs are
+// excluded because they are typically concurrency-group noise, not
+// failures under test. The drivers' fail-fast rules and the workflow
+// dispatch steps' failure assertion share this one predicate, so the
+// conclusions cannot drift apart between them.
+func IsTerminalFailure(conclusion string) bool {
+	switch conclusion {
+	case "failure", "timed_out", "startup_failure":
+		return true
+	default:
+		return false
+	}
+}

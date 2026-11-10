@@ -322,8 +322,10 @@ func TestThenAgentCompletes_RecordsConsumedRunAndAdvancesScenarioStart(t *testin
 			},
 			downloadNamedArtifactFn: func(context.Context, string, string, int, string, string) error { return nil },
 		},
+		DispatchedWorkflow: true,
 	}
 	require.NoError(t, thenAgentCompletes(w, "review"))
+	assert.False(t, w.DispatchedWorkflow, "a harness wait step re-resolves the harness run and clears the guard")
 	assert.Equal(t, 100, w.WorkflowRun.ID)
 	assert.True(t, w.ConsumedHarnessRunIDs["review"][100], "the matched run must be recorded as consumed")
 	// Regression (#7957 review): the new boundary must be inclusive of

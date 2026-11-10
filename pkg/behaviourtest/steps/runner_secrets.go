@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/cucumber/godog"
 
@@ -91,22 +90,13 @@ func deleteRunnerSecretsSecret(w *world.World) error {
 	return nil
 }
 
-// harnessLogPollWindow bounds how long fetchUsableHarnessLogs keeps
-// fetching a run's logs that came back unusable (a fetch error, an empty
-// body, or a fetch-failure note): logs fetched just after a run completes
-// have come back unusable, cause not confirmed. Logs that are complete,
-// or truncated at a size or page cap, are final and are not fetched
-// again. Variables (not constants) so unit tests can shrink the window.
-var harnessLogPollWindow = 60 * time.Second
-
-var harnessLogPollInterval = 5 * time.Second
-
 // thenHarnessWorkflowFailsWithLog waits for the agent's harness run to
 // fail and checks that its logs contain needle, for a run that fails
 // before any post-script could report on the forge (a harness refused at
 // load, for example). Logs that could not be fetched, were empty or hold a
-// fetch-failure note are fetched again until harnessLogPollWindow passes
-// (fetchUsableHarnessLogs, shared with the workflow-logs-contain step);
+// fetch-failure note are fetched again until logPollWindow passes
+// (fetchUsableSubjectLogs, shared with the workflow-logs-contain and
+// workflow-dispatch failure steps);
 // the last fetch is saved as the debug artifact, unless it is partial and a
 // complete snapshot is already saved for the run. When the text is missing,
 // the error says whether the logs could not be fetched, were empty or were
@@ -117,62 +107,28 @@ func thenHarnessWorkflowFailsWithLog(ctx context.Context, w *world.World, agent,
 	if w.ScenarioStart.IsZero() {
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
+	// The shared guard in checkRunLogsNeedle would catch a blank needle
+	// only after this step's harness wait — up to dispatchWait — so
+	// reject it here, before the run is resolved, the way the sibling
+	// log steps do.
+	if err := rejectBlankNeedle(needle); err != nil {
+		return err
+	}
 	run, err := w.CI.WaitForFailedHarnessAgent(ctx, w.Org, w.RepoName, agent, w.ScenarioStart)
 	if err != nil {
 		return err
 	}
 	w.WorkflowRun = run
-	logs, fetchErr, stopped := fetchUsableHarnessLogs(ctx, w, agent, needle, run)
-	_, checkErr := checkHarnessRunLogs(run, agent, needle, logs, fetchErr)
+	// A harness wait step re-resolves the harness run after a dispatch:
+	// harness steps reading w.WorkflowRun are legal again from here on.
+	w.DispatchedWorkflow = false
+	subject := fmt.Sprintf("harness %q", agent)
+	// The saved artifact keeps the bare agent name, the directory the
+	// "completes successfully" step saves the same run to.
+	logs, fetchErr, stopped := fetchUsableSubjectLogs(ctx, w, subject, agent, needle, run)
+	_, checkErr := checkRunLogsNeedle(run, subject, needle, logs, fetchErr)
 	if stopped != nil {
 		return fmt.Errorf("%w (stopped waiting for the logs: %w)", checkErr, stopped)
 	}
 	return checkErr
-}
-
-// fetchUsableHarnessLogs fetches run's logs, fetching again while the
-// result is unusable — a fetch error, an empty body or a fetch-failure
-// note — until harnessLogPollWindow passes; checkHarnessRunLogs is the
-// retry predicate, so a snapshot that holds needle, is complete or is
-// truncated at a cap is final. The last fetch is saved as the debug
-// artifact, unless it is partial and a complete snapshot is already saved
-// for the run. stopped is non-nil when ctx ended the wait; the caller keeps
-// its own diagnosis and wraps it.
-func fetchUsableHarnessLogs(ctx context.Context, w *world.World, agent, needle string, run *forge.WorkflowRun) (logs string, fetchErr error, stopped error) {
-	deadline := time.Now().Add(harnessLogPollWindow)
-	for {
-		fetchCtx, cancel := context.WithTimeout(ctx, logFetchTimeout)
-		logs, fetchErr = w.CI.GetRunLogs(fetchCtx, w.Org, w.RepoName, run.ID)
-		cancel()
-		retry, _ := checkHarnessRunLogs(run, agent, needle, logs, fetchErr)
-		if !retry || time.Now().After(deadline) {
-			saveFetchedWorkflowRunLogs(w, agent, run, logs, fetchErr)
-			return logs, fetchErr, nil
-		}
-		select {
-		case <-ctx.Done():
-			saveFetchedWorkflowRunLogs(w, agent, run, logs, fetchErr)
-			return logs, fetchErr, ctx.Err()
-		case <-time.After(harnessLogPollInterval):
-		}
-	}
-}
-
-// checkHarnessRunLogs reports whether logs hold needle, and whether the
-// logs were unusable in a way a later fetch can change (worth fetching
-// again) rather than final. A truncation note is final: the client cuts
-// each log at a fixed size and reads one page of jobs.
-func checkHarnessRunLogs(run *forge.WorkflowRun, agent, needle, logs string, fetchErr error) (retry bool, err error) {
-	switch {
-	case fetchErr != nil:
-		return true, fmt.Errorf("harness %q run %d failed, but its logs could not be fetched, so %q was not checked (url=%s): %w", agent, run.ID, needle, run.HTMLURL, fetchErr)
-	case strings.Contains(logs, needle):
-		return false, nil
-	case strings.TrimSpace(logs) == "":
-		return true, fmt.Errorf("harness %q run %d failed, but the forge returned no log output, so %q was not checked (url=%s)", agent, run.ID, needle, run.HTMLURL)
-	}
-	if note := partialLogMarker(logs); note.marker != "" {
-		return !note.truncation, fmt.Errorf("harness %q run %d failed and its logs do not contain %q, but they are incomplete (they hold %q), so the text may be in the part not fetched (url=%s)", agent, run.ID, needle, note.marker, run.HTMLURL)
-	}
-	return false, fmt.Errorf("harness %q run %d failed, but its logs do not contain %q (url=%s)", agent, run.ID, needle, run.HTMLURL)
 }

@@ -277,7 +277,7 @@ ci-local:
 # on demand with runner-secret-overlay-guard added to
 # BEHAVIOUR_CAPABILITIES, on dev against the fix or on stage once it is on
 # main; when that passes, declare it here. Jira AISDLC-654 tracks that
-# step and the harnessLogPollWindow confirmation.
+# step and the logPollWindow confirmation.
 BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
 behaviour-test:

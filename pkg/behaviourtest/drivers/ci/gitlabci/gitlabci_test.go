@@ -839,27 +839,6 @@ func TestAssertNoHarnessAgentArtifact_DetectsAgentJob(t *testing.T) {
 	assert.Contains(t, err.Error(), `expected harness "triage" not to run`)
 }
 
-func TestIsTerminalFailure(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		conclusion string
-		want       bool
-	}{
-		{"failure", true},
-		{"timed_out", true},
-		{"startup_failure", true},
-		{"skipped", false},
-		{"cancelled", false},
-		{"success", false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		assert.Equal(t, tt.want, isTerminalFailure(tt.conclusion),
-			"isTerminalFailure(%q)", tt.conclusion)
-	}
-}
-
 func TestIsConcurrencySuperseded(t *testing.T) {
 	t.Parallel()
 

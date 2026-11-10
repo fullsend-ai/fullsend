@@ -82,6 +82,9 @@ var gatewayProviderCleanupMarkers = []string{
 // (recorded by "the harness ... workflow completes successfully") for the
 // gateway provider's cleanup.
 func thenGatewayProviderCleanedUp(w *world.World) error {
+	if w.DispatchedWorkflow {
+		return errDispatchedWorkflow
+	}
 	if w.WorkflowRun == nil {
 		return fmt.Errorf("no workflow run recorded; assert the harness workflow completed first")
 	}
