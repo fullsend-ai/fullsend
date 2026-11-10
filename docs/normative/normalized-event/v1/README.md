@@ -460,6 +460,18 @@ changes). When `transition.comment.command == "/fs-fix"`, set `trigger_source`
 to `actor.id` (the human or bot that invoked the command). Omit
 `trigger_source` for all other agents and transitions.
 
+**Built-in stage payloads (GitHub):** the route job of
+`reusable-dispatch.yml` builds the `event_payload` it hands the built-in
+stage jobs (triage, code, review, fix, retro, prioritize) from the raw
+GitHub event itself, not from an execution ref. It embeds the same complete
+`NormalizedEvent` as `_normalized_event` by running
+`fullsend dispatch --print-event` on the event (bot-role resolution
+included, through the mint URL the job threads as `FULLSEND_MINT_URL`), and
+each stage job writes the payload to
+`.fullsend/dispatch/event-payload.json` before invoking the agent action, so
+`fullsend run` recovers the event the way it does for harness dispatch
+(#6748).
+
 **`event_payload.pull_request`** (GitHub-shaped, for backward compatibility):
 
 When `entity.kind == "change_proposal"`:

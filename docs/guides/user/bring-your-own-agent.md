@@ -936,8 +936,13 @@ variables to the runner:
 | `GITHUB_ISSUE_URL` | Deprecated, use `FULLSEND_WORK_ITEM_URL` instead. |
 
 The full event payload is also written to
-`.fullsend/dispatch/event-payload.json`. Detect the tracker from
-`_normalized_event.source.system`, not variable presence.
+`.fullsend/dispatch/event-payload.json` — by the harness-run job and, on
+GitHub, by the six built-in stage jobs of `reusable-dispatch.yml` (triage,
+code, review, fix, retro, prioritize). The standalone
+`reusable-prioritize.yml` door is the exception: it passes the event to
+`fullsend run` through its `workflow_call` `event_payload` input instead of
+the file. Detect the tracker from `_normalized_event.source.system`, not
+variable presence.
 
 - **Pre/post scripts** inherit these variables directly from the host
   environment (`"$FULLSEND_WORK_ITEM_URL"`).
