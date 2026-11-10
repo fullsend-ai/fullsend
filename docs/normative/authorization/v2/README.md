@@ -526,21 +526,27 @@ bot and resolves its exact registered `actor.bot_role`; `actor.role` remains
 `none`. The downstream harness CEL trigger may further constrain which bot
 role and review state are accepted.
 
-### Legacy lifecycle close (pull\_request\_target.closed)
+### Closed pull request retro (pull\_request\_target.closed)
 
-**Current bash compatibility behavior:** The GitHub bash dispatcher routes
-`pull_request_target.closed` to retro without a separate collaborator-role
-check, so any closer may trigger it. This is not a read-only capability:
-retro's token can write issues and pull requests, and its post-script can
-file issues, comment, and apply labels. The Go CEL path has no close-event
-exception and applies the selected harness's role-derived default; a `retro`
-role requires `write`.
-
-The ungated bash route is not a general v2 grant for CEL-based dispatch or
-entity facts. Under this contract, a human close-event actor must meet the
-selected harness's effective minimum before CEL. A `retro`-role harness
-defaults to `write`; an explicit `human_min_role` may choose another allowed
-value. The legacy `/fs-retro` slash command retains its bash `write` guard.
+The GitHub bash dispatcher checks that the event sender has write access
+before routing a closed pull request to retro. The CEL route applies the
+same fixed write floor before applying the selected harness's role-derived
+threshold; a `retro` role requires `write` by default. Merge-queue merges use
+the same rule: the event sender must have write-level repository permission.
+Other automated merge or close senders without write-level repository
+permission are denied; a write-authorized user can run `/fs-retro` afterward.
+GitLab merged and closed merge requests use the same write threshold: polling
+resolves the actor's project role, and the agent job independently checks
+Developer membership before running retro. If GitLab does not provide the
+closer identity, polling observes the event without dispatch or a poll failure
+instead of using the merge request author.
+If CEL opt-in, configuration, or route evaluation fails for a close event, the
+workflow skips retro rather than falling back to the Bash stage. Retro's
+repository token can write issues and pull requests, so this dispatch is not
+read-only lifecycle accounting. The `/fs-retro` slash command has the same
+fixed write floor, regardless of a lower role declared by the retro harness.
+CEL cannot promote the command to a retro run when the Bash route denied the
+actor.
 
 ### Schedule and manual dispatch
 
@@ -576,15 +582,26 @@ It applies to an entity-source harness's CEL predicate whether a verified
 prompting event is present or `event == null`; legacy event-only dispatch is
 unchanged. The entity-source path is not yet implemented by `fullsend dispatch`,
 `fullsend poll`, or bound `fullsend run`. Entity-first execution MUST NOT be
-enabled until the versioned normalized-entity contract defines CEL-eligible and
-prompt-eligible fields and their coverage states. That contract is a platform
-allowlist; a harness may request fewer fields but cannot expand it.
+enabled for a source and kind until both the versioned normalized-entity
+contract defines its CEL-eligible fields and coverage states and an applicable
+model-facing input contract defines its prompt-eligible fields. The CEL field
+gate is a platform allowlist; a harness may request fewer fields but cannot
+expand it. [Normalized entity v1](../../normalized-entity/v1/README.md)
+defines that gate. For the Git-forge work items and change proposals in its scope,
+[entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
+defines the model-facing field gate. That snapshot does not cover Jira issues
+or GitHub Discussions; their entity-first paths require an applicable
+prompt-field gate before implementation is enabled.
+
+> **Revision note:** The entity-first prerequisite now checks separate CEL
+> and model-facing field contracts for each source and kind. This tightens the
+> future enablement gate; entity-first execution remains unimplemented.
 
 > **Planned:** Entity-source CEL is not implemented and remains disabled until
-> the [normalized-entity contract tracked by issue #8420](https://github.com/fullsend-ai/fullsend/issues/8420)
-> and the run-time authorization and launch checks described here are
-> implemented. Legacy non-CEL, non-entity workflows remain on Authorization
-> v1.
+> [Normalized entity v1](../../normalized-entity/v1/README.md),
+> the applicable prompt-field gate, and the run-time authorization and launch
+> checks described here are implemented. Legacy non-CEL, non-entity workflows
+> remain on Authorization v1.
 
 With a prompting event, the event-actor authorization gate for the selected
 harness still runs before its CEL predicate; neither discovery nor an

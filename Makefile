@@ -88,11 +88,11 @@ lint-all: ensure-hooks
 	pre-commit run --all-files
 
 check:
-	uvx ruff check .
-	uvx ty check hack/
+	uvx ruff@0.15.7 check .
+	uvx ty@0.0.99 check hack/
 
 fmt:
-	uvx ruff format .
+	uvx ruff@0.15.7 format .
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -224,6 +224,7 @@ script-test:
 	$(call run-timed,python3 -m pytest .github/scripts/semgrep_ruleset_drift_test.py -q)
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
 	$(call run-timed,python3 -m pytest hack/check_gateway_doc_configs_test.py -q)
+	$(call run-timed,python3 -m pytest hack/tool_fetch_pins_test.py -q)
 	$(call run-timed,python3 -m pytest internal/security/hooks/ -q)
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 

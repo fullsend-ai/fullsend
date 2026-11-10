@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -280,6 +281,11 @@ func TestRunAgent_JiraWorkItemIdentityExported(t *testing.T) {
 	unsetWorkItemEnv(t)
 	t.Setenv("GITHUB_EVENT_PATH", "")
 	dir := writeCodeHarnessFixture(t)
+	// A Jira-sourced run needs tracker.jira and a resolvable gateway URL
+	// (it fails closed otherwise, ADR 0156).
+	srv := newTenantInfoServer(t, http.StatusOK, nil)
+	useJiraScopedTestClient(t, srv)
+	writeJiraTrackerConfig(t, dir, srv.URL)
 	writeDispatchPayload(t, dir, `{"issue":{"number":10042,"html_url":"https://example.atlassian.net/browse/PROJ-1"},"_normalized_event":{"repo":"org/repo","entity":{"kind":"work_item","id":10042,"key":"PROJ-1","url":"https://example.atlassian.net/browse/PROJ-1"},"transition":{"kind":"comment_added","comment":{"body":"/fs-code","command":"/fs-code"}},"actor":{"id":"u1","kind":"human","role":"write","is_entity_author":false},"state":{"labels":[]},"source":{"system":"jira","raw_type":"comment"}}}`)
 
 	err := runCodeAgentForWorkItemTest(t, dir)

@@ -221,6 +221,17 @@ therefore declare both credential types. Scripts
 always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, so bytecode never
 breaks the hash-verified fetch cache.
 
+For a Jira-sourced run, `fullsend run` sets `JIRA_BASE_URL` to `tracker.jira.base_url` and
+`JIRA_API_URL` to the API gateway base `{tracker.jira.api_url}/ex/jira/{cloudId}` before env
+expansion, replacing any inherited `JIRA_BASE_URL`. A `${JIRA_BASE_URL}` or `${JIRA_API_URL}`
+reference in `env.runner`, `env.sandbox`, or a `host_files` entry with `expand: true` resolves to
+these values. A Jira-sourced run stops before the sandbox starts when cloud-ID discovery fails,
+when the run is `--offline`, or when the `tracker.jira` connection settings are missing or invalid,
+instead of letting agents fall back to the site URL. A runner secret cannot override either name. Runs from other sources do not get these variables from `fullsend run`, so
+reference them only in an overlay guarded on `event.source.system == "jira"`: an unset reference
+fails env validation on a GitHub or GitLab run. See
+[Jira integration § Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
+
 `env.runner` values never reach the sandbox. Each value is expanded with `${NAME}` after `base:` composition and overlays are resolved. Names come from the runner's environment and, on GitHub, from the `FULLSEND_GITHUB_RUNNER_SECRETS` object ([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md)). A name in that object wins over a runner variable of the same name. In CI the composite action stages the object in a mode 0600 file and `fullsend run` deletes it after reading, so the object is never in the environment of `fullsend run` or of any process it starts. Keys the harness does not reference reach no script. A referenced value reaches the script as an ordinary environment variable, and scripts run as the job user. With the object unset, expansion behaves as before.
 
 These rules make a run fail before `pre_script` starts:
