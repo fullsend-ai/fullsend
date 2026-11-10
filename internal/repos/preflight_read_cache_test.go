@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 
@@ -38,6 +39,24 @@ func (c *readCountingClient) record(key string) {
 func (c *readCountingClient) GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error) {
 	c.record("file:" + owner + "/" + repo + "/" + path)
 	return c.Client.GetFileContent(ctx, owner, repo, path)
+}
+
+func (c *readCountingClient) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+	c.record("ref:" + owner + "/" + repo + "/" + path + "@" + ref)
+	return c.Client.GetFileContentAtRef(ctx, owner, repo, path, ref)
+}
+
+// refReads returns the counts of the reads at a ref, by key.
+func (c *readCountingClient) refReads() map[string]int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	reads := make(map[string]int)
+	for k, v := range c.calls {
+		if strings.HasPrefix(k, "ref:") {
+			reads[k] = v
+		}
+	}
+	return reads
 }
 
 func (c *readCountingClient) GetRepoVariable(ctx context.Context, owner, repo, name string) (string, bool, error) {

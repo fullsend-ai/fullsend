@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -382,6 +383,51 @@ func TestCheckOrphanVars_GitLabWebhookVarsManagedButGenuineOrphanReported(t *tes
 	}
 	if len(orphans) != 1 || orphans[0].Name != "FULLSEND_UNKNOWN_LEFTOVER" {
 		t.Errorf("expected only the genuine orphan, got %v", orphans)
+	}
+}
+
+// The trace signing key and its ledger are managed on both forges (ADR
+// 0154): orphan detection never reports them, while a genuine orphan beside
+// them still is. GitLab lists the secret as a CI/CD variable too.
+func TestCheckOrphanVars_TraceSigningKeyNamesManaged(t *testing.T) {
+	cases := []struct {
+		forgeName string
+		mintURL   string
+		names     []string
+	}{
+		{ForgeGitHub, "https://mint.example.com", []string{forge.VarTraceSigningKeyID}},
+		{ForgeGitLab, "", []string{forge.VarTraceSigningKeyID, forge.SecretTraceSigningKey}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.forgeName, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			for _, name := range tc.names {
+				fc.VariableValues["owner/repo/"+name] = "x"
+			}
+			fc.VariableValues["owner/repo/FULLSEND_UNKNOWN_LEFTOVER"] = "x"
+
+			orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo",
+				InstallConfig{Forge: tc.forgeName, MintURL: tc.mintURL}, tc.mintURL)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(orphans) != 1 || orphans[0].Name != "FULLSEND_UNKNOWN_LEFTOVER" {
+				t.Errorf("expected only the genuine orphan, got %v", orphans)
+			}
+		})
+	}
+}
+
+// Guard: both names are managed but never required, so an install that
+// predates them is not incomplete.
+func TestTraceSigningKeyNamesNotRequired(t *testing.T) {
+	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
+		if slices.Contains(requiredVarsForForge(forgeName), forge.VarTraceSigningKeyID) {
+			t.Errorf("requiredVarsForForge(%s) must not include %s", forgeName, forge.VarTraceSigningKeyID)
+		}
+		if slices.Contains(requiredSecretsForForge(forgeName), forge.SecretTraceSigningKey) {
+			t.Errorf("requiredSecretsForForge(%s) must not include %s", forgeName, forge.SecretTraceSigningKey)
+		}
 	}
 }
 

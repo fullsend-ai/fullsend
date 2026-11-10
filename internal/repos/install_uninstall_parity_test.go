@@ -36,13 +36,16 @@ import (
 // variable builders, which the parity check therefore cannot discover on its
 // own. GitLab's FULLSEND_DISPATCH_SECRET is written by seedGitLabPollState
 // (install.go, GitLab branch only) through poll.EnsureDispatchSecret, and is
-// cleaned up from gitlabUninstallVars.
+// cleaned up from gitlabUninstallVars. On both forges convergeTraceSigningKey
+// writes the FULLSEND_TRACE_SIGNING_KEY_ID ledger right after the trace
+// signing key (ADR 0154), outside the variable builders by design.
 //
 // This list is itself hand-maintained, which is the very thing these tests
 // exist to discourage. It is the narrow cost of keeping the check in the test
 // package; if install grows another out-of-band value, add it here.
 var installSideExtras = map[string][]string{
-	ForgeGitLab: {forge.SecretDispatch},
+	ForgeGitHub: {forge.VarTraceSigningKeyID},
+	ForgeGitLab: {forge.SecretDispatch, forge.VarTraceSigningKeyID},
 }
 
 // parityInstallConfig returns a config with every optional field populated, so
@@ -64,10 +67,12 @@ func parityInstallConfig(forgeName, auth string) InstallConfig {
 // installSideSecretExtras names repository secrets install provisions outside
 // installSecretsForForge, which the secret parity check cannot discover on its
 // own. convergeJiraPoll writes the Jira polling credentials (jiraSecretValues)
-// for repos whose effective tracker.jira.poll.enabled is true on both forges.
+// for repos whose effective tracker.jira.poll.enabled is true on both forges,
+// and convergeTraceSigningKey writes FULLSEND_TRACE_SIGNING_KEY on both forges
+// whenever a trace key is planned (ADR 0154).
 // Hand-maintained, like installSideExtras: add any further out-of-band secret.
 var installSideSecretExtras = func() map[string][]string {
-	var names []string
+	names := []string{forge.SecretTraceSigningKey}
 	for name := range jiraSecretValues(ConvergeConfig{JiraToken: "token", JiraEmail: "email"}) {
 		names = append(names, name)
 	}

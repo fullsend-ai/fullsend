@@ -29,8 +29,9 @@ func gitlabRoleOperationLock(owner, repo string) chan struct{} {
 }
 
 // GitLabProjectLeaseVar names the project CI/CD variable that serves as the
-// cross-process lease for GitLab role-credential and webhook transactions.
-// It exists only while an installer holds it and carries no secret.
+// cross-process lease for GitLab role-credential, webhook and trace signing
+// key transactions. It exists only while an installer holds it and carries
+// no secret.
 const GitLabProjectLeaseVar = "FULLSEND_GITLAB_INSTALL_LEASE"
 
 // gitlabLeaseWait bounds how long an installer waits for another installer's
@@ -50,20 +51,21 @@ func gitlabCleanupContext(ctx context.Context) (context.Context, context.CancelF
 	return context.WithTimeout(context.WithoutCancel(ctx), gitlabCleanupTimeout)
 }
 
-// LockGitLabProject serializes every GitLab role-credential and webhook
-// write transaction on one project: within this process by a mutex, and
-// across installer processes (any host) by a lease taken atomically on the
-// project itself (see forge.ProjectLeaser). The returned release function
-// must be deferred with the caller's error pointer; it frees the lease and
-// joins a failed release into *errp so a stuck lease is reported rather than
-// silent. A dry run takes only the process-local mutex, since it must not
-// write to the project. A nil error pointer still releases both locks but
-// discards release errors.
+// LockGitLabProject serializes every GitLab role-credential, webhook and
+// trace signing key write transaction on one project: within this process
+// by a mutex, and across installer processes (any host) by a lease taken
+// atomically on the project itself (see forge.ProjectLeaser). The returned
+// release function must be deferred with the caller's error pointer; it
+// frees the lease and joins a failed release into *errp so a stuck lease is
+// reported rather than silent. A dry run takes only the process-local
+// mutex, since it must not write to the project. A nil error pointer still
+// releases both locks but discards release errors.
 //
 // It fails closed: a client that cannot take a lease, or a lease that stays
 // held past the wait budget, is an error, and the caller must not proceed
-// with credential or webhook changes. The lease is never taken over: a held
-// lease is reported, not removed. The lease is not reentrant.
+// with credential, webhook or trace signing key changes. The lease is never
+// taken over: a held lease is reported, not removed. The lease is not
+// reentrant.
 func LockGitLabProject(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) (func(errp *error), error) {
 	local := gitlabRoleOperationLock(owner, repo)
 	// One deadline-bound context covers the whole acquisition: the

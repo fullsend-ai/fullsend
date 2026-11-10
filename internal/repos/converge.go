@@ -103,6 +103,13 @@ type ConvergeConfig struct {
 	JiraClientID     string
 	JiraClientSecret string
 
+	// TraceKeyPlans holds the trace-signing key writes planned by
+	// EnsureTraceSigningKeys, keyed "owner/repo" (ADR 0154). A repository
+	// with a plan gets FULLSEND_TRACE_SIGNING_KEY and then the
+	// FULLSEND_TRACE_SIGNING_KEY_ID ledger before its scaffold or config
+	// commit (convergeTraceSigningKey). Never logged or reported.
+	TraceKeyPlans map[string]*TraceKeyPlan
+
 	// ReviewAppClientID is the OAuth client ID of the review agent's
 	// GitHub App, pre-resolved by the caller for ReviewAppClientIDAppSet.
 	// It seeds the per-repo resolution cache so repos on that app set
@@ -1772,19 +1779,34 @@ func convergeRepo(ctx context.Context,
 			_, staleVendoredActions = applyStaleVendoredPlan(installFiles, plan, cfg.DryRun, repoFullName, progress)
 		}
 
+		// Install refuses some GitLab fresh installs before its own writes.
+		// A dry run, and an install that writes a trace key first, run those
+		// read-only checks here, so a refused install leaves no seed behind.
+		if resolved.Forge == ForgeGitLab && (cfg.DryRun || cfg.TraceKeyPlans[repoFullName] != nil) {
+			if err := gitlabFreshInstallDryRunPreflight(ctx, resolved, installCfg); err != nil {
+				cr.Error = err
+				cr.Actions = append(cr.Actions, ComponentAction{
+					Component: "gitlab-ci-inputs",
+					Action:    "error",
+					Detail:    err.Error(),
+				})
+				return cr
+			}
+		}
+
+		// The trace signing key and its ledger are written before Install,
+		// so the seed never trails the commit that delivers the config
+		// naming its key (ADR 0154). A dry run reports them; a failure stops
+		// the repository before Install.
+		traceActions := convergeTraceSigningKey(ctx, d, cfg, progress)
+		cr.Actions = append(cr.Actions, traceActions...)
+		if actionsError(traceActions) != nil {
+			cr.Error = actionsError(cr.Actions)
+			return cr
+		}
+
 		if cfg.DryRun {
 			cr.Installed = true
-			if resolved.Forge == ForgeGitLab {
-				if err := gitlabFreshInstallDryRunPreflight(ctx, resolved, installCfg); err != nil {
-					cr.Error = err
-					cr.Actions = append(cr.Actions, ComponentAction{
-						Component: "gitlab-ci-inputs",
-						Action:    "error",
-						Detail:    err.Error(),
-					})
-					return cr
-				}
-			}
 			cr.Actions = append(cr.Actions, ComponentAction{
 				Component: "all",
 				Action:    "add",
@@ -1909,6 +1931,16 @@ func convergeRepo(ctx context.Context,
 		jiraDelivery.render = scaffold.RenderOptions{UpstreamRef: rref.ref, UpstreamTag: rref.tag}
 	}
 	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, jiraDelivery, progress)...)
+
+	// 2d'': Trace signing key and ledger (ADR 0154), before the commit that
+	// delivers the config naming the key. A failure stops the repository
+	// here, with every failure so far.
+	traceActions := convergeTraceSigningKey(ctx, d, cfg, progress)
+	cr.Actions = append(cr.Actions, traceActions...)
+	if actionsError(traceActions) != nil {
+		cr.Error = actionsError(cr.Actions)
+		return cr
+	}
 
 	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;

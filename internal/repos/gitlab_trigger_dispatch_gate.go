@@ -725,8 +725,10 @@ func gitlabJobScriptLines(job *yaml.Node, key string) ([]string, bool) {
 	if !ok || value == nil {
 		return nil, ok
 	}
+	// A tagged list such as `!reference [job, key]` names other script
+	// lines rather than holding them.
 	value = resolveAlias(value)
-	if value == nil {
+	if value == nil || hasNonCoreTag(value) {
 		return nil, false
 	}
 	items := []*yaml.Node{value}
