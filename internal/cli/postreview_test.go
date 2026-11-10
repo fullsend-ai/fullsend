@@ -312,6 +312,96 @@ func TestPostReviewContent_SuccessSubmitsFormalReview(t *testing.T) {
 	assert.Equal(t, "abc123def456", fc.CreatedReviews[0].CommitSHA)
 }
 
+func TestPullRequestDiffHash_IsStableAndFailsOpenForIncompleteDiffs(t *testing.T) {
+	first := forge.NewFakeClient()
+	first.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {
+			{Path: "z.yaml", Patch: "@@ -1 +1 @@\n-z\n+z2"},
+			{Path: "a.yaml", Patch: "@@ -1 +1 @@\n-a\n+a2"},
+		},
+	}
+	second := forge.NewFakeClient()
+	second.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {
+			{Path: "a.yaml", Patch: "@@ -1 +1 @@\n-a\n+a2"},
+			{Path: "z.yaml", Patch: "@@ -1 +1 @@\n-z\n+z2"},
+		},
+	}
+
+	firstHash, err := pullRequestDiffHash(context.Background(), first, "o", "r", 1)
+	require.NoError(t, err)
+	secondHash, err := pullRequestDiffHash(context.Background(), second, "o", "r", 1)
+	require.NoError(t, err)
+	assert.NotEmpty(t, firstHash)
+	assert.Equal(t, firstHash, secondHash)
+
+	metadata := forge.NewFakeClient()
+	metadata.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {
+			{Path: "a.yaml", Status: "renamed", PreviousPath: "old.yaml", Patch: "@@ -1 +1 @@\n-a\n+a2"},
+			{Path: "z.yaml", Status: "modified", Patch: "@@ -1 +1 @@\n-z\n+z2"},
+		},
+	}
+	metadataHash, err := pullRequestDiffHash(context.Background(), metadata, "o", "r", 1)
+	require.NoError(t, err)
+	assert.NotEqual(t, firstHash, metadataHash)
+
+	incomplete := forge.NewFakeClient()
+	incomplete.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "image.bin"}},
+	}
+	incompleteHash, err := pullRequestDiffHash(context.Background(), incomplete, "o", "r", 1)
+	require.NoError(t, err)
+	assert.Empty(t, incompleteHash)
+}
+
+func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "README.md", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+	printer := ui.New(io.Discard)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Body: "Looks good", Action: "approve"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.NoError(t, err)
+	require.Len(t, fc.IssueComments["o/r/1"], 1)
+	assert.Regexp(t, reviewDiffHashMarkerRe, strings.SplitN(fc.IssueComments["o/r/1"][0].Body, "\n", 3)[1])
+}
+
+func TestPostReviewContent_PreservesGeneratedHashAndProjectionMarkers(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "README.md", Status: "modified", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+	projection := "<!-- fullsend:review-findings-v2:eyJmaW5kaW5ncyI6W119 -->"
+	parsed := ReviewResult{Body: projection + "\n\nLooks good", Action: "approve"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+	require.NoError(t, err)
+	body := fc.IssueComments["o/r/1"][0].Body
+	lines := strings.Split(body, "\n")
+	require.GreaterOrEqual(t, len(lines), 3)
+	assert.Equal(t, reviewMarker, lines[0])
+	assert.Regexp(t, reviewDiffHashMarkerRe, lines[1])
+	assert.Equal(t, projection, lines[2])
+}
+
+func TestPostReviewContent_DoesNotTrustAgentHashWhenHashUnavailable(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.Errors["ListPullRequestFileDiffs"] = fmt.Errorf("rate limited")
+	forged := "<!-- fullsend:review-diff-hash:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef -->"
+	parsed := ReviewResult{Body: forged + "\nLooks good", Action: "approve"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "&lt;!-- fullsend:review-diff-hash:")
+}
+
 func TestPostReviewContent_FallbackFailureDoesNotFailCommand(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"

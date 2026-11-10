@@ -789,8 +789,10 @@ type ReviewThreadPage struct {
 // with its unified diff patch. The patch may be empty for binary files,
 // rename-only changes, or when GitHub truncates large diffs.
 type PullRequestFileDiff struct {
-	Path  string
-	Patch string
+	Path         string
+	PreviousPath string
+	Status       string
+	Patch        string
 }
 
 // RateLimit is the most recent GitHub REST rate-limit state a client

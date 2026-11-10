@@ -1,7 +1,10 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -47,6 +51,18 @@ var findingIDRe = regexp.MustCompile(`^f_[a-zA-Z0-9]+$`)
 // metadata. It is left unescaped there, so it stays hidden and the next
 // review run can read it (#8544).
 var reviewProjectionMarkerRe = regexp.MustCompile(`^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->$`)
+
+// reviewDiffHashMarkerRe is trusted metadata emitted by this CLI, not by the
+// review agent. It lets the dispatch workflow avoid re-running a review when
+// the effective PR diff is unchanged. Keep this format in sync with the
+// routing check in reusable-dispatch.yml.
+var reviewDiffHashMarkerRe = regexp.MustCompile(`^<!-- fullsend:review-diff-hash:[0-9a-f]{64} -->$`)
+
+func reviewTrustedLeadingLineReForHash(diffHash string) *regexp.Regexp {
+	projectionPattern := reviewProjectionMarkerRe.String()[1 : len(reviewProjectionMarkerRe.String())-1]
+	hashMarker := regexp.QuoteMeta(fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->", diffHash))
+	return regexp.MustCompile(`^(?:` + projectionPattern + `|` + hashMarker + `)$`)
+}
 
 func newPostReviewCmd() *cobra.Command {
 	var (
@@ -340,6 +356,16 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 // a posted verdict into a workflow Failure (#3548).
 func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, dryRun bool, printer *ui.Printer) error {
 	cfg.TrustedLeadingLine = reviewProjectionMarkerRe
+	cfg.TrustedLeadingLines = 1
+	if !dryRun {
+		if diffHash, hashErr := pullRequestDiffHash(ctx, client, owner, repo, pr); hashErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not compute review diff hash; re-review deduplication will be unavailable: %v", hashErr))
+		} else if diffHash != "" {
+			parsed.Body = fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n%s", diffHash, parsed.Body)
+			cfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash)
+			cfg.TrustedLeadingLines = 2
+		}
+	}
 	commentURL, err := sticky.Post(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
 	if err != nil {
 		return err
@@ -350,6 +376,58 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 	}
 
 	return postApprovedFollowUpIssues(ctx, owner, repo, pr, parsed, printer)
+}
+
+// pullRequestDiffHash returns a stable identity for the current effective PR
+// diff. A missing patch means the forge truncated or cannot represent part of
+// the diff, so return an empty hash and fail open rather than risk suppressing
+// a needed review.
+func pullRequestDiffHash(ctx context.Context, client forge.Client, owner, repo string, pr int) (string, error) {
+	diffs, err := client.ListPullRequestFileDiffs(ctx, owner, repo, pr)
+	if err != nil {
+		return "", err
+	}
+	if len(diffs) == 0 {
+		return "", nil
+	}
+
+	for _, diff := range diffs {
+		if diff.Patch == "" {
+			return "", nil
+		}
+	}
+
+	sort.Slice(diffs, func(i, j int) bool {
+		if diffs[i].Path != diffs[j].Path {
+			return diffs[i].Path < diffs[j].Path
+		}
+		if diffs[i].PreviousPath != diffs[j].PreviousPath {
+			return diffs[i].PreviousPath < diffs[j].PreviousPath
+		}
+		return diffs[i].Status < diffs[j].Status
+	})
+	canonical := make([]struct {
+		Filename         string `json:"filename"`
+		PreviousFilename string `json:"previous_filename"`
+		Status           string `json:"status"`
+		Patch            string `json:"patch"`
+	}, 0, len(diffs))
+	for _, diff := range diffs {
+		canonical = append(canonical, struct {
+			Filename         string `json:"filename"`
+			PreviousFilename string `json:"previous_filename"`
+			Status           string `json:"status"`
+			Patch            string `json:"patch"`
+		}{Filename: diff.Path, PreviousFilename: diff.PreviousPath, Status: diff.Status, Patch: diff.Patch})
+	}
+	var canonicalJSON bytes.Buffer
+	encoder := json.NewEncoder(&canonicalJSON)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(canonical); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(bytes.TrimSuffix(canonicalJSON.Bytes(), []byte("\n")))
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // submitFormalReview minimizes stale reviews by the same user, then

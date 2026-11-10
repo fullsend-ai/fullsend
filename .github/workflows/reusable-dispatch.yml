@@ -451,6 +451,102 @@ jobs:
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
 
+      # A synchronize event can be caused by merging the base branch into a
+      # PR without changing the PR's effective diff. Avoid paying for another
+      # full review when the previous review recorded the same complete diff.
+      # Missing or incomplete metadata deliberately fails open.
+      - name: Skip unchanged review diff
+        id: review-diff
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "skip=false" >> "${GITHUB_OUTPUT}"
+
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
+
+          if ! file_json=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/files" \
+            --paginate --jq '.[] | {filename, previous_filename: (.previous_filename // ""), status: (.status // ""), patch}'); then
+            echo "::warning::Could not fetch PR file diffs; running review"
+            exit 0
+          fi
+
+          if ! expected_files=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '.changed_files'); then
+            echo "::warning::Could not verify the complete PR file list; running review"
+            exit 0
+          fi
+          if [[ ! "${expected_files}" =~ ^[0-9]+$ || "${expected_files}" -ge 3000 ]]; then
+            echo "::notice::PR file count cannot be proven complete; running review"
+            exit 0
+          fi
+          actual_files=$(printf '%s\n' "${file_json}" | jq -s 'length')
+          if [[ "${actual_files}" != "${expected_files}" ]]; then
+            echo "::notice::PR file list is incomplete (${actual_files}/${expected_files}); running review"
+            exit 0
+          fi
+
+          if ! hash_input=$(printf '%s\n' "${file_json}" | jq -s -c '
+            if length == 0 or any(.[]; .patch == null or .patch == "") then
+              empty
+            else
+              sort_by(.filename, .previous_filename, .status)
+            end'); then
+            echo "::warning::Could not canonicalize PR file diffs; running review"
+            exit 0
+          fi
+          if [[ -z "${hash_input}" ]]; then
+            echo "::notice::PR diff is incomplete or empty; running review"
+            exit 0
+          fi
+          # Go's encoding/json escapes U+2028/U+2029 even with HTML escaping
+          # disabled. Normalize jq's literal UTF-8 output to the same JSON
+          # representation before hashing.
+          if ! hash_input=$(printf '%s' "${hash_input}" | perl -CS -pe 's/\x{2028}/\\u2028/g; s/\x{2029}/\\u2029/g'); then
+            echo "::warning::Could not normalize PR file diffs; running review"
+            exit 0
+          fi
+          current_hash="$(printf '%s' "${hash_input}" | sha256sum | awk '{print $1}')"
+
+          if ! prior_body=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" -s -r '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and (.body | contains("<!-- fullsend:review-agent -->")))]
+              | last | .body // ""'); then
+            echo "::warning::Could not fetch the previous review; running review"
+            exit 0
+          fi
+
+          prior_section="${prior_body%%<!-- sticky:history-start -->*}"
+          prior_hash="$(printf '%s\n' "${prior_section}" \
+            | sed -nE 's/^<!-- fullsend:review-diff-hash:([0-9a-f]{64}) -->$/\1/p' \
+            | head -1 || true)"
+          if [[ -z "${prior_hash}" ]]; then
+            echo "::notice::Previous review has no complete diff hash; running review"
+            exit 0
+          fi
+
+          if [[ "${current_hash}" == "${prior_hash}" ]]; then
+            echo "::notice::Skipping review: synchronize event has the same effective diff as the previous review"
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::notice::PR effective diff changed; running review"
+          fi
+
       # CEL routing (#8726). A repository moves a built-in stage's routing
       # from the bash rules above to a CEL trigger by setting agents[].trigger
       # on the agent's entry in config.yaml; a harness trigger: never does.
@@ -765,6 +861,7 @@ jobs:
         env:
           BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
           BASH_TRIGGER_SOURCE: ${{ steps.bash-route.outputs.trigger_source }}
+          REVIEW_DIFF_SKIP: ${{ steps.review-diff.outputs.skip }}
           ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
           CEL_OPT_IN_OUTCOME: ${{ steps.cel-opt-in.outcome }}
           CEL_CONFIG_OUTCOME: ${{ steps.cel-config.outcome }}
@@ -812,6 +909,12 @@ jobs:
                 echo "CEL route changed the stage: '${BASH_STAGE}' -> '${STAGE}'"
               fi
             fi
+          fi
+
+          if [[ "${REVIEW_DIFF_SKIP:-false}" == "true" && "${STAGE}" == "review" ]]; then
+            echo "::notice::Skipping review after final routing: synchronize event has the same effective diff as the previous review"
+            STAGE=""
+            TRIGGER_SOURCE=""
           fi
 
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"

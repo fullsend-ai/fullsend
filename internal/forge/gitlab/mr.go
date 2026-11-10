@@ -354,22 +354,40 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 		}
 
 		var diffs []struct {
-			NewPath string `json:"new_path"`
-			Diff    string `json:"diff"`
+			OldPath     string `json:"old_path"`
+			NewPath     string `json:"new_path"`
+			NewFile     bool   `json:"new_file"`
+			RenamedFile bool   `json:"renamed_file"`
+			DeletedFile bool   `json:"deleted_file"`
+			Diff        string `json:"diff"`
 		}
 		if err := decodeJSON(resp, &diffs); err != nil {
 			return nil, fmt.Errorf("decode merge request file diffs page %d: %w", page, err)
 		}
 
 		for _, d := range diffs {
+			status := "modified"
+			switch {
+			case d.NewFile:
+				status = "added"
+			case d.DeletedFile:
+				status = "removed"
+			case d.RenamedFile:
+				status = "renamed"
+			}
 			files = append(files, forge.PullRequestFileDiff{
-				Path:  d.NewPath,
-				Patch: d.Diff,
+				Path:         d.NewPath,
+				PreviousPath: d.OldPath,
+				Status:       status,
+				Patch:        d.Diff,
 			})
 		}
 
 		if len(diffs) < 100 {
 			break
+		}
+		if page == 100 {
+			return nil, fmt.Errorf("merge request file diff listing exceeded pagination limit")
 		}
 	}
 
