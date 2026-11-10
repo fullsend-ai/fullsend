@@ -41,7 +41,9 @@ explicit permissions before granting action rights is tracked in
 
 This ADR aims to make each config-registered agent's maximum mint authority
 explicit and fail closed when any effective harness variant requests a level
-the repository has not approved.
+outside its effective grant. The built-in profile below is a deliberate
+compatibility exception: an omitted grant resolves to that profile rather than
+being denied.
 
 ## Options
 
@@ -50,8 +52,10 @@ the repository has not approved.
 - Store one flat ceiling per agent. This cannot express different grants for
   different run-stages or account for overlays that select different levels.
 - Store approved level sets per agent and run-stage. This makes the grant
-  explicit while representing all effective harness variants; we choose this
-  option.
+  explicit while representing all effective harness variants. Missing stages
+  could deny every level, which provides the strongest fail-closed behavior
+  but requires existing entries to be migrated. We instead retain a built-in
+  compatibility profile for omitted grants, as described below.
 
 ## Decision
 
@@ -60,12 +64,15 @@ agent installation records the maximum authority each harness may request.
 
 Each `agents[]` entry may have an `approved_privilege_levels` map with the same
 run-stage keys as the harness's `privilege_levels` map. Values are lists of
-levels. The built-in approval profile is `[read]` for `pre_script` and
-`runtime`, and `[write]` for `post_script`; `validation_loop` uses the
-`runtime` grant. Omitting `approved_privilege_levels` applies that profile. In
-an explicit map, a stage-specific entry wins; `default` supplies the grant for
-other stages when present, otherwise the built-in profile applies to each
-unlisted stage.
+levels. The built-in profile is `[read]` for `pre_script` and `runtime`, and
+`[write]` for `post_script`; `validation_loop` uses the `runtime` grant.
+Omitting `approved_privilege_levels` applies this profile. In an explicit map,
+a stage-specific entry wins; `default` supplies the grant for other stages
+when present, otherwise the built-in profile applies to each unlisted stage.
+This fallback is an intentional compatibility trade-off, not a record of
+operator consent: it implicitly grants `post_script` write. Removing an
+explicit stage entry therefore restores that stage's built-in grant; an empty
+list is required to deny every level for that stage.
 
 For example:
 
@@ -132,9 +139,21 @@ bypass.
 
 - Operators see the full privilege request before adding or updating an agent,
   and the repository config records the grant by stage.
-- Entries without an approval map use the built-in profile. Harnesses that
-  omit `privilege_levels` still request `write` at every stage per ADR 0073,
-  so they need additional grants before they can launch.
+- Entries without an approval map use the built-in profile, including its
+  implicit `post_script` write grant. This deliberately preserves Ralph's
+  proposed default, but does not satisfy #7548's no-write-by-default criterion
+  for agents registered by editing config directly. Deleting an explicit
+  `post_script: []` also restores the built-in write grant. A repository that
+  requires every write grant to be recorded must set `post_script: []` or
+  another explicit grant; changing the fallback to deny-by-default would
+  require a separate migration decision.
+- The supported add/install and update/upgrade commands show the effective
+  requested levels and require full approval before writing the grant. That
+  supplies deliberate consent for those CLI flows; it does not turn an omitted
+  config grant into evidence of approval.
+- Harnesses that omit `privilege_levels` still request `write` at every stage
+  per ADR 0073, so they need additional grants beyond the built-in profile
+  before they can launch.
 - The default approves the level named `read`; it does not inspect a custom
   role's underlying permissions. Custom-role owners are responsible for
   defining levels that match their intended access.
