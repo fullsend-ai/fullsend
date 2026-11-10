@@ -652,6 +652,21 @@ variable. Install, dry run and `repos status` report a conflict when it
 differs from the manifest's own `mint_url`. See
 [Effective infrastructure values](../cli/repos.md#effective-infrastructure-values).
 
+**GitHub agent dispatch** (`reusable-dispatch.yml`, `reusable-prioritize.yml`)
+resolves the mint endpoint before minting credentials: this field in
+`config.yaml`, then `config.base.yaml`, then the `FULLSEND_MINT_URL`
+repository/org variable snapshot passed into the reusable workflow. A
+declared config value overrides the variable; changing only the variable has
+no effect while config sets `mint_url`. When every layer is silent, dispatch
+uses the variable and does not apply the compiled CLI default
+(`https://mint.fullsend.sh`). Dispatch fails when a config file exists but
+`yq` is missing, a config file does not parse, the resolved URL is not HTTPS
+(file values must be HTTPS; loopback HTTP is allowed only on the variable
+fallback), or the URL contains userinfo. When config and the variable differ,
+the route job emits a workflow notice naming the effective mint host. See
+[Layered configuration reference](../guides/infrastructure/layered-config-reference.md)
+and [Mint administration — dispatch mint URL migration](../guides/infrastructure/mint-administration.md#dispatch-mint-url-migration).
+
 ### `inference`
 
 Groups inference backend settings under a single key. Each subfield resolves

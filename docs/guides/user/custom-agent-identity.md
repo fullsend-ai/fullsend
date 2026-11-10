@@ -117,9 +117,10 @@ Set it up, then point your repo at it:
    slug: my-org-my-role   # install-time App discovery; still not read by the mint
    ```
 
-3. **Point your repo at your mint** — set `FULLSEND_MINT_URL` to your mint's
-   URL. Without this, tokens are requested from the hosted mint, which does not
-   serve `my-role`.
+3. **Point your repo at your mint** — set `FULLSEND_MINT_URL` and/or declare
+   `mint_url` in `.fullsend/config.yaml` or `config.base.yaml`. Dispatch
+   prefers the config value when both are set. Without either, tokens are
+   requested from the hosted mint, which does not serve `my-role`.
 
 > **Tip: adopt gradually.** With `FALLBACK_MINT_URL`, your standalone mint
 > serves your custom roles locally and proxies the built-in ones to the hosted

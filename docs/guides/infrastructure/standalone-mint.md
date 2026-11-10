@@ -199,6 +199,12 @@ gh api -X POST /repos/myorg/my-repo/actions/variables \
 
 > **Note:** Repository-level variables override organization-level variables in GitHub Actions. If a repo already has `FULLSEND_MINT_URL` set at the repo level, update it there — the org-level variable will be ignored for that repo.
 
+> **Dispatch precedence:** When `.fullsend/config.yaml` or
+> `config.base.yaml` declares `mint_url`, agent dispatch uses that value
+> instead of `FULLSEND_MINT_URL`. Retarget by updating the config field;
+> changing only the variable is not enough when config sets a URL. See
+> [Mint administration — dispatch mint URL migration](mint-administration.md#dispatch-mint-url-migration).
+
 ## Privilege levels
 
 Levels are keys on each role. The mint looks up the requested level and returns the stored permission map — or returns an error if the level is not defined. Every role must define at least `read` and `write`; custom roles may define additional named levels.

@@ -43,6 +43,20 @@ If you are using the hosted community mint, the rest of this guide
 managing self-hosted mints — you do not need to manage mint
 infrastructure yourself.
 
+### Dispatch mint URL migration
+
+If `.fullsend/config.yaml` or `config.base.yaml` declares `mint_url`,
+dispatch uses that endpoint instead of `FULLSEND_MINT_URL`. To retarget a
+repo, change or remove the config field (removing it restores the variable
+fallback). When both are set, dispatch follows config and emits a workflow
+notice if the values differ.
+
+Config-sourced values must be HTTPS with no userinfo. Dispatch now fails
+when config is present but `yq` is missing, YAML does not parse, the
+resolved URL is invalid, or a declared config URL is not HTTPS (loopback
+HTTP remains allowed only on the variable fallback when config is silent on
+`mint_url`).
+
 ## Prerequisites
 
 - **GCP project** with the following APIs enabled:
@@ -181,7 +195,13 @@ fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems \
 
 The mint URL is stable across redeploys within the same project and region — updating the Cloud Function does not change its URL. Enrolling a new repository in an existing mint only updates `PER_REPO_WIF_REPOS` (and WIF configuration) without redeploying the function. Shared `ROLE_APP_IDS` are managed at deploy/bootstrap time (`mint deploy --pem-dir`) or per-role via `mint add-role` / `remove-role` — not during enrollment. Existing enrolled repos continue working with no changes when new repos are enrolled.
 
-Deploying to a **different region** (e.g., changing `--region` from `us-central1` to `us-east5`) creates a new Cloud Run service with a different URL. All enrolled repos store the mint URL in a repo or org variable (`FULLSEND_MINT_URL`), so changing the region requires updating every enrolled repo's variable. Avoid changing `--region` after initial deployment unless you plan to update all consumers.
+Deploying to a **different region** (e.g., changing `--region` from
+`us-central1` to `us-east5`) creates a new Cloud Run service with a
+different URL. Update every consumer: set `mint_url` in
+`.fullsend/config.yaml` or `config.base.yaml` when dispatch reads config,
+and update `FULLSEND_MINT_URL` when config is silent on `mint_url` (see
+[dispatch mint URL migration](#dispatch-mint-url-migration)). Avoid changing
+`--region` after initial deployment unless you plan to update all consumers.
 
 ### HTTP Strict Transport Security
 
