@@ -1192,8 +1192,10 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 }
 
 // TestReusableDispatchJobsReceiveMintOIDC validates permissions and mint URL
-// wiring for both gha-event dispatch steps (#8814). The OIDC token remains
-// job-local and is not copied into outputs, logs, or matrix data.
+// wiring for every gha-event dispatch step (#8814): the CEL route, the
+// harness dispatch and the route job's event payload builder. The OIDC
+// token remains job-local and is not copied into outputs, logs, or matrix
+// data.
 func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 	type workflowStep struct {
 		Name string            `yaml:"name"`
@@ -1218,6 +1220,7 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 		stepName string
 	}{
 		{jobName: "route", stepName: "Evaluate CEL route"},
+		{jobName: "route", stepName: "Build event payload"},
 		{jobName: "harness-dispatch", stepName: "Run fullsend dispatch"},
 	} {
 		t.Run(tc.jobName, func(t *testing.T) {
