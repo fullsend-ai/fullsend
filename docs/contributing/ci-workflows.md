@@ -187,7 +187,7 @@ Jobs triggered by `pull_request_target` that check out and execute PR-head code 
 
 When all five components are present, any code the PR author controls can read and exfiltrate every secret in that step's environment.
 
-**ADR-0009 and the shim distinction:** ADR-0009 documents why `pull_request_target` is safe for the shim workflow — the shim never checks out PR code, so components 2–3 are absent. This safety reasoning does **not** transfer to jobs that check out and execute PR-head code (e.g., the behaviour and playback jobs in `e2e.yml`).
+**ADR-0009 and the shim distinction:** ADR-0009 documents why `pull_request_target` was safe for the shim workflow — the shim never checks out PR code, so components 2–3 are absent. The shim has since moved to `pull_request` for same-repo PRs (ADR 0164); `reusable-dispatch.yml` still accepts `pull_request_target` from shims that have not upgraded. This safety reasoning does **not** transfer to jobs that check out and execute PR-head code (e.g., the behaviour and playback jobs in `e2e.yml`).
 
 ### Credential blast radius
 

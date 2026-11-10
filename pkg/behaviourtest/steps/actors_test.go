@@ -23,6 +23,7 @@ type fakeActorSCM struct {
 	comments     []forge.IssueComment
 	listErr      error
 	addedBodies  []string
+	addedNumbers []int
 	addedLabels  []string
 	createdIssue []string
 	branches     []string
@@ -58,8 +59,9 @@ func (f *fakeActorSCM) CreateChangeProposal(_ context.Context, _, _, _, body, he
 	return &forge.ChangeProposal{Number: 11}, nil
 }
 
-func (f *fakeActorSCM) AddComment(_ context.Context, _, _ string, _ int, body string) (*forge.IssueComment, error) {
+func (f *fakeActorSCM) AddComment(_ context.Context, _, _ string, number int, body string) (*forge.IssueComment, error) {
 	f.addedBodies = append(f.addedBodies, body)
+	f.addedNumbers = append(f.addedNumbers, number)
 	return &forge.IssueComment{Body: body}, nil
 }
 
@@ -269,6 +271,24 @@ func TestWhenActorPostsPRComment(t *testing.T) {
 	assert.False(t, w.ScenarioStart.IsZero())
 
 	err := whenActorPostsPRComment(&world.World{PRNumber: 9}, actorWrite, "/fs-review")
+	require.ErrorContains(t, err, "TEST_ACTOR_WRITE_PAT not set")
+}
+
+func TestWhenActorPostsForkPRComment(t *testing.T) {
+	t.Parallel()
+
+	w, drivers := actorWorld()
+	w.PRNumber = 3
+	require.ErrorContains(t, whenActorPostsForkPRComment(w, actorWrite, "/fs-review"), "no fork pull request opened")
+
+	w.ForkPRNumber = 9
+	require.NoError(t, whenActorPostsForkPRComment(w, actorWrite, "/fs-review"))
+	assert.Equal(t, []string{"/fs-review"}, drivers[actorWrite].addedBodies)
+	assert.Equal(t, []int{9}, drivers[actorWrite].addedNumbers, "the comment goes on the fork pull request")
+	assert.Empty(t, drivers["default"].addedBodies, "the comment must not use the e2e installation identity")
+	assert.False(t, w.ScenarioStart.IsZero())
+
+	err := whenActorPostsForkPRComment(&world.World{ForkPRNumber: 9}, actorWrite, "/fs-review")
 	require.ErrorContains(t, err, "TEST_ACTOR_WRITE_PAT not set")
 }
 

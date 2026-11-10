@@ -485,14 +485,38 @@ func TestIsLifecycleCloseAuthorized(t *testing.T) {
 		reopened := closeBy(normevent.TransitionReopened, readAuthor)
 		gitlab := closeBy(normevent.TransitionMerged, readAuthor)
 		gitlab.Source.System = normevent.SystemGitLab
-		pullRequest := closeBy(normevent.TransitionClosed, readAuthor)
-		pullRequest.Source.RawType = "pull_request"
+		review := closeBy(normevent.TransitionClosed, readAuthor)
+		review.Source.RawType = "pull_request_review"
 		for name, ev := range map[string]*normevent.Event{
 			"issue closed": issueClosed, "PR reopened": reopened, "GitLab MR merged": gitlab,
-			"pull_request (not _target) closed": pullRequest, "nil event": nil,
+			"pull_request_review": review, "nil event": nil,
 		} {
 			assert.False(t, IsLifecycleCloseAuthorized(ev, "retro"), name)
 		}
+	})
+	t.Run("pull_request closes are lifecycle closes like pull_request_target", func(t *testing.T) {
+		prCloseBy := func(kind normevent.TransitionKind, action string) *normevent.Event {
+			ev := closeBy(kind, readAuthor)
+			ev.Source.RawType = "pull_request"
+			ev.Source.RawAction = action
+			return ev
+		}
+		closed := prCloseBy(normevent.TransitionClosed, "closed")
+		merged := prCloseBy(normevent.TransitionMerged, "closed")
+		for name, ev := range map[string]*normevent.Event{"closed": closed, "merged": merged} {
+			assert.True(t, IsLifecycleCloseAuthorized(ev, "retro"), name)
+			assert.False(t, IsAuthorized(ev), "%s: the ordinary gate still denies it", name)
+			for _, role := range []string{"coder", "review", "triage", "fullsend", ""} {
+				assert.False(t, IsLifecycleCloseAuthorized(ev, role), "%s: role %q", name, role)
+			}
+		}
+		assert.False(t, IsLifecycleCloseAuthorized(prCloseBy(normevent.TransitionOpened, "opened"), "retro"),
+			"pull_request opened is not a lifecycle close")
+	})
+	t.Run("pull_request_target opened is not a lifecycle close", func(t *testing.T) {
+		opened := closeBy(normevent.TransitionOpened, readAuthor)
+		opened.Source.RawAction = "opened"
+		assert.False(t, IsLifecycleCloseAuthorized(opened, "retro"))
 	})
 }
 

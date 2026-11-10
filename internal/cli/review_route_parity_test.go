@@ -166,6 +166,21 @@ func TestReviewRouteParity(t *testing.T) {
 		},
 	}
 
+	// Per-repo shims on the pull_request trigger (same-repo PRs) send
+	// pull_request; older shims keep sending pull_request_target. Both the
+	// bash router and the CEL route treat the two alike, so every
+	// pull_request_target row is mirrored as a pull_request row with the
+	// same expectations.
+	for _, tc := range cases {
+		if tc.eventName != "pull_request_target" {
+			continue
+		}
+		mirrored := tc
+		mirrored.name = tc.name + " (pull_request)"
+		mirrored.eventName = "pull_request"
+		cases = append(cases, mirrored)
+	}
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			eventPath := filepath.Join(t.TempDir(), "event.json")
