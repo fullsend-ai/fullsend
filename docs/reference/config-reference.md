@@ -597,10 +597,12 @@ step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
 
 If workflow setup fails before the agent process starts, the dispatch workflow
 posts a separate "Fullsend agent did not run" comment with the failure category
-and workflow-run link. This startup-failure comment is used only for
-GitHub-originated events and does not replace tracker-routed notifications for
-Jira-originated events. Repeated failures update the existing startup-failure
-comment instead of creating duplicates.
+and workflow-run link. This startup-failure comment is emitted only for
+GitHub-originated events. Pre-agent failures from Jira- and GitLab-originated
+events are currently not reported by this fallback; tracker-specific
+startup-failure reporting is tracked in [#9256](https://github.com/fullsend-ai/fullsend/issues/9256).
+Repeated failures update the existing startup-failure comment instead of
+creating duplicates.
 
 The standalone prioritize workflow also supplies the status target and a
 prioritize-scoped GitHub token only to the startup-failure reporter when one

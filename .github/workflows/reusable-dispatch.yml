@@ -2309,11 +2309,6 @@ jobs:
           done
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
-          reporter=".defaults/.github/scripts/report-agent-startup-failure.sh"
-          [[ -f "${reporter}" ]] || reporter=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
-          if [[ -f "${reporter}" ]]; then
-            cp "${reporter}" .github/scripts/report-agent-startup-failure.sh
-          fi
 
       - name: Extract repo metadata
         id: repo-parts

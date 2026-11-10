@@ -581,7 +581,6 @@ runs:
       shell: bash
       env:
         AGENT: ${{ inputs.agent }}
-        ROLE: ${{ inputs.role || inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         TARGET_REPO: ${{ inputs.target-repo }}
         GH_TOKEN: ${{ inputs.github_token }}
