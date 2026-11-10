@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1256,4 +1257,42 @@ func TestHandoffPollerGeneration_AccountRecordedDefersUntilBranchPolicyAdmitsIt(
 	require.NotNil(t, res.Trigger)
 	assert.Equal(t, 1, f.accountCalls, "the deferred account is resumed, not replaced")
 	assert.Equal(t, 1, f.triggerCreates)
+}
+
+// A branch-access refusal is reported as standalone remediation that names the
+// replacement account by username and the exact GitLab setting to change,
+// without the generic "was not raised because" wrapper.
+func TestHandoffPollerGeneration_BranchAccessDeferralIsInstructional(t *testing.T) {
+	f := newHandoffFake()
+	f.prepareErrs = []error{&ReplacementPollerBranchAccessError{UserID: 5005, Username: "service_account_x", Branch: "master", RuleName: "master"}}
+
+	res, err := f.run(t)
+	require.NoError(t, err)
+	assert.Nil(t, res.Trigger)
+	assert.True(t, strings.HasPrefix(res.DeferReason, "webhook fast-path blocked: the replacement GitLab Poller service account @service_account_x (user ID 5005) cannot start pipelines on protected branch \"master\". "), res.DeferReason)
+	assert.Contains(t, res.DeferReason, `edit the "master" rule, and add @service_account_x under "Allowed to merge"`)
+	assert.Contains(t, res.DeferReason, "re-run repos install")
+	assert.True(t, strings.HasSuffix(res.DeferReason, ". The polling schedules remain in effect"), res.DeferReason)
+	assert.NotContains(t, res.DeferReason, "was not raised")
+	assert.Equal(t, []string{"create-account"}, f.events, "no elevation, bootstrap credential, or trigger")
+	assert.Equal(t, PollerPhaseAccountRecorded, f.state(t).Pending.Phase)
+}
+
+func TestReplacementPollerBranchAccessError(t *testing.T) {
+	t.Run("username and exact rule", func(t *testing.T) {
+		msg := (&ReplacementPollerBranchAccessError{UserID: 7, Username: "svc", Branch: "main", RuleName: "main"}).Error()
+		assert.Contains(t, msg, `service account @svc (user ID 7) cannot start pipelines on protected branch "main"`)
+		assert.Contains(t, msg, `open the project's Settings > Repository > Protected branches, edit the "main" rule, and add @svc under "Allowed to merge"`)
+		assert.Contains(t, msg, "allowed to merge or push")
+	})
+	t.Run("unknown username falls back to the user ID", func(t *testing.T) {
+		msg := (&ReplacementPollerBranchAccessError{UserID: 7, Branch: "main", RuleName: "main"}).Error()
+		assert.Contains(t, msg, `service account (user ID 7) cannot start pipelines`)
+		assert.Contains(t, msg, `add the fullsend-poller service account with user ID 7 under "Allowed to merge"`)
+		assert.NotContains(t, msg, "@")
+	})
+	t.Run("wildcard-only rule is named", func(t *testing.T) {
+		msg := (&ReplacementPollerBranchAccessError{UserID: 7, Username: "svc", Branch: "main", RuleName: "ma*"}).Error()
+		assert.Contains(t, msg, `edit the wildcard rule "ma*" that protects "main"`)
+	})
 }
