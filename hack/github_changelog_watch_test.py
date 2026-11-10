@@ -84,6 +84,7 @@ class FakeGitHub:
             "body": body,
             "state": state,
             "labels": [{"name": n} for n in labels],
+            "user": {"login": "github-actions[bot]"},
         }
         self.issues.append(issue)
         return issue
@@ -119,8 +120,13 @@ class FakeGitHub:
         if rest == "labels" and req.method == "POST":
             return W.Response(201, json.dumps(req.data))
         if rest == "issues" and req.method == "GET":
-            label = parse_qs(query)["labels"][0]
-            found = [i for i in self.issues if label in {lb["name"] for lb in i["labels"]}]
+            q = parse_qs(query)
+            if "creator" in q:
+                login = q["creator"][0]
+                found = [i for i in self.issues if i.get("user", {}).get("login") == login]
+            else:
+                label = q["labels"][0]
+                found = [i for i in self.issues if label in {lb["name"] for lb in i["labels"]}]
             return W.Response(200, json.dumps(found))
         if rest == "issues" and req.method == "POST":
             issue = self.add_issue(req.data["title"], req.data["body"], req.data["labels"])
@@ -260,10 +266,11 @@ def test_cosmetic_edit_is_ignored(capsys, post, since):
 
 # Tier-1 posts in the labels fixture with since 2026-08-01, as computed by the
 # classifier: every deprecations-type post, posts naming tier-1 terms, posts
-# with a date-changing editor's note, and the edit of 90922 (note 2026-08-25).
+# with an editor's note that names a date, and the edit of 90922 (note 2026-08-25).
+# 98447 and 99443 have notes that say only "Updated ..." and stay out.
 BACKFILL_TIER1 = {
-    90922, 96959, 98036, 98447, 98515, 98669, 98796, 98897, 99010,
-    99144, 99185, 99215, 99219, 99261, 99283, 99443, 99939,
+    90922, 96959, 98036, 98515, 98669, 98796, 98897, 99010,
+    99144, 99185, 99215, 99219, 99261, 99283, 99939,
 }  # fmt: skip
 
 
@@ -271,7 +278,7 @@ def test_backfill_classification():
     since = W.parse_time("2026-08-01")
     tier1 = {p["id"] for p in LABELS if W.classify(W.item_from_post(p), since).tier == 1}
     assert {98897, 99939} <= tier1
-    assert len(tier1) == 17
+    assert len(tier1) == 15
     assert tier1 == BACKFILL_TIER1
 
 
@@ -285,7 +292,7 @@ def test_backfill_dry_run_and_rerun(capsys):
     assert any(ln.startswith("DRY-RUN OPEN changelog:98897 ") for ln in opens)
     assert any(ln.startswith("DRY-RUN OPEN changelog:99939 ") for ln in opens)
     # 17 label tier-1 posts plus 99517 from the deprecations fixture, minus 5 opened.
-    assert sum(OVER_CAP_TEXT in ln for ln in out) == 13
+    assert sum(OVER_CAP_TEXT in ln for ln in out) == 11
     assert out[-1].startswith("DRY-RUN SUMMARY open=5 comment=0 ")
     assert sum(ln.startswith("DRY-RUN IGNORE-COSMETIC ") for ln in out) == 8
 
@@ -480,11 +487,11 @@ def test_one_source_failing_still_runs(capsys):
     assert "DRY-RUN OPEN changelog:99939 " in out
 
 
-def test_since_defaults_to_26_hours(capsys):
+def test_since_defaults_to_74_hours(capsys):
     fake = FakeGitHub()
     assert run(fake, "--dry-run") == 0
     runner = next(r for r in fake.requests if r.target.startswith(W.RUNNER_IMAGES_ISSUES))
-    assert "since=2026-11-08T10:00:00Z" in runner.target
+    assert "since=2026-11-06T10:00:00Z" in runner.target
 
 
 def test_markers_in_external_text_are_escaped():
@@ -510,3 +517,57 @@ def test_editor_note_parsing():
     assert notes[0].when == datetime(2026, 10, 21).date()
     assert notes[0].text.startswith("We updated the automatic enforcement date")
     assert W.parse_note_date("October 14th, 2026") == datetime(2026, 10, 14).date()
+
+
+def test_note_dated_previous_pacific_day_still_counts(capsys):
+    # Saved 2026-10-22 06:40 UTC, still October 21 in Pacific time; the next run starts after it.
+    post = {
+        **EDITED[0],
+        "modified": "2026-10-21T23:40:00",
+        "modified_gmt": "2026-10-22T06:40:00",
+        "date_gmt": "2026-09-17T08:45:26",
+    }
+    fake = FakeGitHub(labels=[post], issues=[tracked_issue(98897)])
+    since = "2026-10-22T04:23:00Z"
+    assert run(fake, "--since", since, now=datetime(2026, 10, 23, 6, 23, tzinfo=UTC)) == 0
+    line = actions(capsys.readouterr().out)[0]
+    assert line.startswith("COMMENT changelog:98897 ")
+    assert line.endswith(" #7 modified 2026-10-22T06:40:00Z")
+
+
+def test_unlabelled_workflow_issue_still_dedupes(capsys):
+    issue = {**tracked_issue(98897), "labels": [], "user": {"login": "github-actions[bot]"}}
+    fake = FakeGitHub(labels=PUBLISHED, issues=[issue])
+    assert run(fake, "--since", "2026-09-16T00:00:00Z") == 0
+    assert fake.opened() == []
+    line = actions(capsys.readouterr().out)[0]
+    assert line.startswith("SKIP-DUP changelog:98897 ") and line.endswith(" #7")
+
+
+def test_note_added_while_post_is_new_gets_a_comment(capsys):
+    fake = FakeGitHub(labels=PUBLISHED)
+    assert run(fake, "--since", "2026-09-16T00:00:00Z") == 0
+    fake.labels = [{**EDITED[0], "modified": "2026-09-18T01:00:00"}]
+    note = {**EDITED[0]["content"]}
+    note["rendered"] = note["rendered"].replace("October 21, 2026", "September 18, 2026")
+    fake.labels[0]["content"] = note
+    assert run(fake, "--since", "2026-09-16T00:00:00Z") == 0
+    out = actions(capsys.readouterr().out)
+    assert any(ln.startswith("COMMENT changelog:98897 ") for ln in out)
+    assert run(fake, "--since", "2026-09-16T00:00:00Z") == 0
+    out = actions(capsys.readouterr().out)
+    assert any(ln.startswith("SKIP-DUP changelog:98897 ") for ln in out)
+
+
+def test_unparseable_note_date_on_edit_is_tier1():
+    post = copy.deepcopy(EDITED[0])
+    post["content"]["rendered"] = post["content"]["rendered"].replace(
+        "October 21, 2026)", "21st of October)"
+    )
+    verdict = W.classify(W.item_from_post(post), W.parse_time("2026-10-20"))
+    assert verdict.kind == "edit" and verdict.tier == 1
+
+
+def test_note_without_a_date_does_not_make_a_new_post_tier1():
+    note = W.Note("August 27, 2026", None, "Updated the Community link.")
+    assert not W.mentions_date_change(note)

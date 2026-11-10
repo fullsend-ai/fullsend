@@ -6,7 +6,7 @@
 """Watch the GitHub changelog for Actions platform changes and file issues.
 
 Each run polls three sources for items modified since --since (default: now
-minus 26 hours) and merges them by post id or issue number:
+minus 74 hours) and merges them by post id or issue number:
 
 1. The github.blog changelog REST API, labels actions, platform-governance
    and supply-chain-security.
@@ -63,10 +63,13 @@ DEPRECATIONS_FEED = f"{FEED_BASE}/type/deprecations/feed/"
 # RSS changelog-type names for the deprecations type.
 DEPRECATION_TYPE_NAMES = {"retired", "deprecation", "deprecations"}
 RUNNER_IMAGES_ISSUES = "repos/actions/runner-images/issues"
-MAX_WP_PAGES = 20
+MAX_WP_PAGES = 5
+# Three days: a dropped or failed daily run is covered by the next one; dedupe absorbs the overlap.
+DEFAULT_WINDOW = timedelta(hours=74)
 USER_AGENT = "fullsend-github-changelog-watch"
 
 ISSUE_LABEL = "platform-change"
+WORKFLOW_BOT = "github-actions%5Bbot%5D"  # issue author when the scheduled workflow writes
 DIGEST_LABEL = "platform-change-digest"
 LABELS = {
     ISSUE_LABEL: ("d93f0b", "GitHub platform change that may affect fullsend"),
@@ -110,7 +113,7 @@ EDITOR_NOTE_RE = re.compile(r"Editor['’]s note\s*\(([^)]{1,40})\)\s*:?\s*(.*)"
 MONTH_RE = re.compile(
     r"\b(January|February|March|April|May|June|July|August|September|October|November|December)\b"
 )
-DATE_CHANGE_RE = re.compile(r"\b(moved|postpone\w*|updated|delay\w*)\b", re.I)
+YEAR_RE = re.compile(r"\b20\d\d\b")
 BLOCK_END_RE = re.compile(
     r"</(?:p|li|h[1-6]|tr|div|blockquote|pre|ul|ol|table)\s*>|<br\s*/?>", re.I
 )
@@ -345,7 +348,8 @@ class Verdict:
 
 def parse_note_date(s: str) -> date | None:
     s = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", s.strip())
-    for fmt in ("%B %d, %Y", "%b %d, %Y", "%B %d %Y", "%Y-%m-%d"):
+    s = s.replace(".", "")
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%B %d %Y", "%d %B %Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(s, fmt).date()
         except ValueError:
@@ -361,7 +365,7 @@ def editor_notes(text: str) -> list[Note]:
 
 
 def mentions_date_change(note: Note) -> bool:
-    return bool(MONTH_RE.search(note.text) or DATE_CHANGE_RE.search(note.text))
+    return bool(MONTH_RE.search(note.text) or YEAR_RE.search(note.text))
 
 
 def find_terms(text: str, terms: tuple[str, ...]) -> list[str]:
@@ -390,7 +394,9 @@ def classify(item: Item, since: datetime) -> Verdict:
         return Verdict("new", 2 if tier2 else 0, tier2, [])
     if item.modified < since:
         return Verdict("stale", 0, [], [])
-    fresh = [n for n in notes if n.when is not None and n.when >= since.date()]
+    # Note dates are in GitHub's local (Pacific) day, so allow one day of slack.
+    earliest = (since - timedelta(days=1)).date()
+    fresh = [n for n in notes if n.when is None or n.when >= earliest]
     if not fresh:
         return Verdict("cosmetic", 0, [], [])
     return Verdict("edit", 1, [n.reason() for n in fresh] + tier1, fresh)
@@ -462,7 +468,7 @@ def issue_body(item: Item, verdict: Verdict) -> str:
         "",
         f"<!-- platform-change:source={item.source}:id={item.id} -->",
     ]
-    if verdict.kind == "edit":
+    if item.modified > item.published:
         lines.append(edit_marker(item))
     return "\n".join(lines) + "\n"
 
@@ -576,16 +582,21 @@ class Watcher:
         data = {"title": title, "body": body, "labels": [label]}
         return self.gh(f"repos/{self.repo}/issues", "POST", data)
 
-    def list_issues(self, label: str) -> list[dict[str, Any]]:
-        path = f"repos/{self.repo}/issues?labels={label}&state=all&per_page=100"
+    def list_issues(self, query: str) -> list[dict[str, Any]]:
+        path = f"repos/{self.repo}/issues?{query}&state=all&per_page=100"
         return [i for i in self.gh(path, paginate=True) if "pull_request" not in i]
 
     def load_existing(self) -> None:
-        for issue in self.list_issues(ISSUE_LABEL):
-            for m in ISSUE_MARKER_RE.finditer(issue.get("body") or ""):
+        # Issues the workflow created are listed too, so removing a label does not reopen a post.
+        seen: dict[int, dict[str, Any]] = {}
+        for query in (f"labels={ISSUE_LABEL}", f"labels={DIGEST_LABEL}", f"creator={WORKFLOW_BOT}"):
+            for issue in self.list_issues(query):
+                seen.setdefault(issue["number"], issue)
+        for issue in seen.values():
+            body = issue.get("body") or ""
+            for m in ISSUE_MARKER_RE.finditer(body):
                 self.issues.setdefault((m.group(1), int(m.group(2))), issue)
-        for issue in self.list_issues(DIGEST_LABEL):
-            m = DIGEST_MARKER_RE.search(issue.get("body") or "")
+            m = DIGEST_MARKER_RE.search(body)
             if m:
                 self.digests.append((m.group(1), issue))
 
@@ -624,6 +635,8 @@ class Watcher:
             except ValueError:
                 pages = 1
             page += 1
+        if pages > MAX_WP_PAGES:
+            print(f"::warning::changelog REST API has {pages} pages; read the first {MAX_WP_PAGES}")
         try:
             return [item_from_post(p) for p in posts]
         except (KeyError, TypeError, ValueError) as e:
@@ -787,7 +800,7 @@ class Watcher:
                 issue = self.issues.get(item.key)
                 if issue is None:
                     opens.append((item, verdict))
-                elif verdict.kind == "edit":
+                elif verdict.kind == "edit" or (verdict.notes and item.modified > item.published):
                     self.comment_on_edit(issue, item, verdict)
                 else:
                     self.log("SKIP-DUP", f"{item.describe()} #{issue['number']}")
@@ -834,7 +847,7 @@ def max_issues_arg(value: str) -> int:
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Watch the GitHub changelog for platform changes.")
     p.add_argument("--repo", type=repo_arg, default="fullsend-ai/fullsend")
-    p.add_argument("--since", type=since_arg, help="ISO-8601; default now minus 26 hours")
+    p.add_argument("--since", type=since_arg, help="ISO-8601; default now minus 74 hours")
     p.add_argument("--dry-run", action="store_true", help="read only; write nothing")
     p.add_argument("--max-issues", type=max_issues_arg, default=5)
     return p.parse_args(argv)
@@ -847,7 +860,7 @@ def main(
 ) -> int:
     args = parse_args(argv)
     now = now or datetime.now(UTC)
-    since = args.since or now - timedelta(hours=26)
+    since = args.since or now - DEFAULT_WINDOW
     watcher = Watcher(fetch, args.repo, since, now, args.dry_run, args.max_issues)
     try:
         return watcher.run()
