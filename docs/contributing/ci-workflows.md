@@ -24,7 +24,7 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
   concurrency:
     group: fullsend-code-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
   ```
-  Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request_target` or `push` (e.g., `e2e.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
+  Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request` or `push` (e.g., `e2e.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
 - Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main` (see [exception for the site build and deploy workflows](#site-workflows-cancel-in-progress) below).
 - <a id="site-workflows-cancel-in-progress"></a>**Exception — `site-build.yml` and `site-deploy.yml`:**
   these two files intentionally use unconditional `cancel-in-progress: true`,
