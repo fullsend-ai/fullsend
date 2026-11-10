@@ -99,7 +99,7 @@ progress:
   agents, a provider such as `jira-ro` is attached only on runs from the
   matching source, so `by_source` selects the same runs. A repo whose agent
   reads a private system on runs from every source should set the repo-wide
-  `verbosity` to `tools` or `quiet`.
+  `verbosity` to `quiet`.
 - **Pre-scripts and post-scripts are out of scope.** They are the repo owner's
   own code.
 
