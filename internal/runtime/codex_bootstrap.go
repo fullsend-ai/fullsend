@@ -178,12 +178,13 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	// CLI's catalog: the gate takes the collaboration version from the entry
 	// of the model Run will launch, V1 when the entry selects V1 or carries
 	// no version (codex's multi_agent feature, on by default, supplies V1)
-	// and V2 when it selects V2. A V1 parent delegates. A V2 parent is
-	// declined until its child-result delivery path is implemented and
-	// verified live (ADR 0159 decision 4); a disabled, unknown-version,
-	// unlisted or gateway/ parent is declined with its own explanation. A
-	// declined parent keeps the multi-agent tools off and runs in one
-	// context, as an agent that does not delegate does.
+	// and V2 when it selects V2. Only a V1 parent delegates: the gate reads
+	// the version, not the reason. Only the change that renders the V2
+	// config and the checked child-result delivery path widens the gate to V2,
+	// once that path is verified live (ADR 0159 decision 4). A V2, disabled,
+	// unknown-version, unlisted or gateway/ parent is declined with its own
+	// explanation, keeps the multi-agent tools off and runs in one context,
+	// as an agent that does not delegate does.
 	_, securityOn := input.(SandboxHooksBootstrap)
 	var catalog codexCatalog
 	delegating := false
@@ -192,7 +193,7 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 			return err
 		}
 		version, reason := codexParentCollabVersion(catalog, input.ParentModel(), def.Model)
-		if delegating = version != "" && reason == ""; !delegating {
+		if delegating = version == "v1"; !delegating {
 			fmt.Fprintf(os.Stderr, "sub-agents: %s, running in one context\n", reason)
 		}
 	}

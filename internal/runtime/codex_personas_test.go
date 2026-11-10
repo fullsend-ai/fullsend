@@ -386,13 +386,14 @@ func TestCodexCatalog(t *testing.T) {
 
 // TestCodexParentCollabVersion is part two of the delegation gate (ADR 0126,
 // extended by ADR 0159): the parent model Run will use (the run-level model,
-// else the definition's) must translate to an OpenAI id whose catalog entry
-// gives the gate V1 or V2: the entry selects one, or carries no version and
-// codex's multi_agent feature, on by default, supplies V1. A V1 parent
-// delegates. A V2 parent resolves but is declined with the ADR 0159 reason
-// until its child-result delivery path is implemented and verified live. A
-// disabled, unknown-version or unlisted parent gets no version from the gate
-// and says why in one line, and so does a gateway/ parent whatever its id.
+// else the definition's) must translate to an OpenAI id, whose catalog entry
+// gives a version: V1 when it selects V1 or carries none (codex's multi_agent
+// feature, on by default, supplies V1), V2 when it selects V2. Only a "v1"
+// result delegates; a V2 parent gets "v2" and the ADR 0159 reason, and
+// Bootstrap declines it until its child-result delivery path is implemented
+// and verified live. A disabled, unknown-version or unlisted parent gets no
+// version from the gate and says why in one line, and so does a gateway/
+// parent whatever its id.
 func TestCodexParentCollabVersion(t *testing.T) {
 	t.Parallel()
 	catalog := codexVersionsCatalog(map[string]string{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-x": "v3", "gpt-d": "disabled"})

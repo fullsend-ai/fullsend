@@ -391,10 +391,12 @@ func parseCodexCatalog(data []byte) (codexCatalog, error) {
 // codexParentCollabVersion is part two of the delegation gate (ADR 0126,
 // extended by ADR 0159): the collaboration version the gate takes for the
 // parent Run will launch ("v1" or "v2", else ""), and the one-line reason
-// Bootstrap prints when the parent runs in one context. A V2 parent is
-// returned with a reason until its child-result delivery path is implemented
-// and verified live (ADR 0159 decision 4). A parent that does not translate
-// is reported by Run with the same error; the gate only declines here. A
+// Bootstrap prints when the parent runs in one context. Bootstrap delegates
+// only a "v1" parent: the reason explains a decline and never decides one. A
+// V2 parent is returned as "v2" with the ADR 0159 reason, and Bootstrap
+// declines it until its child-result delivery path is implemented and
+// verified live (ADR 0159 decision 4). A parent that does not translate is
+// reported by Run with the same error; the gate only declines here. A
 // gateway/ parent is declined whatever its id: children would inherit the
 // gateway provider with bare OpenAI ids it may not serve, and native children
 // have not run on that route.
