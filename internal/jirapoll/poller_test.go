@@ -61,6 +61,9 @@ type mockClient struct {
 	userGroupsErr  error                           // global error
 	userGroupsErrs map[string]error                // per-actor error (overrides global)
 
+	roleActorsCalls int            // GetProjectRoleActors call count
+	userGroupsCalls map[string]int // accountID -> GetUserGroups call count
+
 	// getPropertyHook, if set, runs after each GetEntityProperty call
 	// captures its return value, and before that value is returned. Used
 	// to simulate a concurrent writer changing the stored property
@@ -191,6 +194,7 @@ func (m *mockClient) GetStatus(_ context.Context, idOrName string) (*jira.Status
 }
 
 func (m *mockClient) GetProjectRoleActors(_ context.Context, _ string) (map[string]jira.ProjectRoleActors, error) {
+	m.roleActorsCalls++
 	if m.roleActorsErr != nil {
 		return nil, m.roleActorsErr
 	}
@@ -216,6 +220,10 @@ func (m *mockClient) GetProjectRoleActors(_ context.Context, _ string) (map[stri
 }
 
 func (m *mockClient) GetUserGroups(_ context.Context, accountID string) ([]jira.UserGroupInfo, error) {
+	if m.userGroupsCalls == nil {
+		m.userGroupsCalls = make(map[string]int)
+	}
+	m.userGroupsCalls[accountID]++
 	if err, ok := m.userGroupsErrs[accountID]; ok {
 		return nil, err
 	}
@@ -714,6 +722,118 @@ func TestDetectChanges_EditedCommentAttributedToEditor(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected the edited comment to surface")
+	}
+}
+
+// TestEditedComment_IsEntityAssigneeFollowsEditor checks that an edited
+// comment is judged by its editor: the assignee editing someone else's
+// comment yields true, and another user editing the assignee's comment
+// yields false.
+func TestEditedComment_IsEntityAssigneeFollowsEditor(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	lastCheck := now.Add(-1 * time.Hour)
+	created := now.Add(-48 * time.Hour).Format("2006-01-02T15:04:05.000-0700")
+	updated := now.Add(-10 * time.Minute).Format("2006-01-02T15:04:05.000-0700")
+
+	tests := []struct {
+		name         string
+		author       string
+		editor       string
+		wantAssignee bool
+	}{
+		{"assignee edits another user's comment", "other-b", "assignee-a", true},
+		{"another user edits the assignee's comment", "assignee-a", "other-b", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mc := newMockClient()
+			mc.comments["PROJ-123"] = []jira.Comment{{
+				ID:           "1",
+				Body:         "/fs-code",
+				Created:      created,
+				Updated:      updated,
+				Author:       jira.User{AccountID: tc.author, AccountType: "atlassian"},
+				UpdateAuthor: jira.User{AccountID: tc.editor, AccountType: "atlassian"},
+			}}
+			p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProject: "PROJ"})
+			issue := jira.Issue{
+				ID:  "10042",
+				Key: "PROJ-123",
+				Fields: jira.IssueFields{
+					Reporter: jira.User{AccountID: "reporter-r"},
+					Assignee: jira.User{AccountID: "assignee-a"},
+					Created:  created,
+				},
+			}
+			result, err := p.detectChanges(context.Background(), issue, lastCheck)
+			if err != nil {
+				t.Fatalf("detectChanges() error: %v", err)
+			}
+			var found bool
+			for _, e := range result.events {
+				if e.Type != "comment_added" || e.CommentID != "1" {
+					continue
+				}
+				found = true
+				ne := p.toNormalizedEvent(e)
+				if ne.Actor.ID != tc.editor {
+					t.Errorf("actor.id = %q, want the editor %q", ne.Actor.ID, tc.editor)
+				}
+				if ne.Actor.IsEntityAssignee != tc.wantAssignee {
+					t.Errorf("actor.is_entity_assignee = %v, want %v", ne.Actor.IsEntityAssignee, tc.wantAssignee)
+				}
+			}
+			if !found {
+				t.Fatal("expected the edited comment to surface")
+			}
+		})
+	}
+}
+
+// TestDetectChanges_CarriesAssignee checks that opened, comment and
+// changelog events carry the issue's assignee for the
+// actor.is_entity_assignee check.
+func TestDetectChanges_CarriesAssignee(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	ts := now.Add(-time.Minute).Format("2006-01-02T15:04:05.000-0700")
+	mc := newMockClient()
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{ID: "1", Body: "/fs-code", Created: ts, Author: jira.User{AccountID: "assignee-a"}},
+	}
+	mc.changelog["PROJ-123"] = []jira.ChangelogEntry{
+		{
+			ID:      "100",
+			Created: ts,
+			Author:  jira.User{AccountID: "assignee-a"},
+			Items:   []jira.ChangeItem{{Field: "labels", ToString: "ready-to-code"}},
+		},
+	}
+
+	p := New(mc, nil, Options{TargetRepo: "acme/platform", JiraBaseURL: "https://acme.atlassian.net", JiraProject: "PROJ"})
+	issue := jira.Issue{
+		ID:  "10042",
+		Key: "PROJ-123",
+		Fields: jira.IssueFields{
+			Reporter: jira.User{AccountID: "reporter-r"},
+			Assignee: jira.User{AccountID: "assignee-a"},
+			Created:  ts,
+		},
+	}
+	result, err := p.detectChanges(context.Background(), issue, time.Time{})
+	if err != nil {
+		t.Fatalf("detectChanges() error: %v", err)
+	}
+	types := map[string]bool{}
+	for _, e := range result.events {
+		types[e.Type] = true
+		if e.Assignee.AccountID != "assignee-a" {
+			t.Errorf("%s event Assignee = %q, want assignee-a", e.Type, e.Assignee.AccountID)
+		}
+	}
+	for _, want := range []string{"opened", "comment_added", "label_changed"} {
+		if !types[want] {
+			t.Errorf("expected a %s event, got %v", want, types)
+		}
 	}
 }
 

@@ -179,7 +179,7 @@ func TestCheckGitLabTriggerDispatchGate_RejectsWidenedDispatchInputConstraints(t
 	for _, path := range []string{".gitlab-ci.yml", fullsendPipelineInclude, fullsendAgentTemplatePath} {
 		for _, tc := range []struct{ name, old, replacement string }{
 			{"stage", "^[A-Za-z0-9_-]*$", "^.*$"},
-			{"resource key", "^((issue|mr)-[0-9]+)?$", "^.*$"},
+			{"resource key", "^((issue|mr)-[0-9]+|jira-[A-Z][A-Z0-9_]+-[1-9][0-9]*)?$", "^.*$"},
 		} {
 			t.Run(path+"/"+tc.name, func(t *testing.T) {
 				e := readyTriggerDispatchEnv(t)

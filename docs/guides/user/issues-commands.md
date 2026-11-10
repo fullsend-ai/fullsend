@@ -8,7 +8,8 @@ custom agent scripts using `fullsend issues get`,
 ## When to use
 
 The built-in agent pipeline handles comment posting automatically for
-GitHub-sourced events. Use these commands when:
+GitHub-sourced events and for Jira-sourced triage and code runs. Use these
+commands when:
 
 - A custom agent needs to post results back to **Jira** or **GitLab**.
 - An agent script needs to **read** issue content (title, body, labels,
@@ -19,6 +20,48 @@ GitHub-sourced events. Use these commands when:
   bug that blocks a task).
 - A planning or decomposition script needs to **create** issues,
   including Jira sub-tasks under a parent issue.
+
+## Jira connection settings
+
+The Jira commands take every non-secret setting from the
+[`tracker.jira`](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)
+mapping in the config.yaml under `--fullsend-dir`. There are no Jira URL or
+email flags and no `JIRA_*` environment variables:
+
+```yaml
+tracker:
+  jira:
+    base_url: https://myteam.atlassian.net
+    project: PROJ
+    # api_url: https://api.atlassian.com  # default
+    allowed_targets:
+      projects: [OPS]
+```
+
+- `base_url` and `project` are required. A config that only selects Jira
+  (`jira: {}`) is rejected for Jira API calls.
+- Requests go through the API gateway at `api_url`, which defaults to
+  `https://api.atlassian.com`. Issue links in the output use `base_url`.
+- `project` is the repository's primary project and the default
+  `--project`.
+- `issues create` may target only `project` or a project listed in
+  `allowed_targets.projects`. Any other project is refused before Jira is
+  called.
+
+Credentials come only from the environment:
+
+- `FULLSEND_JIRA_TOKEN` (required unless client credentials are set) is a
+  scoped Jira API token.
+- `FULLSEND_JIRA_EMAIL` (optional) is the bot user's account email. When it
+  is set, the token is sent with Basic auth. When it is unset, the token is a
+  service-account token sent as a Bearer token.
+- `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` are a service
+  account's OAuth 2.0 credential, used instead of the token and email. The
+  client exchanges them for a short-lived Bearer access token. Setting them
+  together with `FULLSEND_JIRA_TOKEN`, or only one of them, is an error.
+
+`--token` is rejected with `--tracker jira`, so the token never appears on
+the command line.
 
 ## `fullsend issues get`
 
@@ -33,15 +76,14 @@ fullsend issues get \
 ```
 
 For Jira, `--project` is the project key and `--number` is the numeric
-issue ID (not the human-readable key):
+issue ID (not the human-readable key). `--project` defaults to
+`tracker.jira.project`:
 
 ```bash
 fullsend issues get \
+  --fullsend-dir .fullsend \
   --tracker jira \
-  --project PROJ \
-  --number 101 \
-  --jira-url https://myteam.atlassian.net \
-  --jira-email you@example.com
+  --number 101
 ```
 
 The output JSON has `number`, `title`, `body`, `url`, `labels`, and
@@ -54,6 +96,7 @@ requested field that is unset or missing from the issue is `null`:
 
 ```bash
 fullsend issues get \
+  --fullsend-dir .fullsend \
   --tracker jira \
   --project PROJ \
   --number 101 \
@@ -86,24 +129,25 @@ otherwise ignored.
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--tracker` | Yes (unless config default set) | Tracker backend: `github`, `gitlab`, or `jira` |
-| `--project` | Yes | Project identifier: `owner/repo` (GitHub/GitLab) or project key (Jira) |
+| `--project` | GitHub/GitLab | Project identifier: `owner/repo` (GitHub/GitLab) or project key (Jira, default: `tracker.jira.project`) |
 | `--number` | Yes | Issue number (must be a positive integer) |
-| `--token` | No | API token (default: env var per tracker) |
-| `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
-| `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
+| `--token` | No | GitHub/GitLab API token (default: env var per tracker). Rejected for Jira |
 | `--fields` | Jira only | Comma-separated Jira custom field IDs (`customfield_<digits>`) to include under `custom_fields`. Repeatable. |
-| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
+| `--fullsend-dir` | Jira | Path to `.fullsend` config directory. Supplies the default `--tracker` and the [Jira connection settings](#jira-connection-settings) |
 
 ## `fullsend issues create`
 
 ### Prerequisites
 
-You need permission to create issues in the target project, its identifier
-(`owner/repo` for GitHub or GitLab, or a project key for Jira), and a tracker
-API token. Supply the token with `--token` or the relevant
-[environment variable](#environment-variables). For Jira Cloud, also supply
-the instance URL and user email with `--jira-url` and `--jira-email`, or set
-`JIRA_BASE_URL` and `JIRA_USER_EMAIL`. Jira also requires an issue type;
+You need permission to create issues in the target project and a tracker
+API token. For GitHub or GitLab, pass the project as `owner/repo` and supply
+the token with `--token` or the relevant
+[environment variable](#environment-variables). For Jira, configure the
+[Jira connection settings](#jira-connection-settings), set
+`FULLSEND_JIRA_TOKEN` (or the OAuth client credentials), and pass
+`--fullsend-dir`. `--project` defaults to
+`tracker.jira.project`. Another project must be listed in
+`tracker.jira.allowed_targets.projects`. Jira also requires an issue type;
 use the issue type's name or ID with `--type`.
 
 Creates a new issue and prints its number, URL, and (for Jira) key as
@@ -140,14 +184,12 @@ parent issue, which is how Jira sub-tasks are created:
 
 ```bash
 cat plan.md | fullsend issues create \
+  --fullsend-dir .fullsend \
   --tracker jira \
-  --project PROJ \
   --type 10003 \
   --parent PROJ-42 \
   --title "Sub-task title" \
-  --body - \
-  --jira-url https://myteam.atlassian.net \
-  --jira-email you@example.com
+  --body -
 ```
 
 `--type` and `--parent` are only implemented for Jira so far. GitHub
@@ -161,15 +203,13 @@ an error rather than being silently ignored.
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--tracker` | Yes (unless config default set) | Tracker backend: `github`, `gitlab`, or `jira` |
-| `--project` | Yes | Project identifier: `owner/repo` (GitHub/GitLab) or project key (Jira) |
+| `--project` | GitHub/GitLab | Project identifier: `owner/repo` (GitHub/GitLab) or project key (Jira, default: `tracker.jira.project`; any other key must be in `tracker.jira.allowed_targets.projects`) |
 | `--title` | Yes | Issue title |
 | `--body` | No | Issue description as Markdown, or `-` to read from stdin (default: empty) |
 | `--type` | Jira only (required) | Jira issue type: an all-digit value is an issue type ID (e.g. `10003`), anything else an issue type name (e.g. `Sub-task`) |
 | `--parent` | Jira only | Parent issue key (e.g. `PROJ-42`) for sub-task creation |
-| `--token` | No | API token (default: env var per tracker) |
-| `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
-| `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
-| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources a default `--tracker` from its `config.yaml` when the flag is omitted) |
+| `--token` | No | GitHub/GitLab API token (default: env var per tracker). Rejected for Jira |
+| `--fullsend-dir` | Jira | Path to `.fullsend` config directory. Supplies the default `--tracker` and the [Jira connection settings](#jira-connection-settings) |
 
 ## `fullsend issues post-comment`
 
@@ -186,12 +226,10 @@ would be visible to users).
 
 ```bash
 echo "Triage complete. See PR #99." | fullsend issues post-comment \
+  --fullsend-dir .fullsend \
   --tracker jira \
-  --project PROJ \
   --number 101 \
-  --marker "<!-- fullsend:triage-agent -->" \
-  --jira-url https://myteam.atlassian.net \
-  --jira-email you@example.com
+  --marker "<!-- fullsend:triage-agent -->"
 ```
 
 ### Flags
@@ -199,17 +237,15 @@ echo "Triage complete. See PR #99." | fullsend issues post-comment \
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--tracker` | Yes (unless config default set) | Tracker backend: `github`, `gitlab`, or `jira` |
-| `--project` | Yes | Project identifier: `owner/repo` (GitHub/GitLab) or project key (Jira) |
+| `--project` | GitHub/GitLab | Project identifier: `owner/repo` (GitHub/GitLab) or project key (Jira, default: `tracker.jira.project`) |
 | `--number` | Yes | Issue number (must be a positive integer) |
 | `--marker` | Yes | Sticky marker for idempotent updates (e.g. `<!-- fullsend:my-agent -->`). GitHub/GitLab: hidden HTML comment in body. Jira: comment entity property. |
 | `--result` | No | Path to comment body file, or `-` for stdin (default: `-`) |
-| `--token` | No | API token (default: env var per tracker) |
-| `--jira-url` | Jira only | Jira instance URL (default: `$JIRA_BASE_URL`) |
-| `--jira-email` | Jira only | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
+| `--token` | No | GitHub/GitLab API token (default: env var per tracker). Rejected for Jira |
 | `--dry-run` | No | Print what would be posted without posting or editing anything |
 | `--keep-history` | No | Append previous content as collapsed history blocks (default: `true`; set `false` to replace in-place) |
 | `--only-if-exists` | No | Update an existing comment with this marker but never create one. Use it for an all-clear result, so a findings comment from an earlier run is updated in place (the old findings are kept as collapsed history unless `--keep-history=false`) while a clean first run posts nothing. Only a comment whose author is exactly the identity posting matches; if that identity cannot be resolved, the command fails without posting. |
-| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources defaults from its `config.yaml` when flags are omitted) |
+| `--fullsend-dir` | Jira | Path to `.fullsend` config directory. Supplies defaults from its `config.yaml` when flags are omitted, including the [Jira connection settings](#jira-connection-settings) |
 
 ### Jira marker storage
 
@@ -229,12 +265,11 @@ equivalent, so `--tracker github` and `--tracker gitlab` fail with a
 
 ```bash
 fullsend issues link \
+  --fullsend-dir .fullsend \
   --tracker jira \
   --from PROJ-123 \
   --to PROJ-456 \
-  --type Blocks \
-  --jira-url https://myteam.atlassian.net \
-  --jira-email you@example.com
+  --type Blocks
 ```
 
 `--from` and `--to` are Jira issue keys (`PROJECT-NUMBER`); the two
@@ -253,10 +288,8 @@ created in the type's outward direction: the example above records that
 | `--from` | Yes | Source issue key (e.g. `PROJ-123`) |
 | `--to` | Yes | Target issue key (e.g. `PROJ-456`) |
 | `--type` | Yes | Link type name (e.g. `Blocks`), passed through verbatim |
-| `--token` | No | API token (default: env var per tracker) |
-| `--jira-url` | If env var unset | Jira instance URL (default: `$JIRA_BASE_URL`) |
-| `--jira-email` | If env var unset | Jira user email for auth (default: `$JIRA_USER_EMAIL`) |
-| `--fullsend-dir` | No | Path to `.fullsend` config directory (sources a default `--tracker` from its `config.yaml` when the flag is omitted) |
+| `--token` | No | Rejected for Jira, which reads `FULLSEND_JIRA_TOKEN` or the OAuth client credentials |
+| `--fullsend-dir` | Jira | Path to `.fullsend` config directory. Supplies the default `--tracker` and the [Jira connection settings](#jira-connection-settings) |
 
 ## Config-based default tracker
 
@@ -264,8 +297,17 @@ Set a default tracker in `.fullsend/config.yaml` to avoid passing
 `--tracker` on every invocation:
 
 ```yaml
-tracker: jira
+tracker:
+  jira:
+    base_url: https://myteam.atlassian.net
+    project: PROJ
 ```
+
+The provider block that is present under `tracker` selects the default.
+For Jira the same block also supplies the
+[connection settings](#jira-connection-settings).
+Existing configs that use the scalar form (`tracker: jira`) must be migrated
+to this form; the scalar is rejected.
 
 Then pass `--fullsend-dir .fullsend` (or let the agent pipeline supply
 it). An explicit `--tracker` flag overrides the config default. See
@@ -301,9 +343,12 @@ earlier one behind with content no later run updates. To recover:
 |----------|---------|-------------|
 | `GH_TOKEN` or `GITHUB_TOKEN` | GitHub | GitHub API token |
 | `GITLAB_TOKEN` | GitLab | GitLab API token |
-| `JIRA_TOKEN` | Jira | Jira API token |
-| `JIRA_BASE_URL` | Jira | Jira instance URL |
-| `JIRA_USER_EMAIL` | Jira | Email for Jira Cloud Basic auth |
+| `FULLSEND_JIRA_TOKEN` | Jira | Scoped Jira API token (required unless the OAuth client credentials are set) |
+| `FULLSEND_JIRA_EMAIL` | Jira | Bot user account email. When it is set, the token is sent with Basic auth. When it is unset, the token is a service-account token sent as a Bearer token |
+| `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Jira | A service account's OAuth 2.0 client credentials, used instead of `FULLSEND_JIRA_TOKEN` |
+
+Jira site and project settings are never read from the environment; see
+[Jira connection settings](#jira-connection-settings).
 
 ## See also
 

@@ -52,8 +52,23 @@ var issueURLRef = regexp.MustCompile(`\$\{GITHUB_ISSUE_URL\}|\$GITHUB_ISSUE_URL(
 const DeprecatedIssueURLWarning = "GITHUB_ISSUE_URL is deprecated; use FULLSEND_WORK_ITEM_URL instead (see #6610); " +
 	"keep GITHUB_ISSUE_URL for harnesses run by the reusable prioritize workflow, which does not export FULLSEND_WORK_ITEM_URL yet"
 
+// Stable diagnostic codes for JSON lint output. They identify the rule,
+// not the current message wording. Keep them lowercase kebab-case.
+const (
+	CodeRunnerEnvDeprecated        = "runner-env-deprecated"
+	CodeSandboxHostFilesCollision  = "sandbox-host-files-collision"
+	CodeAllowedRemoteImplicitFetch = "allowed-remote-implicit-fetch"
+	CodeForgeDeprecated            = "forge-deprecated"
+	CodeTriggerInvalid             = "trigger-invalid"
+	CodePreflightCheckPath         = "preflight-check-path"
+	CodeGithubIssueURLDeprecated   = "github-issue-url-deprecated"
+)
+
 // Diagnostic represents a non-fatal issue found by Lint.
 type Diagnostic struct {
+	// Code identifies the lint rule independently of Message. Empty on
+	// diagnostics constructed only for text-format unit tests.
+	Code     string
 	Severity DiagnosticSeverity
 	Field    string
 	Message  string
@@ -76,6 +91,7 @@ func (h *Harness) Lint() []Diagnostic {
 			msg = "runner_env is deprecated and env.runner takes precedence; migrate to env.runner (see ADR 0055)"
 		}
 		diags = append(diags, Diagnostic{
+			Code:     CodeRunnerEnvDeprecated,
 			Severity: SeverityWarning,
 			Field:    "runner_env",
 			Message:  msg,
@@ -89,6 +105,7 @@ func (h *Harness) Lint() []Diagnostic {
 		for _, hf := range h.HostFiles {
 			if hf.Expand && strings.Contains(hf.Dest, ".env.d/") {
 				diags = append(diags, Diagnostic{
+					Code:     CodeSandboxHostFilesCollision,
 					Severity: SeverityWarning,
 					Field:    "env.sandbox",
 					Message:  fmt.Sprintf("env.sandbox coexists with host_files entry %s (dest: %s); env.sandbox values take precedence on key collision", hf.Src, hf.Dest),
@@ -105,6 +122,7 @@ func (h *Harness) Lint() []Diagnostic {
 	// reasons, so only a bare declaration warns.
 	if len(h.AllowedRemoteResources) > 0 && !h.AllowRuntimeFetch && !h.HasURLDirResources() {
 		diags = append(diags, Diagnostic{
+			Code:     CodeAllowedRemoteImplicitFetch,
 			Severity: SeverityWarning,
 			Field:    "allowed_remote_resources",
 			Message:  "allowed_remote_resources is declared without allow_runtime_fetch: true; the runtime fetch service will start for backward compatibility, but this behavior is deprecated — add allow_runtime_fetch: true to the harness to silence this warning",
@@ -113,6 +131,7 @@ func (h *Harness) Lint() []Diagnostic {
 
 	if h.hadForgeBeforeResolve {
 		diags = append(diags, Diagnostic{
+			Code:     CodeForgeDeprecated,
 			Severity: SeverityWarning,
 			Field:    "forge",
 			Message:  "forge is deprecated; use overlays with CEL when expressions instead (see ADR 0088)",
@@ -122,6 +141,7 @@ func (h *Harness) Lint() []Diagnostic {
 	if strings.TrimSpace(h.Trigger) != "" {
 		if err := ValidateTriggerExpression(h.Trigger); err != nil {
 			diags = append(diags, Diagnostic{
+				Code:     CodeTriggerInvalid,
 				Severity: SeverityError,
 				Field:    "trigger",
 				Message:  err.Error(),
@@ -156,27 +176,56 @@ func lintPreflightCheckCommand(field, value string) *Diagnostic {
 		return nil
 	}
 	return &Diagnostic{
+		Code:     CodePreflightCheckPath,
 		Severity: SeverityError,
 		Field:    field,
 		Message:  fmt.Sprintf("value %q looks like a script path; %s runs verbatim as `sh -c` on the host and is never fetched or resolved like pre_script/post_script — if a fetched harness script was intended, use pre_script; otherwise inline the command (e.g. python3 -c 'import jsonschema')", pc, field),
 	}
 }
 
-// lintDeprecatedIssueURL reports env entries and host_files sources that
+// lintDeprecatedIssueURL returns the GITHUB_ISSUE_URL deprecation
+// diagnostics for the harness (#6610). Every loader consumes the forge and
+// overlay blocks before Lint() runs: matched sections are merged into the
+// top-level fields and the rest are dropped. So when the diagnostics were
+// captured before that consumption (captureDeprecatedIssueURL), the
+// snapshot is returned; it reports every forge variant and overlay —
+// matched or not — once, at its declared position (#8742). Otherwise
+// (plain Load, or a harness built in memory) the current state is scanned.
+func (h *Harness) lintDeprecatedIssueURL() []Diagnostic {
+	if h.issueURLDiagsCaptured {
+		return append([]Diagnostic(nil), h.issueURLDiags...)
+	}
+	return h.scanDeprecatedIssueURL()
+}
+
+// captureDeprecatedIssueURL records the harness's GITHUB_ISSUE_URL
+// diagnostics for Lint() before its forge and overlay blocks are consumed
+// (#8742). Call it on the raw harness, before ResolveForge, ResolveOverlays,
+// base flattening, or merging a base into it. Only the first call records
+// anything: a later call would see already-merged top-level fields and
+// report forge or overlay content a second time, at the wrong position.
+func (h *Harness) captureDeprecatedIssueURL() {
+	if h.issueURLDiagsCaptured {
+		return
+	}
+	h.issueURLDiags = h.scanDeprecatedIssueURL()
+	h.issueURLDiagsCaptured = true
+}
+
+// scanDeprecatedIssueURL reports env entries and host_files sources that
 // reference the deprecated GITHUB_ISSUE_URL variable, either as the entry
 // key itself or as a $GITHUB_ISSUE_URL / ${GITHUB_ISSUE_URL} expansion
-// in the value (#6610). Checked across the top-level
-// harness and unconsumed forge sections. Overlays are not scanned: every
-// loader runs ResolveOverlays before Lint(), which merges matched overlays
-// into the top-level fields (scanned there) and drops the rest (#8742).
+// in the value (#6610). Checked across the top-level harness and whatever
+// forge sections and overlays are still present.
 // The offending entry key is quoted in the message so harness-controlled key text cannot inject
 // control characters into diagnostic output.
-func (h *Harness) lintDeprecatedIssueURL() []Diagnostic {
+func (h *Harness) scanDeprecatedIssueURL() []Diagnostic {
 	var diags []Diagnostic
 
 	checkEnv := func(m map[string]string, field string) {
 		for _, k := range deprecatedIssueURLKeys(m) {
 			diags = append(diags, Diagnostic{
+				Code:     CodeGithubIssueURLDeprecated,
 				Severity: SeverityWarning,
 				Field:    field,
 				Message:  fmt.Sprintf("%s (entry %q)", DeprecatedIssueURLWarning, k),
@@ -193,6 +242,7 @@ func (h *Harness) lintDeprecatedIssueURL() []Diagnostic {
 				field = fmt.Sprintf("%s.host_files[%d].src", prefix, i)
 			}
 			diags = append(diags, Diagnostic{
+				Code:     CodeGithubIssueURLDeprecated,
 				Severity: SeverityWarning,
 				Field:    field,
 				Message:  DeprecatedIssueURLWarning,
@@ -226,6 +276,9 @@ func (h *Harness) lintDeprecatedIssueURL() []Diagnostic {
 		for _, k := range forgeKeys {
 			checkForgeConfig(h.Forge[k], fmt.Sprintf("forge[%s]", k))
 		}
+	}
+	for i := range h.Overlays {
+		checkForgeConfig(&h.Overlays[i].ForgeConfig, fmt.Sprintf("overlays[%d]", i))
 	}
 	return diags
 }

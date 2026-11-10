@@ -447,9 +447,11 @@ func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
 	assert.Contains(t, s, "note_author_id")
 	// Numeric validation on note_author_id before curl URL interpolation
 	assert.Contains(t, s, `*[!0-9]*`)
-	// Human instruction extracted from /fs-fix note body
+	// Human instruction extracted from the canonical normalized comment
+	// body only — never the legacy note_body field (#8954).
 	assert.Contains(t, s, "/fs-fix")
-	assert.Contains(t, s, "note_body")
+	assert.Contains(t, s, "._normalized_event.transition.comment.body")
+	assert.NotContains(t, s, "'.note_body")
 	// Fix iteration counts prior fix-agent commits
 	assert.Contains(t, s, "fullsend-fix")
 	assert.Contains(t, s, "author_name")
@@ -702,12 +704,16 @@ func TestGitLabAgentTemplateAuthorizationGate(t *testing.T) {
 	assert.Contains(t, s, "Developer access")
 	// Fail-closed on API failure
 	assert.Contains(t, s, "fail-closed")
-	// ACTOR_ID fallback to MR_AUTHOR_ID for backward compatibility
+	// MR_AUTHOR_ID fallback is limited to opened/synchronized MRs, where
+	// the MR author is also the event actor.
 	assert.Contains(t, s, "ACTOR_ID")
 	assert.Contains(t, s, "MR_AUTHOR_ID")
+	assert.Contains(t, s, "opened|synchronized)")
 	// Distinct warning when no actor identity is available
 	assert.Contains(t, s, "No actor identity available")
-	// Read-only stages exempt from Developer-access gate
+	// Prioritize is the only stage exempt from this gate; retro requires
+	// Developer access like other mutation-capable stages.
+	assert.Contains(t, s, `elif [ "${STAGE}" != "prioritize" ]; then`)
 	assert.Contains(t, s, `"retro"`)
 	assert.Contains(t, s, `"prioritize"`)
 }

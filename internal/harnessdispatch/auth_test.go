@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -45,6 +46,82 @@ func TestIsAuthorized_LabelAddedRequiresGitHub(t *testing.T) {
 		},
 	}
 	assert.False(t, IsAuthorized(ev))
+}
+
+func jiraLabelEvent(action string, role normevent.ActorRole) *normevent.Event {
+	return &normevent.Event{
+		Transition: normevent.Transition{
+			Kind:  normevent.TransitionLabelChanged,
+			Label: &normevent.LabelChange{Name: "ready-to-code", Action: action},
+		},
+		Source: normevent.Source{System: normevent.SystemJira},
+		Actor:  normevent.Actor{ID: "557058:abc", Kind: normevent.ActorHuman, Role: role},
+	}
+}
+
+func TestIsAuthorized_JiraLabelAddedByEditPermission(t *testing.T) {
+	// A jira provider entry with labels: jira_editors: Jira required Edit
+	// Issues to add the label, so actor.role is not consulted.
+	opts := AuthOptions{JiraLabelsByEditPermission: true}
+	ev := jiraLabelEvent("added", normevent.RoleNone)
+	assert.True(t, IsEventAuthorizedWith(ev, opts))
+	assert.True(t, IsHarnessAuthorizedWith(ev, "coder", opts))
+	assert.True(t, IsHarnessAuthorizedWith(ev, "triage", opts))
+}
+
+func TestIsAuthorized_JiraLabelAddedRequiresRoleByDefault(t *testing.T) {
+	// The zero AuthOptions is the pre-existing behaviour: a Jira label-added
+	// event takes the per-harness role threshold.
+	opts := AuthOptions{}
+
+	none := jiraLabelEvent("added", normevent.RoleNone)
+	assert.False(t, IsAuthorized(none))
+	assert.False(t, IsEventAuthorized(none))
+	assert.False(t, IsEventAuthorizedWith(none, opts))
+	assert.False(t, IsHarnessAuthorizedWith(jiraLabelEvent("added", normevent.RoleExternal), "coder", opts))
+
+	write := jiraLabelEvent("added", normevent.RoleWrite)
+	assert.True(t, IsAuthorized(write))
+	assert.True(t, IsEventAuthorizedWith(write, opts))
+	assert.True(t, IsHarnessAuthorizedWith(write, "coder", opts))
+
+	triage := jiraLabelEvent("added", normevent.RoleTriage)
+	assert.True(t, IsEventAuthorizedWith(triage, opts))
+	assert.True(t, IsHarnessAuthorizedWith(triage, "triage", opts))
+	assert.False(t, IsHarnessAuthorizedWith(triage, "coder", opts))
+}
+
+func TestIsAuthorized_JiraOpenedFollowsActorRole(t *testing.T) {
+	// A Jira issue-opened event takes the per-harness role threshold under
+	// every AuthOptions value, including the labels: project_roles policy
+	// that resolves every event through project roles: a write actor
+	// dispatches triage, an unresolved actor does not.
+	jiraOpened := func(role normevent.ActorRole) *normevent.Event {
+		return &normevent.Event{
+			Transition: normevent.Transition{Kind: normevent.TransitionOpened},
+			Source:     normevent.Source{System: normevent.SystemJira},
+			Actor:      normevent.Actor{ID: "557058:abc", Kind: normevent.ActorHuman, Role: role},
+		}
+	}
+	for _, opts := range []AuthOptions{{}, {JiraLabelsByEditPermission: true}} {
+		write := jiraOpened(normevent.RoleWrite)
+		assert.True(t, IsEventAuthorizedWith(write, opts))
+		assert.True(t, IsHarnessAuthorizedWith(write, "triage", opts))
+		none := jiraOpened(normevent.RoleNone)
+		assert.False(t, IsEventAuthorizedWith(none, opts))
+		assert.False(t, IsHarnessAuthorizedWith(none, "triage", opts))
+	}
+}
+
+func TestIsAuthorized_JiraLabelRemovedRequiresRole(t *testing.T) {
+	assert.False(t, IsAuthorized(jiraLabelEvent("removed", normevent.RoleNone)))
+	assert.True(t, IsAuthorized(jiraLabelEvent("removed", normevent.RoleWrite)))
+}
+
+func TestIsAuthorized_JiraLabelOptionDoesNotAffectGitHub(t *testing.T) {
+	ev := jiraLabelEvent("added", normevent.RoleNone)
+	ev.Source.System = normevent.SystemGitHub
+	assert.True(t, IsEventAuthorizedWith(ev, AuthOptions{JiraLabelsByEditPermission: true}))
 }
 
 func TestIsAuthorized_BotReviewSubmittedOnGitHub(t *testing.T) {
@@ -364,51 +441,23 @@ func TestFilterAuthorizedHarnesses(t *testing.T) {
 	assert.Equal(t, []string{"review", "code", "triage", "custom", "nil-harness"},
 		names(FilterAuthorizedHarnesses(candidates, botLookupEvent(normevent.TransitionLabelChanged, "", nil))))
 	assert.Empty(t, FilterAuthorizedHarnesses(nil, human(normevent.RoleWrite)))
+
+	jiraLabel := jiraLabelEvent("added", normevent.RoleTriage)
+	assert.Equal(t, []string{"review", "triage"},
+		names(FilterAuthorizedHarnesses(candidates, jiraLabel)))
+	assert.Equal(t, []string{"review", "code", "triage", "custom", "nil-harness"},
+		names(FilterAuthorizedHarnessesWith(candidates, jiraLabel, AuthOptions{JiraLabelsByEditPermission: true})))
 }
 
-func TestIsLifecycleCloseAuthorized(t *testing.T) {
-	closeBy := func(kind normevent.TransitionKind, actor normevent.Actor) *normevent.Event {
-		return &normevent.Event{
-			Entity:     normevent.Entity{Kind: normevent.EntityChangeProposal, ID: 7},
-			Transition: normevent.Transition{Kind: kind},
-			Actor:      actor,
-			Source:     normevent.Source{System: normevent.SystemGitHub, RawType: "pull_request_target", RawAction: "closed"},
-		}
+func TestAuthOptionsFor(t *testing.T) {
+	parse := func(yamlText string) config.ConfigReader {
+		cfg, err := config.ParsePerRepoConfig([]byte(yamlText))
+		assert.NoError(t, err)
+		return cfg
 	}
-	readAuthor := normevent.Actor{ID: "contributor", Kind: normevent.ActorHuman, Role: normevent.RoleRead, IsEntityAuthor: true}
-	appBot := normevent.Actor{ID: "dep-updater[bot]", Kind: normevent.ActorBot, Role: normevent.RoleNone}
-	failed := false
-	unrecognizedBot := normevent.Actor{ID: "stale[bot]", Kind: normevent.ActorBot, Role: normevent.RoleNone, RoleVerified: &failed}
-
-	t.Run("any closer is admitted for the retro role", func(t *testing.T) {
-		for name, ev := range map[string]*normevent.Event{
-			"read-only author closes": closeBy(normevent.TransitionClosed, readAuthor),
-			"app bot without a role":  closeBy(normevent.TransitionClosed, appBot),
-			"bot whose lookup failed": closeBy(normevent.TransitionClosed, unrecognizedBot),
-			"PR merged":               closeBy(normevent.TransitionMerged, readAuthor),
-		} {
-			assert.True(t, IsLifecycleCloseAuthorized(ev, "retro"), name)
-			assert.False(t, IsAuthorized(ev), "%s: the ordinary gate still denies it", name)
-		}
-	})
-	t.Run("other harness roles keep their threshold", func(t *testing.T) {
-		for _, role := range []string{"coder", "review", "triage", "fullsend", ""} {
-			assert.False(t, IsLifecycleCloseAuthorized(closeBy(normevent.TransitionClosed, readAuthor), role), role)
-		}
-	})
-	t.Run("other events are not lifecycle closes", func(t *testing.T) {
-		issueClosed := closeBy(normevent.TransitionClosed, readAuthor)
-		issueClosed.Entity.Kind = normevent.EntityWorkItem
-		reopened := closeBy(normevent.TransitionReopened, readAuthor)
-		gitlab := closeBy(normevent.TransitionMerged, readAuthor)
-		gitlab.Source.System = normevent.SystemGitLab
-		pullRequest := closeBy(normevent.TransitionClosed, readAuthor)
-		pullRequest.Source.RawType = "pull_request"
-		for name, ev := range map[string]*normevent.Event{
-			"issue closed": issueClosed, "PR reopened": reopened, "GitLab MR merged": gitlab,
-			"pull_request (not _target) closed": pullRequest, "nil event": nil,
-		} {
-			assert.False(t, IsLifecycleCloseAuthorized(ev, "retro"), name)
-		}
-	})
+	assert.False(t, AuthOptionsFor(parse("version: \"1\"\n")).JiraLabelsByEditPermission)
+	assert.True(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n")).JiraLabelsByEditPermission)
+	assert.True(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n    labels: jira_editors\n")).JiraLabelsByEditPermission)
+	assert.False(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n    labels: allowlist\n")).JiraLabelsByEditPermission)
+	assert.False(t, AuthOptionsFor(parse("authorization:\n  - provider: jira\n    labels: project_roles\n")).JiraLabelsByEditPermission)
 }

@@ -10,7 +10,7 @@ new per-harness and entity rules do not apply to them.
 This version keeps a `triage` platform floor for humans, including the narrow
 verified label-transition grant below, and applies the selected harness's
 effective `human_min_role` to prompting events, actor-originated facts needed
-for actionable CEL results, and Fullsend-controlled model-bound records.
+for actionable CEL results, and fullsend-controlled model-bound records.
 Harness CEL may impose further
 conditions but cannot replace these admission gates.
 [ADR 0151](../../../ADRs/0151-harness-human-role-minimums.md) establishes the
@@ -29,10 +29,15 @@ The [NormalizedEvent v1](../../normalized-event/v1/) specification defines the
 consumed by this contract. Bot identity and role resolution are specified by
 [ADR 0107](../../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
 
-> **ADR 0107 target contract — not yet implemented:** The bot identity fields,
-> resolver outcomes, and bot-specific fail-closed rows below describe the
-> behavior to be implemented by the adapters and dispatch path. Until that
-> migration lands, existing compatibility behavior remains authoritative.
+> **ADR 0107 target contract — partially implemented:** The bot identity
+> fields, resolver outcomes, and bot-specific fail-closed rows below describe
+> the target behavior. On GitHub, `fullsend dispatch` performs the lookup for
+> bot actors of `gha-event` input through the mint (a layered `mint_url`,
+> else `FULLSEND_MINT_URL`), before both `--route` decisions and harness dispatch, except on label-added
+> events. A no-match or a failed lookup denies the bot, never a command
+> error. Other adapters (the `json` input driver, pollers) do not perform the
+> lookup yet, so their existing compatibility behavior remains authoritative.
+> Non-GitHub lookup is not implemented.
 
 ## Role ordering
 
@@ -69,17 +74,21 @@ admin > maintain > write > triage > read > none > external
 | | Developer | `write` |
 | | Reporter | `triage` |
 | | Guest | `read` |
-| **Jira** | Administrators | `admin` |
+| **Jira** (project roles) | Administrators | `admin` |
 | | Developers | `write` |
 | | _(other named role)_ | `read` |
 | | _(no project membership)_ | `external` |
+| **Jira** (`jira` provider lists) | listed under `write` | `write` |
+| | listed only under `triage` | `triage` |
+| | _(not listed)_ | `none` |
+| **Jira** _(role not resolved)_ | — | `none` |
 
 On GitHub the mapping source is the collaborator permission API
 (`GET /repos/{owner}/{repo}/collaborators/{username}/permission`), which
 returns the user's **effective** role including inherited org grants
 regardless of membership visibility. A built-in `role_name` is used as is.
 Custom repository roles are an organization-level GitHub Enterprise Cloud
-feature, so most repositories only ever return built-in names; Fullsend
+feature, so most repositories only ever return built-in names; fullsend
 does not interpret a custom role's name or its fine-grained permissions.
 A custom repository role resolves to the strongest base role set to `true`
 in `user.permissions` (`admin`, `maintain`, `push` → `write`, `triage`,
@@ -111,8 +120,20 @@ key never matches, and nested aliases are not expanded. The files are read from 
 from the default branch otherwise, so a PR cannot add its author. See the
 [`authorization` field](../../../reference/config-reference.md#authorization).
 
-On Jira the mapping source is the project's role membership roster for the
-configured `--jira-project`, resolved once per poll cycle for event-backed
+On Jira the `jira` provider under `authorization` in `.fullsend/config.yaml`
+([ADR 0153](../../../ADRs/0153-authorize-jira-poll-actors-without-project-administration.md))
+is opt-in, exactly as specified in
+[v1](../v1/README.md#forge-native-permission-mapping). With no `jira` entry,
+every Jira event resolves through the project role roster. With an entry, the
+mapping source for each event is the provider's `write` and `triage` lists
+(authoritative once either list is set), the project role roster, or no
+resolved role (`none`), per event type and the provider's `labels` rule. The
+rest of this paragraph describes the project role roster, the source used for
+every event when no `jira` entry exists (or when an entry sets
+`labels: project_roles` and no list) and for slash commands when any other
+entry sets no list.
+The roster is the project's role membership for the
+configured `tracker.jira.project`, resolved once per poll cycle for event-backed
 dispatch. Entity-source CEL may reuse a completed
 provider-verified actor verdict across poll cycles and bound `run` checks only
 under the bounded cache rules below; event admission does not use that cache.
@@ -175,7 +196,7 @@ Fullsend MUST require a verified effective normalized human role of at least
 specified separately for each admission path below. The exact accepted human
 label addition and its proven projection may instead use the
 narrow, provider-proven `triage` grant below; it is not a general role claim.
-For each selected harness, Fullsend MUST resolve and enforce that harness's
+For each selected harness, fullsend MUST resolve and enforce that harness's
 effective `human_min_role` before its CEL predicate runs. An effective role
 comes from the source provider or a trusted configured permission source such
 as OWNERS. An explicit `human_min_role` at the top level or in a guarded
@@ -235,7 +256,7 @@ evaluation cycle.
 
 A known absent event or optional key is a nonmatch under ADR 0112. If required
 verified guard metadata is unavailable, or the CEL evaluation has another
-error, Fullsend MUST fail the evaluation rather than treating the error as a
+error, fullsend MUST fail the evaluation rather than treating the error as a
 nonmatch and using a possibly weaker default. All processes that make an
 admission decision MUST resolve overlays from one verified context within
 that decision. A later bound `run` is a new decision: it MUST reload trusted
@@ -243,7 +264,7 @@ config and harness sources and recompute the guard context and ordered overlay
 result against its current canonical entity. It MUST NOT reuse a dispatch or
 poll allow as authority. For an event-bound run, the integrity-bound verified
 event remains the event input; current entity and policy inputs are resolved
-again. If a guard needs `entity.source.system`, Fullsend MUST obtain only that
+again. If a guard needs `entity.source.system`, fullsend MUST obtain only that
 provider-verified structural metadata from the event or candidate identity, or
 with a platform discovery credential independent of the still-unpinned
 harness run credential. It MUST NOT acquire actor-originated entity facts for
@@ -276,7 +297,7 @@ authorization or deny an otherwise authorized bot.
 
 The same effective minimum applies independently to a human prompting event,
 actor-originated entity facts whose authority is needed to make CEL actionable
-or prove an actionable absence or aggregate, and every Fullsend-controlled
+or prove an actionable absence or aggregate, and every fullsend-controlled
 model-bound record. Event admission uses fresh authority. Entity CEL may use a
 live or eligible bounded actor verdict under the rules below; model-bound
 records receive their own fresh checks at the required exposure checkpoints.
@@ -285,7 +306,7 @@ below and does not require authorizing every historical updater. For ordinary
 role-based admission, `read`, `none`, `external`, and unresolved human roles do
 not pass; only the exact verified human label transition and its proven
 projection may use the narrow `triage` grant. Admission of one event does not
-authorize another actor's fact or model-bound record. Trusted Fullsend
+authorize another actor's fact or model-bound record. Trusted fullsend
 invocation provenance, rather than a human event actor, authorizes
 eventless entity discovery; decision-relevant actor-originated facts still
 pass the selected harness's minimum.
@@ -309,7 +330,7 @@ verified inputs, re-fetch the bound canonical entity, and recheck all current
 authorization and launch conditions under
 [ADR 0144](../../../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md).
 This includes the prompting-event gate when an event is present, trusted
-Fullsend-origin gate when it is absent, actor/fact admission, and trigger CEL.
+fullsend-origin gate when it is absent, actor/fact admission, and trigger CEL.
 The run MUST then pin the policy identity it actually verified and use that
 same identity throughout its own context-staging, sandbox, and model-record
 checks.
@@ -317,7 +338,7 @@ Dispatch and run policy identities do not have to match: a change between
 them is handled by this fresh run-time evaluation, not by inheriting the
 earlier allow. If current inputs cannot be loaded or verified, or the candidate
 no longer meets the current gates, `run` MUST stop before context exposure or
-launch. If policy changes during a single run cycle, Fullsend MUST stop or
+launch. If policy changes during a single run cycle, fullsend MUST stop or
 re-evaluate from the first gate under the newly loaded policy; it MUST NOT
 silently mix minima or overlay outcomes. A changed guard result or an expired
 guard claim requires the same stop or first-gate re-evaluation. The run's own
@@ -469,7 +490,7 @@ records.
 **Current compatibility behavior:** GitHub authorizes an added-label event
 without applying the ordinary `actor.role` threshold. This existing behavior
 preserves bot-to-bot handoffs such as adding `ready-to-code` after triage
-completes, including handoffs from provider bots that are not Fullsend-
+completes, including handoffs from provider bots that are not fullsend-
 registered.
 
 **V2 target behavior:** When `transition.kind` is `label_changed` and
@@ -491,10 +512,13 @@ and may further narrow the dispatch.
 
 ### Bot-submitted reviews (GitHub)
 
-**Current compatibility behavior:** Until the resolver is implemented,
-`fullsend dispatch` continues to authorize a GitHub `review_submitted` event
-from a bot without requiring a collaborator permission or `actor.bot_role`.
-This existing exception is not evidence that the bot identity was resolved.
+**Current compatibility behavior:** With `gha-event` input, `fullsend
+dispatch` resolves the bot first, so the target behavior below applies. For
+events that carry no lookup result (`actor.role_verified` unset, such as
+`json` input), `fullsend dispatch` still authorizes a GitHub
+`review_submitted` event from a bot without requiring a collaborator
+permission or `actor.bot_role`. This compatibility exception is not evidence
+that the bot identity was resolved.
 
 **ADR 0107 target behavior:** After the resolver is implemented, a GitHub
 review event is authorized only when the provider classifies the actor as a
@@ -502,21 +526,27 @@ bot and resolves its exact registered `actor.bot_role`; `actor.role` remains
 `none`. The downstream harness CEL trigger may further constrain which bot
 role and review state are accepted.
 
-### Legacy lifecycle close (pull\_request\_target.closed)
+### Closed pull request retro (pull\_request\_target.closed)
 
-**Current bash compatibility behavior:** The GitHub bash dispatcher routes
-`pull_request_target.closed` to retro without a separate collaborator-role
-check, so any closer may trigger it. This is not a read-only capability:
-retro's token can write issues and pull requests, and its post-script can
-file issues, comment, and apply labels. The Go CEL path has no close-event
-exception and applies the selected harness's role-derived default; a `retro`
-role requires `write`.
-
-The ungated bash route is not a general v2 grant for CEL-based dispatch or
-entity facts. Under this contract, a human close-event actor must meet the
-selected harness's effective minimum before CEL. A `retro`-role harness
-defaults to `write`; an explicit `human_min_role` may choose another allowed
-value. The legacy `/fs-retro` slash command retains its bash `write` guard.
+The GitHub bash dispatcher checks that the event sender has write access
+before routing a closed pull request to retro. The CEL route applies the
+same fixed write floor before applying the selected harness's role-derived
+threshold; a `retro` role requires `write` by default. Merge-queue merges use
+the same rule: the event sender must have write-level repository permission.
+Other automated merge or close senders without write-level repository
+permission are denied; a write-authorized user can run `/fs-retro` afterward.
+GitLab merged and closed merge requests use the same write threshold: polling
+resolves the actor's project role, and the agent job independently checks
+Developer membership before running retro. If GitLab does not provide the
+closer identity, polling observes the event without dispatch or a poll failure
+instead of using the merge request author.
+If CEL opt-in, configuration, or route evaluation fails for a close event, the
+workflow skips retro rather than falling back to the Bash stage. Retro's
+repository token can write issues and pull requests, so this dispatch is not
+read-only lifecycle accounting. The `/fs-retro` slash command has the same
+fixed write floor, regardless of a lower role declared by the retro harness.
+CEL cannot promote the command to a retro run when the Bash route denied the
+actor.
 
 ### Schedule and manual dispatch
 
@@ -552,15 +582,26 @@ It applies to an entity-source harness's CEL predicate whether a verified
 prompting event is present or `event == null`; legacy event-only dispatch is
 unchanged. The entity-source path is not yet implemented by `fullsend dispatch`,
 `fullsend poll`, or bound `fullsend run`. Entity-first execution MUST NOT be
-enabled until the versioned normalized-entity contract defines CEL-eligible and
-prompt-eligible fields and their coverage states. That contract is a platform
-allowlist; a harness may request fewer fields but cannot expand it.
+enabled for a source and kind until both the versioned normalized-entity
+contract defines its CEL-eligible fields and coverage states and an applicable
+model-facing input contract defines its prompt-eligible fields. The CEL field
+gate is a platform allowlist; a harness may request fewer fields but cannot
+expand it. [Normalized entity v1](../../normalized-entity/v1/README.md)
+defines that gate. For the Git-forge work items and change proposals in its scope,
+[entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
+defines the model-facing field gate. That snapshot does not cover Jira issues
+or GitHub Discussions; their entity-first paths require an applicable
+prompt-field gate before implementation is enabled.
+
+> **Revision note:** The entity-first prerequisite now checks separate CEL
+> and model-facing field contracts for each source and kind. This tightens the
+> future enablement gate; entity-first execution remains unimplemented.
 
 > **Planned:** Entity-source CEL is not implemented and remains disabled until
-> the [normalized-entity contract tracked by issue #8420](https://github.com/fullsend-ai/fullsend/issues/8420)
-> and the run-time authorization and launch checks described here are
-> implemented. Legacy non-CEL, non-entity workflows remain on Authorization
-> v1.
+> [Normalized entity v1](../../normalized-entity/v1/README.md),
+> the applicable prompt-field gate, and the run-time authorization and launch
+> checks described here are implemented. Legacy non-CEL, non-entity workflows
+> remain on Authorization v1.
 
 With a prompting event, the event-actor authorization gate for the selected
 harness still runs before its CEL predicate; neither discovery nor an
@@ -579,7 +620,7 @@ that proof holds, even if the labeler later loses repository permission; it is
 evidence of the accepted mutation, not a current role. A higher human minimum
 still requires the labeler's current verified effective role, and model-bound
 records still pass their separate fresh gate.
-For an eventless check, the following Fullsend-origin and platform-eligibility
+For an eventless check, the following fullsend-origin and platform-eligibility
 gate applies instead.
 
 `fullsend poll` may enumerate candidates without synthesizing a
@@ -587,7 +628,7 @@ gate applies instead.
 only its canonical entity with `event == null`, including after consuming an
 initial event. Both paths require eligible entity sources and effective
 platform policy permitting eventless evaluation. They are authorized only when
-the caller has trusted Fullsend-controlled invocation provenance: a verified,
+the caller has trusted fullsend-controlled invocation provenance: a verified,
 non-user-assertable platform execution identity bound to the invocation and its
 target, such as an attested workflow/job identity or installation credential.
 Neither the actor of an earlier event nor an authenticated wake peer supplies
@@ -597,7 +638,7 @@ Wildcard eligibility (`*` or `all`) requires the same explicit platform-level
 justification as any other wildcard allowlist in this contract.
 
 Each entity-source evaluation's audit record MUST identify its verified
-initiator (the event actor for an event-bearing check, or the trusted Fullsend
+initiator (the event actor for an event-bearing check, or the trusted fullsend
 invocation identity for an eventless check), target repository, effective
 policy and pinned policy identity, canonical entity, acquisition-plan identity,
 and decision outcome, including `UNKNOWN`, deferred, or denied outcomes. The
@@ -625,11 +666,11 @@ also identify the bounded recheck or rediscovery guarantee, or show that the
 candidate remains retryable.
 Unrelated history is not fetched or listed solely for audit. The audit does not
 retain raw rejected content. An eventless child cycle attributes initiation to
-the Fullsend identity, never to an earlier event actor or historical entity
+the fullsend identity, never to an earlier event actor or historical entity
 actor.
 
-Authorization of an event actor or Fullsend invocation origin does not
-authorize other entity content. For each evaluated harness, Fullsend derives a
+Authorization of an event actor or fullsend invocation origin does not
+authorize other entity content. For each evaluated harness, fullsend derives a
 conservative acquisition plan from its CEL predicate and the normalized-entity
 contract. The platform retains a closed classification of action-indicating
 categories; it need not fetch every category for every predicate. The plan
@@ -657,7 +698,7 @@ from admitted records, prove the relevant causal occurrence or platform
 exception, or leave it unknown. Presenting an action signal as current state
 never bypasses the actor gate.
 A provider query MAY narrow reads only when it is proven to include every
-authorized fact that could affect the result; otherwise Fullsend expands the
+authorized fact that could affect the result; otherwise fullsend expands the
 query or leaves the dependent result unknown. A provider aggregate may replace
 individual reads only if it preserves the actor-filtered meaning under the
 eligible CEL verdicts for the current check and proves the coverage needed for
@@ -675,7 +716,7 @@ successfully empty, absent or inapplicable, unsupported, and failed data.
 Unloaded or incomplete data MUST NOT masquerade as an empty collection or a
 false condition. For every actor-originated fact whose authority is needed to
 make CEL actionable or establish an actionable absence or aggregate under the
-causal classification above, Fullsend MUST re-establish its current
+causal classification above, fullsend MUST re-establish its current
 source-revision actor and obtain an eligible verified authorization verdict
 before admitting the fact into the selected harness's CEL view. A human
 ordinarily must have an effective role from the provider or a configured
@@ -704,7 +745,7 @@ further restrict the authorized view, but cannot create authority.
 This exception to a fresh actor-permission lookup for each entity check is
 adopted by
 [ADR 0148](../../../ADRs/0148-reuse-verified-actor-roles-for-entity-cel.md).
-For entity-source CEL only, Fullsend MAY reuse a completed, authoritative
+For entity-source CEL only, fullsend MAY reuse a completed, authoritative
 human permission or exact registered bot-role verdict across entity checks and
 harnesses, poll cycles, separate `poll` and bound `run` loops, and the bound
 run's final CEL decision. The cached value MUST be the verified effective
@@ -760,7 +801,7 @@ verdict and may be scheduled directly or guaranteed by source rediscovery. The
 platform MUST define that interval and either retain a durable candidate
 through checkpoint or watermark advancement or prove rediscovery after it. If
 timely re-evaluation cannot be guaranteed, the cached verdict MUST NOT close
-the candidate: Fullsend uses a
+the candidate: fullsend uses a
 live verdict for a final false decision or keeps the candidate inconclusive
 and durably retryable under a bounded retry schedule. A cached actor result
 alone cannot permanently close the candidate.
@@ -831,10 +872,10 @@ harness's configured identity and permissions.
 
 ## Model-bound actor-attributed data admission
 
-The model-bound gate applies to every source-system record that Fullsend may
+The model-bound gate applies to every source-system record that fullsend may
 expose to a model, regardless of whether the record arrived in an event, was
 found by polling or snapshotting, or was read through a proactive or
-Fullsend-controlled API. Fullsend MUST establish the record's current actor
+fullsend-controlled API. Fullsend MUST establish the record's current actor
 attribution through the source system and resolve that actor's current
 authorization. A human MUST have a fresh, verified effective role meeting the
 selected harness's `human_min_role` at each required checkpoint. A bot MUST
@@ -874,7 +915,7 @@ again immediately before sandbox initialization, and again immediately before
 first model exposure. If sandbox initialization and first exposure are
 contiguous, one fresh check MAY serve both. Non-event retrieval paths MUST
 perform the equivalent checks after retrieval admission. A
-Fullsend-controlled capability invoked after sandbox initialization MUST
+fullsend-controlled capability invoked after sandbox initialization MUST
 resolve authorization immediately before releasing each result to the model.
 That release check is the mid-run equivalent of the sandbox checkpoints.
 
@@ -896,6 +937,7 @@ used for dispatch gating:
 | `author_association` | Does not reflect private org membership; an org admin with private membership gets `CONTRIBUTOR` instead of `MEMBER` ([github/gh-aw-mcpg#2862](https://github.com/github/gh-aw-mcpg/issues/2862)). Also reflects contribution history, not current authority. |
 | Contribution history | Past contributions do not confer repository permissions. A former maintainer's contributions cannot substitute for a provider-verified role verdict; a valid CEL cache entry may still reflect a role from before revocation within its bounded age. |
 | `actor.is_entity_author` | Being the author of an issue or PR does not grant repository permissions. This field supports routing decisions in CEL triggers, not authorization. |
+| `actor.is_entity_assignee` | Being assigned to an issue or PR does not grant repository permissions, and anyone who can assign issues can assign themselves. Like `is_entity_author`, this field only narrows which actor a CEL trigger accepts after the role gate has run; it never admits an actor the gate denies. |
 
 **Principle:** relationship and contribution-history fields are not
 evidence of current authority. Event-backed human authorization must be
@@ -905,7 +947,7 @@ effective minimum, except that an exact provider-verified human label addition
 may use its narrow `triage` grant. Neither path relies on cached or inferred
 relationships.
 Fullsend-originated eventless evaluation must instead be authorized from
-trusted Fullsend-controlled invocation provenance for poll enumeration or
+trusted fullsend-controlled invocation provenance for poll enumeration or
 bound rechecks. Actor-originated entity facts needed for an actionable CEL
 result are separately gated by current source-revision attribution and a live
 or eligible bounded role verdict against that harness's minimum, except for
@@ -976,7 +1018,7 @@ and `FilterAuthorizedHarnesses()` before `MatchHarnesses()`. Jira polling
 preloads harnesses but applies both checks before CEL. In the target path, the
 platform MAY reject a below-floor human event before loading harnesses unless
 the exact verified label grant applies, but MUST resolve and enforce each
-candidate harness's minimum before its CEL predicate. On the Fullsend-originated
+candidate harness's minimum before its CEL predicate. On the fullsend-originated
 eventless path, the trusted-origin gate runs before poll enumeration or
 bound-entity resolution and CEL evaluation. For each eligible entity-source
 harness, the platform admits actor-originated facts needed for
@@ -1006,7 +1048,7 @@ a human rejected by either admission gate. A source event may select the field
 only through the validated trusted facts above; it cannot supply policy text.
 
 A repository can add permission sources through the `authorization`
-field (today only `owners_file`). These sources may raise the verified
+field (today `owners_file` for GitHub and `jira` for Jira events). These sources may raise the verified
 effective role used by the platform and visible to CEL; they do not change
 either minimum or bypass the gate. The current bash
 `has_repo_permission` helper and Go event and per-harness gates retain their

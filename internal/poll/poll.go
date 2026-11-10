@@ -69,7 +69,7 @@ const maxEventRetries = 3
 //
 // Poll mode is determined by Options.Mode:
 //   - "slash": fast poll — only /fs-* slash commands via the Events API
-//   - "events": full discovery — labels, issue opens, merges, MR opens, closed-unmerged MRs, non-slash notes (filters out /fs-* notes)
+//   - "events": full discovery — labels, issue opens, merges, MR opens, pushes to open MRs, closed-unmerged MRs, non-slash notes (filters out /fs-* notes)
 //   - "": backward compatibility — uses events discovery path but does not filter /fs-* notes
 func (p *Poller) Run(ctx context.Context) error {
 	if p.client == nil {
@@ -323,6 +323,11 @@ func (p *Poller) Run(ctx context.Context) error {
 
 		normalizedEvent, actorID, err := p.toNormalizedEvent(ctx, event)
 		if err != nil {
+			if errors.Is(err, errMissingMRCloserIdentity) || errors.Is(err, errMissingMRMergerIdentity) {
+				log.Printf("WARNING: observing %s event on IID %d without dispatch: close/merge actor identity is unavailable", event.Type, event.IID)
+				observe(event)
+				continue
+			}
 			log.Printf("WARNING: skipping %s event on IID %d: %v", event.Type, event.IID, err)
 			recordEventFailure(&cycleErrs, failedKeys, mirrors, event, &minFailedAt, failedLabelEvents,
 				fmt.Errorf("skipping %s event on IID %d: %w", event.Type, event.IID, err))
@@ -395,7 +400,7 @@ func (p *Poller) Run(ctx context.Context) error {
 				continue
 			}
 			allSkipped = false
-			if err := p.dispatch(ctx, p.owner, p.repo, stage, event); err != nil {
+			if err := p.dispatch(ctx, p.owner, p.repo, stage, event, &normalizedEvent); err != nil {
 				log.Printf("dispatch %s for %s failed: %v", stage, eventKey, err)
 				recordEventFailure(&cycleErrs, failedKeys, mirrors, event, &minFailedAt, failedLabelEvents,
 					fmt.Errorf("dispatch %s for %s failed: %w", stage, eventKey, err))

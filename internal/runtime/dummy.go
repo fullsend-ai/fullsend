@@ -101,6 +101,11 @@ type DummyRuntime struct {
 	WriteResultsFn writeBehaviourResultsFunc
 	HostGitFn      hostGitFunc
 
+	// envLoad is a test override for the shell fragment that loads the
+	// harness environment before each scenario command (harnessEnvLoad).
+	// Empty means the sandbox's .env.
+	envLoad string
+
 	// hostRepoDir is the runner-side path of the target repository, the
 	// directory the runner uploaded into the sandbox. Run copies it from
 	// RunParams.HostRepoDir; checkout_branch runs its git remote access
@@ -113,6 +118,45 @@ func (r DummyRuntime) execFn() sandboxExecFunc {
 		return r.ExecFn
 	}
 	return sandbox.Exec
+}
+
+// dummyEnvLoadFailedExit is the exit status of a scenario command whose
+// harness environment could not be loaded (harnessEnvCommand). No command
+// a behaviour op runs (test, printenv, curl, jq, git, node) exits with it.
+const dummyEnvLoadFailedExit = 112
+
+// harnessEnvLoad is the shell fragment that loads the harness environment
+// the runner wrote to the sandbox's .env (bootstrapEnv: .env, the .env.d
+// files and the env.sandbox exports). It is the same read, as data, that
+// the agent launches and the runner's in-sandbox probes do (EnvDataLoad).
+func (r DummyRuntime) harnessEnvLoad() string {
+	if r.envLoad != "" {
+		return r.envLoad
+	}
+	return EnvDataLoad(sandbox.SandboxWorkspace + "/.env")
+}
+
+// harnessEnvCommand runs cmd after envLoad in the same shell. Each
+// sandbox exec is a fresh `sh -c`, so a behaviour op's command sees the
+// harness environment only when it loads it itself (#9046). The EXIT trap
+// turns every way the load can end the shell (a loader error, or the
+// interpreter pin's own `exit 127`) into dummyEnvLoadFailedExit, so a
+// missing or unreadable .env is reported as that rather than as the op's
+// own failure. The loaded values are captured and evaluated, never printed.
+func harnessEnvCommand(envLoad, cmd string) string {
+	return fmt.Sprintf("trap 'exit %[1]d' EXIT; { %[2]s; } || exit %[1]d; trap - EXIT; %[3]s",
+		dummyEnvLoadFailedExit, envLoad, cmd)
+}
+
+// scenarioExec runs cmd for a behaviour op in the sandbox with the harness
+// environment loaded (harnessEnvCommand). When the load fails it returns an
+// error carrying the loader's stderr (file names and line numbers only).
+func (r DummyRuntime) scenarioExec(sandboxName, cmd string, timeout time.Duration) (string, string, int, error) {
+	stdout, stderr, exitCode, err := r.execFn()(sandboxName, harnessEnvCommand(r.harnessEnvLoad(), cmd), timeout)
+	if err == nil && exitCode == dummyEnvLoadFailedExit {
+		err = fmt.Errorf("loading the harness environment failed: %s", strings.TrimSpace(stderr))
+	}
+	return stdout, stderr, exitCode, err
 }
 
 func (r DummyRuntime) hostGitFn() hostGitFunc {
@@ -189,7 +233,7 @@ func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 		}
 	}
 
-	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
+	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy %s/skills", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace, r.ConfigDir())
 	_, stderr, exitCode, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("bootstrap exec: %w", err)
@@ -197,7 +241,9 @@ func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 	if exitCode != 0 {
 		return fmt.Errorf("bootstrap failed: %s", strings.TrimSpace(stderr))
 	}
-	return nil
+	// Stage the harness skills like the agent runtimes do, so behaviour
+	// scenarios can inspect the staged (override-merged) tree (#6158).
+	return uploadHarnessSkillsWith(r.uploadFn(), sandboxName, r.ConfigDir()+"/skills", input.SkillDirs())
 }
 
 func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
@@ -321,7 +367,7 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return err
 		}
 		cmd := fmt.Sprintf("test -r %s", shellQuote(remotePath))
-		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 30*time.Second)
+		_, stderr, exitCode, err := rt.scenarioExec(sandboxName, cmd, 30*time.Second)
 		if err != nil {
 			return fmt.Errorf("read_file exec: %w", err)
 		}
@@ -338,7 +384,7 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return err
 		}
 		cmd := fmt.Sprintf("curl -sf -- %s -o /dev/null", shellQuote(rawURL))
-		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 60*time.Second)
+		_, stderr, exitCode, err := rt.scenarioExec(sandboxName, cmd, 60*time.Second)
 		if err != nil {
 			return fmt.Errorf("url_get exec: %w", err)
 		}
@@ -392,7 +438,7 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return fmt.Errorf("assert_env invalid variable name %q", varName)
 		}
 		cmd := fmt.Sprintf("v=$(printenv -- %s); test -n \"$v\"", shellQuote(varName))
-		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 30*time.Second)
+		_, stderr, exitCode, err := rt.scenarioExec(sandboxName, cmd, 30*time.Second)
 		if err != nil {
 			return fmt.Errorf("assert_env exec: %w", err)
 		}
@@ -408,7 +454,7 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 		if !envVarNamePattern.MatchString(varName) {
 			return fmt.Errorf("assert_not_jwt invalid variable name %q", varName)
 		}
-		_, stderr, exitCode, err := rt.execFn()(sandboxName, assertNotJWTCommand(varName), 30*time.Second)
+		_, stderr, exitCode, err := rt.scenarioExec(sandboxName, assertNotJWTCommand(varName), 30*time.Second)
 		if err != nil {
 			return fmt.Errorf("assert_not_jwt exec: %w", err)
 		}
@@ -433,7 +479,7 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return err
 		}
 		cmd := fmt.Sprintf("test -r %s", shellQuote(remotePath))
-		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 30*time.Second)
+		_, stderr, exitCode, err := rt.scenarioExec(sandboxName, cmd, 30*time.Second)
 		if err != nil {
 			return fmt.Errorf("assert_file exec: %w", err)
 		}
@@ -456,7 +502,7 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return err
 		}
 		cmd := fmt.Sprintf("jq -e %s %s >/dev/null", shellQuote("."+jsonPath), shellQuote(remotePath))
-		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 30*time.Second)
+		_, stderr, exitCode, err := rt.scenarioExec(sandboxName, cmd, 30*time.Second)
 		if err != nil {
 			return fmt.Errorf("assert_json exec: %w", err)
 		}
@@ -464,6 +510,8 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 			return fmt.Errorf("assert_json %s at %s: %s", jsonPath, path, strings.TrimSpace(stderr))
 		}
 		return nil
+	case "assert_jq":
+		return executeAssertJQ(rt, sandboxName, op.Args)
 	// http_probe is not handled here: executeBehaviourScript runs it
 	// through executeHTTPProbe, which also returns what it records.
 	default:
@@ -537,7 +585,7 @@ func executeCheckoutBranch(rt DummyRuntime, sandboxName, repoDir, name string) e
 	}
 
 	cmd := checkoutBranchCommand(repoDir, name, bundleRef)
-	_, stderr, exitCode, err = rt.execFn()(sandboxName, cmd, 120*time.Second)
+	_, stderr, exitCode, err = rt.scenarioExec(sandboxName, cmd, 120*time.Second)
 	if err != nil {
 		return fmt.Errorf("checkout_branch exec: %w", err)
 	}
@@ -840,7 +888,7 @@ func executeHTTPProbe(rt DummyRuntime, sandboxName string, op BehaviourOperation
 	if err != nil {
 		return 0, "", false, err
 	}
-	stdout, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 60*time.Second)
+	stdout, stderr, exitCode, err := rt.scenarioExec(sandboxName, cmd, 60*time.Second)
 	if err != nil {
 		return 0, "", false, fmt.Errorf("http_probe exec: %w", err)
 	}

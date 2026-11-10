@@ -20,9 +20,41 @@ service on Cloud Run that:
 - serves the three APIs the runtimes use: `/v1/messages` (pi, Claude Code), `/v1/chat/completions`
   (pi) and `/v1/responses` (pi, codex).
 
+> **Security boundary: securing the credential becomes your job.** The gateway
+> keeps model keys out of every repository, but the credential still exists: the
+> upstream key in Secret Manager, and the runtime service account's access to
+> Vertex AI. Both live in your GCP project, and protecting them is your job as
+> the operator:
+>
+> - Anyone who can deploy a revision that runs as the runtime service account
+>   (`roles/run.developer` on the service plus `roles/iam.serviceAccountUser` on
+>   the account) can read the upstream key and call Vertex AI as the gateway.
+>   Treat those roles as holding the key.
+> - Anyone who can read the key secret (`roles/secretmanager.secretAccessor` or
+>   an admin role on it or the project), or act as the runtime service account
+>   by any other route (another Cloud Run service or job, token creation,
+>   service account keys), also holds the key.
+> - Anyone who can add a version to the `gateway-config` secret also holds the
+>   key. The config decides which repositories the gateway serves and which
+>   signing keys (`jwks`) it trusts, and also where each model sends the
+>   upstream key: a model whose `baseUrl` points at the writer's own server,
+>   with `apiKey.file` naming the mounted key, hands the key over on the first
+>   call. A revision that mounts `latest` loads a new version on its next start,
+>   with no deploy needed. Let the people who approve enrolments edit only the
+>   allowlist, and have a trusted step generate, check and roll out the full
+>   config.
+> - Project owners and editors hold all of these. Keep that list short, and
+>   review the project's IAM and audit logs as you would review access to the
+>   key itself.
+
 The runner side (how a fullsend run fetches the token and points the agent's runtime at the gateway) is in the
 [user guide for the hosted gateway route](../user/inference-gateway.md).
-This page covers only the gateway.
+This page covers only the gateway. It uses agentgateway v1.7.0, and every config block on it is
+validated against that release.
+
+> **See it in practice.** The fullsend-ai organization runs its own gateway this
+> way. Its config and operations live in the
+> [fullsend-ai/org inference gateway README](https://github.com/fullsend-ai/org/blob/main/inference-gateway/README.md).
 
 ## What you end up with
 
@@ -67,8 +99,8 @@ gcloud artifacts repositories create "$AR_REPO" --project "$PROJECT" --location 
   --repository-format docker
 skopeo copy --all --quiet \
   --dest-creds "oauth2accesstoken:$(gcloud auth print-access-token)" \
-  docker://ghcr.io/agentgateway/agentgateway:v1.6.0 \
-  "docker://$REGION-docker.pkg.dev/$PROJECT/$AR_REPO/agentgateway:v1.6.0"
+  docker://ghcr.io/agentgateway/agentgateway:v1.7.0 \
+  "docker://$REGION-docker.pkg.dev/$PROJECT/$AR_REPO/agentgateway:v1.7.0"
 ```
 
 ```text
@@ -81,17 +113,18 @@ Created repository [example-images].
 `--all` copies every architecture in the release. Check that the copy is byte-for-byte the release:
 
 ```bash
-skopeo inspect --raw docker://ghcr.io/agentgateway/agentgateway:v1.6.0 | shasum -a 256
+skopeo inspect --raw docker://ghcr.io/agentgateway/agentgateway:v1.7.0 | shasum -a 256
 skopeo inspect --raw --creds "oauth2accesstoken:$(gcloud auth print-access-token)" \
-  "docker://$REGION-docker.pkg.dev/$PROJECT/$AR_REPO/agentgateway:v1.6.0" | shasum -a 256
+  "docker://$REGION-docker.pkg.dev/$PROJECT/$AR_REPO/agentgateway:v1.7.0" | shasum -a 256
 ```
+
+The release's digest:
 
 ```text
-9d3e6044ddcdc0878b1787f77bd401252b95e22684203fb5e874c4c42d2ed90c  -
-9d3e6044ddcdc0878b1787f77bd401252b95e22684203fb5e874c4c42d2ed90c  -
+60216aafb03d37f94e952ff3d51d2f630a65b10ecaebdc0a864882f92610c45b  -
 ```
 
-The two digests must match.
+Both commands must print this digest.
 
 ## 2. Create the runtime service account
 
@@ -158,10 +191,21 @@ What the config does, and what it must not do:
   model provider.
 - **Authorise per repository.** Each model's `authorization` rule decides who may call it, and
   `/v1/models` lists for each caller only the models it may call. Allow more repositories with `||`:
-  `jwt.repository == "example-org/a" || jwt.repository == "example-org/b"`. GitHub's token also
-  carries numeric `repository_id` and `repository_owner_id` claims, which survive a rename. Consider
-  them if a renamed or re-created repository must not inherit access (not tested in this
-  walkthrough).
+  `jwt.repository == "example-org/a" || jwt.repository == "example-org/b"`.
+- **Give every model an `allow` rule that tests the repository.** Any GitHub repository can mint a
+  token for your audience and pass `jwtAuth`, so the `authorization` rules are the only thing
+  that refuses one. agentgateway lets every such caller through when a model has:
+  - no `authorization` block, or an empty `rules` list;
+  - only `deny` rules: everything not denied is allowed;
+  - an `allow` rule that does not test the repository, such as `'true'`. A bare string in
+    `rules` (`- 'true'`) is an `allow` rule;
+  - only `require` rules, none of which tests the repository.
+- **Pin the repository ids too, if a name may be reused.** GitHub's token also carries the
+  numeric `repository_id` and `repository_owner_id` claims, sent as strings
+  (`jwt.repository_id == "123"`, not `== 123`). The ids stay with a repository through a rename;
+  a new repository that reuses an old name gets a new `repository_id`. Matching the ids as well
+  stops a reused name from inheriting access, and a renamed repository is refused until you
+  update its entry. This walkthrough matches the name only.
 - **Strip `x-api-key`.** agentgateway removes the credential it validated, but passes every other
   caller header through to the upstream, `x-api-key` included ([step 9](#9-check-that-no-caller-credential-reaches-the-upstream)
   shows both cases). Add `requestHeaders.remove` to every model.
@@ -174,6 +218,11 @@ Fill in the placeholders:
 sed -e "s/VERTEX_PROJECT/$PROJECT/g" -e "s/AUDIENCE/$AUDIENCE/" \
     -e "s#ALLOWED_REPO#example-org/example-repo#g" config.tmpl.yaml > config.yaml
 ```
+
+This is enough for a first deploy. Once you serve more than a few repositories, keep the allowed
+repositories in a file of their own and generate `config.yaml` from it with a script. The script
+should refuse a config that breaks the rules above, such as a model whose `authorization` rules do
+not test the repository. Then every change to the allowlist is a one-line, reviewable diff.
 
 ### An upstream that needs an API key
 
@@ -262,7 +311,7 @@ Admit the key on each model it may call, with a second rule next to the reposito
 ```bash
 mkdir -p v/config v/upstream && cp config.yaml v/config/ && chmod -R a+rX v
 podman run --rm -v "$PWD/v/config:/etc/agw-config:ro" -v "$PWD/v/upstream:/etc/agw-upstream:ro" \
-  ghcr.io/agentgateway/agentgateway:v1.6.0 -f /etc/agw-config/config.yaml --validate-only
+  ghcr.io/agentgateway/agentgateway:v1.7.0 -f /etc/agw-config/config.yaml --validate-only
 ```
 
 ```text
@@ -308,7 +357,7 @@ console or CLI, and delete the local copy once the secret exists.
 
 ```bash
 gcloud run deploy "$SERVICE" --project "$PROJECT" --region "$REGION" \
-  --image "$REGION-docker.pkg.dev/$PROJECT/$AR_REPO/agentgateway:v1.6.0" \
+  --image "$REGION-docker.pkg.dev/$PROJECT/$AR_REPO/agentgateway:v1.7.0" \
   --service-account "$SA" --port 8080 \
   --allow-unauthenticated --no-invoker-iam-check \
   --cpu 1 --memory 512Mi --max-instances 1 \
@@ -332,7 +381,11 @@ Service URL: https://gateway.example.com
   rejects a GitHub token with an HTML `401` before it reaches the gateway, even with
   `--allow-unauthenticated`. This is masked for the first minutes after a deploy while IAM settles.
 - **Each secret gets its own directory.** Cloud Run mounts one secret per directory.
-- Size the service for your load. The values above are what this walkthrough ran with.
+- **`latest` is for the first deploy only.** This revision reads whichever config version is
+  newest, so it is not a rollback target. Every later change mounts a version number; see
+  [Change the config](#change-the-config).
+- Size the service for your load. The values above are what this walkthrough ran with. See
+  [Watch health and capacity](#watch-health-and-capacity) for what to measure.
 
 Check that the gateway, not Cloud Run, answers a non-Google bearer:
 
@@ -344,13 +397,14 @@ curl -s -i https://gateway.example.com/v1/models -H 'authorization: Bearer not-a
 HTTP/2 401
 content-type: text/plain
 server: Google Frontend
-content-length: 74
+content-length: 21
 
-authentication failure: the token header is malformed: Error(InvalidToken)
+authentication failed
 ```
 
-A `text/plain` body starting `authentication failure:` comes from agentgateway. A `text/html` body
-means the invoker check is still on (see [Troubleshooting](#troubleshooting)).
+A `401` with a `text/plain` body comes from agentgateway. It returns `authentication failed` for
+every `jwtAuth` refusal, and writes the reason to its access log (see
+[Troubleshooting](#troubleshooting)). A `text/html` body means the invoker check is still on.
 
 ## 7. Know what a healthy start looks like
 
@@ -366,7 +420,18 @@ Starting new instance. Reason: DEPLOYMENT_ROLLOUT - Instance started due to traf
 ```
 
 `bind/8080` is the gateway. `bind/9000` appears only with the custody-check listener from
-[step 9](#9-check-that-no-caller-credential-reaches-the-upstream).
+[step 9](#9-check-that-no-caller-credential-reaches-the-upstream). This output was recorded on
+v1.6.0. v1.7.0 also logs two warnings before `started bind` when the config is mounted read-only,
+as it is on Cloud Run. This is from a local run of the v1.7.0 image with the step 3 config:
+
+```text
+warn	config	failed to write generated session key	err=failed to write to file `/etc/agw-config/config.yaml`: Read-only file system (os error 30) path=/etc/agw-config/config.yaml
+warn	config	no session key configured; MCP session IDs are not encrypted. Set SESSION_KEY or config.session.key
+info	proxy::gateway	started bind	bind="bind/8080"
+```
+
+Both are harmless for this setup: the session key only encrypts MCP session IDs, and this gateway
+serves no MCP. If you add MCP, set `SESSION_KEY` or `config.session.key`.
 
 ## 8. Check the gateway from GitHub Actions
 
@@ -403,20 +468,25 @@ gh run view "$id" -R example-org/example-repo --log
 ```
 
 The `echo` calls need the custody-check models from [step 9](#9-check-that-no-caller-credential-reaches-the-upstream);
-drop those lines if you skip it. Output from the allowed repository:
+drop those lines if you skip it.
+
+Output from the allowed repository. The claims line comes from a GitHub Actions run. The rest of
+this step and the custody output in step 9 come from a local run of the v1.7.0 image. That run
+used this page's config, Vertex AI credentials, and tokens carrying the same claims, signed by a
+local key set that `jwtAuth` was pointed at:
 
 ```text
 == claims (non-secret)
 {"iss":"https://token.actions.githubusercontent.com","aud":"fullsend-inference","repository":"example-org/example-repo","ttl":300}
 
 == GET /v1/models
-HTTP 200 {"data":[{"id":"claude-sonnet-4-6","object":"model","created":1791586051,"owned_by":"openai"},{"id":"echo-noremove","object":"model","created":1791586051,"owned_by":"openai"},{"id":"gemini-2.5-flash","object":"model","created":1791586051,"owned_by":"openai"},{"id":"echo","object":"model","created":1791586051,"owned_by":"openai"}],"object":"list"}
+HTTP 200 {"object":"list","data":[{"id":"claude-sonnet-4-6","object":"model","created":...,"owned_by":"gcp.vertex_ai"},{"id":"gemini-2.5-flash","object":"model","created":1750118400,"owned_by":"gcp.vertex_ai","name":"Gemini 2.5 Flash","context_window":1048576,"context_length":1048576,"max_input_tokens":1048576,"max_tokens":65536,"architecture":{...},"capabilities":{...},"supported_parameters":[...]},{"id":"echo-noremove",...},{"id":"echo",...}]}
 
 == POST /v1/messages (claude-sonnet-4-6)
 HTTP 200 {"id":"msg_vrtx_...","type":"message","role":"assistant","model":"claude-sonnet-4-6","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":13,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0}},"content":[{"text":"pong","type":"text"}],"container":null,"stop_details":null}
 
 == POST /v1/chat/completions (gemini-2.5-flash)
-HTTP 200 {"model":"gemini-2.5-flash","usage":{"prompt_tokens":5,"completion_tokens":20,"total_tokens":25,"completion_tokens_details":{"reasoning_tokens":19}},"choices":[{"message":{"content":"pong","role":"assistant"},"index":0,"finish_reason":"stop"}],"id":"...","created":1791586171,"object":"chat.completion"}
+HTTP 200 {"model":"gemini-2.5-flash","service_tier":"default","usage":{"prompt_tokens":5,"completion_tokens":22,"total_tokens":27,"completion_tokens_details":{"reasoning_tokens":21}},"choices":[{"message":{"content":"pong","role":"assistant"},"index":0,"finish_reason":"stop"}],"id":"...","created":...,"object":"chat.completion"}
 
 == POST /v1/responses (echo)
 HTTP 200 {"id":"resp_...","status":"completed","output":[{"type":"message","content":[{"type":"output_text","annotations":[],"logprobs":null,"text":"{\"authorization\":\"GATEWAY_KEY\",\"x_api_key_present\":false,\"canary_present\":false}"}], ...
@@ -425,13 +495,13 @@ HTTP 200 {"id":"resp_...","status":"completed","output":[{"type":"message","cont
 HTTP 400 failed to process LLM request: unsupported conversion: from Responses to provider gcp.vertex_ai (supported: [AnthropicMessages])
 
 == negative: token minted for another audience
-HTTP 401 authentication failure: the token is invalid or malformed: Error(InvalidAudience)
+HTTP 401 authentication failed
 
 == negative: token only in x-api-key
-HTTP 401 authentication failure: no bearer token found
+HTTP 401 authentication failed
 
 == negative: no credential
-HTTP 401 authentication failure: no bearer token found
+HTTP 401 authentication failed
 
 == does any body contain the token? 0
 ```
@@ -442,11 +512,19 @@ HTTP 401 authentication failure: no bearer token found
   Chat Completions for a Chat-only upstream (the `echo` call), but not to Vertex Claude. Map
   Claude models to `anthropic-messages` in the runner's model list, and Gemini models to
   `openai-completions`.
+- **Every `401` body reads `authentication failed`.** The reason is in the gateway's access log, as
+  `error="authentication failure: ..."` with `reason=JwtAuth`; see
+  [Troubleshooting](#troubleshooting).
+- **`/v1/models` lists each model with its provider** in `owned_by` (`gcp.vertex_ai` here). Models
+  in agentgateway's catalog, such as Gemini, also carry fields like `context_window` and
+  `max_tokens`.
 - The gateway's log line for each call names the model, the upstream and the caller. The repository
-  appears in `jwt.sub`:
+  appears in `jwt.sub`. Its format depends on the repository: one that uses GitHub's immutable
+  subject claims logs `repo:example-org@1111/example-repo@2222:ref:...` instead. Write
+  `authorization` rules on `jwt.repository` and the id claims, never by parsing `jwt.sub`:
 
   ```text
-  info	request gateway=default/default listener=default route=internal/llm:request endpoint=aiplatform.googleapis.com:443 ... http.path=/v1/chat/completions http.status=200 ... jwt.sub=repo:example-org@1111/example-repo@2222:ref:refs/heads/main protocol=llm gen_ai.operation.name=chat gen_ai.provider.name=gcp.vertex_ai gen_ai.request.model=gemini-2.5-flash ... duration=575ms
+  info	request ... endpoint=aiplatform.googleapis.com:443 ... http.path=/v1/chat/completions http.status=200 jwt.sub=repo:example-org/example-repo:ref:refs/heads/main protocol=llm gen_ai.operation.name=chat gen_ai.provider.name=gcp.vertex_ai gen_ai.request.model=gemini-2.5-flash ...
   ```
 
 ### Check that another repository is refused
@@ -458,7 +536,7 @@ Run the same workflow, with the same audience, in a repository that is **not** i
 {"iss":"https://token.actions.githubusercontent.com","aud":"fullsend-inference","repository":"example-org/other-repo","ttl":300}
 
 == GET /v1/models
-HTTP 200 {"data":[],"object":"list"}
+HTTP 200 {"object":"list","data":[]}
 
 == POST /v1/messages (claude-sonnet-4-6)
 HTTP 403 {"error":{"message":"Model authorization denied","type":"invalid_request_error","code":"model_authorization_denied"}}
@@ -517,10 +595,10 @@ The workflow in step 8 sends a valid bearer plus `x-api-key: canary` and `x-cana
 
 ```text
 == custody: echo, requestHeaders.remove [x-api-key]
-HTTP 200 {"model":"echo",...,"choices":[{"message":{"content":"{\"authorization\":\"GATEWAY_KEY\",\"x_api_key_present\":false,\"canary_present\":true}","role":"assistant"},...
+HTTP 200 {... "content":"{\"authorization\":\"GATEWAY_KEY\",\"x_api_key_present\":false,\"canary_present\":true}" ...}
 
 == custody: echo-noremove, no requestHeaders
-HTTP 200 {"model":"echo",...,"choices":[{"message":{"content":"{\"authorization\":\"GATEWAY_KEY\",\"x_api_key_present\":true,\"canary_present\":true}","role":"assistant"},...
+HTTP 200 {... "content":"{\"authorization\":\"GATEWAY_KEY\",\"x_api_key_present\":true,\"canary_present\":true}" ...}
 ```
 
 - `authorization` is `GATEWAY_KEY` in both: the job's token was replaced by the gateway's own key.
@@ -594,42 +672,95 @@ upstream reads for the provider key. The gateway must therefore:
 ## Change the config
 
 > **Not executed in this walkthrough:** the service was deleted after the checks, so these commands
-> were not run here. They add a new secret version and roll a new revision that mounts it.
+> were not run here.
+
+**The first time only, pin the running config first.** The step 6 revision mounts `latest`, and
+Cloud Run reads a mounted secret when the file is read, not when the revision is created. Adding
+a version would change what that revision loads on its next start, and leave no revision to roll
+back to. Roll a revision that mounts the running version, `1`, before you add a new one:
 
 ```bash
-gcloud secrets versions add gateway-config --project "$PROJECT" --data-file=config.yaml
 gcloud run services update "$SERVICE" --project "$PROJECT" --region "$REGION" \
-  --update-secrets "/etc/agw-config/config.yaml=gateway-config:latest"
+  --update-secrets "/etc/agw-config/config.yaml=gateway-config:1"
 ```
 
-Then rerun the workflow from step 8.
+For every change, add `config.yaml` as a new secret version, roll a revision that mounts that
+version by number, and send all traffic to it:
+
+```bash
+v=$(gcloud secrets versions add gateway-config --project "$PROJECT" --data-file=config.yaml \
+  --format='value(name.basename())')
+gcloud run services update "$SERVICE" --project "$PROJECT" --region "$REGION" \
+  --update-secrets "/etc/agw-config/config.yaml=gateway-config:$v"
+gcloud run services update-traffic "$SERVICE" --project "$PROJECT" --region "$REGION" --to-latest
+```
+
+Then rerun the workflow from step 8. The `--to-latest` step matters only after a rollback, which
+pins traffic to an older revision; otherwise it changes nothing.
+
+- **Mount a version number, not `latest`.** A revision that mounts a numbered version keeps the
+  config it was deployed with. A revision that mounts `latest` reads the newest version instead,
+  so it cannot restore an older config.
+- **To roll back,** list the recent revisions, then send all traffic to the previous one:
+
+  ```bash
+  gcloud run revisions list --service "$SERVICE" --project "$PROJECT" --region "$REGION" --limit 3
+  gcloud run services update-traffic "$SERVICE" --project "$PROJECT" --region "$REGION" \
+    --to-revisions <previous-revision>=100
+  ```
+- **Keep the older version enabled** while any revision you may roll back to mounts it. If the
+  version is disabled, that revision cannot read its config, and the gateway exits at startup.
 
 ## Remove a repository
 
 > **Not executed in this walkthrough:** the service was deleted after the checks, so no
-> repository was removed from a running gateway here. The refusal the removed repository should
-> see is the one [Check that another repository is refused](#check-that-another-repository-is-refused)
-> shows for a repository that was never allowed.
+> repository was removed from a running gateway here.
 
-1. Remove every grant the repository has in the gateway config ([step 3](#3-write-the-gateway-config)):
+1. **Remove every grant the repository has** in the gateway config
+   ([step 3](#3-write-the-gateway-config)):
    - its `jwt.repository` rule on every model. Where a rule allows several repositories with `||`,
      delete only that repository's term;
    - if you issued it a gateway key ([`auth: api-key`](#accept-a-static-key-as-well-auth-api-key)),
      its `apiKey.purpose` rule on every model and its entry under `apiKey.keys`. Removing only the
      `jwt.repository` rule leaves the key working.
-2. Roll the new `config.yaml` out the same way as a config change: see
-   [Change the config](#change-the-config).
-3. Check that the removed repository is now refused. For a key, send one request with the old key
-   from your own machine, for example `GET /v1/models` with `Authorization: Bearer <old key>`: it
-   must no longer return the repository's models. `fullsend inference gateway status` cannot check
-   this, because in the `api-key` mode it stops at the config checks. Ask the repo admin to delete
-   the `FULLSEND_INFERENCE_GATEWAY_API_KEY` secret. For OIDC, from the repository's check workflow
-   ([step 8](#8-check-the-gateway-from-github-actions)), `GET /v1/models` returns an empty list
-   (`{"data":[],"object":"list"}`) or `403 model_authorization_denied`, and every model call
-   returns `403 model_authorization_denied`. In that repository,
-   [`fullsend inference gateway status`](../../cli/inference.md#inference-gateway-status) reports
-   the refusal: `Gateway authenticated the assertion, but no models are authorised for <owner/repo>`
-   for the empty list, or `Gateway refused the assertion (HTTP 403)`.
+
+   **If that was a model's last `allow` rule, remove the model too.** A model left with no
+   `authorization` block or an empty `rules` list lets every caller through (see
+   [step 3](#3-write-the-gateway-config)).
+2. **Roll the change out** as in [Change the config](#change-the-config).
+3. **Check that the repository is refused:**
+
+   | Mode | Check | Refused looks like |
+   |---|---|---|
+   | `oidc` | The step 8 workflow in that repository, or [`fullsend inference gateway status`](../../cli/inference.md#inference-gateway-status) in a job there | `GET /v1/models` returns `{"object":"list","data":[]}` or `403 model_authorization_denied`, as in [Check that another repository is refused](#check-that-another-repository-is-refused). `status` prints `Gateway authenticated the assertion, but no models are authorised for <owner/repo>` or `Gateway refused the assertion (HTTP 403)` |
+   | `api-key` | `GET /v1/models` with `Authorization: Bearer <old key>` from your own machine (`status` stops at the config checks in this mode) | `401 authentication failed`, because the key's `apiKey.keys` entry is gone. Then ask the repo admin to delete the `FULLSEND_INFERENCE_GATEWAY_API_KEY` secret |
+
+## Watch health and capacity
+
+> **Not executed in this walkthrough:** the service was deleted after the checks.
+
+- **Every model call leaves one log line.** It carries `http.status`, the calling repository in
+  `jwt.sub`, the model, token counts (`gen_ai.usage.*`) and `duration`. The sample under
+  [step 8](#8-check-the-gateway-from-github-actions) shows the shape. Filter it for `429` and
+  `5xx`. A `429` with `reason=RateLimit` is the gateway's own `localRateLimit` (below); any other
+  `429` or `5xx` usually comes from the upstream.
+- **Cloud Run's own `429`s never reach the gateway.** When every request slot on every instance
+  up to `--max-instances` is busy, Cloud Run refuses the request itself. It shows only in Cloud
+  Run's request log (`run.googleapis.com/requests`), not in the gateway's lines. Step 6 sets no
+  `--concurrency`, so Cloud Run's default applies: 80 slots per vCPU, so 80 with `--cpu 1`.
+- **Cap bursts with agentgateway's `localRateLimit`** (requests and tokens per `fillInterval`).
+  Set its `key` so that callers outside your allow rule draw from a separate bucket. Any GitHub
+  Actions job can mint a token for your audience (only pull-request runs from forks cannot: they
+  get no `id-token: write`). That token passes `jwtAuth` and reaches the rate limit before the
+  model's rule refuses it, so with one shared bucket an outside repository can use up your
+  repositories' share. The caps apply per instance and reset on each new instance,
+  so they are a burst guard, not a spend limit. Set a budget alert at the model provider as well.
+- **Scale from what you measure.** Raise the rate caps on `reason=RateLimit` `429`s. Raise
+  `--concurrency` on Cloud Run `429`s; Cloud Run sets the default only when it creates the
+  service, so raise `--concurrency` yourself after a CPU change. Raise CPU or memory when the
+  instance runs hot. If you raise `--max-instances`, divide the rate caps by the same factor:
+  each instance has its own buckets. A streamed model call holds its request slot for the whole
+  response.
 
 ## Delete the gateway
 
@@ -664,14 +795,31 @@ returns `404`.
 
 ## Troubleshooting
 
+Every `jwtAuth` refusal returns `401` with the body `authentication failed`. The reason is in the
+gateway's access log line for that request, as `error="authentication failure: ..."` with
+`reason=JwtAuth`. Find it with:
+
+```bash
+gcloud logging read "resource.labels.service_name=\"$SERVICE\" AND textPayload:\"reason=JwtAuth\"" \
+  --project "$PROJECT" --freshness 1h --limit 5 --format 'value(textPayload)'
+```
+
+For the step 6 check's non-JWT bearer, on v1.7.0:
+
+```text
+2026-10-30T15:07:24.725330Z	error	request gateway=default/default listener=default route=internal/llm:request ... http.method=GET ... http.path=/v1/models http.version=HTTP/1.1 http.status=401 ... protocol=http error="authentication failure: the token header is malformed: Error(InvalidToken)" reason=JwtAuth duration=0ms
+```
+
+The rows below are keyed on that `error=` text.
+
 | You see | Cause | Action |
 |---|---|---|
 | `401` `text/html` … `Your client does not have permission to the requested URL` | Cloud Run's invoker IAM check rejected a non-Google bearer before it reached the gateway. | `gcloud run services update "$SERVICE" --project "$PROJECT" --region "$REGION" --no-invoker-iam-check` |
-| `401 authentication failure: the token is invalid or malformed: Error(InvalidAudience)` | The job minted its token for a different audience. | Make the runner's configured audience equal the gateway's `audiences` value, character for character. |
-| `401 authentication failure: no bearer token found` | The request carried no `Authorization: Bearer`, or sent the token only in `x-api-key`. | agentgateway reads the token from `Authorization: Bearer` by default (configurable with `location`). For pi, set `authHeader` for `anthropic-messages` to `authorization`; the fullsend runner does this for you. |
-| `401 authentication failure: the token header is malformed: Error(InvalidToken)` | The bearer is not a JWT. | Check the runner fetched an OIDC token (`id-token: write` permission) rather than passing another secret. |
-| `401` `Error(ExpiredSignature)` (seen in an earlier live test, not this walkthrough) | The token is past its `exp` (GitHub tokens live `exp − iat`, 300 s in practice, plus about 60 s of gateway leeway). | The runner must re-fetch the token before `exp`. |
-| `GET /v1/models` returns `{"data":[],"object":"list"}` and every model `403 model_authorization_denied` | The token is valid but its `repository` matches no `authorization` rule. | Add the repository to the rules (exact `owner/name`), then [change the config](#change-the-config). |
+| `401`; log `error="authentication failure: the token is invalid or malformed: Error(InvalidAudience)"` | The job minted its token for a different audience. | Make the runner's configured audience equal the gateway's `audiences` value, character for character. |
+| `401`; log `error="authentication failure: no bearer token found"` | The request carried no `Authorization: Bearer`, or sent the token only in `x-api-key`. | agentgateway reads the token from `Authorization: Bearer` by default (configurable with `location`). For pi, set `authHeader` for `anthropic-messages` to `authorization`; the fullsend runner does this for you. |
+| `401`; log `error="authentication failure: the token header is malformed: Error(InvalidToken)"` | The bearer is not a JWT. | Check the runner fetched an OIDC token (`id-token: write` permission) rather than passing another secret. |
+| `401`; log `error` ends in `Error(ExpiredSignature)` (seen in an earlier live test, not this walkthrough) | The token is past its `exp` (GitHub tokens live `exp − iat`, 300 s in practice, plus about 60 s of gateway leeway). | The runner must re-fetch the token before `exp`. |
+| `GET /v1/models` returns `{"object":"list","data":[]}` and every model `403 model_authorization_denied` | The token is valid but its `repository` matches no `authorization` rule. | Add the repository to the rules (exact `owner/name`), then [change the config](#change-the-config). |
 | `400 failed to process LLM request: unsupported conversion: from Responses to provider gcp.vertex_ai (supported: [AnthropicMessages])` | A Vertex Claude model was called on `/v1/responses`. | Map Claude models to `anthropic-messages` in the runner's model list. |
 | `Permission denied (os error 13)` from `--validate-only` | The mounted file isn't readable by the container's non-root user. | `chmod -R a+rX` the mounted directories. |
 | Gateway exits at startup after adding an `apiKey.file` model | The file it names is not mounted. | Mount the key secret at that path in its own directory (`--set-secrets`). |
@@ -682,7 +830,7 @@ returns `404`.
   OIDC token is exchanged with OpenAI directly.
 - [pi-inference-gateway](https://github.com/fullsend-ai/pi-inference-gateway): the pi extension
   that calls the gateway, and its agentgateway guide.
-- agentgateway v1.6.0 configuration reference: `schema/config.md` in the
-  [agentgateway repository](https://github.com/agentgateway/agentgateway/blob/v1.6.0/schema/config.md).
+- agentgateway v1.7.0 configuration reference: `schema/config.md` in the
+  [agentgateway repository](https://github.com/agentgateway/agentgateway/blob/v1.7.0/schema/config.md).
 - [ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md): the inference gateway
   credential route, including the gateway-side requirements this page implements.

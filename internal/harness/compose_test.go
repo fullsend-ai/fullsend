@@ -86,6 +86,159 @@ model: opus
 	assert.Empty(t, h.Base)
 }
 
+// TestLoadWithBase_SchemaVersionEqualEffectiveVersionsCompose verifies that a
+// base chain composes when every layer's effective schema version is 1 (ADR
+// 0127 Decision 1): absent means version 1, so an explicit schema_version: 1
+// on either side of the merge must not block composition. The merged harness
+// keeps the child's own declaration: an absent child stays absent, and a
+// child that spelled the version explicitly keeps it.
+func TestLoadWithBase_SchemaVersionEqualEffectiveVersionsCompose(t *testing.T) {
+	tests := []struct {
+		name           string
+		baseBody       string
+		childBody      string
+		expectExplicit bool
+	}{
+		{
+			name: "explicit one base with absent child",
+			baseBody: `
+schema_version: 1
+agent: agents/base.md
+role: test
+model: base-model
+`,
+			childBody: `
+base: base.yaml
+agent: agents/child.md
+`,
+			expectExplicit: false,
+		},
+		{
+			name: "absent base with explicit one child",
+			baseBody: `
+agent: agents/base.md
+role: test
+model: base-model
+`,
+			childBody: `
+base: base.yaml
+schema_version: 1
+agent: agents/child.md
+`,
+			expectExplicit: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestHarness(t, dir, "base.yaml", tt.baseBody)
+			path := writeTestHarness(t, dir, "child.yaml", tt.childBody)
+
+			h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+			require.NoError(t, err)
+
+			// The merge ran: the child inherited the base's model.
+			assert.Equal(t, "base-model", h.Model)
+			// The merged harness keeps the child's own declaration: an
+			// absent child stays absent, an explicit child keeps it.
+			if tt.expectExplicit {
+				require.NotNil(t, h.SchemaVersion)
+				assert.Equal(t, schemaVersionValue(1), *h.SchemaVersion)
+			} else {
+				require.Nil(t, h.SchemaVersion)
+			}
+			assert.Equal(t, 1, h.EffectiveSchemaVersion())
+		})
+	}
+}
+
+// TestLoadWithBase_LocalBase_UnsupportedSchemaVersion verifies that a base
+// layer declaring a version this build does not interpret fails the child's
+// whole load (ADR 0127 Decision 1; design D3's parse-boundary integration
+// test). The base file's own parse rejects schema_version 2 (design D2), and
+// loadBaseChain surfaces that failure through the child's LoadWithBase,
+// naming the offending base file. The guard's mixed-version error is not
+// reachable through parse while every version above 1 is rejected at load;
+// TestCheckSchemaVersionsCompose_ConstructedMixedVersions covers that
+// path directly.
+func TestLoadWithBase_LocalBase_UnsupportedSchemaVersion(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+schema_version: 2
+agent: agents/base.md
+role: test
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+schema_version: 1
+agent: agents/child.md
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.Error(t, err)
+
+	// The base's own parse rejection surfaces, with the field-named message.
+	assert.ErrorContains(t, err, "parsing harness YAML:")
+	assert.ErrorContains(t, err, "schema_version 2 is not supported by this version of fullsend")
+	assert.ErrorContains(t, err, "maximum supported schema_version: 1")
+	// The error names the offending base file via the base-chain load wraps.
+	assert.ErrorContains(t, err, "loading base chain")
+	assert.ErrorContains(t, err, "loading base harness")
+	assert.ErrorContains(t, err, "base.yaml")
+}
+
+// TestCheckSchemaVersionsCompose_ConstructedMixedVersions reaches the
+// D3 guard directly with constructed Harness values: parse rejects every
+// effective version above 1 (design D2), so a base with effective version 2
+// cannot come from a file — this is the state LoadWithBase would hand the
+// guard once a version 2 exists. The child is absent (effective version 1,
+// the spelling of every harness that predates the field), and the guard must
+// reject the pair with an error naming both versions and the layer label.
+// schemaversion_test.go covers the explicit-1-child spelling.
+func TestCheckSchemaVersionsCompose_ConstructedMixedVersions(t *testing.T) {
+	child := &Harness{}                                  // absent — effective version 1
+	base := &Harness{SchemaVersion: schemaVersionPtr(2)} // parse would reject this; constructed directly
+
+	err := checkSchemaVersionsCompose(base, child, "bases/parent.yaml")
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, `base layer "bases/parent.yaml" declares schema_version 2`)
+	assert.ErrorContains(t, err, "incompatible with schema_version 1 of the harness composing it")
+	assert.ErrorContains(t, err, "mixed-version base composition is not supported")
+}
+
+// TestMergeBaseIntoChild_SchemaVersion pins the kept-child slot: an absent
+// child stays absent — its effective version 1 is what the composition guard
+// required the base to match — and an explicit child declaration is
+// preserved untouched. schema_version is never inherited from the base:
+// ADR 0127 Decision 1 defers cross-version behavior to an explicit
+// compatibility rule.
+func TestMergeBaseIntoChild_SchemaVersion(t *testing.T) {
+	t.Run("absent child stays absent, keeping effective version 1", func(t *testing.T) {
+		base := &Harness{SchemaVersion: schemaVersionPtr(1)}
+		child := &Harness{}
+
+		mergeBaseIntoChild(base, child)
+
+		require.Nil(t, child.SchemaVersion)
+		assert.Equal(t, 1, child.EffectiveSchemaVersion())
+	})
+	t.Run("explicit child declaration is preserved", func(t *testing.T) {
+		childVer := schemaVersionPtr(1)
+		base := &Harness{SchemaVersion: schemaVersionPtr(1)}
+		child := &Harness{SchemaVersion: childVer}
+
+		mergeBaseIntoChild(base, child)
+
+		// Same pointer out as in: the merge leaves a non-nil child
+		// declaration untouched rather than swapping in the base's.
+		assert.Same(t, childVer, child.SchemaVersion)
+		assert.Equal(t, schemaVersionValue(1), *child.SchemaVersion)
+	})
+}
+
 func TestLoadWithBase_LocalBase_SkillsConcat(t *testing.T) {
 	dir := t.TempDir()
 
@@ -242,7 +395,7 @@ func TestMergeSkills(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mergeSkills(tt.base, tt.child)
+			got := mustMergeSkills(t, tt.base, tt.child)
 			assert.Equal(t, tt.want, SkillSources(got))
 		})
 	}
@@ -261,7 +414,7 @@ func TestMergeSkills_DeclaredNameDistinguishesNestedDirs(t *testing.T) {
 	labels := writeSkill("issue-labels/github", "issue-labels")
 	review := writeSkill("pr-review/github", "pr-review-github")
 
-	got := mergeSkills(nil, []SkillEntry{{Source: labels}, {Source: review}})
+	got := mustMergeSkills(t, nil, []SkillEntry{{Source: labels}, {Source: review}})
 	assert.Equal(t, []string{labels, review}, SkillSources(got))
 }
 
@@ -277,7 +430,7 @@ func TestMergeSkills_DeclaredNameOverridesMatchingBase(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(childDir, "SKILL.md"),
 		[]byte("---\nname: issue-labels\n---\n# child\n"), 0o644))
 
-	got := mergeSkills(
+	got := mustMergeSkills(t,
 		[]SkillEntry{{Source: baseDir}},
 		[]SkillEntry{{Source: childDir}},
 	)
@@ -448,7 +601,7 @@ func TestMergeSkills_RelativeChildCannotSpoofBaseIdentity(t *testing.T) {
 	base := []SkillEntry{{Source: "/abs/base/code-review"}}
 	child := []SkillEntry{{Source: "attacker-dir"}}
 
-	got := mergeSkills(base, child)
+	got := mustMergeSkills(t, base, child)
 	assert.Equal(t, []string{"/abs/base/code-review", "attacker-dir"}, SkillSources(got))
 }
 
@@ -478,7 +631,7 @@ func TestMergeSkills_LocalOverrideMatchesByBasenameNotDeclaredName(t *testing.T)
 	require.NoError(t, os.WriteFile(filepath.Join(childDir, "SKILL.md"),
 		[]byte("---\nname: code-review\n---\n# child\n"), 0o644))
 
-	got := mergeSkills(
+	got := mustMergeSkills(t,
 		[]SkillEntry{{Source: baseDir}},
 		[]SkillEntry{{Source: childDir}},
 	)
@@ -504,10 +657,10 @@ func TestMergeSkills_LocalOverrideMatchesDeclaredBaseName(t *testing.T) {
 			[]byte("---\nname: issue-labels\n---\n# child\n"), 0o644))
 	}
 
-	got := mergeSkills([]SkillEntry{{Source: baseDir}}, []SkillEntry{{Source: "issue-labels"}})
+	got := mustMergeSkills(t, []SkillEntry{{Source: baseDir}}, []SkillEntry{{Source: "issue-labels"}})
 	assert.Equal(t, []string{"issue-labels"}, SkillSources(got), "the base's declared name overrides it")
 
-	got = mergeSkills([]SkillEntry{{Source: baseDir}}, []SkillEntry{{Source: "github"}})
+	got = mustMergeSkills(t, []SkillEntry{{Source: baseDir}}, []SkillEntry{{Source: "github"}})
 	assert.Equal(t, []string{baseDir, "github"}, SkillSources(got), "the base's basename does not")
 }
 
@@ -548,7 +701,7 @@ func TestMergeBaseIntoChild_PrivilegeLevelsChildWins(t *testing.T) {
 		PrivilegeStageRuntime: "read",
 	}}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, "write", child.PrivilegeLevels[PrivilegeStageDefault])
 	assert.Equal(t, "read", child.PrivilegeLevels[PrivilegeStageRuntime])
@@ -560,7 +713,7 @@ func TestMergeBaseIntoChild_PrivilegeLevelsInheritedWhenChildNil(t *testing.T) {
 	}}
 	child := &Harness{}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, "read", child.PrivilegeLevels[PrivilegeStageRuntime])
 }
@@ -2143,7 +2296,7 @@ func TestMergeForgeBlocks(t *testing.T) {
 		},
 	}
 
-	result := mergeForgeBlocks(base, child)
+	result := mustMergeForgeBlocks(t, base, child)
 
 	// GitHub merged
 	gh := result["github"]
@@ -2167,7 +2320,7 @@ func TestMergeForgeBlocks_NilChild(t *testing.T) {
 		},
 	}
 
-	result := mergeForgeBlocks(base, nil)
+	result := mustMergeForgeBlocks(t, base, nil)
 
 	require.NotNil(t, result)
 	assert.Equal(t, "base-pre.sh", result["github"].PreScript)
@@ -2183,7 +2336,7 @@ func TestMergeForgeBlocks_NilChildPlatform(t *testing.T) {
 		"github": nil, // explicitly nil — should NOT inherit from base
 	}
 
-	result := mergeForgeBlocks(base, child)
+	result := mustMergeForgeBlocks(t, base, child)
 
 	// Child explicitly nulled github, so it stays nil
 	assert.Nil(t, result["github"])
@@ -2195,7 +2348,7 @@ func TestMergeForgeConfigInto_NilBase(t *testing.T) {
 	}
 
 	// Should not panic with nil base
-	mergeForgeConfigInto(nil, child)
+	require.NoError(t, mergeForgeConfigInto(nil, child))
 
 	assert.Equal(t, "child-pre.sh", child.PreScript)
 }
@@ -2212,7 +2365,7 @@ func TestMergeForgeConfigInto_ValidationLoop(t *testing.T) {
 		// No ValidationLoop — should inherit from base
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	require.NotNil(t, child.ValidationLoop)
 	assert.Equal(t, "base-validate.sh", child.ValidationLoop.Script)
@@ -2235,7 +2388,7 @@ func TestMergeForgeConfigInto_ValidationLoopFieldLevelMerge(t *testing.T) {
 		},
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	require.NotNil(t, child.ValidationLoop)
 	assert.Equal(t, "base-validate.sh", child.ValidationLoop.Script)
@@ -2341,7 +2494,7 @@ func TestMergeForgeConfigInto_PreflightCheckCarryForward(t *testing.T) {
 		},
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	require.NotNil(t, child.ValidationLoop)
 	assert.Equal(t, "child-validate.sh", child.ValidationLoop.Script)
@@ -2359,7 +2512,7 @@ func TestMergeForgeConfigInto_PolicyInherited(t *testing.T) {
 		PreScript: "child-pre.sh",
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	assert.Equal(t, "policies/base-gitlab.yaml", child.Policy)
 	assert.Equal(t, "child-pre.sh", child.PreScript)
@@ -2373,7 +2526,7 @@ func TestMergeForgeConfigInto_PolicyOverriddenByChild(t *testing.T) {
 		Policy: "policies/child.yaml",
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	assert.Equal(t, "policies/child.yaml", child.Policy)
 }
@@ -5135,7 +5288,7 @@ func TestMergeForgeConfigInto_ProvidersInherited(t *testing.T) {
 		PreScript: "child-pre.sh",
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	assert.Equal(t, []string{"providers/base-github.yaml"}, child.Providers)
 }
@@ -5148,7 +5301,7 @@ func TestMergeForgeConfigInto_ProvidersConcatenated(t *testing.T) {
 		Providers: []string{"providers/child.yaml"},
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	assert.Equal(t, []string{"providers/base.yaml", "providers/child.yaml"}, child.Providers)
 }
@@ -5161,7 +5314,7 @@ func TestMergeForgeConfigInto_OpenShellInherited(t *testing.T) {
 		PreScript: "child-pre.sh",
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	require.NotNil(t, child.OpenShell)
 	assert.Equal(t, []string{"profiles/base.yaml"}, child.OpenShell.Profiles)
@@ -5175,7 +5328,7 @@ func TestMergeForgeConfigInto_OpenShellConcatenated(t *testing.T) {
 		OpenShell: &OpenShellConfig{Profiles: []string{"profiles/child.yaml"}},
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	require.NotNil(t, child.OpenShell)
 	assert.Equal(t, []string{"profiles/base.yaml", "profiles/child.yaml"}, child.OpenShell.Profiles)
@@ -5191,7 +5344,7 @@ func TestMergeForgeConfigInto_HostFilesInherited(t *testing.T) {
 		PreScript: "child-pre.sh",
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	require.Len(t, child.HostFiles, 1)
 	assert.Equal(t, "env/base.env", child.HostFiles[0].Src)
@@ -5209,7 +5362,7 @@ func TestMergeForgeConfigInto_HostFilesOverriddenByChild(t *testing.T) {
 		},
 	}
 
-	mergeForgeConfigInto(base, child)
+	require.NoError(t, mergeForgeConfigInto(base, child))
 
 	require.Len(t, child.HostFiles, 1)
 	assert.Equal(t, "env/child.env", child.HostFiles[0].Src)
@@ -6054,7 +6207,7 @@ func TestMergeBaseIntoChild_Env(t *testing.T) {
 		},
 	}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	require.NotNil(t, child.Env)
 	assert.Equal(t, "r1", child.Env.Runner["BASE_R"])
@@ -6074,7 +6227,7 @@ func TestMergeBaseIntoChild_EnvChildWins(t *testing.T) {
 		},
 	}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 	assert.Equal(t, "child", child.Env.Runner["KEY"])
 }
 
@@ -6087,7 +6240,7 @@ func TestMergeBaseIntoChild_EnvInheritedWhenChildNil(t *testing.T) {
 	}
 	child := &Harness{}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	require.NotNil(t, child.Env)
 	assert.Equal(t, "val", child.Env.Runner["R"])
@@ -6098,7 +6251,7 @@ func TestMergeBaseIntoChild_EffortInherited(t *testing.T) {
 	base := &Harness{Effort: "high"}
 	child := &Harness{}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, "high", child.Effort)
 }
@@ -6107,7 +6260,7 @@ func TestMergeBaseIntoChild_EffortChildWins(t *testing.T) {
 	base := &Harness{Effort: "high"}
 	child := &Harness{Effort: "low"}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, "low", child.Effort)
 }
@@ -6116,7 +6269,7 @@ func TestMergeBaseIntoChild_EffortEmptyBaseNoEffect(t *testing.T) {
 	base := &Harness{}
 	child := &Harness{Effort: "max"}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, "max", child.Effort)
 }
@@ -6125,7 +6278,7 @@ func TestMergeBaseIntoChild_TriggerInherited(t *testing.T) {
 	base := &Harness{Trigger: `event.entity.kind == "work_item"`}
 	child := &Harness{}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, `event.entity.kind == "work_item"`, child.Trigger)
 }
@@ -6134,7 +6287,7 @@ func TestMergeBaseIntoChild_TriggerChildWins(t *testing.T) {
 	base := &Harness{Trigger: `event.entity.kind == "work_item"`}
 	child := &Harness{Trigger: `event.entity.kind == "change_proposal"`}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, `event.entity.kind == "change_proposal"`, child.Trigger)
 }
@@ -6143,7 +6296,7 @@ func TestMergeBaseIntoChild_TriggerEmptyBaseNoEffect(t *testing.T) {
 	base := &Harness{}
 	child := &Harness{Trigger: `event.entity.kind == "work_item"`}
 
-	mergeBaseIntoChild(base, child)
+	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, `event.entity.kind == "work_item"`, child.Trigger)
 }

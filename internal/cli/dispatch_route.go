@@ -42,16 +42,13 @@ type routableAgent struct {
 	// accepts reports whether the event is one this agent's CEL route
 	// covers. Other events keep bash routing (routeBash).
 	accepts func(*normevent.Event) bool
-	// role is the role the agent's reusable-dispatch.yml job mints its
-	// token for, used by the authorization gate.
-	role string
 }
 
 var routableAgents = map[string]routableAgent{
-	"prioritize": {accepts: prioritizeRouteAccepts, role: "prioritize"},
-	"retro":      {accepts: retroRouteAccepts, role: "retro"},
-	"review":     {accepts: reviewRouteAccepts, role: "review"},
-	"triage":     {accepts: triageRouteAccepts, role: "triage"},
+	"prioritize": {accepts: prioritizeRouteAccepts},
+	"retro":      {accepts: retroRouteAccepts},
+	"review":     {accepts: reviewRouteAccepts},
+	"triage":     {accepts: triageRouteAccepts},
 }
 
 // retroRouteAccepts covers the events bash routes to retro: a pull request
@@ -63,6 +60,27 @@ func retroRouteAccepts(e *normevent.Event) bool {
 	}
 	return e.Transition.Kind == normevent.TransitionCommentAdded &&
 		e.Transition.Comment != nil && e.Transition.Comment.Command == "/fs-retro"
+}
+
+// isGitHubClosedPRRetro reports whether retro routing is deciding a GitHub
+// pull-request close or merge. These events require a fixed write floor even
+// when the selected harness has a lower role or the actor is a registered bot.
+func isGitHubClosedPRRetro(agent string, event *normevent.Event) bool {
+	if agent != "retro" || event == nil || event.Source.System != normevent.SystemGitHub ||
+		event.Entity.Kind != normevent.EntityChangeProposal {
+		return false
+	}
+	return event.Transition.Kind == normevent.TransitionClosed ||
+		event.Transition.Kind == normevent.TransitionMerged
+}
+
+// isGitHubRetroSlashCommand reports whether retro routing is deciding an
+// explicit /fs-retro command. These comments need the same fixed write floor
+// as closed pull requests, regardless of the selected harness role.
+func isGitHubRetroSlashCommand(agent string, event *normevent.Event) bool {
+	return agent == "retro" && event != nil && event.Source.System == normevent.SystemGitHub &&
+		event.Transition.Kind == normevent.TransitionCommentAdded &&
+		event.Transition.Comment != nil && event.Transition.Comment.Command == "/fs-retro"
 }
 
 // reviewRouteAccepts covers pull request events and comments on a pull
@@ -139,17 +157,19 @@ type routeOpts struct {
 // user's own harness writes it or inherits it through base: (the default
 // harnesses' triggers keep bash routing until the cutover, #2902).
 //
-// Without a config trigger the decision is routeBash, and so it is for the
-// kill switch, a disabled entry and an event outside the agent's CEL route.
-// A bot's comment returns routeSkip. Otherwise the event must pass the
+// A bot denied by the bot-role lookup (no registered role, or a failed
+// lookup) returns routeSkip first, ahead of every error and bash decision
+// below. Without a config trigger the decision is routeBash, and so it is for
+// the kill switch, a disabled entry and an event outside the agent's CEL
+// route. A bot's comment returns routeSkip. Otherwise the event must pass the
 // dispatch authorization gate, including the threshold for the harness
 // role:, and the trigger must match. The harness is resolved the way
 // `fullsend run` does (a config entry with source:, else the agents-repo
 // fallback at the lockstep ref) to name it in the decision and read its
 // role.
 //
-// An invalid trigger or agent list is an error for every actor, so the
-// route job keeps the bash stage. A valid trigger that fails to evaluate on
+// An invalid trigger or agent list is an error for every actor except such a
+// denied bot, so the route job keeps the bash stage. A valid trigger that fails to evaluate on
 // the event returns routeSkip.
 func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) {
 	d := routeDecision{Agent: o.agent}
@@ -159,6 +179,16 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	agent, ok := routableAgents[o.agent]
 	if !ok {
 		return d, fmt.Errorf("unsupported --route agent %q (supported: %s)", o.agent, routableAgentNames())
+	}
+
+	// A bot the lookup denied is skipped before any config or trigger
+	// validation can return an error or the bash decision, either of which
+	// keeps the route job's bash stage. The permanent label-added exception
+	// skips the denial the same way, as in harnessdispatch.authorizeEvent,
+	// which allows label-added before it reads the lookup fields.
+	if reason := botRoleDenialReason(o.event.Actor); reason != "" &&
+		!isGitHubLabelAdded(o.event) {
+		return withDecision(d, routeSkip, reason), nil
 	}
 
 	cfg, err := config.LoadConfig(o.configDir, config.LoadOpts{MissingOK: true})
@@ -247,21 +277,26 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		printer.StepWarn(fmt.Sprintf("Could not resolve the %s harness, requiring write access: %v", o.agent, err))
 	}
 
-	// Same gate as harness dispatch: the event-level rules, then the
-	// harness role threshold (IsHarnessAuthorized applies both), on the
-	// OWNERS-upgraded role. A closed pull request starts a retro whoever
-	// closed it (the lifecycle-close exception), only on the retro route and
-	// keyed on the resolved harness role:, or on the agent's own role only
-	// when the harness could not be loaded (the Retro job mints the retro
-	// role either way).
-	exceptionRole := harnessRole
-	if harnessUnavailable {
-		exceptionRole = agent.role
-	}
+	// Apply a fixed write floor to GitHub close-event and /fs-retro routing
+	// before the ordinary event and harness gates. This prevents
+	// registered-bot exceptions and a lower role: on the retro harness from
+	// bypassing the Bash authorization check.
 	authCheck := harnessdispatch.AuthCheckEvent(o.configDir, cfg, o.event)
-	lifecycleClose := o.agent == "retro" && harnessdispatch.IsLifecycleCloseAuthorized(o.event, exceptionRole)
-	if !lifecycleClose &&
-		!harnessdispatch.IsHarnessAuthorized(&authCheck, harnessRole) {
+	closedPRRetro := isGitHubClosedPRRetro(o.agent, o.event)
+	retroCommand := isGitHubRetroSlashCommand(o.agent, o.event)
+	if (closedPRRetro || retroCommand) && !normevent.IsWriteAuthorized(authCheck.Actor.Role) {
+		reason := "retro command requires write"
+		if closedPRRetro {
+			reason = "closed pull request retro requires write"
+		}
+		return withDecision(d, routeSkip, reason), nil
+	}
+	// The harness authorization gate still applies on the OWNERS-upgraded
+	// role. An unavailable harness leaves the role empty, which requires write.
+	if !harnessdispatch.IsHarnessAuthorized(&authCheck, harnessRole) {
+		if reason := botRoleDenialReason(authCheck.Actor); reason != "" {
+			return withDecision(d, routeSkip, reason), nil
+		}
 		if harnessUnavailable {
 			return withDecision(d, routeSkip, "harness unavailable; actor below write"), nil
 		}

@@ -120,7 +120,7 @@ Every push to a PR in the review stage triggers a new review round. This means `
 The triage agent:
 
 1. **Checks for duplicates.** Searches existing issues by title, body, and metadata. If it finds a match with high confidence, it labels `duplicate`, posts a comment linking the canonical issue, and closes this one.
-2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a prerequisite is found, it labels `blocked` and posts a comment linking to it. When no upstream tracking issue exists, the triage agent can also create one in the upstream repo (controlled by `create_issues.allow_targets` in config). On re-triage, it checks whether existing prerequisites have been resolved.
+2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a prerequisite is found, it labels `blocked` and posts a comment linking to it. When no upstream tracking issue exists, the triage agent can also create one in the upstream repo (controlled by `tracker.<provider>.allowed_targets` in config). On re-triage, it checks whether existing prerequisites have been resolved.
 3. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `needs-info` and posts a comment explaining what's missing.
 4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
 5. **Hands off.** Labels `ready-to-code` with a summary comment.
@@ -171,7 +171,21 @@ For details on what the fix agent reads, what it ignores, and how URLs in instru
 
 Once the PR is merged (by human, merge queue, or automation per org governance), the automated pipeline for this issue is complete.
 
-The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131)) runs automatically when a PR is closed (merged or rejected) and can also be triggered on-demand via `/fs-retro` on any issue or PR comment. It analyzes the full workflow graph — triage, code, review, and fix agent interactions plus any human interventions — to identify improvement opportunities. Proposals are filed as GitHub issues in the appropriate repo, and a summary comment is posted on the originating PR/issue linking to all proposals.
+The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131))
+runs automatically when a PR is closed (merged or rejected) by someone with
+write access, and can also be triggered on-demand via `/fs-retro` by a user with
+write access. A merge-queue merge follows the same rule: its event sender must
+have write access.
+The `/fs-retro` command also requires write access, regardless of a lower role
+declared by a custom retro harness.
+It analyzes the full workflow graph — triage, code, review, and fix agent
+interactions plus any human interventions — to identify improvement
+opportunities. Proposals are filed as GitHub issues in the appropriate repo,
+and a summary comment is posted on the originating PR or issue linking to all
+proposals. Other automated merge or close events without a write-authorized
+actor skip automatic retro; a write-authorized user can run `/fs-retro`.
+On GitLab, merged or closed merge requests also start retro only when the
+actor has Developer access.
 
 ## Intervening in the pipeline
 

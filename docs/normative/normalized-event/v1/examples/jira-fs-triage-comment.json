@@ -18,7 +18,8 @@
     "id": "557058:abc123def456",
     "kind": "human",
     "role": "write",
-    "is_entity_author": false
+    "is_entity_author": false,
+    "is_entity_assignee": false
   },
   "state": {
     "labels": ["needs-info", "bug"]

@@ -8,7 +8,7 @@ agent runtimes.
 
 > **Version note:** [ADR 0151](../../../ADRs/0151-harness-human-role-minimums.md)
 > keeps an immutable `triage` floor and uses the selected harness's effective
-> `human_min_role` for target Fullsend-controlled model admission. This v1
+> `human_min_role` for target fullsend-controlled model admission. This v1
 > bundle retains its observation/mutation-derived `triage` or `write` threshold;
 > snapshot producers need a v2 contract before applying the configurable
 > threshold or its expanded role values.
@@ -18,8 +18,10 @@ Git-forge entity. The qualified name distinguishes this data structure from
 the dispatch-layer routing category called *entity context* in
 [ADR 0076](../../../ADRs/0076-slash-command-entity-context-separation.md),
 which determines the agent or slash command that may handle an issue, change
-proposal, or conversation. Entity-context-snapshot v1 applies only to GitHub,
-GitLab, and Forgejo work items and change proposals. A non-forge `work_item`,
+proposal, or conversation. It is also distinct from the CEL-facing normalized
+entity value defined in [Normalized entity v1](../../normalized-entity/v1/README.md),
+which harness predicates evaluate. Entity-context-snapshot v1 applies only to
+GitHub, GitLab, and Forgejo work items and change proposals. A non-forge `work_item`,
 such as Jira, does not start v1
 snapshot assembly; the runner records an `unsupported_entity` diagnostic
 outside the tree and continues under that integration's existing input
@@ -185,7 +187,7 @@ The bot's snapshot actor state retains `role: bot`; the human repository-role
 threshold does not apply. A bot with no recognized role, or with an unavailable
 or unverifiable lookup, is omitted and counted in the same authorization gap.
 This is the intentional v1 trust boundary: users who may invoke the agent, and
-Fullsend-registered bots admitted by ADR 0107, may provide its command inputs.
+fullsend-registered bots admitted by ADR 0107, may provide its command inputs.
 The handled entity body is actor-attributed content and MUST pass the same
 current-revision attribution and authorization rule before it is staged. A
 missing, unverifiable, unauthorized, or unsafe entity body emits an
@@ -404,7 +406,7 @@ not record files. Role values are observed during snapshot assembly, not
 copied from a historical comment event.
 
 `history/agent-runs.json`
-contains only immutable, forge-observable Fullsend run receipts and relates an
+contains only immutable, forge-observable fullsend run receipts and relates an
 agent result to its input revision, result records, and resulting commit. A
 receipt's `input_revision` is the lowercase SHA-256 of the RFC 8785
 `index.json` bytes consumed by that run; `input_head_sha`, when present, is the
@@ -477,7 +479,7 @@ records but must not claim the scope is complete. `unsupported`,
 must not make an authority or completeness decision from that scope. Any
 unusable `entity`-scope gap for the required entity body or metadata aborts
 snapshot assembly, including `authorization_failed`, `fetch_failed`,
-`source_too_large`, `invalid_metadata`, and `unsafe_content`; Fullsend must not
+`source_too_large`, `invalid_metadata`, and `unsafe_content`; fullsend must not
 launch scripts or an agent with that snapshot. The same gap codes remain
 non-aborting unusable gaps for optional scopes. Any `actors` gap makes
 authorization unusable and therefore fails closed. Runtimes
@@ -545,7 +547,7 @@ transformations are bound to the shipped `filter_version`; they are not
 silently added to the portable character-class floor above, and changing their
 output requires a new filter version.
 
-The v1 redaction floor detects exact run credentials registered by Fullsend;
+The v1 redaction floor detects exact run credentials registered by fullsend;
 OpenAI, Anthropic, GitHub, GitLab, Slack, Google, AWS, Stripe, SendGrid,
 Hugging Face, npm, PyPI, Vault, and age secret prefixes; private-key blocks;
 authorization headers; secret-named environment and JSON values; database URL
@@ -658,18 +660,18 @@ invent filter findings.
 Every emitted file other than the root `index.json` has a manifest `sha256`
 over its emitted bytes. The assembler retains the exact root `index.json` bytes,
 or a digest of them, in host-private run state outside the context tree. After
-the host pre-script, Fullsend compares the on-disk root index with that retained
+the host pre-script, fullsend compares the on-disk root index with that retained
 assembly value and aborts on any difference; it never treats a rewritten
 on-disk index as the root of trust. Only the retained assembly index is used to
 verify child digests and the exact manifest path set. A rejected non-entity
 source has a record but no content path or file entry and adds an
 `unsafe_content` gap for its scope. A rejected or missing entity-body record
-aborts snapshot assembly, and Fullsend must not launch scripts or an agent with
+aborts snapshot assembly, and fullsend must not launch scripts or an agent with
 that snapshot.
 
 Verification, upload, and cleanup MUST reject symlinks and special files at the
 context root and every path component, and MUST require regular files beneath
-real directories. After the root-index comparison, Fullsend MUST verify child
+real directories. After the root-index comparison, fullsend MUST verify child
 bytes into an immutable, digest-verified upload snapshot (for example, a private
 copy with concurrent writers excluded and immutable/read-only enforcement), or
 hold an equivalent exclusive writer-blocking capability. No-follow handles alone
@@ -714,12 +716,12 @@ and bytes; stale authorization or filtering state MUST NOT be reused.
 
 The host tree is created outside both the repository and retained run-output
 tree with directory mode `0700` and file mode `0600`. The sandbox copy is
-agent-immutable: Fullsend exposes it through a read-only bind mount, or, when
+agent-immutable: fullsend exposes it through a read-only bind mount, or, when
 that is unavailable, uses a root-owned tree with mode `0555` directories and
 `0444` files while the agent runs unprivileged with `CAP_FOWNER` and equivalent
 write-overriding capabilities removed. A plain mode-`0600` copy owned by the
 agent does not satisfy this contract; if neither mechanism can be enforced,
-Fullsend aborts before launching the agent. Fullsend removes the sandbox copy
+fullsend aborts before launching the agent. Fullsend removes the sandbox copy
 after the runtime's last use and the host copy after the post-script on every
 controlled exit, including skip, failure, and cancellation. Fullsend also
 scavenges abandoned context trees on startup after an unclean termination.

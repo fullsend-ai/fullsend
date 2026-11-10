@@ -82,15 +82,17 @@ The `event` variable has the following top-level fields:
 | `event.actor.bot_role` | string or null | Optional provider-resolved canonical bot role such as `review`; absent/null for humans and unrecognized bots |
 | `event.actor.role_verified` | boolean | Optional lookup status. For humans, true means `actor.role` is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result |
 | `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
+| `event.actor.is_entity_assignee` | boolean | True when the actor is one of the entity's current assignees on GitHub, GitLab or Jira; false when it is unassigned, the actor is not an assignee, or the assignees are unknown. Reviewers are not assignees |
 | `event.state.labels` | list | Label names on the entity at event time |
 | `event.state.change_proposal` | object | Present when a change proposal is involved (includes `is_fork`, `head_ref`, `base_ref`) |
 | `event.state.conversation` | object | Required when `entity.kind == "conversation"` (includes `category.name`; optional `category.id` / `slug` / `format`) |
 | `event.source.system` | string | `"github"`, `"gitlab"`, `"jira"`, `"manual"`, or `"schedule"` |
 
-> `actor.bot_role` and `actor.role_verified` are planned fields and
-> are not yet emitted by the production runtime. The target contract uses
-> `actor.role: "none"` for bots, but current adapters may still populate a
-> forge/project permission there during migration. `role_verified` is not
+> `actor.bot_role` and `actor.role_verified` are ADR 0107 fields. On GitHub,
+> `fullsend dispatch` sets them for bot actors (with `actor.role: "none"`)
+> on every transition except label-added; other adapters do not emit them
+> yet and may still populate a forge/project permission in `actor.role`
+> during migration. `role_verified` is not
 > authorization evidence by itself: for bots it only indicates lookup
 > completion, not recognition. The permanent label-added exception
 > does not require bot-role lookup; its provider-positive bot classification
@@ -188,6 +190,33 @@ trigger: >
     && event.actor.role in ["admin", "maintain", "write"]
 ```
 
+**Run only for the issue's author or an assignee:**
+```yaml
+trigger: >
+  event.entity.kind == "work_item"
+    && event.transition.kind == "comment_added"
+    && has(event.transition.comment.command)
+    && event.transition.comment.command == "/my-command"
+    && (event.actor.is_entity_author || event.actor.is_entity_assignee)
+```
+
+The developer working an issue is usually its assignee, while someone else
+often filed it. This clause lets either of them start the agent and turns
+away other users, even ones with write access. It only narrows who the
+trigger accepts: the authorization gate still runs first, and anyone who can
+assign issues can assign themselves, so the actor still needs the role the
+agent requires.
+
+Where the field takes effect depends on the forge. On GitHub,
+`fullsend dispatch` evaluates it for custom agents; a harness `trigger:` on a
+built-in agent such as `code` does not change GitHub stage routing (see
+[Coexistence with built-in agents](#coexistence-with-built-in-agents)). GitLab
+sets the field on its events, but its built-in router does not evaluate
+`trigger` expressions. The Jira poller evaluates harness triggers for
+built-in agents too, so a `code.yaml` override there can restrict `/fs-code`
+to the author or the assignee; see
+[Jira integration](jira-integration.md#letting-the-assignee-start-code).
+
 ### Guarding optional fields with `has()`
 
 Some NormalizedEvent fields are optional — they are present only for certain transition kinds. For example, `event.transition.comment.command` is set only when the comment contains a slash command. Accessing an absent field in CEL produces a missing-key error. Use `has()` to guard access:
@@ -273,12 +302,14 @@ agents:
 pull requests. The `Route` job evaluates the review trigger for the events
 the fullsend workflow receives: a pull request opened, pushed to
 (`synchronize`), marked ready for review, labeled or unlabeled, and a `/fs-*`
-comment on a pull request from a user who is not a bot. It does so only when
-the default rules chose review or no stage, and not for a closed pull request
-or a `/fs-retro`, `/fs-triage` or `/fs-prioritize` comment (see
-[Which trigger decides](#which-trigger-decides)), so a broad trigger can start
-reviews the default rules would not. It
-never starts a review from a bot's comment.
+comment on a pull request. The workflow starts dispatch for these comments
+from both people and bots, but the current dispatcher skips bot-authored issue
+comments before evaluating CEL triggers. For other events, it evaluates the
+review trigger only when the default rules chose review or no stage, and not
+for a closed pull request or a `/fs-retro`, `/fs-triage` or `/fs-prioritize`
+comment (see [Which trigger decides](#which-trigger-decides)), so a broad
+trigger can start reviews the default rules would not. It never starts a
+review from a bot's comment.
 
 The trigger is read from your default branch, so a pull request cannot change
 its own routing. After the change merges, open a pull request: no review
@@ -321,8 +352,9 @@ the dispatch workflow's built-in rules:
 > [!WARNING]
 > Opt in only after
 > [#8329](https://github.com/fullsend-ai/fullsend/issues/8329) ships, or
-> accept that pushes from the fix agent no longer start a re-review. Until
-> then the trigger path does not look up a bot's role.
+> accept that pushes from the fix agent no longer start a re-review. The
+> trigger path looks up a bot's role, and a bot without a registered role or
+> with a failed lookup is skipped.
 
 #### Checking the decision
 
@@ -343,9 +375,15 @@ the review entry is disabled.
 |---|---|---|
 | `cel=skip reason=trigger did not match` | The trigger left this event out | Expected for events your trigger excludes; otherwise fix the trigger |
 | `cel=skip reason=actor not authorized` | The actor failed the dispatch permission check | See [Known differences from the default rules](#known-differences-from-the-default-rules) for bots |
+| `cel=skip reason=bot has no registered role` | The bot lookup found no fullsend role for the bot that sent a non-label event | Expected for third-party bots; register the bot's role if it should run agents |
+| `cel=skip reason=bot-role lookup failed` | The bot-role lookup could not complete, so the bot is denied | Check the route step's warning for the lookup error |
 | `cel=skip reason=harness unavailable; actor below write` | The review harness could not be fetched or loaded, so only write access passes | Check the route step's warning for the harness error |
 | `cel=skip reason=trigger evaluation failed: …` | The trigger compiles but failed on this event, for example it reads a field the event lacks without `has()`; this counts as no match | Guard optional fields with `has()` |
-| `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid, so the dispatch workflow decided | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
+| `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid; for events other than a closed pull request, the Bash stage remains selected | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
+| `CEL routing failed for a closed pull request; skipping retro` | CEL routing failed for a closed pull request, so retro is skipped instead of falling back to Bash | Open the failed "… CEL route" step for the error |
+| `CEL retro run denied because the Bash route did not authorize retro` | CEL selected retro, but the Bash route did not authorize retro for this event | Check the event actor's write access and use `/fs-retro` if an authorized manual run is needed |
+| `cel=skip reason=closed pull request retro requires write` | The actor closing or merging the pull request lacked write access | Have a write-authorized user close or merge the pull request, or run `/fs-retro` |
+| `cel=skip reason=retro command requires write` | The actor invoking `/fs-retro` lacked write access | Have a write-authorized user invoke `/fs-retro` |
 | `invalid agent config: agents[N] (review): invalid trigger` in any agent job | The `trigger` in `config.yaml` does not compile; every agent run validates the whole `agents:` list, so all agents fail, not only review | Fix the expression in `.fullsend/config.yaml`; see [Checking a trigger before you merge](#checking-a-trigger-before-you-merge) |
 
 ### Choosing when retro runs
@@ -388,11 +426,16 @@ and a bot's `/fs-retro` comment never starts a retro.
 
 A trigger decides which events start a retro, not who may start one:
 
-- **Closing a pull request:** anyone who closes or merges it, including its
-  read-only author and bots without a registered fullsend role, as with the
-  dispatch workflow. Only the retro agent gets this exception (the
-  [lifecycle-close exception](../../normative/authorization/v1/README.md#lifecycle-close-pull_request_targetclosed)).
-- **`/fs-retro`:** users with write access or above.
+- **Closing a pull request:** the closing actor needs write access. If the
+  permission lookup or CEL routing fails, the close event does not start retro.
+  A custom retro harness role cannot lower this write requirement.
+  Merge-queue events follow the same rule: the event sender needs write access.
+  Other automated senders without write access are denied; a write user can
+  run `/fs-retro` afterward. See the
+  [authorization contract](../../normative/authorization/v1/README.md#closed-pull-request-retro-pull_request_targetclosed).
+- **`/fs-retro`:** users with write access or above. A custom retro harness
+  role cannot lower this fixed floor, and CEL cannot start retro when the Bash
+  route denied the actor.
 
 ### Choosing when triage and prioritize run
 
@@ -406,11 +449,13 @@ that trigger, not the dispatch workflow's built-in rules, decides whether the
 before you merge, see
 [Checking a trigger before you merge](#checking-a-trigger-before-you-merge).
 
-A trigger only sees the events that reach the `Route` job. The workflow that
-`fullsend` installs in your repository forwards issues opened, edited and
-labeled, and comments that start with `/fs-` from people, not bots. So a
-prioritize trigger only decides `/fs-prioritize`, and on a pull request only
-`/fs-triage` asks the triage trigger.
+A trigger only sees events that pass the dispatcher's routing and
+authorization checks. The workflow that `fullsend` installs starts dispatch
+for issues opened, edited and labeled, and comments that start with `/fs-`
+from both people and bots. The current dispatcher skips bot-authored issue
+comments before evaluating CEL triggers. So a prioritize trigger only decides
+`/fs-prioritize`, and on a pull request only `/fs-triage` asks the triage
+trigger.
 
 By default the dispatch workflow starts:
 

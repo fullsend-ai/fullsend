@@ -37,11 +37,11 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	vertexinference "github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertexauth"
-	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
@@ -542,6 +542,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	orgCfg, err := loadLockConfig(orgConfigPath)
 	if err != nil {
 		printer.StepFail("Failed to load fullsend config")
+		reportConfigLoadFailure(ctx, agentName, absFullsendDir, forgeFlag, eventFile, sOpts, runnerSecrets, err, printer)
 		return err
 	}
 
@@ -692,10 +693,51 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// A current lock entry pins the relative files of a URL base, so pass
+	// its pins in before composition fetches them (#8979).
+	lockState, err := readRunLock(absFullsendDir, agentName, harnessPath)
+	if err != nil {
+		return err
+	}
+	switch {
+	case lockState.loadErr != nil:
+		printer.StepWarn("Could not load lock file: " + lockState.loadErr.Error())
+	case lockState.stale:
+		printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s%s' to update.", agentName, fullsendDirArg(fullsendDir)))
+	case len(lockState.pins) > 0:
+		noun := "dependency"
+		if len(lockState.pins) > 1 {
+			noun = "dependencies"
+		}
+		printer.StepInfo(fmt.Sprintf("Pinning %d %s from lock file", len(lockState.pins), noun))
+	}
+	composeOpts.LockedPins = lockState.pins
+
 	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, composeOpts)
 	if err != nil {
 		printer.StepFail("Failed to load harness")
 		return fmt.Errorf("loading harness: %w", err)
+	}
+	// An entry written before these files were locked is still current but
+	// leaves them to the URL index (#8979).
+	if lockState.entry != nil && !lockState.stale {
+		if unpinned := unpinnedDeps(baseDeps, lockState.pins); len(unpinned) > 0 {
+			noun := "dependency"
+			if len(unpinned) > 1 {
+				noun = "dependencies"
+			}
+			// Without --forge, lock reads forge keys from the child only
+			// (#8988), so a child with no forge: block needs the platform
+			// named. A child with forge keys is locked for all of them.
+			forgeArg := ""
+			if composeOpts.ForgePlatform != "" {
+				if rawH, rawErr := harness.LoadRaw(harnessPath); rawErr == nil && len(rawH.Forge) == 0 {
+					forgeArg = " --forge " + composeOpts.ForgePlatform
+				}
+			}
+			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run 'fullsend lock --update%s %s%s' to pin them",
+				agentName, len(unpinned), noun, unpinned[0], forgeArg, agentName, fullsendDirArg(fullsendDir)))
+		}
 	}
 
 	// Emit the harness-resolved role as a step output so the finalize step
@@ -751,37 +793,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return fmt.Errorf("validating allowed remote resources: %w", err)
 		}
 
-		// Check for a lock file with a current entry for this harness.
+		// Use a current lock entry for this harness; a stale entry or an
+		// unreadable lock file was reported before composition.
 		usedLock := false
 
-		lockPath := filepath.Join(absFullsendDir, "lock.yaml")
-		lf, lockErr := lock.Load(lockPath)
-		if lockErr != nil {
-			printer.StepWarn("Could not load lock file: " + lockErr.Error())
-		}
-
-		if lf != nil {
-			if entry := lf.Lookup(agentName); entry != nil {
-				harnessData, hashErr := os.ReadFile(harnessPath)
-				if hashErr != nil {
-					return fmt.Errorf("reading harness file for lock check: %w", hashErr)
-				}
-				harnessHash := fetch.ComputeSHA256(harnessData)
-
-				if entry.IsStale(harnessHash) {
-					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s%s' to update.", agentName, fullsendDirArg(fullsendDir)))
-				} else {
-					printer.StepStart("Using pinned dependencies from lock file")
-					lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
-					if lockResolveErr != nil {
-						printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
-						printer.StepWarn("Falling back to normal resolution")
-					} else {
-						result = lockResult
-						usedLock = true
-						printer.StepDone(fmt.Sprintf("Resolved %d dependencies from lock file", len(result.Deps)))
-					}
-				}
+		if entry := lockState.entry; entry != nil && !lockState.stale {
+			printer.StepStart("Using pinned dependencies from lock file")
+			lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
+			if lockResolveErr != nil {
+				printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
+				printer.StepWarn("Falling back to normal resolution")
+			} else {
+				result = lockResult
+				usedLock = true
+				printer.StepDone(fmt.Sprintf("Resolved %d dependencies from lock file", len(result.Deps)))
 			}
 		}
 
@@ -858,6 +883,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepWarn(w)
 	}
 
+	// 1a. Stage the skill trees (file overrides applied to per-run copies)
+	// and write the persona manifest, on the lock-file and fresh paths
+	// alike. It runs here so pi child routing below, the bootstrap and the
+	// pre-script all see the merged trees (#6158). The sandbox name, and
+	// so the run directory, is fixed this early for that reason; it must
+	// also precede provider creation (#6689).
+	sandboxName := generateSandboxName(agentName)
+	if len(sandboxName) > maxSandboxNameLen {
+		return fmt.Errorf("sandbox name %q is %d characters, exceeding the OpenShell limit of %d", sandboxName, len(sandboxName), maxSandboxNameLen)
+	}
+	// outputBase is already absolute (resolveOutputBase above).
+	runDir := filepath.Join(outputBase, sandboxName)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return fmt.Errorf("creating run directory: %w", err)
+	}
+	runSkillDirs, err := stageRunSkills(h, runDir, absFullsendDir, agentName, printer)
+	if err != nil {
+		return err
+	}
+
 	if resolved, overridden := applySandboxImageOverride(h.Image); overridden {
 		printer.StepInfo(fmt.Sprintf("Image override via FULLSEND_SANDBOX_IMAGE: %s -> %s", h.Image, resolved))
 		h.Image = resolved
@@ -908,6 +953,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		setFlagEnv("ISSUE_NUMBER", issueNumber)
 	}
 	for k, v := range workItemEnv {
+		setFlagEnv(k, v)
+	}
+	var issueTracking *config.TrackingConfig
+	if orgCfg != nil {
+		issueTracking = orgCfg.IssueTracking()
+	}
+	jiraEnv, err := resolveJiraRunEnv(ctx, sOpts.trackerSource, issueTracking, rFlags.offline, discoverJiraGatewayURL)
+	if err != nil {
+		return err
+	}
+	for k, v := range jiraEnv {
 		setFlagEnv(k, v)
 	}
 
@@ -1085,7 +1141,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// the openai provider. They need the run-scoped OpenAI provider even
 	// when the parent does not (#7981), so they widen the provider gate
 	// below; the parent's own credential path above stays parent-only.
-	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	openAIChildren := agentruntime.OpenAIChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, runSkillDirs, agentName, configModelAliases)
 	needsOpenAIProvider := parentNeedsOpenAIProvider || len(openAIChildren) > 0
 	// Prepare credentials before env validation and expansion, so harness
 	// references to GOOGLE_APPLICATION_CREDENTIALS resolve to the prepared file.
@@ -1124,7 +1180,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	if vertexGap != "" {
 		var configured []string
-		for _, c := range agentruntime.VertexChildren("pi", h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases) {
+		for _, c := range agentruntime.VertexChildren("pi", h.Agent, agentSubagents, runSkillDirs, agentName, configModelAliases) {
 			// google-vertex also authenticates with an API key; dispatch decides for it.
 			if strings.HasPrefix(c.Spec, "google-vertex/") {
 				continue
@@ -1171,7 +1227,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Runner secret validation failed")
 		return err
 	}
-	if err := h.ValidateRunnerEnvWith(withRunnerSecretLookup(runnerSecrets, lookup)); err != nil {
+	// Sandbox-bound sites expand sandboxDeniedKeys empty instead of failing,
+	// so validation must resolve them there whether or not the host variable
+	// is set (the action unsets FULLSEND_JIRA_TOKEN on non-Jira runs).
+	sandboxLookup := func(key string) (string, bool) {
+		if sandboxDeniedKeys[key] {
+			return "", true
+		}
+		return lookup(key)
+	}
+	if err := h.ValidateRunnerEnvSites(withRunnerSecretLookup(runnerSecrets, lookup), sandboxLookup); err != nil {
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
@@ -1181,7 +1246,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// seen. Emission happens after ValidateFilesExist, further below.
 	lintDiags := h.Lint()
 	for k, v := range h.RunnerEnv {
-		h.RunnerEnv[k] = os.Expand(v, expander)
+		h.RunnerEnv[k] = expandRunnerEntry(k, v, expander)
 	}
 	// Collect the referenced bundle names before expansion replaces them.
 	usedRunnerSecrets := referencedRunnerSecretNames(h, runnerSecrets)
@@ -1192,17 +1257,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.Env != nil {
 		runnerExpander := withRunnerSecretExpander(runnerSecrets, expander)
 		for k, v := range h.Env.Runner {
-			h.Env.Runner[k] = os.Expand(v, runnerExpander)
+			h.Env.Runner[k] = expandRunnerEntry(k, v, runnerExpander)
 		}
 		for k, v := range h.Env.Sandbox {
-			h.Env.Sandbox[k] = os.Expand(v, expander)
+			h.Env.Sandbox[k] = expandSandboxEnvValue(v, expander)
 		}
 	}
 
 	// Expand ${VAR} references in validation_loop.schema so the path
 	// resolves before ValidateFilesExist stat-checks it.
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
-		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+		h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, expander)
 	}
 
 	if err := h.ValidateFilesExist(); err != nil {
@@ -1246,6 +1311,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			effectiveRunnerEnv[k] = v
 		}
 	}
+	// An optional key such as FULLSEND_JIRA_EMAIL that resolved empty is
+	// omitted, so scripts see it absent rather than empty (#9079).
+	dropEmptyOptionalRunnerEnv(effectiveRunnerEnv)
 	// NOTE: after this point h.RunnerEnv contains the merged effective set
 	// (runner_env + env.runner), not just the declared runner_env entries.
 	h.RunnerEnv = effectiveRunnerEnv
@@ -1546,18 +1614,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Only harness-declared profiles and providers are imported and created;
 	// directory files not listed on the harness are skipped entirely (#7095).
 	result.Profiles = dedupResolvedProfiles(result.Profiles)
-	// The sandbox name is generated before providers are created so a
-	// run-scoped provider can carry its suffix (#6689).
-	sandboxName := generateSandboxName(agentName)
-	if len(sandboxName) > maxSandboxNameLen {
-		return fmt.Errorf("sandbox name %q is %d characters, exceeding the OpenShell limit of %d", sandboxName, len(sandboxName), maxSandboxNameLen)
-	}
+	// sandboxName was generated at step 1a, before providers are created,
+	// so a run-scoped provider can carry its suffix (#6689).
 	// Inference gateway route (ADR 0137, #8280): selected per model by the
 	// gateway/ prefix, with no precedence against the OpenAI routes, and
 	// attached in addition to every other provider, never instead of
 	// them. Decided here, before Bootstrap, because the runtime renders
 	// its gateway config from the block (PrepareGatewayRun).
-	gatewayChildren := agentruntime.GatewayChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, harness.SkillSources(h.Skills), agentName, configModelAliases)
+	gatewayChildren := agentruntime.GatewayChildren(runtimeBackend.Runtime.Name(), h.Agent, agentSubagents, runSkillDirs, agentName, configModelAliases)
 	gatewayModels := []string{agentruntime.EffectiveModel(resolvedModel, agentDefModel)}
 	for _, c := range gatewayChildren {
 		gatewayModels = append(gatewayModels, c.Spec)
@@ -1857,9 +1921,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	workItemID := resolveWorkItemID()
 
-	// 3. Create run directory and initialise tracer.
-	// outputBase is already absolute (resolveOutputBase above).
-	runDir := filepath.Join(outputBase, sandboxName)
+	// 3. Create run directory and initialise tracer. runDir was computed
+	// (and created) at step 1a.
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		return fmt.Errorf("creating run directory: %w", err)
 	}
@@ -1891,6 +1954,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	rootSpan.SetAttributes(stringAttr("fullsend.security_trace_id", securityTraceID))
 
 	if attrs := harnessIdentityAttrs(harnessPath, composeOpts.SourceURL); len(attrs) > 0 {
+		rootSpan.SetAttributes(attrs...)
+	}
+	if attrs := forgePointerAttrs(eventMap, forgePlatform, sOpts.runURL, os.Getenv); len(attrs) > 0 {
 		rootSpan.SetAttributes(attrs...)
 	}
 
@@ -2021,7 +2087,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return nil
 	}
 
-	// 4a. Create sandbox.
+	// 4a. Create sandbox. A private ghcr.io harness image is pulled first
+	// with the workflow token; the gateway's own pull is anonymous (#9019).
+	prePullGHCRImage(ctx, h.Image, printer)
+
 	createStart := time.Now()
 	printer.StepStart("Creating sandbox: " + sandboxName)
 	_, sandboxSpan := tracer.Start(ctx, "sandbox_create", trace.WithAttributes(
@@ -2029,9 +2098,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	))
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
-	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
+	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout, keepSandbox); err != nil {
 		finalizeSandboxSpan(sandboxSpan, err)
 		printer.StepFail("Failed to create sandbox")
+		if keepSandbox {
+			keepFailedSandbox(sandboxName, runDir, printer)
+		}
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
 	finalizeSandboxSpan(sandboxSpan, nil)
@@ -2158,7 +2230,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			defer remintCleanup()
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = postScriptEnv(h, traceparent)
+			postCmd.Env = withPersonasFile(postScriptEnv(h, traceparent), runDir)
 			// Override REPO_DIR from childScriptEnv: the harness value points to a fixed
 			// location, but sandbox output is now extracted to a temp dir. exec uses
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
@@ -2341,7 +2413,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// pre-configured child naming the openai provider can be trusted only
 	// when the credential it needs is really there (#7981).
 	openAIProviderAttached := len(openAIHandles) > 0
-	boot, err := newHarnessBootstrap(h, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel, remoteRepositoryDir, openAIProviderAttached)
+	boot, err := newHarnessBootstrap(h, runSkillDirs, sandboxName, agentName, forgeEgressEntry, configModelAliases, agentSubagents, resolvedModel, remoteRepositoryDir, openAIProviderAttached)
 	if err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
@@ -2362,6 +2434,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return err
 	}
 	if err := bootstrapEnv(sandboxName, remoteRepositoryDir, h, rt.EnvExports(), fetchEnvVal); err != nil {
+		printer.StepFail("Failed to bootstrap sandbox")
+		return err
+	}
+	if err := uploadPersonaManifest(sandbox.Exec, sandbox.UploadFile, sandboxName, runDir); err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
@@ -2720,6 +2796,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		collector.attachInput(agentSpan, agentPrompt, promptHidesAlterations(validationFeedback, promptSanitized))
 		toolSpans := newToolSpanTracker(tracer, agentCtx)
 		toolSpans.runnerEnv = h.RunnerEnv
+		renderer := agentruntime.NewEventRenderer(printer)
+		renderer.RedactProgress = func(text string) string {
+			return redactProgressSecretLiterals(text, h.RunnerEnv)
+		}
 		var metrics agentruntime.RunMetrics
 		hooksSettings := ""
 		if h.SecurityEnabled() {
@@ -2744,7 +2824,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Forge:             forgePlatform,
 			ModelAliases:      configModelAliases,
 			ForgeClient:       playbackForgeClient,
-			OnEvent:           iterationEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector, toolSpans),
+			OnEvent:           iterationEventHandler(renderer.Handle, collector, toolSpans),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 		lastIterElapsed = time.Since(agentStart)
@@ -3323,7 +3403,8 @@ var oidcDenyKeys = map[string]bool{
 }
 
 // workflowTokenEnv is the Actions workflow token preserved across minting
-// so provider credentials can authenticate to GitHub Packages. See #6649.
+// so provider credentials can authenticate to GitHub Packages (#6649) and
+// so the runner can pull private ghcr.io sandbox images (#9019).
 const workflowTokenEnv = "GH_WORKFLOW_TOKEN"
 
 // providerOnlyKeys are runner credentials that harness-controlled ${}
@@ -3342,9 +3423,60 @@ var providerOnlyKeys = map[string]bool{
 // does not declare it no longer receives it. The parent process keeps them
 // for its own Jira client and trace exporter. The OTLP *_HEADERS variants
 // are matched by isInheritedScriptDenyKey.
+//
+// FULLSEND_JIRA_TOKEN, FULLSEND_JIRA_EMAIL, FULLSEND_JIRA_CLIENT_ID and
+// FULLSEND_JIRA_CLIENT_SECRET are the Jira repository secrets the composite
+// action passes to the fullsend run step from its jira-token, jira-email,
+// jira-client-id and jira-client-secret inputs (#9079, #9176). The parent
+// uses them for Jira status notifications; host-side scripts receive them
+// only when a harness declares them in env.runner.
 var inheritedScriptDenyKeys = map[string]bool{
-	"JIRA_TOKEN":      true,
-	"JIRA_USER_EMAIL": true,
+	"JIRA_TOKEN":            true,
+	"JIRA_USER_EMAIL":       true,
+	jira.TokenEnvVar:        true,
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
+}
+
+// optionalHarnessEnvKeys are host variables a harness ${VAR} reference may
+// name even when they are unset. The action passes FULLSEND_JIRA_EMAIL only
+// when that repository secret exists: an absent email selects
+// service-account Bearer auth, so a harness that declares it in env.runner
+// must not fail validation on a run without it (#9079). The OAuth 2.0
+// client credentials are likewise present only on deployments that use
+// them instead of a token (#9176). An unset key expands empty, and
+// dropEmptyOptionalRunnerEnv then removes the entry so scripts see the
+// variable absent rather than empty.
+var optionalHarnessEnvKeys = map[string]bool{
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
+}
+
+// isOptionalHarnessEnvKey reports whether a harness ${VAR} reference to key
+// resolves even when key is unset: an optionalHarnessEnvKeys entry, or
+// FULLSEND_JIRA_TOKEN on a deployment that authenticates with OAuth 2.0
+// client credentials instead, so one harness can declare both credential
+// types (#9176).
+func isOptionalHarnessEnvKey(key string) bool {
+	if optionalHarnessEnvKeys[key] {
+		return true
+	}
+	return key == jira.TokenEnvVar &&
+		(strings.TrimSpace(os.Getenv(jira.ClientIDEnvVar)) != "" || strings.TrimSpace(os.Getenv(jira.ClientSecretEnvVar)) != "")
+}
+
+// dropEmptyOptionalRunnerEnv removes isOptionalHarnessEnvKey entries whose
+// value is empty or whitespace from runnerEnv, so a host-side script gets
+// no variable rather than an empty one. The shared Jira client trims the
+// credentials the same way before choosing the auth mode.
+func dropEmptyOptionalRunnerEnv(runnerEnv map[string]string) {
+	for k, v := range runnerEnv {
+		if isOptionalHarnessEnvKey(k) && strings.TrimSpace(v) == "" {
+			delete(runnerEnv, k)
+		}
+	}
 }
 
 // isInheritedScriptDenyKey reports whether key must be dropped from the
@@ -3390,12 +3522,51 @@ func harnessEnvExpand(key string) string {
 	return os.Getenv(key)
 }
 
+// sandboxDeniedKeys are host-only credentials that env.runner may declare
+// but no sandbox-bound site (env.sandbox values, expanded host_files content)
+// may expand: the Jira repository secrets the
+// composite action passes to the fullsend run step (#9079). They stay out of
+// harnessExpansionDenied because that map also gates env.runner, where a
+// harness declares them on purpose.
+var sandboxDeniedKeys = map[string]bool{
+	jira.TokenEnvVar:        true,
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
+}
+
+// expandSandboxEnvValue expands ${VAR} references in an env.sandbox value
+// with expander, refusing sandboxDeniedKeys (they expand empty).
+func expandSandboxEnvValue(v string, expander func(string) string) string {
+	return os.Expand(v, func(key string) string {
+		if sandboxDeniedKeys[key] {
+			return ""
+		}
+		return expander(key)
+	})
+}
+
+// expandRunnerEntry expands ${VAR} references in a runner_env or env.runner
+// value with expander. FULLSEND_OUTPUT_FILE is the one runner entry that
+// bootstrapEnv exports verbatim into the sandbox, so it is expanded like an
+// env.sandbox value and refuses sandboxDeniedKeys.
+func expandRunnerEntry(key, v string, expander func(string) string) string {
+	if key == "FULLSEND_OUTPUT_FILE" {
+		return expandSandboxEnvValue(v, expander)
+	}
+	return os.Expand(v, expander)
+}
+
 // harnessEnvLookup is the lookup used by ValidateRunnerEnvWith. Denied keys
 // return false so a harness that references them fails validation rather
-// than expanding empty.
+// than expanding empty. Keys isOptionalHarnessEnvKey matches always
+// resolve, to their value or empty.
 func harnessEnvLookup(key string) (string, bool) {
 	if harnessExpansionDenied(key) {
 		return "", false
+	}
+	if isOptionalHarnessEnvKey(key) {
+		return os.Getenv(key), true
 	}
 	return os.LookupEnv(key)
 }
@@ -3429,6 +3600,7 @@ var reservedSandboxKeys = map[string]bool{
 	"FULLSEND_SLUG":               true,
 	"FULLSEND_TIMEOUT_MINUTES":    true,
 	"FULLSEND_ITERATION_DEADLINE": true,
+	"FULLSEND_PERSONAS_FILE":      true,
 	"TRACEPARENT":                 true,
 	runnerPathVar:                 true,
 	// OPENAI_API_KEY is reserved through oidcDenyKeys (merged by init()).
@@ -3447,6 +3619,12 @@ func init() {
 	sandbox.DenyExpansionKeys(denied...)
 	for k := range oidcDenyKeys {
 		reservedSandboxKeys[k] = true
+	}
+	// The Jira repository secrets are host-script-only (#9079): provider
+	// definitions may not expand them in config values (argv) or credential
+	// values, the same as the sandbox-bound harness sites above.
+	for k := range sandboxDeniedKeys {
+		sandbox.DenyExpansionKeys(k)
 	}
 	// Provider-only keys are reserved in the sandbox (env.sandbox cannot
 	// inject them) but must remain expandable in provider credential values,
@@ -3853,6 +4031,10 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	// without hardcoding values that drift from the harness YAML. See #6045.
 	lines = append(lines, buildRoleSlugEnvLines(h)...)
 
+	// The persona manifest is uploaded beside the output schema by
+	// uploadPersonaManifest on every run (#6158).
+	lines = append(lines, personasEnvLine())
+
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
 	// Prefer validation_loop.schema (already resolved by compose); fall
@@ -3988,7 +4170,7 @@ func safeExpandEnv(s string) string {
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
-		if harnessExpansionDenied(key) {
+		if harnessExpansionDenied(key) || sandboxDeniedKeys[key] {
 			return ""
 		}
 		return escapeForDoubleQuotes(os.Getenv(key))
@@ -4265,18 +4447,38 @@ func preScriptLogResult(res prescript.Result, runnerEnv map[string]string) presc
 // (runner secrets among them). Unlike redactFeedback it runs no pattern
 // scan, so text that merely looks like a secret is left alone.
 func redactSecretLiterals(feedback string, runnerEnv map[string]string) string {
-	// All exact literals are masked in one pass, longest first, so a
+	return redactSecretLiteralsWithNormalizer(feedback, runnerEnv, nil)
+}
+
+// redactProgressSecretLiterals masks both literal forms because progress
+// cleanup can alter a secret itself.
+func redactProgressSecretLiterals(feedback string, runnerEnv map[string]string) string {
+	return redactSecretLiteralsWithNormalizer(feedback, runnerEnv, agentruntime.NormalizeProgressText)
+}
+
+func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]string, normalize func(string) string) string {
+	// All exact literals are replaced in one pass, longest first, so a
 	// value that is a substring of another never leaves part of the longer
 	// one visible, whichever source each came from. envLiterals covers
-	// RunnerEnv and the provider-only keys kept out of it (#6649);
-	// registered runtime secrets, such as runner secrets referenced under a
-	// key sensitiveEnvKey does not match, join the same pass.
+	// RunnerEnv, provider-only keys kept out of it (#6649), and Jira
+	// repository secrets; registered runtime secrets, such as runner secrets
+	// referenced under a key sensitiveEnvKey does not match, join the same pass.
 	var literals []secretLiteral
 	seen := map[string]bool{}
 	add := func(value, mask string) {
-		if len(value) >= minRedactableSecretLen && !seen[value] {
-			seen[value] = true
-			literals = append(literals, secretLiteral{value, mask})
+		if len(value) < minRedactableSecretLen {
+			return
+		}
+		values := []string{value}
+		if normalize != nil {
+			values = append(values, normalize(value))
+		}
+		for _, value := range values {
+			// An eligible original may normalize to a short sensitive value.
+			if value != "" && !seen[value] {
+				seen[value] = true
+				literals = append(literals, secretLiteral{value, mask})
+			}
 		}
 	}
 	for _, l := range envLiterals(runnerEnv) {
@@ -4358,12 +4560,12 @@ func maskSecretLiterals(text string, literals []secretLiteral) (string, []bool) 
 }
 
 // replaceEnvSecrets is the literal pass: the value of each sensitive runner
-// env key, and of each providerOnlyKeys entry in the process environment
-// (kept out of RunnerEnv, #6649), when it holds minRedactableSecretLen bytes
-// or more and occurs in text, becomes [REDACTED:<key>]. It returns the keys
-// it replaced. Both sources go in one pass, longer values first, then key
-// order: a value that contains another is replaced whole, whichever source
-// holds it, and the text is the same on every run.
+// env key, and of each provider-only or Jira repository secret in the process
+// environment, when it holds minRedactableSecretLen bytes or more and occurs
+// in text, becomes [REDACTED:<key>]. It returns the keys it replaced. All
+// sources go in one pass, longer values first, then key order: a value that
+// contains another is replaced whole, whichever source holds it, and the text
+// is the same on every run.
 func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []string) {
 	envLits := envLiterals(runnerEnv)
 	literals := make([]secretLiteral, len(envLits))
@@ -4385,8 +4587,11 @@ func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []stri
 type envLiteral struct{ key, value string }
 
 // envLiterals lists the values replaceEnvSecrets replaces — longer values
-// first, then key order, so a value that contains another is replaced
-// whole whichever source holds it.
+// first, then key order, so a value that contains another is replaced whole
+// whichever source holds it. Jira repository credentials are included from
+// the process environment even when a harness aliases them under a key that
+// is not classified as sensitive; they are also registered with the shared
+// runtime redactor.
 func envLiterals(runnerEnv map[string]string) []envLiteral {
 	var literals []envLiteral
 	for key, value := range runnerEnv {
@@ -4396,6 +4601,12 @@ func envLiterals(runnerEnv map[string]string) []envLiteral {
 	}
 	for key := range providerOnlyKeys {
 		if value := os.Getenv(key); len(value) >= minRedactableSecretLen {
+			literals = append(literals, envLiteral{key, value})
+		}
+	}
+	for _, key := range []string{jira.TokenEnvVar, jira.EmailEnvVar, jira.ClientIDEnvVar, jira.ClientSecretEnvVar} {
+		if value := os.Getenv(key); len(value) >= minRedactableSecretLen {
+			security.RegisterRuntimeSecret(value)
 			literals = append(literals, envLiteral{key, value})
 		}
 	}
@@ -5035,6 +5246,17 @@ func discardSandbox(sandboxName, runDir string, keep bool, printer *ui.Printer) 
 	printer.StepDone("Sandbox deleted after the failed preflight")
 }
 
+// keepFailedSandbox reports a sandbox that failed creation and was kept
+// for inspection (--keep-sandbox). CreateWithRetry already left it in place
+// and stopped retrying; this collects its OpenShell logs into the run
+// directory and prints the same hint as the run's own cleanup defer, which
+// is not yet registered when creation fails.
+func keepFailedSandbox(sandboxName, runDir string, printer *ui.Printer) {
+	collectOpenshellLogsFn(sandboxName, runDir, printer)
+	printer.StepWarn(fmt.Sprintf("Sandbox kept (--keep-sandbox): %s", sandboxName))
+	printer.StepInfo(fmt.Sprintf("openshell sandbox exec --tty --name %s -- bash", sandboxName))
+}
+
 // runInferenceProvider maps the resolved runtime to the provider the parent
 // agent calls. A parent model resolves to at most one of openai and
 // gateway; every other pi, Claude Code or OpenCode parent stays on Vertex.
@@ -5357,7 +5579,7 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 	}
 	defer cleanup()
 	preCmd := exec.Command(h.PreScript)
-	preCmd.Env = append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath)
+	preCmd.Env = withPersonasFile(append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath), runDir)
 
 	// Tee stdout and stderr so skip-reason fallback (exit 78) and
 	// hard-failure diagnostics can recover the script's own message
@@ -5532,7 +5754,9 @@ func stripControlChars(s string) string {
 // See #5832, #6649.
 //
 // Named workflow secrets (inheritedScriptDenyKeys: JIRA_TOKEN,
-// JIRA_USER_EMAIL, OTEL_EXPORTER_OTLP_*HEADERS) are dropped from the
+// JIRA_USER_EMAIL, FULLSEND_JIRA_TOKEN, FULLSEND_JIRA_EMAIL,
+// FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET,
+// OTEL_EXPORTER_OTLP_*HEADERS) are dropped from the
 // inherited process environment only; a runnerEnv entry for one of them is
 // kept, so a harness that declares it in env.runner still gets it (#8154).
 //
@@ -5656,7 +5880,7 @@ func validationEnv(h *harness.Harness, hostRepoDir, runDir string) []string {
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
 		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
 	}
-	return env
+	return withPersonasFile(env, runDir)
 }
 
 func envToList(env map[string]string) []string {
@@ -6259,6 +6483,14 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			if d.Name() == "security" {
 				return filepath.SkipDir
 			}
+			// The staged skill trees are runner input, not agent output.
+			if path == filepath.Join(outputDir, "skills") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// The persona manifest is runner-written input as well (#6158).
+		if path == filepath.Join(outputDir, personasFileName) {
 			return nil
 		}
 		// Skip the telemetry JSONL: it is still open for append, and any
@@ -6529,7 +6761,11 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 	// instead of the code-hosting forge. This check comes before the
 	// owner/repo parsing because Jira uses project-key addressing.
 	if sOpts.trackerSource == "jira" {
-		return setupStatusNotifierJira(notifyCfg, sOpts, printer)
+		var tracking *config.TrackingConfig
+		if fsCfg != nil {
+			tracking = fsCfg.IssueTracking()
+		}
+		return setupStatusNotifierJira(notifyCfg, tracking, sOpts, printer)
 	}
 
 	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
@@ -6699,9 +6935,10 @@ func setupStatusNotifierGitLab(notifyCfg config.StatusNotificationConfig, owner,
 // setupStatusNotifierJira creates a status notifier for Jira. Unlike the
 // GitHub/GitLab paths, Jira has no commit SHA or CI run ID equivalents, so a
 // synthetic run ID is generated from the current time when no CI run ID is
-// available.
-func setupStatusNotifierJira(notifyCfg config.StatusNotificationConfig, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
-	tc, err := newJiraTrackerClientFromEnv()
+// available. The Jira client is built from the effective tracker.jira
+// config (tracking) and the FULLSEND_JIRA_* credentials.
+func setupStatusNotifierJira(notifyCfg config.StatusNotificationConfig, tracking *config.TrackingConfig, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	tc, err := newJiraTrackerClientFromConfig(tracking)
 	if err != nil {
 		return nil, err
 	}
@@ -7105,7 +7342,8 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 // unsets it if it was unset (#8530).
 // On GitHub Actions the pre-mint GH_TOKEN (or, when that is unset or empty,
 // the pre-mint GITHUB_TOKEN) is copied to GH_WORKFLOW_TOKEN for provider
-// credential expansion (#6649); cleanup unsets it. Remint-safe:
+// credential expansion (#6649) and the runner's ghcr.io image pull (#9019);
+// cleanup unsets it. Remint-safe:
 // if GH_WORKFLOW_TOKEN is already set (remintAgentTokenForPostScript's
 // second call, after the first mint replaced GH_TOKEN with the App token),
 // the copy is skipped so the already-preserved workflow token is left alone.
@@ -7188,12 +7426,12 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 				// A future caller could override the workflow's github_token
 				// input to empty; fail loud instead of silently skipping the
 				// preserve step (#6649).
-				printer.StepWarn("GITHUB_ACTIONS is set but no pre-mint GH_TOKEN or GITHUB_TOKEN was found; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
+				printer.StepWarn("GITHUB_ACTIONS is set but no pre-mint GH_TOKEN or GITHUB_TOKEN was found; GH_WORKFLOW_TOKEN will not be preserved (provider credentials and the ghcr.io image pull get no token)")
 			case !mintTokenPattern.MatchString(preMint):
 				// Gate the same as result.Token below before it reaches
 				// Setenv/add-mask/RegisterRuntimeSecret: fail closed rather
 				// than trust an unvalidated value (#6649).
-				printer.StepWarn("pre-mint " + preMintName + " has an unexpected format; GH_WORKFLOW_TOKEN will not be preserved for provider credentials")
+				printer.StepWarn("pre-mint " + preMintName + " has an unexpected format; GH_WORKFLOW_TOKEN will not be preserved (provider credentials and the ghcr.io image pull get no token)")
 			default:
 				os.Setenv(workflowTokenEnv, preMint)
 				envVars = append(envVars, workflowTokenEnv)

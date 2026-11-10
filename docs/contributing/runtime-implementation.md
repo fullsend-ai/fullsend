@@ -61,6 +61,14 @@ content that must be updated whenever a runtime is added or renamed.
   if the runtime is user-selectable).
 - [x] `internal/config/config_test.go` — update any assertion on
   `ValidRuntimes()` to include the new name.
+- [x] `internal/cli/env_manifest_collector_test.go` and
+  `internal/cli/env_manifest_golden_test.go` — the runtime's `EnvExports()`
+  names must land in the generated
+  [sandbox environment contract](../normative/sandbox-env/v1/README.md);
+  registering a runtime without a contract decision fails
+  `TestEnvManifestRuntimeEnumeration`, and `TestEnvManifestGolden` pins the
+  committed schemas (regenerate with
+  `go test ./internal/cli -run TestEnvManifestGolden -update`).
 
 **CLI:**
 
@@ -184,7 +192,7 @@ How the shared PostToolUse chain reaches each runtime — the three sanitizer ro
 | **Secret redaction** | Sandbox PostToolUse hook | ✓ shared chain (above) | ✗ — not wired; adapter owned by unbound-force#515 | ✓ shared chain (above) | Model context: detect + withhold — codex cannot rewrite a built-in tool's output, so the adapter blocks the result instead of exposing the original secret. Artifacts: `output.jsonl` and the extracted rollout are filtered through the same Go `security.SecretRedactor` the progress parsers use, because codex's artifacts keep raw tool output where Claude Code's stream carries the post-hook result | `secret_redact_posttool.py` |
 | **Unicode normalization** | Sandbox PostToolUse hook | ✓ shared chain (above) | ✗ — not wired; adapter owned by unbound-force#515 | ✓ shared chain (above) | Unsafe hidden Unicode and OSC: detect + withhold. ANSI-only cleanup passes the original result because codex cannot apply the benign rewrite. Plain `fullwidth` findings keep their text and do not block; NFKC escape reassembly has its own unsafe category | `unicode_posttool.py` |
 | **Context suppression** | Sandbox PostToolUse hook | ✓ shared chain (above) | ✗ — not wired; adapter owned by unbound-force#515 | ✓ shared chain (above) | ✗ — it exists only to rewrite output, which codex does not allow for built-in tools; the stage still runs and its findings are logged, but nothing is condensed | `context_suppress_posttool.py` |
-| **Tool allowlist** | Sandbox PreToolUse hook | opt-in; ✓ when enabled | ✗ — not wired; adapter owned by unbound-force#515. Until then `Bash(a,b)` emits a warning and widens to bare `bash: "allow"`; #515 must preserve the command restriction | ✓ `tool_allowlist_pretool.py` via `tool_call` (names translated to Claude vocabulary first, #608) plus pi's native `--tools` from the agent `tools:` and the `Bash(a,b)` first-token allowlist enforced in the extension | opt-in; ✓ when enabled, via `fullsend-codex-hook.py` (names translated to Claude vocabulary first, #608). Unlike pi there is **no native allowlist**: codex has no `--tools`, so an agent's `tools:` frontmatter is documentation unless the harness enables this hook, and the `Bash(a,b)` first-token allowlist is recorded in the manifest but **not wired**. Note `apply_patch` arrives as `Edit`, so an agent allowlisted only for `Write` is blocked | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` (fail-closed when unset) |
+| **Tool allowlist** | Sandbox PreToolUse hook | opt-in; ✓ when enabled | ✗ — not wired; adapter owned by unbound-force#515. Until then `Bash(a,b)` emits a warning and widens to bare `bash: "allow"`; #515 must preserve the command restriction | ✓ `tool_allowlist_pretool.py` via `tool_call` (names translated to Claude vocabulary first, #608) plus pi's native `--tools` from the agent `tools:` and the `Bash(a,b)` first-token allowlist enforced in the extension | opt-in; ✓ when enabled, via `fullsend-codex-hook.py` (names translated to Claude vocabulary first, #608). Unlike pi there is **no native allowlist**: codex has no `--tools`, so an agent's `tools:` frontmatter is documentation unless the harness enables this hook, and the `Bash(a,b)` first-token allowlist is recorded in the manifest but **not wired**. Note `apply_patch` arrives as `Edit`, so an agent allowlisted only for `Write` is blocked. The mapped multi-agent calls arrive as `Agent`, so an allowlist that permits `Agent` passes the V1 and V2 spawns and the spawn guard is their only name-level check | `tool_allowlist_pretool.py`; requires `FULLSEND_TOOL_ALLOWLIST` (fail-closed when unset) |
 
 ### Bootstrap and artifacts (per runtime)
 
@@ -212,6 +220,7 @@ Harness `security.fail_mode` controls whether critical findings **block** the ru
 | `runtime.GatewayRouteRuntime` | Optional — for a runtime that carries the inference gateway route (ADR 0137). `PrepareGatewayRun(sandboxName, GatewayRun)` receives the resolved `inference.gateway` block, the committed `models_file` bytes and the gateway base URL before Bootstrap, and `ClearGatewayRun` releases it at the end of the run. `GatewayCredentialSeed() CredentialSeed` names the route's placeholder env key, `sh` seed fragment and credential file, which the runner re-runs after each token refresh, independently of the OpenAI route's seed (`OpenAIRouteSeed`). pi, codex and Claude Code implement it. pi and Claude Code read the placeholder before the agent-writable `.env` and own the route's environment after it. pi, and Claude Code in the `oidc` mode, seed the placeholder into a token file with the shared `gatewayTokenSeed`, and codex with its own seed; both write through `orderedSeedWrite`; Claude Code in the `api-key` mode writes no token file: it captures the placeholder in a readonly shell variable and exports it as `ANTHROPIC_AUTH_TOKEN` after `.env` (as `ANTHROPIC_API_KEY`, with `ANTHROPIC_AUTH_TOKEN` cleared, when the block sets `messages_auth_header: x-api-key`). Claude Code ignores the block's model list, and its `GatewayRun` registration also feeds its `--settings` document: the route pins and the helper, merged with the hooks and passed inline on gateway runs, never as the uploaded `hooks.json` path. The runner refuses a `gateway/` model on a runtime that does not implement it |
 
 | `runtime.ProviderResolver` | Optional — multi-provider runtimes return the OTEL GenAI serving-endpoint identity for the model the run will call (`ProviderFor`). The runner writes it as both `gen_ai.system` and `gen_ai.provider.name`. Single-vendor runtimes omit this and `GenAISystemFor` falls back to `System()` |
+| `runtime.LaunchEnvExporter` | Optional — a runtime whose launch command exports environment variables beyond `EnvExports()` lists those bare names via `LaunchEnvExports()` (flat list, including provider-conditional names). The sandbox env contract collector unions them into that runtime's `runtime_<name>` set (`docs/normative/sandbox-env/v1/`), and `TestLaunchEnvExportsMatchLaunchCommands` fails unless the list equals what the runtime's built launch commands export beyond `EnvExports()` — add a variant to `launchCommandVariants` for any new launch branch. claude, codex, opencode, and pi implement it; runtimes whose launch commands export nothing new omit it |
 
 **Per-iteration cleanup contract.** When a validation retry reuses the sandbox, the runner calls `ClearIterationArtifacts` before the next iteration. Every runtime runs the shared `clearStrayProcesses` sweep first (it terminates the processes the previous iteration left running as the sandbox user, sparing the exec channel and the `sandbox.KeepAliveCommand` main process), then deletes the iteration's output, sessions and debug log. A failed sweep is reported as a warning and never fails the iteration. The runner holds its sandbox lock (`withSandboxLock` in `internal/cli/run.go`) across the call so the credential refreshers' uploads are never killed mid-write. The same sweep runs as `TerminateStrayProcesses` right after an iteration ends at its budget: OpenShell's exec timeout drops the relay but leaves the agent's processes running, and a killed iteration is not followed by another `ClearIterationArtifacts` (see [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline)).
 
@@ -404,6 +413,12 @@ Two traps when reproducing by hand:
 | `FULLSEND_CANARY_TOKEN` | both canary hooks | no-ops when empty; supply it via harness `env.sandbox`/`host_files` |
 | `FULLSEND_TRACE_ID` | all scripts | correlates findings with the run |
 
+The runner-written rows in this table are entries in the generated
+[sandbox environment contract](../normative/sandbox-env/v1/README.md) — the
+machine-checkable schemas listing every variable the runner injects into
+the sandbox, per gate and per runtime, and the keys it reserves from
+harness override. The schemas are the source of truth; this table is prose.
+
 ### Suppression reachability
 
 Under Claude Code a non-zero-exit command never reaches `PostToolUse` at all, so the suppressors only ever see zero-exit output; a tool that exits 0 with nothing to say is the case that used to be summarized as "passed". Adapters whose post-tool event also fires for failures (pi's `tool_result`) do deliver failed calls to the same chain, which is why the positive-evidence rule matters on both.
@@ -510,6 +525,10 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
 └── workspace/                       ← SandboxWorkspace
     ├── .env                            Environment variables (read as data before claude)
     ├── .env.d/                         Additional env files (host_files expand)
+    ├── .fullsend/                      Runner-owned, outside the repo checkout (host_files cannot target it)
+    │   ├── output-schema.json          Output schema for the agent result
+    │   └── personas.json               Persona manifest (FULLSEND_PERSONAS_FILE); written every run (#6158)
+    ├── .dummy/skills/<name>/           Harness skills (dummy runtime only; staged trees, as on the other runtimes)
     │
     │   claude is resolved on the trusted PATH before .env (the first one
     │   the agent cannot write, binaryPin) and launched by that path
@@ -529,6 +548,37 @@ The sandbox has two key directories that map to Claude Code's config levels (plu
         │   └── custom-lint/SKILL.md
         └── src/...                     Target repo source code
 ```
+
+### Staged skill trees and the persona manifest
+
+Runtimes upload the directories `BootstrapInput.SkillDirs()` returns and
+must not assume those are the harness's source paths. For a `skills:` entry
+with per-file overrides, `fullsend run` copies the resolved skill to
+`<runDir>/skills/<index>/<sandbox-name>` (where `<runDir>` is
+`<output-dir>/<sandbox-name>`) right after harness resolution, applies the
+overrides there, and passes that copy in `SkillDirs()`. The pi child routing
+checks (`OpenAIChildren`, `VertexChildren`, `GatewayChildren`) read the same
+staged directories. Entries without overrides keep their resolved path. The fetch
+cache and the `.fullsend` directory are never written. Upload rules, naming
+and collision checks are unchanged (`uploadHarnessSkills`, shared by the
+dummy runtime through `uploadHarnessSkillsWith`), so a runtime needs no
+override-specific code.
+
+Every run writes `<runDir>/personas.json`, one entry per persona that
+`runtime.DiscoverPersonas` (the pi and codex discovery) registers from the
+staged skills, and uploads it to
+`/sandbox/workspace/.fullsend/personas.json`. The runner exports
+`FULLSEND_PERSONAS_FILE`:
+
+| Where | Value | Set by |
+|-------|-------|--------|
+| Pre-script, post-script and validation script environment | Absolute host path of `<runDir>/personas.json` | The runner, after `runner_env`/`env.runner`, so those cannot replace it |
+| Sandbox `/sandbox/workspace/.env` | `/sandbox/workspace/.fullsend/personas.json` | The runner; reserved, so an `env.sandbox` entry with this name is dropped |
+
+The post-run output scan skips `<runDir>/skills/` and
+`<runDir>/personas.json`, which are runner input. The manifest schema,
+origins and warnings are documented in
+[Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file).
 
 ## Agent rule layering
 
@@ -594,9 +644,10 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 
 | Op | Args | Purpose |
 |----|------|---------|
-| `assert_env` | `VAR_NAME` | Assert env var is set and non-empty in the sandbox |
+| `assert_env` | `VAR_NAME` | Assert env var is set and non-empty in the sandbox, with the harness environment from `.env` loaded as an agent launch loads it |
 | `assert_file` | `path` | Assert file exists and is readable under the workspace |
 | `assert_json` | `path,json_path` | Assert JSON file exists and dot-path field is present and non-null (uses `jq`) |
+| `assert_jq` | `path,jq_filter` | Assert the jq filter (everything after the first comma) yields neither `false` nor `null` for the JSON file, via `jq -e`; filters that read the environment or other inputs are refused. Escape `\|` inside a Gherkin table cell |
 
 ## Dummy-playback runtime
 
@@ -1113,8 +1164,11 @@ re-checked on a `CODEX_VERSION` bump. The decisions are
 [ADR 0099](../ADRs/0099-codex-agent-runtime.md) (credential delivery) and [ADR 0100](../ADRs/0100-codex-sandbox-hooks.md)
 (sandbox hooks).
 
-Everything below was read at tag `rust-v0.152.1`; the rows of [Re-check on a `CODEX_VERSION` bump](#re-check-on-a-codex_version-bump) were re-verified at `rust-v0.157.0` and again at `rust-v0.159.3`. Two of the findings are the reason the hook
-adapter exists at all, because forwarding the scripts' own convention would fail **open**.
+Everything below was read at tag `rust-v0.152.1`; the rows of
+[Re-check on a `CODEX_VERSION` bump](#re-check-on-a-codex_version-bump) were
+re-verified at `rust-v0.157.0`, at `rust-v0.159.3` and again at `rust-v0.166.0`.
+Two of the findings are the reason the hook adapter exists at all, because
+forwarding the scripts' own convention would fail **open**.
 
 One iteration, end to end:
 
@@ -1158,12 +1212,15 @@ flowchart TB
 - **No `CLAUDE.md` pointer.** `CodexRuntime` does not implement `ContextBridger`; it gets the repo's
   `AGENTS.md` through `$CODEX_HOME/AGENTS.md` instead (see **AGENTS.md** below).
 - **Tool names**: the shell tool is already `Bash`; `apply_patch` covers Claude's `Write` and `Edit`
-  and carries them as matcher aliases; `spawn_agent` carries `Agent`. `Read`, `Glob`, `Grep`,
-  `WebFetch` and `WebSearch` have no codex tool — codex does that work through the shell, so the
-  `Bash` groups already cover it.
+  and carries them as matcher aliases; `spawn_agent` carries `Agent` the same way. The adapter
+  reports `spawn_agent`, the V1 control calls the spawn guard passes through and the V2
+  `collaboration*` spawn and control calls to the scripts as `Agent`; codex aliases none of the
+  other seven, so the `Agent`/`Task` matcher lists all eight (the matcher translation table below).
+  `Read`, `Glob`, `Grep`, `WebFetch` and `WebSearch` have no codex tool — codex does that work
+  through the shell, so the `Bash` groups already cover it.
 - **Skills** come from `$CODEX_HOME/skills`, which `Bootstrap` populates. Codex also discovers a
   repo's `.agents/skills`, and (verified live at 0.157.0; discovery source unchanged through
-  0.159.3) its `.codex/skills` even with the project untrusted; both are covered by the host-side
+  0.166.0) its `.codex/skills` even with the project untrusted; both are covered by the host-side
   and in-sandbox context scans, which match `SKILL.md` anywhere in the repo. The agent reads those
   files through the shell, and Codex 0.157.0 truncates a single exec at 10,000 tokens (head and
   tail), so both runtime notes (`codexChunkedReadNote`) tell it to count lines with `awk 'END { print NR }'` (`wc -l`
@@ -1267,11 +1324,11 @@ Matcher translation, per group:
 |---|---|---|
 | `Bash` | `Bash` | codex's shell tool has the same name |
 | `Write`, `Edit`, `MultiEdit` | `apply_patch` | the canonical name; `Write`/`Edit` would also match as aliases |
-| `Agent`, `Task` | `spawn_agent` | reached by a delegating agent's spawns (ADR 0126); the spawn guard is the last row |
+| `Agent`, `Task` | `spawn_agent\|multi_agent_v1wait_agent\|multi_agent_v1close_agent\|multi_agent_v1send_input\|collaborationspawn_agent\|collaborationwait_agent\|collaborationlist_agents\|collaborationinterrupt_agent` | every call the adapter reports as `Agent`: the V1 spawn and the control calls the spawn guard passes through from the root (ADR 0126), and the V2 spawn and control calls (ADR 0159 decision 3); the spawn guard is the last row |
 | `Read`, `Glob`, `Grep`, `LS`, `WebFetch`, `WebSearch` | *dropped, with a note* | no codex tool; the `Bash` groups cover this work |
 | `*` (`security.AllTools`) | *matcher key omitted* | an absent matcher matches every tool |
 | `PostToolUseFailure` (any tools) | *not wired* | codex has no such event and does not need one — see below |
-| *(the spawn guard, not a plan group)* | `^(multi_agent_v1\|collaboration)\|(spawn\|resume)_agent$` — a regex (a character outside `[A-Za-z0-9_\|]` makes it one) that reaches both multi-agent namespaces plus the bare V1 `spawn_agent` | `PreToolUse` element 0; admits a V1 `spawn_agent` from the root thread of a registered role, with `fork_context: false` and no `model` or `reasoning_effort`, after re-checking the files in `FULLSEND_CODEX_SPAWN_DIGESTS`; passes the parent's wait, close and send-input calls through; everything else, its own errors included, exits 2 with a reason. Every admit and deny is logged to `security/findings.jsonl` |
+| *(the spawn guard, not a plan group)* | `^(multi_agent_v1\|collaboration)\|(spawn\|resume)_agent$` — a regex (a character outside `[A-Za-z0-9_\|]` makes it one) that reaches both multi-agent namespaces plus the bare V1 `spawn_agent` | `PreToolUse` element 0; admits a V1 `spawn_agent` from the root thread of a registered role, with `fork_context: false` and no `model` or `reasoning_effort`, after re-checking the files in `FULLSEND_CODEX_SPAWN_DIGESTS`; passes the parent's wait, close and send-input calls through and denies them from a child (a payload carrying `agent_id` or `agent_type`); the V2 spawn, `wait_agent`, `list_agents` and `interrupt_agent` stay denied by name, and today Bootstrap declines a V2 parent, so no `collaboration*` call reaches the hook; everything else, its own errors included, exits 2 with a reason. Every admit and deny is logged to `security/findings.jsonl` |
 
 Tokens are joined with `|` and stay within `[A-Za-z0-9_|]`, which is the character set codex treats
 as an **exact alternation** rather than a regex, so there is no anchoring question and no substring
@@ -1390,8 +1447,9 @@ stream notification under backpressure, of any thread, and says so on stderr: th
 `RUST_LOG` outright after `.env` (codex's default filter with `codex_exec` and
 `codex_app_server::in_process` at warn; codex's commands inherit it), and the runner scans that
 stderr on the host (the sandbox log under `--debug`) and warns on the line and on exec's warning
-that its `thread/read` backfill of the turn's items failed. Drops stay warnings, as #8712 settled:
-most drops hide no spawn. The check cannot catch a forged admission (the log is agent-writable), a
+that its backfill of the turn's items failed (`thread/items/list` on a paginated
+thread, `thread/read` otherwise). Drops stay warnings, as #8712 settled: most drops
+hide no spawn. The check cannot catch a forged admission (the log is agent-writable), a
 resume (a `wait` item in the stream), a spawn hidden from both sides (stream items lost and the
 rollout, or an ancestor's, deleted, renamed or its `session_meta` edited), a child that never
 recorded an item, or a surplus admission covering a later spawn (counts, not ids): codex can reject
@@ -1552,19 +1610,20 @@ Two artefacts of the run are worth knowing about:
 | Hook exit-code semantics (0/2 blocking, everything else `Failed`) | the adapter's block translation is built on it; a change makes hooks fail open | `codex-rs/hooks/src/events/{pre,post}_tool_use.rs` |
 | `async` and `can_apply_control_effects` | a synchronous-only rule that changed would alter what the wiring must omit | `codex-rs/hooks/src/engine/mod.rs` |
 | `PostToolUse` output fields | if `updatedToolOutput` ever lands, the sanitizers can start redacting again | `codex-rs/hooks/src/schema.rs` |
-| Hook payload shape (`tool_name`, `tool_input.command` as a string, `tool_response`) | the scripts read these keys directly | `codex-rs/core/src/{hook_runtime.rs,tools/context.rs}` |
+| Hook payload shape (`tool_name`, `tool_input.command` as a string, `tool_response`, and `cwd`, which since 0.166.0 is the shell call's own `workdir` when it passes one and the session cwd otherwise) | the scripts read these keys directly; the secret redactor derives the checkout root from `cwd`, so a `workdir` inside a submodule narrows it, as its docstring already allows | `codex-rs/core/src/{hook_runtime.rs,tools/context.rs}`, `codex-rs/hooks/src/events/common.rs` (`command_input_cwd`) |
 | `auth.command` semantics (trimmed stdout, non-zero exit fails, no env fallback) | the whole credential path | `codex-rs/login/src/auth/external_bearer.rs` |
 | `supports_websockets` default for custom providers | a true default would take traffic off `POST /v1/responses` and break the egress profile | `codex-rs/model-provider-info/src/lib.rs` |
 | `[skills.bundled]` and skill discovery | the bundled skills are disabled by the runner-owned config; a renamed key would silently bring `skill-installer` and friends back into the agent's roster | `codex-rs/config/src/skills_config.rs` |
 | Exec output truncation (`DEFAULT_MAX_OUTPUT_TOKENS`, head+tail) | the runtime note's 200-line window is sized to stay under this cap; on bump, confirm 200 lines of a dense `SKILL.md` still fits under the new cap and that a truncated exec still emits a warning the split rule can detect | `codex-rs/core/src/unified_exec/mod.rs`, `codex-rs/core/src/tools/context.rs`, `codex-rs/utils/string/src/truncate.rs` |
 | The `plugins` feature and what it gates | `[features] plugins = false` is what stops the startup fetch of `github.com/openai/plugins.git`; a renamed key, or a sync no longer gated on it, would bring the fetch back | `codex-rs/features/src/lib.rs`, `codex-rs/core-plugins/src/manager.rs` (`maybe_start_plugin_startup_tasks_for_config`) |
-| The native binary's path inside the platform package (`vendor/<triple>/bin/codex` at 0.159.3) | the `fullsend-openai` profile names it as `**/codex`; the node ancestor still admits a renamed file, but the pin in `runtimeEgressBinaries` should follow the rename | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
+| The native binary's path inside the platform package (`vendor/<triple>/bin/codex` at 0.166.0) | the `fullsend-openai` profile names it as `**/codex`; the node ancestor still admits a renamed file, but the pin in `runtimeEgressBinaries` should follow the rename | `npm pack --dry-run "@openai/codex@<pin>-linux-x64"` |
 | Whether a custom provider still issues `GET /v1/models` at startup | the `fullsend-openai` egress profile denies it; if the request ever became fatal or retried, it would delay or fail every first turn | `codex-rs/models-manager/` |
 | `models_cache.json` name and location, its TTL and the version/identity checks that decide whether it is used | `buildCodexRunCommand` deletes `$CODEX_HOME/models_cache.json` before launch so every run starts from the bundled catalog; a renamed or relocated file would need the deletion to follow it | `codex-rs/models-manager/src/manager.rs` (`MODEL_CACHE_FILE`, `DEFAULT_MODEL_CACHE_TTL`, `try_load_cache`), `codex-rs/models-manager/src/cache.rs` (`load_fresh_file`) |
 | `ConfigToml` keys and the `ReasoningEffort` enum | a renamed or removed key silently changes behaviour; `--strict-config` reports it | `codex-rs/config/src/config_toml.rs`, `codex-rs/protocol/src/openai_models.rs` |
 | Project trust and `AGENTS.md` | the pinned untrusted entry must still stop codex recording its own trust level, the repo's `.codex/` layer must stay unloaded, and `$CODEX_HOME/AGENTS.md` must still load while the project is untrusted, or the bridge stops reaching the agent | `codex-rs/app-server/src/request_processors/thread_processor.rs` (trust write), `codex-rs/config/src/loader/mod.rs`, `codex-rs/core/src/agents_md.rs`, `codex-rs/codex-home/src/instructions/mod.rs` |
 | JSONL event structs, rollout line types and rollout file naming | the stream parser and transcript extraction; a rollout line type missing from `codexRolloutEnvelopes` discards the whole transcript | `codex-rs/exec/src/exec_events.rs`, `codex-rs/history/src/rollout_payload.rs` (`RolloutItemWire`), `codex-rs/thread-store/src/local/helpers.rs` |
-| The multi-agent tool names (`multi_agent_v1*`, `collaboration*`, the bare V1 `spawn_agent`), the block contract (exit 2 with non-empty stderr blocks; a timeout kills the handler and lets the call through), `agent_id` and `agent_type` in a child's payload, the spawn arguments, and what a child start rereads (`hooks.json` and the role file) | the spawn guard's matcher, pass-through set, policy, digest set and deadline rest on them; a renamed tool is denied (loud), but a payload without `agent_id`, a new model or effort argument, a changed block contract or a child that rereads another file turns a deny into a pass | `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`, `codex-rs/core/src/tools/registry.rs` (`function_hook_tool_name`), `codex-rs/hooks/src/engine/command_runner.rs` (the timeout branch), `codex-rs/core/src/agent/role.rs` (the role file, read at spawn) |
-| The bundled catalog's `multi_agent_version`, `default_reasoning_level` and `supported_reasoning_levels` entries, the version codex supplies to an entry that carries none, and the floor model (`codex debug models --bundled`; at 0.159.3 `gpt-5.6-luna` is the listed model that selects `v1` and defaults to `medium`, and `gpt-5.5` carries no version, which the `multi_agent` feature, on by default, resolves to V1, and lists `low` to `xhigh`) | part two of the delegation gate, the child-model floor and the child-effort check rest on them: the floor must stay listed, or every delegating agent without `subagents.default` or `FULLSEND_CODEX_SUBAGENT_MODEL` fails Bootstrap, while the floor's own collaboration version does not matter for children (a child runs under its parent's; moving luna to V2 only stops luna parents from delegating); a bump that turns `multi_agent` off by default, or gives the null entry a version, changes which parents delegate; a changed level set changes which run efforts Bootstrap accepts; and the fixture `internal/runtime/testdata/codex/models-bundled-0.159.3.json` must be regenerated, never edited | `codex-rs/models-manager/models.json` in the bumped tag; regenerate the fixture with the one-liner in `codex_personas_test.go`'s `TestCodexCatalog` comment and run `go test ./internal/runtime/ -run 'TestCodexCatalog\|TestCodexParentResolvesV1\|TestResolveCodexChildModels_Effort'` |
+| Stderr warning markers (`dropping in-process server notification (queue full)`, `thread/items/list failed during turn completion`, `thread/items/list returned a repeated cursor during turn completion`, and the prefix `thread/read failed while backfilling turn items`), their log targets and levels, and the `RUST_LOG` filter (`error,opentelemetry_sdk=off,opentelemetry_otlp=off,codex_exec=warn,codex_app_server::in_process=warn`; `info` with debug) | `codexStderrDrops` and the debug-log counts match these literals; changed text, targets, levels or filter semantics can silently stop the dropped-notification and failed-backfill warnings | `codex-rs/exec/src/lib.rs` (backfill `warn!` calls, `EXEC_DEFAULT_LOG_FILTER`), `codex-rs/app-server/src/in_process.rs` (drop `warn!` call) |
+| The multi-agent tool names (`multi_agent_v1*`, `collaboration*`, the bare V1 `spawn_agent`), the block contract (exit 2 with non-empty stderr blocks; a timeout kills the handler and lets the call through), `agent_id` and `agent_type` in a child's payload, the spawn arguments, and what a child start rereads (`hooks.json` and the role file) | the spawn guard's matcher, pass-through set, policy, digest set and deadline rest on them; a renamed tool is denied (loud), but a payload without `agent_id` or `agent_type`, a new model or effort argument, a changed block contract or a child that rereads another file turns a deny into a pass | `codex-rs/core/src/tools/handlers/multi_agents_spec.rs`, `codex-rs/core/src/tools/registry.rs` (`function_hook_tool_name`), `codex-rs/hooks/src/engine/command_runner.rs` (the timeout branch), `codex-rs/core/src/agent/role.rs` (the role file, read at spawn) |
+| The bundled catalog's `multi_agent_version`, `default_reasoning_level` and `supported_reasoning_levels` entries, the version codex supplies to an entry that carries none, and the floor model (`codex debug models --bundled`; at 0.166.0 `gpt-5.6-luna` is the listed model that selects `v1` and defaults to `medium`, and `gpt-5.5` carries no version, which the `multi_agent` feature, on by default, resolves to V1, and lists `low` to `xhigh`) | part two of the delegation gate, the child-model floor and the child-effort check rest on them: the floor must stay listed, or every delegating agent without `subagents.default` or `FULLSEND_CODEX_SUBAGENT_MODEL` fails Bootstrap, while the floor's own collaboration version does not matter for children (a child runs under its parent's; moving luna to V2 only stops luna parents from delegating); a bump that turns `multi_agent` off by default, or gives the null entry a version, changes which parents delegate; a changed level set changes which run efforts Bootstrap accepts; and the fixture `internal/runtime/testdata/codex/models-bundled-0.166.0.json` must be regenerated, never edited | `codex-rs/models-manager/models.json` in the bumped tag; regenerate the fixture with the one-liner in `codex_personas_test.go`'s `TestCodexCatalog` comment and run `go test ./internal/runtime/ -run 'TestCodexCatalog\|TestCodexParentResolvesV1\|TestResolveCodexChildModels_Effort'` |
 | The `[agents]` keys codex reads (`enabled`, `max_concurrent_threads_per_session`, `max_depth`, `default_subagent_model`, `default_subagent_reasoning_effort`, and `[agents.<name>]` `description` and `config_file`) and the order of the child path: with no model argument a child takes `default_subagent_model` and, with no effort argument, `default_subagent_reasoning_effort`, else that model's catalog default; a role file applies after and its effort is checked against its own model | `codexAgentsBlock` writes the keys and Bootstrap checks the child efforts on that order; a renamed key or a changed order silently changes every child's model or effort | `codex-rs/config/src/config_toml.rs` (`AgentsToml`), `codex-rs/core/src/config/mod.rs`, `codex-rs/core/src/agent/child_config.rs` (`apply_requested_spawn_agent_model_overrides`, `apply_spawn_agent_role`), `codex-rs/core/src/agent/role.rs` |
 | What writes a rollout under the sessions directory in an exec run, rollout naming and the date layout, creation at a child's first recorded item, a PreToolUse block returning before the tool handler, and spawn-slot reservation before thread creation | the disk side of the admission cross-check (the four facts are in `internal/runtime/testdata/codex/README.md`) | `codex-rs/core/src/tools/registry.rs`, `codex-rs/core/src/agent/control/spawn.rs`, `codex-rs/rollout/src/rollout_file_name.rs`, `codex-rs/features/src/lib.rs` (the memories default) |

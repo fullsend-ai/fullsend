@@ -1,9 +1,9 @@
 # Contributor Ladder
 
-This document defines the path from first-time contributor to
-maintainer. Each role grants additional capabilities and carries
-additional expectations. Advancement is not automatic — it requires a
-request, a track record, and maintainer approval.
+This document defines the path from first-time contributor to admin.
+Each role grants additional capabilities and carries additional
+expectations. Advancement is not automatic — it requires a request, a
+track record, and maintainer approval.
 
 The ladder is organization-wide. Merged PRs and substantive reviews in
 any public repository under the
@@ -67,11 +67,11 @@ repository.
 - Ability to label, close, and reopen issues. A triage user can apply
   labels such as `ready-to-code`, but that label only dispatches the code
   agent when applied by a user with `write` access or by an agent bot.
-  The same applies to `ok-to-test`: CI removes it when a triage user
-  applies it, and it does not authorize e2e runs in this repository.
-  Ask someone with the Write role to apply it.
+  A `/ok-to-test <sha>` comment from a triage user does not authorize e2e
+  runs in this repository. Ask someone with the Write role to comment
+  it.
 - Triage contributors do not receive automatic e2e CI runs. Your PRs
-  need an `ok-to-test` label from someone with the Write role.
+  need a `/ok-to-test <sha>` comment from someone with the Write role.
 
 **Criteria:**
 
@@ -112,8 +112,11 @@ repository.
 - `/fs-retro` and `/fs-prioritize` slash commands (analysis agents
   that require write-level trust)
 - Push access to non-protected branches
-- Authorizing e2e CI on PRs from authors without write access by
-  applying the `ok-to-test` label after reviewing the latest push
+- Authorizing e2e CI on fork PRs, and on PRs from authors without
+  write access, by commenting `/ok-to-test <sha>` after reviewing the
+  latest push, where `<sha>` is the PR's latest commit (Commits tab, or
+  `gh pr view N --json headRefOid`). Your own PRs from a fork also need
+  a `/ok-to-test <sha>` comment, which you may post yourself
 
 **Criteria:**
 
@@ -168,6 +171,37 @@ in the [fullsend-ai/org](https://github.com/fullsend-ai/org) repository.
 issue in [fullsend-ai/org](https://github.com/fullsend-ai/org). Existing
 maintainers discuss and reach consensus; if approved, your username is
 added to the `maintainers` team in `peribolos.yaml`.
+
+### Admin
+
+**What it means:** You have repository administration rights and are a
+member of the
+[@fullsend-ai/admins](https://github.com/orgs/fullsend-ai/teams/admins)
+team. Admins are typically also owners of the fullsend-ai GitHub
+organization. You are expected to perform all of the activities of the
+Maintainer role and also to perform repository-level administrative
+tasks as needed.
+
+**What it unlocks:**
+
+- GitHub `admin` access on the fullsend-ai repositories
+- Approving and merging the `peribolos.yaml` pull requests in
+  [fullsend-ai/org](https://github.com/fullsend-ai/org) that grant or
+  revoke roles (see [Requesting a role](#requesting-a-role) and
+  [Revoking access](#revoking-access))
+- All capabilities from previous roles
+
+**Criteria and process:** This role has no formal request process
+yet. The project does not anticipate needing to add admins anytime
+soon. If and when someone needs this role, the admins will define the
+request process, the track record expected, and the approval
+threshold, and document them here. Until then, if you believe you need
+administrator access, reach out to one or more admins and explain why.
+
+**How to check:** Your GitHub username is listed in the `admins` team
+in
+[peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
+in the [fullsend-ai/org](https://github.com/fullsend-ai/org) repository.
 
 ## Demonstrating readiness
 
@@ -269,10 +303,19 @@ Role changes use the following request mechanisms:
 | Triage | [Triage Request](https://github.com/fullsend-ai/org/issues/new?template=triage-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 1 Maintainer |
 | Write | [Write Request](https://github.com/fullsend-ai/org/issues/new?template=write-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) | 2 Maintainers |
 | Maintainer | [Maintainer Nomination](https://github.com/fullsend-ai/org/issues/new?template=maintainer-request.yml) issue in [fullsend-ai/org](https://github.com/fullsend-ai/org) (see [MAINTAINERS.md](MAINTAINERS.md)) | Maintainer consensus |
+| Admin | None yet; ask a member of the [@fullsend-ai/admins](https://github.com/orgs/fullsend-ai/teams/admins) team (see [Admin](#admin)) | Admins; formal process to be defined when needed |
+
+Approving a request and merging it are separate steps. Maintainers
+approve Triage, Write, and Maintainer requests as the table shows, but
+each of those roles is granted by a pull request against
+[peribolos.yaml](https://github.com/fullsend-ai/org/blob/main/peribolos.yaml)
+in [fullsend-ai/org](https://github.com/fullsend-ai/org), and merging
+there needs an admin's review. A maintainer can open that pull request
+once the request is approved; an admin then approves and merges it.
 
 ## Revoking access
 
-Any maintainer may revoke a collaborator's access at any role level. Common
+Any admin may revoke a collaborator's access at any role level. Common
 reasons include:
 
 - Extended inactivity (no contributions or reviews for 6+ months)
@@ -282,3 +325,7 @@ reasons include:
 Revocation is not punitive — it reflects current activity level. A
 contributor whose access is revoked for inactivity can re-request it
 through the normal process.
+
+For maintainers, removal for inactivity follows the notification and
+grace-period process in
+[MAINTAINERS.md § Inactivity and removal](MAINTAINERS.md#inactivity-and-removal).

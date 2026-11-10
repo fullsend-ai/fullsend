@@ -58,15 +58,34 @@ type codexHookGroup struct {
 	Wired   bool   `json:"wired"`
 }
 
+// codexAgentToolNames are the codex multi-agent calls the adapter reports as
+// Agent: the V1 spawn and the control calls the spawn guard passes through
+// from the root (ADR 0126), and the V2 spawn and control calls ADR 0159
+// decision 3 maps the same way. send_message, followup_task and resume stay
+// unmapped, so an allowlist without their names blocks them even when the
+// guard cannot run. No mapped call has that backstop: an allowlist that
+// permits Agent passes them all and the spawn guard is their only name-level
+// check. The V1 spawn still sits under codex's agents.max_depth; the V2 spawn
+// does not (#9085), so V2 admission needs a backstop of its own before
+// Bootstrap accepts a V2 parent. codex joins namespace and name with no
+// separator (codex-rs/core/src/tools/registry.rs function_hook_tool_name);
+// only the default and multi_agent_v1 namespaces keep the bare spawn_agent.
+var codexAgentToolNames = []string{
+	"spawn_agent",
+	"multi_agent_v1wait_agent", "multi_agent_v1close_agent", "multi_agent_v1send_input",
+	"collaborationspawn_agent", "collaborationwait_agent", "collaborationlist_agents", "collaborationinterrupt_agent",
+}
+
 // claudeToolForCodex is the adapter's translation table, mirrored into the
 // manifest for operators reading it. codex's shell tool is already called
-// `Bash`; `apply_patch` covers Claude's Write and Edit, and the canonical
-// name it reports is what the scripts see translated
-// (codex-rs/core/src/tools/hook_names.rs).
-var claudeToolForCodex = map[string]string{
-	"apply_patch": "Edit",
-	"spawn_agent": "Agent",
-}
+// `Bash`; `apply_patch` covers Claude's Write and Edit.
+var claudeToolForCodex = func() map[string]string {
+	m := map[string]string{"apply_patch": "Edit"}
+	for _, name := range codexAgentToolNames {
+		m[name] = "Agent"
+	}
+	return m
+}()
 
 func (r CodexRuntime) codexHooksDir() string { return r.ConfigDir() + "/hooks" }
 
@@ -385,7 +404,9 @@ const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	codexChunkedReadNote
 
 // codexChunkedReadNote is the chunked-read rule for Codex's exec truncation
-// (10,000 tokens, head and tail, at 0.157.0). A single cat of a long SKILL.md
+// (10,000 tokens, head and tail; verified at 0.157.0 and 0.166.0, the latter
+// live: a 200-line dense file rides whole, a larger one is cut in the middle
+// behind an "N tokens truncated" marker). A single cat of a long SKILL.md
 // drops the middle with no retry (#7831). Lines are counted with awk's NR, not
 // `wc -l`: `wc -l` counts newline characters, so a file whose last line has no
 // trailing newline reports one line too few and the last range would stop

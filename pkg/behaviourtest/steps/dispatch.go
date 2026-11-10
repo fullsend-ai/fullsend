@@ -24,6 +24,9 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a custom harness "([^"]+)" with:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenCustomHarness(world.FromContext(ctx), name, doc)
 	})
+	sc.Step(`^a fullsend file "([^"]+)" with:$`, func(ctx context.Context, rel, doc string) (context.Context, error) {
+		return ctx, givenFullsendFile(world.FromContext(ctx), rel, doc)
+	})
 	sc.Step(`^a disabled custom harness "([^"]+)" with:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenDisabledCustomHarness(world.FromContext(ctx), name, doc)
 	})
@@ -32,6 +35,12 @@ func registerDispatchSteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^the harness "([^"]+)" agent did not run$`, func(ctx context.Context, agent string) (context.Context, error) {
 		return ctx, thenHarnessAgentDidNotRun(world.FromContext(ctx), agent)
+	})
+	sc.Step(`^the harness "([^"]+)" workflow logs (do not )?contain "([^"]+)"$`, func(ctx context.Context, agent, negate, needle string) (context.Context, error) {
+		return ctx, thenHarnessWorkflowLogsContain(ctx, world.FromContext(ctx), agent, needle, negate == "")
+	})
+	sc.Step(`^the harness "([^"]+)" workflow logs register persona "([^"]+)" and not "([^"]+)"$`, func(ctx context.Context, agent, want, notWant string) (context.Context, error) {
+		return ctx, thenHarnessLogsRegisterPersona(world.FromContext(ctx), agent, want, notWant)
 	})
 	sc.Step(`^the harness dispatch completes with an empty matrix$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, thenHarnessDispatchEmptyMatrix(world.FromContext(ctx))
@@ -245,6 +254,22 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 	return nil
 }
 
+// givenFullsendFile commits doc to .fullsend/<rel> in the test repository,
+// for files a harness references by a path relative to the fullsend dir
+// (an override source, for example).
+func givenFullsendFile(w *world.World, rel, doc string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before file operations")
+	}
+	rel = strings.TrimSpace(rel)
+	clean := filepath.ToSlash(filepath.Clean(rel))
+	if rel == "" || filepath.IsAbs(rel) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return fmt.Errorf("fullsend file path %q must be relative and inside .fullsend", rel)
+	}
+	return w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, ".fullsend/"+clean,
+		fmt.Sprintf("behaviour: add fullsend file %s", clean), []byte(doc+"\n"))
+}
+
 func givenCustomHarness(w *world.World, name, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
@@ -398,6 +423,56 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 	return ensureHarnessArtifacts(w, agent)
 }
 
+// thenHarnessWorkflowLogsContain checks the harness run's logs for needle
+// (want) or its absence (!want). It reads the run recorded by "the harness
+// ... workflow completes successfully", waiting for it first when no run is
+// recorded yet. Logs that could not be fetched, were empty or hold a
+// fetch-failure note are fetched again until harnessLogPollWindow passes
+// (fetchUsableHarnessLogs, shared with the fails-with-log step). A log
+// snapshot with a job missing or truncated cannot prove absence, so a
+// negative check on one fails instead of passing, and a window that ends
+// with no log output proves nothing either: the check fails saying the
+// forge returned no logs, whatever the expected outcome.
+func thenHarnessWorkflowLogsContain(ctx context.Context, w *world.World, agent, needle string, want bool) error {
+	agent = strings.TrimSpace(agent)
+	if w.WorkflowRun == nil {
+		if err := thenHarnessWorkflowCompletes(w, agent); err != nil {
+			return err
+		}
+	}
+	run := w.WorkflowRun
+	logs, fetchErr, stopped := fetchUsableHarnessLogs(ctx, w, agent, needle, run)
+	found := strings.Contains(logs, needle)
+	complete := runLogsComplete(*run, logs)
+	var checkErr error
+	switch {
+	case fetchErr != nil:
+		checkErr = fmt.Errorf("reading harness %q workflow logs (run %d): %w", agent, run.ID, fetchErr)
+	// An empty body with no error is not a log snapshot
+	// (writeFetchedWorkflowRunLogs, checkHarnessRunLogs): it proves
+	// neither presence nor absence.
+	case strings.TrimSpace(logs) == "":
+		checkErr = fmt.Errorf("the forge returned no log output for harness %q run %d, so %q was not checked", agent, run.ID, needle)
+	case want && !found && !complete:
+		checkErr = fmt.Errorf("harness %q workflow logs (run %d) do not contain %q, but the log snapshot is incomplete", agent, run.ID, needle)
+	case want && !found:
+		checkErr = fmt.Errorf("harness %q workflow logs (run %d) do not contain %q", agent, run.ID, needle)
+	case !want && found:
+		checkErr = fmt.Errorf("harness %q workflow logs (run %d) unexpectedly contain %q", agent, run.ID, needle)
+	case !want && !complete:
+		checkErr = fmt.Errorf("harness %q workflow logs (run %d) are incomplete, so they cannot show %q is absent", agent, run.ID, needle)
+	}
+	if checkErr == nil {
+		return nil
+	}
+	// A cancelled or timed-out scenario is the cause whatever the
+	// diagnosis, the way the fails-with-log step wraps its check error.
+	if stopped != nil {
+		checkErr = fmt.Errorf("%w (stopped waiting for the logs: %w)", checkErr, stopped)
+	}
+	return checkErr
+}
+
 // defaultSettleDuration is the maximum time to wait for the dispatch
 // pipeline to settle before asserting artifact absence.
 const defaultSettleDuration = 90 * time.Second
@@ -475,7 +550,7 @@ func ensureHarnessArtifacts(w *world.World, agent string) error {
 	if w.WorkflowRun == nil {
 		return fmt.Errorf("no workflow run recorded")
 	}
-	if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, w.WorkflowRun.ID, "fullsend-"+agent, dest); err != nil {
+	if err := ci.DownloadAgentArtifactsFromRun(ctx, w.CI, w.Org, w.RepoName, w.WorkflowRun.ID, agent, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
 	}

@@ -30,10 +30,11 @@ func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
 			Kind: normevent.TransitionKind(event.Type),
 		},
 		Actor: normevent.Actor{
-			ID:             actorID(event),
-			Kind:           normevent.ActorKind(p.actorKind(event)),
-			Role:           normevent.ActorRole(p.resolveRole(event)),
-			IsEntityAuthor: isEntityAuthor(event),
+			ID:               actorID(event),
+			Kind:             normevent.ActorKind(p.actorKind(event)),
+			Role:             normevent.ActorRole(p.resolveRole(event)),
+			IsEntityAuthor:   isEntityAuthor(event),
+			IsEntityAssignee: isEntityAssignee(event),
 		},
 		State: normevent.State{
 			Labels: event.Labels,
@@ -175,6 +176,18 @@ func isEntityAuthor(event JiraEvent) bool {
 	return aid == userID(event.Reporter)
 }
 
+// isEntityAssignee checks if the actor is the issue's current assignee. It
+// compares the same identifier as actor.id and isEntityAuthor: accountId,
+// or name where accountId is unavailable (Data Center/Server). An
+// unassigned issue (zero-value Assignee) never matches.
+func isEntityAssignee(event JiraEvent) bool {
+	aid := actorID(event)
+	if aid == "" {
+		return false
+	}
+	return aid == userID(event.Assignee)
+}
+
 // extractCommand parses a comment body for a /fs- slash command. It returns
 // the command token and the remaining instruction text. If no slash command
 // is found, both return values are empty strings.
@@ -204,17 +217,28 @@ func extractCommand(body string) (command, instruction string) {
 	return command, instruction
 }
 
-// resolveRole maps the event actor's Jira project role to an ADR 0054 role.
+// resolveRole maps the event actor to an ADR 0054 role from the source
+// roleSourceFor picks: the jira authorization lists (write, triage, or
+// "none"), no resolution ("none", for label-added events the dispatch gate
+// authorizes by Jira's Edit Issues permission), or the Jira project role.
 //
 // roleMembership is loaded once per cycle for a single p.opts.JiraProject.
-// A --jql spanning multiple projects can still surface issues outside that
-// project, so an actor's role is only honored for issues in the configured
-// project; anything else fails closed to "external" rather than leaking a
-// role granted in one project onto an issue in another (see PR #5778 review).
+// The poller query is scoped to that project, but as defensive validation
+// (for example a misconfigured poll.query, or an issue moved between
+// projects) an actor's project role is only honored for issues in the
+// configured project; anything else fails closed to "external" rather than
+// leaking a role granted in one project onto an issue in another (see PR
+// #5778 review).
 func (p *Poller) resolveRole(event JiraEvent) string {
 	aid := actorID(event)
 	if aid == "" {
 		return "external"
+	}
+	switch p.roleSourceFor(event) {
+	case roleNotResolved:
+		return unresolvedRole
+	case roleFromLists:
+		return p.listRole(aid)
 	}
 	if p.opts.JiraProject != "" && issueProjectKey(event.IssueKey) != p.opts.JiraProject {
 		return "external"

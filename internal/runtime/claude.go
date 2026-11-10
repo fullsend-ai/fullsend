@@ -727,6 +727,13 @@ func skillDestNames(skillDirs []string) []nameEntry {
 // Every destination name must be a single sandbox-safe path segment
 // (skill.ValidName) and collisions fail, both before any upload.
 func uploadHarnessSkills(sandboxName, skillsRoot string, skillDirs []string) error {
+	return uploadHarnessSkillsWith(sandbox.Upload, sandboxName, skillsRoot, skillDirs)
+}
+
+// uploadHarnessSkillsWith is uploadHarnessSkills with the upload function
+// injected, so runtimes that stub sandbox uploads in tests (dummy) share
+// the same naming and collision rules.
+func uploadHarnessSkillsWith(upload sandboxUploadFunc, sandboxName, skillsRoot string, skillDirs []string) error {
 	entries := skillDestNames(skillDirs)
 	for _, e := range entries {
 		if !skill.ValidName(e.name) {
@@ -742,7 +749,7 @@ func uploadHarnessSkills(sandboxName, skillsRoot string, skillDirs []string) err
 		}
 		name := skill.SandboxName(skillPath)
 		dest := skillsRoot + "/" + name
-		if err := sandbox.Upload(sandboxName, skillPath, dest); err != nil {
+		if err := upload(sandboxName, skillPath, dest); err != nil {
 			return fmt.Errorf("copying skill %q: %w", skillPath, err)
 		}
 		if base := filepath.Base(skillPath); base != name {
@@ -1201,10 +1208,29 @@ func agentDestName(agentName, agentPath string) string {
 	return filepath.Base(agentPath)
 }
 
+// LaunchEnvExports implements LaunchEnvExporter: the environment names
+// buildRunCommand sets beyond EnvExports. Nonessential traffic is always
+// disabled; the rest are set only when an inference gateway is registered
+// for the run (claudeGatewayPostEnv), with the credential variable chosen
+// by the block's auth mode, and are recorded flat anyway: runtime_specific
+// asks whether the runtime can set the name, not whether every
+// configuration does. TestLaunchEnvExportsMatchLaunchCommands pins this
+// list to the launch commands.
+func (ClaudeRuntime) LaunchEnvExports() []string {
+	return []string{
+		claudeNonessentialTrafficEnv,
+		claudeGatewayBaseURLEnv,
+		"ANTHROPIC_API_KEY",
+		"ANTHROPIC_AUTH_TOKEN",
+		"CLAUDE_CODE_API_KEY_HELPER_TTL_MS",
+	}
+}
+
 // Ensure ClaudeRuntime implements Runtime and TranscriptHandler.
 var (
 	_ Runtime           = ClaudeRuntime{}
 	_ TranscriptHandler = ClaudeRuntime{}
 	_ DebugLogNamer     = ClaudeRuntime{}
 	_ ContextBridger    = ClaudeRuntime{}
+	_ LaunchEnvExporter = ClaudeRuntime{}
 )

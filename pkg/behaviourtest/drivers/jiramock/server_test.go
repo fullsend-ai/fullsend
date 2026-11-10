@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -63,6 +64,36 @@ func TestChangelogReturned(t *testing.T) {
 	require.Len(t, entries[0].Items, 1)
 	assert.Equal(t, "labels", entries[0].Items[0].Field)
 	assert.Contains(t, entries[0].Items[0].ToString, "ready-to-code")
+}
+
+func TestTimestampedActivityHelpers(t *testing.T) {
+	t.Parallel()
+	srv, state := NewServer()
+	defer srv.Close()
+
+	at := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
+	state.AddIssue("PROJ-1", nil)
+	state.AddCommentFromActorAt("PROJ-1", "/fs-code", "dev-001", "Dev", at)
+	state.AddLabelChangeAt("PROJ-1", "ready-to-code", at.Add(time.Minute))
+
+	client, err := jira.New("test-token", jira.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	comments, err := client.ListComments(ctx, "PROJ-1")
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Equal(t, "dev-001", comments[0].Author.AccountID)
+	created, err := time.Parse("2006-01-02T15:04:05.000-0700", comments[0].Created)
+	require.NoError(t, err)
+	assert.True(t, created.Equal(at), "comment created = %s, want %s", created, at)
+
+	entries, err := client.ListChangelog(ctx, "PROJ-1")
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	changed, err := time.Parse("2006-01-02T15:04:05.000-0700", entries[0].Created)
+	require.NoError(t, err)
+	assert.True(t, changed.Equal(at.Add(time.Minute)), "changelog created = %s", changed)
 }
 
 func TestEntityPropertyCRUD(t *testing.T) {

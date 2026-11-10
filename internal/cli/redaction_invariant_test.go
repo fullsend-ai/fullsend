@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -322,6 +323,22 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 			return out
 		}
 	}
+	// The pi parser's real path to the record: its wire lines, through
+	// ParsePiStream, into the collector, the tracker or both.
+	piWire := func(toolName, args, result string, isError bool) string {
+		return `{"type":"tool_execution_start","toolCallId":"toolu_01","toolName":` + jsonStr(toolName) + `,"args":` + args + "}\n" +
+			`{"type":"tool_execution_end","toolCallId":"toolu_01","toolName":` + jsonStr(toolName) + `,"result":` + result +
+			`,"isError":` + strconv.FormatBool(isError) + "}\n"
+	}
+	piResult := func(text string) string { return `{"content":[{"type":"text","text":` + jsonStr(text) + `}]}` }
+	viaPi := func(wire func(text string) string) func(*testing.T, string) []string {
+		return func(t *testing.T, text string) []string {
+			c := collector()
+			_, err := agentruntime.ParsePiStream(strings.NewReader(wire(text)), c.Handle)
+			require.NoError(t, err)
+			return []string{c.Result("stop").OutputMessages}
+		}
+	}
 	surfaces := []surface{
 		{"redactText", func(_ *testing.T, text string) []string {
 			var findings []security.Finding
@@ -365,6 +382,36 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 			c.Handle(agentruntime.ToolUseEvent{ID: "toolu_01", Name: "Bash"})
 			c.Handle(agentruntime.ToolResultEvent{ID: "toolu_01", Result: text})
 		})},
+		{"pi command and result", viaPi(func(text string) string {
+			return piWire("bash", `{"command":`+jsonStr(text)+`}`, piResult(text), false)
+		})},
+		{"pi read path", viaPi(func(text string) string {
+			return piWire("read", `{"path":`+jsonStr(text)+`}`, piResult("ok"), false)
+		})},
+		{"pi unlisted argument", viaPi(func(text string) string {
+			return piWire("write", `{"path":"/x","content":`+jsonStr(text)+`}`, piResult("ok"), false)
+		})},
+		{"pi failed call", viaPi(func(text string) string {
+			return piWire("bash", `{"command":"ls"}`, piResult(text), true)
+		})},
+		{"pi result as a plain string", viaPi(func(text string) string {
+			return piWire("bash", `{"command":"ls"}`, jsonStr(text), false)
+		})},
+		{"pi result with no content list", viaPi(func(text string) string {
+			return piWire("bash", `{"command":"ls"}`, `{"output":`+jsonStr(text)+`}`, false)
+		})},
+		{"pi failed call with no content list", viaPi(func(text string) string {
+			return piWire("bash", `{"command":"ls"}`, `{"output":`+jsonStr(text)+`}`, true)
+		})},
+		{"pi failed call with a result that is not an object", viaPi(func(text string) string {
+			return piWire("bash", `{"command":"ls"}`, `[`+jsonStr(text)+`]`, true)
+		})},
+		{"pi call cut off before it ends", viaPi(func(text string) string {
+			return `{"type":"tool_execution_start","toolCallId":"toolu_01","toolName":"bash","args":{"command":` + jsonStr(text) + `}}` + "\n"
+		})},
+		{"pi result with no start", viaPi(func(text string) string {
+			return `{"type":"tool_execution_end","toolCallId":"toolu_01","toolName":"bash","result":` + piResult(text) + `,"isError":false}` + "\n"
+		})},
 		{"input message", func(t *testing.T, text string) []string {
 			// The real path: the feedback is redacted, then composed into the
 			// retry prompt (sanitized, cut, framed), then recorded.
@@ -385,6 +432,22 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 			tr.Handle(agentruntime.ToolUseEvent{ID: text, Name: "Bash"})
 			tr.Handle(agentruntime.ToolResultEvent{ID: text})
 		})},
+		{"pi span id", func(t *testing.T, text string) []string {
+			tr, rec, _ := toolSpanFixture(t)
+			tr.runnerEnv = runnerEnv
+			wire := `{"type":"tool_execution_start","toolCallId":` + jsonStr(text) + `,"toolName":"bash","args":{}}` + "\n" +
+				`{"type":"tool_execution_end","toolCallId":` + jsonStr(text) + `,"toolName":"bash","result":"","isError":false}` + "\n"
+			_, err := agentruntime.ParsePiStream(strings.NewReader(wire), tr.Handle)
+			require.NoError(t, err)
+			var out []string
+			for _, s := range endedToolSpans(rec) {
+				out = append(out, s.Name)
+				for _, kv := range s.Attributes {
+					out = append(out, kv.Value.Emit())
+				}
+			}
+			return out
+		}},
 	}
 
 	for _, pair := range secrets {

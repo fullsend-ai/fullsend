@@ -18,8 +18,8 @@ const noFixLabel = "fullsend-no-fix"
 
 // HarnessRouter implements EventRouter by applying the default routing
 // rules from ADR 0067's event routing table. Slash commands (/fs-X)
-// dispatch to any agent in the valid set; label, merge, and MR-open
-// events use hardcoded stage mappings.
+// dispatch to any agent in the valid set; label, merge, MR-open, and
+// MR-push (synchronized) events use hardcoded stage mappings.
 //
 // This is an interim implementation using Go routing rules. ADR 0067
 // prescribes CEL trigger expressions (ADR 0061) for routing; this
@@ -55,6 +55,8 @@ func (r *HarnessRouter) Route(event *NormalizedEvent) ([]string, error) {
 		return r.routeMerge(event)
 	case "opened":
 		return r.routeOpened(event)
+	case "synchronized":
+		return r.routeSynchronized(event)
 	default:
 		return nil, nil
 	}
@@ -170,13 +172,17 @@ func (r *HarnessRouter) routeLabel(event *NormalizedEvent) ([]string, error) {
 	return []string{stage}, nil
 }
 
-// routeMerge does not verify the merge/close actor's role — retro is a
-// read-only analysis stage, so dispatching it carries no mutation risk.
-// Both merged and closed-unmerged transitions dispatch retro. Only
-// change proposals reach retro: a closed work item (issue close, which
-// the GitLab webhook builder can emit) is not a retro trigger.
+// routeMerge dispatches retro for merged and closed-unmerged change
+// proposals only when the actor has write-level access. The GitLab poller
+// resolves the actor's project role before routing, and the agent job
+// independently checks Developer access before running retro. Only change
+// proposals reach retro: a closed work item (issue close, which the GitLab
+// webhook builder can emit) is not a retro trigger.
 func (r *HarnessRouter) routeMerge(event *NormalizedEvent) ([]string, error) {
 	if event.Entity.Kind != "change_proposal" {
+		return nil, nil
+	}
+	if !HasRole(event.Actor.Role, "write") {
 		return nil, nil
 	}
 	if !r.validAgents["retro"] {
@@ -201,6 +207,24 @@ func (r *HarnessRouter) routeOpened(event *NormalizedEvent) ([]string, error) {
 		if r.validAgents["review"] {
 			return []string{"review"}, nil
 		}
+	}
+	return nil, nil
+}
+
+// routeSynchronized dispatches review for a same-project change proposal
+// whose head received new commits. The poller cannot tell who pushed (the
+// event actor is the MR author), so the pusher is never authorized here.
+// Fork and unknown-origin MRs are denied: a non-member with push access to
+// the fork could otherwise trigger repeated reviews under the author's
+// identity. Fork MR re-review is currently unsupported, since
+// routeSlashCommand also denies fork MRs. For a same-project MR any pusher
+// already holds project push access.
+func (r *HarnessRouter) routeSynchronized(event *NormalizedEvent) ([]string, error) {
+	if event.Entity.Kind != "change_proposal" || isForkOrUnknown(event.State) {
+		return nil, nil
+	}
+	if r.validAgents["review"] {
+		return []string{"review"}, nil
 	}
 	return nil, nil
 }

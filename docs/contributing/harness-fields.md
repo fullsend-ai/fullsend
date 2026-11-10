@@ -11,11 +11,13 @@
 > overlays). Those ADRs are point-in-time records; this document reflects the
 > current state.
 >
-> **Decided, not yet implemented (2026-10-01):**
+> **Decided, not yet implemented (2026-10-01; ADR 0158 2026-10-27):**
 > [ADR 0112](../ADRs/0112-overlays-may-set-any-harness-field.md) will let
 > overlays set any field except `base`, `trigger`, `overlays`, `slug`, `role`
-> and `forge`, with guarded fields limited to trusted inputs. The tables below
-> change when it is implemented.
+> and `forge`, with guarded fields limited to trusted inputs, and
+> [ADR 0158](../ADRs/0158-overlays-may-grant-runtime-fetch-within-the-config-allowlist.md)
+> will let a matching overlay grant runtime fetch within the config-level
+> allowlist. The tables below change when they are implemented.
 > [ADR 0151](../ADRs/0151-harness-human-role-minimums.md) adds the target
 > `human_min_role` field at the top level and in guarded overlays, with its
 > overlay selected before actor admission and pinned through the run. Legacy
@@ -72,7 +74,7 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `max_runtime_fetches` | Fetch cap                                       |
 | `trigger`          | CEL trigger expression, evaluated against normalized events (ADR-0061) |
 | `privilege_levels` | Mint privilege per run-stage (ADR-0073)            |
-| `schema_version`   | Schema contract version (ADR-0127); absent = version `1`. **Planned, not yet implemented** |
+| `schema_version`   | Schema contract version (ADR-0127); absent = `1`; malformed, zero, negative or unsupported values fail load |
 | `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** ([#8722](https://github.com/fullsend-ai/fullsend/issues/8722)) |
 
 ## Semantic types (ADR 0127)
@@ -95,7 +97,7 @@ references are scalar values, not shell commands.
 | source metadata path | Describes a path in the source repository; not runtime-resolved or delivered | `doc` |
 | destination path | Names a location inside the sandbox, not a host file to resolve | `host_files[].dest` |
 | structural | Contains nested fields, lists, maps, or conditions | `forge`, `overlays[]`, `validation_loop`, `host_files[]`, `api_servers[]`, `skills[]`, `plugins[]`, `plugins[].pi`, `openshell`, `security` and its nested scanner/hook/escalation/trace blocks, `runner_env`, `env`, `env.runner`, `env.sandbox`, `privilege_levels`, `api_servers[].env`, `plugins[].env`, `allowed_remote_resources`, `providers` |
-| scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `trigger` (CEL expression), `schema_version` (planned); `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
+| scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `trigger` (CEL expression), `schema_version`; `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
 
 For local harnesses, relative runtime paths resolve from the `.fullsend`
 configuration root (the parent of `harness/`), **not** from the YAML file's
@@ -124,21 +126,24 @@ a single-key map of that source to file overrides; a `plugins[]` entry can be
 a path string or a `{path, env, pi}` map. Scalar security leaf values retain
 their own validation and defaults; this type table does not override them.
 
-The planned `schema_version` field (absent = `1` once implemented) will declare
-this contract; an incompatible field-type change will require a version bump
-and an update to this table in the same change. Backward-compatible field
-additions do not require a bump; [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)
-leaves other breaking schema changes for a separate versioning policy. Once
-version-aware loaders are implemented, they will reject malformed or
-unsupported versions in each raw composition layer before merging; older
-pinned consumers must be upgraded before harness content using a new version
-is published to them.
+The `schema_version` field (absent = `1`) declares this contract; an
+incompatible field-type change requires a version bump and an update to this
+table in the same change. Backward-compatible field additions do not require a
+bump; [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)
+leaves other breaking schema changes for a separate versioning policy. Loaders
+reject malformed, zero, negative, and unsupported versions in each raw
+composition layer at parse time — a load failure, not a `Harness.Lint()`
+finding — and mixed-version `base:` composition is rejected before any merge
+runs. Older pinned consumers must be upgraded before harness content using a
+new version is published to them.
 
 ## Merge and inheritance rules
 
 When a forge block or overlay is merged into the harness top level, each
 field type follows specific merge semantics. The same rules apply during
-`base:` composition (base → child merging).
+`base:` composition (base → child merging). All `base:` layers in a
+composition chain must share a single effective schema version; mixed-version
+composition is rejected at load time (ADR-0127).
 
 Two independent precedence axes govern field resolution
 (see [#6798](https://github.com/fullsend-ai/fullsend/issues/6798)):
@@ -154,7 +159,8 @@ Two independent precedence axes govern field resolution
 | Field type       | Merge behavior                                       | Nil vs empty                                          |
 |------------------|------------------------------------------------------|-------------------------------------------------------|
 | Scalar fields    | Forge/child value overrides top-level/base value     | Absent = inherit from top level / base                |
-| `skills`         | Merged with deduplication by skill identity (declared `SKILL.md` name, otherwise directory basename; `skill.SandboxName`). Relative entries are resolved against the fullsend directory before the merge, so a local override matches by declared name too. Two entries with one identity in a single list are both kept and fail at bootstrap. A relative entry reached through a symlink that leaves the fullsend directory, or that has an absolute target, at any component including the marker file, keeps its directory basename as its merge identity. Forge/child overrides a matching top-level/base entry. Sibling nested dirs that share a leaf name are kept. | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
+| `schema_version` | Not inherited, and an exception to the Scalar row: the merged harness keeps the child's own declaration. Every composed `base:` layer must share one effective version, or the load fails naming both versions and the layer (ADR-0127). Top level only (not in `ForgeConfig`, so no forge/overlay override) | Absent = version `1`; an absent child stays absent after the merge rather than inheriting the base's value |
+| `skills`         | Merged with deduplication by skill identity (declared `SKILL.md` name, otherwise directory basename; `skill.SandboxName`). Relative entries are resolved against the fullsend directory before the merge, so a local override matches by declared name too. Two entries with one identity in a single list are both kept and fail at bootstrap. A relative entry reached through a symlink that leaves the fullsend directory, or that has an absolute target, at any component including the marker file, keeps its directory basename as its merge identity. Forge/child overrides a matching top-level/base entry, and the two entries' per-file override maps merge (`mergeOverrides`; forge/child keys win). A map-form forge/child entry whose path has no `SKILL.md` keeps the matched entry's source and adds only its overrides (#6158); If such an entry matches no key, it can match the one pinned-URL entry of its name (ignoring `#fragment` and `?query`); two or more candidates are an error that names them and asks for the full base URL as the map key (#8973). Sibling nested dirs that share a leaf name are kept. | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
 | `runner_env`     | Top-level/base map merged with forge/child map; forge/child keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `privilege_levels` | Top-level/base map merged with child map; child keys win (not in `ForgeConfig`, so no forge/overlay override) | Absent (nil) = inherit from base; omitted entirely at every layer defaults every run-stage to `write` |
 | `validation_loop`| Field-level merge; forge/child non-zero values win, base/top-level fills gaps | Absent (nil) = inherit from top level / base; `validation_loop: {}` inherits all fields (zero-value-as-unset). Post-merge `Validate()` still requires `script`. There is no way to disable an inherited validation loop. |
@@ -248,6 +254,18 @@ This payload provides backwards-compatible legacy forge fields (`issue`,
 `pull_request`, `comment`) alongside `_normalized_event` (the serialized
 `normevent.Event` map).
 
+GitLab has a second, separate builder: `buildEventPayload` in
+`internal/poll/dispatch.go`, shared by the poller and the webhook dispatcher.
+It emits a minimal payload. Its `_normalized_event` is the complete event when
+that validates and fits the transport budget, and otherwise a partial map that
+carries only `transition.comment.body` (see
+`docs/normative/normalized-event/v1/README.md`). Its unit tests are in
+`internal/poll/dispatch_test.go`, `internal/poll/dispatch_normalized_test.go`
+and `internal/poll/webhook_dispatch_test.go`;
+`run-agent-job.sh` reads the body in
+`internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/`, and
+`internal/scaffold/gitlab_fix_instruction_test.go` covers that script.
+
 When resolving CEL-guarded overlays via `ResolveOverlays(event, forgePlatform,
 config)`, the runtime passes the deserialized `normevent.Event` directly as
 the `event` variable in the CEL environment (see [CEL environment](#cel-environment)
@@ -255,7 +273,9 @@ above). When adding, modifying, or removing fields in normalized event structure
 or `event_payload`:
 
 1. Update `buildEventPayload` in `internal/harnessdispatch/project.go` and its
-   unit tests in `internal/harnessdispatch/project_test.go`.
+   unit tests in `internal/harnessdispatch/project_test.go`. If the change
+   affects GitLab dispatch, also update `buildEventPayload` in
+   `internal/poll/dispatch.go` and its tests.
 2. Update the projection table in `docs/normative/normalized-event/v1/README.md`.
 3. If new event fields or properties are exposed to overlay CEL evaluation,
    document them in the [CEL environment](#cel-environment) table above.

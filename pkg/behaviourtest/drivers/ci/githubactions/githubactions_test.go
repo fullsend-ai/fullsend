@@ -21,6 +21,8 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 )
 
+var _ ci.AgentArtifactDownloader = (*Driver)(nil)
+
 // instantAfter returns a timer function that fires immediately, allowing
 // poll-loop tests to run without real wall-clock sleeps.
 func instantAfter(_ time.Duration) <-chan time.Time {
@@ -276,6 +278,31 @@ func TestNewestRepositoryArtifactCreatedAt(t *testing.T) {
 		{CreatedAt: "2026-01-02T00:00:00Z"},
 	}
 	assert.Equal(t, "2026-01-02T00:00:00Z", newestRepositoryArtifactCreatedAt(arts))
+}
+
+func TestAgentArtifactNameMatchesLogicalAgent(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		actual    string
+		requested string
+		want      bool
+	}{
+		{name: "legacy exact name", actual: "fullsend-ci-retry", requested: "fullsend-ci-retry", want: true},
+		{name: "readable matrix name", actual: "fullsend-ci-retry.matrix-12", requested: "fullsend-ci-retry", want: true},
+		{name: "numeric sibling is not a suffix", actual: "fullsend-ci-retry-1", requested: "fullsend-ci-retry", want: false},
+		{name: "prefix lookalike", actual: "fullsend-ci-retry-helper", requested: "fullsend-ci-retry", want: false},
+		{name: "different agent matrix name", actual: "fullsend-ci-retry-1.matrix-0", requested: "fullsend-ci-retry", want: false},
+		{name: "malformed matrix index", actual: "fullsend-ci-retry.matrix-x", requested: "fullsend-ci-retry", want: false},
+		{name: "invalid agent cannot alias a matrix name", actual: "fullsend-ci-retry.matrix-0", requested: "fullsend-ci-retry.matrix-0", want: false},
+		{name: "invalid requested agent does not match matrix suffix", actual: "fullsend-ci-retry.matrix-0.matrix-1", requested: "fullsend-ci-retry.matrix-0", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, agentArtifactNameMatches(tt.actual, tt.requested))
+		})
+	}
 }
 
 func TestCountHarnessDispatches_NoRuns(t *testing.T) {
@@ -539,6 +566,36 @@ type truncatingListWorkflowRunsClient struct {
 
 func (c *truncatingListWorkflowRunsClient) ListWorkflowRuns(_ context.Context, _, _, _ string) ([]forge.WorkflowRun, error) {
 	return append([]forge.WorkflowRun(nil), c.truncated...), nil
+}
+
+func TestHarnessDispatchAssertions_IncludeRunsBeyondFirstPage(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	var runs []forge.WorkflowRun
+	for id := range 11 {
+		runs = append(runs, forge.WorkflowRun{
+			ID: id + 1, Status: "completed", Conclusion: "success",
+			CreatedAt: after.Add(time.Duration(id+1) * time.Minute).Format(time.RFC3339),
+		})
+	}
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/fullsend.yaml": runs}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		1: {{ID: 1, Name: "dispatch / Harness run (fix)", Status: "completed", Conclusion: "success"}},
+	}
+	d := newTestDriver(&truncatingListWorkflowRunsClient{FakeClient: fake, truncated: runs[1:]})
+
+	t.Run("exact count", func(t *testing.T) {
+		count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "fix", after)
+		require.NoError(t, err)
+		assert.Equal(t, 1, count, "newer unrelated runs must not hide a dispatch")
+	})
+	t.Run("negative assertion", func(t *testing.T) {
+		err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "fix", after)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "workflow run 1")
+	})
 }
 
 // TestWaitForHarnessAgentRound_SelectsEarliestEligibleRunBeyondTruncatedPage
@@ -1107,6 +1164,15 @@ func TestWaitForHarnessAgent_FromRepositoryArtifact(t *testing.T) {
 				CreatedAt:     "2026-01-02T00:00:00Z",
 				WorkflowRunID: 99,
 			},
+			{
+				ID:            11,
+				Name:          "fullsend-issue-ping.matrix-1",
+				CreatedAt:     "2026-01-02T00:00:00Z",
+				WorkflowRunID: 99,
+			},
+			// This used to look like a numeric suffix for issue-ping, but
+			// it is the exact legacy name of a different agent.
+			{ID: 12, Name: "fullsend-issue-ping-1", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 88},
 		},
 	}
 	client.WorkflowRuns = map[string]*forge.WorkflowRun{
@@ -1120,6 +1186,370 @@ func TestWaitForHarnessAgent_FromRepositoryArtifact(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, run)
 	assert.Equal(t, 99, run.ID)
+}
+
+func TestDownloadAgentArtifactsFromRunDownloadsEveryMatchingMatrixArtifact(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	first := "fullsend-ci-retry"
+	second := "fullsend-ci-retry.matrix-1"
+	other := "fullsend-ci-retry-1"
+	client := forge.NewFakeClient()
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		42: {
+			{ID: 1, Name: first},
+			{ID: 2, Name: second},
+			{ID: 3, Name: other},
+		},
+	}
+	client.WorkflowArtifactContents = map[int][]byte{
+		1: zipData(t, "first"),
+		2: zipData(t, "second"),
+		3: zipData(t, "numeric sibling"),
+	}
+
+	dest := t.TempDir()
+	err := ci.DownloadAgentArtifactsFromRun(context.Background(), New(client, ""), "org", "repo", 42, "ci-retry", dest)
+	require.NoError(t, err)
+	for name, want := range map[string]string{first: "first", second: "second"} {
+		got, err := os.ReadFile(filepath.Join(dest, name, "result.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, want, string(got))
+	}
+	_, err = os.Stat(filepath.Join(dest, other))
+	assert.True(t, os.IsNotExist(err), "numeric sibling artifact must not be downloaded")
+}
+
+func TestDownloadNamedArtifactFromRunMatchesExactName(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	client := forge.NewFakeClient()
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		42: {
+			{ID: 1, Name: "fullsend-review"},
+			{ID: 2, Name: "fullsend-review.matrix-1"},
+		},
+	}
+	client.WorkflowArtifactContents = map[int][]byte{
+		1: zipData(t, "base"),
+		2: zipData(t, "matrix sibling"),
+	}
+	dest := t.TempDir()
+	err := New(client, "").DownloadNamedArtifactFromRun(context.Background(), "org", "repo", 42, "fullsend-review", dest)
+	require.NoError(t, err)
+	got, err := os.ReadFile(filepath.Join(dest, "fullsend-review", "result.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "base", string(got))
+	assert.NoFileExists(t, filepath.Join(dest, "fullsend-review.matrix-1"))
+}
+
+func TestDownloadNamedArtifactFromRunErrorsWhenNotFound(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		42: {{ID: 1, Name: "fullsend-ci-retry-1"}},
+	}
+	err := New(client, "").DownloadNamedArtifactFromRun(context.Background(), "org", "repo", 42, "fullsend-ci-retry", t.TempDir())
+	require.ErrorContains(t, err, `artifact "fullsend-ci-retry" not found on workflow run 42`)
+}
+
+func TestDownloadAgentArtifactsAfterDownloadsEveryMatchingMatrixArtifact(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	first := "fullsend-ci-retry"
+	second := "fullsend-ci-retry.matrix-1"
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"run-42": {ID: 42, Status: "completed", Conclusion: "success"},
+	}
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: first, CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42},
+			{ID: 2, Name: second, CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42},
+			{ID: 3, Name: "fullsend-ci-retry-1", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42},
+		},
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		42: {
+			{ID: 1, Name: first},
+			{ID: 2, Name: second},
+			{ID: 3, Name: "fullsend-ci-retry-1"},
+		},
+	}
+	client.WorkflowArtifactContents = map[int][]byte{
+		1: zipData(t, "first"),
+		2: zipData(t, "second"),
+		3: zipData(t, "numeric sibling"),
+	}
+	dest := t.TempDir()
+	err := newTestDriver(client).DownloadAgentArtifactsAfter(context.Background(), "org", "repo", "ci-retry", after, dest)
+	require.NoError(t, err)
+	for name, want := range map[string]string{first: "first", second: "second"} {
+		got, err := os.ReadFile(filepath.Join(dest, name, "result.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, want, string(got))
+	}
+	assert.NoFileExists(t, filepath.Join(dest, "fullsend-ci-retry-1"))
+}
+
+func TestDownloadAgentArtifactsAfterUsesOnlyNewestWorkflowRun(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"run-101": {ID: 101, Status: "completed", Conclusion: "success"},
+		"run-102": {ID: 102, Status: "completed", Conclusion: "success"},
+	}
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			// The latest run appears first, as it does in the repository
+			// artifact listing. Older artifacts use the same names and have
+			// no downloadable contents; the driver must never fetch them.
+			{ID: 3, Name: "fullsend-ci-retry", CreatedAt: "2026-01-03T00:00:00Z", WorkflowRunID: 102},
+			{ID: 4, Name: "fullsend-ci-retry.matrix-1", CreatedAt: "2026-01-03T00:00:00Z", WorkflowRunID: 102},
+			{ID: 1, Name: "fullsend-ci-retry", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 101},
+			{ID: 2, Name: "fullsend-ci-retry.matrix-1", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 101},
+		},
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{
+		102: {
+			{ID: 3, Name: "fullsend-ci-retry"},
+			{ID: 4, Name: "fullsend-ci-retry.matrix-1"},
+		},
+		101: {
+			{ID: 1, Name: "fullsend-ci-retry"},
+			{ID: 2, Name: "fullsend-ci-retry.matrix-1"},
+		},
+	}
+	client.WorkflowArtifactContents = map[int][]byte{
+		3: zipData(t, "newest first job"),
+		4: zipData(t, "newest second job"),
+	}
+	dest := t.TempDir()
+	err := newTestDriver(client).DownloadAgentArtifactsAfter(context.Background(), "org", "repo", "ci-retry", after, dest)
+	require.NoError(t, err)
+	for name, want := range map[string]string{
+		"fullsend-ci-retry":          "newest first job",
+		"fullsend-ci-retry.matrix-1": "newest second job",
+	} {
+		got, err := os.ReadFile(filepath.Join(dest, name, "result.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, want, string(got))
+	}
+}
+
+func TestDownloadAgentArtifactsAfterDownloadsRunArtifactsBeyondRepositoryListing(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("result.txt")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("result"))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"run-42": {ID: 42, Status: "completed", Conclusion: "success"},
+	}
+	// The repository listing only surfaces one artifact of the run; the
+	// run's own (paginated) listing holds more than one page of them.
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: "fullsend-ci-retry", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42},
+		},
+	}
+	const total = 120
+	runArtifacts := []forge.WorkflowArtifact{{ID: 1, Name: "fullsend-ci-retry"}}
+	client.WorkflowArtifactContents = map[int][]byte{1: buf.Bytes()}
+	for i := 1; i < total; i++ {
+		runArtifacts = append(runArtifacts, forge.WorkflowArtifact{ID: i + 1, Name: fmt.Sprintf("fullsend-ci-retry.matrix-%d", i)})
+		client.WorkflowArtifactContents[i+1] = buf.Bytes()
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{42: runArtifacts}
+
+	dest := t.TempDir()
+	require.NoError(t, newTestDriver(client).DownloadAgentArtifactsAfter(context.Background(), "org", "repo", "ci-retry", after, dest))
+	entries, err := os.ReadDir(dest)
+	require.NoError(t, err)
+	assert.Len(t, entries, total)
+}
+
+func TestDownloadAgentArtifactsAfterWaitsForRunToComplete(t *testing.T) {
+	t.Parallel()
+
+	zipData := func(t *testing.T, content string) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		w, err := zw.Create("result.txt")
+		require.NoError(t, err)
+		_, err = w.Write([]byte(content))
+		require.NoError(t, err)
+		require.NoError(t, zw.Close())
+		return buf.Bytes()
+	}
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	first := "fullsend-ci-retry"
+	second := "fullsend-ci-retry.matrix-1"
+	client := forge.NewFakeClient()
+	run := &forge.WorkflowRun{ID: 42, Status: "in_progress"}
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{"run-42": run}
+	// Only the fastest matrix job has uploaded while the run is in progress.
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {{ID: 1, Name: first, CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42}},
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{42: {{ID: 1, Name: first}}}
+	client.WorkflowArtifactContents = map[int][]byte{
+		1: zipData(t, "first"),
+		2: zipData(t, "second"),
+	}
+	polls := 0
+	d := &Driver{
+		Client: client,
+		afterFunc: func(_ time.Duration) <-chan time.Time {
+			polls++
+			if polls == 2 {
+				// The sibling uploads and the run finishes between polls.
+				client.WorkflowRunArtifacts[42] = append(client.WorkflowRunArtifacts[42], forge.WorkflowArtifact{ID: 2, Name: second})
+				run.Status = "completed"
+				run.Conclusion = "success"
+			}
+			return instantAfter(0)
+		},
+	}
+
+	dest := t.TempDir()
+	require.NoError(t, d.DownloadAgentArtifactsAfter(context.Background(), "org", "repo", "ci-retry", after, dest))
+	assert.GreaterOrEqual(t, polls, 2, "driver should poll until the run completes")
+	for name, want := range map[string]string{first: "first", second: "second"} {
+		got, err := os.ReadFile(filepath.Join(dest, name, "result.txt"))
+		require.NoError(t, err)
+		assert.Equal(t, want, string(got))
+	}
+}
+
+// sleepyAfter returns a timer function that sleeps briefly in real time, so a
+// short wall-clock deadline expires after a handful of polls.
+func sleepyAfter(_ time.Duration) <-chan time.Time {
+	time.Sleep(2 * time.Millisecond)
+	return instantAfter(0)
+}
+
+func TestWaitForRunCompletedTimesOutWhileRunInProgress(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{"run-42": {ID: 42, Status: "in_progress"}}
+	d := &Driver{Client: client, afterFunc: sleepyAfter}
+
+	err := d.waitForRunCompleted(context.Background(), "org", "repo", 42, time.Now().Add(20*time.Millisecond))
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "workflow run 42 did not complete")
+	assert.ErrorContains(t, err, "in_progress")
+}
+
+func TestWaitForRunCompletedReturnsLastLookupError(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{"GetWorkflowRun": errRateLimited}
+	d := &Driver{Client: client, afterFunc: sleepyAfter}
+
+	err := d.waitForRunCompleted(context.Background(), "org", "repo", 42, time.Now().Add(20*time.Millisecond))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errRateLimited)
+}
+
+func TestDownloadAgentArtifactsAfterFailsWhenRunNeverCompletes(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{"run-42": {ID: 42, Status: "in_progress"}}
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {{ID: 1, Name: "fullsend-ci-retry", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 42}},
+	}
+	client.WorkflowRunArtifacts = map[int][]forge.WorkflowArtifact{42: {{ID: 1, Name: "fullsend-ci-retry"}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	polls := 0
+	d := &Driver{
+		Client: client,
+		afterFunc: func(_ time.Duration) <-chan time.Time {
+			polls++
+			if polls >= 3 {
+				cancel()                    // stands in for the wait deadline; the run never completes
+				return make(chan time.Time) // block so ctx.Done() wins
+			}
+			return instantAfter(0)
+		},
+	}
+
+	dest := t.TempDir()
+	err := d.DownloadAgentArtifactsAfter(ctx, "org", "repo", "ci-retry", after, dest)
+	require.Error(t, err)
+	entries, readErr := os.ReadDir(dest)
+	require.NoError(t, readErr)
+	assert.Empty(t, entries, "no partial artifact set should be downloaded")
+}
+
+func TestDownloadNamedArtifactAfterReturnsListingError(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{"ListRepositoryArtifacts": errors.New("list failed")}
+	err := newTestDriver(client).DownloadNamedArtifactAfter(context.Background(), "org", "repo", "fullsend-ci-retry", time.Now(), t.TempDir())
+	require.ErrorContains(t, err, "list failed")
 }
 
 func TestWaitForHarnessAgent_FailFastOnFailure(t *testing.T) {
@@ -2490,7 +2920,7 @@ func TestSettleHarnessDispatchCount_SuccessfulBuiltinMatrixUnresolvedPending(t *
 	}
 
 	d := &Driver{Client: fake}
-	count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "triage", after)
+	count, pending, err := d.settleHarnessDispatchCount(context.Background(), "org", "repo", "triage", after, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 0, count, "a successful built-in match must not be counted while the custom matrix remains unresolved")
 	assert.Equal(t, 1, pending, "the run must be classified as pending until the real matrix job appears")
@@ -2517,6 +2947,50 @@ func TestCountHarnessDispatches_ContextCancelledWhilePending(t *testing.T) {
 	_, err := d.CountHarnessDispatches(ctx, "org", "repo", "fork-pr-sync", after)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+// TestCountHarnessDispatches_TimeoutIncludesRateLimitState pins the
+// rate-limit contract on the count-settle timeout path: a pending run that
+// never settles past the wait budget must time out with the reporting
+// client's last-seen rate-limit state appended as the error's final
+// section, so a reader of the failure can tell whether GitHub API quota
+// exhaustion contributed to the count never settling. The wait's clock and
+// timers are injectable like the other harness waits, so the timeout is
+// reached deterministically without sleeping. Only the presence of the age
+// clause is pinned, not its value: how many clock readings a timed-out
+// wait makes before the state line is a poll-loop detail.
+func TestCountHarnessDispatches_TimeoutIncludesRateLimitState(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	fake.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			{ID: 10, Status: "in_progress", CreatedAt: "2026-01-02T00:00:00Z"},
+		},
+	}
+	fake.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		10: {{ID: 1, Name: "dispatch / Harness run (triage)", Status: "in_progress"}},
+	}
+	client := &rateLimitReportingClient{
+		FakeClient: fake,
+		rateLimit: forge.RateLimit{
+			Limit:     5000,
+			Remaining: 1234,
+			Reset:     time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC),
+			Resource:  "core",
+			Observed:  after.Add(-34 * time.Second),
+		},
+		rateLimitSeen: true,
+	}
+
+	d := newTimeoutTestDriver(client)
+	_, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, `harness "triage" dispatch count did not settle: 1 run(s) still pending`)
+	assert.Contains(t, msg, "github rate limit: remaining=1234/5000 reset=2026-10-25T18:00:00Z resource=core")
+	assert.Regexp(t, `, observed \S+ ago$`, msg, "the observation age is part of the state line")
 }
 
 func TestIsConcurrencySuperseded(t *testing.T) {
@@ -3536,6 +4010,234 @@ func TestHarnessTimeoutDiagnostics_CutShortVsLiveDeadlineError(t *testing.T) {
 	})
 }
 
+// rateLimitReportingClient wraps FakeClient with a configurable
+// forge.RateLimitReporter implementation, standing in for the live GitHub
+// client's X-RateLimit-* header observation. FakeClient — and every other
+// fake in this file — deliberately does not implement the reporter; that
+// non-implementing shape pins the no-state-line branch.
+type rateLimitReportingClient struct {
+	*forge.FakeClient
+	rateLimit     forge.RateLimit
+	rateLimitSeen bool
+}
+
+// RateLimit reports the configured observation, mirroring the reporter
+// contract: ok stays false until the client has seen a response carrying
+// rate-limit headers.
+func (c *rateLimitReportingClient) RateLimit() (forge.RateLimit, bool) {
+	return c.rateLimit, c.rateLimitSeen
+}
+
+// TestHarnessTimeoutDiagnostics_RateLimitStateLine pins the rendering of
+// the timeout tail's final section: the last-seen state with its
+// observation age for a reporting client, an explicit unknown for one
+// that has not observed headers yet, and no line at all for a
+// non-reporting client, whose tail is otherwise unchanged. The section is
+// appended whether or not any poll failed; these cases all use empty
+// pollErrors to exercise the no-failure shape.
+func TestHarnessTimeoutDiagnostics_RateLimitStateLine(t *testing.T) {
+	t.Parallel()
+
+	// Nothing else in the diagnostics path reads the clock, so the
+	// stepping clock's first reading — start — is the one the age clause
+	// is computed from: an observation at start-34s renders as 34s.
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	cases := []struct {
+		name        string
+		client      forge.Client
+		contains    string
+		notContains string
+	}{
+		{
+			name: "reporting client with an observation",
+			client: &rateLimitReportingClient{
+				FakeClient: forge.NewFakeClient(),
+				rateLimit: forge.RateLimit{
+					Limit:     5000,
+					Remaining: 1234,
+					Reset:     time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC),
+					Resource:  "core",
+					Observed:  start.Add(-34 * time.Second),
+				},
+				rateLimitSeen: true,
+			},
+			// The full tail pins the state line as the final section.
+			contains: "no recent workflow runs found after trigger time; no repository artifacts listed; " +
+				"github rate limit: remaining=1234/5000 reset=2026-10-25T18:00:00Z resource=core, observed 34s ago",
+		},
+		{
+			name: "observation without a timestamp omits the age",
+			client: &rateLimitReportingClient{
+				FakeClient:    forge.NewFakeClient(),
+				rateLimit:     forge.RateLimit{Remaining: 42},
+				rateLimitSeen: true,
+			},
+			contains:    "github rate limit: remaining=42 reset=unknown resource=unknown",
+			notContains: "observed",
+		},
+		{
+			name:     "reporting client with no observation yet",
+			client:   &rateLimitReportingClient{FakeClient: forge.NewFakeClient()},
+			contains: "github rate limit: unknown (no observation yet)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := newTimeoutTestDriver(tc.client)
+			got := d.harnessTimeoutDiagnostics(context.Background(), "org", "repo", "triage", start, pollErrors{}, pollErrors{}, pollErrors{})
+			assert.Contains(t, got, tc.contains)
+			if tc.notContains != "" {
+				assert.NotContains(t, got, tc.notContains)
+			}
+		})
+	}
+
+	// A client that does not implement the reporter adds no line and the
+	// tail is otherwise unchanged.
+	d := newTimeoutTestDriver(forge.NewFakeClient())
+	got := d.harnessTimeoutDiagnostics(context.Background(), "org", "repo", "triage", start, pollErrors{}, pollErrors{}, pollErrors{})
+	assert.Equal(t, "no recent workflow runs found after trigger time; no repository artifacts listed", got)
+}
+
+// TestWaitForHarnessAgent_TimeoutIncludesRateLimitStateWithNoPollFailures
+// enforces the "Timeout with no poll failures" scenario of the
+// behaviour-ratelimit-observability spec's requirement that harness-wait
+// timeout errors include the last-seen rate-limit state: a wait that
+// times out with every poll succeeding and a client that has observed
+// rate-limit headers still reports the last-observed remaining/limit,
+// reset time, resource, and observation age. Unlike
+// TestHarnessTimeoutDiagnostics_RateLimitStateLine, which pins the
+// rendering at the diagnostics level, this case drives the full
+// WaitForHarnessAgent wait path — the no-failure timeout is the shape
+// that otherwise carries no quota information at all.
+func TestWaitForHarnessAgent_TimeoutIncludesRateLimitStateWithNoPollFailures(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// No configured runs, artifacts, or errors: every poll of the wait
+	// succeeds and finds nothing, so the timeout carries no
+	// poll-failure tail at all.
+	client := &rateLimitReportingClient{
+		FakeClient: forge.NewFakeClient(),
+		rateLimit: forge.RateLimit{
+			Limit:     5000,
+			Remaining: 1234,
+			Reset:     time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC),
+			Resource:  "core",
+			Observed:  after.Add(-34 * time.Second),
+		},
+		rateLimitSeen: true,
+	}
+
+	d := newTimeoutTestDriver(client)
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, `harness agent "triage" did not complete successfully`)
+	assert.NotContains(t, msg, "failed on", "every poll of the wait succeeded")
+	assert.NotContains(t, msg, "cut short", "no poll ran against an exhausted budget")
+	// The state rides along on the plain no-failure timeout shape and
+	// keeps its place as the tail's final section. Only the presence of
+	// the age clause is pinned, not its value: how many clock readings a
+	// timed-out wait makes before the state line is a poll-loop detail.
+	assert.Contains(t, msg, "no recent workflow runs found after trigger time; no repository artifacts listed; "+
+		"github rate limit: remaining=1234/5000 reset=2026-10-25T18:00:00Z resource=core")
+	assert.Regexp(t, `, observed \S+ ago$`, msg, "the observation age is part of the state line")
+}
+
+// TestWaitForHarnessAgent_TimeoutAgesStaleRateLimitObservation enforces
+// the "Stale observation is aged" scenario of the
+// behaviour-ratelimit-observability spec's requirement that harness-wait
+// timeout errors include the last-seen rate-limit state: when the last
+// observation predates the timeout by a non-trivial interval, the state
+// in the timeout error reports that age, so a reader can tell how
+// current the numbers are. The reported age is extracted and checked
+// against the configured staleness rather than pinned to an exact
+// rendering, because the number of clock readings a timed-out wait
+// makes before the state line is a poll-loop detail.
+func TestWaitForHarnessAgent_TimeoutAgesStaleRateLimitObservation(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// The observation is already stale when the wait begins, and the
+	// stepped clock only moves forward from there.
+	const stale = 47 * time.Minute
+	client := &rateLimitReportingClient{
+		FakeClient: forge.NewFakeClient(),
+		rateLimit: forge.RateLimit{
+			Limit:     5000,
+			Remaining: 60,
+			Reset:     time.Date(2026, 10, 25, 18, 0, 0, 0, time.UTC),
+			Resource:  "core",
+			Observed:  after.Add(-stale),
+		},
+		rateLimitSeen: true,
+	}
+
+	d := newTimeoutTestDriver(client)
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, "github rate limit: remaining=60/5000 reset=2026-10-25T18:00:00Z resource=core")
+	m := regexp.MustCompile(`, observed (\S+) ago$`).FindStringSubmatch(msg)
+	require.NotNil(t, m, "the state line must end with an observed-age clause: %s", msg)
+	age, err := time.ParseDuration(m[1])
+	require.NoError(t, err, "the reported age must be a parseable duration: %q", m[1])
+	// Anything younger than the configured staleness means the age
+	// clause is not computed from the observation time.
+	assert.GreaterOrEqual(t, age, stale, "a stale observation must report an age at least as old as itself")
+	// The age is measured on the wait's stepped clock, which cannot
+	// advance far past the wait budget; a wall-clock reading (months,
+	// given the 2026 fixtures) fails this bound.
+	assert.LessOrEqual(t, age, stale+2*dispatchWait, "the age must come from the wait's clock, not wall-clock time")
+}
+
+// TestWaitForHarnessAgent_TimeoutUnchangedWithoutRateLimitReporter
+// enforces the "Client does not track rate limits" scenario of the
+// behaviour-ratelimit-observability spec's requirement that harness-wait
+// timeout errors include the last-seen rate-limit state: when the
+// suite's forge client does not implement forge.RateLimitReporter, the
+// timeout error contains no rate-limit state line and is otherwise
+// unchanged. FakeClient — like the GitLab client — does not implement
+// the reporter, and the exact-equality assertion is what pins
+// "otherwise unchanged".
+func TestWaitForHarnessAgent_TimeoutUnchangedWithoutRateLimitReporter(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	d := newTimeoutTestDriver(forge.NewFakeClient())
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.Equal(t,
+		`harness agent "triage" did not complete successfully; no recent workflow runs found after trigger time; no repository artifacts listed`,
+		err.Error())
+}
+
+// TestWaitForHarnessAgent_TimeoutReportsRateLimitUnknownWhenNotYetObserved
+// enforces the no-observation shape of the behaviour-ratelimit-observability
+// spec's requirement that harness-wait timeout errors include the
+// last-seen rate-limit state: a client that implements
+// forge.RateLimitReporter but has not observed rate-limit headers yet
+// renders the spec's explicit unknown marker ("an explicit unknown
+// marker when no observation exists yet") rather than omitting the line,
+// so "tracks, nothing observed" stays distinguishable from the
+// non-reporting client above.
+func TestWaitForHarnessAgent_TimeoutReportsRateLimitUnknownWhenNotYetObserved(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	// rateLimitSeen stays false: the reporter exists, but no response
+	// has carried rate-limit headers yet.
+	client := &rateLimitReportingClient{FakeClient: forge.NewFakeClient()}
+	d := newTimeoutTestDriver(client)
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(),
+		"no repository artifacts listed; github rate limit: unknown (no observation yet)")
+}
+
 func TestWaitForFailedHarnessAgent_TimeoutReportsListingErrors(t *testing.T) {
 	t.Parallel()
 
@@ -3613,12 +4315,16 @@ func TestFormatArtifactDiagnostics(t *testing.T) {
 		{ID: 11, Name: "fullsend-agent", CreatedAt: "not-a-time", WorkflowRunID: 100},
 		{ID: 12, Name: "fullsend-agent", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 101},
 		{ID: 13, Name: "fullsend-other", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 101},
+		{ID: 14, Name: "fullsend-agent.matrix-0", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 102},
+		{ID: 15, Name: "fullsend-agent-1", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 103},
 	}, "fullsend-agent", after)
-	assert.Contains(t, classified, `artifact "fullsend-agent" listed 3 time(s):`)
+	assert.Contains(t, classified, `artifact "fullsend-agent" listed 4 time(s):`)
 	assert.Contains(t, classified, "artifact 10: run=99 created_at=2026-01-01T11:59:59Z (rejected: created before trigger time 2026-01-01T12:00:00Z)")
 	assert.Contains(t, classified, "artifact 11: run=100 created_at=not-a-time (rejected: unparseable created_at)")
 	assert.Contains(t, classified, "artifact 12: run=101 created_at=2026-01-01T12:00:30Z (eligible by trigger time; not explained by the listing")
 	assert.NotContains(t, classified, "artifact 13")
+	assert.Contains(t, classified, "artifact 14: run=102")
+	assert.NotContains(t, classified, "artifact 15")
 }
 
 // TestWaitForHarnessAgent_SkipsPollBelowMinimumBudget drives the clock so

@@ -28,10 +28,10 @@ type AllowedResourcesReader interface {
 	AllowedResources() []string
 }
 
-// CreateIssuesReader provides read access to cross-repo issue creation
-// configuration.
-type CreateIssuesReader interface {
-	IssueCreationConfig() *CreateIssuesConfig
+// TrackingReader provides read access to the issue-tracking configuration,
+// including the selected provider's cross-project allowed_targets.
+type TrackingReader interface {
+	IssueTracking() *TrackingConfig
 }
 
 // StatusNotificationsReader provides read access to status notification
@@ -49,7 +49,7 @@ type ConfigReader interface {
 	AgentLister
 	KillSwitchReader
 	AllowedResourcesReader
-	CreateIssuesReader
+	TrackingReader
 	StatusNotificationsReader
 	ConfigVersion() string
 }
@@ -93,6 +93,9 @@ type PerRepoConfigReader interface {
 	// IsOwnersFileAuthEnabled reports whether the owners_file
 	// authorization provider is listed.
 	IsOwnersFileAuthEnabled() bool
+	// JiraAuthorization returns the jira authorization provider entry,
+	// or nil when none is listed.
+	JiraAuthorization() *AuthorizationProvider
 }
 
 // --- Write superset interfaces ---
@@ -107,6 +110,8 @@ type ConfigWriter interface {
 	SetStatusNotifications(*StatusNotificationConfig)
 	Marshal() ([]byte, error)
 	Validate() error
+	// ValidateGlobal is Validate without the agents[] entry checks.
+	ValidateGlobal() error
 }
 
 // PerRepoConfigWriter extends PerRepoConfigReader and ConfigWriter with
@@ -131,6 +136,7 @@ type PerRepoConfigWriter interface {
 	MergeInferenceGateway(InferenceGatewayConfig)
 	SetModelAliases(map[string]string)
 	SetOwnersFileAuthEnabled(bool)
+	SetIssueTracking(*TrackingConfig)
 }
 
 // --- Compile-time assertions ---
@@ -301,14 +307,22 @@ func (c *perRepoConfig) AllowedResources() []string {
 	return result
 }
 
-// IssueCreationConfig returns the cross-repo issue creation config.
-// nil falls through to parent.
-func (c *perRepoConfig) IssueCreationConfig() *CreateIssuesConfig {
-	if c.CreateIssues != nil {
-		return c.CreateIssues
+// IssueTracking returns the tracker configuration (the tracker key). nil
+// falls through to parent; a set value replaces the parent's whole
+// mapping, so layers never combine two providers. A layer that still
+// carries the removed create_issues block and sets no tracker of its own
+// denies all extra issue destinations instead of inheriting the parent's
+// grant, so a legacy restrictive overlay is never widened by a permissive
+// base.
+func (c *perRepoConfig) IssueTracking() *TrackingConfig {
+	if c.Tracker != nil {
+		return c.Tracker
+	}
+	if c.legacyCreateIssues {
+		return &TrackingConfig{}
 	}
 	if c.parent != nil {
-		return c.parent.IssueCreationConfig()
+		return c.parent.IssueTracking()
 	}
 	return nil
 }
@@ -342,11 +356,25 @@ func (c *perRepoConfig) ConfigVersion() string {
 // not be inheritable from config.base.yaml.
 func (c *perRepoConfig) IsOwnersFileAuthEnabled() bool {
 	for _, p := range c.Authorization {
-		if p.Provider == "owners_file" {
+		if p.Provider == AuthProviderOwnersFile {
 			return true
 		}
 	}
 	return false
+}
+
+// JiraAuthorization returns a copy of the jira authorization provider
+// entry, or nil when none is listed. Like IsOwnersFileAuthEnabled it has
+// no parent fallback: authorization providers are a per-repo opt-in that
+// is not inherited from config.base.yaml.
+func (c *perRepoConfig) JiraAuthorization() *AuthorizationProvider {
+	for _, p := range c.Authorization {
+		if p.Provider == AuthProviderJira {
+			out := cloneAuthorizationProvider(p)
+			return &out
+		}
+	}
+	return nil
 }
 
 // ConfigRoles returns the configured agent roles. nil (key omitted)
@@ -400,20 +428,18 @@ func (c *perRepoConfig) ConfigKeepHistory() bool {
 	return true
 }
 
-// ConfigTracker returns the configured default issue tracker (e.g.
-// "github", "gitlab", "jira"), used as the default for `fullsend
-// issues` commands' --tracker flag when it is not set explicitly.
-// Distinct from ConfigForge: a repo's hosting forge (github/gitlab)
-// does not imply its issue tracker (e.g. a GitHub-hosted repo may
-// track issues in Jira).
+// ConfigTracker returns the provider selected by the tracker mapping
+// ("github", "gitlab", "jira"), or "" when none is selected. It is the
+// default for `fullsend issues` commands' --tracker flag when that flag
+// is not set explicitly. Like IssueTracking, a layer that sets tracker
+// replaces the parent's whole mapping, and a layer that still carries the
+// removed create_issues block selects no provider, so the provider always
+// comes from the same layer as the targets (it is derived from
+// IssueTracking). Distinct from ConfigForge: a repo's hosting
+// forge (github/gitlab) does not imply its issue tracker (e.g. a
+// GitHub-hosted repo may track issues in Jira).
 func (c *perRepoConfig) ConfigTracker() string {
-	if c.Tracker != "" {
-		return c.Tracker
-	}
-	if c.parent != nil {
-		return c.parent.ConfigTracker()
-	}
-	return ""
+	return c.IssueTracking().Provider()
 }
 
 // ConfigMintURL returns the configured token mint URL.
@@ -643,6 +669,11 @@ func (c *perRepoConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
 	c.Notifications = sn
 }
 
+// SetIssueTracking sets the tracker configuration on this layer.
+func (c *perRepoConfig) SetIssueTracking(t *TrackingConfig) {
+	c.Tracker = t
+}
+
 // SetInferenceWIFProvider sets the WIF provider resource name.
 func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
 	c.ensureInference().WIFProvider = wifProvider
@@ -757,6 +788,9 @@ func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
 	if err := checkOverlayYAML(overlayData, haveOverlay); err != nil {
 		return nil, err
 	}
+	if err := checkLegacyCreateIssues(overlayData, haveOverlay, baseData, haveBase); err != nil {
+		return nil, err
+	}
 
 	return loadPerRepoLayers(overlayData, haveOverlay, baseData, haveBase)
 }
@@ -787,8 +821,36 @@ func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
 	if err := checkOverlayYAML(overlayData, haveOverlay); err != nil {
 		return nil, err
 	}
+	if err := checkLegacyCreateIssues(overlayData, haveOverlay, baseData, haveBase); err != nil {
+		return nil, err
+	}
 
 	return loadPerRepoLayers(overlayData, haveOverlay, baseData, haveBase)
+}
+
+// checkLegacyCreateIssues rejects a config.yaml or config.base.yaml that
+// still carries the removed top-level create_issues key. Without this
+// check runtime loading would silently ignore the key, so an unmigrated
+// config would stop granting cross-repo issue creation with no signal.
+// The error names the offending file and the migration path. Malformed
+// YAML is left for loadPerRepoLayers to report.
+func checkLegacyCreateIssues(overlayData []byte, haveOverlay bool, baseData []byte, haveBase bool) error {
+	for _, layer := range []struct {
+		name string
+		data []byte
+		have bool
+	}{
+		{OverlayConfigFile, overlayData, haveOverlay},
+		{BaseConfigFile, baseData, haveBase},
+	} {
+		if !layer.have {
+			continue
+		}
+		if has, err := hasLegacyCreateIssues(layer.data); err == nil && has {
+			return fmt.Errorf("%s: %w", layer.name, errLegacyCreateIssues)
+		}
+	}
+	return nil
 }
 
 // checkOverlayYAML rejects a config.yaml that is malformed YAML or that
@@ -848,7 +910,7 @@ func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, ha
 	var baseReader PerRepoConfigReader = &perRepoDefaults{}
 	if haveBase {
 		var base perRepoConfig
-		if err := yaml.Unmarshal(baseData, &base); err != nil {
+		if err := unmarshalPerRepo(baseData, &base); err != nil {
 			return nil, fmt.Errorf("parsing base config: %w", err)
 		}
 		base.parent = &perRepoDefaults{}
@@ -858,7 +920,7 @@ func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, ha
 	// Parse or create overlay layer; parent = base (or defaults).
 	var overlay perRepoConfig
 	if haveOverlay {
-		if err := yaml.Unmarshal(overlayData, &overlay); err != nil {
+		if err := unmarshalPerRepo(overlayData, &overlay); err != nil {
 			return nil, fmt.Errorf("parsing per-repo config: %w", err)
 		}
 	}

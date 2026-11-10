@@ -14,6 +14,16 @@ All git forge operations (GitHub API calls, PR comments, issue creation, workflo
 
 **FakeClient coverage:** Every exported `FakeClient` method must have an entry in `fakeClientCalls` in [`internal/forge/fake_test.go`](../../internal/forge/fake_test.go). `TestFakeClient_ErrorInjection` uses that table to assert each method returns its injected error, `TestFakeClient_ThreadSafety` runs it concurrently under `-race`, and `TestFakeClient_CoversAllMethods` fails when an entry is missing or stale. Fake methods must return copies, never slices, maps, or pointers into the fake's own storage: callers read results without holding the fake's lock. Likewise, store copies of caller-supplied slices and maps that a fake method later changes in place: callers keep their own reference.
 
+**Workflow attempts:** `WorkflowRun.RunAttempt` and `WorkflowJob.RunAttempt`
+identify executions when a forge reuses a run ID for reruns. Zero means the
+attempt is unavailable. The GitHub Actions dispatch-count assertion reuses
+completed job listings only within that assertion, for unchanged run metadata
+and completed jobs whose known attempt matches the run. Reuse also requires
+a matching agent job with a nonempty, non-skipped, non-cancelled conclusion:
+that job already establishes a counted dispatch. Listings without that
+evidence, unknown attempts, and unfinished jobs are read again on subsequent
+polls because an absent job may become visible later.
+
 **When reviewing PRs:** Flag any direct `exec.Command("gh", ...)`, raw GitHub API calls, or other forge-specific operations outside `internal/forge/github/` as a medium-severity or higher finding. This is an architectural violation, not a style preference.
 
 **Composite action (`action.yml`):** The forge abstraction extends to `action.yml` bash scripts. New GitHub API operations in action steps should be implemented as `fullsend` CLI subcommands (under `internal/cli/`) that use `forge.Client`, not as inline `gh api` calls. Existing `gh api` calls in `action.yml` that predate this rule are grandfathered but should be migrated when touched.

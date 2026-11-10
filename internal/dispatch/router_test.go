@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -224,6 +225,25 @@ func TestHarnessRouter_Closed(t *testing.T) {
 	}
 }
 
+func TestHarnessRouter_MergeRequiresWrite(t *testing.T) {
+	r := NewHarnessRouter([]string{"retro"})
+	for _, transition := range []string{"merged", "closed"} {
+		event := &NormalizedEvent{
+			Entity:     Entity{Kind: "change_proposal", ID: 42},
+			Transition: Transition{Kind: transition},
+			Actor:      Actor{ID: "triager", Role: "triage"},
+		}
+
+		stages, err := r.Route(event)
+		if err != nil {
+			t.Fatalf("unexpected error for %s event: %v", transition, err)
+		}
+		if len(stages) != 0 {
+			t.Errorf("expected no stages for %s by a triage actor, got %v", transition, stages)
+		}
+	}
+}
+
 func TestHarnessRouter_ClosedWorkItemNotRouted(t *testing.T) {
 	r := NewHarnessRouter([]string{"retro", "code"})
 
@@ -327,6 +347,41 @@ func TestHarnessRouter_OpenedReviewNotInValidSet(t *testing.T) {
 	}
 	if len(stages) != 0 {
 		t.Fatalf("expected no stages when review not in valid set, got %v", stages)
+	}
+}
+
+func TestHarnessRouter_Synchronized(t *testing.T) {
+	tests := []struct {
+		name   string
+		agents []string
+		kind   string
+		state  State
+		want   []string
+	}{
+		{name: "same-project change proposal routes to review", agents: []string{"review", "fix"}, kind: "change_proposal", state: State{ChangeProposal: &ChangeProposalState{}}, want: []string{"review"}},
+		{name: "fork change proposal denied", agents: []string{"review", "fix"}, kind: "change_proposal", state: State{ChangeProposal: &ChangeProposalState{IsFork: true}}, want: nil},
+		{name: "unknown change proposal origin denied", agents: []string{"review", "fix"}, kind: "change_proposal", want: nil},
+		{name: "review not in valid set", agents: []string{"fix", "retro"}, kind: "change_proposal", state: State{ChangeProposal: &ChangeProposalState{}}, want: nil},
+		{name: "work item ignored", agents: []string{"review", "triage"}, kind: "work_item", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := NewHarnessRouter(tt.agents)
+			event := &NormalizedEvent{
+				Entity:     Entity{Kind: tt.kind, ID: 8},
+				Transition: Transition{Kind: "synchronized"},
+				Actor:      Actor{ID: "fullsend-bot", Kind: "bot", Role: "write"},
+				Source:     Source{System: "gitlab"},
+				State:      tt.state,
+			}
+			stages, err := r.Route(event)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !slices.Equal(stages, tt.want) {
+				t.Fatalf("stages = %v, want %v", stages, tt.want)
+			}
+		})
 	}
 }
 

@@ -74,6 +74,9 @@ type mockClient struct {
 	mrNotes   map[int][]Note // keyed by MR IID
 	mrNoteErr map[int]error
 
+	mrVersions    map[int][]MergeRequestDiffVersion // keyed by MR IID
+	mrVersionsErr map[int]error
+
 	events    []ProjectEvent
 	eventsErr error
 
@@ -184,6 +187,8 @@ func newMockClient() *mockClient {
 		issueErr:       make(map[int]error),
 		mr:             make(map[int]*MergeRequest),
 		mrErr:          make(map[int]error),
+		mrVersions:     make(map[int][]MergeRequestDiffVersion),
+		mrVersionsErr:  make(map[int]error),
 		wrapperContent: typedWrapperFixture(),
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),
@@ -251,6 +256,13 @@ func (m *mockClient) ListMergeRequestNotes(_ context.Context, _, _ string, mrIID
 		return nil, err
 	}
 	return m.mrNotes[mrIID], nil
+}
+
+func (m *mockClient) ListMergeRequestDiffVersions(_ context.Context, _, _ string, mrIID int) ([]MergeRequestDiffVersion, error) {
+	if err := m.mrVersionsErr[mrIID]; err != nil {
+		return nil, err
+	}
+	return m.mrVersions[mrIID], nil
 }
 
 func (m *mockClient) ListResourceLabelEvents(_ context.Context, _, _ string, issueIID int) ([]ResourceLabelEvent, error) {
