@@ -242,7 +242,10 @@ when they do, until a harness wait step — `the harness "<agent>"
 workflow completes successfully`, `the harness "<agent>" workflow fails
 with "<text>" in its logs`, `the harness "<agent>" workflow fails
 reporting "<text>"`, or an agent-round completion step — records a
-harness run again. The dispatch step also moves the scenario's trigger
+harness run again. A re-resolution that records a different run also
+drops the scenario's cached artifact directory, so artifact assertions
+after it download the newly recorded run's artifacts instead of passing
+on the earlier run's. The dispatch step also moves the scenario's trigger
 time to the dispatch, and harness steps scope their run windows from
 that time, so harness-semantics steps must come before the dispatch
 step in the scenario: a run triggered before the dispatch falls outside
