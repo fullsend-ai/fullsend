@@ -400,12 +400,13 @@ var gitlabMaskableRe = regexp.MustCompile(`^[A-Za-z0-9_+=/@:.~-]{8,}$`)
 // inference.project the effective configuration declares; cfg carries the
 // repository's effective inputs, see withVertexInputs), --openai-api-key
 // for openai-api-key. For openai-wif, the GCP project supplies the
-// optional GCP pair used by Vertex sub-agents.
+// optional GCP pair used by Vertex sub-agents. A gateway-only repository
+// (empty auth) consumes no credential inputs.
 func inferenceInputsSupplied(cfg ConvergeConfig, auth string) bool {
 	if auth == InferenceAuthOpenAIAPIKey {
 		return cfg.OpenAIAPIKey != ""
 	}
-	return cfg.InferenceProject != ""
+	return usesVertexCredentials(auth) && cfg.InferenceProject != ""
 }
 
 // inferenceInputFlags names the inputs that supply the credentials for
@@ -949,18 +950,11 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			defer func() { <-sem }()
 
 			resolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
-			// A missing inference.auth selection is a configuration error
-			// for this repository only; report it before any forge call so
-			// nothing is probed or written for it.
-			if authErr := resolved.RequireInferenceAuth(); authErr != nil {
-				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: authErr}
-				return
-			}
 			// Load the declared preset before any forge call so a hash
 			// mismatch or invalid source fails the repo without applying
 			// changes, and so the effective infrastructure values (mint
-			// URL, region, Vertex inputs) come from the same layers that
-			// are committed (#8220).
+			// URL, region, Vertex inputs) and any inference.gateway route
+			// come from the same layers that are committed (#8220).
 			var presetData []byte
 			if resolved.Config != "" {
 				data, loadErr := store.Load(ctx, resolved.Config, resolved.ConfigHash)
@@ -970,6 +964,14 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				}
 				presetData = data
 				resolved.ProposedBase = data
+			}
+			// A missing inference.auth selection (without an
+			// inference.gateway route) is a configuration error for this
+			// repository only; report it before any forge call so nothing
+			// is probed or written for it.
+			if authErr := resolved.RequireInferenceAuth(); authErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: authErr}
+				return
 			}
 			if infraErr := resolved.applyEffectiveInfrastructure(); infraErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: infraErr}

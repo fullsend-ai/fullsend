@@ -165,7 +165,9 @@ repository's `.fullsend/config.yaml`.
 `repos install` also needs `inference.auth` for every repository: use
 `vertex-wif` for a Vertex setup, `openai-wif` when you passed the three
 `--openai-*` flags, and `openai-api-key` when the repository uses
-`FULLSEND_OPENAI_API_KEY`. See
+`FULLSEND_OPENAI_API_KEY`. A repository that routes inference only
+through the inference gateway (`config.inference.gateway`) needs no
+`inference.auth`. See
 [Why install requires `inference.auth`](#why-install-requires-inferenceauth).
 
 ### Precedence
@@ -538,7 +540,11 @@ overlay composition to the post-scripts.
 all. `repos install` deliberately does not. Every selected repository must
 resolve `inference.auth`, and that method's credentials must already exist
 on the repository or be supplied by flags or declared configuration.
-Otherwise the repository fails before any write.
+Otherwise the repository fails before any write. The only exception is a
+repository whose effective configuration declares a complete
+`inference.gateway` block. The gateway authenticates on its own, so no
+provider credentials are needed (see
+[Inference gateway route](../../cli/repos.md#inference-gateway-route)).
 
 A fleet install converges many repositories without anyone watching each
 one. Requiring an explicit method means install provisions exactly the

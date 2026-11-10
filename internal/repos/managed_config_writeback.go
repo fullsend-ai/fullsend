@@ -144,7 +144,21 @@ func PreflightProposedManagedSafety(ctx context.Context, m *Manifest, clients Fo
 	store := newPresetCache()
 	for _, rr := range selected {
 		resolved := m.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+		var presetBytes []byte
+		if resolved.Config != "" {
+			data, loadErr := store.Load(ctx, resolved.Config, resolved.ConfigHash)
+			if loadErr != nil {
+				// A preset that cannot be loaded is a failure of this
+				// repository only: convergence loads it again before any
+				// forge write and reports the error in this repository's
+				// result, so one preset cannot stop the fleet (#8516).
+				continue
+			}
+			presetBytes = data
+			resolved.ProposedBase = data
+		}
 		// Convergence reports a repository with no inference authentication
+		// (and no inference.gateway route, which the preset may supply)
 		// before any write; it has nothing to compare here.
 		if resolved.RequireInferenceAuth() != nil {
 			continue
@@ -162,19 +176,6 @@ func PreflightProposedManagedSafety(ctx context.Context, m *Manifest, clients Fo
 			continue
 		}
 		resolved.FreshInstall = pristineInstallation(components)
-		var presetBytes []byte
-		if resolved.Config != "" {
-			data, loadErr := store.Load(ctx, resolved.Config, resolved.ConfigHash)
-			if loadErr != nil {
-				// A preset that cannot be loaded is a failure of this
-				// repository only: convergence loads it again before any
-				// forge write and reports the error in this repository's
-				// result, so one preset cannot stop the fleet (#8516).
-				continue
-			}
-			presetBytes = data
-			resolved.ProposedBase = data
-		}
 		if baseErr := checkDeclaredBase(ctx, resolved, presetBytes); baseErr != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", name, baseErr))
 			continue
@@ -347,7 +348,10 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 		resolved := m.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
 		// A repository whose install will fail validation before any
 		// write (no inference authentication selected) must not gain
-		// manifest edits; convergence reports its error.
+		// manifest edits; convergence reports its error. A gateway route
+		// supplied only by a declared preset is not seen here, but such a
+		// repository takes no install defaults anyway (see
+		// installDefaultsPossible).
 		if resolved.RequireInferenceAuth() != nil {
 			continue
 		}

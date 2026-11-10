@@ -319,7 +319,9 @@ type ResolvedConfig struct {
 	// InferenceAuth is the resolved inference authentication method
 	// (entry, then forge section, then defaults). Empty means no level
 	// declared one; RequireInferenceAuth turns that into an actionable
-	// error for install, convergence, and status.
+	// error for install, convergence, and status unless the effective
+	// configuration routes inference through the inference gateway
+	// (gateway-only: no provider credentials are provisioned).
 	InferenceAuth string
 	// Vendor is true when the fullsend binary and content should be
 	// vendored into the repo for offline CI.
@@ -1369,10 +1371,20 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 
 // RequireInferenceAuth returns an actionable configuration error when no
 // manifest level (entry, forge section, defaults) selects an inference
-// authentication method for this repository, or when the effective
-// selection is not a valid method. Install, convergence, and status call
-// it before any dependent forge reads or writes; uninstall deliberately
-// does not, so incomplete or older installations can still be cleaned up.
+// authentication method for this repository and its effective
+// configuration does not route inference through the inference gateway,
+// or when the effective selection is not a valid method. Install,
+// convergence, and status call it before any dependent forge reads or
+// writes; uninstall deliberately does not, so incomplete or older
+// installations can still be cleaned up.
+//
+// A complete inference.gateway block (ADR 0137) in the effective
+// configuration — the managed configuration layered over the declared
+// preset in ProposedBase — authenticates on its own, so with no
+// inference.auth the repository is gateway-only: an empty InferenceAuth
+// past this check means convergence provisions no provider credentials.
+// Callers load the declared preset into ProposedBase first, so a gateway
+// the preset supplies counts too.
 func (c ResolvedConfig) RequireInferenceAuth() error {
 	if c.InferenceAuth != "" {
 		if err := ValidateInferenceAuth("inference.auth", c.InferenceAuth); err != nil {
@@ -1383,8 +1395,32 @@ func (c ResolvedConfig) RequireInferenceAuth() error {
 		}
 		return nil
 	}
+	gateway := c.effectiveInferenceGateway()
+	if !gateway.IsZero() {
+		if missing := gateway.Missing(); len(missing) > 0 {
+			return fmt.Errorf("no inference authentication selected for %s/%s: the effective inference.gateway is partial (missing %s), so it cannot route inference; complete it, or set inference.auth (%s) on the repository entry, in the %s section, or under defaults in repos.yaml",
+				c.Owner, c.Repo, strings.Join(missing, " and "), strings.Join(ValidInferenceAuths(), " or "), c.Forge)
+		}
+		if err := gateway.ValidateEffective(); err != nil {
+			return fmt.Errorf("no inference authentication selected for %s/%s: the effective inference.gateway is invalid, so it cannot route inference: %w", c.Owner, c.Repo, err)
+		}
+		return nil
+	}
 	return fmt.Errorf("no inference authentication selected for %s/%s: set inference.auth (%s) on the repository entry, in the %s section, or under defaults in repos.yaml (for example: fullsend repos set defaults.inference.auth %s)",
 		c.Owner, c.Repo, strings.Join(ValidInferenceAuths(), " or "), c.Forge, InferenceAuthVertexWIF)
+}
+
+// effectiveInferenceGateway returns the inference.gateway block of the
+// effective configuration: the managed configuration layered over the
+// declared preset in ProposedBase. It is zero when no layer declares one
+// or when the layers cannot be read (the callers that read them report
+// that error).
+func (c ResolvedConfig) effectiveInferenceGateway() config.InferenceGatewayConfig {
+	declared, err := config.DeclaredInfrastructureValues(c.Managed, c.ProposedBase)
+	if err != nil {
+		return config.InferenceGatewayConfig{}
+	}
+	return declared.InferenceGateway
 }
 
 // ValidateInferenceAuthForForge rejects an inference.auth selection the
