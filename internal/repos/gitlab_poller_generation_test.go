@@ -1291,6 +1291,21 @@ func TestReplacementPollerBranchAccessError(t *testing.T) {
 		assert.Contains(t, msg, `add the fullsend-poller service account with user ID 7 under "Allowed to merge"`)
 		assert.NotContains(t, msg, "@")
 	})
+	t.Run("does not suggest a Developer-wide grant", func(t *testing.T) {
+		msg := (&ReplacementPollerBranchAccessError{UserID: 7, Username: "svc", Branch: "main", RuleName: "main"}).Error()
+		assert.NotContains(t, msg, "Developers")
+		assert.Contains(t, msg, "keep the polling schedules in effect")
+	})
+	t.Run("username with control characters falls back to the user ID", func(t *testing.T) {
+		for _, name := range []string{"svc\x1b[31m", "svc\rforged", "svc\nforged line", "svc name", "svc@x"} {
+			msg := (&ReplacementPollerBranchAccessError{UserID: 7, Username: name, Branch: "main", RuleName: "main"}).Error()
+			assert.NotContains(t, msg, "\x1b", name)
+			assert.NotContains(t, msg, "\r", name)
+			assert.NotContains(t, msg, "\n", name)
+			assert.NotContains(t, msg, "@", name)
+			assert.Contains(t, msg, `add the fullsend-poller service account with user ID 7 under "Allowed to merge"`, name)
+		}
+	})
 	t.Run("wildcard-only rule is named", func(t *testing.T) {
 		msg := (&ReplacementPollerBranchAccessError{UserID: 7, Username: "svc", Branch: "main", RuleName: "ma*"}).Error()
 		assert.Contains(t, msg, `edit the wildcard rule "ma*" that protects "main"`)

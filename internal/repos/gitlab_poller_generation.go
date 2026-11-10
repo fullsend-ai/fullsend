@@ -409,7 +409,7 @@ type ReplacementPollerBranchAccessError struct {
 func (e *ReplacementPollerBranchAccessError) Error() string {
 	account := fmt.Sprintf("(user ID %d)", e.UserID)
 	who := fmt.Sprintf("the %s service account with user ID %d", gitlabroles.PollerTokenName, e.UserID)
-	if e.Username != "" {
+	if validGitLabUsername(e.Username) {
 		account = fmt.Sprintf("@%s (user ID %d)", e.Username, e.UserID)
 		who = "@" + e.Username
 	}
@@ -420,8 +420,26 @@ func (e *ReplacementPollerBranchAccessError) Error() string {
 	return fmt.Sprintf("the replacement GitLab Poller service account %s cannot start pipelines on protected branch %q. "+
 		"GitLab starts a pipeline on a protected branch only for an account that is allowed to merge or push to it, and fullsend does not change branch protection for a replacement Poller. "+
 		"To fix this, open the project's Settings > Repository > Protected branches, edit %s, and add %s under \"Allowed to merge\" "+
-		"(where individual users cannot be selected, allow Developers + Maintainers to merge instead), then re-run repos install",
+		"then re-run repos install. If your GitLab tier cannot select individual users there, keep the polling schedules in effect rather than widening merge access; see the GitLab configuration guide",
 		account, e.Branch, rule, who)
+}
+
+// validGitLabUsername reports whether name is non-empty and limited to the
+// characters GitLab allows in a username (letters, digits, '_', '-', '.'). A
+// name outside that set, for example one carrying terminal control
+// characters, is never echoed into operator output.
+func validGitLabUsername(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // pollerGenerationSafetyReason returns an operator-safe description of a

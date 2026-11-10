@@ -363,12 +363,22 @@ To let the replacement Poller start pipelines:
 2. In the GitLab project, open **Settings → Repository → Protected branches**.
 3. Find the rule that protects the default branch. The message names the rule,
    which can be a wildcard rule.
-4. Under **Allowed to merge**, add the account with that username. If your
-   GitLab tier does not let you select individual users, allow
-   **Developers + Maintainers** to merge instead. That lets every Developer
-   merge to the default branch.
+4. Under **Allowed to merge**, add the account with that username.
 5. Re-run `repos install`. Install mints the trigger as the replacement Poller
    and cuts over to it.
+
+If your GitLab tier does not let you select individual users under **Allowed to
+merge**, do not widen the rule as a routine fix. Leave the polling schedules in
+effect, which keep dispatching agents without the webhook fast path, or use the
+trigger-account route described above.
+
+> [!WARNING]
+> Allowing **Developers + Maintainers** to merge is a security-policy change,
+> not a fix for this message. It lets every Developer-level identity on the
+> project merge to the protected branch, including the accounts that run
+> agents. When the rule is a wildcard, it applies to every branch the wildcard
+> matches, not only the default branch. Make this change only if your
+> organization accepts that exposure.
 
 When the superseded Poller is later retired, install reports any merge entry
 still listed for it. Remove that entry if no one else needs it.
