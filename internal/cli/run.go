@@ -3462,6 +3462,13 @@ var oidcDenyKeys = map[string]bool{
 	"FULLSEND_TRIGGER_TOKEN":                true,
 	"FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN": true,
 	"FULLSEND_WEBHOOK_SECRET":               true,
+	// The trace-context signing seed (ADR 0154). On GitLab a protected,
+	// wildcard-scoped CI/CD variable reaches every job on a protected ref.
+	// No run reads the seed, and fullsend's GitLab jobs unset it on their
+	// first before_script line; listing it here keeps a harness from
+	// expanding it and strips it from host-side scripts if it is ever
+	// present.
+	forge.SecretTraceSigningKey: true,
 	// The runner secrets bundle and its file path (ADR 0136).
 	// loadRunnerSecrets unsets both at start-up; listing them here keeps a
 	// harness from expanding the whole bundle and strips them from child

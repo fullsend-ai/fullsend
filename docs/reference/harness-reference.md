@@ -405,7 +405,8 @@ sandbox environment, case-insensitively:
   sets.
 - **Credentials it mints or receives:** `FULLSEND_GCP_OIDC_AUTH_FILE`,
   `FULLSEND_TRIGGER_TOKEN`, `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN`,
-  `FULLSEND_WEBHOOK_SECRET`, `FULLSEND_INFERENCE_GATEWAY_API_KEY`,
+  `FULLSEND_WEBHOOK_SECRET`, the trace-context signing key
+  `FULLSEND_TRACE_SIGNING_KEY`, `FULLSEND_INFERENCE_GATEWAY_API_KEY`,
   `FULLSEND_OPENAI_API_KEY`, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, the
   runner-secret bundle and its staging path (`FULLSEND_GITHUB_RUNNER_SECRETS`,
   `FULLSEND_GITHUB_RUNNER_SECRETS_FILE`), and the GitHub Actions OpenID Connect
