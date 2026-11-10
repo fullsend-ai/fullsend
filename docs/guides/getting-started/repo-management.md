@@ -312,8 +312,10 @@ repositories it can also supply `inference.wif_audience` and
 `repos.yaml` can also declare a sparse managed `.fullsend/config.yaml` in
 `defaults.config`, `github.config`, `gitlab.config`, and each repository
 entry's `config`. Every section uses the same schema as per-repo
-`config.yaml`, including `runtime` and `allowed_remote_resources`, and
-each is sparse: declare only the values you want to set.
+`config.yaml`, including `runtime` and `allowed_remote_resources`, except
+`trace_context`, which only a concrete repository entry accepts (see
+[Trace signing keys](../../cli/repos.md#trace-signing-keys)). Each section
+is sparse: declare only the values you want to set.
 
 ```yaml
 version: 1
@@ -850,7 +852,14 @@ fullsend repos install acme/new-api acme/new-web --dry-run
 To cover every repository in an org, declare a glob entry such as
 `fullsend repos set 'github.repos["acme/*"]' '{}'`. Naming a concrete
 repository the glob covers (`fullsend repos install acme/new-api`)
-installs it with the glob's settings without adding an explicit entry.
+installs it with the glob's settings. Naming it adds no explicit entry.
+Any install, whether it names the repository, passes `"acme/*"` or
+selects the whole manifest, gives each glob-covered repository its own
+entry, copied from the glob, when it writes that repository's
+first-install `tracker` default or `trace_context` block
+([Trace signing keys](../../cli/repos.md#trace-signing-keys)) to
+`repos.yaml`. Later edits to the glob entry apply only to the
+repositories that have no entry of their own.
 
 Per-repo settings live on the entry, never in install flags:
 `fullsend_ref`, `mint_url`, `app_set`, `inference.auth`, `vendor`,

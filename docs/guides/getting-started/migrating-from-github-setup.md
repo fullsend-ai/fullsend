@@ -128,7 +128,7 @@ These inputs are never written to `repos.yaml`:
 |---|---|
 | Secrets and sensitive provisioning | `--openai-api-key`, `--jira-token`, `--jira-email`, `--jira-client-id`, `--jira-client-secret`, `--vertex-project`, `--vertex-wif-provider`, `--gitlab-role-token role=token` (repeatable), `--gitlab-role-registry`, `--gitlab-token` (or `GITLAB_TOKEN`) |
 | Local vendoring artifacts | `--fullsend-binary`, `--fullsend-source`. Valid only when a selected repository resolves `vendor: true`; otherwise install fails and points at `fullsend repos set defaults.vendor true` |
-| One-run controls | `-f` / `--manifest`, `--dry-run`, `--direct`, `--concurrency`, `--force`, `--reactivate-schedules`, `--rotate-gitlab-roles`, `--rotate-gitlab-role`, `--rotate-gitlab-trigger-token`, `--rotate-gitlab-trigger-account` |
+| One-run controls | `-f` / `--manifest`, `--dry-run`, `--direct`, `--concurrency`, `--force`, `--reactivate-schedules`, `--rotate-gitlab-roles`, `--rotate-gitlab-role`, `--rotate-gitlab-trigger-token`, `--rotate-gitlab-trigger-account`, `--rotate-trace-signing-key`, `--remove-trace-verification-key` (repeatable) |
 
 `--vertex-project` and `--vertex-wif-provider` are optional when the
 effective configuration declares `inference.project` and
@@ -205,8 +205,11 @@ github:
 
 `fullsend repos install acme/web` installs `acme/web` with the glob's
 settings, even when the org listing omits it (for example a fork or an
-archived repository), and adds no explicit entry. To give one repository
-different settings, add an explicit entry for it.
+archived repository). Naming it adds no explicit entry, but install gives
+it one, copied from the glob, when it writes the first-install `tracker`
+default or the `trace_context` block to `repos.yaml`; later edits to the
+glob entry no longer apply to it. To give one repository different
+settings, add an explicit entry for it.
 
 ### Infrastructure values
 
@@ -460,14 +463,21 @@ cannot be read back to compare, so they are always refreshed from the
 supplied values. When neither supplies a project, the existing secrets are
 reused.
 
-Install writes to `repos.yaml` itself only in two cases, both of which
-predate this change:
+Install writes to `repos.yaml` itself only in these cases:
 
 - On a first install with no preset and no `tracker` declaration, it
   records `config.tracker.github.allowed_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]`
   on a GitHub repository's entry. For GitLab it records the explicit empty
   policy `config.tracker.gitlab.allowed_targets: {}`. For a repository covered only by a glob, this
   adds an explicit entry.
+- When it converts legacy `tracker` or `create_issues` configuration, it
+  writes the converted manifest (see
+  [Permit agent improvement proposals on existing installations](#permit-agent-improvement-proposals-on-existing-installations)).
+- When it generates a trace signing key pair or removes a retained
+  verification key, it records `config.trace_context` in the repository's
+  entry. For a repository covered only by a glob, this adds an explicit
+  entry, copied from the glob. See
+  [Trace signing keys](../../cli/repos.md#trace-signing-keys).
 - After a first install, it writes the CLI's release to
   `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is unset.
 

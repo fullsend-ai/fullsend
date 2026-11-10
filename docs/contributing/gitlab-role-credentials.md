@@ -775,9 +775,10 @@ polling gap is acceptable.
 
 **One installer at a time per project, across processes and hosts.** The
 whole transaction above, plus role provisioning, rotation, cleanup, Poller
-reconciliation, and the full GitLab repository uninstall (webhook teardown,
-scaffold removal, role cleanup, and the variable, secret, and branch
-deletions), holds a project lease: the CI/CD variable
+reconciliation, the trace signing key writes of `repos install`, and the full
+GitLab repository uninstall (webhook teardown, scaffold removal, role
+cleanup, and the variable, secret, and branch deletions), holds a project
+lease: the CI/CD variable
 `FULLSEND_GITLAB_INSTALL_LEASE`, created atomically (GitLab rejects a second
 variable with the same key and scope) and deleted when the operation ends,
 even after a failure or cancellation. A second installer waits up to two

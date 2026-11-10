@@ -10,6 +10,8 @@ field below, including `runtime` and `allowed_remote_resources`) as
 `config_base`, which is the configuration-preset path written to
 `.fullsend/config.base.yaml`); see
 [Repo Management — Managed configuration](../guides/getting-started/repo-management.md#managed-configuration).
+[`trace_context`](#trace_context) is the exception: only a concrete
+repository entry may declare it.
 For initial setup, see
 [Configuring GitHub](../guides/getting-started/configuring-github.md) or
 [Configuring GitLab](../guides/getting-started/configuring-gitlab.md).
@@ -130,6 +132,15 @@ models:
     sonnet: claude-sonnet-5
     haiku: claude-haiku-3-5
     fable: claude-fable-5-1
+
+# ── Trace context ────────────────────────────────────────────
+trace_context:                       # Trace signing keys, recorded by `fullsend repos install`
+  installation_id: 0f1e2d3c4b5a69788796a5b4c3d2e1f0  # 32 lowercase hex characters, not all zero
+  signing_key:
+    secret: FULLSEND_TRACE_SIGNING_KEY # Secret holding the private key; the only accepted value
+  verification_keys:
+    active: <public key>             # Standard base64 of the 32-byte Ed25519 public key
+    retained: [<public key>]         # Earlier public keys that still verify
 ```
 
 ## Field details
@@ -858,6 +869,46 @@ Model configuration, currently containing only `aliases`.
   opus` would reach the provider as the literal id "opus". In the layered
   config system, aliases merge per key across layers. See
   [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+
+### `trace_context`
+
+The repository's trace-context keys
+([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)):
+its installation ID, the public keys that verify its trace-context envelopes,
+and the name of the secret that holds its private signing key. Every value in
+the block is public. For how the keys are created, rotated and removed, see
+[Trace Context Reference — Key lifecycle](trace-context.md#key-lifecycle).
+
+- **`installation_id`** — Identifies the repository's key set: exactly 32
+  lowercase hex characters (128 bits), not all zero. It stays the same across
+  reinstall, recovery and rotation.
+- **`signing_key.secret`** — The secret that holds the private signing key.
+  It must be exactly `FULLSEND_TRACE_SIGNING_KEY`. The key itself never
+  appears in configuration.
+- **`verification_keys.active`** — The public key of the current signing
+  key: standard base64, with padding, of a 32-byte Ed25519 public key.
+- **`verification_keys.retained`** — Optional. Earlier public keys, in the
+  same form, kept so that envelopes signed with their private keys still
+  verify until you remove them.
+
+`fullsend repos install` writes the block. It records it in the repository's
+`repos.yaml` entry as `config.trace_context` and renders it into the managed
+`.fullsend/config.yaml`. Only a concrete repository entry may declare it:
+manifest validation rejects it in `defaults.config`, `github.config`,
+`gitlab.config` and glob entries. `repos install` also rejects a configuration
+preset or an existing `.fullsend/config.base.yaml` that contains it, and
+`github setup` rejects a `--config` preset that contains it. The block is
+never inherited from `config.base.yaml`.
+
+A block must be complete: `installation_id`, `signing_key.secret` and
+`verification_keys.active` are required. No two keys may share a key ID (the
+first 8 bytes of the SHA-256 hash of the public key), so a key cannot be both
+active and retained or be listed twice. Validation errors name the field, for
+example `trace_context.verification_keys.retained[1]`, and never show its
+value. A value of the wrong YAML type, such as text where `signing_key` needs
+a mapping, fails parsing before validation, and the parse error can quote the
+value's first characters. `fullsend run` validates the block as well: a
+malformed block fails the run before the sandbox is created.
 
 ## Installation model
 

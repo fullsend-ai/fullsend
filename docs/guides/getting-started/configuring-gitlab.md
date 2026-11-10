@@ -1926,8 +1926,18 @@ Confirm:
   above). Role-aware installs also provision
   `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, and
   `FULLSEND_GITLAB_CODER_TOKEN`; custom role enrollments may add
-  `FULLSEND_GITLAB_ROLE_*_TOKEN`. Secrets are requested as masked. For
-  the role tokens above, storing one fails if GitLab rejects masking (for
+  `FULLSEND_GITLAB_ROLE_*_TOKEN`. A fresh install from a writable manifest
+  also stores the trace signing key `FULLSEND_TRACE_SIGNING_KEY` as a masked,
+  protected variable, and its key ID in the unprotected, unmasked
+  `FULLSEND_TRACE_SIGNING_KEY_ID` variable; an existing install gets them
+  only with `--rotate-trace-signing-key`. Install writes a key only when the
+  resolved `fullsend_ref` names a release whose jobs unset
+  `FULLSEND_TRACE_SIGNING_KEY`. While fullsend's jobs are on the default
+  branch, install writes a key, whatever the reason, only once those jobs
+  unset it
+  (see [Trace signing keys](../../cli/repos.md#trace-signing-keys)). Secrets are
+  requested as masked. For the role tokens and the trace signing key above,
+  storing one fails if GitLab rejects masking (for
   example, a value that doesn't meet its masking character-set rules); it is
   never stored unmasked. For other secrets, GitLab silently falls back to
   unmasked if it rejects a value. If any credential secret is unmasked, rotate
