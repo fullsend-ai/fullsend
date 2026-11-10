@@ -15,7 +15,7 @@ topics:
 
 Date: 2026-11-10
 
-Depends on: [ADR 0162](https://github.com/fullsend-ai/fullsend/pull/8965)
+Depends on: [ADR 0162](0162-agent-entries-may-carry-harness-overrides.md)
 
 ## Status
 
@@ -45,7 +45,7 @@ disabling a persona means mapping that file path to null. A persona's model
 is set on the agent entry, while its prompt file and whether it runs are set
 in the harness.
 
-[ADR 0162](https://github.com/fullsend-ai/fullsend/pull/8965) lets an
+[ADR 0162](0162-agent-entries-may-carry-harness-overrides.md) lets an
 `agents:` entry carry a `harness:` block, a partial harness layered on the
 agent's harness. The review of ADR 0162 agreed that entry fields which
 override harness fields give way to that block. Persona settings can therefore live in the
