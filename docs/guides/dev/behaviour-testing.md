@@ -189,6 +189,72 @@ The `@requires:capability:runner-secret-overlay-guard` tag gates the refused
 scenario. `make behaviour-test` skips it until that capability is declared.
 The Makefile's `BEHAVIOUR_CAPABILITIES` comment says why and when.
 
+### Workflow dispatch steps
+
+`pkg/behaviourtest/steps/workflow_dispatch.go` starts a workflow the way an
+external scheduler or custom poller does, with a caller-written dispatch
+payload, and asserts that the run failed with a given log line:
+
+```gherkin
+When the "prioritize.yml" workflow is dispatched with event payload:
+  """
+  {"issue": {"number": 1}, "_normalized_event": {"repo": ""}}
+  """
+Then the "prioritize.yml" workflow fails with "invalid _normalized_event" in its logs
+```
+
+The dispatch runs on the leased repository's default branch with
+`event_type: issues` and `source_repo` set to that repository. The step
+sends exactly those three inputs — `event_type`, `source_repo` and
+`event_payload` — so the target workflow must declare them under
+`on.workflow_dispatch.inputs` (GitHub is expected to refuse undeclared
+inputs with a 422; that is unverified against the live API, and a refused
+dispatch reports the client's error unchanged); `prioritize.yml` is
+currently the only scaffolded workflow that does. Both steps need a CI
+driver that implements `ci.WorkflowDispatcher` (GitHub Actions only), so
+tag such scenarios `@skip:gitlab` — the tag skips on the SCM dimension
+(`BEHAVIOUR_SCM=gitlab`), the only dimension that can skip today: the
+runner accepts `BEHAVIOUR_CI=githubactions` alone, so the CI dimension
+cannot be selected, and the missing-interface error is exercised only
+by the unit tests (`TestWorkflowDispatchSteps_RequireWorkflowDispatcher`).
+Pick a needle the
+program prints. Text the payload or a workflow script already contains
+would pass the step without the behaviour under test. The failure step
+accepts any terminal-failure conclusion (`failure`, `timed_out` or
+`startup_failure`); a run that failed before any job started has no logs,
+and the step fails saying so instead of waiting for them. The log step
+fetches the run's logs again for up to a minute. It retries while the
+logs could not be fetched, were empty or hold a fetch-failure note.
+GitHub can report a run completed before its logs are ready. A truncation
+note is final.
+
+The log step records the dispatched workflow's run as the scenario's
+workflow run, and saves the fetched logs as a debug artifact. That run is
+the caller workflow's run, not a harness agent run, and the step re-arms
+the fail-fast when it records it. Harness-semantics steps — log,
+artifact, negative-assertion, triage, gateway-cleanup, pre-script-skip
+and submitted-review steps that read the scenario's workflow run, and
+the dispatch-count, agent-triggered, empty-matrix and OWNERS
+dispatch-run steps that scope their run windows from the trigger time —
+must not follow either step in the same scenario without re-resolving
+the harness run; they fail fast with an error naming the dispatch step
+when they do, until a harness wait step — `the harness "<agent>"
+workflow completes successfully`, `the harness "<agent>" workflow fails
+with "<text>" in its logs`, `the harness "<agent>" workflow fails
+reporting "<text>"`, or an agent-round completion step — records a
+harness run again. The dispatch step also moves the scenario's trigger
+time to the dispatch, and harness steps scope their run windows from
+that time, so harness-semantics steps must come before the dispatch
+step in the scenario: a run triggered before the dispatch falls outside
+their windows and re-resolving cannot recover it. The failure
+assertion's own window opens at the dispatch time the dispatch step
+records beside the file, so a trigger step between the dispatch and the
+assertion cannot push the dispatched run out of it. Dispatch a given
+workflow file at most once per scenario: the wait window opens a skew
+buffer before the dispatch and matches on file and event only, so a
+second dispatch of the same file can bind the assertion to the earlier
+run.
+
 ### Forge-state assertion steps
 
 `pkg/behaviourtest/steps/forge_state.go` asserts what agent post-scripts
@@ -1347,5 +1413,20 @@ as a breaking change: no external suite is known to rely on a null labels
 field. The poller itself treats an issue served without a labels array as
 unlabeled — `state.labels` becomes an empty list — so neither shape an issue
 arrives in loses events; the unit tests serve each shape directly.
+
+**`ci.WorkflowDispatcher` optional interface:** `DispatchWorkflow(ctx, owner,
+repo, workflowFile, ref string, inputs map[string]string) error` and
+`WaitForWorkflowConclusion(ctx, owner, repo, workflowFile string, after
+time.Time, event string) (*forge.WorkflowRun, error)` back the [workflow
+dispatch steps](#workflow-dispatch-steps). `WaitForWorkflowConclusion` returns
+the run whatever its conclusion, so a step can assert a failure. It is a
+separate interface, not a `ci.Driver` method, so external `ci.Driver`
+implementations keep compiling; the steps fail with an explanatory error on a
+driver without it. A wrapper that embeds `ci.Driver` hides it unless the wrapper
+implements it too. Only the GitHub Actions reference driver implements it.
+
+**`ci.IsTerminalFailure` addition:** the exported predicate reports whether a run conclusion is a terminal failure (`failure`, `timed_out` or `startup_failure`); the drivers' fail-fast rules and the workflow dispatch failure step share it, so the conclusion set cannot drift apart. It is a non-breaking addition.
+
+**`world.World.DispatchedWorkflow` addition:** the new `DispatchedWorkflow bool` field records that `WorkflowRun` holds a dispatched caller workflow's run, not a harness agent run, so harness-semantics steps fail fast instead of asserting on it. It is a non-breaking addition. The companion `DispatchedWorkflowFile string` field records the workflow file the dispatch step dispatched (never cleared, unlike the flag, which a harness re-resolve clears); the workflow-failure step uses it to fail fast when no dispatch step ran or a different file was dispatched. The `DispatchedWorkflowAt time.Time` companion records the dispatch time, which the workflow-failure step scopes its detection window from, so a later trigger step moving the scenario's trigger time forward cannot exclude the dispatched run. Also non-breaking additions.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.
