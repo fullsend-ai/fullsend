@@ -194,6 +194,10 @@ that key is unset. `--dry-run` writes none of them. Install writes the first
 three together, after its preflights. It stops before that write when the file
 changed after the run loaded it, as when another install that uses the same file
 runs at the same time. Run install again once that install has finished.
+When the result would exceed the 1 MB limit that loading a manifest enforces, it
+also stops before that write, and `--dry-run` reports the same refusal. Split a
+larger fleet across several manifests, declaring each repository, including one
+a glob covers, in only one of them.
 
 Legacy issue-tracking configuration in managed `config:` blocks (the scalar
 `tracker: github|gitlab|jira` form and the removed `create_issues` block) is

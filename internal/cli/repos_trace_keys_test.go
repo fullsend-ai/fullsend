@@ -857,3 +857,38 @@ func TestRunReposInstall_ManifestFromPipeIsReadOnly(t *testing.T) {
 		})
 	}
 }
+
+// An install that would rewrite repos.yaml past the size limit that loading
+// a manifest enforces is refused before it writes the file or any key, in a
+// dry run as well. This hand-written file loads, but install renders it with
+// deeper indentation.
+func TestRunReposInstall_ManifestOverSizeLimitIsRefused(t *testing.T) {
+	const limit = 1 << 20 // LoadManifest's limit
+	var b strings.Builder
+	b.WriteString(strings.Replace(githubUnmanagedManifestYAML, "    - name: acme/api\n",
+		"    - name: acme/api\n      config:\n        tracker:\n          github:\n            allowed_targets:\n              repos:\n                - acme/other\n", 1))
+	for i := 0; b.Len() < limit-50000; i++ {
+		fmt.Fprintf(&b, "    - name: acme/%s-%05d\n", strings.Repeat("r", 20), i)
+	}
+	manifest := b.String()
+	for _, dryRun := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dry run %t", dryRun), func(t *testing.T) {
+			manifestPath := writeTestManifest(t, manifest)
+			loaded, err := repos.LoadManifest(context.Background(), manifestPath)
+			require.NoError(t, err, "the file loads")
+			rendered, err := repos.MarshalWithHeader(loaded)
+			require.NoError(t, err)
+			require.Greater(t, len(rendered), limit, "install renders the file past the limit")
+
+			fc := newInstallFakeClient("acme/api")
+			opts := githubManagedInstallOpts(manifestPath, fc)
+			opts.repoFilter = []string{"acme/api"}
+			opts.dryRun = dryRun
+			captureStdout(t, func() { err = runReposInstall(context.Background(), opts) })
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), fmt.Sprintf("would exceed the maximum size of %d bytes", limit))
+			assert.Equal(t, manifest, mustReadFile(t, manifestPath), "repos.yaml is not written")
+			assert.Zero(t, len(writtenTraceSeed(fc, "acme/api")), "no key is written")
+		})
+	}
+}

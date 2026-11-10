@@ -894,6 +894,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
 		return fmt.Errorf("effective infrastructure preflight: %w", err)
 	}
+	// A dry run reports the size refusal that the write below gives.
+	if manifestChanged && opts.dryRun && opts.manifest != "" {
+		if err := repos.CheckManifestSize(opts.manifest, manifest); err != nil {
+			return fmt.Errorf("checking the manifest size: %w", err)
+		}
+	}
 	if manifestChanged && !opts.dryRun && opts.manifest != "" {
 		// Another install that uses the same file may have rewritten it since
 		// this run loaded it; writing now would drop its edits, such as the

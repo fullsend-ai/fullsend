@@ -149,6 +149,11 @@ func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress Progres
 	}
 
 	if cfg.DryRun {
+		if cfg.ManifestPath != "" {
+			if err := CheckManifestSize(cfg.ManifestPath, cfg.Manifest); err != nil {
+				return nil, nil, err
+			}
+		}
 		for _, r := range result.Removed {
 			progress(r, "dry-run", "Would remove from manifest")
 		}
@@ -226,16 +231,36 @@ func WriteManifest(path string, m *Manifest) error {
 	return writeManifest(path, m)
 }
 
+// CheckManifestSize returns the error WriteManifest gives when m renders
+// larger than LoadManifest accepts, so a dry run can report it too.
+func CheckManifestSize(path string, m *Manifest) error {
+	_, err := marshalManifest(path, m)
+	return err
+}
+
 func writeManifest(path string, m *Manifest) error {
 	if ManifestReadOnly(m, path) {
 		return readOnlyManifestError(path)
 	}
-	data, err := MarshalWithHeader(m)
+	data, err := marshalManifest(path, m)
 	if err != nil {
-		return fmt.Errorf("marshalling manifest: %w", err)
+		return err
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing manifest: %w", err)
 	}
 	return nil
+}
+
+// marshalManifest renders m for path. LoadManifest refuses a larger file,
+// which would lock every later command out of it.
+func marshalManifest(path string, m *Manifest) ([]byte, error) {
+	data, err := MarshalWithHeader(m)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling manifest: %w", err)
+	}
+	if int64(len(data)) > maxManifestBytes {
+		return nil, fmt.Errorf("%s: resulting manifest would exceed the maximum size of %d bytes; the file was not changed", path, maxManifestBytes)
+	}
+	return data, nil
 }
