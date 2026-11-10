@@ -32,8 +32,11 @@ its mint role without a separate per-agent grant.
 
 An agent can have multiple effective harness variants, including inherited
 configuration and overlays. Those variants may request different levels for
-the same run-stage, so a grant must cover their union. The related concern
-about explicit permissions before granting action rights is tracked in
+the same run-stage, so a grant must cover their union. [ADR 0112](0112-overlays-may-set-any-harness-field.md)
+allows overlays to set harness fields, but the current overlay schema does not
+carry `privilege_levels`; adding guarded overlay-level requests is a
+prerequisite for implementing this decision. The related concern about
+explicit permissions before granting action rights is tracked in
 [#7548](https://github.com/fullsend-ai/fullsend/issues/7548).
 
 This ADR aims to make each config-registered agent's maximum mint authority
@@ -57,12 +60,12 @@ agent installation records the maximum authority each harness may request.
 
 Each `agents[]` entry may have an `approved_privilege_levels` map with the same
 run-stage keys as the harness's `privilege_levels` map. Values are lists of
-levels. The `default` key supplies the grant for stages without an explicit
-entry; a stage-specific entry replaces that default. If
-`approved_privilege_levels` is omitted, it behaves as `default: [read]`. If
-the map is present without a `default`, unlisted stages still default to
-`[read]`. `validation_loop` uses the `runtime` grant, as it does for harness
-level selection.
+levels. The built-in approval profile is `[read]` for `pre_script` and
+`runtime`, and `[write]` for `post_script`; `validation_loop` uses the
+`runtime` grant. Omitting `approved_privilege_levels` applies that profile. In
+an explicit map, a stage-specific entry wins; `default` supplies the grant for
+other stages when present, otherwise the built-in profile applies to each
+unlisted stage.
 
 For example:
 
@@ -76,11 +79,17 @@ agents:
 ```
 
 The `[write]` shorthand expands to `[read, write]`. Other custom levels must
-be listed explicitly. For each run-stage, the approved set must contain every
-level requested by any effective harness variant registered for the agent,
-including levels selected through inheritance or overlays. The check uses the
-union across variants, even when a particular run would match only one
-overlay.
+be listed explicitly. An empty list denies every level for that stage. Unknown
+stage names, malformed maps or lists, and levels unavailable to the agent's
+role are validation errors and fail closed.
+
+Overlay entries may set `privilege_levels` as a guarded field. Their maps merge
+in overlay order: a later overlay replaces earlier values for the stages it
+names and inherits values for other stages. For each stage, the approval must
+contain every level any effective harness variant can request after
+inheritance and overlay composition. The validator and management commands
+use the union across all possible overlay outcomes, even when a particular
+run would match only one overlay.
 
 The agent add/install and update/upgrade flows resolve the agent's effective
 harness variants, show the complete required level set, and ask the operator
@@ -100,11 +109,16 @@ mint; this approval check does not expand the harness request or change the
 mint role's permissions.
 
 The config value is the grant. A harness's `privilege_levels` declaration is a
-request, not an approval. The CLI prompt is the supported way to create the
-grant, but it is not a separate signed approval record; a config change that
-adds levels is itself an authorization change and must remain under the
-repository's existing policy for protecting agent configuration. This ADR
-does not add an out-of-band or cryptographic approval record.
+request, not an approval. For unmanaged repositories, the grant lives in
+`.fullsend/config.yaml`. For repositories managed through `repos.yaml`, the
+manifest's `config.agents[]` entry is authoritative and the generated
+`.fullsend/config.yaml` carries that value ([ADR 0122](0122-declarative-repo-configuration.md)).
+`fullsend agent approve <name>` must persist managed grants in the owning
+manifest, not only in the generated file. The CLI prompt is the supported way
+to create the grant, but it is not a separate signed approval record; a config
+change that adds levels is itself an authorization change and must remain
+under the repository's existing policy for protecting agent configuration.
+This ADR does not add an out-of-band or cryptographic approval record.
 
 ## Forge scope
 
@@ -118,13 +132,18 @@ bypass.
 
 - Operators see the full privilege request before adding or updating an agent,
   and the repository config records the grant by stage.
-- Existing entries without an approval map authorize only `read`; agents that
-  require higher levels must be approved with `fullsend agent approve` before
-  they can launch.
+- Entries without an approval map use the built-in profile. Harnesses that
+  omit `privilege_levels` still request `write` at every stage per ADR 0073,
+  so they need additional grants before they can launch.
+- The default approves the level named `read`; it does not inspect a custom
+  role's underlying permissions. Custom-role owners are responsible for
+  defining levels that match their intended access.
 - Overlay variants can require approval of a higher level even when that
-  variant is not selected for a particular run.
+  variant is not selected for a particular run, and managed repositories keep
+  grants in their `repos.yaml` source of truth.
 - Repository protections remain essential because the config entry is the
   authority record; the CLI does not provide a separate approval signature.
 - Implementation requires coordinated changes to agent management commands,
-  harness/config validation, and the config reference; those changes are
-  tracked separately from this ADR.
+  overlay composition, harness/config validation, managed `repos.yaml`
+  configuration, and the config reference; those changes are tracked
+  separately from this ADR.
