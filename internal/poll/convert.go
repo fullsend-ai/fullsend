@@ -14,6 +14,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
+var errMissingMRCloserIdentity = errors.New("closed merge request has no closer identity")
+var errMissingMRMergerIdentity = errors.New("merged merge request has no merger identity")
+
 // toNormalizedEvent converts a RoutableEvent into a dispatch.NormalizedEvent
 // suitable for stage matching and dispatch. The returned int is the resolved
 // numeric actor ID (e.g. from the label-events API for issue_label events).
@@ -96,7 +99,7 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 	case "mr_event":
 		authorID = event.NoteAuthorID
 		switch event.Action {
-		case "opened", "closed", "synchronized":
+		case "opened", "synchronized":
 			actorLogin = event.NoteAuthorLogin
 			if actorLogin == "" {
 				actorLogin = event.MRAuthorLogin
@@ -105,8 +108,17 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 				authorID = event.MRAuthorID
 			}
 			isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
+		case "closed":
+			actorLogin = event.NoteAuthorLogin
+			if authorID == 0 || actorLogin == "" {
+				return dispatch.NormalizedEvent{}, 0, errMissingMRCloserIdentity
+			}
+			isBot = event.IsBot || (p.botUserID != 0 && authorID == p.botUserID) || isProjectAccessTokenBot(actorLogin)
 		default:
 			actorLogin = event.MergedByLogin
+			if authorID == 0 || actorLogin == "" {
+				return dispatch.NormalizedEvent{}, 0, errMissingMRMergerIdentity
+			}
 			isBot = event.IsBot || (p.botUserID != 0 && event.NoteAuthorID == p.botUserID) || isProjectAccessTokenBot(event.MergedByLogin)
 		}
 	}

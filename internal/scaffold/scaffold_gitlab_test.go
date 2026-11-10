@@ -704,12 +704,16 @@ func TestGitLabAgentTemplateAuthorizationGate(t *testing.T) {
 	assert.Contains(t, s, "Developer access")
 	// Fail-closed on API failure
 	assert.Contains(t, s, "fail-closed")
-	// ACTOR_ID fallback to MR_AUTHOR_ID for backward compatibility
+	// MR_AUTHOR_ID fallback is limited to opened/synchronized MRs, where
+	// the MR author is also the event actor.
 	assert.Contains(t, s, "ACTOR_ID")
 	assert.Contains(t, s, "MR_AUTHOR_ID")
+	assert.Contains(t, s, "opened|synchronized)")
 	// Distinct warning when no actor identity is available
 	assert.Contains(t, s, "No actor identity available")
-	// Read-only stages exempt from Developer-access gate
+	// Prioritize is the only stage exempt from this gate; retro requires
+	// Developer access like other mutation-capable stages.
+	assert.Contains(t, s, `elif [ "${STAGE}" != "prioritize" ]; then`)
 	assert.Contains(t, s, `"retro"`)
 	assert.Contains(t, s, `"prioritize"`)
 }

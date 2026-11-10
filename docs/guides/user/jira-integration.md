@@ -229,6 +229,30 @@ The `event_type` field in dispatch records (e.g. `"comment_added"`, `"label_chan
 
 For a Jira-sourced run, `fullsend run` exports the tracker-independent `FULLSEND_WORK_ITEM_SOURCE` (`jira`), `FULLSEND_WORK_ITEM_KEY` (for example `PROJ-123`), and `FULLSEND_WORK_ITEM_URL` variables from the normalized event, replacing any inherited values, and clears `ISSUE_NUMBER` because a Jira key has no GitHub or GitLab issue number. The run fails closed, rather than guessing an identity, when the dispatch payload declares Jira but its key or URL is missing or malformed. Harness scripts that handle Jira work items should read the `FULLSEND_WORK_ITEM_*` variables instead of `ISSUE_NUMBER`.
 
+### Jira connection variables in agent runs
+
+For a Jira-sourced run, `fullsend run` also sets two Jira URLs before harness env expansion, so `${JIRA_BASE_URL}` and `${JIRA_API_URL}` in `env.runner`, `env.sandbox`, and `host_files` entries with `expand: true` resolve to them:
+
+| Variable | Value |
+|---|---|
+| `JIRA_BASE_URL` | `tracker.jira.base_url`. It replaces any inherited value, such as the `JIRA_BASE_URL` repository variable or the `jira_base_url` dispatch input, so config is the only source. |
+| `JIRA_API_URL` | The per-site API gateway base `{api_url}/ex/jira/{cloudId}`, with no trailing slash, where `api_url` is `tracker.jira.api_url` (default `https://api.atlassian.com`). It is the same base fullsend's own Jira client uses, and the cloud ID is discovered the same way, from `{base_url}/_edge/tenant_info`. |
+
+The built-in agents send Jira REST calls to `${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/...`. Because `fullsend run` always sets `JIRA_API_URL` for a Jira-sourced run that starts, those calls go through the gateway, which accepts a service account's scoped token and an OAuth 2.0 access token; a bot user's classic token has been observed to work there too, though Atlassian does not promise it.
+
+A Jira-sourced run fails closed. It stops before the sandbox starts, rather than letting agents fall back to the site URL, where a service account's credential is rejected:
+
+| Case | Result |
+|---|---|
+| Discovery succeeds | Both variables are set; the run continues |
+| Discovery fails or times out (10-second limit) | The run stops; the error names the site URL |
+| `fullsend run --offline` | The run stops: the gateway address needs a network lookup |
+| `tracker.jira` connection settings missing or invalid (for example `base_url` or `api_url` not `https`, or with credentials, a query, or a fragment) | The run stops; the URL is never printed |
+
+Reference these variables only in a harness overlay that applies to Jira runs (`when: 'has(event.source) && event.source.system == "jira"'`). On a GitHub- or GitLab-sourced run, fullsend leaves them as they are, and an unset reference fails the run. Both values are URLs, not credentials, and a runner secret cannot override `JIRA_API_URL` or `JIRA_BASE_URL`.
+
+For sandboxed use, the network profile must allow the gateway host. The built-in agents' `jira-ro` provider profile allows `api.atlassian.com`. The legacy `atlassian-cloud` profile below allows only `*.atlassian.net`, so it serves bot-user calls to the site URL only.
+
 ### Where built-in agent results appear
 
 Starting with the agents release that follows v0.52.0
@@ -312,7 +336,7 @@ implementation
 | `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Alternative to `FULLSEND_JIRA_TOKEN`: a service account's OAuth 2.0 credential (see [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)) |
 | `JIRA_TOKEN` | Jira API token for built-in triage and code result writes |
 | `JIRA_USER_EMAIL` | Email associated with the token used for built-in agent result writes |
-| `JIRA_BASE_URL` | Jira site URL used by built-in agent result-write scripts |
+| `JIRA_BASE_URL` | Jira site URL used by built-in agent result-write scripts. For Jira-sourced runs, `fullsend run` replaces it with `tracker.jira.base_url` and also sets `JIRA_API_URL` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) |
 
 The poller and Jira-originated agent workflows use either the token and
 optional email or the OAuth client ID and secret. They take the Jira site and
@@ -420,7 +444,9 @@ earlier release, needs its own matching `trigger`. See
 trigger matches. For Jira-triggered runs,
 `fullsend run` exports `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`,
 and `FULLSEND_WORK_ITEM_URL`, clears `ISSUE_NUMBER`, and fails closed on a
-malformed Jira identity. The built-in triage and code agents write their results
+malformed Jira identity. It also sets `JIRA_BASE_URL` and `JIRA_API_URL` from
+`tracker.jira` (see
+[Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)). The built-in triage and code agents write their results
 to the Jira issue, while branches, commits, PRs or MRs, review, and merge stay
 on the code host. See
 [Where built-in agent results appear](#where-built-in-agent-results-appear) for
@@ -1063,7 +1089,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap are permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
 | GitLab Jira dispatch fails with `does not accept Jira work items` | The project's scaffold predates Jira dispatch | Rerun `fullsend repos install` for the project and merge the scaffold update. See [GitLab runtime](#gitlab-runtime) |
 | Triage or code results do not appear on the Jira issue | The built-in agents are pinned to a release that predates Jira result writes | Use built-in agents from the agents release that follows v0.52.0, or later. Re-pin a harness registered with `source:` or composed with `base:` with `fullsend agent update <name>`. See [Where built-in agent results appear](#where-built-in-agent-results-appear) |
-| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm `JIRA_USER_EMAIL`, `JIRA_TOKEN`, and `JIRA_BASE_URL` reach the agent job and the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
+| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm the Jira credentials reach the agent job, that `tracker.jira.base_url` is set (a missing or invalid setting stops a Jira-sourced run before the sandbox, with a `jira-sourced run:` error in the run log), and that the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
 
 ## See also
 

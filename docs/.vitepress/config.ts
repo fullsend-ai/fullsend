@@ -236,6 +236,7 @@ export default defineConfig({
             { text: "fullsend mint", link: "/cli/mint" },
             { text: "fullsend repos", link: "/cli/repos" },
             { text: "fullsend run", link: "/cli/run" },
+            { text: "fullsend self-update", link: "/cli/self-update" },
           ],
         },
       ],

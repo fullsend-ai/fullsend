@@ -323,6 +323,11 @@ func (p *Poller) Run(ctx context.Context) error {
 
 		normalizedEvent, actorID, err := p.toNormalizedEvent(ctx, event)
 		if err != nil {
+			if errors.Is(err, errMissingMRCloserIdentity) || errors.Is(err, errMissingMRMergerIdentity) {
+				log.Printf("WARNING: observing %s event on IID %d without dispatch: close/merge actor identity is unavailable", event.Type, event.IID)
+				observe(event)
+				continue
+			}
 			log.Printf("WARNING: skipping %s event on IID %d: %v", event.Type, event.IID, err)
 			recordEventFailure(&cycleErrs, failedKeys, mirrors, event, &minFailedAt, failedLabelEvents,
 				fmt.Errorf("skipping %s event on IID %d: %w", event.Type, event.IID, err))

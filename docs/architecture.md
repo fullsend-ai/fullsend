@@ -191,7 +191,8 @@ repo baseline and overrides)
   resolved entities with no prompting event. Harnesses without entity sources
   remain event-triggered only and may rely on the event being present
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md), partially superseded by
-  [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md)).
+  [ADR 0098](ADRs/0098-entity-first-harness-evaluation.md); entity contract:
+  [`docs/normative/normalized-entity/v1`](normative/normalized-entity/v1/README.md)).
 - Portable provider and profile resolution: provider and profile definitions
   can be URL-referenced (sha256-pinned) or specified as local file paths in
   the harness, enabling portable base harnesses that carry their own
@@ -471,6 +472,13 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `labels: project_roles` (which, with no lists, resolves every event through
   the roster, as with no entry)
   ([ADR 0153](ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+- The Jira site URL is kept for links and cloud-ID discovery, and API calls
+  go through the Atlassian API gateway for the site, whose host can be
+  overridden. A token with the account's email is sent with Basic auth (bot
+  account) and one without an email as a Bearer token (service account), and
+  a service account's OAuth 2.0 client credentials are exchanged for a
+  Bearer token, so Fullsend does not ask which kind of account it holds
+  ([ADR 0156](ADRs/0156-separate-jira-api-url-from-site-url.md)).
 - Process lifecycle (target state): bound `fullsend run` and `fullsend poll`
   support once, resident polling, and deadline-bounded polling. Bare
   `fullsend poll` and non-CI bound runs default to once; a CI bound run with
@@ -522,9 +530,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
   separate capability setting. The effective human role comes from the source
   provider or a trusted configured permission source such as `OWNERS`; harness
   CEL may narrow actor, target, or action conditions. Current GitHub bash
-  guards still use `triage` for observation stages and `write` for mutation
-  stages, except for its ungated retro close route. Go CEL dispatch now
-  applies the v1 role-derived default per harness before CEL for ordinary
+  guards use `triage` for observation stages and `write` for mutation stages,
+  including retro on pull-request close. Go CEL dispatch applies the v1
+  role-derived default per harness before CEL for ordinary
   human events; explicit or overlay minima remain target behavior. Non-GitHub
   event paths map source-native roles to normalized roles without cross-system
   identity verification. Bot actors are migrating to provider-backed exact role
@@ -591,7 +599,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
   unresolved, without launching a sandbox. Later input selection and injection
   filtering govern prompt construction. Entity-first execution remains
   disabled until the versioned normalized-entity contract defines partial
-  data and coverage. Every run uses the harness's configured identity
+  data and coverage; [Normalized entity v1](normative/normalized-entity/v1/README.md)
+  defines that field-level contract. Every run uses the harness's configured
+  identity
   ([ADR 0098](ADRs/0098-entity-first-harness-evaluation.md),
   [ADR 0144](ADRs/0144-reuse-poll-and-entity-bound-run-processes.md),
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md),
@@ -610,16 +620,15 @@ The existing design principle is that [the repo is the coordinator](problems/age
 
 **Open questions:**
 
-- What field-level normalized-entity contract and provider query plans can
-  support entity-first evaluation, prove partial-history coverage, and
-  represent handled state? See
+- What provider query plans can support entity-first evaluation over the
+  [Normalized entity v1](normative/normalized-entity/v1/README.md) contract,
+  using its fields and partial-history coverage for handled-state checks? See
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
   for selective acquisition and its authorization rules, and
   [ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)
   for query combination and local routing. The normative discovery protocol,
   including query syntax, adapter mappings, and discovery coverage evidence,
-  remains open, as do the normalized entity-history and handled-state
-  contracts.
+  remains open.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
@@ -834,7 +843,16 @@ ADR 0002: [Building block 13](ADRs/0002-initial-fullsend-design.md#13-observabil
 
 ### 14. retro agent runtime
 
-Retrospective analyst — examines completed or in-progress agent workflows, identifies improvement opportunities, and files proposals as GitHub issues. Runs automatically on PR close (merged or rejected) and on-demand via `/fs-retro` command. Analyzes the full workflow graph (triage, code, review, fix agent interactions and human interventions) and posts a summary comment on the originating PR/issue linking to all filed proposals.
+Retrospective analyst — examines completed or in-progress agent workflows,
+identifies improvement opportunities, and files proposals as GitHub issues.
+Runs automatically on PR close (merged or rejected) when the event actor has
+write access, including for merge-queue events. GitLab MR close and merge use
+the same threshold, expressed as Developer access. Users with write access can
+also start it with `/fs-retro`; a custom retro harness role cannot lower this
+write threshold.
+Analyzes the full workflow graph (triage, code, review, fix agent interactions
+and human interventions) and posts a summary comment on the originating PR or
+issue linking to all filed proposals.
 
 ## Configuration layering
 
