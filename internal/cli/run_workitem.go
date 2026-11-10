@@ -1,13 +1,19 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
@@ -69,6 +75,82 @@ func resolveWorkItemIdentity(eventMap map[string]any, trackerSource, forgePlatfo
 	}
 	return map[string]string{envWorkItemSource: source}, nil
 }
+
+// Jira connection variables run exports for Jira-sourced runs, so harness
+// scripts and host_files expansions reach the same Jira site and API
+// gateway as fullsend's own client. Agents send REST calls to
+// ${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/...
+const (
+	envJiraAPIURL  = "JIRA_API_URL"
+	envJiraBaseURL = "JIRA_BASE_URL"
+)
+
+// jiraGatewayDiscoverer resolves the per-site API gateway base URL
+// {api_url}/ex/jira/{cloudId}. Production code uses discoverJiraGatewayURL;
+// tests inject a stub.
+type jiraGatewayDiscoverer func(ctx context.Context, cfg jira.ScopedConfig) (string, error)
+
+// discoverJiraGatewayURL resolves the gateway base with the shared Jira
+// client's cloud-ID discovery.
+func discoverJiraGatewayURL(ctx context.Context, cfg jira.ScopedConfig) (string, error) {
+	return jira.GatewayBaseURL(ctx, cfg, jiraScopedTestOptions...)
+}
+
+// resolveJiraRunEnv returns the JIRA_BASE_URL and JIRA_API_URL values run
+// exports before harness env expansion. It returns nil for runs that are
+// not Jira-sourced, so GitHub and GitLab runs are unchanged.
+//
+// For a Jira-sourced run, JIRA_BASE_URL is tracker.jira.base_url (trailing
+// slashes trimmed) and replaces any inherited value (such as a repository
+// variable or dispatch input), so config is the only source. JIRA_API_URL is
+// the gateway base {api_url}/ex/jira/{cloudId} the shared client uses.
+//
+// It fails closed (ADR 0156): a Jira-sourced run stops, rather than falling
+// back to the site URL, when the Jira connection settings are missing or
+// invalid, when the run is offline, or when cloud-ID discovery fails. A
+// fallback would turn a service-account rejection into an unexplained
+// failure inside the agent. Errors never include the raw URL, which may
+// embed credentials; discovery errors name only the validated site URL.
+//
+// Both values are URLs, never credentials.
+func resolveJiraRunEnv(ctx context.Context, trackerSource string, tracking *config.TrackingConfig, offline bool, discover jiraGatewayDiscoverer) (map[string]string, error) {
+	if trackerSource != string(normevent.SystemJira) {
+		return nil, nil
+	}
+	if tracking == nil || tracking.Jira == nil || tracking.Jira.BaseURL == "" {
+		return nil, fmt.Errorf("jira-sourced run: tracker.jira.base_url is not configured, so %s and %s cannot be set", envJiraBaseURL, envJiraAPIURL)
+	}
+	baseURL := strings.TrimRight(tracking.Jira.BaseURL, "/")
+	conn := *tracking.Jira
+	conn.BaseURL = baseURL
+	// The config-layer rule (https only, no credentials, query, or
+	// fragment); its errors never include the raw URL. Runtime loading does
+	// not run it, so check here.
+	if err := conn.ValidateConnection(); err != nil {
+		return nil, fmt.Errorf("jira-sourced run: invalid Jira connection settings: %w", err)
+	}
+	if offline {
+		return nil, fmt.Errorf("jira-sourced run: %s needs a cloud-ID lookup, which --offline does not allow", envJiraAPIURL)
+	}
+	host := baseURL
+	if u, err := url.Parse(baseURL); err == nil {
+		host = u.Host
+	}
+	dctx, cancel := context.WithTimeout(ctx, jiraGatewayDiscoveryTimeout)
+	defer cancel()
+	apiURL, err := discover(dctx, jira.ScopedConfig{BaseURL: baseURL, APIURL: tracking.Jira.EffectiveAPIURL()})
+	if err == nil && apiURL == "" {
+		err = fmt.Errorf("empty gateway URL")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("jira-sourced run: could not resolve the Jira API gateway URL for %s: %w", host, err)
+	}
+	return map[string]string{envJiraBaseURL: baseURL, envJiraAPIURL: apiURL}, nil
+}
+
+// jiraGatewayDiscoveryTimeout bounds the cloud-ID lookup a Jira-sourced run
+// makes before the sandbox starts, so an unreachable site can't stall it.
+const jiraGatewayDiscoveryTimeout = 10 * time.Second
 
 // issueNumberFlagEnv returns the ISSUE_NUMBER value run exports and whether
 // to export it at all.

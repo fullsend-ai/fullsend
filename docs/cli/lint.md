@@ -15,8 +15,13 @@ those writes.
 ## Usage
 
 ```bash
-fullsend lint [flags]
+fullsend lint [agent-name] [flags]
+fullsend lint --format json
 ```
+
+With no argument, `fullsend lint` lints every enabled agent. With an agent name, only
+that registered agent is resolved, composed, and linted; see
+[Linting a single agent](#linting-a-single-agent).
 
 ## Flags
 
@@ -26,6 +31,7 @@ fullsend lint [flags]
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in `config.yaml`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources |
 | `--strict` | Exit non-zero on warning-level diagnostics (deprecations), not just error-level ones |
+| `--format` | Output format: `text` (default) or `json` |
 
 ## Resolution and composition
 
@@ -53,6 +59,33 @@ Disabled agents (`enabled: false`) are skipped. Overlay `when` expressions evalu
 against an empty event with `runtime.forge` and `config` available, like other CLI
 flows without event context.
 
+## Linting a single agent
+
+`fullsend lint <agent-name>` runs the per-agent steps (resolution, composition, path
+and file validation, and diagnostics) for the named agent only. Use it while working
+on one agent, so you do not have to fetch other agents or wait for them to be
+checked. The name must match the name of an `agents:` entry, ignoring case.
+
+- `config.yaml` is still validated. An invalid file (YAML that does not parse, an
+  unsupported `version`, or an invalid setting such as an unknown `runtime`) fails the
+  command, as it does without a name.
+- A name that no `agents:` entry registers fails with an error listing the
+  registered agents that can be linted.
+- A disabled agent (`enabled: false`, including a later disable entry for the same
+  name) fails with an error saying that the agent is disabled.
+- Errors in the selected agent's own `agents:` entries or harness are error-level and
+  fail the command.
+- Invalid `agents:` entries for other agents do not stop the selected agent from being
+  linted. Instead, one warning on the `agents` field gives their count and suggests
+  running `fullsend lint` to inspect them. Like other warnings, it fails the command
+  only with `--strict`. Only the other agents' `agents:` entries are checked, and their
+  harnesses are not resolved, so a problem that only resolution finds (for example a
+  missing harness file) appears only when you run `fullsend lint` without a name.
+
+Run `fullsend lint` without a name, for example in CI, to check every agent.
+`--format json` works with a name; the document includes only the selected
+agent and any config-level findings.
+
 ## Path and file validation
 
 After composition, lint applies run's path resolution and file checks: relative paths
@@ -74,15 +107,102 @@ via base, overlay, or forge composition are reported at the merged top-level fie
 (`env.runner`, `env.sandbox`, `runner_env`); unconsumed forge sections report their own
 position (`forge[<name>].…`).
 
+The `GITHUB_ISSUE_URL` check is the exception. It reads each harness file
+before composition, so it reports every forge variant and overlay once, at
+the position where it is declared (`forge[<name>].…`, `overlays[<n>].…`).
+This holds whether or not the variant or overlay matches the current
+platform or event. Content declared in a base harness gets one `base.`
+prefix per level (`base.env.runner`, `base.overlays[<n>].…`).
+
 | Field | Severity | Message |
 |-------|----------|---------|
 | `runner_env` | warning | `runner_env` is deprecated; use `env.runner` instead ([ADR 0055](../ADRs/0055-unified-env-var-delivery.md)) |
 | `env.sandbox` | warning | `env.sandbox` coexists with a `host_files` entry delivering `.env.d/` files; `env.sandbox` values take precedence on key collision |
+| `env.sandbox` | warning | One or more `env.sandbox` keys are reserved (runner infrastructure names or the sandbox credential deny-list, matched case-insensitively) and will be dropped instead of exported into the sandbox; the message names every dropped key. `fullsend run` and `fullsend lock` report the same warning. Because it is a warning, `--strict` fails on it |
 | `allowed_remote_resources` | warning | `allowed_remote_resources` is declared without `allow_runtime_fetch: true`; the implicit runtime fetch service start is deprecated — add `allow_runtime_fetch: true` to silence it |
 | `forge` | warning | `forge` is deprecated; use overlays with CEL `when` expressions instead ([ADR 0088](../ADRs/0088-cel-guarded-overlays.md)) |
 | `validation_loop.preflight_check` | error | The value looks like a bare script path (for example `scripts/common-preflight.sh`) rather than a self-contained command; `preflight_check` runs verbatim as a `sh -c` command on the host and is never fetched or resolved like `pre_script`/`post_script` — if a fetched harness script was intended, use `pre_script`; otherwise inline the command (for example `python3 -c 'import jsonschema'`) |
-| `runner_env`, `env.runner`, `env.sandbox`, `host_files[<n>].src`, `forge[<name>].…` | warning | An env entry named `GITHUB_ISSUE_URL`, or a value or `host_files` source referencing it (`$GITHUB_ISSUE_URL` / `${GITHUB_ISSUE_URL}`), which is deprecated; use `FULLSEND_WORK_ITEM_URL` instead |
-| `config.yaml` | error | Semantic validation of `config.yaml` fails — for example an unsupported `version`, an unknown `runtime`, or an `agents[]` entry whose `trigger` does not compile or does not return a boolean. Merged `agents[]` entries and model aliases are validated, including those inherited from `config.base.yaml`; other inherited settings (such as `version` or `runtime`) are not. Errors are labelled `config.yaml` even when the entry comes from the base file. When an `agents[]` entry is invalid, no agent harness is resolved, because every agent would fail with the same error |
+| `runner_env`, `env.runner`, `env.sandbox`, `host_files[<n>].src`, `forge[<name>].…`, `overlays[<n>].…`, `base.…` | warning | An env entry named `GITHUB_ISSUE_URL`, or a value or `host_files` source referencing it (`$GITHUB_ISSUE_URL` / `${GITHUB_ISSUE_URL}`), which is deprecated; use `FULLSEND_WORK_ITEM_URL` instead |
+| `agents` | warning | `fullsend lint <agent-name>` only: `<n> other agents have lint errors; run fullsend lint to inspect them` — other agents' `agents[]` entries fail validation (see [Linting a single agent](#linting-a-single-agent)) |
+| `config.yaml` | error | Semantic validation of `config.yaml` fails — for example an unsupported `version`, an unknown `runtime`, or an `agents[]` entry whose `trigger` does not compile or does not return a boolean. Merged `agents[]` entries and model aliases are validated, including those inherited from `config.base.yaml`; other inherited settings (such as `version` or `runtime`) are not. Errors are labelled `config.yaml` even when the entry comes from the base file. When an `agents[]` entry is invalid, no agent harness is resolved, because every agent would fail with the same error. With an agent name, only the selected agent's `agents[]` entries are checked here; other agents' entries produce the `agents` warning above |
+
+## JSON output
+
+`--format json` writes one JSON document to stdout. Progress lines that
+`--format text` writes to stdout (agent resolution, a missing Git token)
+go to stderr instead, so `jq` and other parsers can read stdout as a
+single document. Exit codes and what is linted are unchanged.
+
+```json
+{
+  "schema_version": 2,
+  "success": true,
+  "summary": {
+    "errors": 0,
+    "warnings": 1
+  },
+  "diagnostics": [
+    {
+      "code": "github-issue-url-deprecated",
+      "agent": "my-agent",
+      "severity": "warning",
+      "field": "env.runner",
+      "message": "GITHUB_ISSUE_URL is deprecated; use FULLSEND_WORK_ITEM_URL instead (see #6610)"
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `schema_version` | Document version. `2` is the current schema |
+| `success` | `true` when the process would exit 0 |
+| `summary.errors` | Count of error-severity items in `diagnostics` |
+| `summary.warnings` | Count of warning-severity items in `diagnostics` |
+| `diagnostics[].code` | Stable lowercase kebab-case identifier for the rule or failure class. Independent of `message`. Not an enum |
+| `diagnostics` | One object per finding. Harness lint diagnostics include `field`. Config-level diagnostics use `agent` `"config"`. A harness that fails to resolve, load, or validate is an error-severity item with an empty `field` |
+
+The document matches [`lint.schema.json`](lint.schema.json). Consumers can
+validate stdout against that file. The schema sets `additionalProperties`
+to `false`, so unknown fields are errors. Adding, removing, or renaming a
+field, or changing a type or enum, is an incompatible change: bump
+`schema_version` and update the schema in the same change. Do not add
+fields under version `2`. New diagnostic `code` values may appear without
+a bump; the schema does not enumerate them.
+
+### Schema versions
+
+| Version | Change |
+|---------|--------|
+| `1` | Initial JSON report ([#8995](https://github.com/fullsend-ai/fullsend/pull/8995), [#9066](https://github.com/fullsend-ai/fullsend/pull/9066)). No `code`. |
+| `2` | Required `diagnostics[].code`. |
+
+Older binaries still emit `schema_version` 1 with no `code`. Consumers
+should switch on `schema_version` and validate against the schema that
+ships with that CLI version. This repository's `lint.schema.json`
+describes the current version only.
+
+Text output is unchanged: `<agent>: <severity>: <field>: <message>`.
+Codes appear only in `--format json`.
+
+| Code | When |
+|------|------|
+| `runner-env-deprecated` | `runner_env` is set |
+| `sandbox-host-files-collision` | `env.sandbox` overlaps a `.env.d/` `host_files` entry |
+| `allowed-remote-implicit-fetch` | `allowed_remote_resources` without `allow_runtime_fetch: true` |
+| `forge-deprecated` | a `forge:` block was present before composition |
+| `trigger-invalid` | `trigger` fails CEL validation |
+| `preflight-check-path` | `preflight_check` looks like a bare script path |
+| `github-issue-url-deprecated` | `GITHUB_ISSUE_URL` is set or referenced |
+| `reserved-sandbox-env` | `env.sandbox` keys the sandbox will drop |
+| `config-invalid` | `config.yaml` semantic validation failed, including an invalid `forge:` |
+| `agents-siblings-invalid` | scoped lint: other agents' `agents[]` entries are invalid |
+| `agent-unavailable` | scoped lint: the named agent is missing, disabled, or invalid |
+| `harness-failed` | resolving, loading, or validating a harness failed |
+
+A missing `config.yaml`, an unreadable config file, an invalid `--forge`
+flag, or an invalid `--format` value still fails before a document is
+written.
 
 ## Exit codes
 
@@ -91,11 +211,13 @@ position (`forge[<name>].…`).
 | No diagnostics, or warnings only without `--strict` | 0 |
 | Warning-level diagnostics with `--strict` | 1 |
 | Any error-level diagnostic | 1 |
+| `fullsend lint <agent-name>` with a name that is not registered or is disabled | 1 |
 | `config.yaml` missing or invalid, an agent harness that fails to resolve, or a harness that fails composition, validation, or file checks (for example an invalid `trigger` expression or a missing `policy:`) | 1 |
 
-All agents are linted before the command exits. A harness that fails to resolve, load,
-or validate does not stop the run — the failure is collected, the remaining agents are
-still linted, and every error is reported together at the end.
+All agents (or, with a name, the selected agent) are linted before the command exits.
+A harness that fails to resolve, load, or validate does not stop the run — the failure
+is collected, the remaining agents are still linted, and every error is reported
+together at the end.
 
 ## Related
 
@@ -103,3 +225,4 @@ still linted, and every error is reported together at the end.
 - [Checking a trigger before you merge](../guides/user/cel-triggers-reference.md#checking-a-trigger-before-you-merge) for passing and failing `trigger` examples and a CI job
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) for harness and `config.yaml` layout
 - [CLI internals](../guides/dev/cli-internals.md) for the full command tree
+- [lint JSON schema](lint.schema.json) for `--format json`

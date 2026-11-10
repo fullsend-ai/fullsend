@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 
@@ -88,6 +89,94 @@ func doContext(ctx context.Context, g *singleflight.Group, key string, fn func()
 	}
 }
 
+// apiCallDiagnostics renders each org's API calls by caller, one
+// "org: total=N caller=N ..." line per org, then an "all orgs" line. Clients
+// that do not count their calls are left out.
+func (c *orgCredentials) apiCallDiagnostics() string {
+	c.mu.Lock()
+	orgs := sortedKeys(c.byOrg)
+	clients := make([]forge.Client, 0, len(orgs))
+	for _, org := range orgs {
+		clients = append(clients, c.byOrg[org].client)
+	}
+	c.mu.Unlock()
+
+	var lines []string
+	all := map[string]int64{}
+	for i, org := range orgs {
+		r, ok := clients[i].(forge.APICallReporter)
+		if !ok {
+			continue
+		}
+		calls := r.APICalls()
+		if len(calls) == 0 {
+			continue
+		}
+		lines = append(lines, org+": "+formatAPICalls(calls))
+		for caller, n := range calls {
+			all[caller] += n
+		}
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return strings.Join(append(lines, "all orgs: "+formatAPICalls(all)), "\n")
+}
+
+// apiQuotaDiagnostics renders one line per org and group of core rate-limit
+// readings. Clients that do not report them are left out.
+func (c *orgCredentials) apiQuotaDiagnostics() string {
+	c.mu.Lock()
+	orgs := sortedKeys(c.byOrg)
+	clients := make([]forge.Client, 0, len(orgs))
+	for _, org := range orgs {
+		clients = append(clients, c.byOrg[org].client)
+	}
+	c.mu.Unlock()
+
+	var lines []string
+	for i, org := range orgs {
+		r, ok := clients[i].(forge.APIQuotaReporter)
+		if !ok {
+			continue
+		}
+		for _, counter := range r.APIQuotaCounters() {
+			lines = append(lines, org+": "+formatAPIQuotaCounter(counter))
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// formatAPIQuotaCounter renders a group as "reset=T spread=N remaining=N/N
+// calls=N caller/METHOD=N ...", with callers sorted. spread is the gap between
+// the highest and lowest readings, and remaining is the lowest.
+func formatAPIQuotaCounter(c forge.APIQuotaCounter) string {
+	var calls int64
+	parts := make([]string, 0, len(c.Calls))
+	for _, key := range sortedKeys(c.Calls) {
+		calls += c.Calls[key]
+		parts = append(parts, fmt.Sprintf("%s=%d", key, c.Calls[key]))
+	}
+	head := fmt.Sprintf("reset=%s spread=%d remaining=%d/%d calls=%d",
+		c.Reset.UTC().Format(time.RFC3339), c.Highest-c.Lowest, c.Lowest, c.Limit, calls)
+	return strings.Join(append([]string{head}, parts...), " ")
+}
+
+// formatAPICalls renders calls as "total=N caller=N ...", callers sorted.
+// total covers the core quota only; "caller/resource" entries are charged to
+// another quota.
+func formatAPICalls(calls map[string]int64) string {
+	var total int64
+	parts := make([]string, 0, len(calls)+1)
+	for _, caller := range sortedKeys(calls) {
+		if !strings.Contains(caller, "/") {
+			total += calls[caller]
+		}
+		parts = append(parts, fmt.Sprintf("%s=%d", caller, calls[caller]))
+	}
+	return strings.Join(append([]string{fmt.Sprintf("total=%d", total)}, parts...), " ")
+}
+
 // clientFor implements OrgClientFunc for the slot allocator.
 func (c *orgCredentials) clientFor(ctx context.Context, org string) (forge.Client, error) {
 	cred, err := c.get(ctx, org)
@@ -167,6 +256,13 @@ type composedDriver struct {
 	// the first admission, under envMu.
 	acquireCtx    context.Context
 	cancelAcquire context.CancelFunc
+
+	// stopAPICallLog ends the periodic API call log, which starts on the
+	// first admission and runs until Finalize has finished its cleanup,
+	// and apiCallLogDone closes once it has ended. Both are guarded by
+	// envMu.
+	stopAPICallLog context.CancelFunc
+	apiCallLogDone chan struct{}
 
 	mu          sync.Mutex
 	outstanding map[Slot]*orgEnv // slots currently leased
@@ -306,6 +402,9 @@ func poolLogf(pool PoolConfig) func(string, ...any) {
 // errLeaseRequired is returned by the name-only Driver methods.
 var errLeaseRequired = errors.New("the shared pool driver leases slots across orgs; use AllocateLease and DeallocateLease (install.LeaseDriver)")
 
+// apiCallLogInterval is how often a running suite logs its API call counts.
+var apiCallLogInterval = 5 * time.Minute
+
 // AllocateRepo fails: a repo name alone does not identify a slot across
 // orgs. Use AllocateLease.
 func (d *composedDriver) AllocateRepo(context.Context) (string, error) {
@@ -330,6 +429,7 @@ func (d *composedDriver) AllocateLease(ctx context.Context) (RepoLease, error) {
 	d.allocs.Add(1)
 	if d.acquireCtx == nil {
 		d.acquireCtx, d.cancelAcquire = context.WithCancel(context.Background())
+		d.startAPICallLog(apiCallLogInterval)
 	}
 	acquireStop := d.acquireCtx
 	d.envMu.Unlock()
@@ -377,6 +477,7 @@ func (d *composedDriver) AllocateLease(ctx context.Context) (RepoLease, error) {
 // provision makes a freshly claimed slot ready: the org's credential and
 // orgEnv (deploying its mint on first use), then the install.
 func (d *composedDriver) provision(ctx context.Context, slot Slot) (_ RepoLease, _ *orgEnv, err error) {
+	ctx = forge.WithAPICaller(ctx, apiCallerProvision)
 	cred, err := d.creds.get(ctx, slot.Org)
 	if err != nil {
 		return RepoLease{}, nil, err
@@ -405,7 +506,8 @@ func (d *composedDriver) provision(ctx context.Context, slot Slot) (_ RepoLease,
 		if err == nil {
 			return
 		}
-		if relErr := env.ensurer.ReleaseRepo(context.WithoutCancel(ctx), slot.Org, slot.Repo, stillOwns); relErr != nil {
+		relCtx := forge.WithAPICaller(context.WithoutCancel(ctx), apiCallerRelease)
+		if relErr := env.ensurer.ReleaseRepo(relCtx, slot.Org, slot.Repo, stillOwns); relErr != nil {
 			d.logf("[driver] releasing leftover state of %s after failed provisioning: %v", slot, relErr)
 		}
 	}()
@@ -534,6 +636,7 @@ func (d *composedDriver) DeallocateLease(ctx context.Context, org, repo string) 
 // The ensurer re-asks before the delete and every resend of it. A repo
 // that cannot be verified is treated as not ours.
 func (d *composedDriver) release(ctx context.Context, slot Slot, env *orgEnv) {
+	ctx = forge.WithAPICaller(ctx, apiCallerRelease)
 	stillOwns := func(ctx context.Context) (bool, error) {
 		return d.alloc.StillOwns(ctx, slot)
 	}
@@ -545,10 +648,60 @@ func (d *composedDriver) release(ctx context.Context, slot Slot, env *orgEnv) {
 	}
 }
 
+// startAPICallLog starts the periodic API call log. The caller holds envMu.
+func (d *composedDriver) startAPICallLog(interval time.Duration) {
+	ctx, stop := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	d.stopAPICallLog, d.apiCallLogDone = stop, done
+	go func() {
+		defer close(done)
+		d.logAPICallsEvery(ctx, interval)
+	}()
+}
+
+// endAPICallLog stops the periodic API call log and waits for it, so no
+// periodic line follows the final one.
+func (d *composedDriver) endAPICallLog() {
+	d.envMu.Lock()
+	stop, done := d.stopAPICallLog, d.apiCallLogDone
+	d.envMu.Unlock()
+	if stop == nil {
+		return
+	}
+	stop()
+	<-done
+}
+
+// logAPICallsEvery logs the API call counts every interval until ctx ends.
+// Finalize logs them too, but a job that times out never reaches it, and
+// those are the jobs whose quota use matters most.
+func (d *composedDriver) logAPICallsEvery(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.logAPICalls("so far")
+		}
+	}
+}
+
+// logAPICalls logs each org's API calls since the suite started.
+func (d *composedDriver) logAPICalls(when string) {
+	if diag := d.creds.apiCallDiagnostics(); diag != "" {
+		d.logf("[driver] per-org API calls %s:\n%s", when, diag)
+	}
+	if diag := d.creds.apiQuotaDiagnostics(); diag != "" {
+		d.logf("[driver] per-org quota counters %s:\n%s", when, diag)
+	}
+}
+
 // Finalize releases any outstanding leases (logging them and returning
 // an error), releases every org's mint (each shared mint is torn down
 // once, by its last org), logs the per-org quota
-// diagnostics, and stops the trace collector last.
+// and API call diagnostics, and stops the trace collector last.
 func (d *composedDriver) Finalize(ctx context.Context) error {
 	// Refuse new allocations, then wait for those still provisioning so
 	// their leases are in outstanding before it is snapshotted. The wait
@@ -637,6 +790,13 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 	if diag := d.alloc.QuotaDiagnostics(); diag != "" {
 		d.logf("[driver] per-org rate limits at finalize:\n%s", diag)
 	}
+	d.endAPICallLog()
+	when := "at finalize"
+	if allocWaitErr != nil || waitErr != nil {
+		// Work Finalize stopped waiting for can still make calls.
+		when = "at finalize (incomplete: work still in flight)"
+	}
+	d.logAPICalls(when)
 
 	// Stop the trace collector last, after the repos (and their
 	// workflows) are gone, so it flushes everything it received.

@@ -514,6 +514,7 @@ func TestBuildWebhookEvents_MergeRequest(t *testing.T) {
 		mr.ClosedAt = recent
 		mr.MergeUser = bob
 		mc.mr[3] = mr
+		mc.memberLevel[bob.ID] = 30
 		p := newWebhookPoller(mc)
 		got, err := p.BuildWebhookEvents(context.Background(), mrPayload(t, "merge", bob.ID, 3, nil))
 		if err != nil {
@@ -533,6 +534,7 @@ func TestBuildWebhookEvents_MergeRequest(t *testing.T) {
 		mr.ClosedAt = recent
 		mr.ClosedBy = bob
 		mc.mr[3] = mr
+		mc.memberLevel[bob.ID] = 30
 		p := newWebhookPoller(mc)
 		got, err := p.BuildWebhookEvents(context.Background(), mrPayload(t, "close", bob.ID, 3, nil))
 		if err != nil {
@@ -1045,7 +1047,7 @@ func TestBuildWebhookEvents_DispatchHandoff(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	we := got[0]
-	if err := p.dispatch(context.Background(), p.owner, p.repo, we.Stages[0], we.Event); err != nil {
+	if err := p.dispatch(context.Background(), p.owner, p.repo, we.Stages[0], we.Event, &we.Normalized); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if len(mc.pipelineCalls) != 1 {

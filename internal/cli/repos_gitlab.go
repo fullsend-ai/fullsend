@@ -59,7 +59,8 @@ func provisionGitLabPollState(ctx context.Context, client forge.Client, printer 
 // event-discovery poll (at minutes 2,17,32,47). Each schedule has its own
 // resource group so they never cancel each other. Schedules are
 // variable-free: the typed templates select poll mode from the schedule
-// description.
+// description. The Jira poll schedule is left alone: repos install
+// converges it from tracker.jira.poll.enabled (#9108).
 func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, defaultBranch string) error {
 	// Delete existing fullsend schedules to avoid duplicates on re-install.
 	existing, listErr := client.ListPipelineSchedules(ctx, owner, repo)
@@ -67,7 +68,7 @@ func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, prin
 		printer.StepWarn(fmt.Sprintf("Could not list existing schedules — duplicate cleanup skipped: %v", listErr))
 	} else {
 		for _, s := range existing {
-			if strings.HasPrefix(s.Description, "fullsend") {
+			if strings.HasPrefix(s.Description, "fullsend") && s.Description != repos.JiraPollScheduleDescription() {
 				if err := client.DeletePipelineSchedule(ctx, owner, repo, s.ID); err != nil {
 					printer.StepWarn(fmt.Sprintf("Failed to delete existing schedule %q (ID %d): %v", s.Description, s.ID, err))
 				} else {

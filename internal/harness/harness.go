@@ -362,11 +362,18 @@ func (dst *EnvConfig) mergeEnvFrom(src *EnvConfig, srcWins bool) {
 // Harness is the per-agent configuration that the runner reads to provision
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
-	Agent                  string                  `yaml:"agent"`
-	Doc                    string                  `yaml:"doc,omitempty"`
-	Description            string                  `yaml:"description,omitempty"`
-	Role                   string                  `yaml:"role,omitempty"`
-	Slug                   string                  `yaml:"slug,omitempty"`
+	Agent       string `yaml:"agent"`
+	Doc         string `yaml:"doc,omitempty"`
+	Description string `yaml:"description,omitempty"`
+	Role        string `yaml:"role,omitempty"`
+	Slug        string `yaml:"slug,omitempty"`
+	// SchemaVersion is the declared harness schema_version (ADR 0127 Decision 1):
+	// top-level only and forge-agnostic, absent = version 1. It is not a
+	// ForgeConfig field, so it cannot be set under forge: or overlays: — a
+	// schema_version key there is ignored like any unknown key. The named
+	// schemaVersionValue type rejects non-integer values during parsing; read
+	// the effective version through EffectiveSchemaVersion.
+	SchemaVersion          *schemaVersionValue     `yaml:"schema_version,omitempty"`
 	Base                   string                  `yaml:"base,omitempty"`
 	Image                  string                  `yaml:"image,omitempty"`
 	Policy                 string                  `yaml:"policy,omitempty"`
@@ -398,25 +405,36 @@ type Harness struct {
 
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
+
+	// issueURLDiags holds the GITHUB_ISSUE_URL diagnostics captured from the
+	// raw harness before ResolveForge/ResolveOverlays (or base flattening)
+	// consumed its forge and overlay blocks, so Lint() can report every
+	// section at its declared position (#8742). Only meaningful when
+	// issueURLDiagsCaptured is true.
+	issueURLDiags         []Diagnostic `yaml:"-"`
+	issueURLDiagsCaptured bool         `yaml:"-"`
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
+// Parsing is funneled through parseRaw so schema_version rejection applies
+// here identically to every other parse-level entry point (ADR 0127
+// Decision 1).
 func Load(path string) (*Harness, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("reading harness file: %w", err)
 	}
 
-	var h Harness
-	if err := yaml.Unmarshal(data, &h); err != nil {
-		return nil, fmt.Errorf("parsing harness YAML: %w", err)
+	h, err := parseRaw(data)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := h.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid harness: %w", err)
 	}
 
-	return &h, nil
+	return h, nil
 }
 
 // LoadOpts configures forge-aware and overlay-aware harness loading.
@@ -466,11 +484,16 @@ func LoadWithOpts(path string, opts LoadOpts) (*Harness, error) {
 }
 
 // parseRaw unmarshals raw YAML bytes into a Harness without validation or
-// forge resolution. Use this when you already have the bytes (e.g. from a
+// forge resolution, rejecting an invalid schema_version under the standard
+// parse wrap (ADR 0127 Decision 1) so every parse-level entry point shares
+// one version check. Use this when you already have the bytes (e.g. from a
 // forge API call); use LoadRaw for filesystem-based loading.
 func parseRaw(data []byte) (*Harness, error) {
 	var h Harness
 	if err := yaml.Unmarshal(data, &h); err != nil {
+		return nil, fmt.Errorf("parsing harness YAML: %w", err)
+	}
+	if err := validateSchemaVersion(h.SchemaVersion); err != nil {
 		return nil, fmt.Errorf("parsing harness YAML: %w", err)
 	}
 	return &h, nil
@@ -829,18 +852,39 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 // validation_loop.preflight_check references are not checked here; the
 // preflight allowlist scan in internal/cli is their single reference gate.
 func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) error {
+	return h.ValidateRunnerEnvSites(lookup, lookup)
+}
+
+// outputFileEnvKey is the runner entry the runner exports verbatim into the
+// sandbox, so it is validated with the sandbox-bound lookup.
+const outputFileEnvKey = "FULLSEND_OUTPUT_FILE"
+
+// ValidateRunnerEnvSites is ValidateRunnerEnvWith with a separate lookup for
+// sandbox-bound sites: Env.Sandbox values, the FULLSEND_OUTPUT_FILE runner
+// entry, and validation_loop.schema. A caller that expands some variables
+// empty at those sites (rather than failing) passes a sandboxLookup that
+// resolves them; every other site uses lookup.
+func (h *Harness) ValidateRunnerEnvSites(lookup, sandboxLookup func(string) (string, bool)) error {
 	references := make(map[string][]string)
-	checkVarRefs := func(source, value string) {
+	check := func(lk func(string) (string, bool), source, value string) {
 		for _, match := range envVarRef.FindAllStringSubmatch(value, -1) {
 			varName := match[1]
-			if _, ok := lookup(varName); !ok {
+			if _, ok := lk(varName); !ok {
 				references[varName] = append(references[varName], source)
 			}
 		}
 	}
+	checkVarRefs := func(source, value string) { check(lookup, source, value) }
+	checkRunnerRefs := func(source, key, value string) {
+		if key == outputFileEnvKey {
+			check(sandboxLookup, source, value)
+			return
+		}
+		check(lookup, source, value)
+	}
 
 	for k, v := range h.RunnerEnv {
-		checkVarRefs(fmt.Sprintf("runner_env[%s]", k), v)
+		checkRunnerRefs(fmt.Sprintf("runner_env[%s]", k), k, v)
 	}
 	for i, hf := range h.HostFiles {
 		if hf.Optional {
@@ -849,7 +893,7 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 		checkVarRefs(fmt.Sprintf("host_files[%d].src", i), hf.Src)
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
-		checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema)
+		check(sandboxLookup, "validation_loop.schema", h.ValidationLoop.Schema)
 	}
 	// validation_loop.preflight_check is deliberately not checked here: its
 	// references are validated by the preflight allowlist scan in
@@ -857,10 +901,10 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 	// field (D9, preflight-check-credential-safety change).
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
-			checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v)
+			checkRunnerRefs(fmt.Sprintf("env.runner[%s]", k), k, v)
 		}
 		for k, v := range h.Env.Sandbox {
-			checkVarRefs(fmt.Sprintf("env.sandbox[%s]", k), v)
+			check(sandboxLookup, fmt.Sprintf("env.sandbox[%s]", k), v)
 		}
 	}
 	if len(references) == 0 {

@@ -225,6 +225,25 @@ func TestHarnessRouter_Closed(t *testing.T) {
 	}
 }
 
+func TestHarnessRouter_MergeRequiresWrite(t *testing.T) {
+	r := NewHarnessRouter([]string{"retro"})
+	for _, transition := range []string{"merged", "closed"} {
+		event := &NormalizedEvent{
+			Entity:     Entity{Kind: "change_proposal", ID: 42},
+			Transition: Transition{Kind: transition},
+			Actor:      Actor{ID: "triager", Role: "triage"},
+		}
+
+		stages, err := r.Route(event)
+		if err != nil {
+			t.Fatalf("unexpected error for %s event: %v", transition, err)
+		}
+		if len(stages) != 0 {
+			t.Errorf("expected no stages for %s by a triage actor, got %v", transition, stages)
+		}
+	}
+}
+
 func TestHarnessRouter_ClosedWorkItemNotRouted(t *testing.T) {
 	r := NewHarnessRouter([]string{"retro", "code"})
 

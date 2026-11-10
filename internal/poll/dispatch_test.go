@@ -36,7 +36,7 @@ func TestDispatch_CreatesAPIpipelineAndAppendsRecord(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 	t.Run("typed wrapper uses pipeline inputs", func(t *testing.T) {
 		mc := newMockClient() // default wrapper fixture declares the full typed contract
 		p := newTestPoller(mc, Options{})
-		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if len(mc.pipelineCalls) != 1 || !mc.pipelineCalls[0].ViaInputs {
@@ -156,7 +156,7 @@ func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 			mc := newMockClient()
 			setup(mc)
 			p := newTestPoller(mc, Options{})
-			err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+			err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 			if err == nil || !strings.Contains(err.Error(), "legacy pipeline-variable dispatch path is no longer supported") {
 				t.Fatalf("expected a typed-contract refusal, got %v", err)
 			}
@@ -176,7 +176,7 @@ func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 		mc := newMockClient()
 		mc.wrapperErr = fmt.Errorf("permission denied")
 		p := newTestPoller(mc, Options{})
-		err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 		if err == nil || !strings.Contains(err.Error(), "permission denied") {
 			t.Fatalf("expected a wrapped permission-denied error, got %v", err)
 		}
@@ -197,7 +197,7 @@ func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 	t.Run("reads the wrapper at the dispatch ref, not the default branch", func(t *testing.T) {
 		mc := newMockClient()
 		p := newTestPoller(mc, Options{PipelineRef: "legacy-release"})
-		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if len(mc.wrapperContentRefs) != 1 || mc.wrapperContentRefs[0] != "legacy-release" {
@@ -209,7 +209,7 @@ func TestDispatch_SelectsTransportFromTargetRepositoryContract(t *testing.T) {
 		mc := newMockClient() // default-branch wrapper fixture declares the full typed contract
 		mc.wrapperNotFound = true
 		p := newTestPoller(mc, Options{PipelineRef: "legacy-release"})
-		err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 		if err == nil || !strings.Contains(err.Error(), `at ref "legacy-release"`) {
 			t.Fatalf("expected a typed-contract refusal naming the dispatch ref, got %v", err)
 		}
@@ -232,7 +232,7 @@ func TestDispatch_PropagatesMRAuthorAndFork(t *testing.T) {
 		MRTarget:   200,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestDispatch_ActorID_MREvent(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestDispatch_OpenedMRIncludesActionInPayload(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestDispatch_ActorID_IssueNoteEvent(t *testing.T) {
 		NoteAuthorID: 99,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -359,7 +359,7 @@ func TestDispatch_ActorID_MRNoteUsesCommenter(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestDispatch_ActorID_ZeroWhenNeitherSet(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -405,7 +405,7 @@ func TestDispatch_ActorID_IssueLabelEvent(t *testing.T) {
 		NoteAuthorID: 77,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestDispatch_SameProjectIsNotFork(t *testing.T) {
 		MRTarget:  100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -448,7 +448,7 @@ func TestDispatch_PropagatesPollJobURL(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestDispatch_UsesPipelineRefOption(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestDispatch_CreatePipelineErrorPropagates(t *testing.T) {
 		NoteID:    100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err == nil {
 		t.Fatal("expected error from dispatch when CreatePipeline fails")
 	}
@@ -603,7 +603,7 @@ func TestBuildEventPayload_IncludesAllFields(t *testing.T) {
 		MRTarget:     200,
 	}
 
-	data, err := buildEventPayload(event)
+	data, err := buildEventPayload(event, nil)
 	if err != nil {
 		t.Fatalf("buildEventPayload: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestBuildEventPayload_OmitsZeroOptionalFields(t *testing.T) {
 		// All optional fields are zero values.
 	}
 
-	data, err := buildEventPayload(event)
+	data, err := buildEventPayload(event, nil)
 	if err != nil {
 		t.Fatalf("buildEventPayload: %v", err)
 	}
@@ -724,7 +724,7 @@ func TestBuildEventPayload_CommandBodyAtCanonicalPath(t *testing.T) {
 		t.Run(eventType, func(t *testing.T) {
 			event := RoutableEvent{Type: eventType, IID: 1, UpdatedAt: ts, NoteBody: multilineFixBody, NoteID: 9, NoteAuthorID: 3}
 
-			data, err := buildEventPayload(event)
+			data, err := buildEventPayload(event, nil)
 			if err != nil {
 				t.Fatalf("buildEventPayload: %v", err)
 			}
@@ -752,7 +752,7 @@ func TestBuildEventPayload_CommandBodyOverNoteLimitNotTruncated(t *testing.T) {
 	body := "/fs-fix " + strings.Repeat("x", 2*noteBodyTransportLimit)
 	event := RoutableEvent{Type: "mr_note", IID: 1, UpdatedAt: ts, NoteBody: body}
 
-	data, err := buildEventPayload(event)
+	data, err := buildEventPayload(event, nil)
 	if err != nil {
 		t.Fatalf("buildEventPayload: %v", err)
 	}
@@ -768,7 +768,7 @@ func TestBuildEventPayload_NonCommandBodyOverLimitTruncatedWithNotice(t *testing
 	body := "Changes requested\n" + strings.Repeat("x", 900)
 	event := RoutableEvent{Type: "mr_note", IID: 1, UpdatedAt: ts, NoteBody: body, IsBot: true}
 
-	data, err := buildEventPayload(event)
+	data, err := buildEventPayload(event, nil)
 	if err != nil {
 		t.Fatalf("buildEventPayload: %v", err)
 	}
@@ -800,7 +800,7 @@ func TestDispatch_RejectsCommandTooLargeToTransportIntact(t *testing.T) {
 		NoteAuthorID: 3,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "fix", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "fix", event, nil)
 	if err == nil || !strings.Contains(err.Error(), "refusing to dispatch a truncated note body") {
 		t.Fatalf("dispatch error = %v, want a refusal to dispatch a truncated note body", err)
 	}
@@ -822,7 +822,7 @@ func TestDispatch_MultilineCommandCarriedIntact(t *testing.T) {
 		NoteAuthorID: 3,
 	}
 
-	if err := p.dispatch(context.Background(), "owner", "repo", "fix", event); err != nil {
+	if err := p.dispatch(context.Background(), "owner", "repo", "fix", event, nil); err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	payload, err := base64.StdEncoding.DecodeString(p.dispatches[0].EventPayloadB64)
@@ -852,7 +852,7 @@ func TestDispatch_UnknownProjectIDsAreForkFailClosed(t *testing.T) {
 		// MRSource and MRTarget both zero (unknown)
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -872,7 +872,7 @@ func TestDispatch_IssueEventIsNotFork(t *testing.T) {
 		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -894,7 +894,7 @@ func TestDispatch_MREventOneZeroProjectIDIsFork(t *testing.T) {
 		MRTarget:  0,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -996,7 +996,7 @@ func TestDispatch_IncludesHMACWhenSecretSet(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1036,7 +1036,7 @@ func TestDispatch_HMACCoversAllSignedKeysForMREvent(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1073,7 +1073,7 @@ func TestDispatch_NoHMACWhenSecretEmpty(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1182,7 +1182,7 @@ func TestDispatch_IncludesOriginatingURLForIssueEvent(t *testing.T) {
 		NoteAuthorID: 88,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "retro", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "retro", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1209,7 +1209,7 @@ func TestDispatch_IncludesOriginatingURLForMREvent(t *testing.T) {
 		MRTarget:  100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "retro", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "retro", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1242,7 +1242,7 @@ func TestDispatch_OriginatingURLWithSubgroup(t *testing.T) {
 		MRTarget:     100,
 	}
 
-	err := p.dispatch(context.Background(), "owner", "repo", "retro", event)
+	err := p.dispatch(context.Background(), "owner", "repo", "retro", event, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1528,7 +1528,7 @@ func TestDispatch_ChildPipelineRoute(t *testing.T) {
 	t.Run("typed wrapper dispatches a child pipeline with the job token", func(t *testing.T) {
 		mc := newMockClient()
 		p := newTestPoller(mc, Options{DispatchSecret: "s3cret", ChildDispatchJobToken: "job-token-value"})
-		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if len(mc.pipelineCalls) != 1 {
@@ -1550,7 +1550,7 @@ func TestDispatch_ChildPipelineRoute(t *testing.T) {
 	t.Run("no job token keeps the Poller API route", func(t *testing.T) {
 		mc := newMockClient()
 		p := newTestPoller(mc, Options{})
-		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event); err != nil {
+		if err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if len(mc.pipelineCalls) != 1 || !mc.pipelineCalls[0].ViaInputs || mc.pipelineCalls[0].JobToken != "" {
@@ -1562,7 +1562,7 @@ func TestDispatch_ChildPipelineRoute(t *testing.T) {
 		mc := newMockClient()
 		mc.wrapperNotFound = true
 		p := newTestPoller(mc, Options{ChildDispatchJobToken: "job-token-value"})
-		err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 		if err == nil || !strings.Contains(err.Error(), "requires the typed pipeline-input contract") {
 			t.Fatalf("expected a typed-contract error, got %v", err)
 		}
@@ -1578,7 +1578,7 @@ func TestDispatch_ChildPipelineRoute(t *testing.T) {
 		mc := newMockClient()
 		mc.pipelineErr = fmt.Errorf("403 forbidden")
 		p := newTestPoller(mc, Options{ChildDispatchJobToken: "job-token-value"})
-		err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+		err := p.dispatch(context.Background(), "owner", "repo", "triage", event, nil)
 		if err == nil || !strings.Contains(err.Error(), "403 forbidden") {
 			t.Fatalf("expected the child-pipeline error, got %v", err)
 		}

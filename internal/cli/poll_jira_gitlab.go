@@ -39,20 +39,13 @@ type jiraPollGitLabFlags struct {
 var validGitLabProjectPath = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*(/[A-Za-z0-9_][A-Za-z0-9_.-]*)+$`)
 
 // validateJiraGitLabPollArgs resolves env-var fallbacks and validates the
-// jira-poll arguments for a GitLab target (#8919). The project path comes
+// jira-poll arguments for a GitLab target (#8919). The Jira settings come
+// from tracker.jira (see loadJiraPollSettings). The project path comes
 // from --project or CI_PROJECT_PATH and keeps every nested group; the
 // GitLab URL must be an https URL and is returned without a trailing
 // slash. --target-repo is rejected because it names a GitHub repository.
 // --output is optional: GitLab dispatches are scheduled directly.
-func validateJiraGitLabPollArgs(f jiraPollGitLabFlags, getenv func(string) string) (jiraPollArgs, string, error) {
-	jiraURL := f.jiraURL
-	if jiraURL == "" {
-		jiraURL = getenv("JIRA_BASE_URL")
-	}
-	if jiraURL == "" {
-		return jiraPollArgs{}, "", fmt.Errorf("--jira-url or JIRA_BASE_URL is required")
-	}
-
+func validateJiraGitLabPollArgs(settings jiraPollSettings, f jiraPollGitLabFlags, getenv func(string) string) (jiraPollArgs, string, error) {
 	if f.targetRepo != "" {
 		return jiraPollArgs{}, "", fmt.Errorf("--target-repo names a GitHub repository; use --project with --target-forge gitlab")
 	}
@@ -72,14 +65,8 @@ func validateJiraGitLabPollArgs(f jiraPollGitLabFlags, getenv func(string) strin
 		return jiraPollArgs{}, "", err
 	}
 
-	if f.jiraProject == "" && f.jqlOverride == "" {
-		return jiraPollArgs{}, "", fmt.Errorf("--jira-project or --jql is required")
-	}
-
 	return jiraPollArgs{
-		jiraURL:     jiraURL,
-		jiraProject: f.jiraProject,
-		jqlOverride: f.jqlOverride,
+		jira:        settings,
 		targetRepo:  projectPath,
 		outputPath:  f.outputPath,
 		fullsendDir: f.fullsendDir,
@@ -108,9 +95,16 @@ func normalizeJiraGitLabURL(raw string) (string, error) {
 // authenticated with the Poller role credential, and an issue's Jira
 // checkpoint advances only when all of its pipelines were created.
 func runJiraPollGitLab(cmd *cobra.Command, f jiraPollGitLabFlags) error {
-	args, gitlabURL, err := validateJiraGitLabPollArgs(f, os.Getenv)
+	settings, err := loadJiraPollSettings(f.fullsendDir, f.jiraURL, f.jiraProject, f.jqlOverride)
 	if err != nil {
 		return err
+	}
+	args, gitlabURL, err := validateJiraGitLabPollArgs(settings, f, os.Getenv)
+	if err != nil {
+		return err
+	}
+	if !settings.enabled {
+		return skipDisabledJiraPoll(cmd, args.outputPath)
 	}
 
 	sel, forgeToken, err := resolveGitLabPollerCredential(os.Getenv)
@@ -135,7 +129,7 @@ func runJiraPollGitLab(cmd *cobra.Command, f jiraPollGitLabFlags) error {
 		return err
 	}
 
-	jiraClient, err := buildJiraClient(args.jiraURL)
+	jiraClient, err := buildJiraClient(args.jira, os.Getenv)
 	if err != nil {
 		return fmt.Errorf("create Jira client: %w", err)
 	}

@@ -25,7 +25,12 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
     group: fullsend-code-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
   ```
   Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request_target` or `push` (e.g., `e2e.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
-- Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main`.
+- Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main` (see [exception for the site build and deploy workflows](#site-workflows-cancel-in-progress) below).
+- <a id="site-workflows-cancel-in-progress"></a>**Exception — `site-build.yml` and `site-deploy.yml`:**
+  these two files intentionally use unconditional `cancel-in-progress: true`,
+  including on `main` (accepted in PR #7437 to keep fork-PR site previews).
+  Do not flag it as a violation of the rule above. Revisit if cold-cache
+  starvation shows up on a busy `main`.
 
 **Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
 
@@ -259,3 +264,45 @@ This recursion is by design but interacts with the convergence non-idempotence t
 - Always include the workflow file itself in its own `paths:` filter so changes to the workflow trigger its own CI.
 - Use `ubuntu-24.04` (specific version), not `ubuntu-latest`, for reproducible builds.
 - Environment variables that hold secrets must use `${{ secrets.NAME }}` — never hardcode sensitive values or use environment variables with defaults for secrets.
+
+### Semgrep security scan
+
+`scripts/semgrep-scan` is the shared entry point for the pinned Semgrep engine
+and commit-pinned Community Edition rules from `semgrep/semgrep-rules`. The
+source-file allowlist in `scripts/semgrep-ruleset-files.txt` limits the scan to
+files represented in the curated `p/security-audit` config snapshot whose
+SHA-256 is recorded in `scripts/semgrep-security-audit.sha256`. It includes all
+225 Community Edition rules from the snapshot in 216 source files available in
+the pinned public rules repository.
+The source commit is recorded in `scripts/semgrep-ruleset-commit`; the downloaded
+archive is checked against the SHA-256 in `scripts/semgrep-ruleset.sha256` before
+extraction. The p/security-audit config snapshot hash is recorded in
+`scripts/semgrep-security-audit.sha256`; the drift workflow checks it so changes
+to pack membership are reported alongside changes to selected rule files.
+Upstream rule test fixtures are excluded. The dedicated Semgrep job
+sets `SEMGREP_REQUIRED=1`, so it fails closed if the pinned source or locked
+Semgrep environment cannot be prepared.
+Scans fail closed by default; the local pre-commit hook explicitly sets
+`SEMGREP_REQUIRED=0` to allow a skip when prerequisites are unavailable. A
+completed scan still fails on findings. The scheduled `Semgrep Ruleset Drift`
+workflow compares allowlisted rule-file contents at the pinned commit and
+upstream `develop`, and checks the config hash so pack membership changes are
+reported too. Unrelated upstream commits do not create drift. Upstream changes
+do not alter scans until the pins are updated. Renovate PEP 621
+updates keep the Semgrep version and `uv.lock` together; weekly lock
+maintenance refreshes transitive dependencies, and Semgrep updates stay out of
+automerge.
+
+The pre-commit hook scans changed files of all types, except paths matched by
+its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's full-directory
+scan in CI honors `.semgrepignore`, which excludes Go, Python, JavaScript, and
+TypeScript test and spec files plus synthetic fixtures. Explicit file arguments
+bypass it, so keep the hook expression aligned with that file. CI scans in a
+separate job, leaving
+lint and test results visible if Semgrep fails, and retains a SARIF artifact
+for 30 days. Both scans use `--strict` so parse errors and rule timeouts fail
+the scan instead of passing with partial analysis. The job reports failures
+independently; a failing check blocks merges only when the branch ruleset
+requires it. The main ruleset will require Semgrep after this workflow merges.
+For an offline local run, use `SKIP=semgrep make test` or
+`SKIP=semgrep pre-commit run --all-files`.

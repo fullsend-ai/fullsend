@@ -15,14 +15,16 @@ redirect it: the scripts live in `hooks/` next to this file, and
 CodexRuntime.Run checks this file's SHA-256 against the copy embedded in the
 fullsend binary before every iteration.
 
-Wire translation (codex `rust-v0.152.1`, verified against
-codex-rs/hooks/src/{schema.rs,engine/output_parser.rs,events/*.rs}):
+Wire translation (codex `rust-v0.166.0`, verified against
+codex-rs/hooks/src/{schema.rs,engine/output_parser.rs,events/*.rs} and
+codex-rs/core/src/tools/registry.rs function_hook_tool_name):
 
 * Inbound, `tool_name` → the Claude vocabulary the scripts expect
-  (`apply_patch` → `Edit`, `spawn_agent` → `Agent`, `Bash` unchanged, MCP
-  names verbatim). `tool_input` passes through — for `Bash` and
-  `apply_patch` it is `{"command": "<string>"}`, which is what
-  `tirith_check.py` and `ssrf_pretool.py` read.
+  (`apply_patch` → `Edit`, `spawn_agent` and the other multi-agent calls in
+  `CLAUDE_TOOL_FOR_CODEX` → `Agent`, `Bash` unchanged, MCP names verbatim).
+  `tool_input` passes through — for `Bash` and `apply_patch` it is
+  `{"command": "<string>"}`, which is what `tirith_check.py` and
+  `ssrf_pretool.py` read.
 * Outbound, only two shapes are ever emitted:
     - **block** → exit **2** with the reason on stderr and nothing on stdout.
       The scripts' own convention (exit 1 + `{"decision":"block"}`) must not
@@ -132,8 +134,8 @@ MODE_SPAWN_GUARD = "SpawnGuard"
 # The only multi-agent tool the guard admits.
 SPAWN_TOOL_V1 = "spawn_agent"
 # Passed through from the root thread: each acts on an admitted child and
-# none can start or reopen one. Denied from a child. Every other
-# multi-agent tool is denied by name.
+# none can start or reopen one. Denied from a child, whose payload carries
+# agent_id or agent_type. Every other multi-agent tool is denied by name.
 SPAWN_GUARD_PASS = frozenset(
     {
         "multi_agent_v1wait_agent",
@@ -159,9 +161,10 @@ SPAWN_GUARD_DEADLINE_REASON = (
 # codex tool name -> the Claude Code name security.HookGroup.Tools,
 # FULLSEND_TOOL_ALLOWLIST and the scripts are written in (#608).
 # codex-rs/core/src/tools/hook_names.rs: the shell tool is already `Bash`;
-# `apply_patch` covers Claude's Write and Edit; `spawn_agent` is Claude's
-# Agent. Names outside the map (MCP tools) keep their codex name so `*`
-# groups still see them, exactly as the pi adapter does.
+# `apply_patch` covers Claude's Write and Edit; `spawn_agent` and the other
+# multi-agent calls below are Claude's Agent. Names outside the map (MCP
+# tools) keep their codex name so `*` groups still see them, exactly as the
+# pi adapter does.
 CLAUDE_TOOL_FOR_CODEX = {
     "apply_patch": "Edit",
     "spawn_agent": "Agent",
@@ -171,6 +174,18 @@ CLAUDE_TOOL_FOR_CODEX = {
     "multi_agent_v1wait_agent": "Agent",
     "multi_agent_v1close_agent": "Agent",
     "multi_agent_v1send_input": "Agent",
+    # The V2 spawn and the control calls ADR 0159 decision 3 maps the same
+    # way are Agent too; the guard still denies them by name. No mapped call
+    # has the allowlist as a backstop: an allowlist that permits Agent passes
+    # them all and the spawn guard is their only name-level check. The V1
+    # spawn still sits under codex's agents.max_depth; the V2 spawn does not
+    # (#9085), so V2 admission needs a backstop of its own before
+    # CodexRuntime.Bootstrap accepts a V2 parent. send_message and
+    # followup_task stay unmapped like the resume.
+    "collaborationspawn_agent": "Agent",
+    "collaborationwait_agent": "Agent",
+    "collaborationlist_agents": "Agent",
+    "collaborationinterrupt_agent": "Agent",
 }
 
 
@@ -779,7 +794,7 @@ def run_spawn_guard(hook_input: dict[str, Any]) -> None:
     call. Every path but the admit path ends in block()."""
     tool = hook_input.get("tool_name")
     if tool in SPAWN_GUARD_PASS:
-        if "agent_id" in hook_input:
+        if "agent_id" in hook_input or "agent_type" in hook_input:
             denied = f"fullsend: {tool!r} is not allowed from a child (fail closed)"
             log_finding("codex_spawn_guard_block", "critical", denied, "block")
             block(denied)

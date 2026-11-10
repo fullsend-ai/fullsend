@@ -125,13 +125,21 @@ const (
 // not performed a lookup (legacy input, or the label exception where bot-role
 // lookup is not applicable); for bots, true means the bot-role lookup
 // completed (including a successful no-match) and false means it failed.
+//
+// IsEntityAuthor and IsEntityAssignee are best-effort routing facts, never
+// authorization: anyone who can open an issue is its author, and anyone who
+// can assign issues can assign themselves. IsEntityAssignee is optional in
+// the v1 schema so producers that predate it stay valid, but it is always
+// serialized here (false when unknown) so a CEL trigger such as
+// `is_entity_author || is_entity_assignee` never reads a missing key.
 type Actor struct {
-	ID             string    `json:"id"`
-	Kind           ActorKind `json:"kind"`
-	Role           ActorRole `json:"role"`
-	BotRole        string    `json:"bot_role,omitempty"`
-	RoleVerified   *bool     `json:"role_verified,omitempty"`
-	IsEntityAuthor bool      `json:"is_entity_author"`
+	ID               string    `json:"id"`
+	Kind             ActorKind `json:"kind"`
+	Role             ActorRole `json:"role"`
+	BotRole          string    `json:"bot_role,omitempty"`
+	RoleVerified     *bool     `json:"role_verified,omitempty"`
+	IsEntityAuthor   bool      `json:"is_entity_author"`
+	IsEntityAssignee bool      `json:"is_entity_assignee"`
 }
 
 // State is a snapshot of entity metadata at event time.

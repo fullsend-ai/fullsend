@@ -28,10 +28,11 @@ requiring each repository to enroll with it. Public mints must remain supported
 as established by [ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md).
 
 The mint currently authenticates GitHub Actions tokens and checks repository
-access policy and workflow provenance; its [claims and policy functions][mint-claims]
-and [JWKS verifier][mint-jwks] at `efb495b14cfeefdb136fd3f9020ba50de05b4c60`
-expect GitHub-specific claims. A Kubernetes service account token identifies a
-cluster, namespace, and service account, but does not identify a forge repository.
+access policy and workflow provenance
+([ADR 0078](0078-simplified-mint-authorization-policy.md),
+[ADR 0082](0082-workflow-host-allow-list.md)). Those tokens carry GitHub-specific
+claims. A Kubernetes service account token identifies a cluster, namespace, and
+service account, but does not identify a forge repository.
 
 This extends the workload-identity direction of
 [ADR 0029](0029-central-token-mint-secretless-fullsend.md) and the repository
@@ -99,6 +100,4 @@ and unsupported adapters must reject requests.
 - Namespace policy complements per-agent sandboxing but does not protect against
   a compromised cluster administrator, control plane, or shared host kernel.
 
-[mint-claims]: https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/mintcore/claims.go
-[mint-jwks]: https://github.com/fullsend-ai/fullsend/blob/efb495b14cfeefdb136fd3f9020ba50de05b4c60/internal/mintcore/jwks_verifier.go
 [identity-contract]: ../normative/kubernetes-repository-identity/v1/README.md

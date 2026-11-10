@@ -22,7 +22,18 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 // block cleanup. Deleting an absent secret is a no-op, so repeating
 // uninstall is safe. It must not become requiredSecrets — probe/converge
 // require only the selected method's secrets.
-var uninstallSecrets = managedInferenceSecrets()
+//
+// It also deletes the Jira polling credentials (FULLSEND_JIRA_TOKEN,
+// FULLSEND_JIRA_EMAIL, FULLSEND_JIRA_CLIENT_ID and
+// FULLSEND_JIRA_CLIENT_SECRET) that `repos install` provisions for repositories
+// whose effective tracker.jira.poll.enabled is true. Install deliberately
+// keeps them while polling is disabled, but teardown must not leave a
+// long-lived Jira credential behind.
+var uninstallSecrets = append(managedInferenceSecrets(), jiraManagedSecrets...)
+
+// jiraManagedSecrets are the Jira polling credentials written by install
+// (convergeJiraPoll) outside installSecretsForForge.
+var jiraManagedSecrets = []string{forge.SecretJiraToken, forge.SecretJiraEmail, forge.SecretJiraClientID, forge.SecretJiraClientSecret}
 
 // gitlabUninstallVars intentionally does NOT include the legacy
 // FULLSEND_FORGE_TOKEN shared secret. Uninstall no longer retires it
@@ -66,7 +77,10 @@ var gitlabUninstallVars = []string{
 // It also includes the webhook fast-path credentials (FULLSEND_TRIGGER_TOKEN
 // and FULLSEND_WEBHOOK_SECRET). Secret deletion addresses only the
 // wildcard-scoped variable, which is the one Fullsend creates.
-var gitlabUninstallSecrets = append(managedInferenceSecrets(), forge.SecretTriggerToken, forge.SecretWebhookSecret)
+//
+// It also includes the Jira polling credentials, which GitLab injects into
+// every protected-branch job while they exist.
+var gitlabUninstallSecrets = slices.Concat(managedInferenceSecrets(), []string{forge.SecretTriggerToken, forge.SecretWebhookSecret}, jiraManagedSecrets)
 
 // gitlabScaffoldPaths is the full set of files uninstall removes. It is
 // a superset of the current install set: fullsend-dispatch.yml is no
@@ -319,6 +333,26 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	files := make([]forge.TreeFile, 0, len(deletePaths)+1)
 	for _, p := range deletePaths {
 		files = append(files, forge.TreeFile{Path: p, Delete: true})
+	}
+
+	// The managed Jira poll caller (#9109) is removed with the rest of the
+	// scaffold, since uninstall also deletes the Jira credentials it uses.
+	// A user-owned workflow at the same path is left alone.
+	if cfg.Forge == ForgeGitHub || cfg.Forge == "" {
+		actions, err := githubJiraPollReconciler{}.Remove(ctx, jiraPollRequest{
+			Client:    client,
+			Owner:     owner,
+			Repo:      repo,
+			StageFile: func(f forge.TreeFile) { files = append(files, f) },
+		})
+		if err != nil {
+			result.Error = fmt.Errorf("checking managed Jira poll workflow before uninstall: %w", err)
+			progress(fullName, "workflow", fmt.Sprintf("Failed: %v", result.Error))
+			return result
+		}
+		for _, a := range actions {
+			progress(fullName, "workflow", a.Detail)
+		}
 	}
 
 	// For GitLab, clean fullsend entries from the root .gitlab-ci.yml

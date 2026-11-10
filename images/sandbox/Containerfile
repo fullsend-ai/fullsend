@@ -105,7 +105,7 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # rejecting malformed edit arguments (earendil-works/pi#8521, #8962); once
 # the test's without-extension control stops failing, this pi repairs both
 # shapes itself — delete the extension and internal/runtime/pi_edit_repair.go.
-ARG PI_VERSION=1.3.0
+ARG PI_VERSION=1.5.0
 RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
         || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
     && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
@@ -149,8 +149,8 @@ ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
 # PI_VERSION bump move that matrix to the new pin first. Compat flags
 # reach Vertex only through the extension's VERTEX_COMPAT_KEYS allowlist.
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
-ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.1
-ARG PI_ANTHROPIC_VERTEX_SHA256=b7c5572a94dc2b1ad80a189216067b4d3adee4028d85a1f60c3228651c826559
+ARG PI_ANTHROPIC_VERTEX_VERSION=0.2.1
+ARG PI_ANTHROPIC_VERTEX_SHA256=3463c8c655001dfc89fdce649a461dbc55463f970b35b923d28a35eed712f5ef
 ARG PI_EXTENSIONS_DIR=/usr/local/share/pi-extensions
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-anthropic-vertex/archive/refs/tags/v${PI_ANTHROPIC_VERTEX_VERSION}.tar.gz" \
@@ -189,8 +189,8 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # would re-walk earlier extensions on every rebuild), so the last install also
 # locks the parent directory itself, non-recursively -- its mode is then
 # explicit rather than inherited from the build umask.
-ARG PI_XAI_VERTEX_VERSION=0.2.1
-ARG PI_XAI_VERTEX_SHA256=2d910e500c1052f5a8b10d0f9a39149629fd1fff93e5cac71ae963211a71ee30
+ARG PI_XAI_VERTEX_VERSION=0.3.1
+ARG PI_XAI_VERTEX_SHA256=325de8a6b123f205b45de446f628878f3e9ecc1bd69034dd7a5abf4948b6b7ac
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-xai-vertex/archive/refs/tags/v${PI_XAI_VERTEX_VERSION}.tar.gz" \
       -o /tmp/pi-xai-vertex.tar.gz \
@@ -228,8 +228,8 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # carry the tarball SHA256) and set the two ARGs below:
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v<ver>.tar.gz)
 # The last extension install locks the parent directory (see pi-xai-vertex).
-ARG PI_INFERENCE_GATEWAY_VERSION=0.1.4
-ARG PI_INFERENCE_GATEWAY_SHA256=055d9d70b60553a22e8c1bbb0784009dcc1202d7dc5cbd650f81cf8090e75a8d
+ARG PI_INFERENCE_GATEWAY_VERSION=0.2.0
+ARG PI_INFERENCE_GATEWAY_SHA256=359960609b3b6841f0cb3cd7d6c8b4a926d49c32c0237b01b2a8f5669c3a277d
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-inference-gateway/archive/refs/tags/v${PI_INFERENCE_GATEWAY_VERSION}.tar.gz" \
       -o /tmp/pi-inference-gateway.tar.gz \
@@ -268,7 +268,7 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 #
 # To update: bump CODEX_VERSION; renovate tracks this ARG via a
 # customManagers regex entry in renovate.json.
-ARG CODEX_VERSION=0.159.3
+ARG CODEX_VERSION=0.166.0
 RUN npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION} \
     && npm cache clean --force
 
