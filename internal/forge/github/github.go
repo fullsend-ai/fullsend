@@ -4039,17 +4039,26 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 			return nil, fmt.Errorf("list pull request file diffs page %d: %w", page, err)
 		}
 		var raw []struct {
-			Filename string `json:"filename"`
-			Patch    string `json:"patch"`
+			Filename         string `json:"filename"`
+			PreviousFilename string `json:"previous_filename"`
+			Status           string `json:"status"`
+			Patch            string `json:"patch"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decoding pull request file diffs page %d: %w", page, err)
 		}
 		for _, f := range raw {
 			files = append(files, forge.PullRequestFileDiff{
-				Path:  f.Filename,
-				Patch: f.Patch,
+				Path:         f.Filename,
+				PreviousPath: f.PreviousFilename,
+				Status:       f.Status,
+				Patch:        f.Patch,
 			})
+		}
+		// GitHub may cap the files endpoint at 3,000 entries. Do not let a
+		// potentially partial listing become a hash that can suppress review.
+		if len(files) >= 3000 {
+			return nil, fmt.Errorf("pull request file diff listing may be truncated at 3000 files")
 		}
 		if len(raw) < 100 {
 			break
