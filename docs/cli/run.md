@@ -12,6 +12,8 @@ Execute an agent locally in a sandbox. `fullsend run` resolves the agent harness
 fullsend run <agent-name> [flags]
 ```
 
+A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration) must have every harness-level `allowed_remote_resources` prefix covered by the config-level allowlist — `config.yaml`'s `allowed_remote_resources` plus the built-in default prefixes; `fullsend run` fails naming an uncovered prefix, and fails closed when no repository config (`config.yaml` or `config.base.yaml`) exists. See the [`allow_runtime_fetch` entry](../reference/harness-reference.md) in the harness reference.
+
 ## Flags
 
 | Flag | Description |
