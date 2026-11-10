@@ -1551,6 +1551,37 @@ func TestDefaultAllowedRemoteResources_NonGitHubHostAdmitsFullsendRepos(t *testi
 	})
 }
 
+// TestEffectiveAllowedResources pins the command-level allowlist every
+// command family resolves through EffectiveAllowedResources, over the
+// layered accessor shapes TestBuildConfigMap_AllowlistShapes exercises
+// end to end: an omitted key falls through to the defaults parent, an
+// explicit [] stays deny-all, and a non-empty list carries the default
+// prefixes on top.
+func TestEffectiveAllowedResources(t *testing.T) {
+	t.Parallel()
+	defaults := DefaultAllowedRemoteResources()
+
+	t.Run("omitted key falls through to defaults", func(t *testing.T) {
+		cfg := &perRepoConfig{Version: "1", parent: &perRepoDefaults{}}
+		assert.Equal(t, defaults, EffectiveAllowedResources(cfg))
+	})
+
+	t.Run("explicit empty over an empty base stays deny-all", func(t *testing.T) {
+		base := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{}, parent: &perRepoDefaults{}}
+		cfg := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{}, parent: base}
+		got := EffectiveAllowedResources(cfg)
+		assert.NotNil(t, got)
+		assert.Empty(t, got)
+	})
+
+	t.Run("non-empty over an empty base carries the default prefixes", func(t *testing.T) {
+		base := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{}, parent: &perRepoDefaults{}}
+		cfg := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{"https://example.com/"}, parent: base}
+		expected := append([]string{"https://example.com/"}, defaults...)
+		assert.Equal(t, expected, EffectiveAllowedResources(cfg))
+	})
+}
+
 func TestValidModelRef(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
