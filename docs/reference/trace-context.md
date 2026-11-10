@@ -117,8 +117,10 @@ such a `fullsend_ref` goes ahead without keys. After the move,
 
 Install writes a new key in this order:
 
-1. It records the new public key as `active` in `repos.yaml`, before any
-   forge write. The previous active key moves to `retained`.
+1. It records the new public key as `active` in `repos.yaml`, before it
+   writes any key. The previous active key moves to `retained`. When another
+   install that uses the same file changed it after this run loaded it,
+   install stops before writing it.
 2. It reads the ledger again. If the ledger changed since the run first read
    it, as when another install or uninstall of the repository ran at the same
    time, it writes no key, skips the commit and fails that repository. Run

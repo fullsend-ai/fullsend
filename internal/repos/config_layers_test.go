@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -264,6 +265,14 @@ func TestManifestReadOnly_LocalFileWithoutWritePermission(t *testing.T) {
 	err := writeManifest(path, m)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read-only")
+}
+
+// A pipe, as -f <(cmd) gives, cannot take a rewrite.
+func TestManifestReadOnly_Pipe(t *testing.T) {
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = r.Close(); _ = w.Close() })
+	assert.True(t, ManifestReadOnly(newConvergeManifest("acme/api"), "/dev/fd/"+strconv.Itoa(int(r.Fd()))))
 }
 
 func TestEnsureManagedConfigDefaults_ReadOnlyLocalManifestFailsBeforeWrite(t *testing.T) {

@@ -190,7 +190,10 @@ Install writes to `repos.yaml` itself in only four cases: the first-install
 configuration described below; the `trace_context` block of
 [trace signing keys](#trace-signing-keys); and, after a first install, the
 CLI's release written to `github.fullsend_ref` or `gitlab.fullsend_ref` when
-that key is unset. `--dry-run` writes none of them.
+that key is unset. `--dry-run` writes none of them. Install writes the first
+three together, after its preflights. It stops before that write when the file
+changed after the run loaded it, as when another install that uses the same file
+runs at the same time. Run install again once that install has finished.
 
 Legacy issue-tracking configuration in managed `config:` blocks (the scalar
 `tracker: github|gitlab|jira` form and the removed `create_issues` block) is
@@ -613,7 +616,10 @@ the job's initial environment. For the whole lifecycle, see
   lease, so run one install of a GitHub repository at a time. Overlapping runs
   there can leave the secret holding a key other than the one `repos.yaml`
   names, which install cannot detect. `--rotate-trace-signing-key` writes a
-  matching key.
+  matching key. Install stops before writing a `repos.yaml` file that changed
+  after the run loaded it. Two installs that use the same file therefore keep
+  each other's edits to it, apart from a short window between that check and the
+  write.
 - **When install generates a key.** A fresh install gets an installation ID
   and a key pair, except from a read-only manifest (see **Stale or read-only
   manifest** below) and, on GitLab, while the jobs of its `fullsend_ref` do
@@ -1750,7 +1756,7 @@ fullsend repos set --unset <path>
 
 Paths are resolved against the manifest schema, so every field the manifest accepts can be set and there is no separate list of keys. After each edit the whole resulting manifest is validated with the same checks `repos install` uses. A rejected edit leaves the file byte-identical. A successful edit changes only the edited lines and keeps unrelated values, comments, blank lines, and ordering. If the manifest does not exist, `repos set` creates it with `version: 1`. Missing optional parent mappings (for example `defaults.config`) are created as needed.
 
-A manifest loaded from an HTTPS URL, or a local file without write permission, is read-only: `repos set` reports `manifest <path> is read-only; apply the equivalent edit to its source, then re-run` and writes nothing.
+A manifest loaded from an HTTPS URL, read from a pipe or FIFO (as `-f <(cmd)` gives), or a local file without write permission, is read-only: `repos set` reports `manifest <path> is read-only; apply the equivalent edit to its source, then re-run` and writes nothing.
 
 ### Path syntax
 

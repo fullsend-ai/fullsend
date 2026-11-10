@@ -487,10 +487,10 @@ non-per-repo file, or a read error, fails with a clear error and is never
 replaced. `.fullsend/config.base.yaml` is managed as described under
 [Configuration presets](#configuration-presets).
 
-When the manifest is read-only (an HTTPS URL, or a local file without write
-permission), install fails before attempting any manifest write and prints
-the exact entry to add to its source, including for a glob-covered
-repository whose first-install `tracker` default needs an explicit
+When the manifest is read-only (an HTTPS URL, a pipe or FIFO such as `<(cmd)`,
+or a local file without write permission), install fails before attempting any
+manifest write and prints the exact entry to add to its source, including for a
+glob-covered repository whose first-install `tracker` default needs an explicit
 entry. `--dry-run`, live install and `repos status` agree.
 
 ```bash

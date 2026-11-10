@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -894,6 +895,18 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("effective infrastructure preflight: %w", err)
 	}
 	if manifestChanged && !opts.dryRun && opts.manifest != "" {
+		// Another install that uses the same file may have rewritten it since
+		// this run loaded it; writing now would drop its edits, such as the
+		// trace_context of a key it wrote. manifestChanged is set only for a
+		// writable manifest (each edit above refuses a read-only one or, like
+		// the legacy conversion, leaves it unwritten), so the file here is a
+		// local regular file. The comparison and the write are not atomic: a
+		// write that lands between them is overwritten. Lock the file if that
+		// window matters.
+		if current, err := os.ReadFile(opts.manifest); err != nil || !bytes.Equal(current, manifest.LoadedBytes()) {
+			return fmt.Errorf("writing manifest: %s changed after this run loaded it, as when another repos install that uses the same file runs at the same time; "+
+				"this run stopped before writing it: run install again once the other install has finished", opts.manifest)
+		}
 		if err := repos.WriteManifest(opts.manifest, manifest); err != nil {
 			return fmt.Errorf("writing manifest: %w", err)
 		}

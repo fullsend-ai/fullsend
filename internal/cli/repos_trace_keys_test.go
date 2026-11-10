@@ -776,3 +776,84 @@ func TestRunReposInstall_InvalidRemoveTraceVerificationKeyReadsNothing(t *testin
 	assert.Contains(t, err.Error(), "--remove-trace-verification-key value 2")
 	assert.Zero(t, counter.total(), "no forge read: %v", counter.calls)
 }
+
+// sharedManifestClient runs another install right after this run's preflight
+// has read FULLSEND_TRACE_SIGNING_KEY_ID, as when two installs that use the
+// same repos.yaml file overlap and the other one writes the file and its key
+// first.
+type sharedManifestClient struct {
+	*forge.FakeClient
+	other func()
+}
+
+func (c *sharedManifestClient) GetRepoVariable(ctx context.Context, owner, repo, name string) (string, bool, error) {
+	v, ok, err := c.FakeClient.GetRepoVariable(ctx, owner, repo, name)
+	if f := c.other; f != nil && name == forge.VarTraceSigningKeyID {
+		c.other = nil
+		f()
+	}
+	return v, ok, err
+}
+
+// An install whose repos.yaml another install rewrote after this run loaded
+// it does not overwrite the file. The file keeps the other install's keys,
+// and a plain retry from it finds a healthy install.
+func TestRunReposInstall_ManifestChangedMeanwhileIsNotOverwritten(t *testing.T) {
+	manifestPath := writeTestManifest(t, githubUnmanagedManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+	var otherFile string
+	var otherErr error
+	opts := githubManagedInstallOpts(manifestPath, fc)
+	opts.testClient = &sharedManifestClient{FakeClient: fc, other: func() {
+		otherErr = runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc))
+		otherFile = mustReadFile(t, manifestPath)
+	}}
+
+	err := runReposInstall(context.Background(), opts)
+	require.NoError(t, otherErr)
+	require.NotEmpty(t, otherFile, "the other install ran during this run's preflight")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "changed after this run loaded it")
+	assert.Equal(t, otherFile, mustReadFile(t, manifestPath), "the other install's repos.yaml is kept")
+	seeds := func() int {
+		n := 0
+		for _, s := range fc.CreatedSecrets {
+			if s.Name == forge.SecretTraceSigningKey {
+				n++
+			}
+		}
+		return n
+	}
+	assert.Equal(t, 1, seeds(), "only the other install wrote a key")
+	require.NoError(t, runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)), "a plain retry from the file converges")
+	assert.Equal(t, 1, seeds(), "the retry finds a healthy install and writes no key")
+}
+
+// A manifest that can be read only once, as with -f <(cmd), is read once
+// and is read-only, like an HTTPS URL. The entry declares its tracking, so
+// install needs no other repos.yaml edit, and a fresh install from it goes
+// ahead without keys, in a dry run and a live run alike.
+func TestRunReposInstall_ManifestFromPipeIsReadOnly(t *testing.T) {
+	manifest := strings.Replace(githubUnmanagedManifestYAML, "    - name: acme/api\n",
+		"    - name: acme/api\n      config:\n        tracker:\n          github:\n            allowed_targets:\n              repos:\n                - acme/other\n", 1)
+	for _, dryRun := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dry run %t", dryRun), func(t *testing.T) {
+			r, w, err := os.Pipe()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = r.Close() })
+			_, err = w.WriteString(manifest)
+			require.NoError(t, err)
+			require.NoError(t, w.Close())
+			fc := newInstallFakeClient("acme/api")
+			opts := githubManagedInstallOpts(fmt.Sprintf("/dev/fd/%d", r.Fd()), fc)
+			opts.dryRun = dryRun
+			var runErr error
+			out := captureStdout(t, func() { runErr = runReposInstall(context.Background(), opts) })
+			require.NoError(t, runErr)
+			assert.Contains(t, out, "Trace signing keys not provisioned: repos.yaml is read-only")
+			for _, s := range fc.CreatedSecrets {
+				assert.NotEqual(t, forge.SecretTraceSigningKey, s.Name, "no key is written")
+			}
+		})
+	}
+}
