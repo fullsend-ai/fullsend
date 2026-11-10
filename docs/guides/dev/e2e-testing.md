@@ -787,66 +787,87 @@ checks first and stops without deleting anything when:
 
 ## CI authorization
 
-Pull requests trigger e2e via `pull_request_target` in
-[`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) so fork PRs can
-use repository secrets. Because that exposes credentials to untrusted code, a
-**gate job** runs first (see workflow comments for why it is a separate job).
+Pull requests trigger e2e through
+[`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) without
+`pull_request_target`, which GitHub
+[blocks by default](https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2/)
+on public repositories from 2026-12-02
+([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)). The behaviour and playback suites run PR-head code
+with repository secrets, so a **gate job** authorizes every PR run first (see
+workflow comments for why it is a separate job).
+
+| Path | Trigger | What runs |
+|---|---|---|
+| Same-repository PR | `pull_request` (opened, synchronize, reopened) | The gate authorizes the author, then `behaviour` and `playback` run on the PR head with secrets |
+| Fork PR | `pull_request` | Nothing with secrets: fork `pull_request` runs get no secrets, so `behaviour` and `playback` are skipped |
+| Fork PR after `/ok-to-test <sha>` | `issue_comment` | The gate authorizes the commenter and the sha the comment names, then the suites run on that sha and report checks named `behaviour` and `playback` on it |
+| Merge queue, push to `main`, `workflow_dispatch` | unchanged | No gate |
+
+A same-repository `pull_request` run takes `e2e.yml` from the PR merge ref, not
+from `main`. That widens nothing: only users with write access can push a
+branch to this repository.
 
 ### Who runs automatically
 
-E2E tests run without maintainer action when the PR author has **write
-access or higher** (`write`, `maintain`, or `admin` on the base repo) or is an
-allowed trusted bot. The gate verifies this using the collaborator permission
-API rather than `author_association`, ensuring contributors with read or
-triage roles cannot trigger credentialed CI runs automatically.
+E2E tests run without maintainer action for **same-repository** PRs whose
+author has **write access or higher** (`write`, `maintain`, or `admin` on the
+base repo) or is an allowed trusted bot. The gate verifies this using the
+collaborator permission API rather than `author_association`, ensuring
+contributors with read or triage roles cannot trigger credentialed CI runs
+automatically.
 
-### Who needs `ok-to-test`
+### Who needs `/ok-to-test`
 
-Contributors without write access must have a user with write access (Write
-role or above) apply the **`ok-to-test`** label **after** the latest push. A
-label from anyone else (for example a triage-role user) is removed and does not
-authorize the run. The label must be created once in GitHub repo settings
-(Settings → Labels).
+Every PR from a fork needs a user with write access (Write role or above) to
+review the latest push and comment **`/ok-to-test <sha>`** on the PR, where
+`<sha>` is the commit you reviewed. This includes fork authors who have write
+access themselves: fork `pull_request` runs get no secrets, so the gate can no
+longer authorize them automatically. A user with write access may comment
+`/ok-to-test <sha>` on their own fork PR.
 
-### Stale labels
+`/ok-to-test` from anyone without write access (for example a triage-role
+user) does not authorize the run. The `ok-to-test` label no longer starts e2e.
 
-If new commits are pushed after `ok-to-test` was applied, the label is removed
-automatically and e2e is skipped until a user with write access re-applies it
-after reviewing the latest changes. Freshness compares the label timestamp
-against the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`);
-the live API fallback may over-reject when non-push activity bumped
-`updated_at`.
-Applying the label triggers the **E2E ok-to-test** caller workflow, which
-`workflow_call`s into the main suite.
+### One comment, one commit
 
-The main **E2E Tests** workflow does **not** subscribe to
-`labeled` events. Only `opened` / `synchronize` / `reopened` cancel in-progress
-work in the per-PR concurrency group (code changed). Label events are
-authorization only: they **never** cancel an in-progress suite. If a suite is
-already running when `ok-to-test` is applied, GitHub may queue a second run
-behind it (no expression-only “skip if busy”); that is accepted.
+`/ok-to-test <sha>` authorizes only the commit you name. Use the PR's latest
+commit, the one you reviewed. You can copy it from the PR's **Commits** tab or
+print it:
 
-Other labels (for example `ready-for-review`, `requires-manual-review`, or
-`component/*`) do **not** authorize e2e. They may start the thin ok-to-test
-caller with a skipped `run` job (GitHub cannot filter by label name at `on:`),
-but they do not start skipped checks under the **E2E Tests** workflow name,
-and they never enter the suite concurrency group.
+```bash
+gh pr view 1234 --json headRefOid --jq .headRefOid
+```
+
+Put the command on the first line of the comment, for example
+`/ok-to-test 3f2a9c1d4e5b6a7b8c9d0e1f2a3b4c5d6e7f8a9b`. Use the full
+40-character sha: a short prefix is refused, because the author could prepare
+another commit with the same prefix and push it after your review.
+
+When the workflow runs, the gate reads the PR head. It runs the suites only
+if the head is the commit you named. The suites check out that sha, and the
+`behaviour` and `playback` checks are reported on it. If the head is another
+commit, for example because the author pushed after your review, nothing
+runs. A bare `/ok-to-test` with no sha runs nothing either.
+
+Any later push needs a new `/ok-to-test <sha>` from a user with write access
+after reviewing the new changes.
 
 ### Blocked runs
 
 When the gate **runs** and denies authorization, a sticky PR comment (marker
-`<!-- e2e-gate -->`) explains why and what to do. That is distinct from a
-non-`ok-to-test` label event, where the thin caller skips without invoking the
-gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
+`<!-- e2e-gate -->`) explains why and what to do. A fork PR without
+`/ok-to-test <sha>` gets no comment: its `behaviour` and `playback` checks are
+skipped.
 
 The comment names a reason. What to do next:
 
-| Reason | Label removed? | What to do next |
-|---|---|---|
-| `untrusted_labeler` | Yes, unless someone re-applied it since | The person who applied `ok-to-test` does not have write access (for example a Triage user). Do not re-apply it yourself. Ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](../../../MAINTAINERS.md), to apply it after reviewing the latest push. |
-| `stale_ok_to_test` | Yes | The PR changed after the label was applied, usually by a new push. A user with write access reviews the changes and re-applies `ok-to-test`. |
-| `error` | No | The GitHub API failed during the check. Re-run the workflow. |
-| `unauthorized` | No | The author does not have write access and there is no `ok-to-test` label. Ask a user with write access to review the PR and apply it. If you do have write access, the permission lookup may have failed: re-run the workflow first. |
+| Reason | What to do next |
+|---|---|
+| `untrusted_commenter` | The person who commented `/ok-to-test` does not have write access (for example a Triage user). Do not repeat it yourself. Ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](../../../MAINTAINERS.md), to comment `/ok-to-test <sha>` after reviewing the latest push. |
+| `stale_ok_to_test` | The comment named a commit that is not the PR head, usually because of a push after the review. A user with write access reviews the changes and comments `/ok-to-test <sha>` with the current head sha. |
+| `missing_sha` | The comment did not name a commit on its first line (for example a bare `/ok-to-test`). A user with write access comments `/ok-to-test <sha>` with the full sha of the commit they reviewed. The gate comment shows the current head; review it before naming it. |
+| `error` | The GitHub API failed during the check. Re-run the workflow. |
+| `unauthorized` | The author of a same-repository PR does not have write access. Ask a user with write access to review the PR and comment `/ok-to-test <sha>`. If you do have write access, the permission lookup may have failed: re-run the workflow first. |
 
 Unresolved review threads and reviews that request changes are **not** gate
 inputs: they only block merging, never e2e. To see which role you have, use
@@ -854,17 +875,27 @@ the "How to check" links in [LADDER.md](../../../LADDER.md).
 
 ## CI architecture
 
-1. **PR open/sync** — **E2E Tests** runs the gate then suite jobs (trusted
-   authors authorized immediately)
-2. **`ok-to-test` label** — the thin **E2E ok-to-test** workflow calls the same
-   suite via `workflow_call` (fork / external path)
-3. **Gate** — authorize a write+ / trusted-bot author, or an `ok-to-test`
-   labeled event from a write+ sender (base checkout only; never checks out PR
-   head). Policy is implemented in [`internal/e2eauth`](../../../internal/e2eauth/check.go)
-   and exposed as [`fullsend ci check-e2e-authorization`](../../cli/ci.md); see
+1. **PR open/sync** — **E2E Tests** runs on `pull_request`. For a
+   same-repository PR the gate authorizes a write+ / trusted-bot author, then
+   the suite jobs run. For a fork PR the gate and suites are skipped.
+2. **`/ok-to-test <sha>` comment** — the **E2E ok-to-test** workflow runs on
+   `issue_comment`. Its authorize job checks the commenter's permission and
+   that the PR head is the named sha, then calls the same suite via `workflow_call` for
+   that sha. Only the authorize/report job holds `checks: write` and
+   `pull-requests: write`; it creates the `behaviour` and `playback` check runs
+   on the head sha and completes them from the suite results, so they match
+   the required checks on `main`.
+3. **Gate** — base checkout only; never checks out PR head. Policy is
+   implemented in [`internal/e2eauth`](../../../internal/e2eauth/check.go) and
+   exposed as [`fullsend ci check-e2e-authorization`](../../cli/ci.md); CI
+   still invokes
+   [`scripts/check-e2e-authorization.sh`](../../../scripts/check-e2e-authorization.sh)
+   until the gate action switches to the CLI
+   ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371) part 3). See
    [Gate job mitigation](../../contributing/ci-workflows.md#gate-job-mitigation).
-4. **Behaviour / playback** — checkout PR head SHA, authenticate to GCP via
-   WIF, mint cross-org tokens per pool org, `make behaviour-test` (or
+4. **Behaviour / playback** — `contents: read` and `id-token: write` only;
+   checkout the authorized PR head SHA, authenticate to GCP via WIF, mint
+   cross-org tokens per pool org, `make behaviour-test` (or
    `make playback-test` for the playback job)
 
 Pushes to `main`, merge queue, and `workflow_dispatch` skip the gate and run e2e

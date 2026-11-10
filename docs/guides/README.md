@@ -72,7 +72,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 
 Guides for contributors developing and testing fullsend itself.
 
-- [E2E testing](dev/e2e-testing.md) — Local and CI e2e runs, including PR authorization and `ok-to-test`
+- [E2E testing](dev/e2e-testing.md) — Local and CI e2e runs, including PR authorization and `/ok-to-test`
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
 - [Behaviour testing](dev/behaviour-testing.md) — Write Gherkin scenarios for end-to-end agent behaviour
 - [Behaviour test drivers](dev/behaviour-drivers.md) — Implement SCM and CI drivers for behaviour tests

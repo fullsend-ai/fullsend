@@ -24,7 +24,7 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
   concurrency:
     group: fullsend-code-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
   ```
-  Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request_target` or `push` (e.g., `e2e.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
+  Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request` or `push` (e.g., `e2e.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
 - Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main` (see [exception for the site build and deploy workflows](#site-workflows-cancel-in-progress) below).
 - <a id="site-workflows-cancel-in-progress"></a>**Exception — `site-build.yml` and `site-deploy.yml`:**
   these two files intentionally use unconditional `cancel-in-progress: true`,
@@ -202,34 +202,21 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 
 ### Gate job mitigation
 
-The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates
-the risk by requiring authorization before the behaviour and playback
-jobs check out PR-head code. The policy lives in Go
-(`internal/e2eauth`, exposed as
-[`fullsend ci check-e2e-authorization`](../cli/ci.md)).
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`). The policy lives in Go (`internal/e2eauth`, exposed as [`fullsend ci check-e2e-authorization`](../cli/ci.md)).
 
-> **Planned:** Point
-> [`.github/actions/check-e2e-authorization`](../../.github/actions/check-e2e-authorization/action.yml)
-> at that CLI instead of `scripts/check-e2e-authorization.sh`
-> ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371) part 3).
+> **Planned:** Point [`.github/actions/check-e2e-authorization`](../../.github/actions/check-e2e-authorization/action.yml) at that CLI instead of `scripts/check-e2e-authorization.sh` ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371) part 3).
 
-- **Trusted authors** — org members and repo collaborators are auto-authorized.
-- **External contributors** — require a user with write access (Write role or above) to apply the `ok-to-test` label after reviewing the PR diff; the gate checks the labeler's permission. The gate removes stale labels when new commits land.
-- **Separation of concerns** — the gate job runs on the base-branch checkout with `pull-requests: write`; the behaviour/playback jobs run on the PR-head checkout without write permissions.
+- **Same-repository PRs** — the gate authorizes authors with write access (collaborator permission API) and trusted bots. Fork `pull_request` runs get no secrets, so the suites skip them.
+- **Fork PRs** — require a user with write access (Write role or above) to review the PR diff and comment `/ok-to-test <sha>`, naming the reviewed commit, including when the fork author has write access. The gate reads the comment from the API, checks the commenter's permission, and authorizes the PR head only when it is the named sha. Another head is refused (`stale_ok_to_test`), and a comment with no sha is refused (`missing_sha`). The gate uses no timing. The `ok-to-test` label no longer starts e2e.
+- **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports the `behaviour` and `playback` check runs on the authorized sha. The behaviour/playback jobs run on the PR-head checkout with `contents: read` and `id-token: write` only.
 
 **Limitations of the gate:**
 
-- The gate authorizes *authors*, not *code*. A trusted author whose account is compromised bypasses the gate.
-- The gate does not inspect the PR diff — it trusts that the labeler reviewed the code before labeling `ok-to-test`.
-- The `ok-to-test` label check has a TOCTOU window: code can change between label application and job execution (mitigated by the stale-label removal on `synchronize` events, but not eliminated).
+- The gate authorizes *authors* and *commenters*, not *code*. A trusted account that is compromised bypasses the gate.
+- The gate does not inspect the PR diff — it trusts that the commenter reviewed the named commit before commenting `/ok-to-test <sha>`.
+- The suites run the sha the gate authorized, so a push after authorization does not reach a credentialed run. A push between the comment and the gate run moves the head away from the named sha, so the gate refuses it. The command takes only the full 40-character sha: the author controls the reviewed commit and could prepare another commit sharing a short prefix.
 
-**Validating gate changes (`pull_request_target`):** Because `pull_request_target`
-workflows execute the gate from the base branch (`main`), PR runs on a
-gate-modifying PR still execute `main`'s gate. PRs modifying
-`pull_request_target` gates must validate logic via unit tests pre-merge (e.g.,
-`scripts/check-e2e-authorization-test.sh` and
-`go test ./internal/e2eauth/ ./internal/cli/ -run 'TestCheck_|TestCi|TestResolveCheckE2E|TestRunCheckE2E'`) and include
-a post-merge validation checklist in the PR description.
+**Validating gate changes:** A same-repository `pull_request` run takes `e2e.yml` and the gate action from the PR merge ref, so a gate-modifying PR exercises its own gate for same-repository authors. The `/ok-to-test` path runs on `issue_comment`, which takes its workflow and the gate from `main`; a PR that changes that path still runs `main`'s gate. Validate gate logic with unit tests pre-merge (e.g., `scripts/check-e2e-authorization-test.sh` and `go test ./internal/e2eauth/ ./internal/cli/ -run 'TestCheck_|TestCi|TestResolveCheckE2E|TestRunCheckE2E'`) and include a post-merge validation checklist in the PR description.
 
 ### Review checklist for secrets in behaviour/playback jobs
 
@@ -243,9 +230,9 @@ When a PR adds or modifies secret references in a `pull_request_target` job, rev
 
 ### Behaviour debug artifact redaction
 
-The behaviour job in `e2e.yml` uploads debug artifacts after every relevant run, whether the tests succeed or fail. Because PR-head code populates that directory under `pull_request_target`, a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
+The behaviour job in `e2e.yml` uploads debug artifacts after every relevant run, whether the tests succeed or fail. Because PR-head code populates that directory on authorized PR runs (`pull_request` and `/ok-to-test`), a malicious authorized PR could write job secrets into artifact files (GitHub masks logs but not uploaded artifact contents).
 
-Before upload, the workflow checks out `scripts/redact-behaviour-artifacts.sh` from the **base branch** (`github.sha` on `pull_request_target`; the merge-group head on `merge_group`) into a separate `base-scripts/` path. PR-head code cannot modify the checked-in script contents. The redaction step runs via `env -i` with a pinned `PATH` so earlier job steps cannot poison the interpreter search path or dynamic-linker hooks.
+Before upload, the workflow checks out `scripts/redact-behaviour-artifacts.sh` from the **base branch** (`github.event.pull_request.base.sha` on `pull_request`, whose `github.sha` is the PR merge commit; the default-branch head on `/ok-to-test` runs; the merge-group head on `merge_group`) into a separate `base-scripts/` path. PR-head code cannot modify the checked-in script contents. The redaction step runs via `env -i` with a pinned `PATH` so earlier job steps cannot poison the interpreter search path or dynamic-linker hooks.
 
 The behaviour test step tees job output to `behaviour-test.log` in that directory (with `shell: bash` so `pipefail` propagates `make behaviour-test` failures). Upload is gated on `steps.redact.outcome == 'success'`.
 
