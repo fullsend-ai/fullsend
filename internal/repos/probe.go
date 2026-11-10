@@ -72,7 +72,7 @@ func DriftFieldName(componentName string) string {
 // expectedVarValues maps variable names to their expected values for
 // value-level drift detection. Pass nil for presence-only checking.
 func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forgeName string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
-	return probeComponents(ctx, client, owner, repo, forgeName, "", false, fc, expectedVarValues)
+	return probeComponents(ctx, client, owner, repo, forgeName, "", false, false, fc, expectedVarValues)
 }
 
 // ProbeComponentsForAuth is ProbeComponents for a repository whose
@@ -88,12 +88,24 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 // of OpenAI WIF identifiers is live on the default branch. Installed repos
 // also report openai-wif:workflows for their live workflow contract.
 func ProbeComponentsForAuth(ctx context.Context, client forge.Client, owner, repo, forgeName, auth string, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
-	return probeComponents(ctx, client, owner, repo, forgeName, auth, auth == "", fc, expectedVarValues)
+	return probeComponents(ctx, client, owner, repo, forgeName, auth, auth == "", false, fc, expectedVarValues)
 }
 
-// probeComponents implements ProbeComponents and ProbeComponentsForAuth.
-// gatewayOnly skips the provider-secret components entirely.
-func probeComponents(ctx context.Context, client forge.Client, owner, repo, forgeName, auth string, gatewayOnly bool, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
+// ProbeComponentsForConfig is ProbeComponentsForAuth for a resolved
+// repository configuration. It differs only for a gateway-only repository
+// whose inference.gateway block uses the api-key mode: the gateway API key
+// secret (FULLSEND_INFERENCE_GATEWAY_API_KEY, which setup never writes) is
+// then probed and must be present to match, because runs fail without it.
+// An oidc gateway-only repository needs no secret.
+func ProbeComponentsForConfig(ctx context.Context, client forge.Client, cfg ResolvedConfig, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
+	return probeComponents(ctx, client, cfg.Owner, cfg.Repo, cfg.Forge, cfg.InferenceAuth, cfg.InferenceAuth == "", cfg.requiresGatewayAPIKey(), fc, expectedVarValues)
+}
+
+// probeComponents implements ProbeComponents, ProbeComponentsForAuth, and
+// ProbeComponentsForConfig. gatewayOnly skips the provider-secret
+// components entirely; gatewayAPIKey then probes the gateway API key
+// secret in their place.
+func probeComponents(ctx context.Context, client forge.Client, owner, repo, forgeName, auth string, gatewayOnly, gatewayAPIKey bool, fc ForgeConfig, expectedVarValues map[string]string) ([]ComponentStatus, error) {
 	var results []ComponentStatus
 
 	// Workflow presence is the current carrier (WorkflowPaths).
@@ -277,6 +289,9 @@ func probeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 	}
 	if gatewayOnly {
 		probedSecrets = nil
+		if gatewayAPIKey {
+			probedSecrets = []string{forge.SecretInferenceGatewayAPIKey}
+		}
 	}
 	for _, secretName := range probedSecrets {
 		if auth == InferenceAuthOpenAIAPIKey && secretName == forge.SecretOpenAIAPIKey {
