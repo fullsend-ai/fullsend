@@ -93,6 +93,12 @@ Agents are often discussed as if they run on a developer workstation: fast local
 
 ACP may still be useful for **narrow experiments** where those constraints are acceptable; it does not, by itself, deliver the isolation depth, supply-chain posture, or “agent as first-class workload with the right capabilities” that we are trying to reach here.
 
+Independent source targets also need isolated contexts and target-aware
+scheduling keys. [Multi-target execution](multi-target-execution.md) explores
+that boundary;
+[ADR 0167](../ADRs/0167-execute-authorized-multi-target-plans.md) chooses
+bounded host-admitted plans that reuse existing scheduling mechanisms.
+
 ## Hybrid and incremental options
 
 - **Thin orchestration layer** — We build a small layer that triggers agents, gathers results, and posts status checks; the actual compute is 3rd party or internal. This keeps coordination logic in our control while deferring platform choice.

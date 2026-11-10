@@ -609,6 +609,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0151](ADRs/0151-harness-human-role-minimums.md),
   [Authorization Contract v2](normative/authorization/v2/)).
 
+- Decided, not yet implemented: host-admitted multi-target plans freeze target
+  scope, source revisions and finite execution bounds. Child scheduling keys
+  include the target operation identity, and collection accounts for every
+  required target independently of domain success
+  ([ADR 0167](ADRs/0167-execute-authorized-multi-target-plans.md)).
+
 - Entity-source discovery (target state): `fullsend poll` combines admissible
   harness queries into one logical candidate search per source scope and routes
   possible matches locally. A bound `run` rechecks source-query membership
