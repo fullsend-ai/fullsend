@@ -28,6 +28,7 @@ type IssueFields struct {
 	Status      Status       `json:"status"`
 	Labels      []string     `json:"labels"`
 	Reporter    User         `json:"reporter"`
+	Assignee    User         `json:"assignee"` // zero value when unassigned (Jira returns null)
 	Created     string       `json:"created"`
 	Updated     string       `json:"updated"`
 	Comment     *CommentPage `json:"comment,omitempty"`

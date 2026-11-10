@@ -143,6 +143,7 @@ var (
 var jiraCredentialKeys = map[string]bool{
 	"token": true, "api_token": true, "jira_token": true, "email": true, "user_email": true,
 	"jira_email": true, "password": true, "secret": true, "credentials": true, "username": true,
+	"client_id": true, "client_secret": true, "oauth_client_id": true, "oauth_client_secret": true,
 }
 
 // jiraTrackingPlain has JiraTrackingConfig's fields but not its
@@ -160,7 +161,8 @@ func (j *JiraTrackingConfig) UnmarshalYAML(n *yaml.Node) error {
 			key := r.Content[i].Value
 			if jiraCredentialKeys[strings.ToLower(key)] {
 				return managedFieldError(r.Content[i], fmt.Sprintf("tracker.jira: %q must not be set in config: "+
-					"supply the Jira token and account email as the FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL repository secrets", key))
+					"supply the Jira token and account email as the FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL repository secrets, "+
+					"or OAuth 2.0 client credentials as FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET", key))
 			}
 		}
 		if err := checkMappingKeys(r, jiraTrackingKeys, "tracker.jira"); err != nil {

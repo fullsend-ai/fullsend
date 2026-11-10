@@ -24,7 +24,7 @@ help:
 	@echo "  go-vet               - Run go vet"
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
-	@echo "  script-test          - Run shell script tests (topissues, analyze-transcript, user-forum-whats-new, gitlint-rules, gateway doc configs, artifact redaction, kill_stray_processes, ci-local)"
+	@echo "  script-test          - Run shell and Python script tests (including Semgrep ruleset drift)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
 	@echo "  ci-local             - Run CI checks in a container matching the ubuntu-24.04 runner (T=\"targets\"; see hack/ci-local)"
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
@@ -88,11 +88,11 @@ lint-all: ensure-hooks
 	pre-commit run --all-files
 
 check:
-	uvx ruff check .
-	uvx ty check hack/
+	uvx ruff@0.15.7 check .
+	uvx ty@0.0.99 check hack/
 
 fmt:
-	uvx ruff format .
+	uvx ruff@0.15.7 format .
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -192,7 +192,9 @@ script-test:
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
 	$(call run-timed,bash .github/scripts/count-fix-commits-test.sh)
 	$(call run-timed,bash .github/scripts/pre-fetch-review-body-test.sh)
+	$(call run-timed,bash .github/scripts/retry-with-backoff-test.sh)
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
+	$(call run-timed,bash scripts/semgrep-scan-test.sh)
 	$(call run-timed,bash scripts/verify-release-tag-test.sh)
 	$(call run-timed,bash skills/cutting-releases/scripts/prepend-release-highlights-test.sh)
 	$(call run-timed,bash skills/e2e-health/scripts/scan-ratelimit-evidence_test.sh)
@@ -218,8 +220,10 @@ script-test:
 	$(call run-timed,python3 skills/adr-corner/scripts/adr_corner_test.py)
 	$(call run-timed,python3 skills/analyze-transcript/analyze_transcript_test.py)
 	$(call run-timed,python3 skills/user-forum-whats-new/scripts/gather_test.py)
+	$(call run-timed,python3 -m pytest .github/scripts/semgrep_ruleset_drift_test.py -q)
 	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
 	$(call run-timed,python3 -m pytest hack/check_gateway_doc_configs_test.py -q)
+	$(call run-timed,python3 -m pytest hack/tool_fetch_pins_test.py -q)
 	$(call run-timed,python3 -m pytest internal/security/hooks/ -q)
 	$(call run-timed,node --test internal/runtime/pi_extension/*.test.mjs)
 

@@ -34,7 +34,7 @@ repos:
     hooks:
       - id: ty
         name: ty check
-        entry: uvx ty check --ignore import-not-found --ignore unresolved-attribute
+        entry: uvx ty@0.0.99 check --ignore import-not-found --ignore unresolved-attribute
         language: system
         types: [python]
 
@@ -44,6 +44,16 @@ repos:
       - id: bandit
         args: ["-r", "hack/", "--skip", "B101,B404,B603"]
         pass_filenames: false
+
+  - repo: local
+    hooks:
+      # Explicit filenames bypass .semgrepignore; keep this exclude aligned with it.
+      - id: semgrep
+        name: semgrep security audit (pinned p/security-audit rules)
+        entry: env SEMGREP_REQUIRED=0 ./scripts/semgrep-scan
+        language: system
+        verbose: true
+        exclude: '(^|/)([^/]*_test\.[^/]+|[^/]*\.(test|spec)\.[^/]+|test_[^/]+\.py|tests?(/|$))|^\.semgrep/|^e2e/behaviour/(fixtures|results)/'
 
   - repo: https://github.com/zricethezav/gitleaks
     rev: v8.30.0
@@ -190,7 +200,17 @@ repos:
 
       - id: lint-staged
         name: lint-staged (web)
-        entry: npx lint-staged --allow-empty
+        entry: npx lint-staged@16.4.0 --allow-empty
         language: system
         files: ^docs/\.vitepress/
         pass_filenames: false
+
+      # Renovate bumps `uvx`/`npx` fetches only in the <pkg>@<version> form;
+      # flag every other form (no version, ranges, @latest, flags first, ==) so a new
+      # release cannot reach lint-all unreviewed (#9226). Tested by
+      # hack/tool_fetch_pins_test.py.
+      - id: check-tool-fetch-pins
+        name: check tool fetch version pins (uvx/npx)
+        entry: '\b(uvx|npx)\s+(?=\S)(?!(@[\w.-]+/)?[\w.-]+@\d+\.\d+\.\d+(?![\w.*]))'
+        language: pygrep
+        files: ^(\.pre-commit-config\.yaml|Makefile)$

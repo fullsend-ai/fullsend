@@ -401,8 +401,8 @@ func DecodeCarrier(s string) ([]byte, error) {
 type Outcome int
 
 const (
-	// OutcomeFallback means no carrier was admissible; the caller uses
-	// the deterministic entity-derived fallback, except for
+	// OutcomeFallback means no decoded candidate was admissible; the
+	// caller uses the deterministic entity-derived fallback, except for
 	// ReasonUnresolved, where it must postpone dispatch. It is the zero
 	// value.
 	OutcomeFallback Outcome = iota
@@ -473,8 +473,8 @@ func reasonForParse(err error) string {
 // returns permission.
 //
 // An unresolved expected identity reports ReasonUnresolved before any
-// carrier is inspected: the caller must postpone dispatch (FR-002) and
-// must not read the candidate's own diagnostics as the cause.
+// decoded candidate is inspected: the caller must postpone dispatch
+// (FR-002) and must not read the candidate's own diagnostics as the cause.
 func Admit(expected Identity, keys map[[8]byte]ed25519.PublicKey, candidates ...[]byte) Result {
 	if !expected.Resolved() {
 		return fallback(ReasonUnresolved)

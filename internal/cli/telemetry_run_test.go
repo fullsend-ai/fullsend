@@ -428,6 +428,8 @@ func setInheritedScriptSecrets(t *testing.T) {
 	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
 	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
 	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "process-jira-client-id")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "process-jira-client-secret")
 }
 
 func envHasKey(env []string, key string) bool {
@@ -456,6 +458,8 @@ func TestChildScriptEnv_StripsInheritedNamedSecrets(t *testing.T) {
 		"JIRA_USER_EMAIL",
 		"FULLSEND_JIRA_TOKEN",
 		"FULLSEND_JIRA_EMAIL",
+		"FULLSEND_JIRA_CLIENT_ID",
+		"FULLSEND_JIRA_CLIENT_SECRET",
 	} {
 		assert.False(t, envHasKey(env, key), "%s must not be inherited by child scripts", key)
 	}
@@ -582,6 +586,8 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 		"JIRA_USER_EMAIL":                   true,
 		"FULLSEND_JIRA_TOKEN":               true,
 		"FULLSEND_JIRA_EMAIL":               true,
+		"FULLSEND_JIRA_CLIENT_ID":           true,
+		"FULLSEND_JIRA_CLIENT_SECRET":       true,
 		"OTEL_EXPORTER_OTLP_HEADERS":        true,
 		"OTEL_EXPORTER_OTLP_TRACES_HEADERS": true,
 		"OTEL_EXPORTER_OTLP_LOGS_HEADERS":   true,
@@ -680,6 +686,66 @@ func TestDropEmptyOptionalRunnerEnv(t *testing.T) {
 	env = map[string]string{}
 	dropEmptyOptionalRunnerEnv(env)
 	assert.Empty(t, env)
+}
+
+// TestHarnessEnvLookup_OAuthClientCredentials verifies that a harness may
+// declare both Jira credential types in env.runner: the OAuth 2.0 client
+// credentials resolve when unset, and FULLSEND_JIRA_TOKEN resolves when
+// unset on a deployment that uses the client credentials instead (#9176).
+func TestHarnessEnvLookup_OAuthClientCredentials(t *testing.T) {
+	h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{
+		"FULLSEND_JIRA_TOKEN":         "${FULLSEND_JIRA_TOKEN}",
+		"FULLSEND_JIRA_EMAIL":         "${FULLSEND_JIRA_EMAIL}",
+		"FULLSEND_JIRA_CLIENT_ID":     "${FULLSEND_JIRA_CLIENT_ID}",
+		"FULLSEND_JIRA_CLIENT_SECRET": "${FULLSEND_JIRA_CLIENT_SECRET}",
+	}}}
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		t.Setenv(key, "")
+		require.NoError(t, os.Unsetenv(key))
+	}
+
+	// Token deployment: the client credentials are optional.
+	t.Setenv("FULLSEND_JIRA_TOKEN", "scoped-token")
+	for _, key := range []string{"FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		v, ok := harnessEnvLookup(key)
+		assert.True(t, ok, "an unset %s must still resolve", key)
+		assert.Empty(t, v)
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(harnessEnvLookup))
+
+	// OAuth deployment: the token is optional.
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_TOKEN"))
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "client-id")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "client-secret")
+	v, ok := harnessEnvLookup("FULLSEND_JIRA_TOKEN")
+	assert.True(t, ok, "FULLSEND_JIRA_TOKEN is optional with client credentials")
+	assert.Empty(t, v)
+	v, ok = harnessEnvLookup("FULLSEND_JIRA_CLIENT_SECRET")
+	assert.True(t, ok)
+	assert.Equal(t, "client-secret", v)
+	require.NoError(t, h.ValidateRunnerEnvWith(harnessEnvLookup))
+
+	// Neither: the token is required again.
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_CLIENT_ID"))
+	require.NoError(t, os.Unsetenv("FULLSEND_JIRA_CLIENT_SECRET"))
+	_, ok = harnessEnvLookup("FULLSEND_JIRA_TOKEN")
+	assert.False(t, ok)
+}
+
+// TestDropEmptyOptionalRunnerEnv_OAuth verifies that empty OAuth client
+// credentials are omitted, and an empty FULLSEND_JIRA_TOKEN is omitted on a
+// deployment that uses the client credentials (#9176).
+func TestDropEmptyOptionalRunnerEnv_OAuth(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "")
+	env := map[string]string{"FULLSEND_JIRA_CLIENT_ID": "", "FULLSEND_JIRA_CLIENT_SECRET": " ", "FULLSEND_JIRA_TOKEN": ""}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Equal(t, map[string]string{"FULLSEND_JIRA_TOKEN": ""}, env, "the token is not optional without client credentials")
+
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "client-id")
+	env = map[string]string{"FULLSEND_JIRA_CLIENT_ID": "client-id", "FULLSEND_JIRA_TOKEN": ""}
+	dropEmptyOptionalRunnerEnv(env)
+	assert.Equal(t, map[string]string{"FULLSEND_JIRA_CLIENT_ID": "client-id"}, env)
 }
 
 func TestAgentSpanStartAttrs(t *testing.T) {

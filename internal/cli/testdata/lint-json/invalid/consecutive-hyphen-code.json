@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "success": true,
+  "summary": {
+    "errors": 0,
+    "warnings": 1
+  },
+  "diagnostics": [
+    {
+      "code": "rule--invalid",
+      "agent": "my-agent",
+      "severity": "warning",
+      "field": "runner_env",
+      "message": "consecutive hyphens are rejected"
+    }
+  ]
+}

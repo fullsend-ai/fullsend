@@ -237,7 +237,7 @@ for _f in setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh podma
     _missing=1
   fi
 done
-for _f in install-openshell.sh openshell-version.sh; do
+for _f in install-openshell.sh openshell-version.sh retry-with-backoff.sh; do
   if [ ! -f "${REPO_ROOT}/.github/scripts/${_f}" ]; then
     echo "ERROR: required file not found: ${REPO_ROOT}/.github/scripts/${_f}" >&2
     _missing=1
@@ -564,7 +564,7 @@ for file in job_id.sh prepare.sh run.sh cleanup.sh gateway.sh; do
 done
 
 # setup.sh's install_openshell() delegates to the repo's SHA-pinned installer.
-for file in install-openshell.sh openshell-version.sh; do
+for file in install-openshell.sh openshell-version.sh retry-with-backoff.sh; do
   virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
     -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \
     -c "cat > ~/gitlab-runner-vm/.github/scripts/${file}" < "${REPO_ROOT}/.github/scripts/${file}"
@@ -582,7 +582,7 @@ echo "==> Verifying copied files"
   (cd "${SCRIPT_DIR}" && sha256sum setup.sh create-openshift-vm.sh vm.yaml gitlab-runner-version.sh podman-prune.sh os-update.sh \
     executor/job_id.sh executor/prepare.sh executor/run.sh executor/cleanup.sh executor/gateway.sh)
   (cd "${REPO_ROOT}/.github/scripts" \
-    && sha256sum install-openshell.sh openshell-version.sh \
+    && sha256sum install-openshell.sh openshell-version.sh retry-with-backoff.sh \
     | sed 's|  |  .github/scripts/|')
 } | virtctl -n "${NAMESPACE}" ssh "${VM_USER}"@vm/"${vm_name}" \
   -t "-o StrictHostKeyChecking=no" -t "-o UserKnownHostsFile=/dev/null" \

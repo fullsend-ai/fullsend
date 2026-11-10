@@ -570,5 +570,15 @@ echo
 echo "==> ${ORG} is ready for e2e testing."
 echo
 echo "    Next steps:"
-echo "    1. Uncomment \"${ORG}\" in internal/e2etest/testutil.go orgPool"
-echo "    2. Run: make behaviour-test"
+echo "    1. Add \"${ORG}\" to orgPool in internal/e2etest/testutil.go, and raise"
+echo "       DevPoolOrgCount in pkg/behaviourtest/drivers/install/slotpool.go to match"
+echo "       (TestOrgPoolMatchesDevPoolOrgCount checks that they agree)"
+ORG_ID=$(gh api "orgs/${ORG}" --jq .id 2>/dev/null || echo "<gh api orgs/${ORG} --jq .id>")
+echo "    2. Raise POOL_ORG_COUNT in hack/setup-e2e-inference-gateway.sh to the same"
+echo "       count and add \"${ORG}=${ORG_ID}\" to POOL_ORG_IDS, so the e2e inference"
+echo "       gateway admits the org's repositories."
+echo "       Redeploy the gateway: this is a frozen change, so run the script with"
+echo "       --dry-run first (it shows the diff and exits 4), then with"
+echo "       --allow-frozen-change, outside a release window and with the"
+echo "       maintainers told first (see docs/guides/dev/e2e-testing.md)"
+echo "    3. Run: make behaviour-test"

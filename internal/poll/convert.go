@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -146,8 +147,9 @@ func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (di
 		Role: role,
 	}
 
-	// Best-effort: determine if the actor authored the entity.
-	ne.Actor.IsEntityAuthor = p.isEntityAuthor(ctx, event, authorID)
+	// Best-effort: determine if the actor authored, or is assigned to, the
+	// entity.
+	ne.Actor.IsEntityAuthor, ne.Actor.IsEntityAssignee = p.entityRelation(ctx, event, authorID)
 
 	// For MR events, populate ChangeProposalState.
 	if event.Type == "mr_note" || event.Type == "mr_event" {
@@ -345,22 +347,40 @@ func entityURL(gitlabURL, projectPath, eventType string, iid int) string {
 	}
 }
 
-// isEntityAuthor determines whether the actor is the author of the entity.
-// It uses a best-effort approach, returning false if the author cannot be
+// entityRelation determines whether the actor is the author of the entity
+// and whether the actor is one of its current assignees. Issues share one
+// GetIssue call; MRs read the author and assignees carried on the event from
+// the MR object. It is best-effort: either result is false when it cannot be
 // determined.
-func (p *Poller) isEntityAuthor(ctx context.Context, event RoutableEvent, actorID int) bool {
+func (p *Poller) entityRelation(ctx context.Context, event RoutableEvent, actorID int) (isAuthor, isAssignee bool) {
 	switch event.Type {
 	case "issue_label", "issue_note", "issue_event":
 		issue, err := p.client.GetIssue(ctx, p.owner, p.repo, event.IID)
 		if err != nil {
-			return false
+			return false, false
 		}
-		return issue.Author.ID == actorID
+		return issue.Author.ID == actorID, containsID(userIDs(issue.Assignees), actorID)
 	case "mr_note", "mr_event":
-		return event.MRAuthorID != 0 && event.MRAuthorID == actorID
+		return event.MRAuthorID != 0 && event.MRAuthorID == actorID, containsID(event.MRAssigneeIDs, actorID)
 	default:
-		return false
+		return false, false
 	}
+}
+
+// userIDs returns the non-zero IDs of refs, or nil when there are none.
+func userIDs(refs []UserRef) []int {
+	var ids []int
+	for _, r := range refs {
+		if r.ID != 0 {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
+}
+
+// containsID reports whether id is a non-zero member of ids.
+func containsID(ids []int, id int) bool {
+	return id != 0 && slices.Contains(ids, id)
 }
 
 // buildChangeProposalState populates the ChangeProposalState for MR events
@@ -382,12 +402,29 @@ func (p *Poller) buildChangeProposalState(ctx context.Context, event RoutableEve
 		BaseRepo: baseRepo,
 		HeadRef:  event.SourceBranch,
 		BaseRef:  event.TargetBranch,
-		// Set only where discovery read it (a synchronized event's diff
-		// version); empty otherwise and omitted from the event.
-		HeadSHA:  event.HeadSHA,
+		HeadSHA:  p.changeProposalHeadSHA(ctx, event),
 		AuthorID: event.MRAuthorLogin,
 		IsFork:   event.MRSource == 0 || event.MRTarget == 0 || event.MRSource != event.MRTarget,
 	}, nil
+}
+
+// changeProposalHeadSHA returns the head commit for an MR event's
+// change_proposal state. Discovery normally sets it: a synchronized event
+// from its diff version, every other MR event from the MR's sha. When an
+// event reaches here without one, the MR is read once more for its sha.
+// A synchronized event is never filled this way: its head keys the event
+// and must stay the diff-version head. A failed lookup is logged and leaves
+// the SHA empty (omitted from the event) rather than failing the event.
+func (p *Poller) changeProposalHeadSHA(ctx context.Context, event RoutableEvent) string {
+	if event.HeadSHA != "" || event.Action == "synchronized" {
+		return event.HeadSHA
+	}
+	mr, err := p.client.GetMergeRequest(ctx, p.owner, p.repo, event.IID)
+	if err != nil {
+		log.Printf("WARNING: get MR !%d for head SHA of %s: %v (head_sha left empty)", event.IID, event.Type, err)
+		return ""
+	}
+	return mr.SHA
 }
 
 func truncate(s string, maxLen int) string {

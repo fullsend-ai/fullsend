@@ -172,6 +172,35 @@ func TestSetupGitLabPipelineSchedules_DeletesExisting(t *testing.T) {
 	require.Len(t, fake.CreatedSchedules, 2)
 }
 
+// The Jira poll schedule is converged from tracker.jira.poll.enabled by
+// repos install (#9108), so recreating the managed polling schedules must
+// leave it alone, while uninstall cleanup still removes it.
+func TestGitLabPipelineSchedules_JiraPollSchedule(t *testing.T) {
+	ctx := context.Background()
+	jira := repos.JiraPollScheduleDescription()
+	newFake := func() *forge.FakeClient {
+		return &forge.FakeClient{
+			PipelineSchedules: map[string][]forge.PipelineSchedule{
+				"group/project": {
+					{ID: 5, Description: "fullsend slash poll", Active: true},
+					{ID: 7, Description: jira, Active: true},
+				},
+			},
+		}
+	}
+
+	setup := newFake()
+	require.NoError(t, setupGitLabPipelineSchedules(ctx, setup, ui.New(&bytes.Buffer{}), "group", "project", "main"))
+	assert.Equal(t, []int64{5}, setup.DeletedScheduleIDs, "the Jira poll schedule survives schedule setup")
+	for _, s := range setup.CreatedSchedules {
+		assert.NotEqual(t, jira, s.Description, "schedule setup never creates the Jira poll schedule")
+	}
+
+	cleanup := newFake()
+	require.NoError(t, cleanupGitLabPipelineSchedules(ctx, cleanup, ui.New(&bytes.Buffer{}), "group", "project"))
+	assert.Equal(t, []int64{5, 7}, cleanup.DeletedScheduleIDs, "uninstall removes the Jira poll schedule")
+}
+
 func TestCleanupGitLabPipelineSchedules_ListError(t *testing.T) {
 	ctx := context.Background()
 

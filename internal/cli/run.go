@@ -542,6 +542,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	orgCfg, err := loadLockConfig(orgConfigPath)
 	if err != nil {
 		printer.StepFail("Failed to load fullsend config")
+		reportConfigLoadFailure(ctx, agentName, absFullsendDir, forgeFlag, eventFile, sOpts, runnerSecrets, err, printer)
 		return err
 	}
 
@@ -952,6 +953,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		setFlagEnv("ISSUE_NUMBER", issueNumber)
 	}
 	for k, v := range workItemEnv {
+		setFlagEnv(k, v)
+	}
+	var issueTracking *config.TrackingConfig
+	if orgCfg != nil {
+		issueTracking = orgCfg.IssueTracking()
+	}
+	jiraEnv, err := resolveJiraRunEnv(ctx, sOpts.trackerSource, issueTracking, rFlags.offline, discoverJiraGatewayURL)
+	if err != nil {
+		return err
+	}
+	for k, v := range jiraEnv {
 		setFlagEnv(k, v)
 	}
 
@@ -3412,36 +3424,56 @@ var providerOnlyKeys = map[string]bool{
 // for its own Jira client and trace exporter. The OTLP *_HEADERS variants
 // are matched by isInheritedScriptDenyKey.
 //
-// FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL are the Jira repository
-// secrets the composite action passes to the fullsend run step from its
-// jira-token and jira-email inputs (#9079). The parent uses them for Jira
-// status notifications; host-side scripts receive them only when a harness
-// declares them in env.runner.
+// FULLSEND_JIRA_TOKEN, FULLSEND_JIRA_EMAIL, FULLSEND_JIRA_CLIENT_ID and
+// FULLSEND_JIRA_CLIENT_SECRET are the Jira repository secrets the composite
+// action passes to the fullsend run step from its jira-token, jira-email,
+// jira-client-id and jira-client-secret inputs (#9079, #9176). The parent
+// uses them for Jira status notifications; host-side scripts receive them
+// only when a harness declares them in env.runner.
 var inheritedScriptDenyKeys = map[string]bool{
-	"JIRA_TOKEN":      true,
-	"JIRA_USER_EMAIL": true,
-	jira.TokenEnvVar:  true,
-	jira.EmailEnvVar:  true,
+	"JIRA_TOKEN":            true,
+	"JIRA_USER_EMAIL":       true,
+	jira.TokenEnvVar:        true,
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
 }
 
 // optionalHarnessEnvKeys are host variables a harness ${VAR} reference may
 // name even when they are unset. The action passes FULLSEND_JIRA_EMAIL only
 // when that repository secret exists: an absent email selects
 // service-account Bearer auth, so a harness that declares it in env.runner
-// must not fail validation on a run without it (#9079). An unset key
-// expands empty, and dropEmptyOptionalRunnerEnv then removes the entry so
-// scripts see the variable absent rather than empty.
+// must not fail validation on a run without it (#9079). The OAuth 2.0
+// client credentials are likewise present only on deployments that use
+// them instead of a token (#9176). An unset key expands empty, and
+// dropEmptyOptionalRunnerEnv then removes the entry so scripts see the
+// variable absent rather than empty.
 var optionalHarnessEnvKeys = map[string]bool{
-	jira.EmailEnvVar: true,
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
 }
 
-// dropEmptyOptionalRunnerEnv removes optionalHarnessEnvKeys entries whose
+// isOptionalHarnessEnvKey reports whether a harness ${VAR} reference to key
+// resolves even when key is unset: an optionalHarnessEnvKeys entry, or
+// FULLSEND_JIRA_TOKEN on a deployment that authenticates with OAuth 2.0
+// client credentials instead, so one harness can declare both credential
+// types (#9176).
+func isOptionalHarnessEnvKey(key string) bool {
+	if optionalHarnessEnvKeys[key] {
+		return true
+	}
+	return key == jira.TokenEnvVar &&
+		(strings.TrimSpace(os.Getenv(jira.ClientIDEnvVar)) != "" || strings.TrimSpace(os.Getenv(jira.ClientSecretEnvVar)) != "")
+}
+
+// dropEmptyOptionalRunnerEnv removes isOptionalHarnessEnvKey entries whose
 // value is empty or whitespace from runnerEnv, so a host-side script gets
 // no variable rather than an empty one. The shared Jira client trims the
-// email the same way before choosing the auth mode.
+// credentials the same way before choosing the auth mode.
 func dropEmptyOptionalRunnerEnv(runnerEnv map[string]string) {
-	for k := range optionalHarnessEnvKeys {
-		if v, ok := runnerEnv[k]; ok && strings.TrimSpace(v) == "" {
+	for k, v := range runnerEnv {
+		if isOptionalHarnessEnvKey(k) && strings.TrimSpace(v) == "" {
 			delete(runnerEnv, k)
 		}
 	}
@@ -3497,8 +3529,10 @@ func harnessEnvExpand(key string) string {
 // harnessExpansionDenied because that map also gates env.runner, where a
 // harness declares them on purpose.
 var sandboxDeniedKeys = map[string]bool{
-	jira.TokenEnvVar: true,
-	jira.EmailEnvVar: true,
+	jira.TokenEnvVar:        true,
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
 }
 
 // expandSandboxEnvValue expands ${VAR} references in an env.sandbox value
@@ -3525,13 +3559,13 @@ func expandRunnerEntry(key, v string, expander func(string) string) string {
 
 // harnessEnvLookup is the lookup used by ValidateRunnerEnvWith. Denied keys
 // return false so a harness that references them fails validation rather
-// than expanding empty. optionalHarnessEnvKeys always resolve, to their
-// value or empty.
+// than expanding empty. Keys isOptionalHarnessEnvKey matches always
+// resolve, to their value or empty.
 func harnessEnvLookup(key string) (string, bool) {
 	if harnessExpansionDenied(key) {
 		return "", false
 	}
-	if optionalHarnessEnvKeys[key] {
+	if isOptionalHarnessEnvKey(key) {
 		return os.Getenv(key), true
 	}
 	return os.LookupEnv(key)
@@ -4491,7 +4525,7 @@ func envLiterals(runnerEnv map[string]string) []envLiteral {
 			literals = append(literals, envLiteral{key, value})
 		}
 	}
-	for _, key := range []string{jira.TokenEnvVar, jira.EmailEnvVar} {
+	for _, key := range []string{jira.TokenEnvVar, jira.EmailEnvVar, jira.ClientIDEnvVar, jira.ClientSecretEnvVar} {
 		if value := os.Getenv(key); len(value) >= minRedactableSecretLen {
 			security.RegisterRuntimeSecret(value)
 			literals = append(literals, envLiteral{key, value})
@@ -5642,6 +5676,7 @@ func stripControlChars(s string) string {
 //
 // Named workflow secrets (inheritedScriptDenyKeys: JIRA_TOKEN,
 // JIRA_USER_EMAIL, FULLSEND_JIRA_TOKEN, FULLSEND_JIRA_EMAIL,
+// FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET,
 // OTEL_EXPORTER_OTLP_*HEADERS) are dropped from the
 // inherited process environment only; a runnerEnv entry for one of them is
 // kept, so a harness that declares it in env.runner still gets it (#8154).

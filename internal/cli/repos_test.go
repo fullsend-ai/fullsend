@@ -1583,6 +1583,9 @@ github:
               enabled: true
 `)
 	fc := newInstallFakeClient("acme/api")
+	// repos install verifies that the upstream ref it resolves (main here)
+	// contains the reusable Jira poll workflow before writing credentials.
+	fc.FileContentsRef["fullsend-ai/fullsend/.github/workflows/reusable-poll-jira.yml@main"] = []byte("name: Poll Jira\n")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:     manifestPath,
@@ -1605,7 +1608,7 @@ github:
 
 func TestReposInstallCmd_JiraFlags(t *testing.T) {
 	cmd := newReposInstallCmd()
-	for _, name := range []string{"jira-token", "jira-email"} {
+	for _, name := range []string{"jira-token", "jira-email", "jira-client-id", "jira-client-secret"} {
 		f := cmd.Flags().Lookup(name)
 		require.NotNil(t, f, name)
 		assert.Empty(t, f.DefValue, "%s has no default", name)

@@ -286,6 +286,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Action:          "opened",
 				IID:             mr.IID,
 				UpdatedAt:       mr.CreatedAt,
+				HeadSHA:         mr.SHA,
 				NoteAuthorID:    mr.Author.ID,
 				NoteAuthorLogin: mr.Author.Username,
 				IsBot:           mr.Author.Bot,
@@ -296,6 +297,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 
@@ -305,6 +307,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Type:            "mr_event",
 				IID:             mr.IID,
 				UpdatedAt:       mr.MergedAt,
+				HeadSHA:         mr.SHA,
 				NoteAuthorID:    mergedBy.ID,
 				NoteAuthorLogin: mergedBy.Username,
 				IsBot:           mergedBy.Bot,
@@ -315,6 +318,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 				MergedByLogin:   mergedBy.Username,
 			})
 		}
@@ -345,6 +349,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Action:          "closed",
 				IID:             mr.IID,
 				UpdatedAt:       mr.ClosedAt,
+				HeadSHA:         mr.SHA,
 				NoteAuthorID:    mr.ClosedBy.ID,
 				NoteAuthorLogin: mr.ClosedBy.Username,
 				IsBot:           mr.ClosedBy.Bot,
@@ -355,6 +360,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 
@@ -394,6 +400,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 					TargetBranch:    mr.TargetBranch,
 					MRAuthorID:      mr.Author.ID,
 					MRAuthorLogin:   mr.Author.Username,
+					MRAssigneeIDs:   userIDs(mr.Assignees),
 				})
 			}
 		}
@@ -419,6 +426,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				Type:            "mr_note",
 				IID:             mr.IID,
 				UpdatedAt:       note.CreatedAt,
+				HeadSHA:         mr.SHA,
 				NoteBody:        note.Body,
 				NoteID:          note.ID,
 				NoteAuthorID:    note.Author.ID,
@@ -431,6 +439,7 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 				TargetBranch:    mr.TargetBranch,
 				MRAuthorID:      mr.Author.ID,
 				MRAuthorLogin:   mr.Author.Username,
+				MRAssigneeIDs:   userIDs(mr.Assignees),
 			})
 		}
 	}
@@ -493,7 +502,9 @@ func (p *Poller) discoverSlashCommands(ctx context.Context, owner, repo string, 
 			re.TargetBranch = mr.TargetBranch
 			re.MRAuthorID = mr.Author.ID
 			re.MRAuthorLogin = mr.Author.Username
+			re.MRAssigneeIDs = userIDs(mr.Assignees)
 			re.Labels = mr.Labels
+			re.HeadSHA = mr.SHA
 		}
 
 		events = append(events, re)

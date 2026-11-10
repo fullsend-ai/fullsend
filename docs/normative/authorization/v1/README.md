@@ -503,6 +503,7 @@ used for dispatch gating:
 | `author_association` | Does not reflect private org membership; an org admin with private membership gets `CONTRIBUTOR` instead of `MEMBER` ([github/gh-aw-mcpg#2862](https://github.com/github/gh-aw-mcpg/issues/2862)). Also reflects contribution history, not current authority. |
 | Contribution history | Past contributions do not confer current repository permissions. A former maintainer whose access was revoked should not pass authorization. |
 | `actor.is_entity_author` | Being the author of an issue or PR does not grant repository permissions. This field supports routing decisions in CEL triggers, not authorization. |
+| `actor.is_entity_assignee` | Being assigned to an issue or PR does not grant repository permissions, and anyone who can assign issues can assign themselves. Like `is_entity_author`, this field only narrows which actor a CEL trigger accepts after the role gate has run; it never admits an actor the gate denies. |
 
 **Principle:** relationship and contribution-history fields are not
 evidence of current authority. Event-backed authorization must be derived from

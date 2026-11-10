@@ -79,8 +79,8 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 
 The new optional actor fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
-adapter emits `bot_role` or `role_verified`; otherwise their local validator
-may reject an otherwise valid v1 event. Fullsend controls the supported
+adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise
+their local validator may reject an otherwise valid v1 event. Fullsend controls the supported
 NormalizedEvent producers and consumers, so the bundled validator and other
 supported consumers MUST be updated to this v1 schema before any adapter emits
 the new fields. Older strict schema copies are not a supported
@@ -251,6 +251,34 @@ non-label paths. Only the GitHub `gha-event` path of `fullsend dispatch`
 sets the fields today, and only for bot actors on non-label events, so
 triggers that read them must guard with `has()`.
 
+### Entity author and assignee (`actor.is_entity_author`, `actor.is_entity_assignee`)
+
+`actor.is_entity_author` is `true` when the actor authored the work item,
+change proposal or conversation. `actor.is_entity_assignee` is an optional
+additive field with the same semantics on every source system: `true` when
+the actor is one of the entity's current assignees at the time the adapter
+builds the event (with several assignees, any match counts), and `false` when
+the entity has no assignee, the actor is not one, or the assignees cannot be
+determined. Reviewers and requested reviewers are not assignees. An event
+without the field means `false`; the Go `normevent.Actor` type always emits
+it, so a trigger that reads it on an event built by a current adapter needs
+no `has()` guard. The value is a snapshot taken when the event is built. For
+a poll source such as Jira, that is poll time, and the assignee can change
+before the run starts.
+
+| Source | Where assignees come from | Comparison |
+|--------|---------------------------|------------|
+| GitHub (`gha-event`) | `issue.assignees[].login` or `pull_request.assignees[].login` in the webhook payload (the legacy single `assignee` only when the payload has no `assignees` array); no extra API call | Case-insensitive against the actor login (the reviewer for `pull_request_review`) |
+| GitLab (`gitlab-poll`, `gitlab-webhook`) | Issues: `assignees[].id` from the same issue fetch the author check uses. Merge requests: `assignees[].id` from the MR object that supplies the MR author | Numeric user ID against the resolved actor ID |
+| Jira (`jira-poll`) | `fields.assignee`, requested alongside `reporter` in the search fields | The same identifier as `actor.id`: `accountId`, or `name` when `accountId` is unavailable (Data Center/Server), matching the `is_entity_author` fallback |
+
+Both fields are best-effort **routing** facts, not authorization. They can
+only narrow which actor a trigger accepts; the platform role gate
+([Authorization Contract v1](../../authorization/v1/README.md#excluded-fields))
+still runs first and is unchanged. Anyone who can assign issues can assign
+themselves, so a trigger must never treat `is_entity_assignee` as a reason to
+admit an actor the role gate would deny.
+
 ### Fork security (`state.change_proposal.is_fork`)
 
 `is_fork` is `true` when `head_repo` differs from `base_repo` (fork-based
@@ -300,7 +328,9 @@ until it is listed here. For example `transition.comment` (its `body`,
 `command` and `instruction` all come from the comment text), the action fields
 (`transition.kind`, `source.raw_type`, `source.raw_action`, `entity.kind`),
 `actor.kind` (some adapters infer it from a display name),
-`actor.is_entity_author` (the author makes it true by acting), `state.labels`,
+`actor.is_entity_author` (the author makes it true by acting),
+`actor.is_entity_assignee` (anyone who can assign issues can make it true),
+`state.labels`,
 `base_ref` (the author picks the target branch), `head_*` and the change facts
 are untrusted. A guarded overlay may test `has()` only on objects the schema
 always requires, such as `source`; reading `is_fork` when there is no change
@@ -337,6 +367,14 @@ event.transition.kind == "comment_added"
   && event.transition.comment.command == "/fs-fix"
   && !event.state.change_proposal.is_fork
 
+// Code on /fs-code only from the issue's author or an assignee
+// (narrows the role gate; does not replace it)
+event.entity.kind == "work_item"
+  && event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
+  && event.transition.comment.command == "/fs-code"
+  && (event.actor.is_entity_author || event.actor.is_entity_assignee)
+
 // Conversation-native agent on Discussion slash command (ADR 0086)
 event.entity.kind == "conversation"
   && event.transition.kind == "comment_added"
@@ -347,6 +385,9 @@ event.entity.kind == "conversation"
 ```
 
 See [`examples/`](examples/) for matching `NormalizedEvent` fixtures. The
+`fs-code-assignee-comment.json`, `gitlab-fs-code-assignee-note.json` and
+`jira-fs-code-assignee-comment.json` fixtures show `actor.is_entity_assignee`
+for each source system; fixtures without the field remain valid. The
 existing top-level fixtures retain the legacy v1 representation; target
 fixtures for ADR 0107 are under
 [`examples/adr-0107/`](examples/adr-0107/).

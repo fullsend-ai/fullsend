@@ -51,6 +51,8 @@ jobs:
         env:
           FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
           FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
+          FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}
+          FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}
           TARGET_REPO: ${{ github.repository }}
         run: |
           # The Jira site, project, and query come from tracker.jira in
@@ -90,6 +92,8 @@ jobs:
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
       FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
       FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
+      FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}
+      FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}
       JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
       JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
 ```
@@ -137,16 +141,16 @@ Your external repository needs these variables and secrets configured:
 - `FULLSEND_MINT_URL` - Token mint service URL
 - `FULLSEND_GCP_REGION` - GCP region for Vertex AI
 - `OTEL_EXPORTER_OTLP_ENDPOINT` - [OpenTelemetry](../../glossary.md#otel-primary-facts) endpoint (optional)
-- `JIRA_BASE_URL` - Jira instance URL (if using Jira agents)
+- `JIRA_BASE_URL` - Jira instance URL for non-Jira runs that reference it. Jira-sourced runs ignore it and use `tracker.jira.base_url` from config (see [Jira connection variables in agent runs](jira-integration.md#jira-connection-variables-in-agent-runs))
 
 **Secrets:**
 - `FULLSEND_GCP_WIF_PROVIDER` - GCP Workload Identity Federation (WIF) provider
 - `FULLSEND_GCP_PROJECT_ID` - GCP project ID
 - `OTEL_EXPORTER_OTLP_TRACES_HEADERS` - [OTEL](../../glossary.md#otel-primary-facts) auth headers (optional)
-- `FULLSEND_JIRA_TOKEN` - Scoped Jira API token for the Jira poller and
-  Jira-originated agent status updates
-- `FULLSEND_JIRA_EMAIL` - Bot user email for the poller and agent status calls
-  (omit for a service-account token)
+- `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL` - Scoped Jira API
+  token authentication for the Jira poller and status notifications. For an
+  Atlassian service account OAuth credential, set
+  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` instead.
 - `JIRA_TOKEN` - Jira API token (if using Jira agents)
 - `JIRA_USER_EMAIL` - Jira user email (if using Jira agents)
 
