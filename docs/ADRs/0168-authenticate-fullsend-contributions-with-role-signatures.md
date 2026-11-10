@@ -86,7 +86,11 @@ key record in a repository variable named
 `FULLSEND_AGENT_PUBLIC_KEYS_<ROLE_ID>`. `<ROLE_ID>` is the canonical role
 identifier encoded using the platform's variable-name rules. Each public-key
 variable contains the current key and a bounded set of retained public keys
-with their validity metadata.
+with their validity metadata. Repository-variable editors are trusted to
+publish this keyring and therefore define which public keys may authenticate
+roles in the repository. This ADR does not require a separate protected root
+to authenticate the variable; signatures do not protect against an authorized
+variable editor replacing the keyring.
 
 Only trusted host-side Fullsend code may read the private key and sign a
 contribution. Installed workflows explicitly forward the selected role secret
@@ -102,10 +106,13 @@ ID, and signing time. The signature covers the exact content and relevant event
 fields according to the protocol's canonicalization rules. A platform adapter
 stores the envelope in per-object metadata when available, or in a versioned
 hidden marker when it is not. If the platform assigns an object identity only
-after creation, the adapter adds the attestation after receiving that identity;
-until it verifies, the contribution has no authenticated Fullsend role.
-Receivers extract and verify the envelope before ordinary content filtering,
-then remove the marker from model-visible text. Before provider fallback can
+after creation, the adapter adds the attestation after receiving that identity.
+The initial create event is not authenticated and MUST NOT dispatch as a
+Fullsend role through ADR 0107 fallback. The writer must attach the finalized
+attestation and cause a follow-up event or dispatch; consumers may dispatch
+only after verifying that attestation. Receivers extract and verify the
+envelope before ordinary content filtering, then remove the marker from
+model-visible text. Before provider fallback can
 be retired, the protocol must define an equivalent role-bound signature for
 every other non-label source used by Fullsend agents, including commit and ref
 events; no non-label source type is permanently exempt from signing.
@@ -123,9 +130,11 @@ through their existing, separate authorization path and do not depend on this
 attestation.
 
 An installation rotates a role key during install or upgrade when its
-configured expiration is approaching. It keeps a bounded set of previous
-public keys so contributions already signed by them remain verifiable for a
-limited period. The protocol contract will set key lifetime, renewal threshold,
+configured expiration is approaching. A standalone Fullsend command also
+allows operators to rotate role keys independently of installation or upgrade
+cadence. It keeps a bounded set of previous public keys so contributions
+already signed by them remain verifiable for a limited period. The protocol
+contract will define the command interface, key lifetime, renewal threshold,
 retention cap, and legacy migration window using platform variable-size limits
 and the maximum supported delayed-event window, then revisit those initial
 values after production use.
@@ -164,7 +173,8 @@ role secret only to host-side code.
   platform account submitted it.
 - A compromised role key can forge that role's attestations until the key is
   revoked or expires, so key isolation and bounded public-key retention are
-  security requirements.
+  security requirements. Repository-variable editors are trusted to authorize
+  role keys and can replace the keyring.
 - A versioned protocol contract must define canonical encoding, carrier and
   migration details, key-name constraints, timestamp and replay handling,
   rotation thresholds, and retention periods; cross-repository role

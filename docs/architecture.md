@@ -574,11 +574,13 @@ The existing design principle is that [the repo is the coordinator](problems/age
   **Decided:** For Fullsend-authored non-label contributions, repository-scoped
   Ed25519 attestations take precedence over provider lookup. The provider lookup
   remains a migration fallback for legacy objects and sources without a
-  carrier; an invalid attestation fails closed. This covers comments, reviews,
-  and issue or pull-request content across forges and Jira. Signatures bind
-  role and run context to exact source content, but do not make that content
-  trustworthy or grant platform permissions. Cross-repo verification remains
-  open ([ADR 0168](ADRs/0168-authenticate-fullsend-contributions-with-role-signatures.md)).
+  carrier; an invalid attestation fails closed. A create event whose stable
+  object identity is not yet attested does not dispatch under ADR 0107; the
+  writer must attach the finalized signature and cause a follow-up dispatch.
+  This covers comments, reviews, and issue or pull-request content across
+  forges and Jira. Signatures bind role and run context to exact source content,
+  but do not make that content trustworthy or grant platform permissions.
+  Cross-repo verification remains open ([ADR 0168](ADRs/0168-authenticate-fullsend-contributions-with-role-signatures.md)).
   A verified human label addition separately grants `triage`-equivalent
   authority for its exact accepted transition and proven projection without
   synthesizing a verified actor role; a higher harness minimum also requires
