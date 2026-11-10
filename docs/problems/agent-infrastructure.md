@@ -123,7 +123,9 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
 Restarting workers also needs durable ownership and reconciliation of external
 effects; see [durable work recovery](durable-work-recovery.md).
 [ADR 0165](../ADRs/0165-recover-work-through-repository-owned-operation-journals.md)
-chooses repository-owned journals and short-lived reconcilers; backend
+chooses repository-owned journals and short-lived reconcilers.
+[ADR 0167](../ADRs/0167-execute-authorized-multi-target-plans.md) bounds and
+isolates target execution while reusing existing scheduling mechanisms. Backend
 implementation and operational acceptance remain open.
 
 ## Open questions

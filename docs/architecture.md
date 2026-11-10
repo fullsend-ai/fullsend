@@ -622,6 +622,11 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
   [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
 
+- Decided, not yet implemented: host-admitted multi-target plans freeze target
+  scope, source revisions and finite execution bounds. Child scheduling keys
+  include the target operation identity, and collection accounts for every
+  required target independently of domain success
+  ([ADR 0167](ADRs/0167-execute-authorized-multi-target-plans.md)).
 - Decided, not yet implemented: repository-owned operation journals retain
   separate dispatch, execution and publication receipts. Conditional state
   updates and ownership generations support cross-host recovery while domain

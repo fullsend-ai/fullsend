@@ -182,7 +182,9 @@ Cross-host scheduling and partial external writes need deterministic recovery
 without adding a coordinator agent; see
 [durable work recovery](durable-work-recovery.md).
 [ADR 0165](../ADRs/0165-recover-work-through-repository-owned-operation-journals.md)
-chooses repository-owned operation journals; implementation remains open.
+chooses repository-owned operation journals.
+[ADR 0167](../ADRs/0167-execute-authorized-multi-target-plans.md) supplies the
+separate target-plan and collection boundary; implementation remains open.
 
 ### How agents communicate
 

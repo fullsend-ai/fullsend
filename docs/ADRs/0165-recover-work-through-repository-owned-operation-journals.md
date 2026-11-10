@@ -46,8 +46,10 @@ dispatch, execution and publication.
 
 The trusted host records work before dispatch in repository-scoped forge
 storage with integrity checks and compare-and-swap updates. An admitted plan
-defines stable operation identities, required children and persistent work
-bounds. Attempts retain their own identity, source/input revisions and
+uses the execution boundary in
+[ADR 0167](0167-execute-authorized-multi-target-plans.md) for target dispatch
+and collection. The journal retains stable operation identities and persistent
+work bounds. Attempts retain their own identity, source/input revisions and
 scheduler/run identifiers. Scheduling acceptance, worker completion and each
 publication effect have separate receipts. Loss of an acknowledgement leaves
 recoverable pending work rather than advancing a completion checkpoint.

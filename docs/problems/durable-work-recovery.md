@@ -62,6 +62,27 @@ A service can supply timers, retries and ownership. It introduces another
 operated component and trust boundary. Its scheduler guarantees still do not
 make a remote issue creation atomic or authorize a retry after scope changes.
 
+## Dispatching a complete target set
+
+Multiple CI jobs are an execution mechanism, not a definition of coverage.
+When one request maps to several maintained branches, each branch needs a
+separate source binding and work identity. A concurrency key based only on
+the originating issue can incorrectly serialize or coalesce distinct targets.
+A successful child does not account for another child that never started.
+
+A handwritten matrix keeps these rules local to its workflow. A generic
+host-admitted plan can reuse existing matrix execution while enforcing target
+scope, finite bounds and result correlation. A model choosing the target set
+cannot grant authority to execute it.
+
+[ADR 0167](../ADRs/0167-execute-authorized-multi-target-plans.md) chooses the
+plan boundary. ADR 0165 supplies its recovery mechanics. Domain adapters
+still discover maintained targets and decide what their results mean.
+Acceptance must include distinct branches sharing one event, a wrong-target
+result, an exhausted target, a missing child, and a new plan that adds a
+required branch while an old worker is still running. Accounted failure is
+visible failure, not successful assessment or publication.
+
 ## Decision and acceptance
 
 [ADR 0165](../ADRs/0165-recover-work-through-repository-owned-operation-journals.md)
