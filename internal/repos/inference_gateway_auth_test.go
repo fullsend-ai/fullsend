@@ -36,7 +36,14 @@ func TestRequireInferenceAuth_GatewayRoute(t *testing.T) {
 		{name: "api-key gateway without audience", managed: gatewayAPIKeyYAML, wantNoErr: true},
 		{name: "gateway supplied by the preset", base: gatewayManagedYAML, wantNoErr: true},
 		{name: "preset url layered with managed audience", managed: "inference:\n  gateway:\n    audience: fullsend-gateway\n", base: gatewayPartialYAML, wantNoErr: true},
-		{name: "gitlab gateway without inference.auth", forge: ForgeGitLab, managed: gatewayManagedYAML, wantNoErr: true},
+		{name: "gitlab api-key gateway without inference.auth", forge: ForgeGitLab, managed: gatewayAPIKeyYAML, wantNoErr: true},
+		{name: "gitlab oidc gateway with explicit inference.auth", forge: ForgeGitLab, auth: InferenceAuthVertexWIF, managed: gatewayManagedYAML, wantNoErr: true},
+		{
+			name:    "gitlab oidc gateway without inference.auth",
+			forge:   ForgeGitLab,
+			managed: gatewayManagedYAML,
+			wantErr: []string{"no inference authentication selected for acme/api", "oidc inference.gateway route is supported on GitHub only", "inference.gateway.auth to api-key"},
+		},
 		{name: "gateway with explicit inference.auth", auth: InferenceAuthVertexWIF, managed: gatewayManagedYAML, wantNoErr: true},
 		{
 			name:    "no gateway and no inference.auth",
@@ -234,4 +241,116 @@ func TestProbeComponentsForAuth_GatewayOnlyIgnoresLeftoverGCPSecrets(t *testing.
 		}
 		assert.True(t, AllMatch(components), "leftover %v: %+v", leftover, components)
 	}
+}
+
+// TestRequiresGatewayAPIKey covers which repositories need the gateway API
+// key secret: only gateway-only repositories in the api-key mode.
+func TestRequiresGatewayAPIKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		auth    string
+		managed string
+		want    bool
+	}{
+		{name: "api-key gateway only", managed: gatewayAPIKeyYAML, want: true},
+		{name: "oidc gateway only", managed: gatewayManagedYAML, want: false},
+		{name: "api-key gateway with explicit inference.auth", auth: InferenceAuthVertexWIF, managed: gatewayAPIKeyYAML, want: false},
+		{name: "no gateway", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := ResolvedConfig{Owner: "acme", Repo: "api", Forge: ForgeGitHub, InferenceAuth: tt.auth}
+			if tt.managed != "" {
+				cfg.Managed = mustManagedConfig(t, tt.managed).Writer()
+			}
+			assert.Equal(t, tt.want, cfg.requiresGatewayAPIKey())
+		})
+	}
+}
+
+// TestProbeComponentsForConfig_GatewayAPIKey checks that an api-key
+// gateway-only repository must have the gateway API key secret to match,
+// while an oidc one probes no secret.
+func TestProbeComponentsForConfig_GatewayAPIKey(t *testing.T) {
+	probe := func(t *testing.T, managed string, keyPresent bool) []ComponentStatus {
+		t.Helper()
+		fc := newFakeClientForBatch("acme/api")
+		markFullyInstalled(fc, "acme", "api")
+		delete(fc.Secrets, "acme/api/"+forge.SecretGCPProjectID)
+		delete(fc.Secrets, "acme/api/"+forge.SecretGCPWIFProvider)
+		if keyPresent {
+			fc.Secrets["acme/api/"+forge.SecretInferenceGatewayAPIKey] = true
+		}
+		cfg := ResolvedConfig{Owner: "acme", Repo: "api", Forge: ForgeGitHub, Managed: mustManagedConfig(t, managed).Writer()}
+		components, err := ProbeComponentsForConfig(context.Background(), fc, cfg, defaultForgeConfig, nil)
+		require.NoError(t, err)
+		return components
+	}
+
+	missing := probe(t, gatewayAPIKeyYAML, false)
+	assert.False(t, AllMatch(missing), "missing gateway key must drift: %+v", missing)
+	assert.False(t, hasComponent(missing, "secret:"+forge.SecretInferenceGatewayAPIKey))
+
+	present := probe(t, gatewayAPIKeyYAML, true)
+	assert.True(t, AllMatch(present), "%+v", present)
+	assert.True(t, hasComponent(present, "secret:"+forge.SecretInferenceGatewayAPIKey))
+
+	oidc := probe(t, gatewayManagedYAML, false)
+	assert.True(t, AllMatch(oidc), "oidc route needs no secret: %+v", oidc)
+	for _, c := range oidc {
+		assert.False(t, strings.HasPrefix(c.Name, "secret:"), "unexpected %s", c.Name)
+	}
+}
+
+// TestConverge_GatewayAPIKeyRequiresSecret checks that convergence reports a
+// gateway-only api-key repository whose gateway key secret is absent before
+// any write, and that status reports the same as drift.
+func TestConverge_GatewayAPIKeyRequiresSecret(t *testing.T) {
+	newManifest := func(t *testing.T) *Manifest {
+		t.Helper()
+		m := newConvergeManifest("acme/api")
+		m.Defaults.Inference.Auth = ""
+		m.Defaults.Config = mustManagedConfig(t, gatewayAPIKeyYAML)
+		require.NoError(t, m.Validate())
+		return m
+	}
+
+	t.Run("missing", func(t *testing.T) {
+		fc := newFakeClientForBatch("acme/api")
+		sc := &recordingScaffoldCommit{}
+		result, err := Converge(context.Background(), withoutInferenceInputs(convergeCfgWithDefaults(newManifest(t))), newTestClientFactory(fc), sc.fn(), noopProgress)
+		require.NoError(t, err)
+		failed := result.Failed()
+		require.Len(t, failed, 1)
+		assert.Contains(t, failed[0].Error.Error(), forge.SecretInferenceGatewayAPIKey)
+		assert.Contains(t, failed[0].Error.Error(), "missing")
+		assert.NotContains(t, sc.repos, "acme/api", "nothing is written for the rejected repo")
+	})
+
+	t.Run("present", func(t *testing.T) {
+		fc := newFakeClientForBatch("acme/api")
+		fc.Secrets["acme/api/"+forge.SecretInferenceGatewayAPIKey] = true
+		m := newManifest(t)
+		result, err := Converge(context.Background(), withoutInferenceInputs(convergeCfgWithDefaults(m)), newTestClientFactory(fc), (&recordingScaffoldCommit{}).fn(), noopProgress)
+		require.NoError(t, err)
+		require.Empty(t, result.Failed(), "%+v", result.Results)
+
+		status, err := Status(context.Background(), m, newTestClientFactory(fc), 1, nil)
+		require.NoError(t, err)
+		require.Len(t, status.Repos, 1)
+		for _, d := range status.Repos[0].Drifts {
+			assert.NotEqual(t, forge.SecretInferenceGatewayAPIKey, d.Field)
+		}
+
+		// Removing the secret afterwards is reported as drift by status.
+		delete(fc.Secrets, "acme/api/"+forge.SecretInferenceGatewayAPIKey)
+		status, err = Status(context.Background(), m, newTestClientFactory(fc), 1, nil)
+		require.NoError(t, err)
+		require.Len(t, status.Repos, 1)
+		var fields []string
+		for _, d := range status.Repos[0].Drifts {
+			fields = append(fields, d.Field)
+		}
+		assert.Contains(t, fields, forge.SecretInferenceGatewayAPIKey)
+	})
 }

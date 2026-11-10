@@ -1404,10 +1404,23 @@ func (c ResolvedConfig) RequireInferenceAuth() error {
 		if err := gateway.ValidateEffective(); err != nil {
 			return fmt.Errorf("no inference authentication selected for %s/%s: the effective inference.gateway is invalid, so it cannot route inference: %w", c.Owner, c.Repo, err)
 		}
+		if c.Forge == ForgeGitLab && !gateway.IsAPIKey() {
+			return fmt.Errorf("no inference authentication selected for %s/%s: an oidc inference.gateway route is supported on GitHub only (the runtime fetches its assertion from the GitHub Actions OIDC endpoint, so no route applies on GitLab); set inference.gateway.auth to %s, or set inference.auth (%s) on the repository entry, in the %s section, or under defaults in repos.yaml",
+				c.Owner, c.Repo, config.GatewayAuthAPIKey, strings.Join(ValidInferenceAuths(), " or "), c.Forge)
+		}
 		return nil
 	}
 	return fmt.Errorf("no inference authentication selected for %s/%s: set inference.auth (%s) on the repository entry, in the %s section, or under defaults in repos.yaml (for example: fullsend repos set defaults.inference.auth %s)",
 		c.Owner, c.Repo, strings.Join(ValidInferenceAuths(), " or "), c.Forge, InferenceAuthVertexWIF)
+}
+
+// requiresGatewayAPIKey reports whether the repository is gateway-only
+// (no inference.auth) and its effective inference.gateway block uses the
+// api-key mode, so FULLSEND_INFERENCE_GATEWAY_API_KEY must exist for its
+// runs to authenticate. Setup never writes that secret; the repository
+// admin sets it, so install and status only check that it is present.
+func (c ResolvedConfig) requiresGatewayAPIKey() bool {
+	return c.InferenceAuth == "" && c.effectiveInferenceGateway().IsAPIKey()
 }
 
 // effectiveInferenceGateway returns the inference.gateway block of the

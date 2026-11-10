@@ -1035,7 +1035,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
 				return
 			}
-			probed, probeErr := ProbeComponentsForAuth(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, resolved.InferenceAuth, fc, expectedVars)
+			probed, probeErr := ProbeComponentsForConfig(ctx, fc.Client, resolved, fc, expectedVars)
 			if probeErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: probeErr}
 				return
@@ -1330,6 +1330,20 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 					d.repo.Owner, d.repo.Repo, auth,
 					strings.Join(missingSecretNames(d.components, auth), ", "),
 					inferenceInputFlags(auth)),
+			}
+			continue
+		}
+
+		// A gateway-only repository in the api-key mode authenticates with
+		// FULLSEND_INFERENCE_GATEWAY_API_KEY, which no flag supplies and
+		// setup never writes: the repository admin sets it. Runs fail
+		// without it, so report it before any writes.
+		if d.resolved.requiresGatewayAPIKey() && !hasComponent(d.components, "secret:"+forge.SecretInferenceGatewayAPIKey) {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("%s/%s routes inference through inference.gateway with auth %s: missing %s; install does not write it, so set it as a repository secret (a masked CI/CD variable on GitLab)",
+					d.repo.Owner, d.repo.Repo, config.GatewayAuthAPIKey, forge.SecretInferenceGatewayAPIKey),
 			}
 			continue
 		}
