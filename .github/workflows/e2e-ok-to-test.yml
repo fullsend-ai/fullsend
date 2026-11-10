@@ -2,9 +2,10 @@ name: E2E ok-to-test
 
 # Maintainer-authorized e2e for fork PRs (#9245). Fork PRs get no secrets on
 # pull_request, so E2E Tests skips their suites. A user with write access
-# reviews the latest push and comments /ok-to-test on the PR. This is gh-aw's
-# inline slash-command model: issue_comment plus a commenter role gate, with
-# the workflow file always taken from the default branch.
+# reviews the latest push and comments `/ok-to-test <sha>` on the PR, naming
+# the reviewed commit; only a PR head that matches that sha runs. This is
+# gh-aw's inline slash-command model: issue_comment plus a commenter role gate,
+# with the workflow file always taken from the default branch.
 #
 # Called jobs report as "run / behaviour" on the default-branch commit, which
 # the main ruleset does not read. So `authorize` creates check runs named
@@ -45,8 +46,8 @@ jobs:
           ref: ${{ github.sha }}  # Default branch only — never check out PR head here
           persist-credentials: false
 
-      # Commenter must have write+; authorizes the head sha only when it became
-      # the head before the comment. Posts the refusal comment itself.
+      # Commenter must have write+; authorizes the PR head only when it is the
+      # sha the comment names. Posts the refusal comment itself.
       - name: Check /ok-to-test authorization
         id: auth
         uses: ./.github/actions/check-e2e-authorization
@@ -93,7 +94,7 @@ jobs:
           HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          body="E2E authorized for \`${HEAD_SHA}\` ([run](${RUN_URL})). A new push needs a new \`/ok-to-test\`."
+          body="E2E authorized for \`${HEAD_SHA}\` ([run](${RUN_URL})). A new push needs a new \`/ok-to-test <sha>\`."
           gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" -f body="${body}" --silent
 
   run:

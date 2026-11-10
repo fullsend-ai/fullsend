@@ -800,7 +800,7 @@ workflow comments for why it is a separate job).
 |---|---|---|
 | Same-repository PR | `pull_request` (opened, synchronize, reopened) | The gate authorizes the author, then `behaviour` and `playback` run on the PR head with secrets |
 | Fork PR | `pull_request` | Nothing with secrets: fork `pull_request` runs get no secrets, so `behaviour` and `playback` are skipped |
-| Fork PR after `/ok-to-test` | `issue_comment` | The gate authorizes the commenter and one head sha, then the suites run on that sha and report checks named `behaviour` and `playback` on it |
+| Fork PR after `/ok-to-test <sha>` | `issue_comment` | The gate authorizes the commenter and the sha the comment names, then the suites run on that sha and report checks named `behaviour` and `playback` on it |
 | Merge queue, push to `main`, `workflow_dispatch` | unchanged | No gate |
 
 A same-repository `pull_request` run takes `e2e.yml` from the PR merge ref, not
@@ -819,49 +819,55 @@ automatically.
 ### Who needs `/ok-to-test`
 
 Every PR from a fork needs a user with write access (Write role or above) to
-comment **`/ok-to-test`** on the PR **after** the latest push. This includes
-fork authors who have write access themselves: fork `pull_request` runs get no
-secrets, so the gate can no longer authorize them automatically. A user with
-write access may comment `/ok-to-test` on their own fork PR.
+review the latest push and comment **`/ok-to-test <sha>`** on the PR, where
+`<sha>` is the commit you reviewed. This includes fork authors who have write
+access themselves: fork `pull_request` runs get no secrets, so the gate can no
+longer authorize them automatically. A user with write access may comment
+`/ok-to-test <sha>` on their own fork PR.
 
 `/ok-to-test` from anyone without write access (for example a triage-role
 user) does not authorize the run. The `ok-to-test` label no longer starts e2e.
 
 ### One comment, one commit
 
-`/ok-to-test` authorizes exactly one head sha: the PR head when the gate runs.
-The suites check out that sha, and the `behaviour` and `playback` checks are
-reported on it. The gate refuses the sha when the head moved at or after the
-comment. It does not trust commit dates, which the PR author sets. Instead it
-uses two times that GitHub records:
+`/ok-to-test <sha>` authorizes only the commit you name. Use the PR's latest
+commit, the one you reviewed. You can copy it from the PR's **Commits** tab or
+print it:
 
-- the creation time of the latest `pull_request` workflow run for that sha on
-  the PR's head repository and branch, created after the PR was opened, which
-  is when the commit was last pushed to this PR; and
-- any `head_ref_force_pushed` event on the PR at or after that time that moved
-  the head to a different commit.
+```bash
+gh pr view 1234 --json headRefOid --jq .headRefOid
+```
 
-Any later push needs a new `/ok-to-test` from a user with write access after
-reviewing the new changes. Other `pull_request` activity between the comment
-and the gate run (for example a title edit, which starts PR title lint) also
-counts as a change; comment `/ok-to-test` again.
+Put the command on the first line of the comment, for example
+`/ok-to-test 3f2a9c1d4e5b6a7b8c9d0e1f2a3b4c5d6e7f8a9b`. Use the full
+40-character sha: a short prefix is refused, because the author could prepare
+another commit with the same prefix and push it after your review.
+
+When the workflow runs, the gate reads the PR head. It runs the suites only
+if the head is the commit you named. The suites check out that sha, and the
+`behaviour` and `playback` checks are reported on it. If the head is another
+commit, for example because the author pushed after your review, nothing
+runs. A bare `/ok-to-test` with no sha runs nothing either.
+
+Any later push needs a new `/ok-to-test <sha>` from a user with write access
+after reviewing the new changes.
 
 ### Blocked runs
 
 When the gate **runs** and denies authorization, a sticky PR comment (marker
 `<!-- e2e-gate -->`) explains why and what to do. A fork PR without
-`/ok-to-test` gets no comment: its `behaviour` and `playback` checks are
+`/ok-to-test <sha>` gets no comment: its `behaviour` and `playback` checks are
 skipped.
 
 The comment names a reason. What to do next:
 
 | Reason | What to do next |
 |---|---|
-| `untrusted_commenter` | The person who commented `/ok-to-test` does not have write access (for example a Triage user). Do not repeat it yourself. Ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](../../../MAINTAINERS.md), to comment `/ok-to-test` after reviewing the latest push. |
-| `stale_ok_to_test` | The PR head changed at or after the `/ok-to-test` comment, usually by a new push or force push. A user with write access reviews the changes and comments `/ok-to-test` again. |
-| `unknown_head_time` | GitHub has no `pull_request` workflow run for the head sha on the PR's branch yet, so the gate cannot tell when the commit was pushed. Wait until the PR's workflow runs appear (a first-time contributor's runs appear while they wait for approval), then comment `/ok-to-test` again. |
+| `untrusted_commenter` | The person who commented `/ok-to-test` does not have write access (for example a Triage user). Do not repeat it yourself. Ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](../../../MAINTAINERS.md), to comment `/ok-to-test <sha>` after reviewing the latest push. |
+| `stale_ok_to_test` | The comment named a commit that is not the PR head, usually because of a push after the review. A user with write access reviews the changes and comments `/ok-to-test <sha>` with the current head sha. |
+| `missing_sha` | The comment did not name a commit on its first line (for example a bare `/ok-to-test`). A user with write access comments `/ok-to-test <sha>` with the full sha of the commit they reviewed. The gate comment shows the current head; review it before naming it. |
 | `error` | The GitHub API failed during the check. Re-run the workflow. |
-| `unauthorized` | The author of a same-repository PR does not have write access. Ask a user with write access to review the PR and comment `/ok-to-test`. If you do have write access, the permission lookup may have failed: re-run the workflow first. |
+| `unauthorized` | The author of a same-repository PR does not have write access. Ask a user with write access to review the PR and comment `/ok-to-test <sha>`. If you do have write access, the permission lookup may have failed: re-run the workflow first. |
 
 Unresolved review threads and reviews that request changes are **not** gate
 inputs: they only block merging, never e2e. To see which role you have, use
@@ -872,9 +878,9 @@ the "How to check" links in [LADDER.md](../../../LADDER.md).
 1. **PR open/sync** — **E2E Tests** runs on `pull_request`. For a
    same-repository PR the gate authorizes a write+ / trusted-bot author, then
    the suite jobs run. For a fork PR the gate and suites are skipped.
-2. **`/ok-to-test` comment** — the **E2E ok-to-test** workflow runs on
+2. **`/ok-to-test <sha>` comment** — the **E2E ok-to-test** workflow runs on
    `issue_comment`. Its authorize job checks the commenter's permission and
-   resolves the head sha, then calls the same suite via `workflow_call` for
+   that the PR head is the named sha, then calls the same suite via `workflow_call` for
    that sha. Only the authorize/report job holds `checks: write` and
    `pull-requests: write`; it creates the `behaviour` and `playback` check runs
    on the head sha and completes them from the suite results, so they match

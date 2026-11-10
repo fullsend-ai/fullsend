@@ -202,17 +202,17 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 
 ### Gate job mitigation
 
-The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test` comment (`issue_comment`):
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`):
 
 - **Same-repository PRs** — the gate authorizes authors with write access (collaborator permission API) and trusted bots. Fork `pull_request` runs get no secrets, so the suites skip them.
-- **Fork PRs** — require a user with write access (Write role or above) to comment `/ok-to-test` after reviewing the PR diff, including when the fork author has write access. The gate checks the commenter's permission and authorizes exactly one head sha. It refuses the sha (`stale_ok_to_test`) when the head moved at or after the comment, judged by GitHub-recorded times (the latest `pull_request` workflow run for the sha on the PR's branch, and `head_ref_force_pushed` events), never by commit dates. The `ok-to-test` label no longer starts e2e.
+- **Fork PRs** — require a user with write access (Write role or above) to review the PR diff and comment `/ok-to-test <sha>`, naming the reviewed commit, including when the fork author has write access. The gate reads the comment from the API, checks the commenter's permission, and authorizes the PR head only when it is the named sha. Another head is refused (`stale_ok_to_test`), and a comment with no sha is refused (`missing_sha`). The gate uses no timing. The `ok-to-test` label no longer starts e2e.
 - **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports the `behaviour` and `playback` check runs on the authorized sha. The behaviour/playback jobs run on the PR-head checkout with `contents: read` and `id-token: write` only.
 
 **Limitations of the gate:**
 
 - The gate authorizes *authors* and *commenters*, not *code*. A trusted account that is compromised bypasses the gate.
-- The gate does not inspect the PR diff — it trusts that the commenter reviewed the code before commenting `/ok-to-test`.
-- The suites run the sha the gate authorized, so a push after authorization does not reach a credentialed run. A push between the comment and the gate run is refused only once GitHub has created a `pull_request` workflow run for it (or recorded a force push); until then the gate refuses an unseen sha with `unknown_head_time` rather than authorizing it.
+- The gate does not inspect the PR diff — it trusts that the commenter reviewed the named commit before commenting `/ok-to-test <sha>`.
+- The suites run the sha the gate authorized, so a push after authorization does not reach a credentialed run. A push between the comment and the gate run moves the head away from the named sha, so the gate refuses it. The command takes only the full 40-character sha: the author controls the reviewed commit and could prepare another commit sharing a short prefix.
 
 **Validating gate changes:** A same-repository `pull_request` run takes `e2e.yml` and the gate action from the PR merge ref, so a gate-modifying PR exercises its own gate for same-repository authors. The `/ok-to-test` path runs on `issue_comment`, which takes its workflow and the gate from `main`; a PR that changes that path still runs `main`'s gate. Validate gate logic with unit tests pre-merge (e.g., `scripts/check-e2e-authorization-test.sh`) and include a post-merge validation checklist in the PR description.
 

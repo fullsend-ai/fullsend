@@ -16,17 +16,18 @@
 # timestamp is left for the labeled workflow and does not authorize this run
 # (reason=fresh_ok_to_test). Does not use committer.date (author-controlled).
 #
-# /ok-to-test command mode (EVENT_NAME=issue_comment): a maintainer's
-# `/ok-to-test` comment authorizes exactly one PR head sha. The commenter
-# must have admin, maintain or write (collaborator permission API). The
-# script resolves the PR head sha and refuses it (reason=stale_ok_to_test)
-# when the head moved at or after the comment. The time the head sha became
-# the head is the latest pull_request workflow run created for that sha on the
-# PR's head repository and branch after the PR was opened (set by GitHub, not
-# by the PR author). A head_ref_force_pushed event at or after that time that
-# moved the head to another commit also makes it stale, because the sha may
-# have come back by a push that left no run yet. When no
-# such run exists the sha is refused (reason=unknown_head_time).
+# /ok-to-test command mode (EVENT_NAME=issue_comment): a maintainer reviews a
+# commit and comments `/ok-to-test <sha>` naming it. Only that commit can run.
+# The comment is read from the API by COMMENT_ID (never from the event
+# payload); it must be on PR_NUMBER and by COMMENTER_LOGIN. The commenter must
+# have admin, maintain or write (collaborator permission API), else
+# reason=untrusted_commenter. The first line of the comment must be
+# `/ok-to-test` followed by the full 40-character sha, else reason=missing_sha.
+# A short prefix is refused: the author controls the reviewed commit and can
+# grind another commit with the same prefix ahead of time. The run is
+# authorized (reason=ok_to_test) only when the PR head sha, read when this
+# script runs, equals the named sha. Any other head means the
+# PR changed since the review (reason=stale_ok_to_test). No timing is used.
 #
 # Usage: check-e2e-authorization.sh PR_NUMBER OWNER/REPO
 #
@@ -39,15 +40,14 @@
 #     labeled events)
 #   EVENT_NAME — github.event_name; issue_comment selects /ok-to-test mode
 #   COMMENTER_LOGIN — github.event.comment.user.login (/ok-to-test mode)
-#   COMMENT_ID — github.event.comment.id (/ok-to-test mode). When set, the
-#     comment is read from the API: it must belong to PR_NUMBER and to
-#     COMMENTER_LOGIN, and its created_at is used.
-#   COMMENT_CREATED_AT — github.event.comment.created_at (/ok-to-test mode,
-#     used when COMMENT_ID is unset)
+#   COMMENT_ID — github.event.comment.id (/ok-to-test mode, required). The
+#     comment and its body are read from the API; it must belong to
+#     PR_NUMBER and to COMMENTER_LOGIN.
 #
 # Writes authorized, reason, label_removed and head_sha to GITHUB_OUTPUT when
-# set. head_sha is empty outside /ok-to-test mode. Exits 0 always; callers
-# inspect outputs.
+# set. head_sha is the current PR head in /ok-to-test mode once the commenter
+# passes the role check, and empty otherwise. Exits 0 always; callers inspect
+# outputs.
 
 set -euo pipefail
 
@@ -183,31 +183,26 @@ head_sha=""
 # Kept at top level (not in a function) so the ERR trap covers every API call.
 if [[ "${EVENT_NAME:-}" == "issue_comment" ]]; then
   commenter="${COMMENTER_LOGIN:-}"
-  comment_at="${COMMENT_CREATED_AT:-}"
 
-  if [[ -n "${COMMENT_ID:-}" ]]; then
-    if [[ ! "${COMMENT_ID}" =~ ^[0-9]+$ ]]; then
-      write_error_output
-      exit 0
-    fi
-    comment_json="$(gh api "repos/${REPOSITORY}/issues/comments/${COMMENT_ID}")"
-    comment_login="$(jq -r '.user.login // empty' <<<"${comment_json}")"
-    comment_issue_url="$(jq -r '.issue_url // empty' <<<"${comment_json}")"
-    # Fail closed when the comment is on another issue or by someone else.
-    if [[ "${comment_issue_url}" != *"/repos/${REPOSITORY}/issues/${PR_NUMBER}" ]] ||
-      [[ -n "${commenter}" && "${comment_login}" != "${commenter}" ]]; then
-      echo "check-e2e-authorization: comment ${COMMENT_ID} does not match PR ${PR_NUMBER} / ${commenter}" >&2
-      write_error_output
-      exit 0
-    fi
-    commenter="${comment_login}"
-    comment_at="$(jq -r '.created_at // empty' <<<"${comment_json}")"
-  fi
-
-  if [[ -z "${commenter}" || -z "${comment_at}" ]]; then
+  # The body names the reviewed commit, so it must come from the API by id.
+  if [[ ! "${COMMENT_ID:-}" =~ ^[0-9]+$ ]]; then
+    echo "check-e2e-authorization: COMMENT_ID must be a numeric comment id" >&2
     write_error_output
     exit 0
   fi
+  comment_json="$(gh api "repos/${REPOSITORY}/issues/comments/${COMMENT_ID}")"
+  comment_login="$(jq -r '.user.login // empty' <<<"${comment_json}")"
+  comment_issue_url="$(jq -r '.issue_url // empty' <<<"${comment_json}")"
+  # Fail closed when the comment is on another issue or by someone else.
+  if [[ -z "${comment_login}" ]] ||
+    [[ "${comment_issue_url}" != *"/repos/${REPOSITORY}/issues/${PR_NUMBER}" ]] ||
+    [[ -n "${commenter}" && "${comment_login}" != "${commenter}" ]]; then
+    echo "check-e2e-authorization: comment ${COMMENT_ID} does not match PR ${PR_NUMBER} / ${commenter}" >&2
+    write_error_output
+    exit 0
+  fi
+  commenter="${comment_login}"
+  comment_body="$(jq -r '.body // ""' <<<"${comment_json}")"
 
   if ! commenter_role="$(get_collaborator_role "${commenter}")"; then
     write_error_output
@@ -217,45 +212,25 @@ if [[ "${EVENT_NAME:-}" == "issue_comment" ]]; then
   if ! is_write_role "${commenter_role}"; then
     reason="untrusted_commenter"
   else
+    first_line="${comment_body%%$'\n'*}"
+    first_line="${first_line%$'\r'}"
+    ok_to_test_re='^/ok-to-test[[:space:]]+([0-9a-fA-F]{40})[[:space:]]*$'
+    named_sha=""
+    if [[ "${first_line}" =~ ${ok_to_test_re} ]]; then
+      named_sha="$(tr '[:upper:]' '[:lower:]' <<<"${BASH_REMATCH[1]}")"
+    fi
+
     pr_json="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
     head_sha="$(jq -er '.head.sha' <<<"${pr_json}")"
-    head_ref="$(jq -r '.head.ref // empty' <<<"${pr_json}")"
-    head_repo="$(jq -r '.head.repo.full_name // empty' <<<"${pr_json}")"
-    pr_created_at="$(jq -r '.created_at // empty' <<<"${pr_json}")"
 
-    # Latest pull_request run for this sha on the PR's own head branch, created
-    # after this PR was opened. Runs from other branches or forks that carried
-    # the same sha do not count, and neither do runs from an earlier PR on the
-    # same branch: an author could seed a run for a commit there, open a new PR
-    # at an ancestor, and fast-forward to the seeded commit after /ok-to-test.
-    runs_json="$(gh api "repos/${REPOSITORY}/actions/runs?event=pull_request&head_sha=${head_sha}&per_page=100" --paginate |
-      jq -s '[.[].workflow_runs[]?]')"
-    head_at="$(jq -r --arg ref "${head_ref}" --arg repo "${head_repo}" --arg opened "${pr_created_at}" '
-      [.[] | select(.head_branch == $ref and (.head_repository.full_name // "") == $repo
-                    and (.created_at // "") >= $opened)
-           | .created_at // empty] | max // empty
-    ' <<<"${runs_json}")"
-
-    if [[ -z "${head_ref}" || -z "${head_repo}" || -z "${pr_created_at}" || -z "${head_at}" ]]; then
-      reason="unknown_head_time"
-    elif [[ ! "${head_at}" < "${comment_at}" ]]; then
-      reason="stale_ok_to_test"
+    if [[ -z "${named_sha}" ]]; then
+      reason="missing_sha"
+    elif [[ "${head_sha}" == "${named_sha}" ]]; then
+      authorized=true
+      reason="ok_to_test"
     else
-      events_json="$(gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/events" --paginate | jq -s 'add // []')"
-      # A force push at or after the head's run that moved the head to another
-      # commit (commit_id is the new head) means the head left and may have
-      # come back without a new run. A force push to the head sha itself can
-      # share the run's second and must not refuse it forever.
-      forced="$(jq -r --arg at "${head_at}" --arg sha "${head_sha}" '
-        [.[] | select(.event == "head_ref_force_pushed" and (.created_at // "") >= $at
-                      and (.commit_id // "") != $sha)] | length
-      ' <<<"${events_json}")"
-      if [[ "${forced}" != "0" ]]; then
-        reason="stale_ok_to_test"
-      else
-        authorized=true
-        reason="ok_to_test"
-      fi
+      # The head is not the commit the maintainer reviewed.
+      reason="stale_ok_to_test"
     fi
   fi
 

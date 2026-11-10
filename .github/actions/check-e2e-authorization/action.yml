@@ -1,7 +1,7 @@
 name: Check E2E Authorization
 description: >-
   Authorize PR-triggered e2e runs for trusted authors, an ok-to-test labeled event,
-  or a /ok-to-test comment from a user with write access (one head sha).
+  or a `/ok-to-test <sha>` comment from a user with write access (runs only that commit).
   Removes stale ok-to-test labels and posts a sticky PR comment when unauthorized.
 
 inputs:
@@ -40,11 +40,9 @@ inputs:
     required: false
     default: ""
   comment_id:
-    description: github.event.comment.id (/ok-to-test command mode; created_at is read from the API)
-    required: false
-    default: ""
-  comment_created_at:
-    description: github.event.comment.created_at (/ok-to-test command mode, used when comment_id is empty)
+    description: >-
+      github.event.comment.id (required in /ok-to-test command mode; the comment
+      and the sha it names are read from the API)
     required: false
     default: ""
   docs_url:
@@ -63,7 +61,9 @@ outputs:
     description: Whether a stale ok-to-test label was removed
     value: ${{ steps.check.outputs.label_removed }}
   head_sha:
-    description: PR head sha a /ok-to-test comment authorized or refused (empty in other modes)
+    description: >-
+      PR head sha a /ok-to-test comment authorized or refused (empty for an
+      untrusted commenter and in other modes)
     value: ${{ steps.check.outputs.head_sha }}
 
 runs:
@@ -84,7 +84,6 @@ runs:
         EVENT_NAME: ${{ inputs.event_name }}
         COMMENTER_LOGIN: ${{ inputs.commenter_login }}
         COMMENT_ID: ${{ inputs.comment_id }}
-        COMMENT_CREATED_AT: ${{ inputs.comment_created_at }}
       run: bash "${GITHUB_WORKSPACE}/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
 
     # fresh_ok_to_test: a newer label belongs to the labeled workflow.
@@ -116,15 +115,15 @@ runs:
 
         case "${EVENT_NAME}:${REASON}" in
           issue_comment:stale_ok_to_test)
-            body+="The \`/ok-to-test\` comment did not authorize head \`${HEAD_SHA}\`: the PR head changed at or after the comment (a push or force push). Someone with write access must review the latest changes and comment \`/ok-to-test\` again.
+            body+="The \`/ok-to-test\` comment named a commit that is not the PR head \`${HEAD_SHA}\`. Someone with write access must review the latest changes and comment \`/ok-to-test <sha>\` with the current head sha.
         "
             ;;
-          issue_comment:unknown_head_time)
-            body+="The \`/ok-to-test\` comment did not authorize head \`${HEAD_SHA}\`: GitHub has no pull request workflow run that shows when this commit became the PR head, so the check cannot tell whether it changed after the comment. Wait for the PR's workflow runs to appear, then comment \`/ok-to-test\` again.
+          issue_comment:missing_sha)
+            body+="\`/ok-to-test\` must name the commit you reviewed, as its full 40-character sha: \`/ok-to-test <sha>\`. The PR head is now \`${HEAD_SHA}\`; if that is not the commit you reviewed, review it first. A later push needs a new comment.
         "
             ;;
           issue_comment:untrusted_commenter)
-            body+="The \`/ok-to-test\` comment did not authorize this run because its author does not have write access. Do not repeat it yourself: ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](https://github.com/fullsend-ai/fullsend/blob/main/MAINTAINERS.md), to comment \`/ok-to-test\` after reviewing the latest changes.
+            body+="The \`/ok-to-test\` comment did not authorize this run because its author does not have write access. Do not repeat it yourself: ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](https://github.com/fullsend-ai/fullsend/blob/main/MAINTAINERS.md), to comment \`/ok-to-test <sha>\` after reviewing the latest changes.
         "
             ;;
           *:stale_ok_to_test)
@@ -142,7 +141,7 @@ runs:
           *)
             body+="E2E tests run automatically for same-repository pull requests authored by users with **write access or higher**.
 
-        For other contributors, and for any pull request from a fork, someone with write access must comment \`/ok-to-test\` on the PR **after** the latest push.
+        For other contributors, and for any pull request from a fork, someone with write access must review the latest push and comment \`/ok-to-test <sha>\` on the PR, where \`<sha>\` is the PR's latest commit.
         "
             ;;
         esac
