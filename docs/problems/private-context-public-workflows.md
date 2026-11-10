@@ -27,8 +27,8 @@ an agent to repeat or summarize protected material.
 [ADR 0021](../ADRs/0021-jsonl-reasoning-trace-exposure.md) chooses access control
 for full-fidelity transcripts rather than relying on heuristic sanitization.
 ADR 0021's owner-scoped storage has not been implemented for any repository.
-The [GitHub action](https://github.com/fullsend-ai/fullsend/blob/823f3c22b66bdbb4e8d046e3ca1bf787ce5330ff/action.yml#L573-L578)
-and [GitLab CI template](https://github.com/fullsend-ai/fullsend/blob/823f3c22b66bdbb4e8d046e3ca1bf787ce5330ff/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml#L203-L207)
+The [GitHub action](https://github.com/fullsend-ai/fullsend/blob/ef7c61ec1e703f5032ccac96201f107f6b1ec3f6/action.yml#L684-L689)
+and [GitLab CI template](https://github.com/fullsend-ai/fullsend/blob/ef7c61ec1e703f5032ccac96201f107f6b1ec3f6/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml#L203-L207)
 upload run output, including transcripts, as forge-native artifacts. On GitHub,
 any signed-in user can download artifacts from a public repository;
 private-repository artifacts are available to repository readers, not just
@@ -46,18 +46,29 @@ path that implements the opt-in suppression. Operators cannot currently rely
 on this decision to suppress transcripts. The decision does not cover console
 output, reviews, traces or other forge writes.
 
+The harness schema does declare a
+[`security.trace.enabled`](https://github.com/fullsend-ai/fullsend/blob/ef7c61ec1e703f5032ccac96201f107f6b1ec3f6/internal/harness/harness.go#L233-L236)
+field. Its name can suggest a switch for traces, but it is not the control
+ADR 0021 describes. The schema documents it as trace ID generation for
+correlating security findings. It does not select protected sources, and it
+does not suppress transcripts, telemetry files or artifact uploads.
+
 The existing [private-repositories guide](../guides/infrastructure/private-repositories.md)
 provides operator guidance: `AGENTS.md` disclosure rules, per-agent risk
-recommendations, output checks and the harness `SecretRedactor`. Those controls
-depend on agents following the instructions and on patterns the scanner can
-recognize. The guide's lower-risk recommendations for repo-local output do not
-establish safety when a public repository's agents consume private sources.
+recommendations, manual steps for checking agent output and the harness
+`SecretRedactor`. Those controls depend on agents following the instructions
+and on patterns the scanner can recognize. The guide rates triage, coder and
+review as low risk because their output stays in the source repository. It
+also treats agent output in a public repository as harmless because the
+repository content is already public. Neither assumption holds when a public
+repository's agents read private sources outside that repository.
 
 The [scribe agent](https://github.com/fullsend-ai/agents/blob/5b3049ba969789e0aa82e7a412f7280ce2607215/agents/scribe.md#L67-L88)
 already requires a `public_safe` classification for each topic and new issue,
-with a single-word `public_safe_category` for rejected content. Its
-[post-script](https://github.com/fullsend-ai/agents/blob/5b3049ba969789e0aa82e7a412f7280ce2607215/scripts/post-scribe.src.sh#L290-L305)
-checks that flag before repository writes. For items marked unsafe, it skips
+with a single-word `public_safe_category` for rejected content. Its post-script checks that flag
+for [topics](https://github.com/fullsend-ai/agents/blob/5b3049ba969789e0aa82e7a412f7280ce2607215/scripts/post-scribe.src.sh#L290-L302)
+and [new issues](https://github.com/fullsend-ai/agents/blob/5b3049ba969789e0aa82e7a412f7280ce2607215/scripts/post-scribe.src.sh#L429-L441)
+before repository writes. For items marked unsafe, it skips
 the write and logs the category instead of the title or body. This constrains
 scribe's forge writes and rejection-log text, but trusts the model's own
 classification. It does not independently validate the publication safety of
@@ -71,9 +82,20 @@ thinking and assistant text to the job console. On a public repository,
 protected input quoted in that output reaches public job logs even if artifact
 uploads are suppressed.
 
-[ADR 0050](../ADRs/0050-distributed-tracing-instrumentation.md) addresses
-telemetry separately: private remote export does not change the audience of
-local files, console output or public reviews.
+[ADR 0050](../ADRs/0050-distributed-tracing-instrumentation.md) decides how
+telemetry is generated. Every run writes a local span file to the output
+directory, and the ADR notes that this directory is uploaded as GitHub Actions
+artifacts alongside transcripts. Export to a remote OTLP endpoint is opt-in.
+For content capture, the ADR makes the organization responsible for the access
+controls of its backend. The ADR does not address who can read console output
+or public reviews.
+
+This document draws its own conclusion from those points: exporting to a
+private endpoint does not change the audience of the local span file, console
+output or public reviews. With content capture enabled, captured content is
+also
+[written to the local span file](../guides/infrastructure/distributed-tracing.md#content-capture-level-3),
+so it reaches the same forge artifact.
 
 [#2513](https://github.com/fullsend-ai/fullsend/issues/2513) records the
 direction to use private GitHub repositories as the standard for private Jira
@@ -82,10 +104,15 @@ harness-level runtime check that warns or blocks Jira integration in a public
 repository as the follow-up. This records the intended guard, rather than
 establishing that runtime enforcement is available.
 
-[#1189](https://github.com/fullsend-ai/fullsend/issues/1189) identifies private
-content in public retro issues. These establish parts of the problem; neither
-a documentation warning nor a destination allow-list proves that derived
-content is safe to publish.
+[#1189](https://github.com/fullsend-ai/fullsend/issues/1189) identifies that
+retro issues about a private source repository can expose private content in
+a public destination. It notes that restricting which repositories retro may
+target ([#978](https://github.com/fullsend-ai/fullsend/issues/978)) does not
+address the content of the filed issue.
+
+These two issues establish parts of the problem. Neither a documentation
+warning nor a restriction on destinations shows that derived content is safe
+to publish.
 
 ## Boundaries to account for
 
@@ -114,7 +141,9 @@ content; suppressing output does not reduce what the agent can read.
 
 Check the repository's visibility and configured sources before allowing an
 agent to read protected context. Refuse that combination or warn the operator,
-starting with the runtime validation planned in #2513 for Jira integrations.
+starting with the runtime validation planned in
+[#2513](https://github.com/fullsend-ai/fullsend/issues/2513) for Jira
+integrations.
 Apply the check during setup and before execution so later configuration or
 visibility changes also receive validation.
 
@@ -155,10 +184,12 @@ publication policy. It is not equivalent to approving a limited projection.
 already chooses deterministic, filtered staging of forge entity content for
 issue and change-proposal runs. It applies
 [ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md), which
-separates actor authorization, data admission and platform authority. Direct
-model-initiated source-system calls remain outside ADR 0133's guarantee.
-Neither decision authorizes publication of admitted private content; this
-option builds on that admission boundary rather than replacing it.
+separates actor authorization, data admission and platform authority. ADR 0133
+describes a target contract and states that the complete boundary is not yet
+enforced on every model-bound path. Direct model-initiated source-system calls
+remain outside ADR 0133's guarantee. Neither decision authorizes publication
+of admitted private content; this option builds on that admission boundary
+rather than replacing it.
 
 For other protected sources, have trusted pipeline code select the context
 before execution, or expose a restricted retrieval interface whose source
@@ -265,9 +296,10 @@ rationale. A code agent could copy private acceptance criteria into a public
 PR description. These are hypothetical examples, independent of any product
 or organization.
 
-The private reviewer's evidence and explanation remain internal. If the project
-explicitly permits it, a publisher could issue the fixed public message
-"Maintainer review required before merge."
+With a separate private policy evaluation, the private evaluator's evidence
+and explanation remain internal. If the project explicitly permits it, a
+publisher could issue the fixed public message "Maintainer review required
+before merge."
 
 A required check could enforce that hold, but only with trusted results tied
 to the repository, current PR head and applicable policy. Missing or stale
@@ -303,6 +335,9 @@ approval alone cannot demonstrate the required confidentiality property.
   infrastructure ownership do not alone determine output visibility.
 - [Downstream/Upstream](downstream-upstream.md): authority to reconcile private
   business priorities with the public project's direction.
+- [Cross-run memory](cross-run-memory.md): lessons and evidence that a run
+  carries forward can also carry private context to a later run with a wider
+  audience.
 
 ## Open questions
 
