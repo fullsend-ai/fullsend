@@ -565,11 +565,18 @@ The existing design principle is that [the repo is the coordinator](problems/age
   role-derived default per harness before CEL for ordinary
   human events; explicit or overlay minima remain target behavior. Non-GitHub
   event paths map source-native roles to normalized roles without cross-system
-  identity verification. Bot actors are migrating to provider-backed exact role
-  resolution: adapters classify actors from source-native metadata; recognized bots receive a
-  canonical `actor.bot_role` such as `review`, and bot actors retain
-  `actor.role: none` with `actor.role_verified` reflecting completion of the
-  bot-role lookup; unknown or unresolved bots fail closed on non-label paths.
+  identity verification. Fullsend-authored non-label contributions are
+  migrating to repository-scoped Ed25519 attestations across comments, review
+  content, and issue/pull-request creation and revisions, including Jira
+  work-item and comment properties. A valid attestation supplies the canonical
+  `actor.bot_role` and takes precedence over provider
+  lookup; ADR 0107 lookup remains a migration fallback only for legacy objects
+  or source types without an attestation carrier. Invalid or unverifiable
+  attestations fail closed rather than falling back. Label events retain their
+  separate authorization path. Signatures bind role and run context to exact
+  source content but do not make that content trustworthy or grant platform
+  permissions. Cross-repo verification remains open ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md);
+  [ADR 0168](ADRs/0168-authenticate-fullsend-contributions-with-role-signatures.md)).
   A verified human label addition separately grants `triage`-equivalent
   authority for its exact accepted transition and proven projection without
   synthesizing a verified actor role; a higher harness minimum also requires

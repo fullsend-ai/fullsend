@@ -19,6 +19,14 @@ Date: 2026-09-27
 
 Accepted
 
+For non-label events from Fullsend-authored contributions, repository-scoped
+signed role attestations take precedence over this ADR's provider-backed role
+lookup ([ADR 0168](0168-authenticate-fullsend-contributions-with-role-signatures.md)).
+Provider lookup remains a migration fallback only when an attestation is not
+available for a legacy object or unsupported source. Label events retain their
+separate authorization path; a present but invalid attestation does not fall
+back to provider lookup.
+
 [ADR 0151](0151-harness-human-role-minimums.md) requires a human labeler to
 meet the selected harness's effective `human_min_role` for target CEL dispatch;
 the accepted label mutation alone no longer bypasses a stronger human minimum.
