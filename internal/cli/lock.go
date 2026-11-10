@@ -229,6 +229,30 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	}
 	harnessHash := fetch.ComputeSHA256(harnessData)
 
+	// The subset check also covers the cached path: a fetch-capable harness
+	// whose lock entry is current returns below before the harness is ever
+	// composed, so the gate in the compose loop never runs for it. Validate
+	// the raw declaration here, before the up-to-date return —
+	// allowed_remote_resources and allow_runtime_fetch are not inherited
+	// from base:, so the child's own declaration is the complete list
+	// (#7395801).
+	if rawH, rawErr := harness.LoadRaw(harnessPath); rawErr == nil && shouldStartFetchService(rawH) {
+		if orgCfg == nil {
+			var cfgErr error
+			orgCfg, cfgErr = requireOrgConfig(orgConfigPath, printer)
+			if cfgErr != nil {
+				if !rawH.HasURLReferences() {
+					return nil, fmt.Errorf("runtime fetch requires a config.yaml with allowed_remote_resources (expected at %s)", orgConfigPath)
+				}
+				return nil, cfgErr
+			}
+		}
+		if err := rawH.ValidateAllowedRemoteResources(orgCfg.AllowedResources()); err != nil {
+			printer.StepFail("Remote resource allowlist validation failed")
+			return nil, fmt.Errorf("validating allowed remote resources: %w", err)
+		}
+	}
+
 	if !update && lf != nil {
 		if entry := lf.Lookup(agentName); entry != nil && !entry.IsStale(harnessHash) {
 			printer.StepDone(fmt.Sprintf("Lock entry for %s is up to date (%d dependencies)", agentName, len(entry.Dependencies)))
@@ -332,6 +356,24 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			}
 		}
 
+		// The config-level subset check runs for URL-referencing harnesses;
+		// fetch-only and bare-declaration harnesses were already validated
+		// against the same org config by the raw-declaration gate above,
+		// before the up-to-date return (#7395801).
+		if h.HasURLReferences() {
+			if orgCfg == nil {
+				orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+				if err != nil {
+					return nil, err
+				}
+				orgAllowlist = orgCfg.AllowedResources()
+			}
+			if err := h.ValidateAllowedRemoteResources(orgCfg.AllowedResources()); err != nil {
+				printer.StepFail("Remote resource allowlist validation failed")
+				return nil, fmt.Errorf("validating allowed remote resources: %w", err)
+			}
+		}
+
 		if !h.HasURLReferences() {
 			switch {
 			case newBaseDeps > 0:
@@ -362,18 +404,6 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 				return nil, err
 			}
 			continue
-		}
-
-		if orgCfg == nil {
-			orgCfg, err = requireOrgConfig(orgConfigPath, printer)
-			if err != nil {
-				return nil, err
-			}
-			orgAllowlist = orgCfg.AllowedResources()
-		}
-		if err := h.ValidateAllowedRemoteResources(orgCfg.AllowedResources()); err != nil {
-			printer.StepFail("Remote resource allowlist validation failed")
-			return nil, fmt.Errorf("validating allowed remote resources: %w", err)
 		}
 
 		if platform != "" {
