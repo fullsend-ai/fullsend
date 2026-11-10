@@ -1330,13 +1330,22 @@ server: the CLI validates the connection (https required) before the argument
 checks, and the scenarios using this step refuse during argument validation,
 before any Jira contact. A non-breaking addition.
 
+**`world.World.JiraPollerLog` addition and `the Jira poller runs` change:**
+the `the Jira poller runs` step now captures the poller run's
+standard-logger output into the new `JiraPollerLog` field (the capture is
+serialized across parallel scenarios by a package mutex), and the `the poll
+log says the event for issue "<key>" was skipped` step asserts a validation
+skip against it. A side effect external suites can observe: while the poller
+runs, lines other steps write through the process-global standard logger are
+captured into that scenario's field instead of the run log. Non-breaking
+additions.
+
 **`jiramock` labels change:** an issue added with `AddIssue(key, nil)` is now
-served with `"labels": []`, as Jira Cloud was observed serving an issue without
-labels, instead of `"labels": null`. A test that relied on a null labels field
-sees an empty list. This is deliberately not treated as a breaking change: no
-external suite is known to rely on a null labels field, and Jira Cloud was not
-observed sending one. The poller itself skips the events of an issue served
-with a null labels field and logs a distinct warning for it; the unit tests
-serve that shape directly.
+served with `"labels": []`, instead of `"labels": null`. A test that relied
+on a null labels field sees an empty list. This is deliberately not treated
+as a breaking change: no external suite is known to rely on a null labels
+field. The poller itself treats an issue served without a labels array as
+unlabeled — `state.labels` becomes an empty list — so neither shape an issue
+arrives in loses events; the unit tests serve each shape directly.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.

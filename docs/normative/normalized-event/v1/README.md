@@ -41,6 +41,12 @@ and native-webhook input, and **Jira poll** input:
 - `repo` is the target fullsend repository (`owner/repo` for GitHub,
   `group/subgroup/project` for GitLab) for all systems — including Jira poll
   events (see [jira-poll-adapter.md](jira-poll-adapter.md)).
+- For `source.system: jira`, `entity.key` MUST be a Jira work item key
+  (`^[A-Z][A-Z0-9_]+-[1-9][0-9]*$`): the Go `normevent.Validate()` enforces
+  this jira-scoped rule, so a Jira poll event with any other key is skipped
+  before dispatch instead of dispatching and failing downstream
+  (see [jira-poll-adapter.md](jira-poll-adapter.md)). Other source systems
+  keep the schema's looser cross-system `entity.key` shape.
 - The `gha-event` input driver is the production GitHub adapter; `gitlab-poll`
   is the production GitLab poll adapter ([ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md));
   `gitlab-webhook` is the shipped GitLab native-webhook fast-path adapter,
@@ -77,6 +83,23 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 | **Breaking** (requires v2): remove or rename fields, change field types, remove enum values, add new required top-level fields, tighten patterns that reject previously valid documents | Consumers must migrate |
 | **Non-breaking** (allowed in v1.x schema/README): add optional fields, add new enum values, relax validation, clarify documentation | Existing fixtures and triggers keep working |
 
+One jira-scoped pattern tightening has been accepted in v1: `entity.key` for
+`source.system: jira` must be a Jira work item key (see
+[Scope (v1)](#scope-v1)). Both work-item dispatch routes already refused such
+keys after dispatch (`internal/cli/run_workitem.go`,
+`internal/poll/jira_dispatch.go`), so no previously valid Jira-sourced v1
+document is affected on a shipped workflow. One further consumer reads
+Jira-sourced v1 documents with no downstream key check: `fullsend dispatch
+--input-driver json` (and `--route <agent>` with a JSON event) parses them
+through `input.LoadJSONEvent` → `normevent.ParseJSON` → `Validate`
+(`internal/cli/dispatch.go`, `internal/harnessdispatch/input/json.go`), so a
+key that matched the schema's cross-system pattern but not the work-item
+pattern (e.g. `proj-1`, `PROJ-01`) now fails that command at parse time —
+non-zero where it previously printed a matrix/route decision. That fail-earlier
+is intended: the matrix output could only ever lead to a `fullsend run` that
+refuses the key anyway. The general rule that pattern tightening requires v2
+still holds for shapes consumers accept.
+
 The new optional actor fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
 adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise
@@ -87,10 +110,14 @@ the new fields. Older strict schema copies are not a supported
 producer/consumer combination after that rollout. v1 compatibility means that
 existing events without these fields remain valid; it does not require a
 stale `additionalProperties: false` schema to accept newly emitted fields.
-The JSON Schema's cross-field rules are currently stricter than the Go
-`normevent.Validate()` implementation. The adapter migration MUST bring the Go
-validator to parity before emitting the new fields; until then the schema
-remains the normative stricter check.
+The JSON Schema's cross-field rules for the ADR 0107 actor fields are
+currently stricter than the Go `normevent.Validate()` implementation. The
+adapter migration MUST bring the Go validator to parity before emitting the
+new fields; until then the schema remains the normative stricter check for
+those fields. The relationship is per rule, not uniform: for one rule the Go
+validator is stricter — the jira-scoped `entity.key` work-item-key pattern
+(see [Scope (v1)](#scope-v1)) accepts fewer keys than the schema's
+cross-system `entity.key` pattern.
 
 Adding a new `transition.kind` is **non-breaking** — CEL triggers use boolean
 expressions, not exhaustive enum matching.

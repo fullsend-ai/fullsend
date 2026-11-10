@@ -139,7 +139,7 @@
           "pattern": "^[A-Za-z][A-Za-z0-9_]+-\\d+$",
           "minLength": 1,
           "maxLength": 255,
-          "description": "Human-readable work item key when the source system uses one (e.g. Jira PROJ-123). Required when source.system is jira."
+          "description": "Human-readable work item key when the source system uses one (e.g. Jira PROJ-123). Required when source.system is jira, and must then match the Jira work item key pattern ^[A-Z][A-Z0-9_]+-[1-9][0-9]*$ (enforced by normalized-event validation; the pattern here is the cross-system shape)."
         },
         "url": {
           "type": "string",
