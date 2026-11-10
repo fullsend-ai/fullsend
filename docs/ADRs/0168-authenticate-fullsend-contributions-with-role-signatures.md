@@ -30,9 +30,10 @@ retiring provider lookup for Fullsend agents, every supported non-label source
 type, including commit and ref events, must carry equivalent role-bound
 signatures.
 
-The existing Authorization v1 and NormalizedEvent v1 contracts remain the
-current implementation contract. Before rollout, a versioned contract update
-must define how verified attestations populate normalized actor fields and how
+This accepted ADR selects target role evidence but does not change the current
+Authorization v1 or NormalizedEvent v1 contracts. Implementations MUST
+continue to follow those normative contracts until a versioned contract update
+defines how verified attestations populate normalized actor fields and how
 each source type moves from provider lookup to signed identity.
 
 ## Context
@@ -110,9 +111,11 @@ after creation, the adapter adds the attestation after receiving that identity.
 The initial create event is not authenticated and MUST NOT dispatch as a
 Fullsend role through ADR 0107 fallback. The writer must attach the finalized
 attestation and cause a follow-up event or dispatch; consumers may dispatch
-only after verifying that attestation. Receivers extract and verify the
-envelope before ordinary content filtering, then remove the marker from
-model-visible text. Before provider fallback can
+only after verifying that attestation. If the source emits no follow-up event,
+trusted host-side code must enqueue a follow-up after the attestation write; if
+it cannot, the contribution remains undispatched and fails closed. Receivers
+extract and verify the envelope before ordinary content filtering, then remove
+the marker from model-visible text. Before provider fallback can
 be retired, the protocol must define an equivalent role-bound signature for
 every other non-label source used by Fullsend agents, including commit and ref
 events; no non-label source type is permanently exempt from signing.
