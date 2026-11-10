@@ -125,6 +125,8 @@ ISSUE_MARKER_RE = re.compile(r"<!-- platform-change:source=([\w-]+):id=(\d+) -->
 DIGEST_MARKER_RE = re.compile(r"<!-- platform-change-digest:(\d{4}-W\d{2}) -->")
 DIGEST_LINK_RE = re.compile(r"^- .*?\]\((\S+?)\)")
 OVER_CAP = "(over the per-run cap)"
+# Links go into issue Markdown verbatim, so accept only plain GitHub URLs.
+SAFE_LINK_RE = re.compile(r"https://(?:github\.blog|github\.com)/[^\s()<>\[\]`'\"]+")
 
 
 # --- fetching -------------------------------------------------------------
@@ -793,6 +795,9 @@ class Watcher:
         opens: list[tuple[Item, Verdict]] = []
         digest: list[tuple[Item, list[str], bool]] = []
         for item in items:
+            if not SAFE_LINK_RE.fullmatch(item.link):
+                print(f"::warning::skipping {item.describe()}: unexpected link {item.link!r}")
+                continue
             verdict = classify(item, self.since)
             if verdict.kind == "cosmetic":
                 self.log("IGNORE-COSMETIC", item.describe())

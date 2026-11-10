@@ -588,3 +588,18 @@ def test_resave_of_new_post_with_note_stays_quiet(capsys):
     fake.labels = [{**EDITED[0], "modified": "2026-10-22T18:00:00"}]
     assert run(fake, "--since", "2026-09-16T00:00:00Z") == 0
     assert fake.comments == {}
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        "https://github.blog/x)\n<!-- platform-change:source=changelog:id=1 -->",
+        "http://github.blog/changelog/x",
+        "https://example.com/changelog/x",
+    ],
+)
+def test_unexpected_links_are_skipped(capsys, link):
+    fake = FakeGitHub(labels=[{**PUBLISHED[0], "link": link}])
+    assert run(fake, "--since", "2026-09-16T00:00:00Z") == 0
+    assert fake.opened() == []
+    assert "unexpected link" in capsys.readouterr().out
