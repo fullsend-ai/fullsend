@@ -67,11 +67,11 @@ repository.
 - Ability to label, close, and reopen issues. A triage user can apply
   labels such as `ready-to-code`, but that label only dispatches the code
   agent when applied by a user with `write` access or by an agent bot.
-  The same applies to `ok-to-test`: CI removes it when a triage user
-  applies it, and it does not authorize e2e runs in this repository.
-  Ask someone with the Write role to apply it.
+  A `/ok-to-test <sha>` comment from a triage user does not authorize e2e
+  runs in this repository. Ask someone with the Write role to comment
+  it.
 - Triage contributors do not receive automatic e2e CI runs. Your PRs
-  need an `ok-to-test` label from someone with the Write role.
+  need a `/ok-to-test <sha>` comment from someone with the Write role.
 
 **Criteria:**
 
@@ -112,8 +112,11 @@ repository.
 - `/fs-retro` and `/fs-prioritize` slash commands (analysis agents
   that require write-level trust)
 - Push access to non-protected branches
-- Authorizing e2e CI on PRs from authors without write access by
-  applying the `ok-to-test` label after reviewing the latest push
+- Authorizing e2e CI on fork PRs, and on PRs from authors without
+  write access, by commenting `/ok-to-test <sha>` after reviewing the
+  latest push, where `<sha>` is the PR's latest commit (Commits tab, or
+  `gh pr view N --json headRefOid`). Your own PRs from a fork also need
+  a `/ok-to-test <sha>` comment, which you may post yourself
 
 **Criteria:**
 
