@@ -218,7 +218,7 @@ def test_edit_of_known_post_comments_once(capsys):
     body = fake.comments[7][0]["body"]
     assert "Editor's note (October 21, 2026): We updated the automatic enforcement date" in body
     assert "2026-10-21T09:18:27Z" in body
-    assert "<!-- platform-change:id=98897:modified=2026-10-21T09:18:27Z -->" in body
+    assert re.search(r"<!-- platform-change:id=98897:note=[0-9a-f]{12} -->", body)
     first = actions(capsys.readouterr().out)[0]
     assert first.startswith("COMMENT changelog:98897 ") and " #7 modified " in first
 
@@ -571,3 +571,20 @@ def test_unparseable_note_date_on_edit_is_tier1():
 def test_note_without_a_date_does_not_make_a_new_post_tier1():
     note = W.Note("August 27, 2026", None, "Updated the Community link.")
     assert not W.mentions_date_change(note)
+
+
+def test_resave_after_comment_does_not_repeat_the_note(capsys):
+    fake = FakeGitHub(labels=EDITED, issues=[tracked_issue(98897)])
+    assert run(fake, "--since", "2026-10-20") == 0
+    fake.labels = [{**EDITED[0], "modified": "2026-10-23T08:00:00"}]
+    assert run(fake, "--since", "2026-10-21", now=datetime(2026, 10, 24, 10, 0, tzinfo=UTC)) == 0
+    assert len(fake.comments[7]) == 1
+    assert actions(capsys.readouterr().out)[-2].startswith("SKIP-DUP changelog:98897 ")
+
+
+def test_resave_of_new_post_with_note_stays_quiet(capsys):
+    fake = FakeGitHub(labels=EDITED)
+    assert run(fake, "--since", "2026-09-16T00:00:00Z") == 0
+    fake.labels = [{**EDITED[0], "modified": "2026-10-22T18:00:00"}]
+    assert run(fake, "--since", "2026-09-16T00:00:00Z") == 0
+    assert fake.comments == {}

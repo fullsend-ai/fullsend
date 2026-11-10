@@ -27,6 +27,7 @@ Usage: github-changelog-watch [--repo OWNER/NAME] [--since ISO-8601]
 """
 
 import argparse
+import hashlib
 import html
 import json
 import re
@@ -348,7 +349,7 @@ class Verdict:
 
 def parse_note_date(s: str) -> date | None:
     s = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", s.strip())
-    s = s.replace(".", "")
+    s = s.replace(".", "").replace("Sept ", "Sep ")
     for fmt in ("%B %d, %Y", "%b %d, %Y", "%B %d %Y", "%d %B %Y", "%Y-%m-%d"):
         try:
             return datetime.strptime(s, fmt).date()
@@ -439,8 +440,10 @@ def quote(s: str) -> str:
     return "> " + md_safe(s)
 
 
-def edit_marker(item: Item) -> str:
-    return f"<!-- platform-change:id={item.id}:modified={fmt_time(item.modified)} -->"
+def note_marker(item: Item, note: Note) -> str:
+    """Marks one editor's note as reported, so a later save that adds nothing stays quiet."""
+    digest = hashlib.sha256(f"{note.date_text}\n{note.text}".encode()).hexdigest()[:12]
+    return f"<!-- platform-change:id={item.id}:note={digest} -->"
 
 
 def issue_title(item: Item) -> str:
@@ -468,8 +471,7 @@ def issue_body(item: Item, verdict: Verdict) -> str:
         "",
         f"<!-- platform-change:source={item.source}:id={item.id} -->",
     ]
-    if item.modified > item.published:
-        lines.append(edit_marker(item))
+    lines += [note_marker(item, n) for n in editor_notes(item.text())]
     return "\n".join(lines) + "\n"
 
 
@@ -477,7 +479,7 @@ def edit_comment(item: Item, notes: list[Note]) -> str:
     lines = [f"The source was edited. New modified: {fmt_time(item.modified)}.", ""]
     for n in notes:
         lines += [quote(f"Editor's note ({n.date_text}): {n.text}"), ""]
-    lines += [f"Source: {item.link}", "", edit_marker(item)]
+    lines += [f"Source: {item.link}", ""] + [note_marker(item, n) for n in notes]
     return "\n".join(lines) + "\n"
 
 
@@ -729,16 +731,16 @@ class Watcher:
 
     def comment_on_edit(self, issue: dict[str, Any], item: Item, verdict: Verdict) -> None:
         number = issue["number"]
-        marker = edit_marker(item)
         comments = self.gh(
             f"repos/{self.repo}/issues/{number}/comments?per_page=100", paginate=True
         )
-        bodies = [issue.get("body") or ""] + [c.get("body") or "" for c in comments]
-        if any(marker in b for b in bodies):
+        seen = "\n".join([issue.get("body") or ""] + [c.get("body") or "" for c in comments])
+        notes = [n for n in verdict.notes if note_marker(item, n) not in seen]
+        if not notes:
             self.log("SKIP-DUP", f"{item.describe()} #{number} edit {fmt_time(item.modified)}")
             return
         if not self.dry_run:
-            body = edit_comment(item, verdict.notes)
+            body = edit_comment(item, notes)
             self.gh(f"repos/{self.repo}/issues/{number}/comments", "POST", {"body": body})
         self.log("COMMENT", f"{item.describe()} #{number} modified {fmt_time(item.modified)}")
 
