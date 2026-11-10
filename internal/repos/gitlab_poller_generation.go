@@ -389,6 +389,59 @@ type PollerGenerationUnsafeError struct {
 
 func (e *PollerGenerationUnsafeError) Error() string { return e.Reason }
 
+// ReplacementPollerBranchAccessError reports that the existing
+// protected-branch policy does not let the replacement Poller account start
+// pipelines on the default branch. Fullsend never broadens branch protection
+// for a replacement, so the operator must grant it; Error returns step-by-step
+// remediation. Username is the account's GitLab username when it could be
+// read: GitLab's Protected branches page lists accounts by name and username,
+// never by numeric ID, and every Poller generation shares the same display
+// name. RuleName is the protection rule covering Branch (a wildcard rule's
+// name differs from Branch). All fields are fullsend-authored or GitLab
+// identifiers and carry no credential material.
+type ReplacementPollerBranchAccessError struct {
+	UserID   int64
+	Username string
+	Branch   string
+	RuleName string
+}
+
+func (e *ReplacementPollerBranchAccessError) Error() string {
+	account := fmt.Sprintf("(user ID %d)", e.UserID)
+	who := fmt.Sprintf("the %s service account with user ID %d", gitlabroles.PollerTokenName, e.UserID)
+	if validGitLabUsername(e.Username) {
+		account = fmt.Sprintf("@%s (user ID %d)", e.Username, e.UserID)
+		who = "@" + e.Username
+	}
+	rule := fmt.Sprintf("the %q rule", e.Branch)
+	if e.RuleName != "" && e.RuleName != e.Branch {
+		rule = fmt.Sprintf("the wildcard rule %q that protects %q", e.RuleName, e.Branch)
+	}
+	return fmt.Sprintf("the replacement GitLab Poller service account %s cannot start pipelines on protected branch %q. "+
+		"GitLab starts a pipeline on a protected branch only for an account that is allowed to merge or push to it, and fullsend does not change branch protection for a replacement Poller. "+
+		"To fix this, open the project's Settings > Repository > Protected branches, edit %s, and add %s under \"Allowed to merge\" "+
+		"then re-run repos install. If your GitLab tier cannot select individual users there, keep the polling schedules in effect rather than widening merge access; see the GitLab configuration guide",
+		account, e.Branch, rule, who)
+}
+
+// validGitLabUsername reports whether name is non-empty and limited to the
+// characters GitLab allows in a username (letters, digits, '_', '-', '.'). A
+// name outside that set, for example one carrying terminal control
+// characters, is never echoed into operator output.
+func validGitLabUsername(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // pollerGenerationSafetyReason returns an operator-safe description of a
 // credential-inventory failure: the fullsend-authored reason when there is
 // one, otherwise only the failure class.
@@ -417,7 +470,9 @@ type GitLabPollerHandoff interface {
 	// Developer membership and verifies, read-only, that the existing
 	// protected-branch policy lets it start pipelines on the default branch.
 	// It never changes the branch rule. A policy that does not admit the
-	// account is a *PollerGenerationUnsafeError, which defers the handoff.
+	// account is a *ReplacementPollerBranchAccessError (or, for other
+	// operator-safe refusals, a *PollerGenerationUnsafeError), which defers
+	// the handoff.
 	EnsureReplacementPollerAccess(ctx context.Context, owner, repo string, userID int64) error
 	// VerifyReplacementPollerCredentialsRevoked requires that the account
 	// holds no active personal access token. Managed token names are not
@@ -749,6 +804,10 @@ func (g *pollerGenerationRun) attemptTrigger() (PollerHandoffResult, error) {
 	// a membership or policy failure in an earlier run is retried here instead
 	// of leaving the generation stuck at account_recorded.
 	if prepErr := g.h.EnsureReplacementPollerAccess(g.ctx, g.owner, g.repo, uid); prepErr != nil {
+		var branchErr *ReplacementPollerBranchAccessError
+		if errors.As(prepErr, &branchErr) {
+			return PollerHandoffResult{Details: g.details, DeferReason: fmt.Sprintf("webhook fast-path blocked: %s. The polling schedules remain in effect", branchErr.Error())}, nil
+		}
 		var unsafe *PollerGenerationUnsafeError
 		if errors.As(prepErr, &unsafe) {
 			return PollerHandoffResult{Details: g.details, DeferReason: fmt.Sprintf("webhook fast-path blocked: the replacement GitLab Poller (user ID %d) was not raised because %s. The polling schedules remain in effect", uid, unsafe.Reason)}, nil
