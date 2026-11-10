@@ -326,6 +326,15 @@ tracker:
   [Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
 - **`tracker.jira.project`** — The key of the single Jira project for this
   repository. It is not a fallback project, and it has no default.
+- **`tracker.jira.run_label`** — Optional label added to the source Jira issue
+  when any Jira-sourced agent run starts, before sandbox setup. Default: empty
+  (disabled, with a skip log). Use a nonempty name without whitespace or control
+  characters, for example `ai-coding-agent`; no product-branded label is supplied.
+  Existing labels are preserved, and an issue that already has the label is not
+  updated. This runs independently of status-comment settings. API failures
+  warn without failing the run. The label remains after cancellation or failure.
+  Choose a name that does not collide with your poll query's trigger/exclusion
+  labels. See [Tracking runs in Jira](../guides/user/jira-integration.md#tracking-runs-with-an-optional-label).
 - **`tracker.jira.poll.enabled`** — Controls the managed poll workflow. `true`
   installs or enables it, `false` removes or disables it. When `poll` or
   `poll.enabled` is omitted, the workflow is not installed. `fullsend poll
@@ -349,7 +358,7 @@ tracker:
   `project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
 
 `base_url` and `project` are required once `base_url`, `api_url`, `project`,
-or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets
+a nonempty `run_label`, or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets
 `allowed_targets` stays valid. This includes a mapping migrated from the
 legacy scalar `tracker: jira`.
 

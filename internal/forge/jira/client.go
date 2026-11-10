@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -599,6 +600,28 @@ func (c *LiveClient) GetIssue(ctx context.Context, issueIDOrKey string) (*Issue,
 		return nil, fmt.Errorf("get issue %s: %w", issueIDOrKey, err)
 	}
 	return &issue, nil
+}
+
+// AddIssueLabel adds a label without replacing any existing labels. If the
+// issue already has it, no update is sent (and no changelog entry is created).
+func (c *LiveClient) AddIssueLabel(ctx context.Context, issueIDOrKey, label string) error {
+	issue, err := c.GetIssue(ctx, issueIDOrKey)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(issue.Fields.Labels, label) {
+		return nil
+	}
+	body, err := json.Marshal(map[string]any{
+		"update": map[string]any{"labels": []map[string]string{{"add": label}}},
+	})
+	if err != nil {
+		return fmt.Errorf("marshal label update: %w", err)
+	}
+	if err := c.do(ctx, http.MethodPut, "/issue/"+url.PathEscape(issueIDOrKey), bytes.NewReader(body), nil); err != nil {
+		return fmt.Errorf("add label to issue %s: %w", issueIDOrKey, err)
+	}
+	return nil
 }
 
 // CreateIssueInput describes a new Jira issue for CreateIssue.

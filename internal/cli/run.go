@@ -1445,6 +1445,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var statusFinalizer func()
 	var statusFinalizerOnce sync.Once
 
+	// Label independently of comment settings or status-notifier failures.
+	addJiraRunLabel(ctx, issueTracking, sOpts, printer)
+
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
 	// entire run lifecycle including sandbox setup, validation loop, and
