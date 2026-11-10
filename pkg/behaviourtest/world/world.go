@@ -243,6 +243,12 @@ type World struct {
 	JiraMockState  *jiramock.State
 	JiraConfigDir  string // temp dir holding .fullsend/ layout for the poller
 
+	// JiraPollerLog is the standard-logger output captured during the last
+	// "the Jira poller runs" step. The poller reports validation skips
+	// there, not in the dispatch output, so a Then step can tell a
+	// validation skip from any other reason an event produced no dispatch.
+	JiraPollerLog string
+
 	// JiraPollCLIOutput and JiraPollCLIExitCode record the last
 	// `fullsend poll --input-driver jira-poll` run by the Jira poll CLI step;
 	// JiraPollCLIOutputPath is the --output path that run was given.

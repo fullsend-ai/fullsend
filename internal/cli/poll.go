@@ -431,7 +431,8 @@ func validateJiraPollArgs(settings jiraPollSettings, targetRepo, outputPath, ful
 		return jiraPollArgs{}, fmt.Errorf("--target-repo %q must be an owner/repo slug", targetRepo)
 	}
 	// The repo becomes every event's normalized repo, which may not contain
-	// "..": the poller would skip every event and advance every checkpoint.
+	// "..": every event of the cycle would fail validation, so the poll
+	// fails each cycle and never advances a checkpoint.
 	if strings.Contains(targetRepo, "..") {
 		return jiraPollArgs{}, fmt.Errorf("--target-repo %q must not contain '..'", targetRepo)
 	}

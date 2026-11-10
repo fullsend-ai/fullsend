@@ -191,6 +191,7 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		JiraPollCLIOutput:          "{\n  \"dispatches\": []\n}\n",
 		JiraPollCLIExitCode:        1,
 		JiraPollCLIOutputPath:      "/tmp/jira-poll-output.json",
+		JiraPollerLog:              "WARNING: skipping event x for issue PROJ-1",
 		MintProbe:                  &world.MintProbe{Forge: "github"},
 		BotRoleProbe:               &world.BotRoleProbe{Forge: "github"},
 	}
@@ -200,6 +201,7 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Equal(t, "", w.JiraPollCLIOutput)
 	assert.Equal(t, 0, w.JiraPollCLIExitCode)
 	assert.Equal(t, "", w.JiraPollCLIOutputPath)
+	assert.Equal(t, "", w.JiraPollerLog)
 	assert.Equal(t, 0, w.PRNumber)
 	assert.Equal(t, "", w.DispatchAgent)
 	assert.Equal(t, 0, w.IssueNumber)

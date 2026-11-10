@@ -45,6 +45,7 @@ Feature: Jira poll dispatch
     And a comment "/fs-triage check" is added to Jira issue "PROJ-506"
     And the Jira poller runs
     Then the dispatch output does not contain a stage for issue "PROJ-505"
+    And the poll log says the event for issue "PROJ-505" was skipped
     And the dispatch output contains a "triage" stage for issue "PROJ-506"
 
   Scenario: fullsend poll refuses a target repo whose path contains ..

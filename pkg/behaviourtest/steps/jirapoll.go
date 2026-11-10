@@ -1,15 +1,18 @@
 package steps
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -135,6 +138,9 @@ func registerJiraPollSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the dispatch output does not contain a stage for issue "([^"]+)"$`, func(ctx context.Context, key string) (context.Context, error) {
 		return ctx, thenDispatchNotContains(world.FromContext(ctx), key)
 	})
+	sc.Step(`^the poll log says the event for issue "([^"]+)" was skipped$`, func(ctx context.Context, key string) (context.Context, error) {
+		return ctx, thenPollLogSaysEventSkipped(world.FromContext(ctx), key)
+	})
 	sc.Step(`^the "([^"]+)" Jira project role is backed by group "([^"]+)"$`, func(ctx context.Context, role, group string) (context.Context, error) {
 		return ctx, givenRoleBackedByGroup(world.FromContext(ctx), role, group)
 	})
@@ -234,11 +240,35 @@ func whenJiraPollerRuns(ctx context.Context, w *world.World) error {
 	}
 
 	poller := jirapoll.New(jiraClient, matcher, opts)
-	if err := poller.Run(ctx); err != nil {
-		return fmt.Errorf("poller run: %w", err)
+	// The poller reports validation skips through the standard logger, not
+	// through the dispatch output or its error (a partial skip succeeds),
+	// so capture the run's log for the Then steps: without it a scenario
+	// can pin "no dispatch" but not "skipped because validation failed".
+	// The logger is process-global and behaviour tests run in parallel, so
+	// the capture window is serialized: two concurrent swaps would each
+	// lose (or steal) the other's warnings.
+	jiraPollLogMu.Lock()
+	defer jiraPollLogMu.Unlock()
+	var logBuf bytes.Buffer
+	prevWriter := log.Writer()
+	log.SetOutput(&logBuf)
+	runErr := poller.Run(ctx)
+	// Restore the writer before reading the buffer: bytes.Buffer is not
+	// safe for concurrent use, so a foreign log.Printf from a parallel
+	// scenario would race with the read while the logger still points
+	// here. log.SetOutput and log.Printf share the logger's mutex, so no
+	// write can target the buffer after the restore returns.
+	log.SetOutput(prevWriter)
+	w.JiraPollerLog = logBuf.String()
+	if runErr != nil {
+		return fmt.Errorf("poller run: %w", runErr)
 	}
 	return nil
 }
+
+// jiraPollLogMu serializes the standard-logger capture around a poller run
+// in whenJiraPollerRuns (see there for why).
+var jiraPollLogMu sync.Mutex
 
 // jiraPollCLITimeout bounds one `fullsend poll` run launched by the CLI step.
 const jiraPollCLITimeout = 2 * time.Minute
@@ -406,6 +436,25 @@ func thenDispatchNotContains(w *world.World, issueKey string) error {
 		if dispatchMatchesIssue(d, issueKey) {
 			return fmt.Errorf("dispatch output unexpectedly contains agent=%q for %s",
 				d.Agent, issueKey)
+		}
+	}
+	return nil
+}
+
+// thenPollLogSaysEventSkipped asserts the captured poller log shows the
+// validation skip for the issue. The dispatch output alone cannot tell a
+// validation skip from any other reason an event produced no dispatch (a
+// fetch error, a filter), so the scenario pins the skip warning itself.
+func thenPollLogSaysEventSkipped(w *world.World, issueKey string) error {
+	if w.JiraPollerLog == "" {
+		return fmt.Errorf("no captured Jira poller log; did the Jira poller step run?")
+	}
+	for _, want := range []string{
+		"WARNING: skipping event ",
+		fmt.Sprintf(" for issue %s: normalized event: ", issueKey),
+	} {
+		if !strings.Contains(w.JiraPollerLog, want) {
+			return fmt.Errorf("poll log lacks %q:\n%s", want, w.JiraPollerLog)
 		}
 	}
 	return nil

@@ -12,6 +12,15 @@ import (
 // toNormalizedEvent converts a JiraEvent to a normevent.Event for CEL trigger
 // evaluation, per the jira-poll-adapter.md spec.
 func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
+	// An issue Jira serves without a labels array (null or missing) is in
+	// effect unlabeled: map nil to an empty list so its events stay valid
+	// instead of being skipped permanently. Jira does not guarantee one
+	// response shape across deployments and field configurations, so the
+	// adapter tolerates both.
+	labels := event.Labels
+	if labels == nil {
+		labels = []string{}
+	}
 	ne := normevent.Event{
 		Repo: p.opts.TargetRepo,
 		Source: normevent.Source{
@@ -36,7 +45,7 @@ func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
 			IsEntityAssignee: isEntityAssignee(event),
 		},
 		State: normevent.State{
-			Labels: event.Labels,
+			Labels: labels,
 		},
 	}
 
@@ -91,10 +100,11 @@ func mapRawAction(event JiraEvent) string {
 	}
 }
 
-// parseIssueID converts a Jira issue ID string to int. Jira always returns
-// numeric ID strings for issues. Any parse error yields 0, including a
-// numeric id out of int range (for which strconv.Atoi returns the max int),
-// and 0 fails validation, so the poller skips the event with a warning.
+// parseIssueID converts a Jira issue ID string to int. Jira issue ids are
+// numeric by design; a non-numeric id still maps to 0 and is skipped (see
+// the Jira guide's troubleshooting row). Any parse error yields 0, including
+// a numeric id out of int range (for which strconv.Atoi returns the max
+// int), and 0 fails validation, so the poller skips the event with a warning.
 func parseIssueID(id string) int {
 	n, err := strconv.Atoi(id)
 	if err != nil {

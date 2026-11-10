@@ -79,7 +79,13 @@ func TestJiraPoll_InvalidEventSkipped(t *testing.T) {
 	require.NoError(t, whenJiraComment(w, "PROJ-506", "/fs-triage check"))
 	require.NoError(t, whenJiraPollerRuns(context.Background(), w))
 	require.NoError(t, thenDispatchNotContains(w, "PROJ-505"))
+	require.NoError(t, thenPollLogSaysEventSkipped(w, "PROJ-505"))
 	require.NoError(t, thenDispatchContains(w, "triage", "PROJ-506"))
+	// The skip assertion is specific: an issue whose events all validated
+	// has no skip warning in the captured log.
+	err := thenPollLogSaysEventSkipped(w, "PROJ-506")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "poll log lacks")
 }
 
 func TestJiraPoll_IssueIDUnknownIssue(t *testing.T) {

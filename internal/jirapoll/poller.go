@@ -69,6 +69,7 @@ type Poller struct {
 	selfAccountID       string                               // authenticated Jira account from GetMyself; used to classify self-authored events as bot
 	eventsSeen          int                                  // events converted this cycle
 	eventsInvalid       int                                  // events skipped this cycle because they failed validation
+	eventsMatchErrors   int                                  // events dropped this cycle because matcher.Match errored
 }
 
 // ctxSleep sleeps for d or until ctx is cancelled, whichever comes first,
@@ -108,7 +109,7 @@ func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
 func (p *Poller) Run(ctx context.Context) error {
 	cycleID := uuid.New().String()
 	p.dispatches = nil
-	p.eventsSeen, p.eventsInvalid = 0, 0
+	p.eventsSeen, p.eventsInvalid, p.eventsMatchErrors = 0, 0, 0
 	p.statusCategoryCache = make(map[string]string)
 	p.roleMembership = make(map[string]string)
 	p.roleGroups = make(map[string][]string)
@@ -228,6 +229,36 @@ func (p *Poller) Run(ctx context.Context) error {
 		log.Printf("WARNING: committing checkpoints for %d dispatch(es) not yet confirmed as scheduled downstream; see KNOWN LIMITATION note in Run", len(p.dispatches))
 	}
 
+	// A bad issue can skip several of its events — the guard counts
+	// events, not issues, so one bad issue alone in a cycle is "every
+	// event" — while a setting that breaks every event skips them all,
+	// which these lines show. Logged once here — before the
+	// all-invalid guard's early return below — so the guard needs no copy
+	// of its own and the two sites cannot drift apart.
+	if p.eventsInvalid > 0 {
+		log.Printf("WARNING: skipped %d of %d events this cycle because they failed normalized-event validation", p.eventsInvalid, p.eventsSeen)
+	}
+	if p.eventsMatchErrors > 0 {
+		log.Printf("WARNING: dropped %d of %d events this cycle because matching them failed", p.eventsMatchErrors, p.eventsSeen)
+	}
+
+	// A cycle in which every event was dropped before dispatch is a
+	// systemic problem — a Jira response-shape change, an adapter gap or
+	// a trigger matcher that errors on every event, not one bad issue
+	// among good ones. Advancing the checkpoints would drop those events
+	// for good behind a green run, so the cycle fails and holds every
+	// checkpoint, as a dispatch failure does; the next cycle retries them
+	// and the operator sees the error. Matcher errors count beside
+	// validation failures because an event whose Match call errors is
+	// dropped just as silently.
+	dropped := p.eventsInvalid + p.eventsMatchErrors
+	if dropped > 0 && dropped == p.eventsSeen {
+		if p.eventsMatchErrors == 0 {
+			return fmt.Errorf("all %d events this cycle failed normalized-event validation; no checkpoint was advanced, so they are retried next cycle", p.eventsInvalid)
+		}
+		return fmt.Errorf("all %d events this cycle were dropped before dispatch (%d failed normalized-event validation, %d failed matching); no checkpoint was advanced, so they are retried next cycle", dropped, p.eventsInvalid, p.eventsMatchErrors)
+	}
+
 	// Step 6: Commit checkpoints now that the dispatch file is durably
 	// written (or there was nothing to write). All advances are attempted;
 	// any failure then fails the cycle so the operator sees it — the
@@ -248,11 +279,6 @@ func (p *Poller) Run(ctx context.Context) error {
 
 	log.Printf("poll complete: %d candidates, %d unlocked, %d selected, %d dispatches",
 		len(candidates), len(unlocked), len(selected), len(p.dispatches))
-	// One bad issue skips one event; a setting that breaks every event
-	// skips them all, which this line shows.
-	if p.eventsInvalid > 0 {
-		log.Printf("WARNING: skipped %d of %d events this cycle because they failed normalized-event validation", p.eventsInvalid, p.eventsSeen)
-	}
 	if dispatchErrors > 0 {
 		return fmt.Errorf("failed to dispatch records for %d issue(s); their lastCheck was not advanced, so they are retried next cycle: %w", dispatchErrors, firstDispatchErr)
 	}
@@ -499,7 +525,14 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 	// number of agent workflow runs, and thus Actions minutes / model
 	// spend / actions:write rate-limit pressure — an attacker or accident
 	// can trigger from one issue. The checkpoint still advances past all
-	// inspected entries, so overflow is not re-processed next cycle.
+	// inspected entries, so overflow is not re-processed next cycle. The
+	// cap applies before event validation, so an issue whose capped prefix
+	// is all invalid while events beyond the cap would have validated
+	// fires Run's all-invalid guard and holds the checkpoint; that failure
+	// is loud (this WARNING names the truncation) and bounded —
+	// readLastCheck clamps a lastCheck older than the backfill window
+	// forward, so the cycle retires within a day rather than looping
+	// forever.
 	if len(events) > maxEventsPerIssue {
 		log.Printf("WARNING: %s produced %d routable events this cycle; capping dispatch at %d (possible lastCheck rewind or bulk change)", issue.Key, len(events), maxEventsPerIssue)
 		events = events[:maxEventsPerIssue]
@@ -521,25 +554,21 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		return time.Time{}, fmt.Errorf("resolve actor roles for %s: %w", issue.Key, err)
 	}
 
-	// Convert, match harness triggers, dispatch. A transiently failing
-	// event is skipped rather than retried: the checkpoint advances past
-	// all inspected entries regardless, which prevents the poller from
-	// stalling when a routing error persists across cycles.
-	labelsWarned := false
+	// Convert, match harness triggers, dispatch. An event that fails
+	// validation is skipped rather than retried, so one issue's bad event
+	// cannot stall the other issues: the checkpoint advances past all
+	// inspected entries once at least one event of the cycle validated.
+	// A cycle in which every event fails validation fails the whole
+	// cycle in Run instead, holding the checkpoints so those events
+	// are retried.
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
 		p.eventsSeen++
-		// fullsend run cannot use an invalid embedded event, so an event that
-		// fails validation is skipped here rather than dispatched. Jira was
-		// observed serving an issue without labels with an empty list (checked
-		// 2026-11-01), so an issue served without a labels array gets its own
-		// warning, once: one odd issue must not stop the others, but the
-		// operator should be able to tell it from an ordinary invalid event.
+		// fullsend run cannot use an invalid embedded event, so an event
+		// that fails validation is skipped here rather than dispatched.
+		// An issue served without a labels array never reaches this skip:
+		// toNormalizedEvent maps nil labels to an empty list.
 		if err := ne.Validate(); err != nil {
-			if ne.State.Labels == nil && !labelsWarned {
-				log.Printf("WARNING: Jira served issue %s without a labels array (null or missing); its events are skipped. The Jira response shape may have changed", issue.Key)
-				labelsWarned = true
-			}
 			log.Printf("WARNING: skipping event %s for issue %s: %v (Jira issue id %q)", event.Key(), event.IssueKey, err, event.IssueID)
 			p.eventsInvalid++
 			continue
@@ -548,7 +577,12 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		if p.matcher != nil {
 			records, matchErr := p.matcher.Match(ctx, &ne)
 			if matchErr != nil {
+				// Counted beside validation failures so an
+				// all-matcher-error cycle fails the run at the
+				// guard above instead of advancing behind a
+				// green Run.
 				log.Printf("WARNING: matching event %s: %v", event.Key(), matchErr)
+				p.eventsMatchErrors++
 				continue
 			}
 			p.dispatches = append(p.dispatches, records...)
