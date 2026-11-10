@@ -1759,12 +1759,13 @@ func (f *FakeClient) CreateIssueComment(_ context.Context, owner, repo string, n
 	}
 	f.commentCounter++
 	comment := IssueComment{
-		ID:        f.commentCounter,
-		NodeID:    fmt.Sprintf("IC_fake_%d", f.commentCounter),
-		HTMLURL:   fmt.Sprintf("https://github.com/%s/%s/issues/%d#issuecomment-%d", owner, repo, number, f.commentCounter),
-		Body:      body,
-		Author:    f.AuthenticatedUser,
-		CreatedAt: "2026-01-01T00:00:00Z",
+		ID:          f.commentCounter,
+		NodeID:      fmt.Sprintf("IC_fake_%d", f.commentCounter),
+		HTMLURL:     fmt.Sprintf("https://github.com/%s/%s/issues/%d#issuecomment-%d", owner, repo, number, f.commentCounter),
+		Body:        body,
+		Author:      f.AuthenticatedUser,
+		CreatedAt:   "2026-01-01T00:00:00Z",
+		IssueNumber: number,
 	}
 	key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 	if f.IssueComments == nil {

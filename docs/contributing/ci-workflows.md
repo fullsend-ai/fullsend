@@ -202,7 +202,7 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 
 ### Gate job mitigation
 
-The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`). The policy lives in Go (`internal/e2eauth`, exposed as [`fullsend ci check-e2e-authorization`](../cli/ci.md)).
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`). The same-repository author/label policy and the `/ok-to-test` comment mode both live in Go (`internal/e2eauth`, exposed as [`fullsend ci check-e2e-authorization`](../cli/ci.md)).
 
 > **Planned:** Point [`.github/actions/check-e2e-authorization`](../../.github/actions/check-e2e-authorization/action.yml) at that CLI instead of `scripts/check-e2e-authorization.sh` ([#8371](https://github.com/fullsend-ai/fullsend/issues/8371) part 3).
 

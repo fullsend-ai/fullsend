@@ -17,12 +17,19 @@ interactive operator tools.
 
 Decide whether a pull request may run credentialed e2e tests.
 
-The command authorizes a run when the PR author is a trusted bot, when
-the collaborator permission API confirms write access or higher, or when
-this run is an `ok-to-test` labeled event from a user with write access.
-A labeled event authorizes only when the event label is `ok-to-test`.
-Other labels do not authorize, even if `ok-to-test` is already on the
-pull request.
+**Same-repository `pull_request` runs** (fullsend `e2e.yml`): authorize when
+the PR author is a trusted bot or the collaborator permission API confirms
+write access or higher.
+
+**Fork `/ok-to-test` runs** (`EVENT_NAME=issue_comment`, `e2e-ok-to-test.yml`):
+fetch the comment by `COMMENT_ID`, verify it belongs to the PR, require the
+commenter to have write+ access, and authorize only when the first line is
+`/ok-to-test` followed by the full 40-character PR head sha.
+
+**Labeled events** (for example the agents repository gate): authorize only
+when `EVENT_LABEL` is `ok-to-test` and the labeler has write+ access.
+fullsend's own `e2e.yml` no longer triggers on `labeled`
+([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)).
 
 This is the Go replacement for
 [`scripts/check-e2e-authorization.sh`](../../scripts/check-e2e-authorization.sh).
@@ -42,6 +49,20 @@ fullsend ci check-e2e-authorization [PR_NUMBER] [OWNER/REPO] [flags]
 
 Positional arguments match the bash script. You can also pass `--pr`
 and `--repo`, or set `PR_NUMBER` and `GITHUB_REPOSITORY`.
+
+### Environment
+
+| Variable | Used when | Description |
+|----------|-----------|-------------|
+| `EVENT_NAME` | always | `issue_comment` selects `/ok-to-test` comment mode |
+| `COMMENT_ID` | `issue_comment` | Comment id to fetch from the API (required in comment mode) |
+| `COMMENTER_LOGIN` | `issue_comment` | Who posted the comment (optional; API author is used when empty) |
+| `EVENT_ACTION` | `pull_request` / `labeled` | GitHub event action |
+| `PR_UPDATED_AT` | non-`labeled` with stale labels | Frozen `pull_request.updated_at` |
+| `PR_AUTHOR_LOGIN` | `pull_request` | Pull request author login |
+| `LABEL_ACTOR_LOGIN` | `labeled` | Who applied the label on this run |
+| `EVENT_LABEL` | `labeled` | `github.event.label.name` (must be `ok-to-test` to authorize) |
+| `CHECK_E2E_AUTH_DRY_RUN` | label removal | Set to `true` to report removal without calling the API |
 
 ### Flags
 
@@ -69,18 +90,23 @@ When `GITHUB_OUTPUT` is set, the command appends:
 authorized=true|false
 reason=<reason>
 label_removed=true|false
+head_sha=<sha>
 ```
+
+`head_sha` is set in `issue_comment` mode when the write+ commenter check
+passes (even if the named sha is missing or stale). It is empty in other
+modes and when the commenter is untrusted.
 
 It also prints one stdout line:
 
 ```
-authorized=<bool> reason=<reason> label_removed=<bool>
+authorized=<bool> reason=<reason> label_removed=<bool> head_sha=<sha>
 ```
 
 If the GitHub API fails or the gate cannot be constructed (for example a
 missing token), `reason` is `error`, the cause is written to stderr, and
 the command still exits 0.
 
-`reason` values match the bash script (`trusted_bot`, `trusted_author`,
-`ok_to_test`, `fresh_ok_to_test`, `stale_ok_to_test`,
-`untrusted_labeler`, `unauthorized`, `error`).
+`reason` values match the bash script: `trusted_bot`, `trusted_author`,
+`ok_to_test`, `fresh_ok_to_test`, `stale_ok_to_test`, `untrusted_labeler`,
+`untrusted_commenter`, `missing_sha`, `unauthorized`, `error`.

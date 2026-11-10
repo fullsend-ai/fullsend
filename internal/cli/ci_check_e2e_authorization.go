@@ -17,11 +17,14 @@ import (
 type checkE2EAuthOpts struct {
 	prNumber        int
 	repo            string
+	eventName       string
 	eventAction     string
 	prUpdatedAt     string
 	prAuthorLogin   string
 	labelActorLogin string
 	eventLabel      string
+	commentID       int
+	commenterLogin  string
 	dryRun          bool
 }
 
@@ -54,19 +57,23 @@ func newCiCheckE2EAuthorizationCmd() *cobra.Command {
 		Short: "Decide whether a pull request may run credentialed e2e tests",
 		Long: `Checks whether a pull request may run credentialed e2e tests in CI.
 
-Authorized when the PR author is a trusted bot, when the collaborator
-permission API confirms write access or higher, or when this run is an
-ok-to-test labeled event from a user with write access.
+On pull_request workflows, authorizes when the PR author is a trusted
+bot or has write+ permission via the collaborator permission API.
 
-A labeled event authorizes only when --event-label (EVENT_LABEL) is
-ok-to-test. Other labels do not authorize even if ok-to-test is already
-on the pull request.
+On issue_comment workflows (fork /ok-to-test), reads the comment by
+COMMENT_ID, checks the commenter's write+ permission, and authorizes only
+when the first line is /ok-to-test followed by the full 40-character PR
+head sha.
 
-Writes authorized, reason, and label_removed to GITHUB_OUTPUT when that
-file is set, and prints the same values on one stdout line. After a
-completed check or a gate setup failure the command exits 0; callers
-inspect the outputs. A missing PR number or repository is a usage error
-and exits non-zero.`,
+On labeled events (for example the agents gate), authorizes only when
+--event-label (EVENT_LABEL) is ok-to-test and the labeler has write+
+access. fullsend's own e2e.yml does not use labeled events.
+
+Writes authorized, reason, label_removed, and head_sha to GITHUB_OUTPUT
+when that file is set, and prints the same values on one stdout line.
+After a completed check or a gate setup failure the command exits 0;
+callers inspect the outputs. A missing PR number or repository is a
+usage error and exits non-zero.`,
 		Args: cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := resolveCheckE2EAuthOpts(&opts, args, cmd.Flags().Changed("dry-run")); err != nil {
@@ -125,11 +132,20 @@ func resolveCheckE2EAuthOpts(opts *checkE2EAuthOpts, args []string, dryRunChange
 	}
 	opts.repo = owner + "/" + name
 
+	opts.eventName = firstNonEmpty(opts.eventName, os.Getenv("EVENT_NAME"))
 	opts.eventAction = firstNonEmpty(opts.eventAction, os.Getenv("EVENT_ACTION"))
 	opts.prUpdatedAt = firstNonEmpty(opts.prUpdatedAt, os.Getenv("PR_UPDATED_AT"))
 	opts.prAuthorLogin = firstNonEmpty(opts.prAuthorLogin, os.Getenv("PR_AUTHOR_LOGIN"))
 	opts.labelActorLogin = firstNonEmpty(opts.labelActorLogin, os.Getenv("LABEL_ACTOR_LOGIN"))
 	opts.eventLabel = firstNonEmpty(opts.eventLabel, os.Getenv("EVENT_LABEL"))
+	opts.commenterLogin = firstNonEmpty(opts.commenterLogin, os.Getenv("COMMENTER_LOGIN"))
+	if cid := strings.TrimSpace(os.Getenv("COMMENT_ID")); cid != "" {
+		n, err := strconv.Atoi(cid)
+		if err != nil || n <= 0 {
+			return fmt.Errorf("COMMENT_ID must be a numeric comment id, got %q", cid)
+		}
+		opts.commentID = n
+	}
 	if !dryRunChanged {
 		opts.dryRun = strings.TrimSpace(os.Getenv("CHECK_E2E_AUTH_DRY_RUN")) == "true"
 	}
@@ -163,11 +179,14 @@ func runCheckE2EAuthorization(ctx context.Context, gate e2eauth.GitHubGate, opts
 		Owner:           owner,
 		Repo:            repo,
 		PRNumber:        opts.prNumber,
+		EventName:       opts.eventName,
 		EventAction:     opts.eventAction,
 		PRUpdatedAt:     opts.prUpdatedAt,
 		PRAuthorLogin:   opts.prAuthorLogin,
 		LabelActorLogin: opts.labelActorLogin,
 		EventLabel:      opts.eventLabel,
+		CommentID:       opts.commentID,
+		CommenterLogin:  opts.commenterLogin,
 		DryRun:          opts.dryRun,
 	})
 	if res.Err != nil {
@@ -179,7 +198,8 @@ func runCheckE2EAuthorization(ctx context.Context, gate e2eauth.GitHubGate, opts
 func writeE2EAuthOutput(stdout io.Writer, githubOutput string, res e2eauth.Result) error {
 	authorized := strconv.FormatBool(res.Authorized)
 	labelRemoved := strconv.FormatBool(res.LabelRemoved)
-	if _, err := fmt.Fprintf(stdout, "authorized=%s reason=%s label_removed=%s\n", authorized, res.Reason, labelRemoved); err != nil {
+	headSHA := res.HeadSHA
+	if _, err := fmt.Fprintf(stdout, "authorized=%s reason=%s label_removed=%s head_sha=%s\n", authorized, res.Reason, labelRemoved, headSHA); err != nil {
 		return err
 	}
 	if githubOutput == "" {
@@ -189,7 +209,7 @@ func writeE2EAuthOutput(stdout io.Writer, githubOutput string, res e2eauth.Resul
 	if err != nil {
 		return fmt.Errorf("opening GITHUB_OUTPUT: %w", err)
 	}
-	_, writeErr := fmt.Fprintf(f, "authorized=%s\nreason=%s\nlabel_removed=%s\n", authorized, res.Reason, labelRemoved)
+	_, writeErr := fmt.Fprintf(f, "authorized=%s\nreason=%s\nlabel_removed=%s\nhead_sha=%s\n", authorized, res.Reason, labelRemoved, headSHA)
 	closeErr := f.Close()
 	if writeErr != nil {
 		return fmt.Errorf("writing GITHUB_OUTPUT: %w", writeErr)

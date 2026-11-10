@@ -3671,11 +3671,12 @@ func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, co
 		return nil, fmt.Errorf("get issue comment %d: %w", commentID, err)
 	}
 	var result struct {
-		ID      int    `json:"id"`
-		NodeID  string `json:"node_id"`
-		HTMLURL string `json:"html_url"`
-		Body    string `json:"body"`
-		User    struct {
+		ID       int    `json:"id"`
+		NodeID   string `json:"node_id"`
+		HTMLURL  string `json:"html_url"`
+		IssueURL string `json:"issue_url"`
+		Body     string `json:"body"`
+		User     struct {
 			Login string `json:"login"`
 		} `json:"user"`
 		CreatedAt string `json:"created_at"`
@@ -3684,13 +3685,28 @@ func (c *LiveClient) GetIssueComment(ctx context.Context, owner, repo string, co
 		return nil, fmt.Errorf("decode issue comment %d: %w", commentID, err)
 	}
 	return &forge.IssueComment{
-		ID:        result.ID,
-		NodeID:    result.NodeID,
-		HTMLURL:   result.HTMLURL,
-		Body:      result.Body,
-		Author:    result.User.Login,
-		CreatedAt: result.CreatedAt,
+		ID:          result.ID,
+		NodeID:      result.NodeID,
+		HTMLURL:     result.HTMLURL,
+		Body:        result.Body,
+		Author:      result.User.Login,
+		CreatedAt:   result.CreatedAt,
+		IssueNumber: parseGitHubIssueNumberFromURL(result.IssueURL),
 	}, nil
+}
+
+func parseGitHubIssueNumberFromURL(issueURL string) int {
+	const marker = "/issues/"
+	idx := strings.LastIndex(issueURL, marker)
+	if idx < 0 {
+		return 0
+	}
+	rest := strings.TrimSuffix(issueURL[idx+len(marker):], "/")
+	n, err := strconv.Atoi(rest)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // CreateIssueComment creates a new comment on an issue or pull request.

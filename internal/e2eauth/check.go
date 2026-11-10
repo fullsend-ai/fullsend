@@ -30,7 +30,13 @@ type Input struct {
 	// EventLabel is github.event.label.name on labeled events. A labeled
 	// event authorizes only when this equals OkToTestLabel.
 	EventLabel string
-	DryRun     bool
+	// EventName is github.event_name. issue_comment selects /ok-to-test mode.
+	EventName string
+	// CommentID is github.event.comment.id in issue_comment mode.
+	CommentID int
+	// CommenterLogin is github.event.comment.user.login in issue_comment mode.
+	CommenterLogin string
+	DryRun         bool
 }
 
 // Result is the authorization outcome written to GITHUB_OUTPUT by the gate.
@@ -38,12 +44,17 @@ type Result struct {
 	Authorized   bool
 	Reason       string
 	LabelRemoved bool
+	HeadSHA      string
 	APIError     bool
 	Err          error
 }
 
 // Check decides whether a pull request may run credentialed e2e tests in CI.
 func Check(ctx context.Context, gh GitHubGate, in Input) Result {
+	if strings.TrimSpace(in.EventName) == "issue_comment" {
+		return checkIssueComment(ctx, gh, in)
+	}
+
 	res := Result{Reason: "unauthorized"}
 
 	owner, repo := in.Owner, in.Repo

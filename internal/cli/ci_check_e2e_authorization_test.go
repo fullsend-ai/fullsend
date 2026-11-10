@@ -87,6 +87,9 @@ func clearE2EAuthEnv(t *testing.T) {
 	t.Setenv("PR_AUTHOR_LOGIN", "")
 	t.Setenv("LABEL_ACTOR_LOGIN", "")
 	t.Setenv("EVENT_LABEL", "")
+	t.Setenv("EVENT_NAME", "")
+	t.Setenv("COMMENT_ID", "")
+	t.Setenv("COMMENTER_LOGIN", "")
 	t.Setenv("CHECK_E2E_AUTH_DRY_RUN", "")
 	t.Setenv("GITHUB_OUTPUT", "")
 }
@@ -186,7 +189,7 @@ func TestRunCheckE2EAuthorization_TrustedAuthor(t *testing.T) {
 	stdout, stderr, err := runE2EAuth(t, e2eAuthGate(t, fc), opts, "")
 	require.NoError(t, err)
 	assert.Empty(t, stderr)
-	assert.Equal(t, "authorized=true reason=trusted_author label_removed=false\n", stdout)
+	assert.Equal(t, "authorized=true reason=trusted_author label_removed=false head_sha=\n", stdout)
 }
 
 func TestRunCheckE2EAuthorization_LabeledOkToTest(t *testing.T) {
@@ -206,7 +209,7 @@ func TestRunCheckE2EAuthorization_LabeledOkToTest(t *testing.T) {
 	stdout, stderr, err := runE2EAuth(t, e2eAuthGate(t, fc), opts, "")
 	require.NoError(t, err)
 	assert.Empty(t, stderr)
-	assert.Equal(t, "authorized=true reason=ok_to_test label_removed=false\n", stdout)
+	assert.Equal(t, "authorized=true reason=ok_to_test label_removed=false head_sha=\n", stdout)
 }
 
 func TestRunCheckE2EAuthorization_LabeledOtherLabel(t *testing.T) {
@@ -226,7 +229,7 @@ func TestRunCheckE2EAuthorization_LabeledOtherLabel(t *testing.T) {
 	stdout, stderr, err := runE2EAuth(t, e2eAuthGate(t, fc), opts, "")
 	require.NoError(t, err)
 	assert.Empty(t, stderr)
-	assert.Equal(t, "authorized=false reason=unauthorized label_removed=false\n", stdout)
+	assert.Equal(t, "authorized=false reason=unauthorized label_removed=false head_sha=\n", stdout)
 }
 
 func TestRunCheckE2EAuthorization_StaleRemovesLabel(t *testing.T) {
@@ -248,7 +251,7 @@ func TestRunCheckE2EAuthorization_StaleRemovesLabel(t *testing.T) {
 	stdout, stderr, err := runE2EAuth(t, e2eAuthGate(t, fc), opts, "")
 	require.NoError(t, err)
 	assert.Empty(t, stderr)
-	assert.Equal(t, "authorized=false reason=stale_ok_to_test label_removed=true\n", stdout)
+	assert.Equal(t, "authorized=false reason=stale_ok_to_test label_removed=true head_sha=\n", stdout)
 	assert.Contains(t, fc.RemovedIssueLabels, e2eAuthKey+"/"+e2eauth.OkToTestLabel)
 }
 
@@ -271,7 +274,7 @@ func TestRunCheckE2EAuthorization_DryRunDoesNotRemove(t *testing.T) {
 	stdout, stderr, err := runE2EAuth(t, e2eAuthGate(t, fc), opts, "")
 	require.NoError(t, err)
 	assert.Empty(t, stderr)
-	assert.Equal(t, "authorized=false reason=stale_ok_to_test label_removed=true\n", stdout)
+	assert.Equal(t, "authorized=false reason=stale_ok_to_test label_removed=true head_sha=\n", stdout)
 	assert.Empty(t, fc.RemovedIssueLabels)
 }
 
@@ -286,11 +289,11 @@ func TestRunCheckE2EAuthorization_GitHubOutput(t *testing.T) {
 	stdout, stderr, err := runE2EAuth(t, e2eAuthGate(t, fc), opts, outPath)
 	require.NoError(t, err)
 	assert.Empty(t, stderr)
-	assert.Equal(t, "authorized=true reason=trusted_author label_removed=false\n", stdout)
+	assert.Equal(t, "authorized=true reason=trusted_author label_removed=false head_sha=\n", stdout)
 
 	got, err := os.ReadFile(outPath)
 	require.NoError(t, err)
-	assert.Equal(t, "authorized=true\nreason=trusted_author\nlabel_removed=false\n", string(got))
+	assert.Equal(t, "authorized=true\nreason=trusted_author\nlabel_removed=false\nhead_sha=\n", string(got))
 }
 
 func TestCiCheckE2EAuthorizationCmd_ExecuteTrustedAuthor(t *testing.T) {
@@ -315,11 +318,11 @@ func TestCiCheckE2EAuthorizationCmd_ExecuteTrustedAuthor(t *testing.T) {
 	cmd.SetArgs([]string{"42", "fullsend-ai/fullsend", "--pr-author-login", "author"})
 	require.NoError(t, cmd.Execute())
 	assert.Empty(t, stderr.String())
-	assert.Equal(t, "authorized=true reason=trusted_author label_removed=false\n", stdout.String())
+	assert.Equal(t, "authorized=true reason=trusted_author label_removed=false head_sha=\n", stdout.String())
 
 	got, err := os.ReadFile(outPath)
 	require.NoError(t, err)
-	assert.Equal(t, "authorized=true\nreason=trusted_author\nlabel_removed=false\n", string(got))
+	assert.Equal(t, "authorized=true\nreason=trusted_author\nlabel_removed=false\nhead_sha=\n", string(got))
 }
 
 func TestCiCheckE2EAuthorizationCmd_MissingToken(t *testing.T) {
@@ -335,7 +338,7 @@ func TestCiCheckE2EAuthorizationCmd_MissingToken(t *testing.T) {
 	cmd.SetArgs([]string{"42", "fullsend-ai/fullsend"})
 	err := cmd.Execute()
 	require.NoError(t, err)
-	assert.Equal(t, "authorized=false reason=error label_removed=false\n", stdout.String())
+	assert.Equal(t, "authorized=false reason=error label_removed=false head_sha=\n", stdout.String())
 	assert.Contains(t, stderr.String(), "check-e2e-authorization:")
 	assert.Contains(t, stderr.String(), "--forge-token")
 }
@@ -373,6 +376,30 @@ func TestCiWriteE2EAuthOutput_Errors(t *testing.T) {
 	assert.Contains(t, err.Error(), "GITHUB_OUTPUT")
 }
 
+func TestRunCheckE2EAuthorization_IssueComment(t *testing.T) {
+	const head = "1111111111111111111111111111111111111111"
+	fc := newE2EAuthFake()
+	fc.PullRequestHeadSHA = head
+	key := e2eAuthOwner + "/" + e2eAuthRepo + "/" + fmt.Sprint(e2eAuthPR)
+	fc.IssueComments = make(map[string][]forge.IssueComment)
+	fc.IssueComments[key] = []forge.IssueComment{{
+		ID:          900,
+		Body:        "/ok-to-test " + head,
+		Author:      "maint",
+		IssueNumber: e2eAuthPR,
+	}}
+	fc.CollaboratorPermissions[e2eAuthCollabKey("maint")] = "write"
+
+	opts := e2eAuthBaseOpts()
+	opts.eventName = "issue_comment"
+	opts.commentID = 900
+	opts.commenterLogin = "maint"
+
+	stdout, _, err := runE2EAuth(t, e2eAuthGate(t, fc), opts, "")
+	require.NoError(t, err)
+	assert.Equal(t, "authorized=true reason=ok_to_test label_removed=false head_sha="+head+"\n", stdout)
+}
+
 func TestRunCheckE2EAuthorization_APIErrorStderr(t *testing.T) {
 	fc := newE2EAuthFake()
 	fc.CollaboratorPermissionErrors[e2eAuthCollabKey("author")] = fmt.Errorf("permission API down")
@@ -382,7 +409,7 @@ func TestRunCheckE2EAuthorization_APIErrorStderr(t *testing.T) {
 
 	stdout, stderr, err := runE2EAuth(t, e2eAuthGate(t, fc), opts, "")
 	require.NoError(t, err)
-	assert.Equal(t, "authorized=false reason=error label_removed=false\n", stdout)
+	assert.Equal(t, "authorized=false reason=error label_removed=false head_sha=\n", stdout)
 	assert.True(t, strings.Contains(stderr, "check-e2e-authorization:"), stderr)
 	assert.True(t, strings.Contains(stderr, "permission API down"), stderr)
 }
