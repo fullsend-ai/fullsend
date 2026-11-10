@@ -95,6 +95,11 @@ progress:
   the validation result and the result line still print.
 - **Per-agent levels are out of scope.** This ADR decides the repo-level
   setting only.
+- **Provider-keyed levels (`by_provider`) are out of scope.** For the shipped
+  agents, a provider such as `jira-ro` is attached only on runs from the
+  matching source, so `by_source` selects the same runs. A repo whose agent
+  reads a private system on runs from every source should set the repo-wide
+  `verbosity` to `tools` or `quiet`.
 - **Pre-scripts and post-scripts are out of scope.** They are the repo owner's
   own code.
 
