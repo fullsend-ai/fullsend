@@ -256,7 +256,7 @@ Overlay `when` expressions are evaluated with:
 |---|---|---|
 | `event` | `normevent.Event` | The triggering event — fields like `source.system`, `entity.kind`, `transition.kind`. The ADR 0107 fields `actor.bot_role` and `actor.role_verified` are present only when an adapter performed a bot-role lookup; guard them with `has()` |
 | `runtime.forge` | `string` | Effective forge platform (precedence: CLI flag > config.forge > CI env vars) |
-| `config` | `map[string]any` | Full per-repo config from `config.yaml` |
+| `config` | `map[string]any` | Full per-repo config from `config.yaml`, with `allowed_remote_resources` as the effective list every command family resolves (the layered chain with fullsend's default prefixes ensured on a non-empty result); the key is omitted when the resolved list is empty, so an explicit `[]` stays deny-all |
 
 ### Mutual exclusion
 
