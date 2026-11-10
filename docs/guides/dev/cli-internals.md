@@ -146,6 +146,9 @@ fullsend
 │   ├── output                               # Scan agent output for leaked secrets
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
+├── self-update                              # Replace the local binary with a verified release
+│   ├── --version <tag>                      #   Release to install (default: latest)
+│   └── --dry-run                            #   Report the update without downloading
 ├── issues                                   # Read and write issue content across trackers
 │   ├── get                                  #   Read issue content (title, type, body, comments, labels, Jira custom fields)
 │   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
@@ -456,6 +459,14 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForRun` | Release download (released CLI only) → cross-compile → latest release |
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
+
+`fullsend self-update` (`internal/selfupdate`) uses the release helpers in
+`internal/binary` (`ResolveLatestReleaseTag`, `FetchReleaseFile`,
+`ChecksumForAsset`, `ExtractFullsendFromTarGz`) for the current OS and
+architecture. Before it trusts `checksums.txt`, it verifies
+`checksums.txt.sigstore.json` with sigstore-go against the identity of the
+release workflow for the exact tag. See
+[`fullsend self-update`](../../cli/self-update.md#signature-verification).
 
 Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `.fullsend/bin/fullsend` when `--vendor` is not set. `repos install` removes them for GitHub repositories whose `repos.yaml` settings resolve `vendor: false`. The read-only plan comes from `scaffold.FindStaleVendoredAssets` and `internal/repos/stale_vendored.go`, and install, dry run and `repos status` all use it. The deletions and any caller rewrites go into the scaffold commit. Ownership comes from the embedded `.defaults/` layout plus the explicit historical lists in `internal/scaffold/vendorhistory.go`, never from the manifest alone. On an established install with stale assets, `convergeEstablishedPhases` completes this planning before any variable or secret write and reuses the plan for the scaffold commit.
 

@@ -13,7 +13,8 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
   `event` bound to a `NormalizedEvent` object. This describes the currently
   shipped event-backed path. [ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md)
   adopts a future entity-first context with required `entity` and nullable
-  `event`; its field-level contract remains follow-up versioned work.
+  `event`; its field-level contract is
+  [Normalized entity v1](../../normalized-entity/v1/README.md).
 - **Authorization:** `fullsend dispatch` enforces the
   [Authorization Contract v1](../../authorization/v1/) as a platform-level gate
   after normalization and **before** CEL evaluation. Harness `trigger`
@@ -282,10 +283,15 @@ admit an actor the role gate would deny.
 ### Fork security (`state.change_proposal.is_fork`)
 
 `is_fork` is `true` when `head_repo` differs from `base_repo` (fork-based
-change proposal). Write-capable agents (code, fix) that push commits or open
-follow-up PRs **must** gate on `!state.change_proposal.is_fork` in harness
-`trigger` expressions or rely on dispatch-level authorization per ADR 0054.
-Read-only agents (triage, review, retro) may run on fork PRs when policy allows.
+change proposal). Agents that push commits or open follow-up PRs **must** gate
+on `!state.change_proposal.is_fork` in harness `trigger` expressions or rely on
+dispatch-level authorization per ADR 0054. Triage and review are observation
+agents. Retro can create issues and comments, so its dispatch authorization
+must be considered separately; GitHub PR-close retro requires the closing or
+merging actor to have write access, including for a completed merge-queue
+merge. GitHub App and bot senders have `role: none`, so their close or merge
+events, including bot automerges through a merge queue, do not start retro. A
+write-authorized user can run `/fs-retro` afterward.
 
 ### Change facts (`state.change_proposal.diff`, `state.change_proposal.linked_work_items`)
 

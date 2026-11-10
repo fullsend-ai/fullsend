@@ -46,7 +46,7 @@ func TestCodexDelegates(t *testing.T) {
 	}{
 		{name: "no tools line includes Agent", agent: codexTestDelegatingAgentDef, security: true, want: true},
 		{name: "tools naming Agent", agent: "---\nname: review\ntools: Bash,Agent\n---\nbody\n", security: true, want: true},
-		{name: "tools naming Task, the alias codex maps to spawn_agent", agent: "---\nname: review\ntools: Bash,Task\n---\nbody\n", security: true, want: true},
+		{name: "tools naming Task, the alias of Agent", agent: "---\nname: review\ntools: Bash,Task\n---\nbody\n", security: true, want: true},
 		{name: "tools without Agent", agent: codexTestAgentDef, security: true, want: false},
 		{name: "security disabled", agent: codexTestDelegatingAgentDef, security: false, want: false},
 		{name: "empty tools list", agent: "---\nname: review\ntools: []\n---\nbody\n", security: true, want: false},

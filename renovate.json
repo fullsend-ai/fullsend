@@ -117,10 +117,35 @@
       "description": "codex minor bumps change the `codex exec --json` wire shape and the hook payloads, so the stream fixtures under internal/runtime/testdata/codex and the hook adapter must be re-verified before a pin move lands, even for patch/pin updates — the same reason pi is not automerged (#6920)",
       "matchPackageNames": ["@openai/codex"],
       "automerge": false
+    },
+    {
+      "description": "ty 0.0.x releases rename and split rules (0.0.98 renamed unresolved-import, #9133; 0.0.100 renamed unresolved-attribute and added missing-union-attribute, #9226), so a pin bump must re-check the ty hook's --ignore list in .pre-commit-config.yaml and the Makefile check target before it lands, even for patch/pin updates.",
+      "matchDatasources": ["pypi"],
+      "matchPackageNames": ["ty"],
+      "automerge": false
+    },
+    {
+      "description": "Keep the npx lint-staged pin in .pre-commit-config.yaml equal to the package-lock.json version, so one PR moves both (#9226). npx uses the local install only on an exact version match.",
+      "matchPackageNames": ["lint-staged"],
+      "groupName": "lint-staged"
+    },
+    {
+      "description": "Keep the ruff-pre-commit rev and the Makefile uvx ruff pin on one version in one PR (#9226).",
+      "matchPackageNames": ["ruff", "astral-sh/ruff-pre-commit"],
+      "groupName": "ruff",
+      "automerge": false
+    },
+    {
+      "description": "Pre-commit hooks are linters and scanners: a patch release can add or rename checks, and the code runs on contributor machines. Review hook rev bumps by hand (#9226).",
+      "matchManagers": ["pre-commit"],
+      "automerge": false
     }
   ],
   "postUpdateOptions": ["gomodTidy"],
   "git-submodules": {
+    "enabled": true
+  },
+  "pre-commit": {
     "enabled": true
   },
   "github-actions": {
@@ -302,6 +327,26 @@
       "depNameTemplate": "sigstore/cosign",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track version-pinned uvx (PyPI) tool fetches in pre-commit hook entries and Makefile targets, e.g. `uvx ty@0.0.99`, `uvx ruff@0.15.7` (#9226). Unpinned fetches pick up each new release the moment it ships.",
+      "managerFilePatterns": ["/^\\.pre-commit-config\\.yaml$/", "/^Makefile$/"],
+      "matchStrings": [
+        "\\buvx\\s+(?<depName>[A-Za-z0-9][A-Za-z0-9._-]*)@(?<currentValue>[^\\s'\"]+)"
+      ],
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "pep440"
+    },
+    {
+      "customType": "regex",
+      "description": "Track version-pinned npx (npm) tool fetches in pre-commit hook entries and Makefile targets, e.g. `npx lint-staged@16.4.0`; scoped package names are allowed (#9226).",
+      "managerFilePatterns": ["/^\\.pre-commit-config\\.yaml$/", "/^Makefile$/"],
+      "matchStrings": [
+        "\\bnpx\\s+(?<depName>(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*)@(?<currentValue>[^\\s'\"]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "versioningTemplate": "npm"
     }
   ]
 }

@@ -99,6 +99,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newCheckProtectedBranchCmd())
 	cmd.AddCommand(newCiCmd())
 	cmd.AddCommand(newLintCmd())
+	cmd.AddCommand(newSelfUpdateCmd())
 	return cmd
 }
 
