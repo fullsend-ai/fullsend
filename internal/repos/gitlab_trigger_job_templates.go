@@ -61,6 +61,12 @@ func (s ciTemplateScope) lookup(name, what string) (node *yaml.Node, why string)
 	return node, ""
 }
 
+// defines reports whether the file itself defines the top-level name.
+func (s ciTemplateScope) defines(name string) bool {
+	_, ok := s.keys[name]
+	return ok
+}
+
 // jobAdmission is the effective configuration that decides whether GitLab
 // adds a job to a pipeline. A nil field means the key is absent.
 type jobAdmission struct {
@@ -78,8 +84,23 @@ type jobAdmission struct {
 // another file, a cycle or over-deep chain, a non-literal extends value, an
 // unresolvable merge key or alias, and only/except anywhere in the chain
 // (their admission semantics are not modelled).
+//
+// One exception (#8731): when the job defines its own rules:, an extends
+// target the file does not define (a template from an include) is skipped
+// instead of failing closed. GitLab replaces the inherited rules with the
+// job's own, so the unseen template cannot change which rule decides. It
+// could only supply a job-level when:, which the evaluation does not rely on
+// here: a matching rule without its own when: is already treated as
+// admitting, and a template's when: never could only reject more. A template
+// shared with another loaded file still fails closed, and so do only/except
+// on the job and !reference tags the file cannot resolve.
 func effectiveJobAdmission(job *yaml.Node, scope ciTemplateScope) (adm jobAdmission, why string) {
-	adm, _, why = resolveExtendsAdmission(job, "configuration", scope, 0, map[*yaml.Node]bool{}, map[*yaml.Node]resolvedExtends{})
+	skipUndefined := false
+	if mapping := resolveAlias(job); mapping != nil && mapping.Kind == yaml.MappingNode {
+		rules, ok := effectiveMappingValue(mapping, "rules")
+		skipUndefined = ok && rules != nil
+	}
+	adm, _, why = resolveExtendsAdmission(job, "configuration", scope, skipUndefined, 0, map[*yaml.Node]bool{}, map[*yaml.Node]resolvedExtends{})
 	if why != "" || adm.rules == nil {
 		return adm, why
 	}
@@ -102,8 +123,9 @@ type resolvedExtends struct {
 // successfully, so a template shared by many extends: entries is resolved once
 // and the total work stays linear in the number of templates and extends
 // entries rather than in the number of paths through them. Failures are not
-// cached: the first one aborts the whole resolution.
-func resolveExtendsAdmission(node *yaml.Node, label string, scope ciTemplateScope, depth int, visiting map[*yaml.Node]bool, memo map[*yaml.Node]resolvedExtends) (adm jobAdmission, height int, why string) {
+// cached: the first one aborts the whole resolution. skipUndefined skips
+// extends targets the file does not define (see effectiveJobAdmission).
+func resolveExtendsAdmission(node *yaml.Node, label string, scope ciTemplateScope, skipUndefined bool, depth int, visiting map[*yaml.Node]bool, memo map[*yaml.Node]resolvedExtends) (adm jobAdmission, height int, why string) {
 	const chainErr = "extends chain is cyclic or nested more than %d levels"
 	mapping := resolveAlias(node)
 	if mapping == nil || mapping.Kind != yaml.MappingNode || hasNonCoreTag(mapping) {
@@ -140,11 +162,14 @@ func resolveExtendsAdmission(node *yaml.Node, label string, scope ciTemplateScop
 			return adm, 0, "extends value is not a literal template name or list of names"
 		}
 		for _, name := range names {
+			if skipUndefined && !scope.defines(name) {
+				continue
+			}
 			target, why := scope.lookup(name, "extends target")
 			if why != "" {
 				return adm, 0, why
 			}
-			parent, parentHeight, why := resolveExtendsAdmission(target, fmt.Sprintf("extends target %q", name), scope, depth+1, visiting, memo)
+			parent, parentHeight, why := resolveExtendsAdmission(target, fmt.Sprintf("extends target %q", name), scope, skipUndefined, depth+1, visiting, memo)
 			if why != "" {
 				return adm, 0, why
 			}

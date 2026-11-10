@@ -177,8 +177,15 @@ repo baseline and overrides)
   infrastructure plumbing (credentials, project IDs, regions) and values
   computable only at CI runtime; agent behavior defaults are set via
   harness `env.runner`/`env.sandbox` and overridden through `base:`
-  composition, never the workflow file
+  composition or an entry's `harness:` block (below), never the workflow
+  file
   ([ADR 0081](ADRs/0081-reserve-workflow-env-for-infra-plumbing.md)).
+- Harness overrides from config: an `agents:` entry may carry a `harness:`
+  block that works as a harness built on the agent's harness, without
+  pinning it, so a repo can change most harness settings without writing a
+  harness file. It cannot add `env` variables the harness does not declare,
+  and run, lint, lock and dispatch all compose it
+  ([ADR 0162](ADRs/0162-agent-entries-may-carry-harness-overrides.md)).
 - Agent-driven branch targeting: the code agent writes its chosen target
   branch to structured output. The post-script validates the choice against
   an allowlist and falls back to the repo's auto-detected default branch.
@@ -343,7 +350,7 @@ flowchart TB
   Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
 - Decided, not yet implemented: extend the runner-owned native Codex child
-  policy to V2 alongside the 0.166.0 bump. Bootstrap requires the `Agent` tool,
+  policy to V2. Bootstrap requires the `Agent` tool,
   harness security and a direct-route parent selecting V1 or V2 in the bundled
   model catalog (absent means V1); other parents keep delegation off. The
   runner binds child models and effort, registers roles and admits only

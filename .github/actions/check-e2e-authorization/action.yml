@@ -1,6 +1,7 @@
 name: Check E2E Authorization
 description: >-
-  Authorize PR-triggered e2e runs for trusted authors or an ok-to-test labeled event.
+  Authorize PR-triggered e2e runs for trusted authors, an ok-to-test labeled event,
+  or a `/ok-to-test <sha>` comment from a user with write access (runs only that commit).
   Removes stale ok-to-test labels and posts a sticky PR comment when unauthorized.
 
 inputs:
@@ -30,6 +31,20 @@ inputs:
     description: github.event.sender.login (who applied the label on labeled events)
     required: false
     default: ""
+  event_name:
+    description: github.event_name (issue_comment selects /ok-to-test command mode)
+    required: false
+    default: ""
+  commenter_login:
+    description: github.event.comment.user.login (/ok-to-test command mode)
+    required: false
+    default: ""
+  comment_id:
+    description: >-
+      github.event.comment.id (required in /ok-to-test command mode; the comment
+      and the sha it names are read from the API)
+    required: false
+    default: ""
   docs_url:
     description: Link to e2e testing documentation
     required: false
@@ -45,6 +60,11 @@ outputs:
   label_removed:
     description: Whether a stale ok-to-test label was removed
     value: ${{ steps.check.outputs.label_removed }}
+  head_sha:
+    description: >-
+      PR head sha a /ok-to-test comment authorized or refused (empty for an
+      untrusted commenter and in other modes)
+    value: ${{ steps.check.outputs.head_sha }}
 
 runs:
   using: composite
@@ -61,6 +81,9 @@ runs:
         PR_AUTHOR_ASSOCIATION: ${{ inputs.pr_author_association }}
         PR_AUTHOR_LOGIN: ${{ inputs.pr_author_login }}
         LABEL_ACTOR_LOGIN: ${{ inputs.label_actor_login }}
+        EVENT_NAME: ${{ inputs.event_name }}
+        COMMENTER_LOGIN: ${{ inputs.commenter_login }}
+        COMMENT_ID: ${{ inputs.comment_id }}
       run: bash "${GITHUB_WORKSPACE}/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
 
     # fresh_ok_to_test: a newer label belongs to the labeled workflow.
@@ -74,6 +97,8 @@ runs:
         PR_NUMBER: ${{ inputs.pr_number }}
         REASON: ${{ steps.check.outputs.reason }}
         LABEL_REMOVED: ${{ steps.check.outputs.label_removed }}
+        HEAD_SHA: ${{ steps.check.outputs.head_sha }}
+        EVENT_NAME: ${{ inputs.event_name }}
         DOCS_URL: ${{ inputs.docs_url }}
         BOT_LOGIN: github-actions[bot]
       run: |
@@ -88,23 +113,35 @@ runs:
 
         "
 
-        case "${REASON}" in
-          stale_ok_to_test)
+        case "${EVENT_NAME}:${REASON}" in
+          issue_comment:stale_ok_to_test)
+            body+="The \`/ok-to-test\` comment named a commit that is not the PR head \`${HEAD_SHA}\`. Someone with write access must review the latest changes and comment \`/ok-to-test <sha>\` with the current head sha.
+        "
+            ;;
+          issue_comment:missing_sha)
+            body+="\`/ok-to-test\` must name the commit you reviewed, as its full 40-character sha: \`/ok-to-test <sha>\`. The PR head is now \`${HEAD_SHA}\`; if that is not the commit you reviewed, review it first. A later push needs a new comment.
+        "
+            ;;
+          issue_comment:untrusted_commenter)
+            body+="The \`/ok-to-test\` comment did not authorize this run because its author does not have write access. Do not repeat it yourself: ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](https://github.com/fullsend-ai/fullsend/blob/main/MAINTAINERS.md), to comment \`/ok-to-test <sha>\` after reviewing the latest changes.
+        "
+            ;;
+          *:stale_ok_to_test)
             body+="The \`ok-to-test\` label was removed because the PR changed after it was applied (usually a new push). Someone with write access must re-apply \`ok-to-test\` after reviewing the latest changes.
         "
             ;;
-          untrusted_labeler)
+          *:untrusted_labeler)
             body+="The \`ok-to-test\` label did not authorize this run because it was applied by a user without write access. Do not re-apply it yourself: ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](https://github.com/fullsend-ai/fullsend/blob/main/MAINTAINERS.md), to apply \`ok-to-test\` after reviewing the latest changes.
         "
             ;;
-          error)
+          *:error)
             body+="The authorization check failed (GitHub API error). Re-run the workflow when the API is available; if this persists, contact a maintainer.
         "
             ;;
           *)
-            body+="E2E tests run automatically for pull requests authored by users with **write access or higher**.
+            body+="E2E tests run automatically for same-repository pull requests authored by users with **write access or higher**.
 
-        For other contributors, someone with write access must add the \`ok-to-test\` label **after** the latest push.
+        For other contributors, and for any pull request from a fork, someone with write access must review the latest push and comment \`/ok-to-test <sha>\` on the PR, where \`<sha>\` is the PR's latest commit.
         "
             ;;
         esac
