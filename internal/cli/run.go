@@ -1096,6 +1096,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail(err.Error())
 		return fmt.Errorf("%s: %w", runCfg.source, err)
 	}
+	// trace_context is checked the same way (ADR 0154): a malformed block
+	// fails the run before the sandbox exists.
+	if runCfg.perRepo != nil {
+		if err := config.ValidateTraceContext(runCfg.perRepo.TraceContext()); err != nil {
+			printer.StepFail(err.Error())
+			return fmt.Errorf("%s: %w", runCfg.source, err)
+		}
+	}
 	// resolvedModel is the alias-table target when models.aliases remaps
 	// h.Model, h.Model otherwise. It is what the echo and the Claude Code
 	// warning look at; pi still prefixes a bare id with its provider.
@@ -3381,6 +3389,13 @@ var oidcDenyKeys = map[string]bool{
 	"FULLSEND_TRIGGER_TOKEN":                true,
 	"FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN": true,
 	"FULLSEND_WEBHOOK_SECRET":               true,
+	// The trace-context signing seed (ADR 0154), which `fullsend repos
+	// install` provisions as a protected, wildcard-scoped GitLab CI/CD
+	// variable. No run reads it, and fullsend's GitLab jobs unset it on
+	// their first before_script line; listing it here keeps a harness from
+	// expanding it and strips it from host-side scripts if it is ever still
+	// present.
+	forge.SecretTraceSigningKey: true,
 	// The runner secrets bundle and its file path (ADR 0136).
 	// loadRunnerSecrets unsets both at start-up; listing them here keeps a
 	// harness from expanding the whole bundle and strips them from child
