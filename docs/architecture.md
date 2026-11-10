@@ -342,6 +342,10 @@ flowchart TB
   ([ADR 0158](ADRs/0158-overlays-may-grant-runtime-fetch-within-the-config-allowlist.md)).
   Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
+- Decided, not yet implemented: exact Pi extension tool selections resolve
+  against runner-vetted extensions and keep an explicit effective tool set,
+  including empty sets; unsupported selections fail before inference
+  ([ADR 0166](ADRs/0166-select-pi-extension-tools-without-widening-access.md)).
 - Decided, not yet implemented: extend the runner-owned native Codex child
   policy to V2 alongside the 0.166.0 bump. Bootstrap requires the `Agent` tool,
   harness security and a direct-route parent selecting V1 or V2 in the bundled
@@ -618,6 +622,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
   [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
 
+- Decided, not yet implemented: repository-owned operation journals retain
+  separate dispatch, execution and publication receipts. Conditional state
+  updates and ownership generations support cross-host recovery while domain
+  adapters retain target and completion semantics
+  ([ADR 0165](ADRs/0165-recover-work-through-repository-owned-operation-journals.md)).
+
 **Open questions:**
 
 - What provider query plans can support entity-first evaluation over the
@@ -632,7 +642,8 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent
   idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
-  lock refresh; ADR 0098 does not resolve this question.)
+  lock refresh; ADR 0165 chooses an operation journal for recoverable effects,
+  while adapter implementation and external-system guarantees remain open.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - How should explicit cancellation, retry, and reassignment interact with the
   automatic event-coalescing policy in
