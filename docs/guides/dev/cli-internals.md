@@ -146,6 +146,12 @@ fullsend
 │   ├── output                               # Scan agent output for leaked secrets
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
+├── push-signed                              # Push local commits as signed commits via GitHub GraphQL API
+│   ├── --repo <owner/repo>                  #   Repository (default: $GITHUB_REPOSITORY)
+│   ├── --branch <string>                    #   Remote branch to push to (required)
+│   ├── --base <string>                      #   Base branch name that exists locally and on the remote (required)
+│   ├── --repo-dir <path>                    #   Local git repository directory (default: $REPO_DIR or cwd)
+│   └── --token <string>                     #   GitHub token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)
 ├── self-update                              # Replace the local binary with a verified release
 │   ├── --version <tag>                      #   Release to install (default: latest)
 │   └── --dry-run                            #   Report the update without downloading
