@@ -354,3 +354,60 @@ func TestConverge_GatewayAPIKeyRequiresSecret(t *testing.T) {
 		assert.Contains(t, fields, forge.SecretInferenceGatewayAPIKey)
 	})
 }
+
+// TestGatewayAPIKey_UnusableVariable checks that an existing gateway API key
+// that jobs cannot use (file-type, unmasked, unprotected, or
+// environment-scoped) is reported by the probe without a match, and rejected
+// by convergence before any write.
+func TestGatewayAPIKey_UnusableVariable(t *testing.T) {
+	tests := []struct {
+		name   string
+		prot   forge.SecretProtection
+		defect string
+	}{
+		{name: "file-type", prot: forge.SecretProtection{Exists: true, Masked: true, Protected: true, FileType: true}, defect: "file-type variable"},
+		{name: "unmasked", prot: forge.SecretProtection{Exists: true, Protected: true}, defect: "unmasked variable"},
+		{name: "unprotected", prot: forge.SecretProtection{Exists: true, Masked: true}, defect: "unprotected variable"},
+		{name: "unmasked and unprotected", prot: forge.SecretProtection{Exists: true}, defect: "unmasked and unprotected variable"},
+		{name: "environment-scoped", prot: forge.SecretProtection{Exists: true, Masked: true, Protected: true, EnvironmentScoped: true}, defect: "environment-scoped variable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			key := "acme/api/" + forge.SecretInferenceGatewayAPIKey
+			fc := newFakeClientForBatch("acme/api")
+			fc.Secrets[key] = true
+			if fc.SecretProtections == nil {
+				fc.SecretProtections = map[string]forge.SecretProtection{}
+			}
+			fc.SecretProtections[key] = tt.prot
+
+			cfg := ResolvedConfig{Owner: "acme", Repo: "api", Forge: ForgeGitLab, Managed: mustManagedConfig(t, gatewayAPIKeyYAML).Writer()}
+			components, err := ProbeComponentsForConfig(context.Background(), fc, cfg, defaultForgeConfig, nil)
+			require.NoError(t, err)
+			var found bool
+			for _, c := range components {
+				if c.Name == "secret:"+forge.SecretInferenceGatewayAPIKey {
+					found = true
+					assert.True(t, c.Present)
+					assert.False(t, c.Match)
+					assert.Equal(t, tt.defect, c.Actual)
+				}
+			}
+			require.True(t, found)
+			assert.False(t, AllMatch(components))
+
+			m := newConvergeManifest("acme/api")
+			m.Defaults.Inference.Auth = ""
+			m.Defaults.Config = mustManagedConfig(t, gatewayAPIKeyYAML)
+			require.NoError(t, m.Validate())
+			sc := &recordingScaffoldCommit{}
+			result, err := Converge(context.Background(), withoutInferenceInputs(convergeCfgWithDefaults(m)), newTestClientFactory(fc), sc.fn(), noopProgress)
+			require.NoError(t, err)
+			failed := result.Failed()
+			require.Len(t, failed, 1)
+			assert.Contains(t, failed[0].Error.Error(), forge.SecretInferenceGatewayAPIKey)
+			assert.Contains(t, failed[0].Error.Error(), tt.defect)
+			assert.NotContains(t, sc.repos, "acme/api", "nothing is written for the rejected repo")
+		})
+	}
+}
