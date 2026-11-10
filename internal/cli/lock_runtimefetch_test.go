@@ -15,7 +15,7 @@ import (
 )
 
 // A fetch-only harness (allow_runtime_fetch with no URL references) is held
-// to the config-level subset check like a URL-referencing one (#7395801).
+// to the config-level subset check like a URL-referencing one (#9291).
 func TestRunLock_FetchOnlyHarnessNoOrgConfigErrors(t *testing.T) {
 	// Without config.yaml there is no config-level allowlist to validate
 	// against, so lock fails closed exactly as it does for a harness with
@@ -50,7 +50,7 @@ func TestRunLock_BareDeclarationRemoteResourcesNotSubset(t *testing.T) {
 	// A bare allowed_remote_resources declaration (no allow_runtime_fetch,
 	// no URL references) still starts the runtime fetch service for
 	// backward compatibility, so the deprecated shape is held to the same
-	// config-level subset check too (#7395801): the gate is
+	// config-level subset check too (#9291): the gate is
 	// shouldStartFetchService, not just the explicit opt-in.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -115,7 +115,7 @@ func TestRunLock_UpToDateEntryStillValidatesRemoteResources(t *testing.T) {
 	// allowed_remote_resources. Lock with a config that covers the list,
 	// then narrow config.yaml (harness and entry unchanged): the second
 	// lock without --update must fail naming the uncovered entry instead
-	// of reporting the entry up to date (#7395801).
+	// of reporting the entry up to date (#9291).
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
 
@@ -168,4 +168,36 @@ allowed_remote_resources:
 	assert.Contains(t, err.Error(), "validating allowed remote resources")
 	assert.Contains(t, err.Error(), fmt.Sprintf("%q is not covered by the org allowlist", fetchOnlyPrefix))
 	assert.NotContains(t, err.Error(), "up to date")
+}
+
+func TestRunLock_FetchOnlyHarnessMalformedOrgConfigErrors(t *testing.T) {
+	// A config.yaml that exists but cannot be parsed is reported with its
+	// load error, never as the fetch gate's missing-file message: only an
+	// absent config.yaml is "runtime fetch requires"
+	// (TestRunLock_FetchOnlyHarnessNoOrgConfigErrors).
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	harnessContent := `agent: agents/code.md
+role: test
+allow_runtime_fetch: true
+allowed_remote_resources:
+  - "https://example.com/"
+`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "local.yaml"),
+		[]byte(harnessContent),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("{{invalid yaml"),
+		0o644,
+	))
+
+	printer := ui.New(os.Stdout)
+	err := runLock(context.Background(), "local", dir, "", false, resolveFlags{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading fullsend config")
+	assert.NotContains(t, err.Error(), "runtime fetch requires")
 }

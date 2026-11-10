@@ -12,8 +12,8 @@ import (
 // A bare allowed_remote_resources declaration (no allow_runtime_fetch, no
 // URL references) still starts the runtime fetch service for backward
 // compatibility, so lint holds the deprecated shape to the same config-level
-// subset check as a URL-referencing harness (#7395801). This test sits in
-// its own file because the reproduction commit froze lint_test.go.
+// subset check as a URL-referencing harness (#9291). The case sits in its
+// own file, separate from lint_test.go's URL-reference cases.
 func TestLintCommand_BareDeclarationRemoteResourcesNotSubset(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `version: "1"
