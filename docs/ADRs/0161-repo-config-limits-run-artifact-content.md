@@ -112,7 +112,10 @@ artifacts:
   A file added to `output/` later stays excluded until this list names it.
   `security/findings.jsonl` stays out: a finding's `detail` can quote tool
   output, and a copy with that field stripped would break the file's hash
-  chain. It stays on the runner for local checks.
+  chain. It stays on the runner for local checks. In the staged
+  `run-telemetry.jsonl`, "conversation content removed" means every
+  attribute and event that content capture adds (ADR 0050) is dropped. If a
+  record can't be parsed or stripped, the file is left out.
 - **Filtering happens after local use, and fails closed.** The runner leaves
   `output/` untouched, so `fullsend eval-measure` and post-scripts read the
   full run. A step after them builds a staged copy, and the runner uploads
