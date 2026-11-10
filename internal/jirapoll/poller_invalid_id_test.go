@@ -453,3 +453,54 @@ func TestRun_MalformedKeyEventSkipped(t *testing.T) {
 		t.Errorf("P-1 lastCheck = %v (err %v), want advanced past the skipped event", got, err)
 	}
 }
+
+// TestRun_LoneBadEventFailsEveryCycle: the all-invalid guard counts events,
+// not issues, so one bad issue alone in a quiet cycle is "every event" — the
+// cycle fails and holds the checkpoint, and because no checkpoint advanced,
+// the next cycle re-detects the same event and fails again. The repeat is the
+// guard's intent (nothing is lost behind a green run) and is bounded: it ends
+// when the event ages past the first-poll backfill floor (24h by default) or
+// another selected issue produces a valid event. Reviewed on PR #9191
+// (thread 4526836669): this pins the one-issue-alone outcome as intended.
+func TestRun_LoneBadEventFailsEveryCycle(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "not-a-number",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Labels:   []string{},
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "1",
+			Body:    "/fs-code fix it",
+			Created: now.Add(-30 * time.Minute).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "u1", AccountType: "atlassian"},
+		},
+	}
+
+	p := newTestPoller(mc, &stubMatcher{agents: []string{"code"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+	})
+	for cycle := 1; cycle <= 2; cycle++ {
+		logBuf := captureLog(t)
+		if err := p.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "failed normalized-event validation") {
+			t.Fatalf("cycle %d: Run() error = %v, want the all-invalid cycle to fail", cycle, err)
+		}
+		const summary = "WARNING: skipped 2 of 2 events this cycle because they failed normalized-event validation"
+		if !strings.Contains(logBuf.String(), summary) {
+			t.Errorf("cycle %d: poll log lacks %q:\n%s", cycle, summary, logBuf.String())
+		}
+		if got, err := p.readLastCheck(context.Background(), "PROJ-123"); err != nil || !got.IsZero() {
+			t.Errorf("cycle %d: PROJ-123 lastCheck = %v (err %v), want held at zero so the next cycle re-detects the event", cycle, got, err)
+		}
+	}
+}
