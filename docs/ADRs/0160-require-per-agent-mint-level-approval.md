@@ -71,8 +71,9 @@ a stage-specific entry wins; `default` supplies the grant for other stages
 when present, otherwise the built-in profile applies to each unlisted stage.
 This fallback is an intentional compatibility trade-off, not a record of
 operator consent: it implicitly grants `post_script` write. Removing an
-explicit stage entry therefore restores that stage's built-in grant; an empty
-list is required to deny every level for that stage.
+explicit stage entry therefore uses the map's `default` list when present;
+otherwise it restores that stage's built-in grant. An empty list is required
+to deny every level for that stage.
 
 For example:
 
@@ -143,10 +144,11 @@ bypass.
   implicit `post_script` write grant. This deliberately preserves Ralph's
   proposed default, but does not satisfy #7548's no-write-by-default criterion
   for agents registered by editing config directly. Deleting an explicit
-  `post_script: []` also restores the built-in write grant. A repository that
-  requires every write grant to be recorded must set `post_script: []` or
-  another explicit grant; changing the fallback to deny-by-default would
-  require a separate migration decision.
+  `post_script: []` restores the map's `default` list when present; only when
+  that key is absent does it restore the built-in post-script write grant. A
+  repository that requires every write grant to be recorded must set
+  `post_script: []` or another explicit grant; changing the fallback to
+  deny-by-default would require a separate migration decision.
 - The supported add/install and update/upgrade commands show the effective
   requested levels and require full approval before writing the grant. That
   supplies deliberate consent for those CLI flows; it does not turn an omitted
