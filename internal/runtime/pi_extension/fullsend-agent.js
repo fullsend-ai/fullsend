@@ -524,7 +524,7 @@ export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
   // even if inactive. Resource tools are in the same MCP category. Deny
   // unselected names explicitly, preserving any selected resources.
   if (tools.length > 0 && !tools.some((t) => t.startsWith("mcp__"))) {
-    const resources = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"];
+    const resources = JSON.parse(readFileSync(new URL("./mcp-resource-tools.json", import.meta.url), "utf8"));
     args.push("--exclude-tools", ["mcp__*", ...resources.filter((name) => !tools.some((pattern) => toolMatches(pattern, name)))].join(","));
   }
   args.push("--model", modelSpec);

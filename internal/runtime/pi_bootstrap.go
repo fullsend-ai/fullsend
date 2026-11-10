@@ -349,6 +349,9 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 	}
 
 	if agentTool {
+		if err := uploadBytes(sandboxName, cfg+"/mcp-resource-tools.json", piMCPResourceJSON); err != nil {
+			return fmt.Errorf("installing MCP resource names: %w", err)
+		}
 		if err := uploadBytes(sandboxName, cfg+"/"+piAgentExtensionFile, piAgentExtensionJS); err != nil {
 			return fmt.Errorf("installing agent extension: %w", err)
 		}

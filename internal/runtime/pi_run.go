@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
@@ -18,8 +20,18 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// piMCPResourceTools mirrors MCP_RESOURCE_TOOLS in pi's core/mcp-servers.js.
-var piMCPResourceTools = []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"}
+// Shared with the child dispatcher; the real-pi parity test checks upstream.
+//
+//go:embed pi_extension/mcp-resource-tools.json
+var piMCPResourceJSON []byte
+
+var piMCPResourceTools = func() []string {
+	var names []string
+	if err := json.Unmarshal(piMCPResourceJSON, &names); err != nil {
+		panic(err) // Invalid embedded source data, not runtime input.
+	}
+	return names
+}()
 
 // piMCPResourcePattern accepts resource names and scoped resource patterns,
 // not broad wildcards that could accidentally select unrelated tools.

@@ -1053,6 +1053,18 @@ fleet's sub-agent skills dispatch unchanged. The block is written — and `Run` 
 with `-e`, after the hook adapter — when the agent definition has no `tools:` frontmatter or lists
 `Agent`/`Task`; otherwise the older "no sub-agent tool" runtime note is appended instead.
 
+Direct-exposure MCP tools can be selected through agent and persona frontmatter.
+Nested calls to `codemode`/`deferred` tools require a separately reachable
+executor. `--no-extensions` disables pi's built-in MCP, codemode, and search
+extensions; `codemode` and `tool_search` are not accepted by the explicit tool
+mapper. The nested-execution fixtures test pi's API, not that configuration path.
+The offline direct-MCP regression starts with real frontmatter and Bootstrap,
+then runs the rendered parent selection and generated child selection in real pi.
+
+Go and the child dispatcher share `pi_extension/mcp-resource-tools.json`.
+Bootstrap uploads this file beside the dispatcher. The pinned-pi parity test
+reads the complete upstream resource category, so additions fail the test.
+
 | Manifest field | Meaning |
 |---|---|
 | `enabled` | The tool is registered. `Run` also gates the `-e` and the integrity guard on it |

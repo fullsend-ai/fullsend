@@ -76,6 +76,9 @@ jobs:
 
       - run: make script-test
 
+      - name: Test frontmatter to real pi MCP launch
+        run: go test -race -count=1 -timeout 120s ./internal/runtime -run TestPiBootstrap_DirectMCPRealPi
+
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:

@@ -408,6 +408,15 @@ nonempty parent and child selections without `mcp__` entries also get
 Selected resource names/patterns remain available. Pi otherwise retains these
 registrations, which can leave tools callable through codemode or deferred
 exposure even when inactive. Default and extension-only parent modes are unchanged.
+Direct-exposure MCP tools can reach the model through these tool lists.
+`codemode` and `deferred` tools need a separately reachable executor for nested
+calls. Fullsend uses `--no-extensions`, so pi's built-in MCP, codemode, and
+search extensions do not load automatically. The tool mapper does not accept
+`codemode` or `tool_search` in explicit frontmatter. The nested-call fixtures
+exercise pi's execution API; they are not examples of supported frontmatter.
+
+Parent and child resource exclusions share `mcp-resource-tools.json`. A parity
+test reads the complete upstream resource category and fails on drift.
 CI runs the offline real-pi regressions against `PI_VERSION` from
 `images/sandbox/Containerfile`, including nested execution and selected resources.
 
