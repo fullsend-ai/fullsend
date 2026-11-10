@@ -80,6 +80,12 @@ func validatePresetAsPerRepo(data []byte) error {
 	if err := w.Validate(); err != nil {
 		return fmt.Errorf("invalid preset: %w", err)
 	}
+	// A preset or config.base.yaml can be shared by many repositories, and
+	// trace_context has no parent fallback, so a block there would be
+	// silently ignored (ADR 0154).
+	if w.TraceContext() != nil {
+		return fmt.Errorf("invalid preset: trace_context belongs to one repository; set it only in that repository's repos.yaml entry")
+	}
 	return nil
 }
 
