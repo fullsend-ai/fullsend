@@ -46,6 +46,9 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 	if aliases := r.ConfigModelAliases(); len(aliases) > 0 {
 		out["models"] = map[string]any{"aliases": aliases}
 	}
+	if tc := r.TraceContext(); tc != nil {
+		out["trace_context"] = tc
+	}
 	var authProviders []any
 	if r.IsOwnersFileAuthEnabled() {
 		authProviders = append(authProviders, AuthProviderOwnersFile)
