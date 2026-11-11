@@ -527,7 +527,12 @@ func TestListPullRequestFileDiffs(t *testing.T) {
 				"base": map[string]string{"sha": "base"},
 				"head": map[string]string{"sha": "head"},
 			})
-		case "/repos/owner/repo/git/trees/base", "/repos/owner/repo/git/trees/head":
+		case "/repos/owner/repo/compare/base...head":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]any{
+				"merge_base_commit": map[string]string{"sha": "merge-base"},
+			})
+		case "/repos/owner/repo/git/trees/merge-base", "/repos/owner/repo/git/trees/head":
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]any{
 				"truncated": false,

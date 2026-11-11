@@ -38,8 +38,8 @@ write or higher.
 The `/fs-review` command does not accept arguments and always forces a review. The review agent also runs automatically when a PR is opened,
 when its effective diff changes on a synchronize event, or when it is moved out of draft by a user with triage-level repository permission or higher.
 For GitHub `pull_request_target` synchronize events, the review is skipped when the complete effective diff matches the previous app-verified approved review. GitLab diff metadata uses the same normalized model, but the GitLab poller does not consume this marker yet and continues to review synchronized merge requests.
-The deduplication check is currently prepared only when the Bash route authorizes the `review` stage. CEL routing can still select the review stage afterward, but a CEL-only review route runs normally even when its effective diff is unchanged; this preserves the fail-open behavior and avoids minting a write-capable token before the final route is known.
-The guard fails open and runs the review when there is no prior diff hash, the prior review cannot be verified, a required hash/head API call fails,
+The deduplication check is currently prepared only when the Bash route authorizes the `review` stage. CEL routing can still select the review stage afterward, but a CEL-only review route runs normally even when its effective diff is unchanged; this preserves the fail-open behavior and avoids minting a write-capable token before the final route is known. File modes are part of the compared effective diff identity, so executable-bit changes cannot be hidden by an otherwise identical textual patch.
+The guard fails open and runs the review when there is no prior diff hash, the prior review cannot be verified, a required hash/head or base/head tree-mode API call fails,
 the file listing is incomplete or truncated, or any file has no representable patch (for example, a binary or rename-only change).
 If a built-in GitHub review run is cancelled while its commit is still the
 pull request HEAD, its GitHub status comment identifies that commit and directs

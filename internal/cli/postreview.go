@@ -368,8 +368,11 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 	cfg.TrustedLeadingLine = reviewProjectionMarkerRe
 	cfg.MaxTrustedLeadingLines = 1
 	var diffHash string
-	if !dryRun && parsed.HeadSHA != "" {
-		if computedHash, hashErr := pullRequestDiffHash(ctx, client, owner, repo, pr); hashErr != nil {
+	var diffListing *pullRequestFileDiffListing
+	if !dryRun && parsed.HeadSHA != "" && strings.EqualFold(parsed.Action, "approve") {
+		diffs, diffErr := client.ListPullRequestFileDiffs(ctx, owner, repo, pr)
+		diffListing = &pullRequestFileDiffListing{diffs: diffs, err: diffErr}
+		if computedHash, hashErr := pullRequestDiffHashFromDiffs(diffs, diffErr); hashErr != nil {
 			printer.StepWarn(fmt.Sprintf("Could not compute review diff hash; re-review deduplication will be unavailable: %v", hashErr))
 		} else if computedHash != "" {
 			currentSHA, headErr := client.GetPullRequestHeadSHA(ctx, owner, repo, pr)
@@ -381,7 +384,7 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 				diffHash = computedHash
 			}
 		}
-	} else if !dryRun {
+	} else if !dryRun && strings.EqualFold(parsed.Action, "approve") {
 		printer.StepWarn("Reviewed PR HEAD is unavailable; re-review deduplication will be unavailable")
 	}
 	commentURL, err := sticky.Post(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
@@ -389,7 +392,7 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 		return err
 	}
 
-	formalReviewErr := submitFormalReview(ctx, client, owner, repo, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer)
+	formalReviewErr := submitFormalReviewWithDiffs(ctx, client, owner, repo, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer, diffListing)
 	if formalReviewErr != nil {
 		printer.StepWarn(fmt.Sprintf("Formal review submission failed (%v); sticky review comment was posted", formalReviewErr))
 	} else if !dryRun && diffHash != "" && strings.EqualFold(parsed.Action, "approve") {
@@ -398,6 +401,7 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 		// formal submission must never leave an approved-looking hash behind.
 		hashBody := fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n<!-- fullsend:review-head:%s -->\n%s", diffHash, parsed.HeadSHA, parsed.Body)
 		hashCfg := cfg
+		hashCfg.KeepHistory = false
 		hashCfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash, parsed.HeadSHA)
 		hashCfg.MaxTrustedLeadingLines = 3
 		if _, hashErr := sticky.Post(ctx, client, owner, repo, pr, hashBody, hashCfg, printer); hashErr != nil {
@@ -414,6 +418,15 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 // a needed review.
 func pullRequestDiffHash(ctx context.Context, client forge.Client, owner, repo string, pr int) (string, error) {
 	diffs, err := client.ListPullRequestFileDiffs(ctx, owner, repo, pr)
+	return pullRequestDiffHashFromDiffs(diffs, err)
+}
+
+type pullRequestFileDiffListing struct {
+	diffs []forge.PullRequestFileDiff
+	err   error
+}
+
+func pullRequestDiffHashFromDiffs(diffs []forge.PullRequestFileDiff, err error) (string, error) {
 	if err != nil {
 		if errors.Is(err, forge.ErrDiffListingTruncated) {
 			return "", nil
@@ -423,6 +436,7 @@ func pullRequestDiffHash(ctx context.Context, client forge.Client, owner, repo s
 	if len(diffs) == 0 {
 		return "", nil
 	}
+	diffs = append([]forge.PullRequestFileDiff(nil), diffs...)
 
 	for _, diff := range diffs {
 		if diff.Patch == "" || !diff.ModesVerified {
@@ -482,6 +496,10 @@ func pullRequestDiffHash(ctx context.Context, client forge.Client, owner, repo s
 //     COMMENT review is submitted with a body linking to the sticky
 //     comment so findings appear on the relevant code lines
 func submitFormalReview(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA, commentURL string, findings []ReviewFinding, dryRun bool, printer *ui.Printer) error {
+	return submitFormalReviewWithDiffs(ctx, client, owner, repo, pr, action, commitSHA, commentURL, findings, dryRun, printer, nil)
+}
+
+func submitFormalReviewWithDiffs(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA, commentURL string, findings []ReviewFinding, dryRun bool, printer *ui.Printer, preloadedDiffs *pullRequestFileDiffListing) error {
 	event, ok := reviewActionToEvent(action)
 	if !ok {
 		printer.StepInfo(fmt.Sprintf("Unknown review action %q, skipping formal review", action))
@@ -506,7 +524,13 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	}
 
 	var diffHunks map[string][][2]int
-	fileDiffs, diffErr := client.ListPullRequestFileDiffs(ctx, owner, repo, pr)
+	var fileDiffs []forge.PullRequestFileDiff
+	var diffErr error
+	if preloadedDiffs != nil {
+		fileDiffs, diffErr = preloadedDiffs.diffs, preloadedDiffs.err
+	} else {
+		fileDiffs, diffErr = client.ListPullRequestFileDiffs(ctx, owner, repo, pr)
+	}
 	if diffErr != nil && !errors.Is(diffErr, forge.ErrDiffListingTruncated) {
 		printer.StepInfo(fmt.Sprintf("Could not list PR files (%v), inline comments may be rejected", diffErr))
 		fileDiffs = nil

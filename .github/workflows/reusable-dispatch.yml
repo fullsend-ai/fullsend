@@ -582,6 +582,14 @@ jobs:
             echo "::warning::PR base or head tree metadata is incomplete; running review"
             exit 0
           fi
+          if ! merge_base_sha=$(gh api "repos/${SOURCE_REPO}/compare/${base_sha}...${head_sha}" --jq '.merge_base_commit.sha // ""'); then
+            echo "::notice::Could not determine the PR merge base; running review"
+            exit 0
+          fi
+          if [[ -z "${merge_base_sha}" ]]; then
+            echo "::notice::PR compare metadata did not include a merge base; running review"
+            exit 0
+          fi
 
           if ! file_json=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/files" \
             --paginate --jq '.[] | {filename, previous_filename: (.previous_filename // ""), status: (.status // ""), patch}'); then
@@ -603,7 +611,7 @@ jobs:
             exit 0
           fi
 
-          if ! base_modes=$(gh api "repos/${SOURCE_REPO}/git/trees/${base_sha}?recursive=1" --jq 'if .truncated then error("base tree truncated") else [.tree[] | select(.type == "blob") | {key: .path, value: .mode}] | from_entries end'); then
+          if ! base_modes=$(gh api "repos/${SOURCE_REPO}/git/trees/${merge_base_sha}?recursive=1" --jq 'if .truncated then error("base tree truncated") else [.tree[] | select(.type == "blob") | {key: .path, value: .mode}] | from_entries end'); then
             echo "::notice::Could not verify base file modes; running review"
             exit 0
           fi
@@ -617,7 +625,7 @@ jobs:
               empty
             else
               sort_by(.filename, .previous_filename, .status)
-              | map(. + {old_mode: ($base_modes[(if .status == "added" then "" else (.previous_filename // .filename) end)] // ""), new_mode: ($head_modes[(if .status == "removed" then "" else .filename end)] // "")})
+              | map(. + {old_mode: ($base_modes[(if .status == "added" then "" elif (.previous_filename // "") == "" then .filename else .previous_filename end)] // ""), new_mode: ($head_modes[(if .status == "removed" then "" else .filename end)] // "")})
               | if any(.[]; (.status == "added" and .new_mode == "") or (.status == "removed" and .old_mode == "") or ((.status != "added" and .status != "removed") and (.old_mode == "" or .new_mode == ""))) then empty else map({filename: .filename, previous_filename: .previous_filename, status: .status, old_mode: .old_mode, new_mode: .new_mode, patch: .patch}) end
             end'); then
             echo "::warning::Could not canonicalize PR file diffs; running review"

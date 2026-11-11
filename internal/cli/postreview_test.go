@@ -362,11 +362,14 @@ func TestPullRequestDiffHash_MatchesWorkflowCanonicalJSON(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
 		"o/r/1": {{
-			Path:   "a\u2028.txt",
-			Status: "modified",
-			Patch:  "@@ -1 +1 @@\n-old\n+new\u2029\x7f",
+			Path:    "a\u2028.txt",
+			Status:  "modified",
+			OldMode: "100644",
+			NewMode: "100755",
+			Patch:   "@@ -1 +1 @@\n-old\n+new\u2029\x7f",
 		}},
 	}
+	fc.PRFileDiffModes = map[string]bool{"o/r/1": true}
 
 	hash, err := pullRequestDiffHash(context.Background(), fc, "o", "r", 1)
 	require.NoError(t, err)
@@ -374,7 +377,7 @@ func TestPullRequestDiffHash_MatchesWorkflowCanonicalJSON(t *testing.T) {
 	// This is the field order and escaping emitted by the workflow's jq
 	// projection after normalizing jq's U+2028/U+2029/DEL escaping to Go's
 	// JSON representation.
-	canonicalJSON := `[{"filename":"a\u2028.txt","previous_filename":"","status":"modified","old_mode":"","new_mode":"","patch":"@@ -1 +1 @@\n-old\n+new\u2029` + "\x7f" + `"}]`
+	canonicalJSON := `[{"filename":"a\u2028.txt","previous_filename":"","status":"modified","old_mode":"100644","new_mode":"100755","patch":"@@ -1 +1 @@\n-old\n+new\u2029` + "\x7f" + `"}]`
 	wantSum := sha256.Sum256([]byte(canonicalJSON))
 	assert.Equal(t, hex.EncodeToString(wantSum[:]), hash)
 }
@@ -413,6 +416,18 @@ func TestPullRequestDiffHash_DistinguishesFileModes(t *testing.T) {
 	assert.NotEqual(t, regularHash, executableHash)
 }
 
+func TestPullRequestDiffHash_FailsOpenWhenModesAreUnverified(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "script.sh", Status: "modified", OldMode: "100644", NewMode: "100755", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+	fc.PRFileDiffModes = map[string]bool{"o/r/1": false}
+
+	hash, err := pullRequestDiffHash(context.Background(), fc, "o", "r", 1)
+	require.NoError(t, err)
+	assert.Empty(t, hash)
+}
+
 func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
@@ -428,6 +443,7 @@ func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, fc.IssueComments["o/r/1"], 1)
 	assert.Regexp(t, reviewDiffHashMarkerRe, strings.SplitN(fc.IssueComments["o/r/1"][0].Body, "\n", 3)[1])
+	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "<summary>Previous run</summary>")
 }
 
 func TestPostReviewContent_PublishesDiffHashOnlyAfterApproval(t *testing.T) {

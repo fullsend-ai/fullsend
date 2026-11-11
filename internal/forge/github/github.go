@@ -4002,14 +4002,14 @@ func (c *LiveClient) ListPullRequestFiles(ctx context.Context, owner, repo strin
 	return files, nil
 }
 
-// pullRequestFileModes returns Git tree modes keyed by path. GitHub's PR file
-// endpoint omits mode changes, so the base and head trees are the source of
-// truth for the review-deduplication identity.
 type pullRequestFileModesResult struct {
 	old map[string]string
 	new map[string]string
 }
 
+// pullRequestFileModes returns Git tree modes keyed by path. GitHub's PR file
+// endpoint omits mode changes, so the base and head trees are the source of
+// truth for the review-deduplication identity.
 func (c *LiveClient) pullRequestFileModes(ctx context.Context, owner, repo string, number int) (pullRequestFileModesResult, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))
 	if err != nil {
@@ -4029,8 +4029,23 @@ func (c *LiveClient) pullRequestFileModes(ctx context.Context, owner, repo strin
 	if pr.Base.SHA == "" || pr.Head.SHA == "" {
 		return pullRequestFileModesResult{}, fmt.Errorf("pull request is missing base or head SHA")
 	}
+	compareResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/compare/%s...%s", owner, repo, pr.Base.SHA, pr.Head.SHA))
+	if err != nil {
+		return pullRequestFileModesResult{}, fmt.Errorf("finding pull request merge base: %w", err)
+	}
+	var comparison struct {
+		MergeBaseCommit struct {
+			SHA string `json:"sha"`
+		} `json:"merge_base_commit"`
+	}
+	if err := decodeJSON(compareResp, &comparison); err != nil {
+		return pullRequestFileModesResult{}, fmt.Errorf("decoding pull request merge base: %w", err)
+	}
+	if comparison.MergeBaseCommit.SHA == "" {
+		return pullRequestFileModesResult{}, fmt.Errorf("compare response is missing merge base SHA")
+	}
 	result := pullRequestFileModesResult{old: make(map[string]string), new: make(map[string]string)}
-	for i, sha := range []string{pr.Base.SHA, pr.Head.SHA} {
+	for i, sha := range []string{comparison.MergeBaseCommit.SHA, pr.Head.SHA} {
 		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, sha))
 		if err != nil {
 			return pullRequestFileModesResult{}, err
@@ -4148,6 +4163,8 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 				files[i].ModesVerified = false
 			}
 		}
+	} else {
+		log.Printf("could not enrich pull request file diffs with verified modes for %s/%s#%d: %v", owner, repo, number, err)
 	}
 	return files, nil
 }
