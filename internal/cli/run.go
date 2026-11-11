@@ -664,8 +664,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		RunnerSecretNames: runnerSecretNameSet(runnerSecrets),
 
 		// Pin-mismatch and offline-miss errors advise this command, which
-		// names the harness and succeeds as written.
-		LockUpdateCommand: fmt.Sprintf("fullsend lock %s --update%s", shellQuoteArg(agentName), fullsendDirArg(fullsendDir)),
+		// names the harness and succeeds as written. The harness is not
+		// resolved yet, so the hint cannot carry --forge; it is rebuilt
+		// once the harness path is known.
+		LockUpdateCommand: lockUpdateHint(agentName, fullsendDir, "", forgePlatform),
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
@@ -686,6 +688,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 		composeOpts.SourceURL = fetchDeps[0].URL
 	}
+
+	// The harness path is known now, so the lock-update advice can name
+	// the forge platform: for a child with no forge: block run under one,
+	// the advised re-lock must carry --forge or it composes with platform
+	// "" and drops the forge-specific base files (#8988).
+	composeOpts.LockUpdateCommand = lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform)
 
 	// If the harness has a URL base and org config failed to load,
 	// load it strictly now so LoadWithBase gets a proper error path
@@ -737,12 +745,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// Without --forge, lock reads forge keys from the child only
 			// (#8988), so a child with no forge: block needs the platform
 			// named. A child with forge keys is locked for all of them.
-			forgeArg := ""
-			if composeOpts.ForgePlatform != "" {
-				if rawH, rawErr := harness.LoadRaw(harnessPath); rawErr == nil && len(rawH.Forge) == 0 {
-					forgeArg = " --forge " + composeOpts.ForgePlatform
-				}
-			}
+			forgeArg := lockForgeArg(harnessPath, composeOpts.ForgePlatform)
 			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run fullsend lock --update%s %s%s to pin them",
 				agentName, len(unpinned), noun, unpinned[0], forgeArg, shellQuoteArg(agentName), fullsendDirArg(fullsendDir)))
 		}

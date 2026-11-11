@@ -325,9 +325,11 @@ func lockOneAgent(ctx context.Context, agentName, fullsendDir, absFullsendDir, f
 			SourceURL:     sourceURL,
 			// --update re-resolves from the source, not the URL index, so an
 			// upstream change is recorded even on the cache that wrote the
-			// lock. Offline-miss errors advise the named command.
+			// lock. Offline-miss errors advise the named command, which
+			// carries --forge when the user named a platform for a child
+			// with no forge: block (#8988).
 			BypassURLIndex:    update,
-			LockUpdateCommand: fmt.Sprintf("fullsend lock %s --update%s", shellQuoteArg(agentName), fullsendDirArg(fullsendDir)),
+			LockUpdateCommand: lockUpdateHint(agentName, fullsendDir, harnessPath, forgeFlag),
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
