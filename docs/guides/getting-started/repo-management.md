@@ -527,10 +527,10 @@ types, and migration from the removed `repos set-default`.
 
 ### Manifest paths and URLs
 
-The `-f`/`--manifest` flag accepts either a local file path or an HTTPS
-URL. Remote manifests are fetched with a 30-second timeout and a 1 MB
-size limit. Most `repos` subcommands support this — see the
-[CLI reference](../../cli/repos.md) for details.
+The `-f`/`--manifest` flag accepts either a local file path or an HTTPS URL.
+Most `repos` subcommands support this — see the
+[CLI reference](../../cli/repos.md) for details. Remote manifests are fetched
+with a 30-second timeout. A manifest, local or remote, can be at most 1 MB.
 
 ```bash
 fullsend repos status -f https://example.com/manifests/repos.yaml

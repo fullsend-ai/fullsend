@@ -1,11 +1,77 @@
 package repos
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// oversizeManifestNames returns repository names whose manifest marshals
+// to more than maxManifestBytes.
+func oversizeManifestNames() []string {
+	names := make([]string, 0, 6000)
+	for i := 0; i < cap(names); i++ {
+		names = append(names, fmt.Sprintf("acme/%s-%05d", strings.Repeat("r", 180), i))
+	}
+	return names
+}
+
+// A manifest that the loader would refuse as too large is not written, so
+// the file on disk stays loadable.
+func TestWriteManifest_RefusesManifestOverSizeLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repos.yaml")
+	small, err := MarshalWithHeader(testManifest("acme/api"))
+	if err != nil {
+		t.Fatalf("MarshalWithHeader() error = %v", err)
+	}
+	if err := os.WriteFile(path, small, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	err = WriteManifest(path, testManifest(oversizeManifestNames()...))
+	if err == nil || !strings.Contains(err.Error(), "would exceed the maximum size") {
+		t.Fatalf("WriteManifest() error = %v, want the size limit error", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !bytes.Equal(got, small) {
+		t.Fatal("the manifest file changed")
+	}
+}
+
+// The live write refuses a read-only manifest before it checks the size, so
+// a dry run does not report the size refusal for one. As for an HTTPS
+// manifest, the dry run reports no refusal.
+func TestRemoveFromManifest_DryRunSkipsSizeCheckForReadOnlyManifest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "repos.yaml")
+	if err := os.WriteFile(path, []byte("version: 1\n"), 0o444); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	names := oversizeManifestNames()
+	if _, _, err := RemoveFromManifest(ManifestEditConfig{Manifest: testManifest(names...), ManifestPath: path, DryRun: true}, names[:1], nil); err != nil {
+		t.Fatalf("RemoveFromManifest() error = %v, want nil", err)
+	}
+}
+
+// A dry run refuses a removal whose manifest the write would refuse as too
+// large, as the live run does.
+func TestRemoveFromManifest_DryRunRefusesManifestOverSizeLimit(t *testing.T) {
+	names := oversizeManifestNames()
+	_, _, err := RemoveFromManifest(ManifestEditConfig{
+		Manifest:     testManifest(names...),
+		ManifestPath: filepath.Join(t.TempDir(), "repos.yaml"),
+		DryRun:       true,
+	}, names[:1], nil)
+	if err == nil || !strings.Contains(err.Error(), "would exceed the maximum size") {
+		t.Fatalf("RemoveFromManifest() error = %v, want the size limit error", err)
+	}
+}
 
 func TestRemoveFromManifest_Basic(t *testing.T) {
 	dir := t.TempDir()
