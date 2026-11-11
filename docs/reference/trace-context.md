@@ -45,11 +45,21 @@ trusted forge read, following the [identity contract](../normative/trace-context
 `GetPullRequestInfo` currently returns branch/repository context without that
 database ID; its result alone cannot resolve trace identity.
 
+`KindConversation` identifies a GitHub Discussion by its repository ID and
+Discussion database ID (webhook `discussion.id`, GraphQL `databaseId`). No
+forge adapter reads Discussions yet: GitHub Discussion ingress is tracked
+under the conversation-surface work for
+[ADR 0086](../ADRs/0086-conversation-surface-for-agent-participation.md).
+Until a trusted read supplies that database ID, the conversation identity
+stays unresolved. The package cannot tell forges apart, so callers must
+never construct `KindConversation` for GitLab or Jira entities.
+
 ## Go API
 
 | Symbol | Purpose |
 |--------|---------|
 | `Identity` | The immutable binding tuple |
+| `EntityKind` | `KindWorkItem`, `KindChangeProposal`, or `KindConversation` (GitHub Discussion) |
 | `Identity.Resolved` | Whether the forge-side components are present and valid: a canonical instance, IDs ≥ 1, and a defined kind |
 | `DeriveFallback` | The v1 deterministic fallback context |
 | `NormalizeInstance` | Canonical deployment base URL, including its path prefix |
@@ -65,14 +75,17 @@ database ID; its result alone cannot resolve trace identity.
 ## Conformance evidence
 
 - [`identity_test.go`](https://github.com/fullsend-ai/fullsend/blob/main/internal/telemetry/tracecontext/identity_test.go)
-  contains independent fallback vectors, deployment-prefix separation checks,
+  contains independent fallback vectors (including a GitHub conversation),
+  conversation convergence and kind-separation checks,
+  deployment-prefix separation checks,
   cross-process convergence, root-dot, port, and IPv6 spelling
   canonicalization and zone rejection, mixed-escape path rejection, a
   normalization fuzz target asserting the canonical form re-normalizes to
   itself, and SDK exporter lifecycle assertions.
 - [`envelope_test.go`](https://github.com/fullsend-ai/fullsend/blob/main/internal/telemetry/tracecontext/envelope_test.go)
   contains independent signed-wire vectors for both domains and all provenance
-  kinds, binding checks, empty/default/padded-port convergence, zero-value fallback,
+  kinds plus a bound conversation envelope, conversation admission and
+  fallback, binding checks, empty/default/padded-port convergence, zero-value fallback,
   pending-scope admission (container-scoped markers, stale markers beside bound
   envelopes), unresolved identities suppressing every carrier kind,
   malformed-input cases, and parser fuzzing.
