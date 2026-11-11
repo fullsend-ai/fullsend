@@ -76,6 +76,7 @@ func (r OpenCodeRuntime) EnvExports() []string {
 func (OpenCodeRuntime) LaunchEnvExports() []string {
 	return []string{
 		openCodeRuntimeEnv,
+		openCodeHookConfigEnv,
 		"GOOGLE_CLOUD_PROJECT",
 		"GOOGLE_CLOUD_LOCATION",
 		"HOME",
