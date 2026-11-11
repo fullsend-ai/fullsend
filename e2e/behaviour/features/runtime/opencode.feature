@@ -71,25 +71,28 @@ Feature: OpenCode runtime runs an agent unattended
           GOOGLE_CLOUD_PROJECT: ${ANTHROPIC_VERTEX_PROJECT_ID}
           CLOUD_ML_REGION: ${CLOUD_ML_REGION}
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json
-          OPENCODE_CONFIG_CONTENT: '{"provider":{"google-vertex-anthropic":{"id":"google-vertex-anthropic"}},"permission":{"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow","bash":{"*":"deny","ls *":"allow","ls":"allow","cat *":"allow"}}}'
+          OPENCODE_CONFIG_CONTENT: >-
+            {"provider":{"google-vertex-anthropic":{"id":"google-vertex-anthropic"}},"permission":{"*":"deny","bash":{"*":"deny","ls .":"allow","printf %s *":"allow","printf '%s' *":"allow","tee /sandbox/workspace/output/agent-result.json":"allow"}}}
       """
     And an opencode agent "opencode-smoke" defined as:
       """
       ---
       name: opencode-smoke
       description: Behaviour smoke agent for the OpenCode runtime.
-      tools: Bash
+      tools: Bash(ls,printf,tee)
       ---
       You are an unattended smoke-test agent. Do exactly the following, in
       order, then stop. Do not ask questions, do not explain, do not read or
       modify any other file.
 
       1. Using the bash tool, run: ls .
-      2. Using the bash tool, write the file "$FULLSEND_OUTPUT_DIR/agent-result.json"
-         with `cat > "$FULLSEND_OUTPUT_DIR/agent-result.json" <<'EOF'`, containing
-         exactly this content and nothing else:
+      2. Using the bash tool, run this command exactly. Keep the JSON as a
+         single-quoted literal; do not use expansions, redirections or a heredoc:
 
-      {{fixture:fixtures/triage/sufficient.json}}
+      ```sh
+      printf '%s' '{{fixture:fixtures/triage/sufficient.json}}
+      ' | tee /sandbox/workspace/output/agent-result.json
+      ```
       """
     And an issue
     When the issue is labeled "ready-for-opencode-smoke"
