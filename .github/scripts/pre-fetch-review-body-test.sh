@@ -87,18 +87,14 @@ fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
-# The BSD wc mock pads the byte count with leading spaces, as macOS wc
-# does, so the padding regression is caught on GNU/Linux too (#9298).
-# Tests opt in by setting EXTRA_PATH="${BSD_WC_BIN}:".
-BSD_WC_BIN="${TMPDIR}/bsd-wc-bin"
-mkdir -p "${BSD_WC_BIN}"
+# The mock wc pads the byte count with leading spaces, as BSD/macOS wc does,
+# so the padding regression (#9298) is caught on GNU/Linux too.
 REAL_WC="$(command -v wc)"
-cat > "${BSD_WC_BIN}/wc" <<MOCKEOF
+cat > "${MOCK_BIN}/wc" <<MOCKEOF
 #!/usr/bin/env bash
 printf '%8s\n' "\$("${REAL_WC}" "\$@" | tr -d '[:space:]')"
 MOCKEOF
-chmod +x "${BSD_WC_BIN}/wc"
-EXTRA_PATH=""
+chmod +x "${MOCK_BIN}/wc"
 
 # run_test runs the script against the current mock pages.
 #   $1 — test name
@@ -116,7 +112,7 @@ run_test() {
   : > "${TMPDIR}/github-output"
 
   local actual_exit=0 output
-  output=$(PATH="${EXTRA_PATH}${MOCK_BIN}:${PATH}" \
+  output=$(PATH="${MOCK_BIN}:${PATH}" \
     GH_TOKEN="fake" \
     SOURCE_REPO="org/repo" \
     PR_NUM="123" \
@@ -249,26 +245,8 @@ reset_pages
 jq -n --arg login "${ORG_BOT}" \
   '[{id: 1, user: {login: $login}, state: "CHANGES_REQUESTED", body: ("x" * 1048577)}]' \
   > "${TMPDIR}/page-1.json"
-run_test "oversized body rejected" 1 "${ORG_BOT}" "" "::error::Review body is"
-
-# #9298: BSD wc pads the byte count; the logged count must not be padded,
-# and the size checks and their error messages must still work.
-EXTRA_PATH="${BSD_WC_BIN}:"
-reset_pages
-review 1 "${ORG_BOT}" "CHANGES_REQUESTED" "latest change request" | write_page 1
-run_test "padded wc count is trimmed" 0 "${ORG_BOT}" "latest change request" \
-  "Pre-fetched review body: 22 bytes"
-reset_pages
-run_test "padded wc empty body proceeds for human trigger" 0 "human-user" "" \
-  "Pre-fetched review body: 1 bytes"
-run_test "padded wc empty body fails bot-triggered run" 1 "${ORG_BOT}" "" \
-  "Bot-triggered run but review body is empty"
-jq -n --arg login "${ORG_BOT}" \
-  '[{id: 1, user: {login: $login}, state: "CHANGES_REQUESTED", body: ("x" * 1048577)}]' \
-  > "${TMPDIR}/page-1.json"
-run_test "padded wc oversized body rejected" 1 "${ORG_BOT}" "" \
+run_test "oversized body rejected" 1 "${ORG_BOT}" "" \
   "::error::Review body is 1048578 bytes (max: 1048576)"
-EXTRA_PATH=""
 
 echo ""
 if [[ "${FAILURES}" -gt 0 ]]; then
