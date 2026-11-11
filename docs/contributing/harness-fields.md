@@ -258,6 +258,20 @@ Overlay `when` expressions are evaluated with:
 | `runtime.forge` | `string` | Effective forge platform (precedence: CLI flag > config.forge > CI env vars) |
 | `config` | `map[string]any` | Full per-repo config from `config.yaml`, with `allowed_remote_resources` as the effective list every command family resolves (the layered chain with fullsend's default prefixes ensured on a non-empty result); the key is omitted when the resolved list is empty, so an explicit `[]` stays deny-all |
 
+#### Why the default prefixes are ensured
+
+`config.allowed_remote_resources` resolves to the layered chain with
+fullsend's default prefixes ensured on top of a non-empty result. The
+defaults are ensured because the compiled prefixes are what make
+first-party agent sources resolvable with no configuration: `run`, `lint`
+and `lock` resolve them, and the other command families (harness dispatch,
+`dispatch --route`, the Jira poll) resolve the same value rather than a
+stricter one; tightening `run`/`lint`/`lock` to respect a base `[]`
+instead would change the behaviour of the family that already worked. A
+base `[]` that must stay authoritative has the managed `repos.yaml` reset,
+which rejects a non-empty list declared below it ([Layered Config
+Reference](../guides/infrastructure/layered-config-reference.md)).
+
 ### Mutual exclusion
 
 `forge:` and `overlays:` must not coexist in the same harness (post-merge).
