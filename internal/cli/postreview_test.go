@@ -379,6 +379,23 @@ func TestPullRequestDiffHash_MatchesWorkflowCanonicalJSON(t *testing.T) {
 	assert.Equal(t, hex.EncodeToString(wantSum[:]), hash)
 }
 
+func TestPullRequestDiffHash_DistinguishesDELFromLiteralUnicodeEscape(t *testing.T) {
+	withDEL := forge.NewFakeClient()
+	withDEL.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "a.txt", Status: "modified", Patch: "@@ -1 +1 @@\n-old\n+new\x7f"}},
+	}
+	withLiteralEscape := forge.NewFakeClient()
+	withLiteralEscape.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "a.txt", Status: "modified", Patch: "@@ -1 +1 @@\n-old\n+new\\u007f"}},
+	}
+
+	delHash, err := pullRequestDiffHash(context.Background(), withDEL, "o", "r", 1)
+	require.NoError(t, err)
+	literalHash, err := pullRequestDiffHash(context.Background(), withLiteralEscape, "o", "r", 1)
+	require.NoError(t, err)
+	assert.NotEqual(t, delHash, literalHash)
+}
+
 func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"

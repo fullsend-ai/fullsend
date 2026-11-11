@@ -167,39 +167,6 @@ jobs:
             /OWNERS_ALIASES
           sparse-checkout-cone-mode: false
 
-      # Keep the route job's platform token read-only. For synchronize events,
-      # mint a review-app token solely for the PR-visible skip status note.
-      - name: Checkout upstream defaults for review token
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
-          path: .defaults
-          fetch-depth: 1
-          sparse-checkout: |
-            .github/actions/
-            internal/scaffold/fullsend-repo/
-          sparse-checkout-cone-mode: false
-
-      - name: Prepare workspace for review token
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
-        id: review-token-workspace
-        uses: ./.defaults/.github/actions/prepare-workspace
-        with:
-          source_repo: ${{ github.repository }}
-
-      - name: Mint review token for skip status
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
-        id: review-token
-        continue-on-error: true
-        uses: ./.defaults/.github/actions/mint-token
-        with:
-          role: review
-          repos: ${{ steps.review-token-workspace.outputs.repo_name }}
-          level: write
-          mint_url: ${{ inputs.mint_url }}
-
       - name: Determine stage
         id: bash-route
         env:
@@ -486,13 +453,94 @@ jobs:
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
 
+      # Do not mint a write-capable token or mutate skip notes when review is
+      # disabled by repository configuration. The full validation steps below
+      # still enforce the same policy for the final routed stage.
+      - name: Check review deduplication guards
+        id: review-dedup-guard
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.bash-route.outputs.stage == 'review'
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowed=true
+          kill_switch="false"
+          overlay_ks="null"
+          if [[ -f .fullsend/config.yaml ]]; then
+            if ! overlay_ks=$(yq -o=json '.kill_switch' .fullsend/config.yaml 2>/dev/null); then
+              echo "::warning::Could not read the review kill switch; skipping deduplication"
+              allowed=false
+              overlay_ks="null"
+            fi
+          fi
+          if [[ "${overlay_ks}" != "null" ]]; then
+            kill_switch="${overlay_ks}"
+          elif [[ -f .fullsend/config.base.yaml ]]; then
+            if ! kill_switch=$(yq -o=json '.kill_switch' .fullsend/config.base.yaml 2>/dev/null); then
+              echo "::warning::Could not read the base review kill switch; skipping deduplication"
+              allowed=false
+              kill_switch="false"
+            fi
+          fi
+          kill_switch="${kill_switch,,}"
+          kill_switch="${kill_switch#\"}"
+          kill_switch="${kill_switch%\"}"
+          if [[ "${kill_switch}" == "true" || "${kill_switch}" == "yes" ]]; then
+            echo "::notice::Review kill switch is active; skipping deduplication"
+            allowed=false
+          fi
+
+          if [[ -f .fullsend/config.yaml ]]; then
+            if ! agent_enabled=$(yq -r '.agents[] | select((.name | downcase) == "review") | .enabled' .fullsend/config.yaml 2>/dev/null | tail -1); then
+              echo "::warning::Could not check review agent enablement; skipping deduplication"
+              allowed=false
+            elif [[ "${agent_enabled}" == "false" ]]; then
+              echo "::notice::Review agent is disabled; skipping deduplication"
+              allowed=false
+            fi
+          fi
+          echo "allowed=${allowed}" >> "${GITHUB_OUTPUT}"
+
+      # Keep the route job's platform token read-only. For eligible
+      # synchronize events, mint a review-app token solely for the PR-visible
+      # skip status note.
+      - name: Checkout upstream defaults for review token
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            internal/scaffold/fullsend-repo/
+          sparse-checkout-cone-mode: false
+
+      - name: Prepare workspace for review token
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        id: review-token-workspace
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          source_repo: ${{ github.repository }}
+
+      - name: Mint review token for skip status
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        id: review-token
+        continue-on-error: true
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace.outputs.repo_name }}
+          level: write
+          mint_url: ${{ inputs.mint_url }}
+
       # A synchronize event can be caused by merging the base branch into a
       # PR without changing the PR's effective diff. Avoid paying for another
       # full review when the previous review recorded the same complete diff.
       # Missing or incomplete metadata deliberately fails open.
       - name: Check unchanged review diff
         id: review-diff
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
         env:
           GH_TOKEN: ${{ steps.review-token.outputs.token || github.token }}
           SOURCE_REPO: ${{ github.repository }}
@@ -555,7 +603,7 @@ jobs:
           # Match Go's encoding/json output (with HTML escaping disabled): Go
           # escapes U+2028/U+2029 but emits DEL literally, while jq emits DEL
           # as the JSON escape \u007f.
-          if ! hash_input=$(printf '%s' "${hash_input}" | perl -CS -pe 's/\\u007f/\x{007f}/g; s/\x{2028}/\\u2028/g; s/\x{2029}/\\u2029/g'); then
+          if ! hash_input=$(printf '%s' "${hash_input}" | perl -CS -pe 's/(?<!\\)\\u007f/\x{007f}/g; s/\x{2028}/\\u2028/g; s/\x{2029}/\\u2029/g'); then
             echo "::warning::Could not normalize PR file diffs; running review"
             exit 0
           fi
