@@ -82,11 +82,24 @@ func givenRuntimeWorkflowCommitted(w *world.World, name, dest string) error {
 	}
 	for _, f := range files {
 		w.RuntimeWorkflowFiles = append(w.RuntimeWorkflowFiles, f.dest)
-		if err := commitFixtureFile(w, f); err != nil {
+		if err := commitRuntimeWorkflowFile(w, f); err != nil {
 			return fmt.Errorf("committing runtime workflow %q to %s: %w", name, repoDir, err)
 		}
 	}
 	return nil
+}
+
+// commitRuntimeWorkflowFile commits one fixture file to the leased repo
+// under the lease guard: it verifies the scenario still owns its slot
+// right before the commit (the existence checks before it can outlast
+// the lease) and commits on mutationCtx, so a retry inside the forge
+// client never lands on a replacement holder's repository.
+func commitRuntimeWorkflowFile(w *world.World, f fixtureFile) error {
+	if err := verifyLease(w); err != nil {
+		return err
+	}
+	return w.SCM.CommitFile(mutationCtx(w), w.RepoOwner, w.RepoName, f.dest,
+		fmt.Sprintf("behaviour: add fixture %s", f.dest), f.content)
 }
 
 // errNoFileDeleter refuses a runtime workflow commit on an SCM driver
@@ -121,9 +134,11 @@ func refuseExistingRepoPath(w *world.World, p string) error {
 // givenRuntimeWorkflowCommitted recorded, so the next scenario on this
 // slot starts without the runtime workflow. A file that is not there (its
 // commit failed) is skipped. CleanupScenario calls it during scenario
-// teardown.
+// teardown. Every delete is made by name, so each attempt first verifies
+// the scenario still owns its lease; a lost or unverifiable lease skips
+// the delete (logged) rather than touching the next holder's repository.
 func removeRuntimeWorkflowFiles(w *world.World) {
-	ctx := context.Background()
+	ctx := mutationCtx(w)
 	deleter, ok := w.SCM.(scm.FileDeleter)
 	if !ok {
 		// givenRuntimeWorkflowCommitted refuses such a driver before it
@@ -134,7 +149,7 @@ func removeRuntimeWorkflowFiles(w *world.World) {
 	}
 	for _, p := range w.RuntimeWorkflowFiles {
 		desc := fmt.Sprintf("delete runtime workflow file %s", p)
-		if err := cleanupRetry(w.Logf, desc, func() error {
+		if err := guardedCleanupRetry(w, desc, func() error {
 			err := deleter.DeleteFile(ctx, w.RepoOwner, w.RepoName, p, "behaviour: remove runtime workflow file "+p)
 			if forge.IsNotFound(err) {
 				return nil

@@ -281,6 +281,41 @@ func TestAssertRunStartedWorkflow(t *testing.T) {
 	require.ErrorContains(t, assertRunStartedWorkflow(&world.World{ArtifactDir: none}, "/d:n", "s"), "no workflow object")
 }
 
+// When the slot was handed to another holder before cleanup, no runtime
+// workflow file is deleted from the replacement holder's repository: the
+// deletes are skipped and logged, and the recorded list is cleared.
+func TestCleanupScenario_RuntimeWorkflowLeaseLost_NothingDeleted(t *testing.T) {
+	t.Parallel()
+	scm := &treeSCM{}
+	var logged []string
+	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scm, FixturesRoot: "e2e/behaviour",
+		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }}
+	require.NoError(t, givenRuntimeWorkflowCommitted(w, "sample-pipeline", "pipelines/sample-pipeline"))
+	require.Len(t, scm.files, len(sampleDefinitionFiles))
+
+	holder := newSlotHolder("scenario")
+	w.LeaseOwned = holder.leaseOwnedBy("scenario")
+	holder.replaceWith("replacement")
+	CleanupScenario(w)
+
+	assert.Empty(t, scm.deletedFiles, "no file may be deleted from the replacement holder's repo")
+	assert.Len(t, scm.files, len(sampleDefinitionFiles))
+	assert.Empty(t, w.RuntimeWorkflowFiles)
+	assert.Contains(t, logged, "behaviour cleanup: delete runtime workflow file "+sampleDefinitionFiles[0]+": "+errLeaseLost.Error())
+}
+
+// A lost lease stops the commit before the first file is written.
+func TestGivenRuntimeWorkflowCommitted_LeaseLost_NothingCommitted(t *testing.T) {
+	t.Parallel()
+	scm := &treeSCM{}
+	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scm, FixturesRoot: "e2e/behaviour",
+		LeaseOwned: func(context.Context) (bool, error) { return false, nil }}
+	err := givenRuntimeWorkflowCommitted(w, "sample-pipeline", "pipelines/sample-pipeline")
+	require.ErrorIs(t, err, errLeaseLost)
+	assert.Equal(t, 0, scm.commits)
+	assert.Empty(t, scm.files)
+}
+
 // A delete that fails for another reason than not found is logged, and
 // the recorded list is cleared either way.
 func TestRemoveRuntimeWorkflowFiles_DeleteError(t *testing.T) {
