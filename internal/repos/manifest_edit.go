@@ -256,14 +256,12 @@ func writeManifest(path string, m *Manifest) error {
 }
 
 // marshalManifest renders m for path. LoadManifest refuses a larger file,
-// which would lock every later command out of it.
+// which would lock every later command out of it. A MarshalWithHeader error
+// already names the manifest, so it is returned as it is.
 func marshalManifest(path string, m *Manifest) ([]byte, error) {
 	data, err := MarshalWithHeader(m)
-	if err != nil {
-		return nil, fmt.Errorf("marshalling manifest: %w", err)
-	}
-	if int64(len(data)) > maxManifestBytes {
+	if err == nil && int64(len(data)) > maxManifestBytes {
 		return nil, fmt.Errorf("%s: resulting manifest would exceed the maximum size of %d bytes; the file was not changed", path, maxManifestBytes)
 	}
-	return data, nil
+	return data, err
 }
