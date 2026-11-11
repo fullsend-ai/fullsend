@@ -59,6 +59,7 @@ function bashCommands(command, allowParameterExpansion = false) {
     finishWord();
     if (words.length) {
       const first = words[0];
+      if (!allowParameterExpansion && first.includes("/")) deny("Bash policy rejects path-qualified program names with trusted patterns");
       if (!/^[A-Za-z0-9_./-]+$/.test(first) ||
           ["eval", "exec", "sh", "bash", "source", ".", "command", "builtin", "env", "nohup", "nice", "timeout", "xargs", "time",
             "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function", "select", "coproc",
@@ -292,6 +293,9 @@ export default async ({ directory, worktree }) => {
   const validate = (input, args) => {
     try {
       checkFiles(cfg);
+      // Native argument repair only reports an error; it never executes the
+      // requested tool. Keep its diagnostics in the normal hook chains.
+      if (input.tool === "invalid") return "invalid";
       let canonical = names[input.tool] ?? input.tool;
       // OpenCode replaces write/edit with apply_patch for GPT-family models,
       // and its edit tool implements the legacy MultiEdit capability too.
