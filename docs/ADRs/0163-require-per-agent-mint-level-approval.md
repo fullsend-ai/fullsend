@@ -95,15 +95,18 @@ agents:
 
 The `[write]` shorthand expands to `[read, write]`. Other custom levels must
 be listed explicitly. An empty list denies every level for that stage. Unknown
-roles, stage names, malformed maps or lists, and levels unavailable to an
-approved role are validation errors and fail closed.
+roles, stage names, malformed maps or lists, and a requested level unavailable
+to its requested role are validation errors and fail closed.
 
 Overlay entries may set `role` and `privilege_levels` as guarded fields. Their
 values compose in overlay order. For each effective harness variant, the
 approval must include its requested role and every level it can request at
 each run-stage. The validator and management commands use the union across all
 possible overlay outcomes, even when a particular run would match only one
-overlay.
+overlay. Level availability is checked for each variant's requested
+role-and-level pair; a level required by one role does not have to be defined
+by unrelated approved roles. The per-stage level map is a shared set of
+approved level names, not a role-to-level map.
 
 The agent add/install and update/upgrade flows resolve the agent's effective
 harness variants, show the complete required role and level sets, and ask the
@@ -147,31 +150,19 @@ bypass.
 
 ## Consequences
 
-- Operators see the full role and privilege request before adding or updating
-  an agent, and repository config records the approved roles and any
-  non-default level grants.
-- Missing `approved_roles` denies every role. An approved role with no level
-  map uses Ralph's profile, including `post_script` write; an explicit map
-  overrides it and defaults unlisted stages to `read`. This makes role
-  approval the required authorization boundary while preserving the agreed
-  level defaults within that boundary.
-- The supported add/install and update/upgrade commands show the effective
-  requested roles and levels and require full approval before writing grants.
-  That supplies deliberate consent for those CLI flows; manually editing the
-  config remains subject to the repository's policy for protecting agent
-  configuration.
+- Missing `approved_roles` denies every role; an approved role with no level
+  map uses Ralph's profile, including `post_script` write, so deleting the
+  entire map deliberately restores that profile.
+- In an explicit level map, omitted stages default to `[read]`; `{}` is
+  equivalent to `default: [read]`, and removing a stage-specific empty list
+  grants that default, while `default: []` denies unlisted stages.
+- Agent add/install, update/upgrade, and `fullsend agent approve <name>` show
+  the full role and level request and require all-or-nothing approval; managed
+  repositories keep these grants in their `repos.yaml` source of truth.
 - Harnesses that omit `privilege_levels` still request `write` at every stage
-  per ADR 0073, so they need additional grants beyond the built-in profile
-  before they can launch.
-- The default approves the level named `read`; it does not inspect a custom
-  role's underlying permissions. Custom-role owners are responsible for
-  defining levels that match their intended access.
-- Overlay variants can require approval of additional roles or higher levels
-  even when a particular variant is not selected for a run, and managed
-  repositories keep grants in their `repos.yaml` source of truth.
-- Repository protections remain essential because the config entry is the
-  authority record; the CLI does not provide a separate approval signature.
-- Implementation requires coordinated changes to agent management commands,
-  overlay composition, harness/config validation, managed `repos.yaml`
-  configuration, and the config reference; those changes are tracked
-  separately from this ADR.
+  per ADR 0073, and custom-role owners remain responsible for making `read`
+  mean the access they intend.
+- The config entry is the authority record and must remain protected by
+  repository policy; implementation of the management commands, overlay
+  composition, validation, managed `repos.yaml` support, and config reference
+  is tracked separately from this ADR.
