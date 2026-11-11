@@ -27,8 +27,8 @@ type RuntimeWorkflowSpec struct {
 	Args   string `yaml:"args,omitempty"`
 
 	// baseDirURL is set by ResolveBaseWorkflowSource when Source was a
-	// relative path in a harness composed through a URL base: Source is
-	// then a tree URL at the base's commit without a #sha256= fragment,
+	// relative path in a URL base, or in a harness added by URL: Source is
+	// then a tree URL at that harness's commit without a #sha256= fragment,
 	// and baseDirURL is the raw-content directory URL the allowlist is
 	// checked against, as for a base plugin. It cannot be set from YAML.
 	baseDirURL string
@@ -41,7 +41,7 @@ type RuntimeWorkflowSpec struct {
 
 // InheritedFromBase returns the raw-content directory URL of a source
 // that ResolveBaseWorkflowSource rewrote from a relative path in a URL
-// base, or "" when Source is as the harness wrote it.
+// base or a harness added by URL, or "" when Source is as written.
 func (w *RuntimeWorkflowSpec) InheritedFromBase() string { return w.baseDirURL }
 
 // DeclaredIn returns the directory of the local base harness that
@@ -186,19 +186,60 @@ func validateRemoteWorkflowSource(src string, inherited bool) error {
 // against allowlist, the check a base plugin gets. A nil workflow, or a
 // source that is already a URL, is left alone.
 func ResolveBaseWorkflowSource(w *RuntimeWorkflowSpec, baseURL string, allowlist []string) error {
+	return resolveFetchedWorkflowSource(w, baseURL, allowlist, baseWorkflowWords)
+}
+
+// resolveURLHarnessWorkflowSource is ResolveBaseWorkflowSource for the
+// harness being loaded when it was added by URL (ComposeOpts.SourceURL):
+// a relative source resolves in that harness's repository at the commit
+// it was fetched from, as its other relative files do, and is fetched and
+// locked like a base's. Only its error wording differs.
+func resolveURLHarnessWorkflowSource(w *RuntimeWorkflowSpec, sourceURL string, allowlist []string) error {
+	return resolveFetchedWorkflowSource(w, sourceURL, allowlist, urlHarnessWorkflowWords)
+}
+
+// fetchedWorkflowWords names, in resolveFetchedWorkflowSource's errors,
+// the harness whose relative runtime_workflow.source is being resolved.
+type fetchedWorkflowWords struct {
+	errPrefix string // put before a validation error of the source
+	field     string // the field, with the harness it is in
+	repo      string // the repository the source resolves in
+	url       string // the URL the harness was fetched from
+	pinHint   string // how to pin that URL at a commit sha
+	setIn     string // where to set a tree URL instead
+}
+
+var (
+	baseWorkflowWords = fetchedWorkflowWords{
+		errPrefix: "base ",
+		field:     "base runtime_workflow.source",
+		repo:      "the base harness's repository",
+		url:       "the base URL",
+		pinHint:   "pin base: at the full 40-character commit sha",
+		setIn:     "in the base ",
+	}
+	urlHarnessWorkflowWords = fetchedWorkflowWords{
+		field:   "runtime_workflow.source",
+		repo:    "the repository of this harness, which was added by URL,",
+		url:     "the harness URL",
+		pinHint: "add the harness by a URL at the full 40-character commit sha",
+	}
+)
+
+func resolveFetchedWorkflowSource(w *RuntimeWorkflowSpec, harnessURL string, allowlist []string, words fetchedWorkflowWords) error {
 	if w == nil || w.Source == "" || IsURL(w.Source) {
 		return nil
 	}
 	if err := validateLocalWorkflowSource(w.Source); err != nil {
-		return fmt.Errorf("base %w", err)
+		return fmt.Errorf("%s%w", words.errPrefix, err)
 	}
-	cleanBase, _, _ := ParseIntegrityHash(baseURL)
+	cleanBase, _, _ := ParseIntegrityHash(harnessURL)
 	info, err := forge.ParseRawContentURL(cleanBase)
 	if err != nil {
-		return fmt.Errorf("base runtime_workflow.source %q is a relative path, so it resolves in the base harness's repository, but the base URL %s does not name one (%w); set runtime_workflow.source in the base to a tree URL with #sha256=", w.Source, cleanBase, err)
+		return fmt.Errorf("%s %q is a relative path, so it resolves in %s, but %s %s does not name one (%w); set runtime_workflow.source %sto a tree URL with #sha256=", words.field, w.Source, words.repo, words.url, cleanBase, err, words.setIn)
 	}
 	if !validCommitSHA.MatchString(info.Ref) {
-		return fmt.Errorf("base runtime_workflow.source %q is a relative path, so it resolves in the base harness's repository at the base's commit, but the base URL %s pins ref %q, not a commit sha; pin base: at the full 40-character commit sha, or set runtime_workflow.source in the base to a tree URL with #sha256=", w.Source, cleanBase, info.Ref)
+		return fmt.Errorf("%s %q is a relative path, so it resolves in %s at the commit it was fetched from, but %s %s pins ref %q, not a commit sha; %s, or set runtime_workflow.source %sto a tree URL with #sha256=", words.field, w.Source, words.repo, words.url, cleanBase, info.Ref, words.pinHint, words.setIn)
 	}
 	rel := path.Clean(w.Source)
 	rawDir := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/", info.Owner, info.Repo, info.Ref)
@@ -208,7 +249,7 @@ func ResolveBaseWorkflowSource(w *RuntimeWorkflowSpec, baseURL string, allowlist
 		treeURL += "/" + rel
 	}
 	if matchingAllowedPrefix(rawDir, allowlist) == "" {
-		return fmt.Errorf("base runtime_workflow.source %q resolves to %s, which is not in allowed_remote_resources; add a prefix that covers it to allowed_remote_resources in config.yaml", w.Source, rawDir)
+		return fmt.Errorf("%s %q resolves to %s, which is not in allowed_remote_resources; add a prefix that covers it to allowed_remote_resources in config.yaml", words.field, w.Source, rawDir)
 	}
 	w.Source = treeURL
 	w.baseDirURL = rawDir

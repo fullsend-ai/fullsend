@@ -68,7 +68,7 @@ func workflowKindRuntime(k pluginformat.Kind) string {
 // workflowLocation is where a harness came from, for resolving a relative
 // runtime_workflow.source: the git checkout that holds the harness file.
 // addedByURL is true for a harness registered by URL, whose relative
-// source is refused.
+// source composition has already resolved against that URL.
 func workflowLocation(harnessPath, absFullsendDir string, addedByURL bool) resolve.WorkflowLocation {
 	return resolve.WorkflowLocation{
 		HarnessDir:  filepath.Dir(harnessPath),

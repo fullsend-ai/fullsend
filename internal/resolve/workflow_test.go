@@ -853,10 +853,14 @@ func TestResolveRuntimeWorkflow_ClaudeNeedsName(t *testing.T) {
 }
 
 func TestResolveRuntimeWorkflow_AddedByURL(t *testing.T) {
-	t.Run("relative source is refused", func(t *testing.T) {
+	// Composition rewrites the harness's own relative source into a tree
+	// URL (see TestRunLock_WorkflowRelativeSourceInHarnessAddedByURL); one
+	// that reaches resolution still relative fails closed rather than
+	// being read from the consumer's checkout.
+	t.Run("unresolved relative source is refused", func(t *testing.T) {
 		_, _, err := resolveWF(wfHarness(), "pipelines/sample", WorkflowLocation{HarnessDir: t.TempDir(), AddedByURL: true}, ResolveOpts{WorkspaceRoot: t.TempDir()})
 		require.Error(t, err)
-		assert.Equal(t, `runtime_workflow.source "pipelines/sample" is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness`, err.Error())
+		assert.Equal(t, `runtime_workflow.source "pipelines/sample" is a relative path that was not resolved against the URL this harness was added from, so it names no known repository; set runtime_workflow.source to a tree URL with #sha256=`, err.Error())
 	})
 	t.Run("pinned tree URL is accepted", func(t *testing.T) {
 		files := wfTree()

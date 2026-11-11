@@ -253,28 +253,88 @@ func TestRunLock_RuntimeWorkflowError(t *testing.T) {
 	assert.Contains(t, err.Error(), `runtime_workflow.source URL "https://github.com/example-org/sample-pipeline/tree/`+cliWorkflowSHA+`" is not covered by allowed_remote_resources`)
 }
 
-// A harness registered by URL resolves relative paths in the consumer's
-// repository, so its relative runtime_workflow.source is refused (ADR 0130 rule
-// 1), here for a config.yaml agents: entry whose source is a URL.
-func TestRunLock_WorkflowRelativeSourceInHarnessAddedByURL(t *testing.T) {
+// urlAddedWorkflowDir is a configuration repository whose config.yaml
+// agents: entry adds the code harness by a raw.githubusercontent.com URL
+// at a commit sha; the harness declares runtime_workflow.source: source.
+// The harness and its agent file are cached, so lock and run find them
+// offline. A same-named directory in the consumer's checkout holds a pi
+// extension, so a run that read it would show "pi extension".
+func urlAddedWorkflowDir(t *testing.T, source string) string {
+	t.Helper()
 	dir := t.TempDir()
 	harnessURL := "https://raw.githubusercontent.com/example-org/agents/" + cliWorkflowSHA + "/harness/code.yaml"
-	content := []byte("agent: agents/code.md\nrole: test\nruntime_workflow:\n  source: pipelines/sample\n  name: probe\n")
+	content := []byte("agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nruntime_workflow:\n  source: " + source + "\n  name: probe\n")
 	require.NoError(t, fetch.CachePut(dir, harnessURL, content))
 	// Lock resolves a URL agent's own relative files against its source
-	// URL (#8979), so its agent file must be in the offline cache too.
-	agentURL := "https://raw.githubusercontent.com/example-org/agents/" + cliWorkflowSHA + "/agents/code.md"
-	agentContent := []byte("You are a coding agent.")
-	require.NoError(t, fetch.CachePut(dir, agentURL, agentContent))
+	// URL (#8979), so its agent and policy files must be cached too.
+	repoURL := "https://raw.githubusercontent.com/example-org/agents/" + cliWorkflowSHA + "/"
+	agentContent, policyContent := []byte("You are a coding agent."), []byte("version: 1\n")
+	require.NoError(t, fetch.CachePut(dir, repoURL+"agents/code.md", agentContent))
+	require.NoError(t, fetch.CachePut(dir, repoURL+"policies/base.yaml", policyContent))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend-cache", "url-index.json"),
-		[]byte(`{"`+agentURL+`":"`+fetch.ComputeSHA256(agentContent)+`"}`), 0o600))
+		[]byte(`{"`+repoURL+`agents/code.md":"`+fetch.ComputeSHA256(agentContent)+`","`+repoURL+`policies/base.yaml":"`+fetch.ComputeSHA256(policyContent)+`"}`), 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(workflowAllowlist+
 		"agents:\n  - name: code\n    source: "+harnessURL+"#sha256="+fetch.ComputeSHA256(content)+"\n"), 0o644))
+	writeBytesTree(t, filepath.Join(dir, "pipelines", "sample"), cliPiTree())
 	gitInit(t, dir)
+	return dir
+}
 
-	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{offline: true}, ui.New(io.Discard))
+// A relative runtime_workflow.source in a harness added by URL resolves in
+// that harness's repository at the commit it was fetched from (ADR 0130
+// rule 1), as its other relative files do: here for a config.yaml agents:
+// entry whose source is a raw.githubusercontent.com URL. It is fetched,
+// allowlist-checked and locked like a source inherited from a URL base,
+// and fullsend run replays it from the locked hash.
+func TestRunLock_WorkflowRelativeSourceInHarnessAddedByURL(t *testing.T) {
+	trees, treeFetcher := refTrees()
+	lockedHash := fetch.ComputeTreeHash(trees[cliWorkflowSHA])
+	var fetched []string
+	fetcher := func(ctx context.Context, cloneURL, path, ref, token string) (map[string][]byte, error) {
+		fetched = append(fetched, cloneURL+" "+path+" "+ref)
+		return treeFetcher(ctx, cloneURL, path, ref, token)
+	}
+	dir := urlAddedWorkflowDir(t, "pipelines/sample")
+
+	relock(t, dir, resolveFlags{treeFetcher: fetcher})
+	dep := lockedWorkflow(t, dir)
+	assert.Equal(t, "https://raw.githubusercontent.com/example-org/agents/"+cliWorkflowSHA+"/pipelines/sample/", dep.URL, "recorded under its allowlist key, as a base-inherited source is")
+	assert.Equal(t, lockedHash, dep.SHA256)
+	assert.Equal(t, "directory", dep.Type)
+	assert.Equal(t, []string{"https://github.com/example-org/agents.git pipelines/sample " + cliWorkflowSHA}, fetched)
+
+	// The run replays the lock offline: the locked tree, no fetch.
+	usePreScriptStub(t)
+	out, err := runWorkflowAgent(t, dir, resolveFlags{offline: true, treeFetcher: fetcher})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `runtime_workflow.source "pipelines/sample" is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness`)
+	assert.Contains(t, err.Error(), "creating sandbox", "the workflow resolved and the run reached sandbox creation")
+	assert.Contains(t, out, "example-org/agents@"+cliWorkflowSHA[:12]+"/pipelines/sample (sha256:"+lockedHash[:12]+") delivered as claude plugin wfplug")
+	assert.Len(t, fetched, 1)
+
+	t.Run("a source that escapes the repository is refused", func(t *testing.T) {
+		dir := urlAddedWorkflowDir(t, "../other-repo")
+		err := runLock(context.Background(), "code", dir, "", false, resolveFlags{treeFetcher: fetcher}, ui.New(io.Discard))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `runtime_workflow.source "../other-repo" contains ".."; a path source must stay inside the repository that holds this harness`)
+	})
+	t.Run("a source outside allowed_remote_resources is refused before a fetch", func(t *testing.T) {
+		dir := urlAddedWorkflowDir(t, "pipelines/sample")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), bytes.Replace(
+			mustRead(t, filepath.Join(dir, "config.yaml")), []byte("  - https://raw.githubusercontent.com/example-org/\n"),
+			[]byte("  - https://raw.githubusercontent.com/example-org/agents/"+cliWorkflowSHA+"/harness/\n  - https://raw.githubusercontent.com/example-org/agents/"+cliWorkflowSHA+"/agents/\n  - https://raw.githubusercontent.com/example-org/agents/"+cliWorkflowSHA+"/policies/\n"), 1), 0o644))
+		calls := len(fetched)
+		err := runLock(context.Background(), "code", dir, "", false, resolveFlags{treeFetcher: fetcher}, ui.New(io.Discard))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `runtime_workflow.source "pipelines/sample" resolves to https://raw.githubusercontent.com/example-org/agents/`+cliWorkflowSHA+`/pipelines/sample/, which is not in allowed_remote_resources`)
+		assert.Equal(t, calls, len(fetched))
+	})
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return b
 }
 
 // newWorkflowRunDir is newSkipHarnessDir with a runtime_workflow: harness whose

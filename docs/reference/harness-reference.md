@@ -393,16 +393,28 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 - **`source`** (required) — where the runtime workflow is. Two forms:
   - **A tree URL**: `https://github.com/<owner>/<repo>/tree/<commit sha>[/<path>]#sha256=<tree hash>`, at the repository root or a sub-directory. The ref must be the full 40-character commit sha (a branch or tag is refused) and the `#sha256=` tree hash is required. Only github.com is supported today. The URL must be covered by `allowed_remote_resources` in `config.yaml`, and `fullsend lock` records it with field `runtime_workflow`.
-  - **A path** in the repository that holds the harness, `.` being its root: for a harness under `.fullsend/`, the repository that holds `.fullsend/`. The path must be relative, use `/`, and contain no `..`, `.git` or `.fullsend-cache` segment. Only files git tracks under it are read (commit or `git add` a file for it to be delivered), fullsend's configuration directory is never part of it (a path that is that directory or lies inside it is refused), and it has no pin and no lock entry.
+  - **A path** in the repository that holds the harness, `.` being its root: for a harness under `.fullsend/`, the repository that holds `.fullsend/`. The path must be relative, use `/`, and contain no `..`, `.git` or `.fullsend-cache` segment. Only files git tracks under it are read (commit or `git add` a file for it to be delivered), fullsend's configuration directory is never part of it (a path that is that directory or lies inside it is refused), and it has no pin and no lock entry. In a URL `base:` or a harness added by URL, a path is instead fetched from that harness's repository and locked (see below).
 - **`name`** — for a Claude plugin, required: the workflow's `meta.name`, which is the name Claude Code gives the workflow. fullsend finds the script by file name, so it checks that `workflows/<name>.js` exists and that its `meta.name` is `<name>`: keep the file name and `meta.name` identical. A name with no script fails resolution with the list of workflows the runtime workflow ships. fullsend allows only letters, digits, `_` and `-` here, which is stricter than Claude Code. For a pi extension, `name` is refused.
 - **`args`** (optional) — for a Claude plugin, one literal string. Claude Code hands the text after the workflow command to the script as a single string, unsplit, in `args`; there is no argument splitting or quoting. No NUL, carriage return or newline, and `args` needs `name`. For a pi extension, `args` is refused.
 
 **Relative sources and `base:`.** A relative `source` in a harness composed through a URL `base:` is resolved in the base harness's repository at the base's commit: `source: pipelines/sample` in a base fetched from `https://raw.githubusercontent.com/example-org/sample-pipeline/<commit-sha>/.fullsend/harness/base.yaml` becomes `https://github.com/example-org/sample-pipeline/tree/<commit-sha>/pipelines/sample`. The path is taken from the repository root, not from the base's `.fullsend/` directory. As for a base plugin, it needs no `#sha256=` fragment: the base's pin covers the path, the runtime workflow is fetched at that commit, and `fullsend lock` records its tree hash. The base URL must be pinned at a full commit sha, and `https://raw.githubusercontent.com/<owner>/<repo>/<commit-sha>/<path>/` must be covered by `allowed_remote_resources`, the prefix a base plugin is checked against. Several harnesses of one repository share a pin this way: each is a thin harness with a `base:` that holds the `runtime_workflow:`. A relative `source` in a local `base:` file resolves in the git checkout that holds that base file, which may be another checkout than the child's.
 
-**Harnesses added by URL.** A harness registered by URL (`fullsend agent add <url>`, or a `config.yaml` `agents:` entry whose source is a URL) resolves relative paths in your repository, not in the harness's, so a relative `runtime_workflow.source` there is refused:
+**Harnesses added by URL.** A harness registered by URL (`fullsend agent add <url>`, or a `config.yaml` `agents:` entry whose source is a URL) resolves a relative `source` the same way a URL `base:` does: in that harness's repository at the commit it was fetched from, never in your repository. `source: pipelines/sample` in a harness added from `https://raw.githubusercontent.com/example-org/agents/<commit-sha>/harness/code.yaml` becomes `https://github.com/example-org/agents/tree/<commit-sha>/pipelines/sample`, and `fullsend lock` records its tree hash. The same rules apply as for a base:
+
+- The harness URL must be a raw.githubusercontent.com URL pinned at the full 40-character commit sha, so only github.com harnesses can use a relative `source`.
+- `https://raw.githubusercontent.com/<owner>/<repo>/<commit-sha>/<path>/` must be covered by `allowed_remote_resources`; this is checked before anything is fetched.
+- The path must stay inside the harness's repository: a `..` segment is refused.
+
+A harness added at a branch or tag fails with:
 
 ```text
-runtime_workflow.source "pipelines/sample" is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness
+runtime_workflow.source "pipelines/sample" is a relative path, so it resolves in the repository of this harness, which was added by URL, at the commit it was fetched from, but the harness URL https://raw.githubusercontent.com/example-org/agents/main/harness/code.yaml pins ref "main", not a commit sha; add the harness by a URL at the full 40-character commit sha, or set runtime_workflow.source to a tree URL with #sha256=
+```
+
+A path the allowlist does not cover fails with:
+
+```text
+runtime_workflow.source "pipelines/sample" resolves to https://raw.githubusercontent.com/example-org/agents/0123456789abcdef0123456789abcdef01234567/pipelines/sample/, which is not in allowed_remote_resources; add a prefix that covers it to allowed_remote_resources in config.yaml
 ```
 
 **The tree's kind decides what runs it.** After the fetch, fullsend classifies the runtime workflow the way it classifies a `plugins:` entry, and the kind must match the agent's runtime; a mismatch fails at plan time naming both:

@@ -99,9 +99,10 @@ type WorkflowLocation struct {
 	// part of a local runtime workflow.
 	FullsendDir string
 	// AddedByURL is true when the harness was registered by URL (fullsend
-	// agent add <url>, or a config.yaml agents: entry with a URL source):
-	// its relative paths would resolve in the consumer's repository, not
-	// the harness's, so a relative source is refused.
+	// agent add <url>, or a config.yaml agents: entry with a URL source).
+	// Composition resolves its own relative source against that URL, so a
+	// source still relative here is refused rather than read from the
+	// consumer's repository.
 	AddedByURL bool
 }
 
@@ -140,7 +141,10 @@ func ResolveRuntimeWorkflow(ctx context.Context, h *harness.Harness, loc Workflo
 		return nil, nil, nil
 	}
 	if !spec.IsRemote() && loc.AddedByURL {
-		return nil, nil, fmt.Errorf("runtime_workflow.source %q is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness", spec.Source)
+		// Composition rewrites a relative source the harness itself declares
+		// into a tree URL at the harness's commit; one still relative here
+		// was not resolved against that URL, so it names no known repository.
+		return nil, nil, fmt.Errorf("runtime_workflow.source %q is a relative path that was not resolved against the URL this harness was added from, so it names no known repository; set runtime_workflow.source to a tree URL with #sha256=", spec.Source)
 	}
 
 	// A relative source inherited from a local base harness resolves in

@@ -254,6 +254,12 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 				return nil, nil, fmt.Errorf("resolving URL-sourced plugins: %w", err)
 			}
 			deps = append(deps, pluginDeps...)
+
+			// A relative runtime_workflow.source resolves in this harness's
+			// repository at its commit (ADR 0130 rule 1), like a base's.
+			if err := resolveURLHarnessWorkflowSource(child.RuntimeWorkflow, opts.SourceURL, opts.OrgAllowlist); err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced runtime workflow: %w", err)
+			}
 		}
 
 		if err := child.validateForge(); err != nil {
@@ -387,6 +393,16 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			return nil, nil, fmt.Errorf("resolving URL-sourced plugins after base composition: %w", err)
 		}
 		deps = append(deps, pluginDeps...)
+
+		// The child's own relative runtime_workflow.source resolves in its
+		// repository at its commit, like a base's; one inherited from a URL
+		// base is already a URL, and one from a local base (DeclaredIn) is
+		// left for resolution to refuse.
+		if w := child.RuntimeWorkflow; w != nil && w.DeclaredIn() == "" {
+			if err := resolveURLHarnessWorkflowSource(w, opts.SourceURL, allowlist); err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced runtime workflow after base composition: %w", err)
+			}
+		}
 	}
 
 	// ResolveForge and ResolveOverlays once on the merged result

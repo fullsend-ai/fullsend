@@ -293,6 +293,71 @@ func TestLoadWithBase_URLBase_RelativeWorkflowSourceErrors(t *testing.T) {
 	}
 }
 
+// A harness added by URL (ComposeOpts.SourceURL) resolves its own relative
+// runtime_workflow.source in its repository at the commit it was fetched
+// from, with or without a base, as a URL base's source is; a source it
+// inherits from a URL base stays the one that base resolved.
+func TestLoadWithBase_URLHarness_RelativeWorkflowSource(t *testing.T) {
+	const sourceURL = "https://raw.githubusercontent.com/example-org/agents/" + testWorkflowSHA + "/harness/code.yaml"
+	const allow = "https://raw.githubusercontent.com/example-org/"
+	load := func(t *testing.T, ref, extra, allowPrefix string) (*Harness, error) {
+		t.Helper()
+		dir := t.TempDir()
+		cacheDir := filepath.Join(dir, "cache")
+		// The agent file resolves against the harness URL too; seed it.
+		agentURL := "https://raw.githubusercontent.com/example-org/agents/" + ref + "/agents/a.md"
+		require.NoError(t, fetch.CachePut(cacheDir, agentURL, []byte("agent")))
+		require.NoError(t, RecordURLIndex(cacheDir, agentURL, fetch.ComputeSHA256([]byte("agent"))))
+		content := "agent: agents/a.md\nrole: test\n" + extra
+		if strings.Contains(extra, "base: SEED") {
+			content = strings.Replace(content, "SEED", seedURLBase(t, cacheDir, testWorkflowSHA, "runtime_workflow:\n  source: pipelines/from-base\n  name: probe\n"), 1)
+		}
+		path := writeTestHarness(t, dir, "code.yaml", content)
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+			OrgAllowlist:  []string{allowPrefix},
+			SourceURL:     strings.Replace(sourceURL, testWorkflowSHA, ref, 1),
+		})
+		return h, err
+	}
+	own := "runtime_workflow:\n  source: pipelines/sample\n  name: probe\n"
+
+	for name, extra := range map[string]string{"no base": own, "with a URL base": "base: SEED\n" + own} {
+		t.Run(name, func(t *testing.T) {
+			h, err := load(t, testWorkflowSHA, extra, allow)
+			require.NoError(t, err)
+			assert.Equal(t, "https://github.com/example-org/agents/tree/"+testWorkflowSHA+"/pipelines/sample", h.RuntimeWorkflow.Source)
+			assert.Equal(t, "https://raw.githubusercontent.com/example-org/agents/"+testWorkflowSHA+"/pipelines/sample/", h.RuntimeWorkflow.InheritedFromBase())
+		})
+	}
+	t.Run("a source inherited from a URL base is untouched", func(t *testing.T) {
+		h, err := load(t, testWorkflowSHA, "base: SEED\n", allow)
+		require.NoError(t, err)
+		assert.Equal(t, "https://github.com/example-org/sample-pipeline/tree/"+testWorkflowSHA+"/pipelines/from-base", h.RuntimeWorkflow.Source)
+	})
+	t.Run("a pinned tree URL is untouched", func(t *testing.T) {
+		src := "https://github.com/other-org/p/tree/" + testWorkflowSHA + "#sha256=" + testWorkflowHash
+		h, err := load(t, testWorkflowSHA, "runtime_workflow:\n  source: "+src+"\n  name: probe\n", allow)
+		require.NoError(t, err)
+		assert.Equal(t, src, h.RuntimeWorkflow.Source)
+		assert.Empty(t, h.RuntimeWorkflow.InheritedFromBase())
+	})
+
+	for _, tt := range []struct{ name, ref, source, allow, wantErr string }{
+		{name: "branch ref", ref: "main", source: "pipelines/sample", allow: allow, wantErr: `runtime_workflow.source "pipelines/sample" is a relative path, so it resolves in the repository of this harness, which was added by URL, at the commit it was fetched from, but the harness URL https://raw.githubusercontent.com/example-org/agents/main/harness/code.yaml pins ref "main", not a commit sha; add the harness by a URL at the full 40-character commit sha, or set runtime_workflow.source to a tree URL with #sha256=`},
+		{name: "not allowlisted", ref: testWorkflowSHA, source: "pipelines/sample", allow: "https://raw.githubusercontent.com/example-org/agents/" + testWorkflowSHA + "/agents/", wantErr: `runtime_workflow.source "pipelines/sample" resolves to https://raw.githubusercontent.com/example-org/agents/` + testWorkflowSHA + `/pipelines/sample/, which is not in allowed_remote_resources`},
+		{name: "escapes the repository", ref: testWorkflowSHA, source: "../x", allow: allow, wantErr: `runtime_workflow.source "../x" contains ".."`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := load(t, tt.ref, "runtime_workflow:\n  source: "+tt.source+"\n  name: probe\n", tt.allow)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.NotContains(t, err.Error(), "base runtime_workflow", "a harness added by URL is not called a base")
+		})
+	}
+}
+
 func TestResolveBaseWorkflowSource(t *testing.T) {
 	allow := []string{"https://raw.githubusercontent.com/"}
 	require.NoError(t, ResolveBaseWorkflowSource(nil, "", allow))
