@@ -419,7 +419,7 @@ func (a *applier) finish() error {
 		a.errs = append(a.errs, fmt.Errorf("normentity: coverage.check_annotations entry %q matches no check", id))
 	}
 	for k := range a.lists {
-		a.errs = append(a.errs, fmt.Errorf("normentity: coverage.extension_lists entry %s/%s matches no list-valued extension", k.ownerID, k.alias))
+		a.errs = append(a.errs, fmt.Errorf("normentity: coverage.extension_lists entry %q matches no list-valued extension", k.ownerID+"/"+k.alias))
 	}
 	for _, name := range []string{"labels", "comments", "label_applications", "reviews", "checks",
 		"threads", "reviewers", "current_approvals", "assignees", "reactions", "changed_files", "commits"} {
