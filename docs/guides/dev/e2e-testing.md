@@ -756,7 +756,7 @@ and pass the full capability list. This replaces the `Makefile` default
 rather than adding to it:
 
 ```bash
-BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,runtime-codex-gateway,runtime-claude-gateway,inference-gateway-reseed \
+BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runner-secret-overlay-guard,runtime-pi-gateway,runtime-codex-gateway,runtime-claude-gateway,inference-gateway-reseed \
   make behaviour-test
 ```
 
