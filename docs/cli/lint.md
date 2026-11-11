@@ -47,13 +47,18 @@ Each enabled `agents:` entry is resolved and composed through the same machinery
   directory. Run that online run with the same forge (`--forge` or CI auto-detection)
   as the offline run; otherwise the forge-specific files are not cached and the
   offline run fails.
-- Harnesses are composed with `base:` chains, CEL-guarded overlays, and the forge
-  section for the effective platform, so diagnostics see the harness as it would
-  execute. Without a platform (`--forge` omitted, none in config, no CI env), the forge
-  section is left unconsumed and its fields are linted in place.
+- Harnesses are composed with `base:` chains, CEL-guarded overlays, the forge
+  section for the effective platform, and the `harness:` block of the agent's
+  `agents:` entry, so diagnostics see the harness as it would execute. Without a
+  platform (`--forge` omitted, none in config, no CI env), the forge section is left
+  unconsumed and its fields are linted in place.
 
-Diagnostics for an override-only entry come from the upstream harness, not from your
-`config.yaml`, so you cannot fix them in this repository.
+Diagnostics for an override-only entry come from the upstream harness, so you cannot
+fix them in this repository. The entry's `harness:` block is the exception. A
+diagnostic on a field that the block sets comes from your `config.yaml`. It
+carries the same field label as one from the upstream harness, so compare the
+field with your block. A diagnostic that names the block or a `harness.` field
+always comes from the block.
 
 Disabled agents (`enabled: false`) are skipped. Overlay `when` expressions evaluate
 against an empty event with `runtime.forge` and `config` available, like other CLI
@@ -194,6 +199,8 @@ Codes appear only in `--format json`.
 | `trigger-invalid` | `trigger` fails CEL validation |
 | `preflight-check-path` | `preflight_check` looks like a bare script path |
 | `github-issue-url-deprecated` | `GITHUB_ISSUE_URL` is set or referenced |
+| `block-drops-runtime-fetch` | an `agents:` entry's `harness:` block leaves out a runtime fetch field that a layer below it sets, unless the block sets `allow_runtime_fetch: false` |
+| `block-trigger-ignored` | an `agents:` entry's `harness:` block sets `trigger` on a built-in agent |
 | `reserved-sandbox-env` | `env.sandbox` keys the sandbox will drop |
 | `config-invalid` | `config.yaml` semantic validation failed, including an invalid `forge:` |
 | `agents-siblings-invalid` | scoped lint: other agents' `agents[]` entries are invalid |

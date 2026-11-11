@@ -1867,6 +1867,44 @@ agents:
 	assert.Equal(t, "medium", lint.Effort)
 }
 
+// agent add and agent remove write only the overlay's own entries, not the base layer's.
+func TestRunAgentAddRemove_BaseLayerEntriesStayInBase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	for _, name := range []string{"lint", "other"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", name+".yaml"), []byte("agent: agents/"+name+".md\nrole: test\n"), 0o644))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`version: "1"
+agents:
+  - source: harness/lint.yaml
+    harness:
+      timeout_minutes: 30
+`), 0o644))
+	writePerRepoConfig(t, dir, "")
+	overlay := func() string {
+		data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+		require.NoError(t, err)
+		return string(data)
+	}
+
+	require.NoError(t, runAgentAdd(context.Background(), "harness/other.yaml", "", dir, nil, ui.New(os.Stdout)))
+	assert.Contains(t, overlay(), "harness/other.yaml")
+	assert.NotContains(t, overlay(), "lint")
+
+	require.NoError(t, runAgentRemove(dir, "other", ui.New(os.Stdout)))
+	assert.NotContains(t, overlay(), "other")
+	assert.NotContains(t, overlay(), "lint")
+
+	// With or without an entry of its own in config.yaml, a base-layer agent is not reported as removed.
+	for _, own := range []string{"", "agents:\n  - name: lint\n    enabled: false\n"} {
+		writePerRepoConfig(t, dir, own)
+		before := overlay()
+		err := runAgentRemove(dir, "lint", ui.New(os.Stdout))
+		assert.ErrorContains(t, err, `agent "lint" is registered in config.base.yaml`)
+		assert.Equal(t, before, overlay(), "nothing is written")
+	}
+}
+
 func TestAgentSetCmd_ExecutesAndTracksChangedFlags(t *testing.T) {
 	dir := t.TempDir()
 	writePerRepoConfig(t, dir, "")
@@ -2155,6 +2193,8 @@ func TestRunAgentList_BuiltInAndSettings(t *testing.T) {
     effort: high
     subagents:
       default: haiku
+    harness:
+      timeout_minutes: 30
   - source: harness/lint.yaml
     model: opus
 `)
@@ -2166,7 +2206,7 @@ func TestRunAgentList_BuiltInAndSettings(t *testing.T) {
 	assert.Contains(t, out, "runtime=claude")
 	assert.Contains(t, out, "model=sonnet")
 	assert.Contains(t, out, "effort=high")
-	assert.Contains(t, out, "subagents: default=haiku")
+	assert.Contains(t, out, "subagents: default=haiku harness]")
 	assert.Contains(t, out, "harness/lint.yaml")
 	assert.Contains(t, out, "model=opus")
 }
@@ -2352,6 +2392,7 @@ func TestRunAgentSet_OpenAISubagentWarningAbsolutePaths(t *testing.T) {
 		name      string
 		absAgent  bool
 		providers func(dir string) string
+		block     string
 		warn      bool
 	}{
 		{name: "absolute openai provider path counts", providers: func(dir string) string {
@@ -2359,6 +2400,8 @@ func TestRunAgentSet_OpenAISubagentWarningAbsolutePaths(t *testing.T) {
 		}},
 		{name: "absolute agent path still finds the persona", absAgent: true,
 			providers: func(string) string { return "  - vertex-ai\n" }, warn: true},
+		{name: "a harness: block may add the provider",
+			providers: func(string) string { return "  - vertex-ai\n" }, block: "    harness: { providers: [openai] }\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -2378,7 +2421,7 @@ func TestRunAgentSet_OpenAISubagentWarningAbsolutePaths(t *testing.T) {
 				[]byte("name: my-oai\ntype: fullsend-openai\ncredentials:\n  OPENAI_API_KEY: \"\"\n"), 0o644))
 			require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "mix.yaml"),
 				[]byte("agent: "+agentPath+"\nrole: test\nmodel: opus\nskills:\n  - skills/probe\nproviders:\n"+tc.providers(dir)), 0o644))
-			writePerRepoConfig(t, dir, "agents:\n  - name: mix\n    source: harness/mix.yaml\n")
+			writePerRepoConfig(t, dir, "agents:\n  - name: mix\n    source: harness/mix.yaml\n"+tc.block)
 
 			var out bytes.Buffer
 			require.NoError(t, runAgentSet(dir, "mix", agentSetFlags{
@@ -2389,6 +2432,11 @@ func TestRunAgentSet_OpenAISubagentWarningAbsolutePaths(t *testing.T) {
 				assert.Contains(t, out.String(), warnText)
 			} else {
 				assert.NotContains(t, out.String(), warnText)
+			}
+			if tc.block != "" {
+				written, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+				require.NoError(t, err)
+				assert.Contains(t, string(written), "openai", "agent set keeps the entry's harness: block")
 			}
 		})
 	}

@@ -63,6 +63,7 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		Config:        harness.BuildConfigMap(cfg),
 	}
 
+	entries := cfg.AgentEntries()
 	var out []TriggeredHarness
 	var loadErrs []error
 	loaded := 0
@@ -81,6 +82,9 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		if harness.IsURL(agent.Entry.Source) {
 			loadOpts.SourceURL = agent.Entry.Source
 		}
+		// The entry's harness: blocks may override the trigger (ADR 0162).
+		loadOpts.Blocks = config.HarnessBlocksFor(entries, agent.Name)
+		loadOpts.Agent = agent.Name
 		h, _, err := harness.LoadWithBase(ctx, resolved.Path, loadOpts)
 		if err != nil {
 			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: load failed: %v\n", agent.Name, err)

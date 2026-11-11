@@ -141,11 +141,25 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md).
 |----------|-------------|---------|--------------|
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. | `low` | `info`, `low`, `medium`, `high`, `critical` |
 
-Set this in the harness's `env.sandbox` (the upstream default lives in
-`harness/review.yaml`). To override per repo or org, use `base:`
-composition rather than the CI workflow `env:` block — workflow `env:`
-is reserved for infrastructure plumbing (see [Architecture](../architecture.md#agent-harness)
-for details on harness composition and workflow-env conventions).
+The upstream default lives in `harness/review.yaml`, in both `env.runner`
+and `env.sandbox`. To override it per repo or org, set it in the review
+entry's `harness:` block in `config.yaml` (or `config.base.yaml`), which
+keeps the agent on upstream updates
+([ADR 0162](../ADRs/0162-agent-entries-may-carry-harness-overrides.md)):
+
+```yaml
+agents:
+  - name: review
+    harness:
+      env:
+        runner: { REVIEW_FINDING_SEVERITY_THRESHOLD: medium }
+        sandbox: { REVIEW_FINDING_SEVERITY_THRESHOLD: medium }
+```
+
+`base:` composition also works. Do not use the CI workflow `env:` block —
+workflow `env:` is reserved for infrastructure plumbing (see
+[Architecture](../architecture.md#agent-harness) for details on harness
+composition and workflow-env conventions).
 The post-script reads the value from the runner environment directly —
 no separate configuration is needed.
 

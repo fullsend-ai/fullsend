@@ -171,10 +171,11 @@ func (lf *LockFile) Lookup(harnessName string) *HarnessLock {
 	return &hl
 }
 
-// IsStale returns true if the harness source file has changed since the
-// lock entry was generated. It compares the harness file's SHA256 against
-// the stored hash. sourceHash is the SHA256 of the current harness file
-// content. Returns true for a nil receiver.
+// IsStale returns true if the harness has changed since the lock entry was
+// generated. It compares sourceHash against the stored hash. sourceHash is
+// the SHA256 of the current harness file content, or, for an agent whose
+// agents: entry carries harness: blocks, of that content followed by the
+// blocks (ADR 0162). Returns true for a nil receiver.
 func (hl *HarnessLock) IsStale(sourceHash string) bool {
 	if hl == nil {
 		return true

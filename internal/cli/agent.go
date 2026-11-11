@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -399,7 +400,9 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 		return fmt.Errorf("agent %q already exists in config", derivedName)
 	}
 
-	cfg.SetAgents(append(agents, entry))
+	// Write only this layer's own entries, as runAgentSet does: the merged
+	// list would copy the parent layer's entries into config.yaml.
+	cfg.SetAgents(append(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), entry))
 
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
@@ -469,6 +472,9 @@ func runAgentList(fullsendDir string, printer *ui.Printer) error {
 			}
 			if strings.TrimSpace(a.Trigger) != "" {
 				settings = append(settings, "trigger")
+			}
+			if len(a.HarnessBlocks()) > 0 {
+				settings = append(settings, "harness")
 			}
 			displaySource += "  [" + strings.Join(settings, " ") + "]"
 		}
@@ -705,8 +711,21 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 	}
 
 	removedEntry := agents[idx]
-	agents = append(agents[:idx], agents[idx+1:]...)
-	cfg.SetAgents(agents)
+	// Write only this layer's own entries, as runAgentSet does: the merged
+	// list would copy the parent layer's entries into config.yaml.
+	local := slices.Clone(localAgentEntries(cfg))
+	if i, ok := findAgentByName(local, agentName); ok {
+		local = slices.Delete(local, i, i+1)
+	}
+	cfg.SetAgents(local)
+	// An agent that config.base.yaml registers is still there, and this
+	// command edits config.yaml only.
+	agents = cfg.AgentEntries()
+	if _, inLocal := findAgentByName(local, agentName); !inLocal {
+		if _, inBase := findAgentByName(agents, agentName); inBase {
+			return fmt.Errorf("agent %q is registered in config.base.yaml, which this command does not edit; to turn it off, add an entry with `name: %s` and `enabled: false` to config.yaml", agentName, agentName)
+		}
+	}
 
 	if urlutil.IsURL(removedEntry.Source) {
 		prefix := allowlistPrefixForURL(removedEntry.Source)

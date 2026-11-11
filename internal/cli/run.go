@@ -353,6 +353,25 @@ func loadRunConfig(path string) (runConfig, error) {
 	return runConfig{source: source, perRepo: perRepoCfg}, nil
 }
 
+// siblingConfigBlockError fails a run whose agents: entry has a harness:
+// block in the sibling .fullsend/config.yaml that loadRunConfig falls back
+// to. The entry's runtime, model and effort are read from there, but a block
+// composes only from the config at the root of --fullsend-dir, and dropping
+// it would run the agent without its settings.
+func siblingConfigBlockError(path, agentName string) error {
+	rc, err := loadRunConfig(path)
+	if err != nil || rc.perRepo == nil {
+		return nil // reported where the run loads this config
+	}
+	if filepath.Dir(rc.source) == filepath.Dir(path) {
+		return nil // the config blocks compose from
+	}
+	if len(config.HarnessBlocksFor(rc.perRepo.AgentEntries(), agentName)) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s: the %q agents entry has a harness: block, which applies only when --fullsend-dir is the directory that holds config.yaml; pass --fullsend-dir %s", rc.source, agentName, filepath.Dir(rc.source))
+}
+
 // backendFromConfigFile selects the runtime for agentName from the config
 // file at path (see loadRunConfig for which file and layering). The
 // returned source names the file, suffixed with agents.<agent>
@@ -550,6 +569,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return err
 	}
 
+	if err := siblingConfigBlockError(orgConfigPath, agentName); err != nil {
+		printer.StepFail("Failed to load fullsend config")
+		return err
+	}
+
 	// Detect forge platform after config is loaded so config.forge can be consulted (ADR 0088).
 	forgePlatform, err := detectForgePlatform(forgeFlag, orgCfg)
 	if err != nil {
@@ -697,9 +721,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// The agent's agents: entry may carry harness: blocks, composed on the
+	// harness as child layers (ADR 0162).
+	if orgCfg != nil {
+		composeOpts.Blocks = config.HarnessBlocksFor(orgCfg.AgentEntries(), agentName)
+		composeOpts.Agent = agentName
+	}
+
 	// A current lock entry pins the relative files of a URL base, so pass
 	// its pins in before composition fetches them (#8979).
-	lockState, err := readRunLock(absFullsendDir, agentName, harnessPath)
+	lockState, err := readRunLock(absFullsendDir, agentName, harnessPath, composeOpts.Blocks)
 	if err != nil {
 		return err
 	}
@@ -3712,6 +3743,9 @@ func init() {
 		// keys there; only credential values (child env) may expand them.
 		sandbox.CredentialOnlyExpansionKeys(k)
 	}
+	// An agents: entry's harness: block may not set a reserved name in
+	// either env section (ADR 0162 Decision 5).
+	harness.SetReservedSandboxKeyCheck(isReservedSandboxKey)
 }
 
 // isReservedSandboxKey reports whether an env.sandbox key is blocked by name:
@@ -7723,13 +7757,13 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		return "", nil, fmt.Errorf("resolving agent %q: not in config and agents-repo fallback unavailable", agentName)
 	}
 	if entry.Source == "" {
-		// An override-only entry tunes a built-in agent (runtime/model/
-		// effort) but registers no harness: the built-in still comes from
-		// the agents repo, exactly as if the entry were absent.
+		// An override-only entry tunes a built-in agent (any setting
+		// HasSettings counts) but registers no harness: the built-in still
+		// comes from the agents repo, exactly as if the entry were absent.
 		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
 			return path, deps, nil
 		}
-		return "", nil, fmt.Errorf("resolving agent %q: config entry has no source (it only sets runtime/model/effort) and agents-repo fallback unavailable", agentName)
+		return "", nil, fmt.Errorf("resolving agent %q: config entry has no source (it only tunes the built-in agent) and agents-repo fallback unavailable", agentName)
 	}
 
 	if harness.IsURL(entry.Source) {

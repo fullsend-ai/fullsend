@@ -382,7 +382,8 @@ the `#sha256=...` integrity hash suffix is stripped from the displayed source
 for readability. Disabled agents (`enabled: false`) are included in the listing.
 A built-in agent tuned by an entry without `source:` shows `(built-in)`. An
 entry's settings follow in brackets, for example `[model=sonnet effort=high]`;
-an entry with an `agents[].trigger` shows `trigger` there.
+an entry with an `agents[].trigger` shows `trigger` there, and one with a
+`harness:` block shows `harness`.
 
 Example output:
 ```
@@ -442,6 +443,10 @@ dispatch on each runtime.
 ## `agent remove`
 
 Remove an agent from config. If the removed agent was the last one using a given `allowed_remote_resources` prefix, that prefix is also cleaned up.
+
+The command edits `config.yaml` only. For an agent that `config.base.yaml`
+registers, it fails and writes nothing. To turn that agent off, add an entry
+with its `name` and `enabled: false` to `config.yaml`.
 
 ```bash
 fullsend agent remove triage

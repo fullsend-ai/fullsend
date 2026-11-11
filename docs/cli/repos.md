@@ -104,8 +104,12 @@ declared in a more specific layer than an explicit empty one (for example
 `defaults.config` `[]` with a non-empty `github.config` or repository list)
 unless the most specific declared list is itself empty, which denies every
 remote resource whatever the earlier layers say; declare the full list in a
-single layer instead. Omitted values inherit and are not written into the
-managed file. Every repository selected from the manifest has a managed
+single layer instead. Validation also rejects an agent's `harness:` block that
+is set in more than one of these three layers, because they render into one
+`config.yaml`. Set the block in one layer (see the
+[config reference](../reference/config-reference.md#agents)). Omitted values
+inherit and are not written into the managed file. Every repository selected
+from the manifest has a managed
 `.fullsend/config.yaml`; no `config` key is required. With no `config` declared,
 install renders the canonical sparse file carrying only the ownership marker
 (omitted values still inherit from a declared preset and the code defaults).
@@ -215,9 +219,15 @@ key plus `create_issues.allow_targets`. A setting that schema cannot express
 repository with an error that names the setting. The ownership marker is the
 same in every schema.
 
+An agent entry's `harness:` block needs a ref that declares schema version 3
+or later. For a ref on an older schema, install fails that repository with an
+error that names the entry, and `repos status` reports a block that is already
+in the installed file as `incompatible`.
+
 The pinned ref is looked up only when the managed configuration or the
-installed file declares `tracker` or `create_issues`, the only keys whose shape
-differs between known schemas. Looking it up needs the upstream GitHub client.
+installed file declares `tracker`, `create_issues` or a `harness:` block on an
+agent entry, the only settings that known schemas read differently. Looking it
+up needs the upstream GitHub client.
 When the ref or its schema cannot be determined (the ref does not resolve, no
 upstream client is available, or the ref declares a schema version this CLI
 does not know), install leaves `.fullsend/config.yaml` unchanged and fails that

@@ -1328,6 +1328,8 @@ func TestLintDiagnosticCodesMatchPattern(t *testing.T) {
 		harness.CodeTriggerInvalid,
 		harness.CodePreflightCheckPath,
 		harness.CodeGithubIssueURLDeprecated,
+		harness.CodeBlockDropsRuntimeFetch,
+		harness.CodeBlockTriggerIgnored,
 	}
 	seen := map[string]struct{}{}
 	for _, c := range codes {
@@ -1621,4 +1623,42 @@ func TestLintCommand_ScopedJSONLintsOnlySelectedAgent(t *testing.T) {
 	assert.Equal(t, "beta", report.Diagnostics[0].Agent)
 	assert.Equal(t, "warning", report.Diagnostics[0].Severity)
 	assert.Equal(t, harness.CodeGithubIssueURLDeprecated, report.Diagnostics[0].Code)
+}
+
+// lint composes an entry's harness: block as run does, with the same name and path checks.
+func TestLintCommand_LintsHarnessBlock(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(`role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+env:
+  sandbox:
+    MY_KNOB: low
+`), 0o644))
+	writeConfig := func(block string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+    harness:
+`+block), 0o644))
+	}
+
+	writeConfig("      env: { sandbox: { MY_KNOB: high } }\n      policy: policies/base.yaml\n")
+	out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+	require.NoError(t, err, out)
+	assert.NotContains(t, out, "error:")
+
+	writeConfig("      env: { sandbox: { NOT_DECLARED: x } }\n")
+	out, err = executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+	require.Error(t, err)
+	assert.Contains(t, out+err.Error(), `harness.env.sandbox.NOT_DECLARED`)
+
+	writeConfig("      policy: ../outside.yaml\n")
+	out, err = executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+	require.Error(t, err, "a block path escaping the config directory is rejected, as in a local harness file")
+	assert.Contains(t, out+err.Error(), "resolving paths for agent")
 }

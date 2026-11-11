@@ -36,6 +36,19 @@ func TestRenderManagedConfigSchemaCurrentUnchanged(t *testing.T) {
 	assert.Equal(t, in, out)
 }
 
+// A schema before the harness: block fails on an entry that carries one.
+func TestRenderManagedConfigSchemaHarnessBlock(t *testing.T) {
+	block := []byte("agents:\n  - name: review\n    harness:\n      timeout_minutes: 30\n")
+	plain := []byte("agents:\n  - name: review\n    model: opus\n    harness: {}\n")
+	for _, v := range []int{ManagedConfigSchemaTrackerMapping, ManagedConfigSchemaLegacy} {
+		_, err := RenderManagedConfigSchema(block, v)
+		require.ErrorContains(t, err, `agents entry "review": a harness: block cannot be expressed`)
+		out, err := RenderManagedConfigSchema(plain, v)
+		require.NoError(t, err)
+		assert.Equal(t, plain, out, "an empty block sets nothing")
+	}
+}
+
 func TestRenderManagedConfigSchemaUnknownVersion(t *testing.T) {
 	_, err := RenderManagedConfigSchema([]byte("runtime: claude\n"), ManagedConfigSchemaVersion+1)
 	require.ErrorContains(t, err, "unknown managed configuration schema version")
@@ -168,6 +181,8 @@ func TestManagedConfigSchemaDependent(t *testing.T) {
 	assert.True(t, ManagedConfigSchemaDependent([]byte("tracker:\n  github: {}\n")))
 	assert.True(t, ManagedConfigSchemaDependent([]byte("tracker: github\n")))
 	assert.True(t, ManagedConfigSchemaDependent([]byte("create_issues:\n  allow_targets: {}\n")))
+	assert.True(t, ManagedConfigSchemaDependent([]byte("agents:\n  - name: review\n    harness: { timeout_minutes: 30 }\n")))
+	assert.False(t, ManagedConfigSchemaDependent([]byte("agents:\n  - name: review\n    model: opus\n    harness: {}\n")))
 	assert.False(t, ManagedConfigSchemaDependent([]byte("runtime: claude\n")))
 	assert.False(t, ManagedConfigSchemaDependent(nil))
 	assert.False(t, ManagedConfigSchemaDependent([]byte("a: [\n")))
@@ -185,4 +200,11 @@ func TestCheckManagedConfigSchemaCompat(t *testing.T) {
 	require.NoError(t, CheckManagedConfigSchemaCompat(neutral, ManagedConfigSchemaLegacy))
 	require.NoError(t, CheckManagedConfigSchemaCompat(neutral, ManagedConfigSchemaVersion))
 	require.NoError(t, CheckManagedConfigSchemaCompat([]byte("a: [\n"), ManagedConfigSchemaLegacy))
+
+	require.NoError(t, CheckManagedConfigSchemaCompat(mapping, ManagedConfigSchemaTrackerMapping))
+	require.Error(t, CheckManagedConfigSchemaCompat(legacy, ManagedConfigSchemaTrackerMapping))
+	block := []byte("agents:\n  - name: review\n    harness: { timeout_minutes: 30 }\n")
+	require.NoError(t, CheckManagedConfigSchemaCompat(block, ManagedConfigSchemaVersion))
+	require.ErrorContains(t, CheckManagedConfigSchemaCompat(block, ManagedConfigSchemaTrackerMapping), `harness: block on the agents entry "review"`)
+	require.Error(t, CheckManagedConfigSchemaCompat(block, ManagedConfigSchemaLegacy))
 }

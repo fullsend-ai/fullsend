@@ -611,6 +611,8 @@ func TestDiagnosticCodeConstantsMatchPattern(t *testing.T) {
 		CodeTriggerInvalid,
 		CodePreflightCheckPath,
 		CodeGithubIssueURLDeprecated,
+		CodeBlockDropsRuntimeFetch,
+		CodeBlockTriggerIgnored,
 	}
 	seen := map[string]struct{}{}
 	for _, c := range codes {

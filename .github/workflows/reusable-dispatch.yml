@@ -931,13 +931,48 @@ jobs:
           fi
           # An enabled entry may omit source when it only tunes a built-in
           # agent by name (runtime/model/effort/subagents, ADR 0091; trigger,
-          # #8726), the settings config.AgentEntry.HasSettings counts. A blank
-          # trigger counts as unset, as on the Go side. trigger is checked for
-          # null explicitly: `//` would also replace an unquoted false, which
-          # Go reads as the CEL expression "false".
-          BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null and .subagents == null and ((.trigger == null) or (.trigger | tostring | test("^\\s*$"))))) | line' .fullsend/config.yaml 2>/dev/null || echo "")
-          if [[ -n "$BAD_SOURCE" ]]; then
-            echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model, effort, subagents or trigger to tune a built-in agent)"
+          # #8726; a non-empty harness: block, ADR 0162), the settings
+          # config.AgentEntry.HasSettings counts. A blank trigger counts as
+          # unset, as on the Go side. trigger is checked for null explicitly:
+          # `//` would also replace an unquoted false, which Go reads as the
+          # CEL expression "false". explode(.) resolves each entry's YAML
+          # aliases, as the Go side does; without it `harness: *anchor`
+          # counts as unset. It runs per entry, so a bad merge key elsewhere
+          # in the file does not fail this check. A yq failure is reported;
+          # fullsend run validates the entries again.
+          YQ_ERR=$(mktemp)
+          BAD_SOURCE=$(yq '.agents[] | explode(.) | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null and .subagents == null and ((.trigger == null) or (.trigger | tostring | test("^\\s*$"))) and (((.harness | type) != "!!map") or ((.harness | length) == 0)))) | ((.enabled // "unset") | tostring) + " " + ((.name // "") | downcase)' .fullsend/config.yaml 2>"$YQ_ERR") || {
+            echo "::warning::yq failed checking agent entries without a source — see logs"
+            cat "$YQ_ERR" >&2
+            BAD_SOURCE=""
+          }
+          # The Go keyed merge (perRepoConfig.AgentEntries) completes such an
+          # entry from the config.base.yaml entry of the same name: one with
+          # a source or a setting, or one that turns the agent off when this
+          # entry does not turn it on. Names compare without case, and a base
+          # entry without a name is named after its source file.
+          BASE_ENTRIES=""
+          if [[ -n "$BAD_SOURCE" && -f .fullsend/config.base.yaml ]]; then
+            BASE_ENTRIES=$(yq '.agents[] | explode(.) | ((select(type == "!!str") | "complete " + (sub("#[^#]*$", "") | sub("^.*/", "") | sub("\\.[^.]*$", "") | downcase)), (select(type == "!!map") | select(((.source // "") != "") or .runtime != null or .model != null or .effort != null or .subagents != null or ((.trigger != null) and ((.trigger | tostring | test("^\\s*$")) | not)) or (((.harness | type) == "!!map") and ((.harness | length) > 0))) | "complete " + ((.name // .source) | sub("#[^#]*$", "") | sub("^.*/", "") | sub("\\.[^.]*$", "") | downcase)), (select(type == "!!map") | select(.enabled == false) | "off " + ((.name // "") | downcase)))' .fullsend/config.base.yaml 2>"$YQ_ERR") || {
+              echo "::warning::yq failed reading agent entries from config.base.yaml — see logs"
+              cat "$YQ_ERR" >&2
+              BAD_SOURCE=""
+            }
+          fi
+          rm -f "$YQ_ERR"
+          UNRESOLVED=""
+          while read -r enabled name; do
+            [[ -z "$enabled" ]] && continue
+            if [[ -n "$name" ]] && grep -qxF -- "complete $name" <<<"$BASE_ENTRIES"; then
+              continue
+            fi
+            if [[ -n "$name" && "$enabled" == "unset" ]] && grep -qxF -- "off $name" <<<"$BASE_ENTRIES"; then
+              continue
+            fi
+            UNRESOLVED=1
+          done <<<"$BAD_SOURCE"
+          if [[ -n "$UNRESOLVED" ]]; then
+            echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model, effort, subagents, trigger or harness to tune a built-in agent)"
             exit 1
           fi
           DUPES_ENABLED=$(yq '.agents[] | select(type == "!!map" and .enabled != false) | (.name // "") | select(. != "") | downcase' .fullsend/config.yaml 2>/dev/null | sort | uniq -d)

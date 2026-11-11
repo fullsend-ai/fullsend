@@ -11,7 +11,8 @@ so you can pick the right one.
 |------|----------|--------|
 | Teach agents your coding style, test commands, or architecture rules | [AGENTS.md](#agentsmd) | Low |
 | Give an agent domain-specific knowledge or a new capability | [Skills](#skills) | Low |
-| Change model, timeout, image, or add env vars to an existing agent | [Harness configuration](#harness-configuration) | Medium |
+| Change a setting of an existing agent's harness, such as a timeout, the image or a variable it declares | [The `harness:` block](#harness-configuration) | Low |
+| Add env vars to an existing agent, or keep its changes in a harness file | [Harness configuration](#harness-configuration) | Medium |
 | Build a completely new agent with its own trigger, scripts, and schema | [Bring Your Own Agent](#bring-your-own-agent) | Medium with `fullsend agent new`, high by hand |
 
 Start at the top and move down only when a lighter option doesn't cover your
@@ -42,9 +43,28 @@ points, replacing built-in skills.
 
 ## Harness configuration
 
-To change how an existing agent runs — its model, timeout, sandbox image,
-environment variables, or skills — use `base:` harness composition. Create
-a thin harness that inherits from the upstream agent and overrides only what
+To change a setting of an existing agent's harness, such as its timeout,
+sandbox image, skills or a variable it declares, set it in the `harness:`
+block of the agent's entry in `config.yaml`. The agent keeps getting
+upstream updates. See the
+[config reference](../../reference/config-reference.md#agents).
+
+```yaml
+agents:
+  - name: code
+    harness:
+      timeout_minutes: 90
+      env:
+        sandbox:
+          TIMEOUT_SECONDS: "5400"
+```
+
+The code, fix and review skills read their time limit from
+`TIMEOUT_SECONDS`, in seconds. Change it together with `timeout_minutes`.
+
+The block cannot add an environment variable. For that, or to keep the
+changes in a harness file, use `base:` harness composition. Create a thin
+harness that inherits from the upstream agent and overrides only what
 differs:
 
 ```yaml

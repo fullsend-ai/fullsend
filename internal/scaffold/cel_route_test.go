@@ -673,24 +673,76 @@ func TestValidateAgentsConfigStep_AcceptsOverrideOnlySettings(t *testing.T) {
 		{"unquoted boolean trigger", "agents:\n  - name: review\n    trigger: false\n", false},
 		{"blank trigger", "agents:\n  - name: review\n    trigger: \"  \"\n", true},
 		{"empty trigger", "agents:\n  - name: review\n    trigger: \"\"\n", true},
+		{"harness block only", "agents:\n  - name: review\n    harness:\n      timeout_minutes: 30\n", false},
+		{"harness block as an alias", "agents:\n  - name: code\n    harness: &blk\n      timeout_minutes: 90\n  - name: fix\n    harness: *blk\n", false},
+		{"empty harness block", "agents:\n  - name: review\n    harness: {}\n", true},
+		{"null harness block", "agents:\n  - name: review\n    harness: ~\n", true},
+		{"name only beside a bad merge key", "x: &s hello\nother:\n  <<: *s\nagents:\n  - name: review\n", true},
+	}
+	run := func(t *testing.T, base, config string) (string, error) {
+		t.Helper()
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), []byte(config), 0o644))
+		if base != "" {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.base.yaml"), []byte(base), 0o644))
+		}
+		cmd := exec.Command("bash", "-c", script)
+		cmd.Dir = dir
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+		out, err := cmd.CombinedOutput()
+		return string(out), err
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
-			require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), []byte(tc.config), 0o644))
-			cmd := exec.Command("bash", "-c", script)
-			cmd.Dir = dir
-			cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
-			out, err := cmd.CombinedOutput()
+			out, err := run(t, "", tc.config)
 			if tc.wantErr {
 				require.Error(t, err, "%s", out)
-				assert.Contains(t, string(out), "without a source field")
+				assert.Contains(t, out, "without a source field")
 				return
 			}
 			require.NoError(t, err, "%s", out)
 		})
 	}
+
+	// The config.base.yaml entry of the same name completes a name-only entry, as the Go keyed merge does.
+	nameOnly := "agents:\n  - name: lint\n"
+	layered := []struct {
+		name    string
+		base    string
+		config  string
+		wantErr bool
+	}{
+		{"base block", "agents:\n  - name: lint\n    harness:\n      timeout_minutes: 30\n", nameOnly, false},
+		{"base source as a string", "agents:\n  - harness/lint.yaml\n", nameOnly, false},
+		{"base source in a map", "agents:\n  - source: https://example.com/harness/Lint.yaml#sha256=abc\n", nameOnly, false},
+		{"base turns the agent off", "agents:\n  - name: lint\n    enabled: false\n", nameOnly, false},
+		{"base turns the agent off, entry turns it on", "agents:\n  - name: lint\n    enabled: false\n", "agents:\n  - name: lint\n    enabled: true\n", true},
+		{"base has no such agent", "agents:\n  - name: other\n    model: opus\n", nameOnly, true},
+	}
+	for _, tc := range layered {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := run(t, tc.base, tc.config)
+			if tc.wantErr {
+				require.Error(t, err, "%s", out)
+				assert.Contains(t, out, "without a source field")
+				return
+			}
+			require.NoError(t, err, "%s", out)
+		})
+	}
+
+	// A yq failure is reported; fullsend run validates the entries again.
+	t.Run("a bad merge key in an entry is reported", func(t *testing.T) {
+		out, err := run(t, "", "x: &s hello\nagents:\n  - name: review\n    model: opus\n    <<: *s\n")
+		require.NoError(t, err, "%s", out)
+		assert.Contains(t, out, "::warning::yq failed checking agent entries")
+	})
+	t.Run("an unreadable config.base.yaml is reported", func(t *testing.T) {
+		out, err := run(t, "agents:\n  - name: lint\n    model: *nope\n", nameOnly)
+		require.NoError(t, err, "%s", out)
+		assert.Contains(t, out, "::warning::yq failed reading agent entries from config.base.yaml")
+	})
 }
 
 // TestCELRouteSanitizerCopiesMatch keeps the gha_text copies in the CEL

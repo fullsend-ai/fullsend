@@ -68,8 +68,11 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    use the built-in triggers instead, move to the release listed above. Re-pin
    a harness registered with `source:` or composed with `base:` with
    `fullsend agent update <name>`. The
-   poller reads only the harness `trigger:`. A `trigger` on an `agents:` entry
-   in `config.yaml` does not affect it: that field decides routing for the
+   poller reads only the harness `trigger:`. For a custom agent, that includes
+   a `trigger` in the `harness:` block of its `agents:` entry. On a built-in
+   agent the block's trigger is not evaluated. A `trigger` set directly on an
+   `agents:` entry in `config.yaml` does not affect the poller: that field
+   decides routing for the
    built-in review, retro, triage and prioritize agents on GitHub only
    ([Choosing when review runs](customizing-agents.md#choosing-when-review-runs),
    [Choosing when retro runs](customizing-agents.md#choosing-when-retro-runs),
