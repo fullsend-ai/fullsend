@@ -593,7 +593,9 @@ v1 coverage vocabulary:
 | `failed` | Selected, but at least one unusable gap prevents an authority or completeness decision | At least one unusable gap |
 
 `entity` is always `complete` in an emitted snapshot, because any unusable
-entity gap aborts assembly. `labels` is `complete` or `partial`. `actors` is
+entity gap aborts assembly. `labels` is `complete`, `partial`, or `failed`;
+it is `failed` when filtering dropped an unsafe label (see
+[Canonical bytes](#canonical-bytes)). `actors` is
 `complete` or `failed` and is derived from the actor references rather than
 selected. The status and the gaps must agree as shown above; JSON Schema cannot
 express that cross-array invariant, so producers enforce it and consumers
@@ -730,8 +732,14 @@ unsafe or empty. An unsafe or empty check name, agent name, or optional
 Discussion category `slug` rejects only its affected optional value or record
 with an `unsafe_content`/`invalid_metadata` gap; it never aborts an otherwise
 valid entity snapshot. A required Discussion category `name` that becomes empty
-or unsafe aborts assembly like the title. Unsafe labels are dropped and
-findings are retained. A truncated display string is scanned again exactly as
+or unsafe aborts assembly like the title. An unsafe label is dropped and its
+findings are retained, and the producer emits a `labels`-scope `unsafe_content`
+gap with `usability: unusable` whose `count` is the number of dropped unsafe
+labels, and sets the `labels` scope status to `failed`. This holds even when no
+labels remain: an empty `labels` array with a `failed` scope is never evidence
+that the entity has no labels. A label that is merely empty after bounding is
+an empty optional value, not an unsafe one, and is dropped without a gap.
+A truncated display string is scanned again exactly as
 emitted before canonical serialization. This includes entity titles, labels,
 and Discussion category names and slugs; entity author, manifest-record actor,
 and actor-state logins; check names; and agent names.
@@ -915,8 +923,9 @@ exact UTF-8 text. A conformance check parses each JSON document from its
 string, validates it against its schema, and recomputes every manifest
 `bytes` and `sha256` value, every record key, and `collection_profile` from
 those bytes. Files named `valid-*` cover each supported Normalized entity v1
-provider/kind pair, a truncated label set, and the `not_loaded` and
-`unsupported` scope states; files named `invalid-*` each violate one schema
+provider/kind pair, a truncated label set, a label set emptied by an unsafe
+label (`failed` `labels` scope), and the `not_loaded` and `unsupported` scope
+states; files named `invalid-*` each violate one schema
 rule, such as an inapplicable scope row, an omitted applicable scope row, or an
 unsupported provider/kind pair.
 

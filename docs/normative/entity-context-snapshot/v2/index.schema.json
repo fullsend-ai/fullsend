@@ -181,7 +181,7 @@
         },
         {
           "if": { "properties": { "scope": { "const": "labels" } }, "required": ["scope"] },
-          "then": { "properties": { "status": { "enum": ["complete", "partial"] } } }
+          "then": { "properties": { "status": { "enum": ["complete", "partial", "failed"] } } }
         },
         {
           "if": { "properties": { "scope": { "const": "actors" } }, "required": ["scope"] },
