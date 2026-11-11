@@ -71,7 +71,7 @@ func (r *progressReconciler) status(e StatusProgressEvent, redact func(string) s
 		}
 		// Only a new key needs a free slot: updating an existing key at
 		// capacity must not discard the retained state of every other key.
-		if !keyPresent && len(r.statusProgressSeen) >= maxStatusProgressEntries {
+		if !keyPresent && len(r.statusProgressSeen) >= r.maxStatusEntries() {
 			clear(r.statusProgressSeen)
 		}
 		r.statusProgressSeen[key] = statusProgressDisplay{message: msg, subject: subject, context: context}

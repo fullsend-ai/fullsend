@@ -9,7 +9,11 @@ import (
 )
 
 func TestProgressCacheOwnsNormalizedStrings(t *testing.T) {
-	padded := strings.Repeat(" ", 1<<20) + "x"
+	// Each event allocates a normalized copy as large as the padding. A cached
+	// field that slices that copy pins it, so retention grows with rows times
+	// padding; a few rows of a quarter MiB keep the race-detector scans cheap.
+	const rows = 4
+	padded := strings.Repeat(" ", 256<<10) + "x"
 	runtime.GC()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
@@ -22,7 +26,7 @@ func TestProgressCacheOwnsNormalizedStrings(t *testing.T) {
 	check(taskProgressText(padded, 80))
 	var out bytes.Buffer
 	r := newTestRenderer(&out)
-	for i := range 32 {
+	for i := range rows {
 		r.Handle(TaskProgressEvent{TaskID: fmt.Sprint(i), Label: padded, State: TaskRunning})
 		r.Handle(StatusProgressEvent{Kind: "hook", ID: fmt.Sprint(i), Label: "Hook", Subject: padded, Context: padded})
 	}
@@ -37,9 +41,10 @@ func TestProgressCacheOwnsNormalizedStrings(t *testing.T) {
 	runtime.ReadMemStats(&after)
 	runtime.KeepAlive(r)
 	runtime.KeepAlive(padded)
-	// 32 rows retain 96 one-byte values. Allow ample GC/runtime noise but
-	// reject the roughly 96 MiB retained by padded backing allocations.
-	if after.HeapAlloc > before.HeapAlloc+(8<<20) {
+	// The rows retain 3*rows one-byte values. Allow GC/runtime noise but
+	// reject half of the 3*rows padded backing allocations being retained.
+	leaked := uint64(3 * rows * len(padded))
+	if after.HeapAlloc > before.HeapAlloc+leaked/2 {
 		t.Fatalf("tiny cached fields retained %d bytes", after.HeapAlloc-before.HeapAlloc)
 	}
 }
