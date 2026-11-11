@@ -171,8 +171,16 @@ func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress Progres
 }
 
 // removeManifestEntries removes the entries named in names from every
-// platform section of m and returns the names it removed.
+// platform section of m and returns the names it removed. Names are compared
+// case-insensitively, as repo patterns are, so an entry whose capitalization
+// changed after names was built is still removed.
 func removeManifestEntries(m *Manifest, names map[string]bool) []string {
+	folded := make(map[string]bool, len(names))
+	for name, ok := range names {
+		if ok {
+			folded[strings.ToLower(name)] = true
+		}
+	}
 	var removed []string
 	for _, platform := range []*PlatformConfig{m.GitHub, m.GitLab} {
 		if platform == nil {
@@ -180,7 +188,7 @@ func removeManifestEntries(m *Manifest, names map[string]bool) []string {
 		}
 		kept := make([]RepoEntry, 0, len(platform.Repos))
 		for _, entry := range platform.Repos {
-			if names[entry.Name] {
+			if folded[strings.ToLower(entry.Name)] {
 				removed = append(removed, entry.Name)
 			} else {
 				kept = append(kept, entry)
@@ -207,7 +215,7 @@ func reloadManifestForWrite(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("re-reading manifest before write: %w", err)
 	}
 	if err := current.ValidateStructure(); err != nil {
-		return nil, fmt.Errorf("manifest %s changed and no longer validates; not writing: %w", path, err)
+		return nil, fmt.Errorf("manifest %q changed and no longer validates; not writing: %w", path, err)
 	}
 	return current, nil
 }

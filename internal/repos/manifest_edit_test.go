@@ -155,6 +155,47 @@ func TestRemoveFromManifest_RefusesInvalidCurrentFile(t *testing.T) {
 	}
 }
 
+// TestRemoveFromManifest_CapitalizationChangedAfterLoad checks that an entry
+// whose capitalization changed after load is still removed from the file.
+func TestRemoveFromManifest_CapitalizationChangedAfterLoad(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	write := func(m *Manifest) {
+		t.Helper()
+		data, err := MarshalWithHeader(m)
+		if err != nil {
+			t.Fatalf("MarshalWithHeader() error = %v", err)
+		}
+		if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+	}
+
+	write(testManifest("acme/api", "acme/web"))
+	loaded, err := LoadManifest(context.Background(), manifestPath)
+	if err != nil {
+		t.Fatalf("LoadManifest() error = %v", err)
+	}
+	write(testManifest("Acme/API", "acme/web"))
+
+	if _, _, err := RemoveFromManifest(ManifestEditConfig{
+		Manifest:     loaded,
+		ManifestPath: manifestPath,
+	}, []string{"acme/api"}, nil); err != nil {
+		t.Fatalf("RemoveFromManifest() error = %v", err)
+	}
+
+	reloaded, err := LoadManifest(context.Background(), manifestPath)
+	if err != nil {
+		t.Fatalf("LoadManifest() error = %v", err)
+	}
+	all := reloaded.AllRepos()
+	if len(all) != 1 || all[0].Name != "acme/web" {
+		t.Errorf("repos = %v, want only acme/web", all)
+	}
+}
+
 func TestReloadManifestForWrite_NonRegularPath(t *testing.T) {
 	for _, path := range []string{t.TempDir(), filepath.Join(t.TempDir(), "missing.yaml")} {
 		got, err := reloadManifestForWrite(path)
