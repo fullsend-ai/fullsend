@@ -455,14 +455,14 @@ installs depends on its `source`:
   your repository. Its relative source resolves in the base's repository at
   the base's pinned commit, which must be a full commit sha; see
   [Let others install your harness](runtime-workflow-authors.md#let-others-install-your-harness).
-- **Adding a harness with a relative `source` by URL** is refused, because a
-  harness added by URL resolves relative paths in your repository, not its
-  own. `fullsend lock` prints:
-
-  ```text
-    ✗ Runtime workflow resolution failed
-  Error: resolving runtime workflow: runtime_workflow.source "pipelines/sample-pipeline" is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness
-  ```
+- **A harness with a relative `source` added by URL** (`fullsend agent add <url>`,
+  or a `config.yaml` `agents:` entry whose source is a URL) also works: the
+  source resolves in that harness's repository at the commit it was fetched
+  from, as a base's does, and `fullsend lock` records its tree hash. Add the
+  harness by a URL at a full commit sha, and cover
+  `https://raw.githubusercontent.com/<owner>/<repo>/` with
+  `allowed_remote_resources`. A branch or tag is refused; see
+  [Troubleshooting](#troubleshooting).
 
 ## pi extensions
 
@@ -521,8 +521,8 @@ checks for OpenShell or creates a sandbox.
 | `runtime_workflow.source URL "<url>" is not covered by allowed_remote_resources; add a prefix that covers it, such as https://github.com/<owner>/<repo>/, to allowed_remote_resources in config.yaml` | The default allowlist does not cover github.com tree URLs. Add the suggested prefix, as in [Remote source](#remote-source). | `lock` |
 | `runtime_workflow.source ref "<ref>" is not a commit sha; pin the commit sha (40 hex characters) so the runtime workflow cannot move under the pin` | The tree URL names a branch or tag. Pin the full commit sha. Printed after `✗ Failed to load harness`. | `lock` |
 | `runtime_workflow.source: tree hash mismatch for <url>: the harness pins sha256=<pinned> but the fetched tree hashes to sha256=<actual>; if the commit is the one you meant, update the #sha256= fragment` | The pin does not match the commit's tree. If the commit is right, copy `<actual>` into the fragment. | `lock` |
-| `runtime_workflow.source "<source>" is relative, but this harness was added by URL, so relative paths resolve in your repository, not the harness's; pin source as a tree URL with #sha256=, or install the harness through a one-line base: harness` | The harness was registered by URL and pins a relative source. Install it through a `base:` harness, as in [Install a harness someone else ships](#install-a-harness-someone-else-ships). | `lock` |
-| `base runtime_workflow.source "<source>" is a relative path, so it resolves in the base harness's repository at the base's commit, but the base URL <url> pins ref "<ref>", not a commit sha; pin base: at the full 40-character commit sha, or set runtime_workflow.source in the base to a tree URL with #sha256=` | A `base:` URL at a branch or tag holds a relative `runtime_workflow.source`. Pin `base:` at the commit sha. Printed after `✗ Failed to load harness`, after `loading base chain: resolving base workflow from <url>: `. | `lock` |
+| `runtime_workflow.source "<source>" is a relative path, so it resolves in the repository of this harness, which was added by URL, at the commit it was fetched from, but the harness URL <url> pins ref "<ref>", not a commit sha; add the harness by a URL at the full 40-character commit sha, or set runtime_workflow.source to a tree URL with #sha256=` | The harness was added by a URL at a branch or tag and pins a relative source. Add it by a URL at the full commit sha, or pin `source` as a tree URL with `#sha256=`. | `lock` |
+| `base runtime_workflow.source "<source>" is a relative path, so it resolves in the base harness's repository at the commit it was fetched from, but the base URL <url> pins ref "<ref>", not a commit sha; pin base: at the full 40-character commit sha, or set runtime_workflow.source in the base to a tree URL with #sha256=` | A `base:` URL at a branch or tag holds a relative `runtime_workflow.source`. Pin `base:` at the commit sha. Printed after `✗ Failed to load harness`, after `loading base chain: resolving base workflow from <url>: `. | `lock` |
 
 Full field rules:
 [harness `runtime_workflow`](../../reference/harness-reference.md#field-details).

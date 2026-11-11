@@ -302,13 +302,14 @@ commit: the relative source then resolves in **your** repository at that
 commit, the path taken from your repository root, so the consumer pins one
 commit for the harness and the runtime workflow together. The base must be pinned
 at a full commit sha; a branch or tag is refused with
-`base runtime_workflow.source "pipelines/sample-pipeline" is a relative path, so it resolves in the base harness's repository at the base's commit, but the base URL ... pins ref "main", not a commit sha; pin base: at the full 40-character commit sha, or set runtime_workflow.source in the base to a tree URL with #sha256=`.
+`base runtime_workflow.source "pipelines/sample-pipeline" is a relative path, so it resolves in the base harness's repository at the commit it was fetched from, but the base URL ... pins ref "main", not a commit sha; pin base: at the full 40-character commit sha, or set runtime_workflow.source in the base to a tree URL with #sha256=`.
 
-A consumer cannot add such a harness with `fullsend agent add <url>`: a
-harness added by URL resolves relative paths in the consumer's repository,
-so its relative `runtime_workflow.source` is refused with advice to use a `base:`
-harness. A harness whose `runtime_workflow.source` is a tree URL with `#sha256=`
-installs by `fullsend agent add <url>` like any other.
+A consumer can also add such a harness with `fullsend agent add <url>` at a
+full commit sha: a relative `runtime_workflow.source` in a harness added by URL
+resolves in your repository at that commit too, and the consumer's
+`allowed_remote_resources` must cover
+`https://raw.githubusercontent.com/<your owner>/<your repo>/`. A harness whose
+`runtime_workflow.source` is a tree URL with `#sha256=` installs the same way.
 
 Not run here: needs your runtime-workflow repository's harness at a pushed
 commit; fullsend publishes no harness with `runtime_workflow:` that could stand in
