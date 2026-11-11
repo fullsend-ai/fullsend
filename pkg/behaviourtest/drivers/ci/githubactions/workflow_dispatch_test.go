@@ -40,10 +40,30 @@ func TestDispatchWorkflow_PassesInputs(t *testing.T) {
 
 	client := &dispatchRecordingClient{FakeClient: forge.NewFakeClient()}
 	d := newTestDriver(client)
-	require.NoError(t, d.DispatchWorkflow(context.Background(), "org", "repo", ".github/workflows/prioritize.yml", "main", map[string]string{"event_payload": "{}"}))
+	floor, err := d.DispatchWorkflow(context.Background(), "org", "repo", ".github/workflows/prioritize.yml", "main", map[string]string{"event_payload": "{}"})
+	require.NoError(t, err)
 	assert.Equal(t, "prioritize.yml", client.file)
 	assert.Equal(t, "main", client.ref)
 	assert.Equal(t, map[string]string{"event_payload": "{}"}, client.inputs)
+	assert.Zero(t, floor, "a file with no listed runs has floor 0")
+}
+
+// The floor is the highest run ID listed just before the dispatch, so
+// the failure step's wait can reject every run already listed before
+// the dispatch.
+func TestDispatchWorkflow_RunFloor(t *testing.T) {
+	t.Parallel()
+
+	client := &dispatchRecordingClient{FakeClient: forge.NewFakeClient()}
+	client.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/prioritize.yml": {
+		{ID: 7, Status: "completed", Conclusion: "success", Event: "issues", CreatedAt: "2025-12-31T00:00:00Z"},
+		{ID: 9, Status: "completed", Conclusion: "failure", Event: "workflow_dispatch", CreatedAt: "2026-01-02T00:00:00Z"},
+	}}
+	d := newTestDriver(client)
+	floor, err := d.DispatchWorkflow(context.Background(), "org", "repo", ".github/workflows/prioritize.yml", "main", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 9, floor, "the floor is the highest listed run ID, whatever the event")
+	assert.NotNil(t, client.ctx, "the dispatch itself must still run")
 }
 
 // The dispatch runs with ambiguous retry disabled, like the forge
@@ -55,9 +75,92 @@ func TestDispatchWorkflow_NoAmbiguousRetry(t *testing.T) {
 
 	client := &dispatchRecordingClient{FakeClient: forge.NewFakeClient()}
 	d := newTestDriver(client)
-	require.NoError(t, d.DispatchWorkflow(context.Background(), "org", "repo", ".github/workflows/prioritize.yml", "main", nil))
+	_, err := d.DispatchWorkflow(context.Background(), "org", "repo", ".github/workflows/prioritize.yml", "main", nil)
+	require.NoError(t, err)
 	require.NotNil(t, client.ctx, "the driver must pass a context to the client")
 	assert.True(t, forge.AmbiguousRetryDisabled(client.ctx), "the dispatch must not be retried on an ambiguous timeout or server error")
+}
+
+// floorReadFailsClient fails (failList) or blocks (block) the
+// pre-dispatch run listing and counts dispatch POSTs (returning postErr
+// from them when set): when the floor listing fails, DispatchWorkflow
+// promises the dispatch does not happen, so the POST count must stay
+// zero and the error must reach the step.
+type floorReadFailsClient struct {
+	*forge.FakeClient
+	mu       sync.Mutex
+	failList bool
+	block    bool
+	postErr  error
+	posts    int
+}
+
+func (c *floorReadFailsClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]forge.WorkflowRun, error) {
+	if c.block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if c.failList {
+		return nil, errors.New("HTTP 403 secondary rate limit")
+	}
+	return c.FakeClient.ListWorkflowRuns(ctx, owner, repo, workflowFile)
+}
+
+func (c *floorReadFailsClient) DispatchWorkflow(context.Context, string, string, string, string, map[string]string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.posts++
+	return c.postErr
+}
+
+// The dispatch reads the file's runs before the POST to learn the
+// run-ID floor; when that listing fails — an API error, or a call cut
+// short by the floor budget — the dispatch does not happen and the
+// error is returned, so a scenario never runs with a floor it could
+// not read. A dispatch POST error is passed through unchanged.
+func TestDispatchWorkflow_FloorReadFails(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a failing listing fails the dispatch without posting", func(t *testing.T) {
+		t.Parallel()
+		client := &floorReadFailsClient{FakeClient: forge.NewFakeClient(), failList: true}
+		floor, err := newTestDriver(client).DispatchWorkflow(context.Background(), "org", "repo", ".github/workflows/prioritize.yml", "main", nil)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "reading the runs before the dispatch")
+		assert.ErrorContains(t, err, "secondary rate limit")
+		assert.Zero(t, floor)
+		client.mu.Lock()
+		posts := client.posts
+		client.mu.Unlock()
+		assert.Zero(t, posts, "the dispatch POST must not fire when the floor listing fails")
+	})
+
+	t.Run("a listing cut short by the floor budget fails the dispatch without posting", func(t *testing.T) {
+		t.Parallel()
+		client := &floorReadFailsClient{FakeClient: forge.NewFakeClient(), block: true}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		floor, err := newTestDriver(client).DispatchWorkflow(ctx, "org", "repo", ".github/workflows/prioritize.yml", "main", nil)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "reading the runs before the dispatch exceeded its budget")
+		assert.Zero(t, floor)
+		client.mu.Lock()
+		posts := client.posts
+		client.mu.Unlock()
+		assert.Zero(t, posts, "the dispatch POST must not fire when the floor listing is cut short")
+	})
+
+	t.Run("a dispatch POST error is passed through", func(t *testing.T) {
+		t.Parallel()
+		client := &floorReadFailsClient{FakeClient: forge.NewFakeClient(), postErr: errors.New("HTTP 502 bad gateway")}
+		client.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/prioritize.yml": {
+			{ID: 9, Status: "completed", Conclusion: "success", Event: "workflow_dispatch", CreatedAt: "2025-12-31T00:00:00Z"},
+		}}
+		floor, err := newTestDriver(client).DispatchWorkflow(context.Background(), "org", "repo", ".github/workflows/prioritize.yml", "main", nil)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "HTTP 502 bad gateway")
+		assert.Zero(t, floor)
+	})
 }
 
 // completingClient serves a run as in progress from ListWorkflowRuns and
@@ -85,7 +188,7 @@ func TestWaitForWorkflowConclusion(t *testing.T) {
 		t.Parallel()
 		client := forge.NewFakeClient()
 		client.WorkflowRuns = runs("completed", "failure", "workflow_dispatch", "2026-01-02T00:00:00Z")
-		run, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", ".github/workflows/prioritize.yml", after, "workflow_dispatch")
+		run, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", ".github/workflows/prioritize.yml", after, "workflow_dispatch", 0)
 		require.NoError(t, err)
 		assert.Equal(t, 11, run.ID)
 		assert.Equal(t, "failure", run.Conclusion)
@@ -95,38 +198,22 @@ func TestWaitForWorkflowConclusion(t *testing.T) {
 		t.Parallel()
 		client := &completingClient{FakeClient: forge.NewFakeClient(), conclusion: "failure"}
 		client.WorkflowRuns = runs("in_progress", "", "workflow_dispatch", "2026-01-02T00:00:00Z")
-		run, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+		run, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch", 0)
 		require.NoError(t, err)
 		assert.Equal(t, "completed", run.Status)
 		assert.Equal(t, "failure", run.Conclusion)
 	})
 
-	// A workflow with cancel-in-progress replaces a cancelled run with a
-	// newer one; the conclusion returned is the replacement's, not the
-	// cancelled run's (the same replacement-following WaitForWorkflow does).
-	t.Run("a cancelled run is replaced by a later one", func(t *testing.T) {
-		t.Parallel()
-		run := func(id int, conclusion string) forge.WorkflowRun {
-			return forge.WorkflowRun{ID: id, Status: "completed", Conclusion: conclusion, Event: "workflow_dispatch", CreatedAt: "2026-01-02T00:00:00Z"}
-		}
-		client := &replacingClient{FakeClient: forge.NewFakeClient(), final: []forge.WorkflowRun{run(10, "cancelled"), run(11, "failure")}}
-		got, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
-		require.NoError(t, err)
-		assert.Equal(t, 11, got.ID)
-		assert.Equal(t, "failure", got.Conclusion)
-	})
-
-	t.Run("a cancelled run with no replacement is returned", func(t *testing.T) {
+	// The scenario dispatched the run itself, so a cancelled conclusion
+	// is final: whatever cancelled it was another caller, and the wait
+	// does not follow a replacement (unlike the harness waits).
+	t.Run("a cancelled run is returned as final", func(t *testing.T) {
 		t.Parallel()
 		run := func(id int, conclusion string) forge.WorkflowRun {
 			return forge.WorkflowRun{ID: id, Status: "completed", Conclusion: conclusion, Event: "workflow_dispatch", CreatedAt: "2026-01-02T00:00:00Z"}
 		}
 		client := &replacingClient{FakeClient: forge.NewFakeClient(), final: []forge.WorkflowRun{run(10, "cancelled")}}
-		// The re-list grace is bounded by the wait's deadline, so the
-		// clock must advance for the wait to give up on a replacement.
-		d := newTestDriver(client)
-		d.nowFunc = steppingClock(after, time.Minute)
-		got, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+		got, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch", 0)
 		require.NoError(t, err)
 		assert.Equal(t, 10, got.ID)
 		assert.Equal(t, "cancelled", got.Conclusion)
@@ -142,11 +229,26 @@ func TestWaitForWorkflowConclusion(t *testing.T) {
 			client.WorkflowRuns = wf
 			d := newTestDriver(client)
 			d.nowFunc = steppingClock(after, time.Minute)
-			_, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+			_, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch", 0)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "was not dispatched")
 		})
 	}
+
+	// A run at or below the dispatch's run-ID floor existed before the
+	// dispatch, so it is never the asserted run even inside the wait
+	// window: the wait keeps polling and times out saying the workflow
+	// was not dispatched.
+	t.Run("a run at or below the floor is not dispatched", func(t *testing.T) {
+		t.Parallel()
+		client := forge.NewFakeClient()
+		client.WorkflowRuns = runs("completed", "failure", "workflow_dispatch", "2026-01-02T00:00:00Z")
+		d := newTestDriver(client)
+		d.nowFunc = steppingClock(after, time.Minute)
+		_, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch", 11)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "was not dispatched")
+	})
 
 	t.Run("a run that never completes times out", func(t *testing.T) {
 		t.Parallel()
@@ -154,7 +256,7 @@ func TestWaitForWorkflowConclusion(t *testing.T) {
 		client.WorkflowRuns = runs("in_progress", "", "workflow_dispatch", "2026-01-02T00:00:00Z")
 		d := newTestDriver(client)
 		d.nowFunc = steppingClock(after, time.Minute)
-		_, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+		_, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch", 0)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "did not complete")
 	})
@@ -164,7 +266,7 @@ func TestWaitForWorkflowConclusion(t *testing.T) {
 		client := &failingListingClient{FakeClient: forge.NewFakeClient()}
 		d := newTestDriver(client)
 		d.nowFunc = steppingClock(after, time.Minute)
-		_, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+		_, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch", 0)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "was not dispatched")
 		assert.Contains(t, err.Error(), "run listings")
@@ -177,7 +279,7 @@ func TestWaitForWorkflowConclusion(t *testing.T) {
 		client.WorkflowRuns = runs("in_progress", "", "workflow_dispatch", "2026-01-02T00:00:00Z")
 		d := newTestDriver(&failingLookupClient{FakeClient: client})
 		d.nowFunc = steppingClock(after, time.Minute)
-		_, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+		_, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch", 0)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "did not complete within deadline")
 		assert.Contains(t, err.Error(), "run lookups")
@@ -190,7 +292,7 @@ func TestWaitForWorkflowConclusion(t *testing.T) {
 		cancel()
 		d := newTestDriver(forge.NewFakeClient())
 		d.afterFunc = func(time.Duration) <-chan time.Time { return make(chan time.Time) }
-		_, err := d.WaitForWorkflowConclusion(ctx, "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+		_, err := d.WaitForWorkflowConclusion(ctx, "org", "repo", "prioritize.yml", after, "workflow_dispatch", 0)
 		require.ErrorIs(t, err, context.Canceled)
 	})
 }
@@ -228,8 +330,9 @@ func (c *cancellingReplacementClient) GetWorkflowRun(_ context.Context, _, _ str
 	return &c.cancelled, nil
 }
 
-// A run already cancelled when the wait first lists it is still replaced
-// by its newer run: the detection path must not return it as final.
+// A run already cancelled when the wait first lists it is final: the
+// newer run that appears in the listings later — whatever cancelled the
+// dispatched run, another caller — is not adopted as a replacement.
 func TestWaitForWorkflowConclusion_CancelledAtDetection(t *testing.T) {
 	t.Parallel()
 
@@ -238,27 +341,10 @@ func TestWaitForWorkflowConclusion_CancelledAtDetection(t *testing.T) {
 		return forge.WorkflowRun{ID: id, Status: "completed", Conclusion: conclusion, Event: "workflow_dispatch", CreatedAt: "2026-01-02T00:00:00Z"}
 	}
 	client := &cancellingReplacementClient{FakeClient: forge.NewFakeClient(), revealAfter: 1, cancelled: run(10, "cancelled"), replacement: run(11, "failure")}
-	got, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+	got, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch", 0)
 	require.NoError(t, err)
-	assert.Equal(t, 11, got.ID)
-	assert.Equal(t, "failure", got.Conclusion)
-}
-
-// A replacement listed only after the cancelled run completed is still
-// followed: the wait re-lists within its deadline instead of returning
-// the cancelled run as final.
-func TestWaitForWorkflowConclusion_ReplacementListLag(t *testing.T) {
-	t.Parallel()
-
-	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	run := func(id int, conclusion string) forge.WorkflowRun {
-		return forge.WorkflowRun{ID: id, Status: "completed", Conclusion: conclusion, Event: "workflow_dispatch", CreatedAt: "2026-01-02T00:00:00Z"}
-	}
-	client := &cancellingReplacementClient{FakeClient: forge.NewFakeClient(), revealAfter: 2, cancelled: run(10, "cancelled"), replacement: run(11, "failure")}
-	got, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
-	require.NoError(t, err)
-	assert.Equal(t, 11, got.ID)
-	assert.Equal(t, "failure", got.Conclusion)
+	assert.Equal(t, 10, got.ID)
+	assert.Equal(t, "cancelled", got.Conclusion)
 }
 
 // failingListingClient fails every run listing: the shape of a
@@ -280,47 +366,6 @@ type failingLookupClient struct {
 
 func (c *failingLookupClient) GetWorkflowRun(context.Context, string, string, int) (*forge.WorkflowRun, error) {
 	return nil, errors.New("HTTP 403 secondary rate limit")
-}
-
-// rateLimitedListingClient serves the cancelled run on its first listing
-// (detection) and fails every later one: the shape of a #6647-style
-// secondary rate limit hitting the replacement grace.
-type rateLimitedListingClient struct {
-	*forge.FakeClient
-	mu        sync.Mutex
-	listed    bool
-	cancelled forge.WorkflowRun
-}
-
-func (c *rateLimitedListingClient) ListWorkflowRuns(context.Context, string, string, string) ([]forge.WorkflowRun, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.listed {
-		c.listed = true
-		return []forge.WorkflowRun{c.cancelled}, nil
-	}
-	return nil, errors.New("HTTP 403 secondary rate limit")
-}
-
-func (c *rateLimitedListingClient) GetWorkflowRun(_ context.Context, _, _ string, runID int) (*forge.WorkflowRun, error) {
-	return &c.cancelled, nil
-}
-
-// A listing that keeps failing during the replacement grace is reported,
-// not read as "no replacement": the cancelled run comes back together
-// with the listing error instead of a silent "cancelled is final".
-func TestWaitForWorkflowConclusion_ReplacementListingFails(t *testing.T) {
-	t.Parallel()
-
-	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	client := &rateLimitedListingClient{FakeClient: forge.NewFakeClient(), cancelled: forge.WorkflowRun{ID: 10, Status: "completed", Conclusion: "cancelled", Event: "workflow_dispatch", CreatedAt: "2026-01-02T00:00:00Z"}}
-	d := newTestDriver(client)
-	d.nowFunc = steppingClock(after, time.Minute)
-	got, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "replacement listing kept failing")
-	assert.ErrorContains(t, err, "secondary rate limit")
-	assert.Equal(t, 10, got.ID)
 }
 
 // completingFailureClient lists an in-progress run (detection) and then
@@ -465,8 +510,8 @@ func (c *budgetRecordingClient) GetWorkflowRun(ctx context.Context, owner, repo 
 	return c.FakeClient.GetWorkflowRun(ctx, owner, repo, id)
 }
 
-// Every API call the dispatched-run waits make — detection listing,
-// run lookup and replacement-grace relist — runs under a context
+// Every API call the dispatched-run waits make — the dispatch's floor
+// listing, detection listing and run lookup — runs under a context
 // bounded by the wait's remaining budget: without the bound, one
 // #6647-style secondary rate limit stretches a poll minutes past the
 // deadline, because the client retries up to five times honoring
@@ -488,7 +533,7 @@ func TestDispatchedRunWaits_PollsAreBounded(t *testing.T) {
 		client.lookup = func(_ context.Context, _, _ string, id int) (*forge.WorkflowRun, error) {
 			return &forge.WorkflowRun{ID: id, Status: "completed", Conclusion: "failure"}, nil
 		}
-		run, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+		run, err := newTestDriver(client).WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch", 0)
 		require.NoError(t, err)
 		assert.Equal(t, "failure", run.Conclusion)
 		client.mu.Lock()
@@ -498,68 +543,19 @@ func TestDispatchedRunWaits_PollsAreBounded(t *testing.T) {
 		assert.Zero(t, unbounded, "every poll must run under a deadline-bounded context")
 	})
 
-	t.Run("replacement-grace relist", func(t *testing.T) {
+	t.Run("dispatch floor listing", func(t *testing.T) {
 		t.Parallel()
 		client := &budgetRecordingClient{FakeClient: forge.NewFakeClient()}
-		client.WorkflowRuns = runs("completed", "cancelled")
-		d := newTestDriver(client)
-		// The re-list grace is bounded by the wait's deadline, so the
-		// clock must advance for the wait to give up on a replacement.
-		d.nowFunc = steppingClock(after, time.Minute)
-		got, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
+		client.WorkflowRunsList = map[string][]forge.WorkflowRun{"org/repo/prioritize.yml": {
+			{ID: 9, Status: "completed", Conclusion: "success", Event: "workflow_dispatch", CreatedAt: "2025-12-31T00:00:00Z"},
+		}}
+		floor, err := newTestDriver(client).DispatchWorkflow(context.Background(), "org", "repo", "prioritize.yml", "main", nil)
 		require.NoError(t, err)
-		assert.Equal(t, "cancelled", got.Conclusion)
+		assert.Equal(t, 9, floor)
 		client.mu.Lock()
 		calls, unbounded := client.calls, client.unbounded
 		client.mu.Unlock()
-		assert.Greater(t, calls, 1, "the wait must have re-listed during the grace")
-		assert.Zero(t, unbounded, "every poll must run under a deadline-bounded context")
+		assert.GreaterOrEqual(t, calls, 1, "the dispatch must have listed the file's runs to read the floor")
+		assert.Zero(t, unbounded, "the floor listing must run under a deadline-bounded context")
 	})
-}
-
-// graceExhaustedListingClient serves the cancelled run on its first
-// listing (detection) and then blocks every replacement listing until its
-// bounded context expires: the shape of a listing that spends the whole
-// grace inside the client's rate-limit retries, so not one replacement
-// observation completes before the grace runs out.
-type graceExhaustedListingClient struct {
-	*forge.FakeClient
-	mu        sync.Mutex
-	listed    bool
-	cancelled forge.WorkflowRun
-}
-
-func (c *graceExhaustedListingClient) ListWorkflowRuns(ctx context.Context, _, _, _ string) ([]forge.WorkflowRun, error) {
-	c.mu.Lock()
-	first := !c.listed
-	c.listed = true
-	c.mu.Unlock()
-	if first {
-		return []forge.WorkflowRun{c.cancelled}, nil
-	}
-	<-ctx.Done()
-	return nil, ctx.Err()
-}
-
-func (c *graceExhaustedListingClient) GetWorkflowRun(_ context.Context, _, _ string, _ int) (*forge.WorkflowRun, error) {
-	return &c.cancelled, nil
-}
-
-// A replacement grace that expires without a single completed listing is
-// not evidence that the cancelled run is final: the wait reports an
-// inconclusive replacement lookup instead of returning the cancelled run
-// with no error.
-func TestWaitForWorkflowConclusion_ReplacementListingNeverCompletes(t *testing.T) {
-	t.Parallel()
-
-	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	client := &graceExhaustedListingClient{FakeClient: forge.NewFakeClient(), cancelled: forge.WorkflowRun{ID: 10, Status: "completed", Conclusion: "cancelled", Event: "workflow_dispatch", CreatedAt: "2026-01-02T00:00:00Z"}}
-	d := newTestDriver(client)
-	// The re-list grace is bounded by the wait's deadline, so the clock
-	// must advance for the wait to give up on a replacement.
-	d.nowFunc = steppingClock(after, time.Minute)
-	got, err := d.WaitForWorkflowConclusion(context.Background(), "org", "repo", "prioritize.yml", after, "workflow_dispatch")
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "no replacement listing completed")
-	assert.Equal(t, 10, got.ID)
 }

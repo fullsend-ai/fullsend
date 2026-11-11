@@ -135,13 +135,22 @@ func DownloadAgentArtifactsAfter(ctx context.Context, d Driver, owner, repo, age
 // explanatory error. A wrapper that embeds Driver hides it unless the
 // wrapper implements it too.
 type WorkflowDispatcher interface {
-	// DispatchWorkflow starts workflowFile on ref with the given inputs.
-	DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error
+	// DispatchWorkflow starts workflowFile on ref with the given inputs
+	// and returns the run-ID floor: the highest run ID of workflowFile
+	// visible in the listings just before the dispatch, so the run the
+	// dispatch starts has a strictly higher ID. The failure step's wait
+	// accepts only runs above that floor, keeping the assertion from
+	// binding to a run of the file already listed before the dispatch.
+	// The floor is 0 when the file has no listed runs.
+	DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) (runFloor int, err error)
 	// WaitForWorkflowConclusion waits for the newest run of workflowFile
-	// for event created at or after the given time to complete, and
-	// returns it whatever its conclusion, so a scenario can assert a
-	// failure and read the failed run's logs.
-	WaitForWorkflowConclusion(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error)
+	// for event created at or after the given time with an ID above
+	// minRunID to complete, and returns it whatever its conclusion, so a
+	// scenario can assert a failure and read the failed run's logs. A
+	// cancelled run is final on this path: the scenario dispatched the
+	// run itself, so whatever cancelled it was another caller, and the
+	// wait does not follow a replacement.
+	WaitForWorkflowConclusion(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string, minRunID int) (*forge.WorkflowRun, error)
 }
 
 // IsTerminalFailure reports whether a CI run or pipeline conclusion

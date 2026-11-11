@@ -27,13 +27,15 @@ type fakeDispatcherCI struct {
 	dispatchErr error
 	file, ref   string
 	inputs      map[string]string
+	floor       int
 
-	run     *forge.WorkflowRun
-	waitErr error
-	after   time.Time
-	event   string
-	logs    string
-	logsErr error
+	run      *forge.WorkflowRun
+	waitErr  error
+	after    time.Time
+	event    string
+	minRunID int
+	logs     string
+	logsErr  error
 	// logsSeq, when set, is returned one entry per GetRunLogs call (the last
 	// repeats); logCalls counts the calls.
 	logsSeq  []string
@@ -42,13 +44,13 @@ type fakeDispatcherCI struct {
 	errSeq []error
 }
 
-func (f *fakeDispatcherCI) DispatchWorkflow(_ context.Context, _, _, file, ref string, inputs map[string]string) error {
+func (f *fakeDispatcherCI) DispatchWorkflow(_ context.Context, _, _, file, ref string, inputs map[string]string) (int, error) {
 	f.file, f.ref, f.inputs = file, ref, inputs
-	return f.dispatchErr
+	return f.floor, f.dispatchErr
 }
 
-func (f *fakeDispatcherCI) WaitForWorkflowConclusion(_ context.Context, _, _, _ string, after time.Time, event string) (*forge.WorkflowRun, error) {
-	f.after, f.event = after, event
+func (f *fakeDispatcherCI) WaitForWorkflowConclusion(_ context.Context, _, _, _ string, after time.Time, event string, minRunID int) (*forge.WorkflowRun, error) {
+	f.after, f.event, f.minRunID = after, event, minRunID
 	return f.run, f.waitErr
 }
 
@@ -99,6 +101,19 @@ func TestWhenWorkflowDispatchedWithPayload(t *testing.T) {
 	assert.Equal(t, w.ScenarioStart, w.ScenarioStart.Truncate(time.Second), "the trigger time is truncated to second precision")
 	assert.Equal(t, "prioritize.yml", w.DispatchedWorkflowFile, "the dispatched file is recorded for the failure step's fail-fast")
 	assert.Equal(t, w.ScenarioStart, w.DispatchedWorkflowAt, "the dispatch time is recorded for the failure step's window")
+}
+
+// The dispatch step records the run-ID floor the driver returned, and
+// the failure step passes it to the wait: only a run above the floor is
+// the dispatched run, so a run of the file that was already listed
+// before the dispatch can never become the asserted run.
+func TestWorkflowDispatchSteps_RunFloor(t *testing.T) {
+	fake := &fakeDispatcherCI{floor: 9, run: &forge.WorkflowRun{ID: 11, Status: "completed", Conclusion: "failure"}, logs: "needle"}
+	w := &world.World{Org: "org", RepoName: "repo", CI: fake, SCM: &defaultBranchSCM{}}
+	require.NoError(t, whenWorkflowDispatchedWithPayload(context.Background(), w, "prioritize.yml", "{}"))
+	assert.Equal(t, 9, w.DispatchedWorkflowRunFloor, "the dispatch step records the driver's run-ID floor")
+	require.NoError(t, thenWorkflowFailsLogging(context.Background(), w, "prioritize.yml", "needle"))
+	assert.Equal(t, 9, fake.minRunID, "the failure step's wait accepts only runs above the floor")
 }
 
 func TestWhenWorkflowDispatchedWithPayload_Errors(t *testing.T) {
@@ -333,11 +348,11 @@ type fakeReArmCI struct {
 	dispatched *forge.WorkflowRun
 }
 
-func (f *fakeReArmCI) DispatchWorkflow(context.Context, string, string, string, string, map[string]string) error {
-	return nil
+func (f *fakeReArmCI) DispatchWorkflow(context.Context, string, string, string, string, map[string]string) (int, error) {
+	return 0, nil
 }
 
-func (f *fakeReArmCI) WaitForWorkflowConclusion(context.Context, string, string, string, time.Time, string) (*forge.WorkflowRun, error) {
+func (f *fakeReArmCI) WaitForWorkflowConclusion(context.Context, string, string, string, time.Time, string, int) (*forge.WorkflowRun, error) {
 	return f.dispatched, nil
 }
 

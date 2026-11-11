@@ -26,18 +26,6 @@ const (
 	// spuriously timing out.
 	dispatchWait = 20 * time.Minute
 
-	// replacementListWait bounds how long WaitForWorkflowConclusion keeps
-	// re-listing for a cancelled run's replacement before returning the
-	// cancelled run as final. A cancel-in-progress replacement shows up in
-	// the run listings within seconds, so the grace stays far below
-	// dispatchWait instead of spinning the whole wait budget on a
-	// cancelled run that has no replacement.
-	// shortcut: the "within seconds" lag is unverified against a live
-	// cancel-in-progress run (the tests fake the listing lag); raise this
-	// grace if e2e logs ever show a replacement appearing in the listings
-	// later than the grace allows.
-	replacementListWait = 2 * pollInterval
-
 	// Dispatch detection uses exponential backoff: the poll interval
 	// starts at dispatchPollInit, doubles each iteration up to
 	// dispatchPollMax, and the total detection window is dispatchTimeout.
@@ -46,6 +34,12 @@ const (
 	dispatchPollInit = 2 * time.Second
 	dispatchPollMax  = 30 * time.Second
 	dispatchTimeout  = 5 * time.Minute
+
+	// dispatchFloorBudget bounds the one listing DispatchWorkflow reads
+	// before it dispatches, to learn the run-ID floor the dispatched
+	// run's ID is above. The same budget as detection: a listing that
+	// cannot succeed within it would fail detection anyway.
+	dispatchFloorBudget = dispatchTimeout
 
 	// countSettlePoll is the fixed poll interval used by
 	// CountHarnessDispatches while waiting for in-progress runs to
@@ -133,7 +127,7 @@ func nextBackoff(current, max time.Duration) time.Duration {
 
 func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error) {
 	workflowFile = filepath.Base(workflowFile)
-	dispatchedRun, err := d.findDispatchedRun(ctx, owner, repo, workflowFile, after, event)
+	dispatchedRun, err := d.findDispatchedRun(ctx, owner, repo, workflowFile, after, event, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -154,8 +148,8 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		}
 		// List directly (not through latestRuns) so a listing that keeps
 		// failing — a #6647-style secondary rate limit — is reported on
-		// the conclusion error instead of reading as "no replacement"
-		// (the WaitForWorkflowConclusion relist shape). The listing is
+		// the conclusion error instead of reading as "no replacement".
+		// The listing is
 		// bounded by the remaining wait budget (withPollBudget), so the
 		// client's rate-limit retries cannot stretch it past the
 		// deadline.
@@ -175,12 +169,15 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 // findDispatchedRun polls workflowFile's runs, backing off from
 // dispatchPollInit to dispatchPollMax, until selectWorkflowRun finds
 // one or dispatchTimeout (read from d.now) passes. WaitForWorkflow and
-// WaitForWorkflowConclusion share it. Listing failures do not end the
+// WaitForWorkflowConclusion share it; the dispatch path passes the
+// run-ID floor DispatchWorkflow returned, so a run of the file already
+// listed before the dispatch is never selected (minRunID 0 accepts
+// every run). Listing failures do not end the
 // wait, but they are counted (pollErrors) so the timeout message says
 // the wait was blind, not that nothing existed. Every listing is
 // bounded by the remaining detection budget (withPollBudget), so the
 // client's rate-limit retries cannot stretch a poll past the deadline.
-func (d *Driver) findDispatchedRun(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error) {
+func (d *Driver) findDispatchedRun(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string, minRunID int) (*forge.WorkflowRun, error) {
 	deadline := d.now().Add(dispatchTimeout)
 	interval := dispatchPollInit
 	var listErrs pollErrors
@@ -202,7 +199,7 @@ func (d *Driver) findDispatchedRun(ctx context.Context, owner, repo, workflowFil
 			listErrs.recordBounded(ctx, err, cut)
 			continue
 		}
-		if candidate := selectWorkflowRun(runs, after, event); candidate != nil {
+		if candidate := selectWorkflowRun(runs, after, event); candidate != nil && candidate.ID > minRunID {
 			return candidate, nil
 		}
 	}
@@ -2138,104 +2135,65 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 // with forge.WithoutAmbiguousRetry, like the forge client's own
 // UpdateFileIfMatch: a replayed dispatch POST could start a second run of
 // the workflow, so an ambiguous timeout or 5xx is returned, not retried.
-func (d *Driver) DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error {
-	return d.Client.DispatchWorkflow(forge.WithoutAmbiguousRetry(ctx), owner, repo, filepath.Base(workflowFile), ref, inputs)
+// Before the dispatch it reads the file's current runs once and returns
+// their highest ID as the run-ID floor: the run this dispatch starts has
+// a strictly higher ID, and the failure step's wait accepts only runs
+// above the floor, so a run of the file already listed before the
+// dispatch (the org scheduler, a harness, an earlier dispatch in the
+// scenario) can never become the asserted run. The floor listing happens before
+// the POST — after it, this dispatch's own run could already be listed —
+// and is bounded by dispatchFloorBudget; when it fails the dispatch does
+// not happen and the error is returned, so a scenario never runs with a
+// floor it could not read.
+func (d *Driver) DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) (int, error) {
+	workflowFile = filepath.Base(workflowFile)
+	runs, err, cut := withPollBudget(ctx, dispatchFloorBudget, func(c context.Context) ([]forge.WorkflowRun, error) {
+		return d.Client.ListWorkflowRuns(c, owner, repo, workflowFile)
+	})
+	if err != nil {
+		if cut {
+			return 0, fmt.Errorf("workflow %s: reading the runs before the dispatch exceeded its budget", workflowFile)
+		}
+		return 0, fmt.Errorf("workflow %s: reading the runs before the dispatch: %w", workflowFile, err)
+	}
+	floor := 0
+	for _, run := range runs {
+		if run.ID > floor {
+			floor = run.ID
+		}
+	}
+	if err := d.Client.DispatchWorkflow(forge.WithoutAmbiguousRetry(ctx), owner, repo, workflowFile, ref, inputs); err != nil {
+		return 0, err
+	}
+	return floor, nil
 }
 
 // WaitForWorkflowConclusion implements ci.WorkflowDispatcher. Unlike
 // WaitForWorkflow, a run that concludes with a failure is returned
-// without an error. Like WaitForWorkflow, one deadline covers the run
-// and every replacement of it: a workflow with cancel-in-progress
-// replaces a run with a newer one, and the conclusion returned is the
-// replacement's, not the cancelled run's. A replacement can lag in the
-// run listings by seconds, so the wait keeps re-listing for a short
-// grace (replacementListWait) before returning a cancelled run as final.
-// A grace that expires without a single completed listing is reported as
-// an inconclusive lookup (the cancelled run with an error), not read as
-// the cancelled run being final. Every poll on the path — detection
-// listing, run lookup, grace relist — is bounded by the remaining wait
-// budget (withPollBudget), so the
-// client's rate-limit retries cannot stretch a poll past the deadline
-// (the #6647 shape harnessPollOnce fixed for the harness path).
-func (d *Driver) WaitForWorkflowConclusion(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error) {
+// without an error, and only a run above the dispatch's run-ID floor is
+// ever selected (minRunID, from the dispatch step). A cancelled run is
+// final on this path, unlike the harness waits that follow
+// replacements: the scenario dispatched the run itself exactly once, so
+// whatever cancelled it was another caller — a cancel-in-progress
+// concurrency group, the org scheduler, a second dispatch — and adopting
+// a newer run of the file as a replacement would assert a run the
+// scenario never dispatched. The cancelled run is returned and the
+// failure step reports the cancellation. Every poll on the path —
+// detection listing, run lookup — is bounded by the remaining wait
+// budget (withPollBudget), so the client's rate-limit retries cannot
+// stretch a poll past the deadline (the #6647 shape harnessPollOnce
+// fixed for the harness path).
+func (d *Driver) WaitForWorkflowConclusion(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string, minRunID int) (*forge.WorkflowRun, error) {
 	workflowFile = filepath.Base(workflowFile)
-	found, err := d.findDispatchedRun(ctx, owner, repo, workflowFile, after, event)
+	found, err := d.findDispatchedRun(ctx, owner, repo, workflowFile, after, event, minRunID)
 	if err != nil {
 		return nil, err
 	}
-	// A run already completed with a conclusion other than cancelled is
-	// final; a cancelled one may still be replaced by a newer run, so it
-	// goes through the same replacement check as a run cancelled while
-	// waiting.
-	if found.Status == "completed" && found.Conclusion != "cancelled" {
+	// A completed run is final whatever its conclusion: a cancelled one
+	// is reported, not replaced (see the method comment).
+	if found.Status == "completed" {
 		return found, nil
 	}
 	deadline := d.now().Add(dispatchWait)
-	for {
-		run, err := d.waitRunCompleted(ctx, owner, repo, workflowFile, found.ID, deadline)
-		if err != nil {
-			return nil, err
-		}
-		if run.Conclusion != "cancelled" {
-			return run, nil
-		}
-		// A cancelled run may be replaced by a newer one
-		// (cancel-in-progress), and the replacement can lag in the run
-		// listings by seconds: keep re-listing for replacementListWait
-		// (capped by the wait's own deadline) before returning the
-		// cancelled run as final, so a cancelled run with no replacement
-		// settles promptly instead of spinning out the whole dispatchWait.
-		relistDeadline := d.now().Add(replacementListWait)
-		if relistDeadline.After(deadline) {
-			relistDeadline = deadline
-		}
-		var lastListErr error
-		listed := false
-		for {
-			// List directly (not through latestRuns) so a listing that
-			// keeps failing — a #6647-style secondary rate limit — is
-			// reported instead of reading as "no replacement" when the
-			// grace expires. The listing is bounded by the remaining
-			// grace (withPollBudget): the client's rate-limit retries
-			// must not stretch the short grace into a multi-minute
-			// block.
-			runs, err, cut := withPollBudget(ctx, relistDeadline.Sub(d.now()), func(c context.Context) ([]forge.WorkflowRun, error) {
-				return d.Client.ListWorkflowRuns(c, owner, repo, workflowFile)
-			})
-			if err != nil {
-				// A call the grace budget cut short is the driver's own
-				// cutoff, not an API failure: it must not read as the
-				// listing having kept failing.
-				if !cut {
-					lastListErr = err
-				}
-			} else {
-				lastListErr = nil
-				listed = true
-				if replacement := selectWorkflowRun(runs, after, event); replacement != nil && replacement.ID > found.ID {
-					found = replacement
-					break
-				}
-			}
-			if !d.now().Before(relistDeadline) {
-				if lastListErr != nil {
-					return run, fmt.Errorf("workflow %s run %d concluded with %q, but the replacement listing kept failing: %w", workflowFile, run.ID, run.Conclusion, lastListErr)
-				}
-				if !listed {
-					// A grace that expired without a single completed
-					// listing — every call cut short by the budget — is
-					// no observation at all: report the lookup as
-					// inconclusive instead of reading the cancelled run
-					// as final.
-					return run, fmt.Errorf("workflow %s run %d concluded with %q, but no replacement listing completed within its grace, so a replacement may have been missed", workflowFile, run.ID, run.Conclusion)
-				}
-				return run, nil
-			}
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-d.timerAfter(pollInterval):
-			}
-		}
-	}
+	return d.waitRunCompleted(ctx, owner, repo, workflowFile, found.ID, deadline)
 }

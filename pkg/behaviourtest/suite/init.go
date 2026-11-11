@@ -163,6 +163,7 @@ func resetScenarioWorld(w *world.World) {
 	w.DispatchedWorkflow = false
 	w.DispatchedWorkflowFile = ""
 	w.DispatchedWorkflowAt = time.Time{}
+	w.DispatchedWorkflowRunFloor = 0
 	w.ArtifactDir = ""
 	w.ForkOwner = ""
 	w.ForkRepo = ""

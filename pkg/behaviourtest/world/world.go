@@ -79,6 +79,18 @@ type World struct {
 	// run from it.
 	DispatchedWorkflowAt time.Time
 
+	// DispatchedWorkflowRunFloor is the highest run ID of the dispatched
+	// file visible in the listings just before the dispatch, zero when
+	// no dispatch step ran (or the file had no listed runs). Like
+	// DispatchedWorkflowFile it is never cleared: the run the dispatch
+	// started has a strictly higher ID, and the workflow-failure step's
+	// wait accepts only runs above the floor, so a run of the file
+	// already listed before the dispatch can never become the asserted
+	// run. A second dispatch of the same file records its own floor —
+	// higher once the earlier run is listed — so assert each dispatch
+	// before dispatching the same file again.
+	DispatchedWorkflowRunFloor int
+
 	DispatchAgent string
 	PRNumber      int
 

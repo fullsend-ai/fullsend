@@ -86,11 +86,24 @@ func whenWorkflowDispatchedWithPayload(ctx context.Context, w *world.World, file
 	w.DispatchedWorkflow = true
 	w.DispatchedWorkflowFile = file
 	w.DispatchedWorkflowAt = w.ScenarioStart
-	return d.DispatchWorkflow(ctx, w.Org, w.RepoName, file, ref, map[string]string{
+	floor, err := d.DispatchWorkflow(ctx, w.Org, w.RepoName, file, ref, map[string]string{
 		"event_type":    issueOpenEvent,
 		"source_repo":   w.Org + "/" + w.RepoName,
 		"event_payload": strings.TrimSpace(payload),
 	})
+	if err != nil {
+		return err
+	}
+	// The run-ID floor (the highest run of the file listed before the
+	// dispatch) is recorded beside the file and time, never cleared: the
+	// failure step's wait accepts only runs above it, so a run already
+	// listed before the dispatch — the org scheduler, a harness, an
+	// earlier dispatch in the scenario — can never become the asserted
+	// run. A second dispatch of the same file records its own floor —
+	// higher once the earlier run is listed — so assert each dispatch
+	// before dispatching the same file again.
+	w.DispatchedWorkflowRunFloor = floor
+	return nil
 }
 
 // thenWorkflowFailsLogging waits for the dispatched workflow's run and
@@ -148,8 +161,13 @@ func thenWorkflowFailsLogging(ctx context.Context, w *world.World, file, needle 
 	// that time beside the file (never cleared, unlike the flag): a
 	// trigger step between the dispatch and this assertion moves
 	// ScenarioStart forward and must not exclude the dispatched run.
+	// The run-ID floor recorded with it accepts only runs above the
+	// floor: a run of the file already listed before the dispatch
+	// cannot become the asserted run, and a
+	// cancelled dispatched run is returned as final rather than followed
+	// to a replacement another caller started.
 	after := w.DispatchedWorkflowAt.Add(-issueOpenDrainSkewBuffer)
-	run, err := d.WaitForWorkflowConclusion(ctx, w.Org, w.RepoName, file, after, workflowDispatchEvent)
+	run, err := d.WaitForWorkflowConclusion(ctx, w.Org, w.RepoName, file, after, workflowDispatchEvent, w.DispatchedWorkflowRunFloor)
 	if err != nil {
 		return err
 	}
