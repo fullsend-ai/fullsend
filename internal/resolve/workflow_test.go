@@ -753,6 +753,41 @@ func TestResolveRuntimeWorkflow_LocalLeavesOutFullsendDir(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+// A checkout reached through a symlinked path still keeps fullsend's
+// configuration directory out: both paths are resolved before they are
+// compared, so the directory is not mistaken for one outside the checkout.
+func TestLocalWorkflowExclude_SymlinkedCheckout(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	fullsendDir := filepath.Join(realDir, "ci", ".fullsend")
+	require.NoError(t, os.MkdirAll(fullsendDir, 0o755))
+	link := filepath.Join(root, "link")
+	require.NoError(t, os.Symlink(realDir, link))
+
+	exclude, err := localWorkflowExclude("runtime_workflow.source", "ci", link, fullsendDir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ci/.fullsend"}, exclude)
+
+	_, err = localWorkflowExclude("runtime_workflow.source", "ci/.fullsend", link, fullsendDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is fullsend's configuration directory")
+
+	// The configuration directory at the checkout top: "." is refused.
+	_, err = localWorkflowExclude("runtime_workflow.source", ".", link, realDir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is the top of a checkout that is fullsend's configuration directory")
+
+	// A configuration directory really outside the checkout is still fine.
+	outside := filepath.Join(root, "elsewhere")
+	require.NoError(t, os.MkdirAll(outside, 0o755))
+	exclude, err = localWorkflowExclude("runtime_workflow.source", ".", link, outside)
+	require.NoError(t, err)
+	assert.Nil(t, exclude)
+
+	_, err = localWorkflowExclude("runtime_workflow.source", ".", filepath.Join(root, "missing"), fullsendDir)
+	require.Error(t, err, "an unresolvable checkout fails closed")
+}
+
 func TestResolveRuntimeWorkflow_Meta(t *testing.T) {
 	tests := []struct {
 		name    string

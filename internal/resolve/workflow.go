@@ -455,12 +455,22 @@ func readLocalWorkflow(ctx context.Context, source string, loc WorkflowLocation,
 // sub-directory is outside the configuration files at the top, and nothing
 // is left out of it.
 func localWorkflowExclude(label, source, top, fullsendDir string) ([]string, error) {
+	// Both sides are resolved, so a checkout reached through a symlinked
+	// path still finds the configuration directory inside it.
 	realFullsend, err := filepath.EvalSymlinks(fullsendDir)
 	if err != nil {
 		return nil, fmt.Errorf("%s: resolving %s: %w", label, fullsendDir, err)
 	}
-	rel, err := filepath.Rel(top, realFullsend)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	realTop, err := filepath.EvalSymlinks(top)
+	if err != nil {
+		return nil, fmt.Errorf("%s: resolving %s: %w", label, top, err)
+	}
+	rel, err := filepath.Rel(realTop, realFullsend)
+	if err != nil {
+		// Fail closed: without the relation the directory cannot be kept out.
+		return nil, fmt.Errorf("%s: relating %s to the checkout %s: %w", label, fullsendDir, top, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		// The configuration directory is outside the checkout, so no
 		// source can include it.
 		return nil, nil
