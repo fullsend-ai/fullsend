@@ -1857,6 +1857,94 @@ func TestBoundTransportLabelsSingleOverBoundLabelDropsAll(t *testing.T) {
 	}
 }
 
+// TestBoundTransportLabels_KeepsControlLabels pins the labels bound's
+// control-label keep (dispatch.IsControlLabel): fullsend-no-fix and
+// fullsend-fix survive the byte cap however much padding sorts ahead of
+// them, so the router's no-fix gate — which evaluates the bounded list
+// both doors hand it — can never fail open on its own kill switch, and
+// the worst-case payload with them kept still fits the chunk budget.
+func TestBoundTransportLabels_KeepsControlLabels(t *testing.T) {
+	// Twenty-four forty-character pad labels overflow the 1024-byte JSON
+	// bound (2 + 24*42 + 23 = 1033 bytes with quotes and commas), pushing
+	// both control labels past it.
+	pad := strings.Repeat("p", 40)
+	labels := make([]string, 0, 26)
+	for i := 0; i < 24; i++ {
+		labels = append(labels, pad)
+	}
+	labels = append(labels, "fullsend-fix", "fullsend-no-fix")
+	bounded := LogBoundTransportLabels("test control labels", labels)
+	if !slices.Contains(bounded, "fullsend-no-fix") || !slices.Contains(bounded, "fullsend-fix") {
+		t.Fatalf("bounded labels = %v, want both control labels kept past the byte cap", bounded)
+	}
+	if enc, err := json.Marshal(bounded); err != nil || len(enc) > transportLabelsLimit+40 {
+		t.Errorf("bounded labels with the control labels kept are %d JSON bytes (err %v), want at most the bound plus the control labels' ~32 bytes", len(enc), err)
+	}
+
+	// The router's no-fix gate evaluates the bounded list: a bot
+	// changes-requested marker on a non-fork change proposal whose padding
+	// labels pushed fullsend-no-fix past the byte cap routes to no stage.
+	markerEvent := func(labels []string) dispatch.NormalizedEvent {
+		return dispatch.NormalizedEvent{
+			Transition: dispatch.Transition{
+				Kind:    "comment_added",
+				Comment: &dispatch.TransitionComment{Body: "review " + forge.ChangesRequestedMarker},
+			},
+			Entity: dispatch.Entity{Kind: "change_proposal"},
+			Actor:  dispatch.Actor{Kind: "bot"},
+			State: dispatch.State{
+				Labels:         labels,
+				ChangeProposal: &dispatch.ChangeProposalState{IsFork: false},
+			},
+		}
+	}
+	ne := markerEvent(bounded)
+	stages, err := dispatch.NewHarnessRouter([]string{"fix"}).Route(&ne)
+	if err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if len(stages) != 0 {
+		t.Errorf("routed %v, want no stage: the kept fullsend-no-fix label must suppress the fix gate", stages)
+	}
+
+	// Without the stop label the same marker routes to fix, proving the
+	// gate — not the event's shape — decided.
+	withoutStop := make([]string, 0, len(bounded))
+	for _, l := range bounded {
+		if l != "fullsend-no-fix" {
+			withoutStop = append(withoutStop, l)
+		}
+	}
+	ne = markerEvent(withoutStop)
+	stages, err = dispatch.NewHarnessRouter([]string{"fix"}).Route(&ne)
+	if err != nil {
+		t.Fatalf("Route without the stop label: %v", err)
+	}
+	if len(stages) != 1 || stages[0] != "fix" {
+		t.Errorf("routed %v without fullsend-no-fix, want [fix]", stages)
+	}
+
+	// The kept control labels ride inside the worst-case budget: the
+	// maximal attacker shape with both control labels sorted past the
+	// bound still transports as the complete form within the chunk
+	// budget, control labels carried.
+	event, worst := worstCaseAttackerEvent()
+	withControl := append(append([]string{}, worst.State.Labels...), "fullsend-fix", "fullsend-no-fix")
+	worst.State.Labels = withControl
+	event.Labels = withControl
+	data, err := buildEventPayload(event, &worst)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	if n := base64.StdEncoding.EncodedLen(len(data)); n > maxEventPayloadChunks*dispatchPayloadChunkSize {
+		t.Errorf("worst-case payload with control labels kept is %d base64 characters, over the %d budget", n, maxEventPayloadChunks*dispatchPayloadChunkSize)
+	}
+	ev := payloadEvent(t, data)
+	if !slices.Contains(ev.State.Labels, "fullsend-no-fix") || !slices.Contains(ev.State.Labels, "fullsend-fix") {
+		t.Errorf("transported labels = %d entries, want the control labels carried in the complete form", len(ev.State.Labels))
+	}
+}
+
 // TestEncodeJiraEventPayload_LastLadderStepCarriesNoCommentText pins the
 // ladder's 0 step: at the largest comment ballast that still
 // dispatches, the ladder has walked to its last step, and the dispatched
