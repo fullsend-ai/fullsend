@@ -45,17 +45,17 @@ func TestWriteManifest_RefusesManifestOverSizeLimit(t *testing.T) {
 	}
 }
 
-// The live write refuses a read-only manifest before it checks the size, so
-// a dry run does not report the size refusal for one. As for an HTTPS
-// manifest, the dry run reports no refusal.
-func TestRemoveFromManifest_DryRunSkipsSizeCheckForReadOnlyManifest(t *testing.T) {
+// A dry run refuses a removal from a read-only manifest, as the live write
+// does, before it checks the size.
+func TestRemoveFromManifest_DryRunRefusesReadOnlyManifest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "repos.yaml")
 	if err := os.WriteFile(path, []byte("version: 1\n"), 0o444); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	names := oversizeManifestNames()
-	if _, _, err := RemoveFromManifest(ManifestEditConfig{Manifest: testManifest(names...), ManifestPath: path, DryRun: true}, names[:1], nil); err != nil {
-		t.Fatalf("RemoveFromManifest() error = %v, want nil", err)
+	_, _, err := RemoveFromManifest(ManifestEditConfig{Manifest: testManifest(names...), ManifestPath: path, DryRun: true}, names[:1], nil)
+	if err == nil || !strings.Contains(err.Error(), "is read-only") {
+		t.Fatalf("RemoveFromManifest() error = %v, want the read-only error", err)
 	}
 }
 

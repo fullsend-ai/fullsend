@@ -149,9 +149,11 @@ func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress Progres
 	}
 
 	if cfg.DryRun {
-		// The live write refuses a read-only manifest before it checks the
-		// size, so only a writable one can get the size refusal.
-		if cfg.ManifestPath != "" && !ManifestReadOnly(cfg.Manifest, cfg.ManifestPath) {
+		// A dry run gives the live write's refusals, in the same order.
+		if cfg.ManifestPath != "" {
+			if ManifestReadOnly(cfg.Manifest, cfg.ManifestPath) {
+				return nil, nil, readOnlyManifestError(cfg.ManifestPath)
+			}
 			if err := CheckManifestSize(cfg.ManifestPath, cfg.Manifest); err != nil {
 				return nil, nil, err
 			}

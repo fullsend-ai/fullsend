@@ -1485,6 +1485,14 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (opening a PR to remove workflow files, then deleting variables and secrets via the API), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
 
+A manifest loaded from an HTTPS URL, read from a pipe or FIFO (as `-f <(cmd)`
+gives), or a local file without write permission, is read-only, so uninstall
+cannot remove entries from it. Uninstall refuses such a manifest before it
+tears anything down, `--manifest-only` refuses it too, and `--dry-run` reports
+the same refusal. To uninstall from one, run with `--uninstall-only`, which
+tears down without editing the manifest, then remove each torn-down entry from
+its source.
+
 Uninstall rewrites the whole `repos.yaml` with its own formatting. When the
 rewritten file would exceed the 1 MB limit that loading a manifest enforces,
 uninstall fails after teardown and leaves the file unchanged. `--dry-run`

@@ -1547,6 +1547,13 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		printer.StepInfo("All matched entries are glob patterns — no concrete repos to uninstall")
 		return nil
 	}
+	// The manifest edit follows the teardown, so a read-only manifest is
+	// refused before anything is torn down, as install refuses one.
+	if !opts.manifestOnly && !opts.uninstallOnly && repos.ManifestReadOnly(manifest, opts.manifest) {
+		return fmt.Errorf("manifest %s is read-only and the uninstall must remove %s from it; no changes were made. "+
+			"Run with --uninstall-only to tear down without editing the manifest, then remove each torn-down entry from its source",
+			opts.manifest, strings.Join(concreteRepos, ", "))
+	}
 
 	action := "uninstall and remove from manifest"
 	if opts.manifestOnly {

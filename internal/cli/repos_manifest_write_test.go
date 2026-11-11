@@ -153,3 +153,51 @@ func TestRunReposInstall_ManifestOverSizeLimitIsRefused(t *testing.T) {
 		})
 	}
 }
+
+// An uninstall that must remove entries from a read-only manifest is refused
+// before the teardown, in a dry run as well, so no repository is torn down
+// while its entry stays. --manifest-only, which tears nothing down, gets
+// the write's own refusal, and its dry run reports it too. --uninstall-only
+// leaves the manifest alone and still tears down.
+func TestRunReposUninstall_ReadOnlyManifest(t *testing.T) {
+	for _, tc := range []struct {
+		name                        string
+		manifestOnly, uninstallOnly bool
+		wantErr                     string
+	}{
+		{"default", false, false, "the uninstall must remove acme/api from it; no changes were made"},
+		{"manifest only", true, false, "is read-only; apply the equivalent edit to its source"},
+		{"uninstall only", false, true, ""},
+	} {
+		for _, dryRun := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/dry run %t", tc.name, dryRun), func(t *testing.T) {
+				r, w, err := os.Pipe()
+				require.NoError(t, err)
+				t.Cleanup(func() { _ = r.Close() })
+				_, err = w.WriteString(twoRepoManifestYAML)
+				require.NoError(t, err)
+				require.NoError(t, w.Close())
+				fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+				var runErr error
+				captureStdout(t, func() {
+					runErr = runReposUninstall(context.Background(), &reposUninstallConfig{
+						manifest:      fmt.Sprintf("/dev/fd/%d", r.Fd()),
+						dryRun:        dryRun,
+						yes:           true,
+						concurrency:   1,
+						manifestOnly:  tc.manifestOnly,
+						uninstallOnly: tc.uninstallOnly,
+						testClient:    fc,
+					}, []string{"acme/api"})
+				})
+				if tc.wantErr == "" {
+					require.NoError(t, runErr)
+				} else {
+					require.ErrorContains(t, runErr, tc.wantErr)
+				}
+				_, kept := fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"]
+				assert.Equal(t, tc.wantErr != "" || dryRun, kept, "only a live --uninstall-only run tears down")
+			})
+		}
+	}
+}
