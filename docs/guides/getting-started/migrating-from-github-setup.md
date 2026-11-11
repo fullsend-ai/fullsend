@@ -403,8 +403,9 @@ Install rejects a rewrite that makes the effective configuration less
 restrictive than the current one unless `repos.yaml` declares that
 relaxation. The compared keys are `kill_switch`, `roles`,
 `allowed_remote_resources`, agent `enabled: false` suppressions,
-`tracker.<provider>.allowed_targets`, `inference.gateway.url`, and
-`inference.gateway.audience`. The output names the affected keys.
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`,
+`inference.gateway.audience`, `artifacts.content`, and
+`artifacts.by_source.<source>`. The output names the affected keys.
 
 After the repository is in `repos.yaml`, stop running `github setup` on it.
 A setup run that rewrites `.fullsend/config.yaml` removes the ownership

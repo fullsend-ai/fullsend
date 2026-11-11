@@ -288,8 +288,9 @@ installed base) with the proposed one (proposed overlay over the declared
 preset). If the replacement would implicitly relax a restriction the
 overlay does not declare — `kill_switch`, `roles`,
 `allowed_remote_resources`, agent suppressions,
-`tracker.<provider>.allowed_targets`, `inference.gateway.url`, or
-`inference.gateway.audience` — that repository fails before any write and
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`,
+`inference.gateway.audience`, `artifacts.content`, or
+`artifacts.by_source.<source>` — that repository fails before any write and
 the output names the keys. Changing a preset source alone is not an
 explicit declaration of a less-restrictive setting.
 
@@ -456,7 +457,8 @@ candidate would become less restrictive than the current effective
 configuration without an explicit manifest declaration. That pre-write
 safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
 agent `enabled: false` suppressions, `tracker.<provider>.allowed_targets`,
-`inference.gateway.url`, and `inference.gateway.audience` through the full
+`inference.gateway.url`, `inference.gateway.audience`, `artifacts.content`,
+and `artifacts.by_source.<source>` through the full
 overlay → base → code-defaults accessor chain. Omitted
 keys fall through rather than being treated as unset; an explicit empty
 `allowed_remote_resources: []` remains deny-all. A change to either
