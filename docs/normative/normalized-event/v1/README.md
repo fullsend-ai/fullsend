@@ -213,9 +213,10 @@ cross-field equality.
 
 For `comment_added`, adapters extract `command` and `instruction` from the
 **raw** comment body before applying the 4096-character truncation stored in
-`comment.body` (JSON Schema `maxLength` counts Unicode code points). This keeps
-slash-command routing and fix instructions intact even when the stored body is
-truncated for transport.
+`comment.body` (a `/fs-*` command body is exempt: the Jira source carries it
+whole past the cap so the dispatch door can measure and refuse it; JSON Schema
+`maxLength` counts Unicode code points). This keeps slash-command routing and
+fix instructions intact even when the stored body is truncated for transport.
 
 This moves instruction extraction from downstream workflow steps (e.g.
 `reusable-fix.yml`) into the input adapter — a behavioral change called out in

@@ -231,7 +231,7 @@
             "body": {
               "type": "string",
               "maxLength": 4096,
-              "description": "Comment body truncated to 4096 Unicode code points for dispatch transport."
+              "description": "Comment body truncated to 4096 Unicode code points by the source adapter; a /fs-* command body is carried unshortened (the Jira source keeps it whole past the cap so the dispatch door can measure and refuse it: the GitLab-target dispatch fails when it does not fit the budget, while the GitHub-target dispatch carries the whole command body, its transport having no chunk budget). Non-command bodies are bounded further by the dispatch transports (a shortening ladder on Jira, 270 code points on GitLab)."
             },
             "instruction": {
               "type": "string",

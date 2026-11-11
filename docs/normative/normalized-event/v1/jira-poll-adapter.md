@@ -133,7 +133,15 @@ than depending on either.
   [GitLab dispatch payload](README.md#gitlab-dispatch-payload), so labels
   past the bound never reach the harness on this transport; an `/fs-*`
   command body that does not fit the dispatch budget fails the dispatch
-  instead of arriving shortened. On the GitLab target the same bound is
+  instead of arriving shortened, and a command body is carried whole
+  through normalization so the door measures the complete body — but a
+  raw non-command body past the schema's 4096-code-point cap is cut at
+  normalization, before the dispatch door sees it, so that guarantee
+  covers what the schema carries. Body-keyed triggers see the
+  adapter-truncated body, while the transported non-command body is
+  shortened further (the shortening ladder on the GitLab target; the
+  GitHub target carries the adapter-truncated body). On
+  the GitLab target the same labels bound is
   applied before trigger matching, so a trigger keyed on a label past the
   bound does not match: the matcher and the transported payload agree on
   the work item's labels. The GitHub target matches on the full label
