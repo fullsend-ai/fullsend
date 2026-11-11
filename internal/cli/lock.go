@@ -136,7 +136,7 @@ func runLock(ctx context.Context, agentName, fullsendDir, forgeFlag string, upda
 		return err
 	}
 
-	result, err := lockOneAgent(ctx, agentName, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
+	result, err := lockOneAgent(ctx, agentName, fullsendDir, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
 	if err != nil {
 		return err
 	}
@@ -205,7 +205,7 @@ func loadLockConfig(path string) (config.ConfigWriter, error) {
 // lockOneAgent resolves dependencies for a single harness and returns the
 // lock entry without writing to disk. Returns nil (no error) when the harness
 // has no remote dependencies or the lock entry is already up to date.
-func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag string, update bool, lf *lock.LockFile, rFlags resolveFlags, printer *ui.Printer) (*lockResult, error) {
+func lockOneAgent(ctx context.Context, agentName, fullsendDir, absFullsendDir, forgeFlag string, update bool, lf *lock.LockFile, rFlags resolveFlags, printer *ui.Printer) (*lockResult, error) {
 	// Load org config early — needed for config-driven agent resolution
 	// fallback and later for allowlist validation.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
@@ -323,6 +323,11 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			GitToken:      composeGitToken,
 			Config:        harness.BuildConfigMap(orgCfg),
 			SourceURL:     sourceURL,
+			// --update re-resolves from the source, not the URL index, so an
+			// upstream change is recorded even on the cache that wrote the
+			// lock. Offline-miss errors advise the named command.
+			BypassURLIndex:    update,
+			LockUpdateCommand: fmt.Sprintf("fullsend lock %s --update%s", shellQuoteArg(agentName), fullsendDirArg(fullsendDir)),
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
@@ -584,7 +589,7 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 		printer.Header("Locking dependencies: " + name)
 		printer.Blank()
 
-		result, lockErr := lockOneAgent(ctx, name, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
+		result, lockErr := lockOneAgent(ctx, name, fullsendDir, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
 		if lockErr != nil {
 			if len(locked) > 0 {
 				printer.StepStart("Writing partial lock file (preserving progress)")

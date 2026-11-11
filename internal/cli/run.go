@@ -662,6 +662,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		Config:        harness.BuildConfigMap(orgCfg),
 
 		RunnerSecretNames: runnerSecretNameSet(runnerSecrets),
+
+		// Pin-mismatch and offline-miss errors advise this command, which
+		// names the harness and succeeds as written.
+		LockUpdateCommand: fmt.Sprintf("fullsend lock %s --update%s", shellQuoteArg(agentName), fullsendDirArg(fullsendDir)),
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
@@ -707,7 +711,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	case lockState.loadErr != nil:
 		printer.StepWarn("Could not load lock file: " + lockState.loadErr.Error())
 	case lockState.stale:
-		printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s%s' to update.", agentName, fullsendDirArg(fullsendDir)))
+		printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run fullsend lock %s%s to update.", shellQuoteArg(agentName), fullsendDirArg(fullsendDir)))
 	case len(lockState.pins) > 0:
 		noun := "dependency"
 		if len(lockState.pins) > 1 {
@@ -739,8 +743,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					forgeArg = " --forge " + composeOpts.ForgePlatform
 				}
 			}
-			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run 'fullsend lock --update%s %s%s' to pin them",
-				agentName, len(unpinned), noun, unpinned[0], forgeArg, agentName, fullsendDirArg(fullsendDir)))
+			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run fullsend lock --update%s %s%s to pin them",
+				agentName, len(unpinned), noun, unpinned[0], forgeArg, shellQuoteArg(agentName), fullsendDirArg(fullsendDir)))
 		}
 	}
 

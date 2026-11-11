@@ -338,6 +338,8 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 			agentOpts.SourceURL = fetchDeps[0].URL
 		}
+		// Offline-miss errors advise the named command, same as run.
+		agentOpts.LockUpdateCommand = fmt.Sprintf("fullsend lock %s --update%s", shellQuoteArg(agentName), fullsendDirArg(fullsendDir))
 		h, _, err := harness.LoadWithBase(cmd.Context(), harnessPath, agentOpts)
 		if err != nil {
 			wrapped := fmt.Errorf("loading harness for agent %q: %w", agentName, err)
