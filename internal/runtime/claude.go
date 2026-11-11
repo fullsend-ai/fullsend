@@ -1257,9 +1257,10 @@ func (ClaudeRuntime) LaunchEnvExports() []string {
 
 // Ensure ClaudeRuntime implements Runtime and TranscriptHandler.
 var (
-	_ Runtime           = ClaudeRuntime{}
-	_ TranscriptHandler = ClaudeRuntime{}
-	_ DebugLogNamer     = ClaudeRuntime{}
-	_ ContextBridger    = ClaudeRuntime{}
-	_ LaunchEnvExporter = ClaudeRuntime{}
+	_ Runtime                = ClaudeRuntime{}
+	_ TranscriptHandler      = ClaudeRuntime{}
+	_ DebugLogNamer          = ClaudeRuntime{}
+	_ ContextBridger         = ClaudeRuntime{}
+	_ LaunchEnvExporter      = ClaudeRuntime{}
+	_ BackgroundStopDetector = ClaudeRuntime{}
 )
