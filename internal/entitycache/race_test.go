@@ -1,55 +1,47 @@
 package entitycache
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/normentity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// mergeField decodes snapshot (or starts a new document for id when snapshot
-// is nil), sets entity.<field> to true, and re-encodes it. It stands in for a
-// caller merging newly acquired data into the latest snapshot.
-func mergeField(id EntityID, snapshot Entity, field string) (Entity, error) {
-	var d struct {
-		Entity map[string]any `json:"entity"`
+// mergeLabel returns snapshot (or a new document when snapshot is nil) with
+// label added to the known labels. It stands in for a caller merging newly
+// acquired data into the latest snapshot.
+func mergeLabel(snapshot *normentity.Document, label string) *normentity.Document {
+	if snapshot == nil {
+		snapshot = doc("I_shared", "shared")
 	}
-	if snapshot != nil {
-		if err := json.Unmarshal(snapshot, &d); err != nil {
-			return nil, err
-		}
-	}
-	if d.Entity == nil {
-		d.Entity = map[string]any{"id": string(id)}
-	}
-	d.Entity[field] = true
-	return json.Marshal(d)
+	labels := &snapshot.Entity.Labels
+	labels.Known = append(labels.Known, label)
+	slices.Sort(labels.Known)
+	labels.Coverage = normentity.Coverage{Status: normentity.CoveragePartial}
+	return snapshot
 }
 
 // TestMemoryConcurrentMerges has concurrent clients progressively add their
-// own field to the same entity with a Get, merge, Put, retry-on-conflict loop.
-// No update may be lost, and the race detector checks shared state.
+// own label to the same entity with a Get, merge, Put, retry-on-conflict
+// loop. No update may be lost, and the race detector checks shared state.
 func TestMemoryConcurrentMerges(t *testing.T) {
 	m := NewMemory()
-	id := mustEntityID(t, "I_shared")
-	other := mustEntityID(t, "I_other")
+	id := mustID(t, "I_shared")
+	other := mustID(t, "I_other")
 
 	const goroutines = 12
 	var wg sync.WaitGroup
 	for g := range goroutines {
 		wg.Go(func() {
-			field := fmt.Sprintf("field_%d", g)
+			label := fmt.Sprintf("label_%02d", g)
 			for {
 				snapshot, rev, _ := m.Get(id)
-				merged, err := mergeField(id, snapshot, field)
-				if !assert.NoError(t, err) {
-					return
-				}
-				_, err = m.Put(id, merged, rev)
+				_, err := m.Put(id, mergeLabel(snapshot, label), rev)
 				if err == nil {
 					break
 				}
@@ -65,11 +57,9 @@ func TestMemoryConcurrentMerges(t *testing.T) {
 
 	final, _, ok := m.Get(id)
 	require.True(t, ok)
-	var d struct {
-		Entity map[string]any `json:"entity"`
-	}
-	require.NoError(t, json.Unmarshal(final, &d))
+	want := make([]string, goroutines)
 	for g := range goroutines {
-		assert.Equal(t, true, d.Entity[fmt.Sprintf("field_%d", g)], "field_%d lost", g)
+		want[g] = fmt.Sprintf("label_%02d", g)
 	}
+	assert.Equal(t, want, final.Entity.Labels.Known, "an update was lost")
 }

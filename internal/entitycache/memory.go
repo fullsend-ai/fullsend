@@ -1,18 +1,23 @@
 package entitycache
 
 import (
-	"bytes"
+	"encoding/json"
+	"fmt"
 	"sync"
+
+	"github.com/fullsend-ai/fullsend/internal/normentity"
 )
 
 // defaultMaxTombstones bounds how many per-entity invalidation records a
 // [Memory] retains before it collapses them into its shared absent revision.
 const defaultMaxTombstones = 4096
 
-// record is the cached state of one present entity.
+// record is the cached state of one present entity. The document is held in
+// its serialized form, which no caller can alias: Put encodes it and Get
+// decodes a fresh copy, so every caller owns the document it gets back.
 type record struct {
-	entity Entity
-	rev    Revision
+	doc []byte
+	rev Revision
 }
 
 // Memory is a thread-safe, process-local [Cache].
@@ -28,8 +33,8 @@ type record struct {
 // miss-time Put for an unrelated absent entity may also conflict and retry.
 type Memory struct {
 	mu            sync.Mutex
-	records       map[EntityID]record
-	tombstones    map[EntityID]Revision
+	records       map[normentity.ID]record
+	tombstones    map[normentity.ID]Revision
 	absent        Revision // revision of absent entities without a tombstone
 	last          Revision // last revision issued
 	maxTombstones int
@@ -40,35 +45,43 @@ var _ Cache = (*Memory)(nil)
 // NewMemory returns an empty in-memory cache.
 func NewMemory() *Memory {
 	return &Memory{
-		records:       make(map[EntityID]record),
-		tombstones:    make(map[EntityID]Revision),
+		records:       make(map[normentity.ID]record),
+		tombstones:    make(map[normentity.ID]Revision),
 		maxTombstones: defaultMaxTombstones,
 	}
 }
 
-// Get implements [Cache].
-func (m *Memory) Get(id EntityID) (Entity, Revision, bool) {
+// Get implements [Cache]. A stored record that cannot be decoded is reported
+// as a miss at its current revision, so the caller can replace it with Put;
+// Put only stores documents that encode, so this does not occur in practice.
+func (m *Memory) Get(id normentity.ID) (*normentity.Document, Revision, bool) {
 	if !id.Valid() {
 		return nil, 0, false
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if r, ok := m.records[id]; ok {
-		return bytes.Clone(r.entity), r.rev, true
+	r, ok := m.records[id]
+	rev := m.currentLocked(id)
+	m.mu.Unlock()
+	if !ok {
+		return nil, rev, false
 	}
-	return nil, m.currentLocked(id), false
+	var doc normentity.Document
+	if err := json.Unmarshal(r.doc, &doc); err != nil {
+		return nil, rev, false
+	}
+	return &doc, rev, true
 }
 
 // Put implements [Cache].
-func (m *Memory) Put(id EntityID, entity Entity, expected Revision) (Revision, error) {
+func (m *Memory) Put(id normentity.ID, doc *normentity.Document, expected Revision) (Revision, error) {
 	if !id.Valid() {
 		return 0, ErrInvalidID
 	}
-	if err := validateEntity(id, entity); err != nil {
+	stored, err := encode(id, doc)
+	if err != nil {
 		return 0, err
 	}
-	stored := bytes.Clone(entity)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -76,13 +89,31 @@ func (m *Memory) Put(id EntityID, entity Entity, expected Revision) (Revision, e
 		return cur, ErrConflict
 	}
 	rev := m.nextLocked()
-	m.records[id] = record{entity: stored, rev: rev}
+	m.records[id] = record{doc: stored, rev: rev}
 	delete(m.tombstones, id)
 	return rev, nil
 }
 
+// encode validates doc against id and serializes it.
+func encode(id normentity.ID, doc *normentity.Document) ([]byte, error) {
+	if doc == nil {
+		return nil, fmt.Errorf("%w: no document", ErrInvalidEntity)
+	}
+	if doc.Entity.ID != id {
+		return nil, fmt.Errorf("%w: entity.id %q does not match key %q", ErrInvalidEntity, doc.Entity.ID, id)
+	}
+	if err := doc.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidEntity, err)
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidEntity, err)
+	}
+	return b, nil
+}
+
 // Invalidate implements [Cache].
-func (m *Memory) Invalidate(id EntityID) (Revision, error) {
+func (m *Memory) Invalidate(id normentity.ID) (Revision, error) {
 	if !id.Valid() {
 		return 0, ErrInvalidID
 	}
@@ -103,7 +134,7 @@ func (m *Memory) Invalidate(id EntityID) (Revision, error) {
 }
 
 // currentLocked returns id's current revision. m.mu must be held.
-func (m *Memory) currentLocked(id EntityID) Revision {
+func (m *Memory) currentLocked(id normentity.ID) Revision {
 	if r, ok := m.records[id]; ok {
 		return r.rev
 	}
