@@ -1,6 +1,7 @@
 package repos
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,8 +91,11 @@ func carveOutGlobEntry(platforms []*PlatformConfig, name string) (*RepoEntry, er
 
 // RemoveFromManifest removes matching repo entries from all platform
 // sections in the manifest. Patterns containing glob characters (*, ?, [)
-// are matched against manifest entries using filepath.Match. Returns the
-// result and the modified manifest.
+// are matched against manifest entries using filepath.Match. Entries are
+// matched in cfg.Manifest; when ManifestPath is a writable regular file, the
+// removal is applied to the file as it is at write time, so edits made after
+// cfg.Manifest was loaded are kept. Returns the result and the modified
+// manifest (the copy that was written, when one was).
 func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress ProgressFunc) (*ManifestRemoveResult, *Manifest, error) {
 	if cfg.Manifest == nil {
 		return nil, nil, fmt.Errorf("manifest is required")
@@ -109,26 +113,9 @@ func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress Progres
 		return nil, nil, err
 	}
 
-	result := &ManifestRemoveResult{}
-
-	// Remove matching entries from each platform section.
-	removePlatformEntries := func(platform *PlatformConfig) {
-		if platform == nil {
-			return
-		}
-		kept := make([]RepoEntry, 0, len(platform.Repos))
-		for _, entry := range platform.Repos {
-			if toRemove[entry.Name] {
-				result.Removed = append(result.Removed, entry.Name)
-			} else {
-				kept = append(kept, entry)
-			}
-		}
-		platform.Repos = kept
+	result := &ManifestRemoveResult{
+		Removed: removeManifestEntries(cfg.Manifest, toRemove),
 	}
-
-	removePlatformEntries(cfg.Manifest.GitHub)
-	removePlatformEntries(cfg.Manifest.GitLab)
 
 	for _, pattern := range repos {
 		matched := false
@@ -155,8 +142,23 @@ func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress Progres
 		return result, cfg.Manifest, nil
 	}
 
+	updated := cfg.Manifest
 	if cfg.ManifestPath != "" {
-		if err := writeManifest(cfg.ManifestPath, cfg.Manifest); err != nil {
+		// The caller may have loaded cfg.Manifest long before this write
+		// (uninstall loads it before teardown). Apply the removal to the
+		// file as it is now, so edits another command made in the meantime
+		// are kept.
+		if !ManifestReadOnly(cfg.Manifest, cfg.ManifestPath) {
+			current, err := reloadManifestForWrite(cfg.ManifestPath)
+			if err != nil {
+				return nil, nil, err
+			}
+			if current != nil {
+				removeManifestEntries(current, toRemove)
+				updated = current
+			}
+		}
+		if err := writeManifest(cfg.ManifestPath, updated); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -165,7 +167,49 @@ func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress Progres
 		progress(r, "manifest", "Removed from manifest")
 	}
 
-	return result, cfg.Manifest, nil
+	return result, updated, nil
+}
+
+// removeManifestEntries removes the entries named in names from every
+// platform section of m and returns the names it removed.
+func removeManifestEntries(m *Manifest, names map[string]bool) []string {
+	var removed []string
+	for _, platform := range []*PlatformConfig{m.GitHub, m.GitLab} {
+		if platform == nil {
+			continue
+		}
+		kept := make([]RepoEntry, 0, len(platform.Repos))
+		for _, entry := range platform.Repos {
+			if names[entry.Name] {
+				removed = append(removed, entry.Name)
+			} else {
+				kept = append(kept, entry)
+			}
+		}
+		platform.Repos = kept
+	}
+	return removed
+}
+
+// reloadManifestForWrite reads the local manifest at path again, as it is
+// on disk now, and validates it as uninstall validates the manifest it
+// loads. It returns nil when path is not a regular file (for example a pipe
+// that cannot be read a second time); the caller then writes the copy it
+// already holds.
+func reloadManifestForWrite(path string) (*Manifest, error) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, nil
+	}
+	// A local path is read without the context; it only bounds HTTPS fetches.
+	current, err := LoadManifest(context.Background(), path)
+	if err != nil {
+		return nil, fmt.Errorf("re-reading manifest before write: %w", err)
+	}
+	if err := current.ValidateStructure(); err != nil {
+		return nil, fmt.Errorf("manifest %s changed and no longer validates; not writing: %w", path, err)
+	}
+	return current, nil
 }
 
 // MatchManifestRepos returns the list of repo names from the manifest that
