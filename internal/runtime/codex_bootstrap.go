@@ -173,13 +173,18 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	if !ok || repoInput.RepoDir() == "" {
 		return fmt.Errorf("codex bootstrap: the target repository's sandbox path is required")
 	}
-	// ADR 0126 gate. Part one: tools include Agent and harness security is
-	// on. Part two needs the pinned CLI's catalog: codex must resolve the
-	// model Run will launch to collaboration V1, the only version whose spawn
-	// tool the guard admits (its entry selects V1, or carries no version and
-	// codex's multi_agent feature, on by default, supplies V1). A V2,
-	// unlisted or gateway/ parent keeps the multi-agent tools off and runs in
-	// one context, as an agent that does not delegate does.
+	// Delegation gate (ADR 0126, extended by ADR 0159). Part one: tools
+	// include Agent and harness security is on. Part two needs the pinned
+	// CLI's catalog: the gate takes the collaboration version from the entry
+	// of the model Run will launch, V1 when the entry selects V1 or carries
+	// no version (codex's multi_agent feature, on by default, supplies V1)
+	// and V2 when it selects V2. Only a V1 parent delegates: the gate reads
+	// the version, not the reason. Only the change that renders the V2
+	// config and the checked child-result delivery path widens the gate to V2,
+	// once that path is verified live (ADR 0159 decision 4). A V2, disabled,
+	// unknown-version, unlisted or gateway/ parent is declined with its own
+	// explanation, keeps the multi-agent tools off and runs in one context,
+	// as an agent that does not delegate does.
 	_, securityOn := input.(SandboxHooksBootstrap)
 	var catalog codexCatalog
 	delegating := false
@@ -187,8 +192,8 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		if catalog, err = codexPreflightCatalog(sandboxName); err != nil {
 			return err
 		}
-		var reason string
-		if delegating, reason = codexParentResolvesV1(catalog, input.ParentModel(), def.Model); !delegating {
+		version, reason := codexParentCollabVersion(catalog, input.ParentModel(), def.Model)
+		if delegating = version == "v1"; !delegating {
 			fmt.Fprintf(os.Stderr, "sub-agents: %s, running in one context\n", reason)
 		}
 	}
@@ -393,9 +398,9 @@ func codexDeveloperInstructions(agentName string, def *piAgentDef, roles []codex
 // codexNoSubagentNote makes the absence of a sub-agent roster explicit so
 // skills written for Claude Code's Agent tool (pr-review, retro) take their
 // single-context path deliberately instead of recording a failed dispatch.
-// Every agent the ADR 0126 gate declines gets it (tools without Agent,
-// security off, a V2 or unlisted parent); a delegating agent gets
-// codexSubagentNote.
+// Every agent the delegation gate declines gets it (tools without Agent,
+// security off, or a V2, disabled, unknown-version, unlisted or gateway/
+// parent); a delegating agent gets codexSubagentNote.
 const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). No fullsend sub-agent " +
 	"roster is available. When a skill says to dispatch sub-agents, execute each sub-agent " +

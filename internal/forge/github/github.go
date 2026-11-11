@@ -1606,14 +1606,15 @@ func (c *LiveClient) commitFilesWithRetry(ctx context.Context, owner, repo, bran
 
 // retryCommitOp runs op up to three times while it fails with a retriable
 // commit error (see isRetriableCommitError), with a jittered delay between
-// attempts.
+// attempts that doubles on each retry (100-500ms, then 200-1000ms) so
+// replication lag has longer to settle before the last attempt.
 func retryCommitOp[T any](ctx context.Context, c *LiveClient, label string, op func() (T, error)) (T, error) {
 	const maxAttempts = 3
 	var result T
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			jitter := time.Duration(100+randutil.IntN(400)) * time.Millisecond
+			jitter := time.Duration(100+randutil.IntN(400)) * time.Millisecond << (attempt - 1)
 			select {
 			case <-ctx.Done():
 				var zero T
@@ -1808,12 +1809,13 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 	newTreeResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/trees", owner, repo), treePayload)
 	if err != nil {
-		// A 422 "Tree SHA does not exist" means the base_tree SHA went
-		// stale between when we read it and now — same class of race as
+		// A transient 422 (see isTransientTreeError) — a base_tree SHA
+		// that went stale, a just-created blob not yet visible, or a
+		// GitHub-side timeout — is the same class of race as a
 		// non-fast-forward on the ref update. Wrap it so
 		// commitFilesWithRetry retries the entire operation from scratch.
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isTransientTreeError(apiErr) {
 			return false, fmt.Errorf("create tree: %w: %w", forge.ErrNonFastForward, err)
 		}
 		return false, fmt.Errorf("create tree: %w", wrapForbidden(err))
@@ -1833,9 +1835,9 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 	newCommitResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo), commitPayload)
 	if err != nil {
-		// Same stale-SHA race as the create-tree step above.
+		// Same transient 422s as the create-tree step above.
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isTransientTreeError(apiErr) {
 			return false, fmt.Errorf("create commit: %w: %w", forge.ErrNonFastForward, err)
 		}
 		return false, fmt.Errorf("create commit: %w", wrapForbidden(err))
@@ -2015,6 +2017,23 @@ func isNonFastForwardError(apiErr *APIError) bool {
 // update and should be retried from scratch.
 func isStaleTreeSHAError(apiErr *APIError) bool {
 	return strings.Contains(lowerAPIErrorText(apiErr), "tree sha does not exist")
+}
+
+// isTransientTreeError checks whether a 422 APIError from the create-tree
+// or create-commit step is transient and worth retrying from scratch:
+//   - a stale tree SHA (see isStaleTreeSHAError);
+//   - "tree.sha <sha> is not a valid blob": a blob created moments earlier
+//     is not yet visible to the tree endpoint (replication lag);
+//   - "Sorry, your request timed out": a GitHub-side timeout.
+//
+// Other 422s (validation failures) are not transient.
+func isTransientTreeError(apiErr *APIError) bool {
+	if isStaleTreeSHAError(apiErr) {
+		return true
+	}
+	msg := lowerAPIErrorText(apiErr)
+	return strings.Contains(msg, "is not a valid blob") ||
+		strings.Contains(msg, "request timed out")
 }
 
 func isAlreadyExistsError(apiErr *APIError) bool {

@@ -181,6 +181,9 @@ func convergeGitLabDispatchRoute(ctx context.Context, opts *reposInstallConfig, 
 		}
 		return tErr
 	}
+	// The webhook step can run twice below; a deferral it reports both times
+	// is printed once.
+	shown := gitlabDeferralsShown{}
 	var tErr error
 	if accountFirst {
 		tErr = convergeAccount()
@@ -195,7 +198,7 @@ func convergeGitLabDispatchRoute(ctx context.Context, opts *reposInstallConfig, 
 	// it requires no_one_allowed before a live webhook may start trigger
 	// pipelines.
 	if needsWebhook || opts.rotateGitLabTriggerToken {
-		if err := setupGitLabWebhookFastPath(ctx, client, printer, owner, repo, opts.rotateGitLabTriggerToken, opts.dryRun); err != nil {
+		if err := setupGitLabWebhookFastPath(ctx, client, printer, owner, repo, opts.rotateGitLabTriggerToken, opts.dryRun, shown); err != nil {
 			printer.StepWarn(fmt.Sprintf("[%s] GitLab webhook fast-path provisioning failed: %v", repoFullName, err))
 			errs := []error{tErr, err}
 			if repos.GitLabWebhookTriggerOwnerUnsafe(err) {
@@ -210,7 +213,7 @@ func convergeGitLabDispatchRoute(ctx context.Context, opts *reposInstallConfig, 
 	// The trigger-account stage can activate, rotate, or withdraw the dispatch
 	// route whose trigger token the webhook carries (#8509), so the webhook is
 	// converged again when it no longer matches.
-	wErr := refreshGitLabWebhookTriggerRoute(ctx, client, printer, owner, repo, opts.dryRun)
+	wErr := refreshGitLabWebhookTriggerRoute(ctx, client, printer, owner, repo, opts.dryRun, shown)
 	errs := []error{tErr, wErr}
 	if wErr != nil {
 		printer.StepWarn(fmt.Sprintf("[%s] GitLab webhook fast-path provisioning failed: %v", repoFullName, wErr))

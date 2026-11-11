@@ -180,7 +180,8 @@ func (c *JiraClient) CreateIssue(ctx context.Context, project, title string, bod
 // parseJiraID converts a Jira issue or project ID string to the immutable
 // int64 identity. Jira returns positive numeric ID strings; an invalid value
 // yields 0, which callers must treat as an unresolved identity rather than
-// guessing (FR-002), matching jirapoll's parseIssueID behavior.
+// guessing (FR-002). jirapoll's poller-side equivalent reports its invalid
+// ids via the event-skip warning.
 func parseJiraID(id string) int64 {
 	n, err := strconv.ParseInt(id, 10, 64)
 	if err != nil || n < 1 {

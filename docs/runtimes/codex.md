@@ -213,11 +213,18 @@ Delegation needs a parent model Codex resolves to collaboration V1: its entry in
 the pinned CLI's bundled catalog selects V1, or carries no version and Codex's
 `multi_agent` feature, on by default, supplies V1 (on the current pin
 `gpt-5.6-luna`, `gpt-5.5` and a hidden catalog entry). Bootstrap reads that
-catalog; for any other parent, a V2 model such as `gpt-5.6-sol` or a model the
-catalog does not list included, it keeps Codex's multi-agent tools off, prints
-one line saying why (`sub-agents: parent model "gpt-5.6-sol" selects
-collaboration "v2"; native sub-agents need a parent Codex resolves to
-collaboration V1, running in one context`), and the agent runs in one context.
+catalog. [ADR 0159](../ADRs/0159-codex-subagents-on-collaboration-v2.md) admits
+a parent that selects V2 (`gpt-5.6-sol`, `gpt-6.1-sol` and most of the current
+catalog). Such a parent still runs in one context, because its child results
+would reach it outside the PostToolUse chain. Bootstrap prints one line saying
+so (`sub-agents: parent model "gpt-5.6-sol" selects collaboration "v2"; V2
+delegation is off until its child-result delivery path is verified live
+(ADR 0159), running in one context`). A model the catalog does not list runs
+in one context the same way (`sub-agents: parent model "gpt-5.6-nova" is not
+in the bundled catalog of the pinned codex, running in one context`), and so
+does an entry whose `multi_agent_version` is `disabled`, with a line that says
+so. An entry with any other collaboration value runs in one context the same
+way, with a line that names the value.
 A `gateway/` parent runs in one context the same way, whatever its id
 (`sub-agents: parent model "gateway/gpt-5.6-luna" takes the inference gateway
 route, where native sub-agents are not supported, running in one context`):
@@ -233,7 +240,7 @@ serve, and native children have not been run on that route.
 | Artifacts | `output.jsonl` (the `codex exec --json` stream), `transcripts/<agent>-<rollout>.jsonl` for the root thread and `transcripts/<agent>-sub<seq>-<role>.jsonl` for each native child (`generic` for the `default` role, which codex records as no role when the spawn names no `agent_type`; `explore` keeps its name), `metrics.json` with `runtime: codex` (and `per_model_usage` for a delegating agent), plus `codex-debug.log` with `--debug`. Only uncompressed rollouts are extracted — codex compresses older sessions, so a `.jsonl.zst` is never the run's own transcript. The agent's final message is in the stream; `--output-last-message` also drops it in the runner-owned config directory inside the sandbox, which is a convenience when inspecting a kept sandbox rather than a downloaded artifact |
 | Sub-agents | Native Codex children for an agent whose tools include `Agent` (or that declares no `tools:`), with harness security on, on a parent model Codex resolves to collaboration V1 on the direct route, under a runner-owned policy: registered roles only, fresh context, depth one, four open; see [Sub-agents](#sub-agents) |
 | Extra knobs | `FULLSEND_CODEX_MODEL` (the runner-side model default for codex runs; see [Models](#models)), `FULLSEND_CODEX_SUBAGENT_MODEL` (the run-level child model; the GitHub fleet workflows do not pass it; see [Child models](#child-models)) |
-| Not supported | `plugins:`, fallback chains, non-OpenAI providers (other than through a Responses-capable inference gateway), Chat Completions or Messages on a gateway, delegation from a parent model on collaboration V2 or from a `gateway/` parent (see [Sub-agents](#sub-agents)) |
+| Not supported | `plugins:`, fallback chains, non-OpenAI providers (other than through a Responses-capable inference gateway), Chat Completions or Messages on a gateway, delegation from a parent model on collaboration V2 (ADR 0159 admits it; off until its child-result delivery path is implemented and verified live) or from a `gateway/` parent (see [Sub-agents](#sub-agents)) |
 
 Cost is recorded as **zero** in `metrics.json` on codex: the
 `codex exec --json` stream carries no cost field, so the value stays `0`.

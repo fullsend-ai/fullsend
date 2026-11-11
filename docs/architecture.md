@@ -350,7 +350,7 @@ flowchart TB
   Decided, not yet implemented.
 - Plugins are runtime-scoped harness resources: a harness declares `plugins:` as one list of directories in its own repository (same trust and fetch path as skills), and each entry's format decides which runtime loads it — a `plugin.json` bundle is Claude Code's, a directory pi's `-e` loader resolves is uploaded and loaded after a tree-hash preflight computed from the host copy. Each runtime names and skips the entries in the other format, so the list survives a runtime switch. Because `--no-extensions` plus explicit `-e` closes the set of code that can register tools, no per-tool declaration is needed ([ADR 0094](ADRs/0094-pi-extensions-are-harness-resources.md)).
 - Decided, not yet implemented: extend the runner-owned native Codex child
-  policy to V2 alongside the 0.166.0 bump. Bootstrap requires the `Agent` tool,
+  policy to V2. Bootstrap requires the `Agent` tool,
   harness security and a direct-route parent selecting V1 or V2 in the bundled
   model catalog (absent means V1); other parents keep delegation off. The
   runner binds child models and effort, registers roles and admits only
@@ -468,6 +468,11 @@ The existing design principle is that [the repo is the coordinator](problems/age
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
+- Jira poll candidate selection spends per-cycle slots only on candidates
+  whose Jira `updated` is newer than their per-repository checkpoint, picks
+  at random among them, and reads the per-cycle caps (N, default 5, and M,
+  default 50) from `tracker.jira.poll` within fixed bounds
+  ([ADR 0160](ADRs/0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)).
 - Jira poll actor authorization does not require the poller to administer the
   Jira project once a repository opts in with a `jira` provider under
   `authorization:`. With no `jira` entry, every Jira event resolves through the
