@@ -86,7 +86,7 @@ Next:
   2. Test locally, printing the result instead of commenting:
        POST_SAMPLE_TRIAGE_DRY_RUN=1 fullsend run sample-triage \
          --target-repo . --env-file .env.local
-     .env.local needs GITHUB_ISSUE_URL, ISSUE_NUMBER, REPO_FULL_NAME,
+     .env.local needs FULLSEND_WORK_ITEM_URL, ISSUE_NUMBER, REPO_FULL_NAME,
      GH_TOKEN, ANTHROPIC_VERTEX_PROJECT_ID, CLOUD_ML_REGION, and
      GOOGLE_APPLICATION_CREDENTIALS pointing at a GCP credentials file;
      the run stops before it starts without them.
@@ -330,7 +330,7 @@ for OpenShell, so a failure costs no sandbox.
 POST_SAMPLE_TRIAGE_DRY_RUN=1 fullsend run sample-triage --target-repo . --env-file .env.local --output-dir ../out
 ```
 
-`.env.local` needs `GITHUB_ISSUE_URL`, `ISSUE_NUMBER`, `REPO_FULL_NAME`,
+`.env.local` needs `FULLSEND_WORK_ITEM_URL`, `ISSUE_NUMBER`, `REPO_FULL_NAME`,
 `GH_TOKEN`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` and
 `GOOGLE_APPLICATION_CREDENTIALS`. This run pointed them at the public issue
 [fullsend-ai/fullsend#8204](https://github.com/fullsend-ai/fullsend/issues/8204).
