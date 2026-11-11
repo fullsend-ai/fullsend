@@ -780,7 +780,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var result resolve.ResolveResult
 	// lockedWorkflowHash is the runtime workflow's tree hash from a
 	// current lock entry; it binds the runtime workflow resolved below.
-	var lockedWorkflowHash string
+	var lockedWorkflowHash, lockedWorkflowURL string
 
 	// The config-level subset check runs for URL-referencing harnesses (as
 	// before) and for every harness whose runtime fetch service can start
@@ -824,7 +824,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// succeeds or falls back to normal resolution, so the
 			// URL index never picks the tree of a locked runtime workflow.
 			var wfErr error
-			lockedWorkflowHash, wfErr = lockedWorkflowSHA256(entry, agentName, fullsendDir)
+			lockedWorkflowURL, lockedWorkflowHash, wfErr = lockedRuntimeWorkflow(entry, agentName, fullsendDir)
 			if wfErr != nil {
 				printer.StepFail("Lock file workflow entry is malformed")
 				return wfErr
@@ -1320,9 +1320,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		GitToken:      composeGitToken,
 
 		LockedWorkflowSHA256: lockedWorkflowHash,
+		LockedWorkflowURL:    lockedWorkflowURL,
 	})
 	if err != nil {
 		printer.StepFail("Runtime workflow resolution failed")
+		if errors.Is(err, resolve.ErrLockedWorkflowURLMismatch) {
+			return fmt.Errorf("resolving runtime workflow: %w; run `fullsend lock --update %s%s` to re-lock it", err, agentName, fullsendDirArg(fullsendDir))
+		}
 		return fmt.Errorf("resolving runtime workflow: %w", err)
 	}
 	if workflowDep != nil {

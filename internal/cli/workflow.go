@@ -86,15 +86,15 @@ func resolveHarnessWorkflow(ctx context.Context, h *harness.Harness, loc resolve
 	return resolve.ResolveRuntimeWorkflow(ctx, h, loc, opts)
 }
 
-// lockedWorkflowSHA256 is the tree hash a current lock entry records for
-// the runtime workflow, or "" when it records none. fullsend run reads
-// it before it replays the entry, so the hash binds the runtime workflow on the
-// replay and on the fallback to normal resolution alike: the lock, not
-// the URL index, is the authority for a locked runtime workflow's content. An
-// entry that records the runtime workflow in a shape `fullsend lock` never
-// writes fails closed rather than being skipped.
-func lockedWorkflowSHA256(entry *lock.HarnessLock, agentName, fullsendDir string) (string, error) {
-	var hash string
+// lockedRuntimeWorkflow is the url and tree hash a current lock entry records
+// for the runtime workflow, or "" for both when it records none. fullsend
+// run reads them before it replays the entry, so the hash binds the
+// runtime workflow on the replay and on the fallback to normal resolution
+// alike: the lock, not the URL index, is the authority for a locked
+// runtime workflow's content. The url limits the hash to the source it was
+// locked for. An entry that records the runtime workflow in a shape
+// `fullsend lock` never writes fails closed rather than being skipped.
+func lockedRuntimeWorkflow(entry *lock.HarnessLock, agentName, fullsendDir string) (url, hash string, err error) {
 	for i, d := range entry.Dependencies {
 		if d.Field != resolve.RuntimeWorkflowDependencyField {
 			continue
@@ -111,11 +111,11 @@ func lockedWorkflowSHA256(entry *lock.HarnessLock, agentName, fullsendDir string
 			problem = fmt.Sprintf("has sha256 %q, not 64 lowercase hex characters", d.SHA256)
 		}
 		if problem != "" {
-			return "", fmt.Errorf("lock.yaml entry for agent %q is malformed: dependencies[%d] (field runtime_workflow) %s; regenerate it with `fullsend lock --update %s%s`", agentName, i, problem, agentName, fullsendDirArg(fullsendDir))
+			return "", "", fmt.Errorf("lock.yaml entry for agent %q is malformed: dependencies[%d] (field runtime_workflow) %s; regenerate it with `fullsend lock --update %s%s`", agentName, i, problem, agentName, fullsendDirArg(fullsendDir))
 		}
-		hash = d.SHA256
+		url, hash = d.URL, d.SHA256
 	}
-	return hash, nil
+	return url, hash, nil
 }
 
 func isLowerHex64(s string) bool {

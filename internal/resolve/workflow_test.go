@@ -20,7 +20,10 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 )
 
-const wfSHA = "0123456789abcdef0123456789abcdef01234567"
+const (
+	wfSHA  = "0123456789abcdef0123456789abcdef01234567"
+	wfSHA2 = "89abcdef0123456789abcdef0123456789abcdef"
+)
 
 func wfTree() map[string][]byte {
 	return map[string][]byte{
@@ -944,6 +947,7 @@ func TestResolveRuntimeWorkflow_LockedHashWinsOverURLIndex(t *testing.T) {
 	lockedHash, otherHash := fetch.ComputeTreeHash(files), fetch.ComputeTreeHash(other)
 	baseURL := "https://raw.githubusercontent.com/example-org/sample-pipeline/" + wfSHA + "/.fullsend/harness/base.yaml"
 	rawAllow := []string{"https://raw.githubusercontent.com/example-org/"}
+	rawDirURL := "https://raw.githubusercontent.com/example-org/sample-pipeline/" + wfSHA + "/pipelines/sample/"
 	cleanURL := "https://github.com/example-org/sample-pipeline/tree/" + wfSHA + "/pipelines/sample"
 	inherited := func(t *testing.T) *harness.Harness {
 		t.Helper()
@@ -972,6 +976,7 @@ func TestResolveRuntimeWorkflow_LockedHashWinsOverURLIndex(t *testing.T) {
 		return ResolveOpts{
 			WorkspaceRoot: ws, OrgAllowlist: rawAllow, TreeFetcher: fetcher,
 			FetchPolicy: fetch.FetchPolicy{Offline: true}, LockedWorkflowSHA256: lockedHash,
+			LockedWorkflowURL: rawDirURL,
 		}
 	}
 
@@ -1026,9 +1031,31 @@ func TestResolveRuntimeWorkflow_LockedHashWinsOverURLIndex(t *testing.T) {
 		_, _, err := resolveWF(h, wfURL(other), WorkflowLocation{}, ResolveOpts{
 			WorkspaceRoot: t.TempDir(), OrgAllowlist: []string{"https://github.com/example-org/"},
 			TreeFetcher: fetchOf(other, &calls), LockedWorkflowSHA256: lockedHash,
+			LockedWorkflowURL: "https://github.com/example-org/sample-pipeline/tree/" + wfSHA,
 		})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "runtime_workflow.source: the harness pins sha256="+otherHash+" for https://github.com/example-org/sample-pipeline/tree/"+wfSHA+", but .fullsend/lock.yaml records sha256="+lockedHash+"; run `fullsend lock` to update the lock file")
+		assert.Equal(t, 0, calls)
+	})
+	t.Run("a lock entry for another url fails closed without a cache hit", func(t *testing.T) {
+		// The locked tree is cached, so applying its hash would hit.
+		calls := 0
+		o := replayOpts(t, "", fetchOf(files, &calls))
+		o.LockedWorkflowURL = "https://raw.githubusercontent.com/example-org/sample-pipeline/" + wfSHA2 + "/pipelines/sample/"
+		_, _, err := ResolveRuntimeWorkflow(context.Background(), inherited(t), WorkflowLocation{}, o)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrLockedWorkflowURLMismatch)
+		assert.Contains(t, err.Error(), "runtime_workflow.source resolves to "+rawDirURL+", but .fullsend/lock.yaml records the runtime workflow at "+o.LockedWorkflowURL+", so its locked tree hash does not cover this source")
+		assert.Equal(t, 0, calls)
+	})
+	t.Run("a pinned source checks the url too", func(t *testing.T) {
+		calls := 0
+		_, _, err := resolveWF(wfHarness(), wfURL(files), WorkflowLocation{}, ResolveOpts{
+			WorkspaceRoot: t.TempDir(), OrgAllowlist: []string{"https://github.com/example-org/"},
+			TreeFetcher: fetchOf(files, &calls), LockedWorkflowSHA256: lockedHash,
+			LockedWorkflowURL: "https://github.com/example-org/sample-pipeline/tree/" + wfSHA2,
+		})
+		assert.ErrorIs(t, err, ErrLockedWorkflowURLMismatch)
 		assert.Equal(t, 0, calls)
 	})
 }

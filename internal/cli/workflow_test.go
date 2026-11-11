@@ -663,7 +663,55 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 	})
 }
 
-func TestLockedWorkflowSHA256(t *testing.T) {
+// The lock entry's hash binds only the source it was locked for. Here the
+// child's local base harness moves its URL base to another commit: the
+// child file is unchanged, so the entry is still current, but the
+// runtime workflow now resolves to another tree URL. The run fails closed
+// instead of delivering the commit-1 tree, which is still cached under the
+// locked hash, under a plan line that names commit 2.
+func TestRunAgent_WorkflowLockForAnotherURLFailsClosed(t *testing.T) {
+	usePreScriptStub(t)
+	trees, fetcher := refTrees()
+	dir := newSkipHarnessDir(t, "")
+	baseContent := []byte("runtime_workflow:\n  source: pipelines/sample\n  name: probe\n")
+	urlBaseAt := func(sha string) string {
+		u := "https://raw.githubusercontent.com/example-org/sample-pipeline/" + sha + "/.fullsend/harness/base.yaml"
+		require.NoError(t, fetch.CachePut(dir, u, baseContent))
+		return u + "#sha256=" + fetch.ComputeSHA256(baseContent)
+	}
+	writeLocalBase := func(sha string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "base.yaml"), []byte("base: "+urlBaseAt(sha)+"\n"), 0o644))
+	}
+	writeLocalBase(cliWorkflowSHA)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("base: base.yaml\nagent: agents/code.md\nrole: test\npolicy: policies/base.yaml\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(workflowAllowlist+"agents:\n  - harness/code.yaml\n"), 0o644))
+	gitInit(t, dir)
+	relock(t, dir, resolveFlags{treeFetcher: fetcher})
+	dep := lockedWorkflow(t, dir)
+	require.Equal(t, fetch.ComputeTreeHash(trees[cliWorkflowSHA]), dep.SHA256)
+
+	writeLocalBase(cliWorkflowSHA2)
+	gitIn(t, dir, "add", "-A")
+	out, err := runWorkflowAgent(t, dir, resolveFlags{treeFetcher: fetcher})
+	require.Error(t, err)
+	assert.NotContains(t, out, "Harness has changed since lock file was generated", "the child file is unchanged, so the entry is current")
+	assert.ErrorIs(t, err, resolve.ErrLockedWorkflowURLMismatch)
+	assert.Contains(t, err.Error(), "runtime_workflow.source resolves to https://raw.githubusercontent.com/example-org/sample-pipeline/"+cliWorkflowSHA2+"/pipelines/sample/, but .fullsend/lock.yaml records the runtime workflow at "+dep.URL)
+	assert.Contains(t, err.Error(), "run `fullsend lock --update code --fullsend-dir "+dir+"` to re-lock it")
+	assert.NotContains(t, err.Error(), "creating sandbox")
+	assert.NotContains(t, out, "delivered as claude plugin")
+
+	// `fullsend lock --update` records the new source, and the run then
+	// delivers its tree.
+	require.NoError(t, runLock(context.Background(), "code", dir, "", true, resolveFlags{treeFetcher: fetcher}, ui.New(io.Discard)))
+	out, err = runWorkflowAgent(t, dir, resolveFlags{treeFetcher: fetcher})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating sandbox")
+	assert.Contains(t, out, "(sha256:"+fetch.ComputeTreeHash(trees[cliWorkflowSHA2])[:12]+") delivered as claude plugin wfplug")
+}
+
+func TestLockedRuntimeWorkflow(t *testing.T) {
 	good := strings.Repeat("ab", 32)
 	wf := func(url, typ, sha string) lock.DependencyEntry {
 		return lock.DependencyEntry{Field: resolve.RuntimeWorkflowDependencyField, URL: url, Type: typ, SHA256: sha}
@@ -672,12 +720,13 @@ func TestLockedWorkflowSHA256(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		deps    []lock.DependencyEntry
+		wantURL string
 		want    string
 		wantErr string
 	}{
 		{name: "none", deps: nil},
 		{name: "other fields only", deps: []lock.DependencyEntry{other}},
-		{name: "workflow", deps: []lock.DependencyEntry{other, wf("https://example.com/w", "directory", good)}, want: good},
+		{name: "workflow", deps: []lock.DependencyEntry{other, wf("https://example.com/w", "directory", good)}, wantURL: "https://example.com/w", want: good},
 		{name: "second workflow", deps: []lock.DependencyEntry{wf("u", "directory", good), wf("u", "directory", good)}, wantErr: "dependencies[1] (field runtime_workflow) records a second workflow dependency"},
 		{name: "no url", deps: []lock.DependencyEntry{wf("", "directory", good)}, wantErr: "dependencies[0] (field runtime_workflow) has no url"},
 		{name: "file type", deps: []lock.DependencyEntry{wf("u", "file", good)}, wantErr: `has type "file", not "directory"`},
@@ -685,7 +734,7 @@ func TestLockedWorkflowSHA256(t *testing.T) {
 		{name: "short hash", deps: []lock.DependencyEntry{wf("u", "directory", "ab")}, wantErr: `has sha256 "ab"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := lockedWorkflowSHA256(&lock.HarnessLock{Dependencies: tc.deps}, "code", "custom")
+			gotURL, got, err := lockedRuntimeWorkflow(&lock.HarnessLock{Dependencies: tc.deps}, "code", "custom")
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErr)
@@ -694,6 +743,7 @@ func TestLockedWorkflowSHA256(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.wantURL, gotURL)
 		})
 	}
 }

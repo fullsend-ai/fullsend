@@ -248,6 +248,11 @@ type ResolveOpts struct {
 	// the cache is read by it and a fetched tree must match it. Empty when
 	// there is no current lock entry or it records no definition.
 	LockedWorkflowSHA256 string
+	// LockedWorkflowURL is the url the same lock entry records for the
+	// runtime workflow. LockedWorkflowSHA256 applies only to a source that
+	// resolves to this url; another url fails closed with
+	// ErrLockedWorkflowURLMismatch.
+	LockedWorkflowURL string
 }
 
 type resolveState struct {
