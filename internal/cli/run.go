@@ -4199,6 +4199,17 @@ func validationFailMessage(output []byte, execErr error) string {
 	return execErr.Error()
 }
 
+// redactedValidationFailMessage is validationFailMessage with the
+// redaction a trust boundary needs. The raw capture is redacted before
+// validationFailMessage trims it (#8165): a literal secret with leading
+// or trailing whitespace, printed at the very start or end of the output,
+// would lose that whitespace to the trim and no longer match. The result
+// is redacted again, because the exec error it falls back to was not.
+func redactedValidationFailMessage(output []byte, execErr error, runnerEnv map[string]string) string {
+	redactedOut := []byte(redactFeedback(string(output), runnerEnv))
+	return redactFeedback(validationFailMessage(redactedOut, execErr), runnerEnv)
+}
+
 // feedbackDelimiterOpen and feedbackDelimiterClose fence validation output
 // inside the agent prompt, marking it as data — not instructions. Chosen to
 // be visually unambiguous and unlikely to collide with real validator output.
@@ -4452,8 +4463,7 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 	// RunnerEnv, provider-only keys kept out of it (#6649), and Jira
 	// repository secrets; registered runtime secrets, such as runner secrets
 	// referenced under a key sensitiveEnvKey does not match, join the same pass.
-	type literal struct{ value, mask string }
-	var literals []literal
+	var literals []secretLiteral
 	seen := map[string]bool{}
 	add := func(value, mask string) {
 		if len(value) < minRedactableSecretLen {
@@ -4467,7 +4477,7 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 			// An eligible original may normalize to a short sensitive value.
 			if value != "" && !seen[value] {
 				seen[value] = true
-				literals = append(literals, literal{value, mask})
+				literals = append(literals, secretLiteral{value, mask})
 			}
 		}
 	}
@@ -4477,11 +4487,95 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 	for _, value := range security.RuntimeSecrets() {
 		add(value, "***")
 	}
-	slices.SortStableFunc(literals, func(a, b literal) int { return cmp.Compare(len(b.value), len(a.value)) })
-	for _, l := range literals {
-		feedback = strings.ReplaceAll(feedback, l.value, l.mask)
-	}
+	slices.SortStableFunc(literals, func(a, b secretLiteral) int { return cmp.Compare(len(b.value), len(a.value)) })
+	feedback, _ = maskSecretLiterals(feedback, literals)
 	return feedback
+}
+
+// secretLiteral is one exact value the literal pass masks, with the text
+// that replaces it.
+type secretLiteral struct{ value, mask string }
+
+// maskSecretLiterals masks every occurrence of each literal in text and
+// reports, by index, which literals occurred. literals must be sorted
+// longest first.
+//
+// Match ranges are located in the original text before anything is
+// replaced, overlapping ranges are merged, and each merged range is
+// masked once (#8165). Replacing one literal at a time would leave a
+// fragment of two values that overlap in the text without either
+// containing the other: masking the first breaks the second's match. A
+// merged range takes the mask of the longest literal in it (the earliest
+// in literals on a tie), so a value inside a longer one is masked as the
+// longer one. Ranges that only touch are not merged and keep their own
+// masks.
+//
+// The output is unbounded (a script can print 100 MB of one repeated
+// secret), so matches are merged as they are found instead of being
+// collected: each literal keeps one cursor at its next match, and only the
+// range being built is held. Memory beyond the result is O(len(literals)).
+func maskSecretLiterals(text string, literals []secretLiteral) (string, []bool) {
+	found := make([]bool, len(literals))
+	// next[i] is the start of literal i's first match not yet consumed,
+	// or -1 when it has none left.
+	next := make([]int, len(literals))
+	nextMatch := func(i, from int) int {
+		if literals[i].value == "" || from > len(text) {
+			return -1
+		}
+		j := strings.Index(text[from:], literals[i].value)
+		if j < 0 {
+			return -1
+		}
+		return from + j
+	}
+	for i := range literals {
+		next[i] = nextMatch(i, 0)
+	}
+	var b strings.Builder
+	last := 0
+	for {
+		first := -1
+		for i, s := range next {
+			if s >= 0 && (first < 0 || s < next[first]) {
+				first = i
+			}
+		}
+		if first < 0 {
+			break
+		}
+		start := next[first]
+		end := start + len(literals[first].value)
+		lit := first
+		// Consume every match that starts inside the range, growing it.
+		// The search resumes one byte past each match start, not past the
+		// match, so a value that overlaps itself in the text ("aaaa" in
+		// "aaaaa") is covered whole. Repeat until a pass leaves the end
+		// where it was: a literal visited early may match inside a range
+		// a later one has since grown.
+		for grew := true; grew; {
+			grew = false
+			for i := range next {
+				for next[i] >= 0 && next[i] < end {
+					found[i] = true
+					if e := next[i] + len(literals[i].value); e > end {
+						end = e
+						grew = true
+					}
+					lit = min(lit, i)
+					next[i] = nextMatch(i, next[i]+1)
+				}
+			}
+		}
+		b.WriteString(text[last:start])
+		b.WriteString(literals[lit].mask)
+		last = end
+	}
+	if last == 0 {
+		return text, found
+	}
+	b.WriteString(text[last:])
+	return b.String(), found
 }
 
 // replaceEnvSecrets is the literal pass: the value of each sensitive runner
@@ -4492,13 +4586,17 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 // contains another is replaced whole, whichever source holds it, and the text
 // is the same on every run.
 func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []string) {
+	envLits := envLiterals(runnerEnv)
+	literals := make([]secretLiteral, len(envLits))
+	for i, l := range envLits {
+		literals[i] = secretLiteral{l.value, "[REDACTED:" + l.key + "]"}
+	}
+	text, found := maskSecretLiterals(text, literals)
 	var replaced []string
-	for _, l := range envLiterals(runnerEnv) {
-		if !strings.Contains(text, l.value) {
-			continue
+	for i, ok := range found {
+		if ok {
+			replaced = append(replaced, envLits[i].key)
 		}
-		text = strings.ReplaceAll(text, l.value, "[REDACTED:"+l.key+"]")
-		replaced = append(replaced, l.key)
 	}
 	return text, replaced
 }
@@ -4547,7 +4645,7 @@ func envLiterals(runnerEnv map[string]string) []envLiteral {
 // credentials either. The write is best-effort: failures are logged but do
 // not block the retry loop.
 func writeValidationFeedback(iterDir string, valOut []byte, valErr error, runnerEnv map[string]string, printer *ui.Printer) string {
-	feedback := redactFeedback(validationFailMessage(valOut, valErr), runnerEnv)
+	feedback := redactedValidationFailMessage(valOut, valErr, runnerEnv)
 	feedbackPath := filepath.Join(iterDir, validationFeedbackFile)
 	if err := os.WriteFile(feedbackPath, []byte(feedback), 0o600); err != nil {
 		printer.StepWarn("Failed to write validation feedback: " + err.Error())
@@ -4611,7 +4709,7 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 			}
 			return sweepResult{passed: true, validatedIter: i, repoExtractedOK: repoOK}
 		}
-		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactFeedback(validationFailMessage(valOut, valErr), h.RunnerEnv)))
+		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactedValidationFailMessage(valOut, valErr, h.RunnerEnv)))
 	}
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
 }
@@ -7056,7 +7154,13 @@ type tokenVar struct {
 // the minted token for every role. GITHUB_TOKEN is included so a caller
 // workflow that exports it does not leave the job token in place for tools
 // that read it instead of GH_TOKEN, or for pre/post scripts (#8530).
-var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN"}
+// GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN are included because gh
+// reads those instead of GH_TOKEN/GITHUB_TOKEN for any host other than
+// github.com and *.ghe.com (GitHub Enterprise Server); without them gh on
+// such a host keeps the caller's credential after the mint (#8952). They
+// are set unconditionally, so no host detection is needed; gh ignores them
+// for github.com.
+var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
 
 // roleTokenVars maps canonical role names to the additional env vars they
 // require beyond agentTokenEnvVars. These match the vars declared in
@@ -7258,9 +7362,10 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 // The caller should defer cleanup() to clear tokens from the process env.
 // forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
 // set to "github-app" for GitHub and "pat" for GitLab.
-// The minted token replaces every agentTokenEnvVars name (GH_TOKEN and
-// GITHUB_TOKEN); cleanup restores each to its value before this call, or
-// unsets it if it was unset (#8530).
+// The minted token replaces every agentTokenEnvVars name (GH_TOKEN,
+// GITHUB_TOKEN, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN); cleanup
+// restores each to its value before this call, or unsets it if it was
+// unset (#8530, #8952).
 // On GitHub Actions the pre-mint GH_TOKEN (or, when that is unset or empty,
 // the pre-mint GITHUB_TOKEN) is copied to GH_WORKFLOW_TOKEN for provider
 // credential expansion (#6649) and the runner's ghcr.io image pull (#9019);
@@ -7361,8 +7466,9 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 			}
 		}
 	}
-	// GITHUB_TOKEN is set even when the caller did not export it, so no
-	// tool that reads it instead of GH_TOKEN keeps the job token (#8530).
+	// GITHUB_TOKEN and the enterprise names are set even when the caller
+	// did not export them, so no tool that reads one instead of GH_TOKEN
+	// keeps the job token (#8530), whichever host gh targets (#8952).
 	for _, name := range agentTokenEnvVars {
 		os.Setenv(name, result.Token)
 	}

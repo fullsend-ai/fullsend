@@ -468,6 +468,11 @@ The existing design principle is that [the repo is the coordinator](problems/age
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
+- Jira poll candidate selection spends per-cycle slots only on candidates
+  whose Jira `updated` is newer than their per-repository checkpoint, picks
+  at random among them, and reads the per-cycle caps (N, default 5, and M,
+  default 50) from `tracker.jira.poll` within fixed bounds
+  ([ADR 0160](ADRs/0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)).
 - Jira poll actor authorization does not require the poller to administer the
   Jira project once a repository opts in with a `jira` provider under
   `authorization:`. With no `jira` entry, every Jira event resolves through the
