@@ -342,6 +342,8 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		}
 		agentOpts.Blocks = config.HarnessBlocksFor(entries, agentName)
 		agentOpts.Agent = agentName
+		// Offline-miss errors advise the named command, same as run.
+		agentOpts.LockUpdateCommand = fmt.Sprintf("fullsend lock %s --update%s", shellQuoteArg(agentName), fullsendDirArg(fullsendDir))
 		h, _, err := harness.LoadWithBase(cmd.Context(), harnessPath, agentOpts)
 		if err != nil {
 			wrapped := fmt.Errorf("loading harness for agent %q: %w", agentName, err)

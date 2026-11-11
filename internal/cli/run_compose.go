@@ -142,7 +142,7 @@ func composeRunHarness(ctx context.Context, in runHarnessInput, printer *ui.Prin
 	case lockState.loadErr != nil:
 		printer.StepWarn("Could not load lock file: " + lockState.loadErr.Error())
 	case lockState.stale:
-		printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s%s' to update.", agentName, fullsendDirArg(in.fullsendDir)))
+		printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run fullsend lock %s%s to update.", shellQuoteArg(agentName), fullsendDirArg(in.fullsendDir)))
 	case len(lockState.pins) > 0:
 		noun := "dependency"
 		if len(lockState.pins) > 1 {
@@ -174,8 +174,8 @@ func composeRunHarness(ctx context.Context, in runHarnessInput, printer *ui.Prin
 					forgeArg = " --forge " + composeOpts.ForgePlatform
 				}
 			}
-			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run 'fullsend lock --update%s %s%s' to pin them",
-				agentName, len(unpinned), noun, unpinned[0], forgeArg, agentName, fullsendDirArg(in.fullsendDir)))
+			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run fullsend lock --update%s %s%s to pin them",
+				agentName, len(unpinned), noun, unpinned[0], forgeArg, shellQuoteArg(agentName), fullsendDirArg(in.fullsendDir)))
 		}
 	}
 

@@ -119,16 +119,34 @@ func TestCheckDefaultFullsendDirLeavesExplicitPathToCommand(t *testing.T) {
 
 func TestFullsendDirArg(t *testing.T) {
 	cases := map[string]string{
-		".fullsend":       "",
-		"./.fullsend":     "",
-		".fullsend/":      "",
-		"sub/.fullsend":   " --fullsend-dir sub/.fullsend",
-		"/abs/.fullsend":  " --fullsend-dir /abs/.fullsend",
-		"../repo/.config": " --fullsend-dir ../repo/.config",
+		".fullsend":                            "",
+		"./.fullsend":                          "",
+		".fullsend/":                           "",
+		"sub/.fullsend":                        " --fullsend-dir 'sub/.fullsend'",
+		"/abs/.fullsend":                       " --fullsend-dir '/abs/.fullsend'",
+		"../repo/.config":                      " --fullsend-dir '../repo/.config'",
+		"/Users/me/My Projects/repo/.fullsend": " --fullsend-dir '/Users/me/My Projects/repo/.fullsend'",
+		"/dir/it's/.fullsend":                  " --fullsend-dir '/dir/it'\\''s/.fullsend'",
 	}
 	for in, want := range cases {
 		if got := fullsendDirArg(in); got != want {
 			t.Errorf("fullsendDirArg(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestShellQuoteArg pins both branches of the command-hint argument quoter:
+// shell-safe names stay bare, and a name with a space or an embedded quote is
+// single-quoted with the quote escaped, so a pasted hint stays one argument.
+func TestShellQuoteArg(t *testing.T) {
+	cases := map[string]string{
+		"code":     "code",
+		"my agent": "'my agent'",
+		"it's":     "'it'\\''s'",
+	}
+	for in, want := range cases {
+		if got := shellQuoteArg(in); got != want {
+			t.Errorf("shellQuoteArg(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -170,8 +188,8 @@ func TestAgentNewNextStepsKeepNonDefaultFullsendDir(t *testing.T) {
 		t.Fatalf("runAgentNew: %v\n%s", err, out)
 	}
 	for _, want := range []string{
-		"--fullsend-dir " + dir + "\n",
-		"fullsend run lint-docs --fullsend-dir " + dir + " \\\n",
+		"--fullsend-dir '" + dir + "'\n",
+		"fullsend run lint-docs --fullsend-dir '" + dir + "' \\\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)

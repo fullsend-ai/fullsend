@@ -168,7 +168,7 @@ func TestLockOneAgent_ReportsReservedSandboxEnvKeys(t *testing.T) {
 			"    MY_TOOL_SETTING: keep-me\n"), 0o644))
 
 	var out bytes.Buffer
-	_, err := lockOneAgent(context.Background(), "code", dir, "", false, nil, resolveFlags{}, ui.New(&out))
+	_, err := lockOneAgent(context.Background(), "code", dir, dir, "", false, nil, resolveFlags{}, ui.New(&out))
 	require.NoError(t, err)
 
 	assert.Contains(t, out.String(), "HTTPS_PROXY",

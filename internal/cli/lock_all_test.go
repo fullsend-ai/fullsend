@@ -391,7 +391,7 @@ func TestLockOneAgent_YMLFallback(t *testing.T) {
 	))
 
 	printer := ui.New(os.Stdout)
-	result, err := lockOneAgent(context.Background(), "review", dir, "", false, nil, resolveFlags{}, printer)
+	result, err := lockOneAgent(context.Background(), "review", dir, dir, "", false, nil, resolveFlags{}, printer)
 	require.NoError(t, err)
 	// Local-only harness returns nil (no deps to lock).
 	assert.Nil(t, result)
@@ -424,7 +424,7 @@ func TestLockOneAgent_StalenessCheck(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	result, err := lockOneAgent(context.Background(), "code", dir, "", false, lf, resolveFlags{}, printer)
+	result, err := lockOneAgent(context.Background(), "code", dir, dir, "", false, lf, resolveFlags{}, printer)
 	require.NoError(t, err)
 	assert.Nil(t, result, "should return nil when lock entry is up to date")
 }
@@ -447,7 +447,7 @@ func TestLockOneAgent_DualExtensionWarning(t *testing.T) {
 
 	var buf strings.Builder
 	printer := ui.New(&buf)
-	result, err := lockOneAgent(context.Background(), "code", dir, "", false, nil, resolveFlags{}, printer)
+	result, err := lockOneAgent(context.Background(), "code", dir, dir, "", false, nil, resolveFlags{}, printer)
 	require.NoError(t, err)
 	assert.Nil(t, result, "local-only harness should return nil")
 	assert.Contains(t, buf.String(), "Both code.yaml and code.yml exist")
@@ -526,7 +526,7 @@ allowed_remote_resources:
 	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
 
 	printer := ui.New(os.Stdout)
-	_, err := lockOneAgent(context.Background(), "code", dir, "", false, nil, resolveFlags{}, printer)
+	_, err := lockOneAgent(context.Background(), "code", dir, dir, "", false, nil, resolveFlags{}, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "allowed remote resources")
 }
@@ -536,7 +536,7 @@ func TestLockOneAgent_NonexistentHarness(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	printer := ui.New(os.Stdout)
-	_, err := lockOneAgent(context.Background(), "nonexistent", dir, "", false, nil, resolveFlags{}, printer)
+	_, err := lockOneAgent(context.Background(), "nonexistent", dir, dir, "", false, nil, resolveFlags{}, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "harness file not found")
 }
@@ -555,7 +555,7 @@ func TestLockOneAgent_StatError(t *testing.T) {
 	t.Cleanup(func() { os.Chmod(harnessDir, 0o755) })
 
 	printer := ui.New(os.Stdout)
-	_, err := lockOneAgent(context.Background(), "code", dir, "", false, nil, resolveFlags{}, printer)
+	_, err := lockOneAgent(context.Background(), "code", dir, dir, "", false, nil, resolveFlags{}, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking harness file")
 }
@@ -986,7 +986,7 @@ func TestLockOneAgent_ConfigFallback(t *testing.T) {
 	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
 
 	printer := ui.New(os.Stdout)
-	result, err := lockOneAgent(context.Background(), "code", dir, "", false, nil, resolveFlags{}, printer)
+	result, err := lockOneAgent(context.Background(), "code", dir, dir, "", false, nil, resolveFlags{}, printer)
 	require.NoError(t, err)
 	require.NotNil(t, result, "config-resolved agent should have dependencies to lock")
 	assert.NotEmpty(t, result.deps, "should have at least one dependency")
