@@ -187,7 +187,12 @@ Install writes to `repos.yaml` itself in only three cases: the first-install
 `tracker` writeback described above; the conversion of legacy issue-tracking
 configuration described below; and, after a first install, the CLI's release
 written to `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is
-unset. `--dry-run` writes none of them.
+unset. `--dry-run` writes none of them. Install writes the first two together,
+after its configuration preflights. It stops before that write when the file
+changed after the run loaded it, as when another install that uses the same
+file runs at the same time. Run install again once that install has finished.
+Install still overwrites a change that lands in the short window between that
+check and the write.
 
 Legacy issue-tracking configuration in managed `config:` blocks (the scalar
 `tracker: github|gitlab|jira` form and the removed `create_issues` block) is
