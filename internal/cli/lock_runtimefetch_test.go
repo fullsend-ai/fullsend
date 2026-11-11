@@ -201,3 +201,32 @@ allowed_remote_resources:
 	assert.Contains(t, err.Error(), "loading fullsend config")
 	assert.NotContains(t, err.Error(), "runtime fetch requires")
 }
+
+func TestRunLock_URLDirFetchCapableNoOrgConfigError(t *testing.T) {
+	// The raw-declaration gate's URL branch: a harness that is both
+	// fetch-capable and URL-referencing (a URL-sourced skill directory)
+	// with no config.yaml fails with the URL-referenced message, not the
+	// fetch-only one — each branch of the gate names its own requirement
+	// (#9291).
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	harnessContent := `agent: agents/code.md
+role: test
+skills:
+  - "https://example.com/skills/helper/"
+`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "urldir.yaml"),
+		[]byte(harnessContent),
+		0o644,
+	))
+
+	// Deliberately do NOT create config.yaml.
+
+	printer := ui.New(os.Stdout)
+	err := runLock(context.Background(), "urldir", dir, "", false, resolveFlags{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
+	assert.NotContains(t, err.Error(), "runtime fetch requires")
+}

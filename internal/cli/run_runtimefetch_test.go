@@ -176,3 +176,42 @@ func TestRunAgent_FetchOnlyHarnessMalformedOrgConfigErrors(t *testing.T) {
 	assert.Contains(t, runErr.Error(), "loading fullsend config")
 	assert.NotContains(t, runErr.Error(), "runtime fetch requires")
 }
+
+func TestRunAgent_URLDirFetchCapableNoOrgConfigErrors(t *testing.T) {
+	// The gate's URL branch: a harness that is both fetch-capable and
+	// URL-referencing (a URL-sourced skill directory) with no config.yaml
+	// fails with the URL-referenced message, not the fetch-only one —
+	// each branch of the gate names its own requirement (#9291). The
+	// cached agents-repo scaffolding from
+	// TestRunAgent_FetchOnlyHarnessNoOrgConfigErrors carries the run past
+	// agent resolution without a config: the companion agent and policy
+	// rewrite to local cache paths, while the skill directory stays a
+	// URL, so the composed harness is URL-referencing and fetch-capable.
+	dir := t.TempDir()
+	sha := strings.Repeat("a", 40)
+	fetched := time.Now().UTC().Add(-time.Hour)
+	harnessYAML := "agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nskills:\n  - \"https://github.com/test-org/skills-repo/tree/main/skills/helper/#sha256=" + fetch.ComputeSHA256([]byte("helper skill")) + "\"\n"
+	cacheAgentsRepoFile(t, dir, sha, "harness/triage.yaml", []byte(harnessYAML), fetched)
+	agentContent := []byte("You are a coding agent.")
+	policyContent := []byte("version: 1\n")
+	agentURL := cacheAgentsRepoFile(t, dir, sha, "agents/code.md", agentContent, fetched)
+	policyURL := cacheAgentsRepoFile(t, dir, sha, "policies/base.yaml", policyContent, fetched)
+	index := map[string]string{
+		agentURL:  fetch.ComputeSHA256(agentContent),
+		policyURL: fetch.ComputeSHA256(policyContent),
+	}
+	indexData, err := json.Marshal(index)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend-cache"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend-cache", "url-index.json"), indexData, 0o600))
+
+	// Deliberately do NOT create config.yaml.
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50, offline: true}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	runErr := runAgent(context.Background(), "triage", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, runErr)
+	assert.Contains(t, runErr.Error(), "URL-referenced resources require a config.yaml")
+	assert.NotContains(t, runErr.Error(), "runtime fetch requires")
+}
