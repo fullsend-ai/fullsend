@@ -1557,7 +1557,7 @@ fullsend repos set --unset <path>
 
 Paths are resolved against the manifest schema, so every field the manifest accepts can be set and there is no separate list of keys. After each edit the whole resulting manifest is validated with the same checks `repos install` uses. A rejected edit leaves the file byte-identical. A successful edit changes only the edited lines and keeps unrelated values, comments, blank lines, and ordering. If the manifest does not exist, `repos set` creates it with `version: 1`. Missing optional parent mappings (for example `defaults.config`) are created as needed.
 
-A manifest loaded from an HTTPS URL, or a local file without write permission, is read-only: `repos set` reports `manifest <path> is read-only; apply the equivalent edit to its source, then re-run` and writes nothing.
+A manifest loaded from an HTTPS URL, read from a pipe or FIFO (as `-f <(cmd)` gives), or a local file without write permission, is read-only: `repos set` reports `manifest <path> is read-only; apply the equivalent edit to its source, then re-run` and writes nothing.
 
 ### Path syntax
 
