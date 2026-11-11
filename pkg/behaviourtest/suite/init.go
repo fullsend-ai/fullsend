@@ -200,6 +200,7 @@ func resetScenarioWorld(w *world.World) {
 	w.JiraPollCLIOutputPath = ""
 	w.PlaybackEntries = nil
 	w.PlaybackCommitted = false
+	w.RuntimeWorkflowFiles = nil
 	w.ConsumedHarnessRunIDs = nil
 	w.HarnessRunArtifactDirs = nil
 	w.StagePublishedSHA = nil

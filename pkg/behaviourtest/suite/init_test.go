@@ -191,6 +191,7 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		GatewayConfigOriginal:      []byte("runtime: dummy\n"),
 		PlaybackEntries:            []runtime.PlaybackEntry{{Result: "triage/bug"}},
 		PlaybackCommitted:          true,
+		RuntimeWorkflowFiles:       []string{"pipelines/sample-pipeline/.claude-plugin/plugin.json"},
 		ConsumedHarnessRunIDs:      map[string]map[int]bool{"review": {10: true}},
 		JiraPollCLIOutput:          "{\n  \"dispatches\": []\n}\n",
 		JiraPollCLIExitCode:        1,
@@ -226,6 +227,7 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Nil(t, w.GatewayConfigOriginal)
 	assert.Nil(t, w.PlaybackEntries)
 	assert.False(t, w.PlaybackCommitted)
+	assert.Nil(t, w.RuntimeWorkflowFiles)
 	assert.Nil(t, w.ConsumedHarnessRunIDs)
 }
 
