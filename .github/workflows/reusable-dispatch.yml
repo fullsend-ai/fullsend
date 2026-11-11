@@ -552,10 +552,10 @@ jobs:
             echo "::notice::PR diff is incomplete or empty; running review"
             exit 0
           fi
-          # Go's encoding/json escapes U+2028/U+2029 even with HTML escaping
-          # disabled. Normalize jq's literal UTF-8 output to the same JSON
-          # representation before hashing.
-          if ! hash_input=$(printf '%s' "${hash_input}" | perl -CS -pe 's/\x{2028}/\\u2028/g; s/\x{2029}/\\u2029/g'); then
+          # Match Go's encoding/json output (with HTML escaping disabled): Go
+          # escapes U+2028/U+2029 but emits DEL literally, while jq emits DEL
+          # as the JSON escape \u007f.
+          if ! hash_input=$(printf '%s' "${hash_input}" | perl -CS -pe 's/\\u007f/\x{007f}/g; s/\x{2028}/\\u2028/g; s/\x{2029}/\\u2029/g'); then
             echo "::warning::Could not normalize PR file diffs; running review"
             exit 0
           fi
@@ -598,6 +598,13 @@ jobs:
             echo "::notice::Previous review has no complete diff hash; running review"
             exit 0
           fi
+          prior_reviewed_head="$(printf '%s\n' "${prior_section}" \
+            | sed -nE 's/^<!-- fullsend:review-head:([0-9a-fA-F]{40,64}) -->$/\1/p' \
+            | head -1 || true)"
+          if [[ -z "${prior_reviewed_head}" ]]; then
+            echo "::notice::Previous review has no verified reviewed HEAD; running review"
+            exit 0
+          fi
 
           if ! prior_formal_review=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/reviews" \
             --paginate --jq '.[]' \
@@ -612,8 +619,8 @@ jobs:
           fi
           prior_state="$(printf '%s' "${prior_formal_review}" | jq -r '.state // ""')"
           prior_commit_sha="$(printf '%s' "${prior_formal_review}" | jq -r '.commit_id // ""')"
-          if [[ "${prior_state}" != "APPROVED" || "${prior_commit_sha}" != "${current_head_sha}" ]]; then
-            echo "::notice::No approved bot review for current PR HEAD; running review"
+          if [[ "${prior_state}" != "APPROVED" || "${prior_commit_sha}" != "${prior_reviewed_head}" ]]; then
+            echo "::notice::No approved bot review for the reviewed diff; running review"
             exit 0
           fi
 
@@ -627,9 +634,19 @@ jobs:
               exit 0
             fi
             skip_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review${prior_url:+ (${prior_url})}. No new review findings were generated."
-            status_comment_id="$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
-              --paginate --jq '.[] | select(.body | startswith("<!-- fullsend:review-skip -->")) | .id' \
-              | tail -1 || true)"
+            if ! status_comment_id="$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+              --paginate --jq '.[]' \
+              | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                  --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -s -r '
+                [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                  or ($custom_bot != "" and .user.login == $custom_bot))
+                  and (.body | startswith("<!-- fullsend:review-skip -->"))
+                  and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))]
+                | sort_by(.created_at) | last // {} | .id // ""' \
+              | tail -1)"; then
+              echo "::warning::Could not verify an existing review-skip status note; running review"
+              exit 0
+            fi
             if [[ -n "${status_comment_id}" ]]; then
               if ! gh api --method PATCH "repos/${SOURCE_REPO}/issues/comments/${status_comment_id}" -f body="${skip_body}" >/dev/null; then
                 echo "::warning::Could not update the review-skip status note; running review"

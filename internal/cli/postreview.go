@@ -59,10 +59,12 @@ var reviewProjectionMarkerRe = regexp.MustCompile(`^` + reviewProjectionMarkerPa
 // the effective PR diff is unchanged. Keep this format in sync with the
 // routing check in reusable-dispatch.yml.
 var reviewDiffHashMarkerRe = regexp.MustCompile(`^<!-- fullsend:review-diff-hash:[0-9a-f]{64} -->$`)
+var reviewDiffHeadMarkerRe = regexp.MustCompile(`^<!-- fullsend:review-head:[0-9a-fA-F]{40,64} -->$`)
 
-func reviewTrustedLeadingLineReForHash(diffHash string) *regexp.Regexp {
+func reviewTrustedLeadingLineReForHash(diffHash, headSHA string) *regexp.Regexp {
 	hashMarker := regexp.QuoteMeta(fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->", diffHash))
-	return regexp.MustCompile(`^(?:` + reviewProjectionMarkerPattern + `|` + hashMarker + `)$`)
+	headMarker := regexp.QuoteMeta(fmt.Sprintf("<!-- fullsend:review-head:%s -->", headSHA))
+	return regexp.MustCompile(`^(?:` + reviewProjectionMarkerPattern + `|` + hashMarker + `|` + headMarker + `)$`)
 }
 
 func newPostReviewCmd() *cobra.Command {
@@ -394,10 +396,10 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 		// Publish the deduplication marker only after the matching formal
 		// approval succeeds. A request-changes/comment result or a failed
 		// formal submission must never leave an approved-looking hash behind.
-		hashBody := fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n%s", diffHash, parsed.Body)
+		hashBody := fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n<!-- fullsend:review-head:%s -->\n%s", diffHash, parsed.HeadSHA, parsed.Body)
 		hashCfg := cfg
-		hashCfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash)
-		hashCfg.MaxTrustedLeadingLines = 2
+		hashCfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash, parsed.HeadSHA)
+		hashCfg.MaxTrustedLeadingLines = 3
 		if _, hashErr := sticky.Post(ctx, client, owner, repo, pr, hashBody, hashCfg, printer); hashErr != nil {
 			printer.StepWarn(fmt.Sprintf("Could not publish review diff hash after approval; re-review deduplication will be unavailable: %v", hashErr))
 		}

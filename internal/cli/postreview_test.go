@@ -364,7 +364,7 @@ func TestPullRequestDiffHash_MatchesWorkflowCanonicalJSON(t *testing.T) {
 		"o/r/1": {{
 			Path:   "a\u2028.txt",
 			Status: "modified",
-			Patch:  "@@ -1 +1 @@\n-old\n+new\u2029",
+			Patch:  "@@ -1 +1 @@\n-old\n+new\u2029\x7f",
 		}},
 	}
 
@@ -372,8 +372,9 @@ func TestPullRequestDiffHash_MatchesWorkflowCanonicalJSON(t *testing.T) {
 	require.NoError(t, err)
 
 	// This is the field order and escaping emitted by the workflow's jq
-	// projection after normalizing U+2028/U+2029 to Go's JSON representation.
-	canonicalJSON := `[{"filename":"a\u2028.txt","previous_filename":"","status":"modified","patch":"@@ -1 +1 @@\n-old\n+new\u2029"}]`
+	// projection after normalizing jq's U+2028/U+2029/DEL escaping to Go's
+	// JSON representation.
+	canonicalJSON := `[{"filename":"a\u2028.txt","previous_filename":"","status":"modified","patch":"@@ -1 +1 @@\n-old\n+new\u2029` + "\x7f" + `"}]`
 	wantSum := sha256.Sum256([]byte(canonicalJSON))
 	assert.Equal(t, hex.EncodeToString(wantSum[:]), hash)
 }
@@ -416,21 +417,22 @@ func TestPostReviewContent_PublishesDiffHashOnlyAfterApproval(t *testing.T) {
 func TestPostReviewContent_PreservesGeneratedHashAndProjectionMarkers(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
-	fc.PullRequestHeadSHA = "abc123def456"
+	fc.PullRequestHeadSHA = "0123456789abcdef0123456789abcdef01234567"
 	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
 		"o/r/1": {{Path: "README.md", Status: "modified", Patch: "@@ -1 +1 @@\n-old\n+new"}},
 	}
 	projection := "<!-- fullsend:review-findings-v2:eyJmaW5kaW5ncyI6W119 -->"
-	parsed := ReviewResult{Body: projection + "\n\nLooks good", Action: "approve", HeadSHA: "abc123def456"}
+	parsed := ReviewResult{Body: projection + "\n\nLooks good", Action: "approve", HeadSHA: "0123456789abcdef0123456789abcdef01234567"}
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
 	require.NoError(t, err)
 	body := fc.IssueComments["o/r/1"][0].Body
 	lines := strings.Split(body, "\n")
-	require.GreaterOrEqual(t, len(lines), 3)
+	require.GreaterOrEqual(t, len(lines), 4)
 	assert.Equal(t, reviewMarker, lines[0])
 	assert.Regexp(t, reviewDiffHashMarkerRe, lines[1])
-	assert.Equal(t, projection, lines[2])
+	assert.Regexp(t, reviewDiffHeadMarkerRe, lines[2])
+	assert.Equal(t, projection, lines[3])
 }
 
 func TestPostReviewContent_DoesNotTrustAgentHashWhenHashUnavailable(t *testing.T) {
