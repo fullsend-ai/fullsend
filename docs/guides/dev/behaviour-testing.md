@@ -252,11 +252,23 @@ step in the scenario: a run triggered before the dispatch falls outside
 their windows and re-resolving cannot recover it. The failure
 assertion's own window opens at the dispatch time the dispatch step
 records beside the file, so a trigger step between the dispatch and the
-assertion cannot push the dispatched run out of it. Dispatch a given
-workflow file at most once per scenario: the wait window opens a skew
-buffer before the dispatch and matches on file and event only, so a
-second dispatch of the same file can bind the assertion to the earlier
-run.
+assertion cannot push the dispatched run out of it. The dispatch step
+also records a run-ID floor — the highest run of the file listed just
+before the dispatch — and the failure assertion accepts only runs above
+that floor, so a run of the file that was already listed before the
+dispatch (the org scheduler, a harness, an earlier dispatch in the
+scenario) can never become the asserted run; a run created before the
+dispatch but not yet in that listing is not covered. The window itself
+stays on purpose as a secondary filter: it opens 30 seconds before the
+recorded dispatch time, because the run's `created_at` comes from
+GitHub's clock and the runner's clock can be ahead of it — the run-ID
+floor, not the window, is what keeps a run of the file that was already
+listed before the dispatch from being asserted. Assert a dispatched file's failure before
+dispatching it again: the scenario holds one run-ID floor, so a later
+dispatch replaces the floor the earlier assertion would use. A cancelled
+dispatched run is final: whatever cancelled it was another caller, so the
+assertion reports the cancellation instead of following a newer run of the
+file.
 
 ### Forge-state assertion steps
 
@@ -1418,11 +1430,13 @@ unlabeled — `state.labels` becomes an empty list — so neither shape an issue
 arrives in loses events; the unit tests serve each shape directly.
 
 **`ci.WorkflowDispatcher` optional interface:** `DispatchWorkflow(ctx, owner,
-repo, workflowFile, ref string, inputs map[string]string) error` and
-`WaitForWorkflowConclusion(ctx, owner, repo, workflowFile string, after
-time.Time, event string) (*forge.WorkflowRun, error)` back the [workflow
-dispatch steps](#workflow-dispatch-steps). `WaitForWorkflowConclusion` returns
-the run whatever its conclusion, so a step can assert a failure. It is a
+repo, workflowFile, ref string, inputs map[string]string) (runFloor int, err
+error)` and `WaitForWorkflowConclusion(ctx, owner, repo, workflowFile string,
+after time.Time, event string, minRunID int) (*forge.WorkflowRun, error)` back
+the [workflow dispatch steps](#workflow-dispatch-steps). `WaitForWorkflowConclusion`
+returns the run whatever its conclusion, so a step can assert a failure, and
+accepts only runs above the dispatch's floor (`minRunID`), treating a cancelled
+dispatched run as final. It is a
 separate interface, not a `ci.Driver` method, so external `ci.Driver`
 implementations keep compiling; the steps fail with an explanatory error on a
 driver without it. A wrapper that embeds `ci.Driver` hides it unless the wrapper
@@ -1430,6 +1444,6 @@ implements it too. Only the GitHub Actions reference driver implements it.
 
 **`ci.IsTerminalFailure` addition:** the exported predicate reports whether a run conclusion is a terminal failure (`failure`, `timed_out` or `startup_failure`); the drivers' fail-fast rules and the workflow dispatch failure step share it, so the conclusion set cannot drift apart. It is a non-breaking addition.
 
-**`world.World.DispatchedWorkflow` addition:** the new `DispatchedWorkflow bool` field records that `WorkflowRun` holds a dispatched caller workflow's run, not a harness agent run, so harness-semantics steps fail fast instead of asserting on it. It is a non-breaking addition. The companion `DispatchedWorkflowFile string` field records the workflow file the dispatch step dispatched (never cleared, unlike the flag, which a harness re-resolve clears); the workflow-failure step uses it to fail fast when no dispatch step ran or a different file was dispatched. The `DispatchedWorkflowAt time.Time` companion records the dispatch time, which the workflow-failure step scopes its detection window from, so a later trigger step moving the scenario's trigger time forward cannot exclude the dispatched run. Also non-breaking additions.
+**`world.World.DispatchedWorkflow` addition:** the new `DispatchedWorkflow bool` field records that `WorkflowRun` holds a dispatched caller workflow's run, not a harness agent run, so harness-semantics steps fail fast instead of asserting on it. It is a non-breaking addition. The companion `DispatchedWorkflowFile string` field records the workflow file the dispatch step dispatched (never cleared, unlike the flag, which a harness re-resolve clears); the workflow-failure step uses it to fail fast when no dispatch step ran or a different file was dispatched. The `DispatchedWorkflowAt time.Time` companion records the dispatch time, which the workflow-failure step scopes its detection window from, so a later trigger step moving the scenario's trigger time forward cannot exclude the dispatched run. The `DispatchedWorkflowRunFloor int` companion records the highest run ID of the dispatched file listed just before the dispatch; the workflow-failure step's wait accepts only runs above it, so a run of the file already listed before the dispatch can never become the asserted run. Also non-breaking additions.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.

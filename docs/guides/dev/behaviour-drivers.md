@@ -90,7 +90,12 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 5. Also implement the optional `ci.WorkflowDispatcher` interface
    (`DispatchWorkflow`, `WaitForWorkflowConclusion`). The workflow dispatch
    steps need it to start a workflow with caller-written inputs and wait for the
-   run whatever its conclusion; scenarios that use them are tagged
+   run whatever its conclusion; `DispatchWorkflow` returns the run-ID floor
+   (the highest run of the file listed just before the dispatch) and the
+   wait accepts only runs above it, so a run of the file already listed
+   before the dispatch can never become the asserted run, and a
+   cancelled dispatched run is final rather than
+   followed to a replacement. Scenarios that use them are tagged
    `@skip:<vendor>` for a driver without it (the tag skips on the SCM
    dimension — `BEHAVIOUR_SCM=gitlab` for `@skip:gitlab`; the CI dimension
    cannot be selected today, the runner accepting `BEHAVIOUR_CI=githubactions`
