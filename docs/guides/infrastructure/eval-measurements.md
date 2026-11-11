@@ -192,15 +192,21 @@ newer `agents@v0` manifest this binary does not implement yet) also writes
 GitHub Actions job
 ├── fullsend run
 ├── fullsend eval-measure   # reads output/<runDir>/run-telemetry.jsonl; never fails the job
-└── upload-artifact         # includes both JSONL files under output/
+├── fullsend stage-artifacts # staged copy of output/ per config.yaml artifacts (ADR 0161)
+└── upload-artifact         # uploads the staged copy (skipped for artifacts level none)
 
 GitLab CI agent job
 ├── fullsend run            # --output-dir $CI_PROJECT_DIR/output
 ├── fullsend eval-measure   # always (even if run failed); || true
-└── artifacts: output/      # when: always (parity with GHA upload of output/)
+├── fullsend stage-artifacts # --artifact-dir $CI_PROJECT_DIR/fullsend-artifact
+└── artifacts: fullsend-artifact/ # when: always (parity with the GHA upload)
 ```
 
-Add `output/` to the consuming repo's `.gitignore` so local GitLab-checkout
+Both JSONL files reach the artifact under the `all` and `metadata`
+[artifact levels](../../reference/config-reference.md#artifacts); under
+`metadata`, `run-telemetry.jsonl` has its content-capture attributes removed.
+
+Add `output/` and `fullsend-artifact/` to the consuming repo's `.gitignore` so local GitLab-checkout
 runs do not stage telemetry accidentally. The GitLab per-repo scaffold embeds
 a recommended `.gitignore` fragment (asserted in tests) but does **not**
 install it as a root file — that would overwrite an existing consumer ignore

@@ -1096,6 +1096,10 @@ if [ "${STAGE}" = "fix" ]; then
   _FS_TARGET_REPO="${FIX_TARGET_REPO}"
 fi
 mkdir -p "${CI_PROJECT_DIR}/output"
+# A persistent runner may keep a previous job's staged artifact copy (built
+# at the end of this script); clear it so it never reaches this run's
+# sandbox or artifact.
+rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"
 
 # Jira work-item dispatch (#8919): hand fullsend run the normalized Jira
 # event from the HMAC-verified payload. fullsend run validates it, exports
@@ -1151,10 +1155,6 @@ fullsend run "${STAGE}" \
   ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}
 RUN_STATUS=$?
 set -e
-# Persistent runners keep RUNNER_TEMP between jobs.
-if [ -n "${GITLAB_EVENT_FILE:-}" ]; then
-  rm -f "${GITLAB_EVENT_FILE}"
-fi
 
 MEASURE_ARGS=(--agent "${STAGE}" --output-dir "${CI_PROJECT_DIR}/output")
 if [ -n "${DEFAULT_BRANCH_SHA}" ]; then
@@ -1165,5 +1165,30 @@ if [ -n "${DEFAULT_BRANCH_SHA}" ]; then
   fi
 fi
 fullsend eval-measure "${MEASURE_ARGS[@]}" || true
+
+# Stage the job artifact (ADR 0161): artifacts.content and
+# artifacts.by_source in .fullsend/config.yaml pick the level (all,
+# metadata or none) for this run's source, read from the same event file
+# fullsend run received. The job's artifacts: path is the staged copy, not
+# output/, which stays untouched for the steps above. Fails closed: when the
+# level cannot be resolved the staged directory is left empty, and GitLab
+# finds no artifact files (a warning, not a job failure).
+_FS_STAGED_DIR="${CI_PROJECT_DIR}/fullsend-artifact"
+if _FS_ARTIFACT_LEVEL=$(fullsend stage-artifacts \
+  --output-dir "${CI_PROJECT_DIR}/output" \
+  --artifact-dir "${_FS_STAGED_DIR}" \
+  --fullsend-dir .fullsend \
+  ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}); then
+  echo "Run artifact content level: ${_FS_ARTIFACT_LEVEL}"
+else
+  rm -rf -- "${_FS_STAGED_DIR}"
+  mkdir -p -- "${_FS_STAGED_DIR}"
+  echo "WARNING: run artifact level could not be resolved; no run artifact is uploaded" >&2
+fi
+
+# Persistent runners keep RUNNER_TEMP between jobs.
+if [ -n "${GITLAB_EVENT_FILE:-}" ]; then
+  rm -f "${GITLAB_EVENT_FILE}"
+fi
 
 exit "${RUN_STATUS}"

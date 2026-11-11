@@ -313,6 +313,55 @@ implementation
 ([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). See
 [Issue commands](issues-commands.md) for usage.
 
+## Public repos and private data
+
+Every agent run uploads a run artifact: `fullsend-<agent>` on GitHub Actions,
+the job artifact on GitLab CI. By default it holds the run's whole `output/`
+directory, including the raw conversation stream, transcripts, the agent's
+output files, `run-telemetry.jsonl` (with conversation content when content
+capture is on) and `security/findings.jsonl`. Tool results in those files can
+quote what the agent read from a private system, such as a Jira issue. On a
+public repository, any signed-in user can download the artifact until it
+expires. The output scan masks secret literals; it does not remove personal
+data, customer names or other private business text.
+
+To stop publishing that content, set
+[`artifacts`](../../reference/config-reference.md#artifacts) in
+`.fullsend/config.yaml`:
+
+```yaml
+artifacts:
+  by_source:
+    jira: metadata      # runs started from a Jira issue
+```
+
+**Choosing a level.**
+
+- `metadata` keeps the run's metrics, eval measurements and telemetry
+  (without conversation content), so cost, turn and trace dashboards keep
+  working. Choose it when you want run health without the conversation.
+- `none` uploads nothing. Choose it when even metrics and span names must not
+  be public.
+- A run's level is the stricter of `content` and its `by_source` entry.
+
+**`by_source` looks only at where the run started.** A run started from a
+GitHub issue still uses the GitHub level, even if its harness gives the agent
+Jira access on that run. The shipped code and triage harnesses attach
+read-only Jira access only to Jira-started runs, so `by_source.jira` covers
+them. A custom agent that reads a private system on runs from every source
+needs a stricter `content` for the whole repository instead.
+
+**What later workflows lose.** The retro agent, session resumption and
+[follow-up workflows](chaining-follow-up-workflows.md) that download the
+artifact get no transcripts, agent results or security findings under
+`metadata`, and no artifact under `none`.
+
+**Keeping content privately.** The withheld files exist only on the runner and
+are gone when the job ends; fullsend has no private store for them. To keep
+conversation content, export traces over OTLP to a backend you control
+([How to emit traces](how-to-emit-traces.md)). OTLP export works under every
+level.
+
 ## Prerequisites
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).

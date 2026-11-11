@@ -114,3 +114,10 @@ func (d *perRepoDefaults) ConfigInferenceGateway() InferenceGatewayConfig {
 // ConfigModelAliases returns the default model aliases (none — fleet
 // defaults are compiled into the runtimes).
 func (d *perRepoDefaults) ConfigModelAliases() map[string]string { return nil }
+
+// ConfigArtifactsContent returns the default run artifact level ("all" —
+// the whole output/ directory, as before ADR 0161).
+func (d *perRepoDefaults) ConfigArtifactsContent() string { return ArtifactContentAll }
+
+// ConfigArtifactsBySource returns the default per-source levels (none).
+func (d *perRepoDefaults) ConfigArtifactsBySource() map[string]string { return nil }

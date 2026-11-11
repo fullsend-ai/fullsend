@@ -220,8 +220,9 @@ func zipArtifact(t *testing.T, files map[string]string) []byte {
 }
 
 // The real CI drivers extract into dest/<driver artifact name>/, and the
-// two forges keep different prefixes: upload-artifact strips output/,
-// GitLab artifacts:paths keeps it. A skipped run must pass on both.
+// two forges keep different prefixes: upload-artifact strips the staged
+// directory, GitLab artifacts:paths keeps it (fullsend-artifact/, or
+// output/ on older scaffolds). A skipped run must pass on all of them.
 func TestThenHarnessRunSkippedByPreScript_RealDriverLayouts(t *testing.T) {
 	telemetry := filepath.ToSlash(filepath.Join(skipTestRunDir, "run-telemetry.jsonl"))
 	tests := []struct {
@@ -231,7 +232,8 @@ func TestThenHarnessRunSkippedByPreScript_RealDriverLayouts(t *testing.T) {
 		prefix   string
 	}{
 		{name: "github", driver: func(c forge.Client) ci.Driver { return githubactions.New(c, "") }, artifact: "fullsend-pre"},
-		{name: "gitlab", driver: func(c forge.Client) ci.Driver { return gitlabci.New(c, "") }, artifact: "fullsend pre agent", prefix: "output/"},
+		{name: "gitlab", driver: func(c forge.Client) ci.Driver { return gitlabci.New(c, "") }, artifact: "fullsend pre agent", prefix: "fullsend-artifact/"},
+		{name: "gitlab legacy output", driver: func(c forge.Client) ci.Driver { return gitlabci.New(c, "") }, artifact: "fullsend pre agent", prefix: "output/"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

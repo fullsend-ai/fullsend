@@ -1,7 +1,8 @@
 name: Fullsend
 description: >-
   Install fullsend-cli, create ${GITHUB_WORKSPACE}/output, invoke fullsend run with --output-dir
-  pointing at that directory, then upload it with actions/upload-artifact. The run resolves the
+  pointing at that directory, then upload the staged copy config.yaml's artifacts setting allows
+  with actions/upload-artifact. The run resolves the
   selected agent's inference provider and prepares GCP credentials only for Vertex.
 
 branding:
@@ -681,12 +682,43 @@ runs:
         # at the top of each runDir.
         fullsend eval-measure "${MEASURE_ARGS[@]}"
 
-    - name: Upload fullsend artifacts
+    # Build the copy of output/ that the upload step publishes (ADR 0161).
+    # artifacts.content and artifacts.by_source in config.yaml pick the
+    # level (all, metadata or none) for this run's source; output/ itself
+    # stays untouched, so the steps above read the full run. Fails closed:
+    # when the level cannot be resolved (including a CLI too old to know
+    # the command) the staged directory is empty and nothing is uploaded —
+    # the raw output/ is never uploaded in its place.
+    - name: Stage fullsend artifacts
+      id: stage-artifacts
       if: always() && inputs.agent != '__install_only__'
+      shell: bash
+      env:
+        FULLSEND_DIR: ${{ inputs.fullsend-dir }}
+      run: |
+        set -uo pipefail
+        FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
+        STAGED_DIR="${RUNNER_TEMP}/fullsend-artifact"
+        echo "dir=${STAGED_DIR}" >> "${GITHUB_OUTPUT}"
+        if LEVEL="$(fullsend stage-artifacts \
+          --output-dir "${GITHUB_WORKSPACE}/output" \
+          --artifact-dir "${STAGED_DIR}" \
+          --fullsend-dir "${FULLSEND_DIR}")"; then
+          echo "Run artifact content level: ${LEVEL}"
+        else
+          LEVEL="unresolved"
+          rm -rf -- "${STAGED_DIR}"
+          mkdir -p -- "${STAGED_DIR}"
+          echo "::warning::Run artifact level could not be resolved; no run artifact is uploaded"
+        fi
+        echo "level=${LEVEL}" >> "${GITHUB_OUTPUT}"
+
+    - name: Upload fullsend artifacts
+      if: always() && inputs.agent != '__install_only__' && contains(fromJSON('["all","metadata"]'), steps.stage-artifacts.outputs.level)
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
         name: ${{ inputs.artifact-name || format('fullsend-{0}', inputs.agent) }}
-        path: ${{ github.workspace }}/output
+        path: ${{ steps.stage-artifacts.outputs.dir }}
 
     - name: Finalize orphaned status comment
       # Runs last (after all other always() steps) so job.status reflects

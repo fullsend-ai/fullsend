@@ -130,6 +130,12 @@ models:
     sonnet: claude-sonnet-5
     haiku: claude-haiku-3-5
     fable: claude-fable-5-1
+
+# ── Run artifacts ────────────────────────────────────────────
+artifacts:
+  content: all                       # Every run: all (default) | metadata | none
+  by_source:                         # Per run source (event.source.system); stricter level wins
+    jira: metadata                   # e.g. runs started from a Jira issue
 ```
 
 ## Field details
@@ -883,6 +889,51 @@ Model configuration, currently containing only `aliases`.
   opus` would reach the provider as the literal id "opus". In the layered
   config system, aliases merge per key across layers. See
   [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+
+### `artifacts`
+
+Limits what the CI run artifact publishes
+([ADR 0161](../ADRs/0161-repo-config-limits-run-artifact-content.md)): the
+`fullsend-<agent>` artifact on GitHub Actions and the job artifact on GitLab
+CI. The runner leaves `output/` untouched, so `fullsend eval-measure` and
+post-scripts read the full run; `fullsend stage-artifacts` then builds a staged
+copy, and only that copy is uploaded.
+
+| Level | Artifact holds |
+|---|---|
+| `all` | Everything in `output/`. This is the default, so an unset block keeps the artifact as before. |
+| `metadata` | Only the run-level files of each run directory: `metrics.json`, `eval-measurements.jsonl` and `run-telemetry.jsonl`. In the telemetry copy, every attribute and event that content capture adds (`gen_ai.input.messages`, `gen_ai.output.messages`, `fullsend.content.*` and the other GenAI content attributes) is removed; if a record can't be parsed or stripped, the file is left out. Every `iteration-<N>/` directory, `security/findings.jsonl` and any other file is left out. |
+| `none` | No artifact is uploaded. The job still succeeds. |
+
+- **`content`** — The level for every run. Unset means `all`.
+- **`by_source`** — Levels for runs started from one source. Keys are the
+  normalized event's `source.system`, the same value CEL triggers see as
+  `event.source.system`: `github`, `gitlab`, `jira`, `manual`, `schedule`,
+  or any source a later adapter adds. Keys are open strings; validation
+  rejects unknown levels, not unknown keys.
+
+**Resolution.** The runner picks one level per run: the stricter of
+`content` and the `by_source` entry for the run's source. A source with no
+entry, or a run with no normalized event, gets `content`. `none` is stricter
+than `metadata`, which is stricter than `all`, so a `by_source` entry can
+tighten a run's level but never loosen `content`. With `content: none` and
+`by_source: {jira: metadata}`, a Jira run uploads nothing.
+
+**Fails closed.** If the level cannot be resolved — an invalid level, a
+config file that cannot be loaded, an unreadable event, or a CLI too old to
+know `fullsend stage-artifacts` — the staged copy is empty and no artifact is
+uploaded. The raw `output/` is never uploaded in its place.
+
+**Layers.** Across `config.base.yaml` and `config.yaml`, an explicit
+`content` overrides and `by_source` merges per key. Lowering an effective
+level toward `all` (for example by dropping a `by_source` entry or a base's
+`content`) is a relaxation under the managed-configuration safety gate
+([ADR 0122](../ADRs/0122-declarative-repo-configuration.md)), so the new layer
+must declare that key explicitly.
+
+`by_source` looks only at where the run started. For when to choose each
+level and what follow-up workflows lose, see
+[Public repos and private data](../guides/user/jira-integration.md#public-repos-and-private-data).
 
 ## Installation model
 

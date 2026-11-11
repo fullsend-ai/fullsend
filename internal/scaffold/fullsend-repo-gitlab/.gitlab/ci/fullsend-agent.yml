@@ -200,10 +200,13 @@ stages:
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/install-fullsend-cli.sh"
   script:
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/run-agent-job.sh"
+  # The staged copy run-agent-job.sh builds from output/ (ADR 0161):
+  # config.yaml's artifacts setting decides what it holds, and it is empty
+  # when the level is none or cannot be resolved.
   artifacts:
     when: always
     paths:
-      - output/
+      - fullsend-artifact/
     expire_in: 1 week
   resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"
   rules:

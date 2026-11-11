@@ -96,6 +96,39 @@ func TestGitLabGitignoreExcludesOutput(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "output/")
+	assert.Contains(t, s, "fullsend-artifact/")
+}
+
+// The GitLab job uploads only the staged copy (ADR 0161): the artifact
+// path is fullsend-artifact/, never output/, and the job script builds it
+// after eval-measure from the event file fullsend run received, before
+// that file is removed.
+func TestGitLabAgentArtifactIsStagedCopy(t *testing.T) {
+	tmpl := gitlabPerRepoText(t, ".gitlab/ci/fullsend-agent.yml")
+	assert.Contains(t, tmpl, "    paths:\n      - fullsend-artifact/\n")
+	assert.NotContains(t, tmpl, "      - output/\n")
+
+	s := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+	measureIdx := strings.Index(s, `fullsend eval-measure "${MEASURE_ARGS[@]}"`)
+	stageIdx := strings.Index(s, "fullsend stage-artifacts")
+	rmEventIdx := strings.LastIndex(s, `rm -f "${GITLAB_EVENT_FILE}"`)
+	exitIdx := strings.LastIndex(s, `exit "${RUN_STATUS}"`)
+	require.Greater(t, measureIdx, 0)
+	require.Greater(t, stageIdx, measureIdx, "staging runs after eval-measure")
+	require.Greater(t, rmEventIdx, stageIdx, "the event file outlives staging")
+	require.Greater(t, exitIdx, rmEventIdx)
+	stage := s[stageIdx:rmEventIdx]
+	assert.Contains(t, stage, `--output-dir "${CI_PROJECT_DIR}/output"`)
+	assert.Contains(t, stage, `--artifact-dir "${_FS_STAGED_DIR}"`)
+	assert.Contains(t, stage, "--fullsend-dir .fullsend")
+	assert.Contains(t, stage, `${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}`)
+	assert.Contains(t, stage, `rm -rf -- "${_FS_STAGED_DIR}"`, "a failed resolution leaves the staged copy empty")
+	assert.Contains(t, s, `_FS_STAGED_DIR="${CI_PROJECT_DIR}/fullsend-artifact"`)
+
+	runIdx := strings.Index(s, `fullsend run "${STAGE}"`)
+	clearIdx := strings.Index(s, `rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"`)
+	require.Greater(t, clearIdx, 0, "a previous job's staged copy is cleared")
+	assert.Less(t, clearIdx, runIdx, "the stale staged copy is cleared before the sandbox is built")
 }
 
 func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {

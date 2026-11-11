@@ -34,6 +34,7 @@ To update an installed binary later, run [`fullsend self-update`](self-update.md
 | `fullsend scan` | Run security scanners on agent input/output |
 | [`fullsend self-update`](self-update.md) | Update the local `fullsend` binary to the latest release, or to `--version`, after verifying the release's Sigstore signature and checksum. |
 | `fullsend eval-measure` | Score wild-run traces into `eval-measurements.jsonl`. See [Eval measurements](../guides/infrastructure/eval-measurements.md). |
+| `fullsend stage-artifacts` | Build the copy of a run's `--output-dir` that CI uploads as the run artifact, in `--artifact-dir`, at the level `config.yaml`'s [`artifacts`](../reference/config-reference.md#artifacts) setting resolves for the run's source (`--event-file`, else the dispatch payload); prints the level. When the level cannot be resolved, it leaves `--artifact-dir` empty and exits non-zero. `action.yml` and the GitLab agent job run it after `eval-measure`. |
 
 ## Global flags
 
