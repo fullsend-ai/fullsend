@@ -328,7 +328,7 @@ runtimes.
 
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
 
-**`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
+**`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`. The subset check runs for URL-referencing harnesses (as before) and whenever the runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration): every `allowed_remote_resources` prefix must be covered by the config-level allowlist — `config.yaml`'s `allowed_remote_resources` plus the built-in default prefixes (the defaults are included when the list is omitted or non-empty; an explicit `allowed_remote_resources: []` stays deny-all and excludes them) — and `fullsend run`, `fullsend lint` and `fullsend lock` fail naming the uncovered entry; without a repository config (`config.yaml` or `config.base.yaml`) they fail closed rather than fall back to the built-in defaults.
 
 **`skills`** — Skill directories to upload. Each entry is a source string (a
 local path or a forge tree URL pinned with `#sha256=`), or a single-key map
@@ -569,7 +569,7 @@ More-specific entries go last so they override broader defaults.
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
 | `security` | Child replaces entirely |
-| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution |
+| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution and as the ceiling every harness-level `allowed_remote_resources` is validated against (see `allow_runtime_fetch` above) |
 
 ## Referencing resources: local vs. remote
 

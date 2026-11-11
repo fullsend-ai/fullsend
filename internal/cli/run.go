@@ -779,10 +779,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// later for profile import and provider resolution.
 	var result resolve.ResolveResult
 
-	if h.HasURLReferences() {
+	// The config-level subset check runs for URL-referencing harnesses (as
+	// before) and for every harness whose runtime fetch service can start
+	// (shouldStartFetchService: an explicit allow_runtime_fetch, URL-dir
+	// resources, or a bare allowed_remote_resources declaration): a harness
+	// whose fetch service starts would otherwise grant its agent fetch
+	// prefixes the organization never allowed (#9291). The service start
+	// below uses the same shouldStartFetchService, so the gate cannot drift
+	// from it.
+	if h.HasURLReferences() || shouldStartFetchService(h) {
 		if orgCfg == nil {
 			var err error
-			orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+			if h.HasURLReferences() {
+				orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+			} else {
+				// A fetch-capable harness without URL references names its
+				// own requirement when the config is missing; an unreadable
+				// or unparsable config keeps its own error instead of being
+				// reported as missing.
+				orgCfg, err = requireOrgConfigFor(orgConfigPath, printer, "runtime fetch requires")
+			}
 			if err != nil {
 				return err
 			}
@@ -792,7 +808,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Remote resource allowlist validation failed")
 			return fmt.Errorf("validating allowed remote resources: %w", err)
 		}
+	}
 
+	if h.HasURLReferences() {
 		// Use a current lock entry for this harness; a stale entry or an
 		// unreadable lock file was reported before composition.
 		usedLock := false

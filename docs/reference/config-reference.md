@@ -257,6 +257,16 @@ URL prefixes allowed for remote resources in harness files — agent sources
 and `base:` composition. The config-level list acts as a fallback for all URL
 resolution: a URL is accepted if it matches either the harness-level or the
 config-level list. Default prefixes cover the fullsend and agents repositories.
+The same config-level list is also the ceiling for harness-level
+`allowed_remote_resources`: whenever a harness's runtime fetch service can
+start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories,
+or a bare, deprecated `allowed_remote_resources` declaration), every
+harness-level prefix must be covered by the config-level list (the built-in
+default prefixes are included when the list is omitted or non-empty; an
+explicit `allowed_remote_resources: []` stays deny-all and cannot cover a
+harness prefix), and `fullsend run`, `fullsend lint` and `fullsend lock` fail
+naming the uncovered entry, and fail closed when no repository config
+(`config.yaml` or `config.base.yaml`) exists.
 
 When the `GITHUB_SERVER_URL` environment variable names a GitHub host other
 than `github.com` (for example a GitHub Enterprise Server), the defaults also

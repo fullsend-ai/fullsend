@@ -809,6 +809,38 @@ allowed_remote_resources:
 	assert.Contains(t, err.Error(), `validating allowed remote resources for agent "my-agent"`)
 }
 
+func TestLintCommand_FetchOnlyHarnessRemoteResourcesNotSubset(t *testing.T) {
+	// A harness with no URL references that opts into runtime fetching
+	// (allow_runtime_fetch + allowed_remote_resources) still starts the
+	// fetch service at run time, so lint must check its allowlist against
+	// config.yaml's — not only when HasURLReferences() is true (#7395801).
+	dir := t.TempDir()
+	cfg := `version: "1"
+allowed_remote_resources:
+  - "https://allowed.example.com/"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+allow_runtime_fetch: true
+allowed_remote_resources:
+  - "https://disallowed.example.com/"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	cmd := newLintCmd()
+	_, err := executeCmd(cmd, []string{"--fullsend-dir", dir, "--offline"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `validating allowed remote resources for agent "my-agent"`)
+	assert.Contains(t, err.Error(), `"https://disallowed.example.com/" is not covered by the org allowlist`)
+}
+
 func TestLintCommand_MissingLocalProviderFails(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `version: "1"
