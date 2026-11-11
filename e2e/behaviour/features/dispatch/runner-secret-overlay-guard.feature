@@ -15,10 +15,10 @@ Feature: An overlay that references a runner secret reads only runtime.forge and
     Given the enrolled test repository
     And the repository has the runner secret "BEHAVIOUR_RUNNER_SECRET"
 
-  # The refused scenario has not passed a live run yet, so it is gated
-  # on the runner-secret-overlay-guard capability; the Makefile's
-  # BEHAVIOUR_CAPABILITIES comment says when to declare it, and
-  # Jira AISDLC-654 tracks that step.
+  # The refused scenario is gated on the runner-secret-overlay-guard
+  # capability, declared in the Makefile's BEHAVIOUR_CAPABILITIES, so it
+  # runs in the default behaviour suite; the gate stays so
+  # BEHAVIOUR_CAPABILITIES= can still skip it on demand.
   @requires:capability:runner-secret-overlay-guard
   Scenario: An overlay that reads a shadowed .event is refused
     # Harness dispatch loads the harness without the runner secret names

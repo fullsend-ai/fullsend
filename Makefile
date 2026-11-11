@@ -258,7 +258,7 @@ ci-local:
 # model runs) and inference-gateway-reseed (holds the sandbox for a 330 s
 # wait) are deliberately not declared; run them on demand with the full list
 # (docs/guides/dev/e2e-testing.md), e.g.
-#   BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,runtime-codex-gateway,runtime-claude-gateway,inference-gateway-reseed
+#   BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runner-secret-overlay-guard,runtime-pi-gateway,runtime-codex-gateway,runtime-claude-gateway,inference-gateway-reseed
 # runtime-pi-openai (features/runtime/pi-openai.feature) is deliberately not
 # declared: it needs an OpenAI organization mapped to the pool repositories
 # (docs/guides/infrastructure/openai-workload-identity.md). Add it here once
@@ -270,14 +270,13 @@ ci-local:
 # fullsend-sandbox:latest ships OpenCode, i.e. after the image change is
 # published from main; then add it here (one small haiku run on Vertex).
 # runner-secret-overlay-guard
-# (features/dispatch/runner-secret-overlay-guard.feature) is not declared
-# until its refused scenario has passed one live run. A dev run (an
-# authorized PR or the merge queue) installs the PR head's fullsend
-# binary; a stage run (push to main) takes main's. Run make behaviour-test
-# on demand with runner-secret-overlay-guard added to
-# BEHAVIOUR_CAPABILITIES, on dev against the fix or on stage once it is on
-# main; when that passes, declare it here. Jira AISDLC-654 tracks that
-# step and the harnessLogPollWindow confirmation.
+# (features/dispatch/runner-secret-overlay-guard.feature) is declared so
+# both scenarios run in the default suite and a guard regression fails it
+# instead of passing unnoticed. The refused scenario first ran live in
+# the PR that declared this capability (Nov 2026); the eight live runs
+# behind harnessLogPollWindow's 5s measurement exercised the allowed
+# scenario only. The gate stays so BEHAVIOUR_CAPABILITIES= can still
+# skip the refused scenario on demand.
 # fetch-allowlist-gate (features/dispatch/fetch-allowlist-gate.feature) is
 # not declared until its scenario has passed one live run. A dev run (an
 # authorized PR or the merge queue) installs the PR head's fullsend
@@ -285,7 +284,7 @@ ci-local:
 # on demand with fetch-allowlist-gate added to BEHAVIOUR_CAPABILITIES, on
 # dev against the fix or on stage once it is on main; when that passes,
 # declare it here (#9291).
-BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
+BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key,runner-secret-overlay-guard
 
 behaviour-test:
 	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/

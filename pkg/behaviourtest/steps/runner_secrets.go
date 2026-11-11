@@ -93,10 +93,16 @@ func deleteRunnerSecretsSecret(w *world.World) error {
 
 // harnessLogPollWindow bounds how long fetchUsableHarnessLogs keeps
 // fetching a run's logs that came back unusable (a fetch error, an empty
-// body, or a fetch-failure note): logs fetched just after a run completes
-// have come back unusable, cause not confirmed. Logs that are complete,
-// or truncated at a size or page cap, are final and are not fetched
-// again. Variables (not constants) so unit tests can shrink the window.
+// body, or a fetch-failure note). Measured on live runs of the feature's
+// allowed scenario (eight CI runs of
+// features/dispatch/runner-secret-overlay-guard.feature, 2026-11-10/11):
+// every run's logs were usable on the first fetch after completion, and
+// the completes-successfully and logs-contain steps' saved snapshots
+// were never more than 4.4s apart, so measured 5s rounded up; the window
+// keeps 12x that margin. The refused scenario first ran live in the PR
+// that declared this capability (Nov 2026). Logs that are complete, or
+// truncated at a size or page cap, are final and are not fetched again.
+// Variables (not constants) so unit tests can shrink the window.
 var harnessLogPollWindow = 60 * time.Second
 
 var harnessLogPollInterval = 5 * time.Second
