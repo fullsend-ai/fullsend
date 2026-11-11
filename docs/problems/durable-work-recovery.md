@@ -50,8 +50,9 @@ handling and publication recovery. Guarantees can differ across workflows.
 
 ### Extend repository-owned state
 
-A repository-scoped journal can use conditional forge writes and short-lived
-reconcilers. Existing schedulers still run individual workers. This fits the
+A journal in a control repository can use versioned JSON files, conditional
+forge writes and short-lived reconcilers. Storage need not share the forge of
+the source code or tracker. Existing schedulers still run individual workers. This fits the
 repository coordination model and avoids a required central service. It needs
 explicit trust, retention, conflict, lease and external-effect protocols;
 eventual-consistency searches cannot establish that an ambiguous write failed.
@@ -65,12 +66,24 @@ make a remote issue creation atomic or authorize a retry after scope changes.
 ## Decision and acceptance
 
 [ADR 0165](../ADRs/0165-recover-work-through-repository-owned-operation-journals.md)
-chooses a repository-owned journal. Its implementation remains separate from
-the decision. A local database test is not distributed acceptance.
+chooses JSON journal files in the control repository, initially hosted on
+GitLab. The journal covers the full saga and each required branch, while
+source repositories and trackers can use other providers. Shared trusted
+operations let pre/post scripts and scheduled reconcilers consume the same
+state. CI finalization is a best-effort checkpoint, not the recovery guarantee.
+Its implementation remains separate from the decision. A local database test is not distributed acceptance.
+
+Entity-first discovery must also find eligible work whose trigger was lost
+before admission. Trackers retain business and handled state; the journal
+records mechanical progress after admission. Publish-only retry from retained
+validated evidence can be implemented independently of the complete journal.
 
 Fault tests must stop both sides of each handoff, overlap reconcilers, expire
 ownership while a worker is still alive, and supersede a plan before
-publication. A remote write that succeeded before its acknowledgement was
+publication. Kill a runner before its finalizer, interrupt journal writes and
+race multi-record updates; only a valid conditional transition may win. A
+GitLab control repository must demonstrate recovery with GitHub source and
+Jira publication. Journal writes must not trigger recursive agent runs. A remote write that succeeded before its acknowledgement was
 lost must be reconciled without rerunning inference or blindly repeating the
 write. Every required target remains accounted for, including exhausted or
 missing attempts. A domain adapter may publish an investigation request when
@@ -78,8 +91,12 @@ analysis fails; that request is not an assessment or permission to remediate.
 
 ## Open questions
 
-- Which journal layout, signing rules, retention and compaction bounds meet
-  the conditional-write and integrity requirements on each forge?
+- Which bounded JSON layout, integrity checks, retention and compaction rules
+  preserve history and conditional transitions in the control repository?
+- Which trusted host identity writes the protected GitLab journal branch, and
+  how are its credentials kept separate from read-only assessment workers?
+- Which shared script interface and reconciliation schedule expose the saga
+  without making CI finalizers a prerequisite for recovery?
 - Which existing scheduler APIs can reconcile accepted-but-unacknowledged
   requests by stable operation identity?
 - Which publication adapters can safely prove a write absent, and which must

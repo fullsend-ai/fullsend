@@ -618,10 +618,13 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
   [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
 
-- Decided, not yet implemented: repository-owned operation journals retain
-  separate dispatch, execution and publication receipts. Conditional state
-  updates and ownership generations support cross-host recovery while domain
-  adapters retain operation and completion semantics
+- Decided, not yet implemented: a saga journal stores versioned JSON in the
+  control repository, initially on GitLab, independently of the source forge
+  and tracker. Shared pre/post-script operations and scheduled reconciliation
+  retain separate dispatch, execution and publication receipts for each target.
+  Conditional updates and ownership generations support cross-host recovery;
+  CI finalization provides only a best-effort checkpoint. Domain adapters
+  retain operation, completion and compensation semantics
   ([ADR 0165](ADRs/0165-recover-work-through-repository-owned-operation-journals.md)).
 
 **Open questions:**
