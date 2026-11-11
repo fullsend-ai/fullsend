@@ -16,6 +16,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -139,9 +140,93 @@ func sanitizeDownload(localDir string) error {
 		return err
 	}
 
-	return filepath.WalkDir(absLocal, func(path string, d fs.DirEntry, err error) error {
+	var reftableDirs []string
+	reftableSeen := make(map[string]bool)
+	worktreeDirs := make(map[string]bool)
+	err = filepath.WalkDir(absLocal, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		inGit, rel := inGitDir(path, absLocal)
+		// Filter metadata that can redirect commit ancestry.
+		if inGit {
+			folded := strings.ToLower(rel)
+			// Reftable stores are verified natively after the walk, but their
+			// on-disk shape is validated here first. Every entry beneath the
+			// store must be a regular file: a directory, symlink, or special
+			// file could redirect or block native Git.
+			if folded == "reftable" {
+				if d.Type()&fs.ModeSymlink != 0 || !d.IsDir() {
+					return fmt.Errorf("git reftable storage %s is not a real directory", path)
+				}
+				gitDir := filepath.Dir(path)
+				if !reftableSeen[gitDir] {
+					reftableSeen[gitDir] = true
+					reftableDirs = append(reftableDirs, gitDir)
+				}
+				return nil
+			}
+			if strings.HasPrefix(folded, "reftable/") {
+				if !d.Type().IsRegular() {
+					return fmt.Errorf("git reftable storage entry %s is not a regular file", path)
+				}
+				return nil
+			}
+			if folded == "worktrees" {
+				worktreeDirs[filepath.Dir(path)] = true
+			}
+			switch folded {
+			case "":
+				// A symlinked .git hides metadata from this walk at any depth;
+				// root gitfiles redirect it outside the inspected directory.
+				if d.Type()&fs.ModeSymlink != 0 {
+					return fmt.Errorf("repository git metadata %s is a symlink", path)
+				}
+				if filepath.Dir(path) == absLocal && !d.IsDir() {
+					return fmt.Errorf("repository git metadata %s is not a real directory", path)
+				}
+			case "commondir":
+				return fmt.Errorf("unsupported git metadata redirect %s", path)
+			case "objects/info/alternates", "objects/info/http-alternates":
+				// Alternate stores can carry unfiltered commit graphs.
+				return fmt.Errorf("unsupported git metadata alternate object store %s", path)
+			case "refs", "info", "objects", "objects/info":
+				// These containers must be real directories: Git follows
+				// symlinks that the directory walker does not.
+				if d.Type()&fs.ModeSymlink != 0 || !d.IsDir() {
+					return fmt.Errorf("git metadata container %s is not a real directory", path)
+				}
+			case "packed-refs":
+				// WalkDir has already read a directory entry before the
+				// callback; removing it here would make the walk read a
+				// deleted path. Reject the layout instead.
+				if d.IsDir() {
+					return fmt.Errorf("unsupported git metadata storage %s", path)
+				}
+				if !d.Type().IsRegular() {
+					return removeGitMetadata(path)
+				}
+				return filterPackedRefs(path)
+			case "shallow":
+				// Only the root boundary is reconciled with the trusted host
+				// snapshot by SafeDownload. Defer that entry so the
+				// generic symlink handling below cannot discard a supplied
+				// symlink before that validation rejects it. Nested
+				// repositories keep the ordinary walk behavior.
+				if filepath.Dir(filepath.Dir(path)) == absLocal {
+					return nil
+				}
+			default:
+				if ancestryMetadata(folded) {
+					if err := removeGitMetadata(path); err != nil {
+						return err
+					}
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+			}
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			target, readErr := os.Readlink(path)
@@ -190,26 +275,139 @@ func sanitizeDownload(localDir string) error {
 		// Remove AppleDouble (._*) files inside .git/ directories.
 		// These are created by macOS bsdtar when archiving files with
 		// extended attributes and corrupt git when extracted on Linux.
-		if !d.IsDir() && strings.HasPrefix(d.Name(), "._") && inGitDir(path, absLocal) {
+		if !d.IsDir() && strings.HasPrefix(d.Name(), "._") && inGit {
 			return os.Remove(path)
 		}
 
 		return nil
 	})
-}
-
-// inGitDir reports whether path is inside a ".git" directory under root.
-func inGitDir(path, root string) bool {
-	rel, err := filepath.Rel(root, path)
 	if err != nil {
-		return false
+		return err
 	}
-	for _, component := range strings.Split(filepath.Dir(rel), string(filepath.Separator)) {
-		if component == ".git" {
-			return true
+
+	// Reject registered worktrees because they can carry additional ref stores
+	// that this walker does not inspect.
+	for _, gitDir := range reftableDirs {
+		if worktreeDirs[gitDir] {
+			return fmt.Errorf("unsupported reftable worktree metadata %s", filepath.Join(gitDir, "worktrees"))
 		}
 	}
-	return false
+
+	// Only after the walk accepted the layout, verify and clean each store.
+	// The staging parent, not the untrusted tree, is the command's cwd.
+	cwd := filepath.Dir(absLocal)
+	for _, gitDir := range reftableDirs {
+		if err := sanitizeReftableStore(cwd, gitDir); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// inGitDir reports whether path is inside a .git directory and returns its path
+// below the outermost .git. The .git entry itself returns true, "" so the
+// root symlink check can reject it. Ordinary nested directory-form .git repos
+// are filtered the same way; alternate layouts are not resolved.
+func inGitDir(path, root string) (bool, string) {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false, ""
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	for i, part := range parts {
+		if strings.EqualFold(part, ".git") {
+			// Metadata comparisons use slash-separated paths on every
+			// platform; filesystem paths stay native at call sites.
+			return true, filepath.ToSlash(filepath.Join(parts[i+1:]...))
+		}
+	}
+	return false, ""
+}
+
+// ancestryMetadata reports whether a lowercased .git-relative path holds an
+// ancestry override: loose replacement refs, grafts, or commit-graph caches
+// (the monolithic file and the split commit-graphs directory).
+func ancestryMetadata(rel string) bool {
+	rel = filepath.ToSlash(rel)
+	if rel == "refs/replace" || rel == "info/grafts" {
+		return true
+	}
+	return filepath.ToSlash(filepath.Dir(rel)) == "objects/info" && strings.HasPrefix(filepath.Base(rel), "commit-graph")
+}
+
+func removeGitMetadata(path string) error {
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("removing git metadata %s: %w", path, err)
+	}
+	return nil
+}
+
+// replaceRefRecord matches an ordinary packed-refs line in the refs/replace
+// namespace. Go's POSIX [[:space:]] class is ASCII-only, so ref names that
+// contain non-ASCII whitespace do not match the separator.
+var replaceRefRecord = regexp.MustCompile(`^[^[:space:]]+[[:space:]]+refs/replace/`)
+
+// filterPackedRefs drops refs/replace lines and one immediately following
+// peeled line, keeping every other line byte-for-byte. Matching is
+// case-sensitive because Git ref names are. The rewrite uses a sibling
+// temporary file so a hardlinked packed-refs target is replaced, not truncated.
+func filterPackedRefs(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading git metadata %s: %w", path, err)
+	}
+
+	var out strings.Builder
+	out.Grow(len(data))
+	changed, droppingPeeled := false, false
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		switch {
+		case droppingPeeled && strings.HasPrefix(line, "^"):
+			droppingPeeled = false
+			changed = true
+		case !strings.HasPrefix(line, "#") && replaceRefRecord.MatchString(line):
+			droppingPeeled = true
+			changed = true
+		default:
+			droppingPeeled = false
+			out.WriteString(line)
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return replaceFileContents(path, []byte(out.String()))
+}
+
+// replaceFileContents atomically replaces path via a sibling temporary file.
+func replaceFileContents(path string, data []byte) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("rewriting git metadata %s: %w", path, err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("rewriting git metadata %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	err = tmp.Chmod(info.Mode().Perm())
+	if err == nil {
+		_, err = tmp.Write(data)
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmpName, path)
+	}
+	if err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("rewriting git metadata %s: %w", path, err)
+	}
+	return nil
 }
 
 // ImportProfile imports a single openshell provider profile from a YAML
@@ -1919,13 +2117,426 @@ func DownloadFile(sandboxName, remotePath, localPath string) error {
 	return nil
 }
 
+// ShallowState is a repository's root git shallow state: whether a shallow
+// file exists and its exact bytes. Git treats the commits listed there as
+// having no parents, so the file bounds the visible history.
+type ShallowState struct {
+	Present bool
+	Data    []byte
+}
+
+// RepositorySnapshot captures selected host repository state before upload for
+// validating or restoring downloaded output. It is not a copy of repository
+// contents. IsCheckout records that the host input was a real .git checkout.
+type RepositorySnapshot struct {
+	Shallow    ShallowState
+	IsCheckout bool
+}
+
+// restoreTrustedShallow replaces the downloaded repository's root .git/shallow
+// with the trusted snapshot. The sandbox may remove the boundary (unshallow),
+// but any boundary entry it added fails closed because only the host's
+// pre-upload cutoffs may survive. Non-regular entries are rejected rather than
+// written through, and a trusted marker without a real .git directory fails
+// closed rather than creating git metadata in a non-repository.
+func restoreTrustedShallow(localDir string, trusted ShallowState) error {
+	gitDir := filepath.Join(localDir, ".git")
+	path := filepath.Join(gitDir, "shallow")
+
+	info, err := os.Lstat(path)
+	switch {
+	case err == nil && !info.Mode().IsRegular():
+		return fmt.Errorf("git shallow metadata %s is not a regular file", path)
+	case err == nil:
+		returned, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading downloaded git shallow metadata %s: %w", path, err)
+		}
+		// A sandbox fetch --depth may add cutoffs the host never trusted, so
+		// every returned boundary entry must already be in the trusted set.
+		allowed := make(map[string]bool)
+		if trusted.Present {
+			for _, entry := range strings.Fields(string(trusted.Data)) {
+				allowed[entry] = true
+			}
+		}
+		for _, entry := range strings.Fields(string(returned)) {
+			if !allowed[entry] {
+				return fmt.Errorf("unsupported sandbox shallow boundary change in %s: returned shallow cutoffs were not in the trusted snapshot; sandbox fetch --depth or --deepen must not introduce new boundaries", path)
+			}
+		}
+		if !trusted.Present {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("removing untrusted git shallow metadata %s: %w", path, err)
+			}
+			return nil
+		}
+		return replaceFileContents(path, trusted.Data)
+	case !errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("inspecting git shallow metadata %s: %w", path, err)
+	}
+
+	if !trusted.Present {
+		return nil
+	}
+	gitInfo, err := os.Lstat(gitDir)
+	if err != nil {
+		return fmt.Errorf("restoring trusted git shallow metadata: %w", err)
+	}
+	if !gitInfo.IsDir() {
+		return fmt.Errorf("restoring trusted git shallow metadata: %s is not a directory", gitDir)
+	}
+	if err := os.WriteFile(path, trusted.Data, 0o644); err != nil {
+		return fmt.Errorf("writing trusted git shallow metadata %s: %w", path, err)
+	}
+	return nil
+}
+
+// validateGitCheckout checks that tree is a real Git worktree root whose known
+// .git directory resolves as itself, without modifying tree. It is read-only
+// and intended for trusted host inputs before upload; downloads must pass
+// sanitizeDownload first. It does not reject every unsupported repository
+// format, and the query does not honor an alternate repository selected by the
+// caller's inherited environment.
+func validateGitCheckout(tree string) error {
+	absTree, err := filepath.Abs(tree)
+	if err != nil {
+		return err
+	}
+	gitDir := filepath.Join(absTree, ".git")
+
+	// The known .git must be a real directory: a gitfile or symlink points at
+	// a layout this check does not inspect, so reject before the query can
+	// follow it.
+	info, err := os.Lstat(gitDir)
+	if err != nil {
+		return fmt.Errorf("checking git checkout %s: %w", absTree, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("unsupported git layout in %s: .git is not a real directory; use a normal .git checkout", absTree)
+	}
+
+	// The host Git is the layout oracle for the known .git; there is no
+	// discovery fallback to a parent or bare root. The shared helper keeps
+	// inherited selectors, config, and tracing out of the query and bounds it.
+	// An empty helper gitDir leaves the layout query without a --git-dir.
+	out, err := runBoundedGit(filepath.Dir(absTree), "", nil, "rev-parse", "--resolve-git-dir", gitDir)
+	if err != nil {
+		return fmt.Errorf("checking git checkout %s: %w", absTree, err)
+	}
+	// Only one trailing newline is removed; path whitespace is significant.
+	if resolved := strings.TrimSuffix(string(out), "\n"); resolved != gitDir {
+		return fmt.Errorf("checking git checkout %s: git directory resolved to %q", absTree, resolved)
+	}
+
+	// The repository config names the ref backend. Reftable needs Git 2.53's
+	// strict ref verification, so it is gated on the native version; an
+	// unknown backend is never assumed safe.
+	storage, err := readRefStorage(filepath.Dir(absTree), gitDir)
+	if err != nil {
+		return fmt.Errorf("checking git checkout %s: %w", absTree, err)
+	}
+	switch storage {
+	case "files":
+	case "reftable":
+		supported, err := nativeGitSupportsReftable(filepath.Dir(absTree))
+		if err != nil {
+			return fmt.Errorf("checking git checkout %s: %w", absTree, err)
+		}
+		if !supported {
+			return fmt.Errorf("checking git checkout %s: reftable storage requires Git 2.53 or newer", absTree)
+		}
+	default:
+		return fmt.Errorf("checking git checkout %s: unsupported git ref storage %q", absTree, storage)
+	}
+	return nil
+}
+
+// ValidateRepositoryRoot validates tree as a plain directory or a real .git
+// checkout, reporting whether it is plain. A root with a .git entry keeps the
+// strict checkout validation and is never treated as plain; plain roots are
+// classified by entry presence without invoking Git.
+func ValidateRepositoryRoot(tree string) (plain bool, err error) {
+	absTree, err := filepath.Abs(tree)
+	if err != nil {
+		return false, err
+	}
+
+	_, err = os.Lstat(filepath.Join(absTree, ".git"))
+	switch {
+	case err == nil:
+		return false, validateGitCheckout(absTree)
+	case !errors.Is(err, fs.ErrNotExist):
+		return false, fmt.Errorf("checking git checkout %s: %w", absTree, err)
+	}
+
+	// Conservatively mirror Git's is_git_directory() layout checks by entry
+	// presence. Avoid rev-parse: untrusted metadata can redirect or block reads.
+	present := make(map[string]bool, 4)
+	for _, name := range []string{"HEAD", "commondir", "objects", "refs"} {
+		_, err := os.Lstat(filepath.Join(absTree, name))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return false, fmt.Errorf("checking git checkout %s: inspecting root entry %s: %w", absTree, name, err)
+		}
+		present[name] = err == nil
+	}
+	if present["HEAD"] && (present["commondir"] || (present["objects"] && present["refs"])) {
+		return false, fmt.Errorf("checking git checkout %s: unsupported git layout: root has Git directory metadata but no .git directory; use a normal .git checkout or a plain directory", absTree)
+	}
+	return true, nil
+}
+
+// runBoundedGit runs one native Git command with isolated config and a fixed
+// deadline, returning stdout only on success. A non-empty gitDir is passed as
+// an absolute --git-dir, and cwd must be outside any untrusted tree.
+func runBoundedGit(cwd, gitDir string, stdin []byte, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if gitDir != "" {
+		args = append([]string{"--no-replace-objects", "--git-dir=" + gitDir}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = cwd
+	// Inherited Git selectors and tracing are omitted, and global and system
+	// config are disabled so repository config is the only config source.
+	cmd.Env = []string{
+		"PATH=" + os.Getenv("PATH"),
+		"LC_ALL=C",
+		"TMPDIR=" + os.TempDir(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+	}
+	cmd.WaitDelay = time.Second
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, fmt.Errorf("git %s: %w", gitSubcommand(args), ctxErr)
+	}
+	if runErr != nil {
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return nil, fmt.Errorf("git %s: %w: %s", gitSubcommand(args), runErr, msg)
+		}
+		return nil, fmt.Errorf("git %s: %w", gitSubcommand(args), runErr)
+	}
+	return stdout.Bytes(), nil
+}
+
+// gitSubcommand returns the command name for error messages, skipping global
+// options and the values of -c.
+func gitSubcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-c":
+			i++
+		case strings.HasPrefix(args[i], "-"):
+		default:
+			return args[i]
+		}
+	}
+	return "git"
+}
+
+// readRefStorage returns the repository's declared ref backend. Local config
+// is read without includes, and an absent key means the default files backend.
+// Any other query failure is fatal rather than assumed to be files.
+func readRefStorage(cwd, gitDir string) (string, error) {
+	out, err := runBoundedGit(cwd, gitDir, nil, "config", "--no-includes", "--local", "--get", "extensions.refStorage")
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "files", nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// nativeGitSupportsReftable reports whether the native Git is 2.53 or newer,
+// the first release whose strict ref verification rejects malformed reftable
+// tables. Only the major and minor fields of "git version M.m.patch [suffix]"
+// are parsed; an unrecognized version is an error, not a guess.
+func nativeGitSupportsReftable(cwd string) (bool, error) {
+	out, err := runBoundedGit(cwd, "", nil, "--version")
+	if err != nil {
+		return false, err
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 3 || fields[0] != "git" || fields[1] != "version" {
+		return false, fmt.Errorf("unrecognized git version %q", strings.TrimSpace(string(out)))
+	}
+	parts := strings.SplitN(fields[2], ".", 3)
+	if len(parts) < 2 {
+		return false, fmt.Errorf("unrecognized git version %q", fields[2])
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return false, fmt.Errorf("unrecognized git version %q", fields[2])
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false, fmt.Errorf("unrecognized git version %q", fields[2])
+	}
+	return major > 2 || (major == 2 && minor >= 53), nil
+}
+
+// sanitizeReftableStore removes replacement refs from one validated reftable
+// store using native Git against a fresh trusted scratch repository with an
+// empty template, so downloaded config and hooks cannot run. Only the
+// already-validated flat reftable files are copied; the cleaned tables replace
+// the download's store.
+func sanitizeReftableStore(cwd, gitDir string) error {
+	// A reftable's real HEAD lives in the copied tables, so the source HEAD
+	// file is only a sentinel; reject a malformed one rather than proceed.
+	head, err := os.Lstat(filepath.Join(gitDir, "HEAD"))
+	if err != nil {
+		return fmt.Errorf("inspecting HEAD in %s: %w", gitDir, err)
+	}
+	if !head.Mode().IsRegular() {
+		return fmt.Errorf("git HEAD %s is not a regular file", filepath.Join(gitDir, "HEAD"))
+	}
+
+	storage, err := readRefStorage(cwd, gitDir)
+	if err != nil {
+		return fmt.Errorf("reading reftable storage %s: %w", gitDir, err)
+	}
+	if storage != "reftable" {
+		return fmt.Errorf("git reftable storage %s is not declared as reftable", gitDir)
+	}
+	supported, err := nativeGitSupportsReftable(cwd)
+	if err != nil {
+		return fmt.Errorf("reading git version for %s: %w", gitDir, err)
+	}
+	if !supported {
+		return fmt.Errorf("git reftable storage %s requires Git 2.53 or newer", gitDir)
+	}
+	format, err := readObjectFormat(cwd, gitDir)
+	if err != nil {
+		return fmt.Errorf("reading object format for %s: %w", gitDir, err)
+	}
+
+	scratch, err := os.MkdirTemp(cwd, ".fullsend-refs-*")
+	if err != nil {
+		return fmt.Errorf("creating trusted reftable store for %s: %w", gitDir, err)
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+	if _, err := runBoundedGit(cwd, "", nil,
+		"init", "--quiet", "--bare", "--template=", "--ref-format=reftable", "--object-format="+format, scratch); err != nil {
+		return fmt.Errorf("creating trusted reftable store for %s: %w", gitDir, err)
+	}
+
+	scratchStore := filepath.Join(scratch, "reftable")
+	if err := os.RemoveAll(scratchStore); err != nil {
+		return fmt.Errorf("replacing trusted reftable store for %s: %w", gitDir, err)
+	}
+	// The sanitize walk already required every reftable entry to be a regular
+	// file, so CopyFS cannot introduce a source symlink or special file.
+	if err := os.CopyFS(scratchStore, os.DirFS(filepath.Join(gitDir, "reftable"))); err != nil {
+		return fmt.Errorf("copying reftable store %s: %w", gitDir, err)
+	}
+	if err := removeReplacementRefs(cwd, scratch); err != nil {
+		return fmt.Errorf("sanitizing reftable store %s: %w", gitDir, err)
+	}
+	if err := os.RemoveAll(filepath.Join(gitDir, "reftable")); err != nil {
+		return fmt.Errorf("replacing reftable store %s: %w", gitDir, err)
+	}
+	if err := os.Rename(scratchStore, filepath.Join(gitDir, "reftable")); err != nil {
+		return fmt.Errorf("replacing reftable store %s: %w", gitDir, err)
+	}
+	return nil
+}
+
+// readObjectFormat returns the repository's declared object format, defaulting
+// to sha1 when local config does not declare one. Any other query failure or
+// unsupported format is fatal.
+func readObjectFormat(cwd, gitDir string) (string, error) {
+	out, err := runBoundedGit(cwd, gitDir, nil, "config", "--no-includes", "--local", "--get", "extensions.objectFormat")
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "sha1", nil
+		}
+		return "", err
+	}
+	switch format := strings.TrimSpace(string(out)); format {
+	case "sha1", "sha256":
+		return format, nil
+	default:
+		return "", fmt.Errorf("unsupported git object format %q", format)
+	}
+}
+
+// removeReplacementRefs verifies and cleans a trusted scratch store without
+// dereferencing symbolic refs. The symref-target override catches a finding
+// that --strict alone leaves informational.
+func removeReplacementRefs(cwd, gitDir string) error {
+	if _, err := runBoundedGit(cwd, gitDir, nil,
+		"-c", "fsck.symrefTargetIsNotARef=error", "refs", "verify", "--strict"); err != nil {
+		return fmt.Errorf("verifying refs in %s: %w", gitDir, err)
+	}
+
+	listed, err := runBoundedGit(cwd, gitDir, nil, "replace", "--list", "--format=short")
+	if err != nil {
+		return fmt.Errorf("listing replacement refs in %s: %w", gitDir, err)
+	}
+	var batch []byte
+	// Git terminates every listed suffix with one newline. Never trim the
+	// suffix itself: bytes such as U+00A0 are legal in a ref name, and
+	// normalizing them either skips a ref or deletes a different one.
+	if listing := strings.TrimSuffix(string(listed), "\n"); listing != "" {
+		for _, name := range strings.Split(listing, "\n") {
+			if name == "" {
+				return fmt.Errorf("unexpected empty replacement ref name in %s", gitDir)
+			}
+			// Git prints the raw suffix after refs/replace/; strict verification
+			// above already validated it as a ref name, and the batch is passed
+			// over stdin with NUL delimiters, never through a shell.
+			batch = append(batch, "delete refs/replace/"...)
+			batch = append(batch, name...)
+			batch = append(batch, 0, 0)
+		}
+	}
+	if len(batch) > 0 {
+		if _, err := runBoundedGit(cwd, gitDir, batch, "update-ref", "--no-deref", "--stdin", "-z"); err != nil {
+			return fmt.Errorf("removing replacement refs in %s: %w", gitDir, err)
+		}
+	}
+
+	if _, err := runBoundedGit(cwd, gitDir, nil,
+		"-c", "fsck.symrefTargetIsNotARef=error", "refs", "verify", "--strict"); err != nil {
+		return fmt.Errorf("verifying cleaned refs in %s: %w", gitDir, err)
+	}
+	remain, err := runBoundedGit(cwd, gitDir, nil, "replace", "--list", "--format=short")
+	if err != nil {
+		return fmt.Errorf("relisting replacement refs in %s: %w", gitDir, err)
+	}
+	if len(remain) != 0 {
+		return fmt.Errorf("replacement refs remain in %s", gitDir)
+	}
+	return nil
+}
+
 // SafeDownload copies a directory from a sandbox to the local machine and then
 // sanitizes the result by removing dangerous symlinks (absolute or
-// repo-escaping) and .git/hooks/. Each attempt downloads into a fresh staging
-// directory, so a partial extraction from a failed attempt cannot collide with
-// a later one. The sanitized staging directory replaces localDir only after
-// both download and sanitization succeed.
-func SafeDownload(sandboxName, remoteDir, localDir string) error {
+// repo-escaping), real .git/hooks/ directories, and Git ancestry overrides.
+// Symlinked .git entries and ancestry containers, root gitfiles, commondir
+// redirects, unsupported reftable storage, and alternate object stores are rejected.
+// The root .git/shallow is replaced with the state in snapshot, captured from
+// the host before upload, so the sandbox cannot introduce or narrow that
+// boundary.
+// Each attempt downloads into a fresh staging directory, so a partial
+// extraction from a failed attempt cannot collide with a later one. The
+// downloaded tree must pass root validation as a real .git checkout or a plain
+// directory, so only a valid root is published. When snapshot.IsCheckout is set,
+// the downloaded root must remain a checkout, because a plain output could
+// resolve Git metadata through a parent repository on later host use.
+// The sanitized staging directory replaces localDir only after download,
+// sanitization, and that check succeed.
+func SafeDownload(sandboxName, remoteDir, localDir string, snapshot RepositorySnapshot) error {
 	localDir = filepath.Clean(localDir)
 	parent := filepath.Dir(localDir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
@@ -1947,7 +2558,18 @@ func SafeDownload(sandboxName, remoteDir, localDir string) error {
 			continue
 		}
 
-		if err := sanitizeDownload(stagingDir); err != nil {
+		err = sanitizeDownload(stagingDir)
+		var plain bool
+		if err == nil {
+			plain, err = ValidateRepositoryRoot(stagingDir)
+		}
+		if err == nil && snapshot.IsCheckout && plain {
+			err = fmt.Errorf("downloaded directory %s is a plain directory, but the input repository was a git checkout; a checkout input must remain a git checkout", stagingDir)
+		}
+		if err == nil {
+			err = restoreTrustedShallow(stagingDir, snapshot.Shallow)
+		}
+		if err != nil {
 			cleanupErr := cleanupStagingDir(stagingDir)
 			if cleanupErr == nil {
 				return fmt.Errorf("sanitizing downloaded directory: %w", err)

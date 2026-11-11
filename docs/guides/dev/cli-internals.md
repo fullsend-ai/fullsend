@@ -585,7 +585,7 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │ Extract output    │ SafeDownload() with sanitization:        │
 │  │                   │ - Remove dangerous symlinks (escape)     │
 │  │                   │ - Remove .git/hooks/ (hook injection)    │
-│  │                   │                                          │
+│  │                   │ - Filter ancestry metadata               │
 │  │                   │ With validation_loop: SafeDownload       │
 │  │                   │ failure is non-fatal — clean up repo dir │
 │  │                   │ and continue to next iteration. Output   │
@@ -710,7 +710,7 @@ details, see [Agent runtimes](../../runtimes.md).
 | `Upload()` | `openshell sandbox upload ...` | Copy files into sandbox |
 | `UploadDir()` | tar -czf + Upload + Exec extract | Copy directory preserving symlinks |
 | `Download()` | `openshell sandbox download ...` | Copy files out of sandbox |
-| `SafeDownload()` | Staged download + sanitize | Retry into a fresh staging directory, remove dangerous symlinks (absolute or repo-escaping) and `.git/hooks/`, then publish the sanitized tree |
+| `SafeDownload()` | Staged download + sanitize | Retry into a fresh staging directory, remove dangerous symlinks (absolute or repo-escaping) and real `.git/hooks/` directories, remove known ancestry overrides, reject redirecting Git layouts and bare-shaped directories, require a valid root `.git` when present, then publish the sanitized tree |
 | `CollectLogs()` | Download logs dir | Extract sandbox logs |
 | `ExtractTranscripts()` | Download transcripts | Extract conversation transcripts |
 | `Delete()` | `openshell sandbox delete` | Destroy container |
@@ -720,6 +720,55 @@ details, see [Agent runtimes](../../runtimes.md).
 After downloading files from the sandbox, `sanitizeDownload()` removes:
 - **Dangerous symlinks** (absolute targets or targets that escape the repo) — Prevents sandbox escape via symlink-to-host-path attacks; relative in-repo symlinks are kept
 - **.git/hooks/** — Prevents hook injection that would execute on the host
+- **Ancestry overrides** — Removes `.git/refs/replace/`, `.git/info/grafts`,
+  and `.git/objects/info/commit-graph*`, and filters replacement refs from
+  `.git/packed-refs`. These are the ancestry paths this walker knows about;
+  the check is not a complete defense against hostile Git configuration.
+
+It rejects downloads with a non-directory root `.git`, `.git/commondir`
+redirects, or alternate object stores configured through
+`.git/objects/info/alternates` or `http-alternates`. A symlinked `.git`
+is rejected wherever the walk treats it as a repository root: the download
+root and the outermost `.git` of a nested checkout. A `.git` nested inside
+another `.git` is not treated as a separate repository root.
+
+The selected target may be a plain directory or a normal, non-bare checkout
+with a real root `.git` directory; a `.git` file (linked worktree or submodule)
+or a symlinked `.git` is unsupported. A target without `.git` is a plain
+directory unless it has the bare or redirected shape: `HEAD` plus either
+`commondir` or both `objects` and `refs`. That shape is detected by presence
+alone, without reading Git metadata. These names can occur in ordinary trees,
+so only the full combination is rejected. Fullsend validates the host target
+after the pre-script and before upload, then sanitizes and validates the
+returned tree after download and before publication, because the agent can
+alter `.git`. A plain target may return either a plain directory or a valid
+checkout; a checkout target must return a valid checkout. Otherwise, the
+download is rejected and the local destination is left unchanged.
+
+Git metadata outside the target's root `.git/` directory—for example, selected
+through `GIT_DIR` or `--git-dir`—is outside this sanitization guarantee.
+
+Reftable ref storage (`.git/reftable`) is supported when the host Git where
+the Fullsend CLI runs is 2.53 or newer; native Git validates its refs, and
+known ancestry overrides such as replacement refs are still removed. Older
+host Git rejects a reftable input at the pre-upload check and again after
+download. File-based repositories keep their existing compatibility; the
+Git 2.53+ requirement applies to host-side reftable sanitization. The sandbox
+also needs a reftable-capable Git to operate on such a checkout. Native ref
+operations use a temporary Git directory with host-created configuration, so
+downloaded configuration cannot run hooks during sanitization.
+
+Shallow state is handled separately from sanitization. Fullsend snapshots the
+root repository's trusted `.git/shallow` state immediately before upload, then
+restores its exact bytes (or absence) before publication, host validation, and
+the post-script. Returned markers containing boundary commits absent from that
+snapshot are rejected before publication: agent-chosen cutoffs cannot be
+trusted. This includes sandbox `git fetch --depth` or `--deepen` operations
+that introduce a new boundary. Removing entries or unshallowing is allowed,
+but the original trusted marker is restored; fetching objects without changing
+the boundary is also allowed. Restoration does not undo history rewrites or
+recover missing objects. A plain target contributes no trusted marker, so a
+checkout created in the sandbox must not introduce a shallow boundary.
 
 ---
 

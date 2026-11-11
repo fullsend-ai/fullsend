@@ -36,6 +36,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
@@ -9446,7 +9447,7 @@ func TestRunAgent_CancelledReviewFinalizesBeforeSandboxTeardown(t *testing.T) {
 		}
 	}))
 	done := make(chan error, 1)
-	repoDir := t.TempDir()
+	repoDir := newShallowTestRepo(t)
 	go func() {
 		done <- runAgent(ctx, "review", dir, "", repoDir, "", nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{
 			statusRepo:    "org/my-repo",
@@ -9519,7 +9520,7 @@ func TestRunAgent_CancelledReviewLeavesCommentPendingWhenHeadLookupFails(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	repoDir := t.TempDir()
+	repoDir := newShallowTestRepo(t)
 	go func() {
 		done <- runAgent(ctx, "review", dir, "", repoDir, "", nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{
 			statusRepo:    "org/my-repo",
@@ -10639,4 +10640,346 @@ func TestBuiltInGitHubReviewCancellationGuidance(t *testing.T) {
 			assert.Equal(t, tt.wantSuperseded, strings.Contains(body, "superseded by a newer commit"), body)
 		})
 	}
+}
+
+// captureGit runs git in dir with inherited GIT_* variables removed and
+// ambient hooks and system config disabled. Inherited GIT_DIR, GIT_WORK_TREE,
+// GIT_INDEX_FILE, or GIT_CONFIG_COUNT would otherwise redirect fixture writes.
+func captureGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			env = append(env, kv)
+		}
+	}
+	cmd.Env = append(env,
+		"HOME="+t.TempDir(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v: %s", args, out)
+	return strings.TrimSpace(string(out))
+}
+
+// captureGitTry runs a fixture Git command and returns its error, for probing
+// optional Git features without failing the test.
+func captureGitTry(t *testing.T, dir string, args ...string) error {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			env = append(env, kv)
+		}
+	}
+	cmd.Env = append(env,
+		"HOME="+t.TempDir(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	return cmd.Run()
+}
+
+// hostGitAtLeast is a test gate on the host Git version, not production
+// version policy.
+func hostGitAtLeast(t *testing.T, major, minor int) bool {
+	t.Helper()
+	out, err := exec.Command("git", "--version").Output()
+	require.NoError(t, err)
+	fields := strings.Fields(string(out))
+	require.GreaterOrEqual(t, len(fields), 3, "unexpected git version output: %s", out)
+	var gotMajor, gotMinor int
+	_, err = fmt.Sscanf(fields[2], "%d.%d", &gotMajor, &gotMinor)
+	require.NoError(t, err, "unexpected git version output: %s", out)
+	return gotMajor > major || (gotMajor == major && gotMinor >= minor)
+}
+
+// useFakeGitVersion puts a Git wrapper first on PATH that reports version for
+// --version and delegates every other command to the real Git.
+func useFakeGitVersion(t *testing.T, version string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	realGit, err = filepath.Abs(realGit)
+	require.NoError(t, err)
+
+	binDir := t.TempDir()
+	script := fmt.Sprintf(`#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--version" ]; then
+    echo "git version %s"
+    exit 0
+  fi
+done
+exec %q "$@"
+`, version, realGit)
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+}
+
+// newShallowTestRepo creates a three-commit repository for capture fixtures.
+func newShallowTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	captureGit(t, dir, "init", "--quiet", "--initial-branch=main", ".")
+	captureGit(t, dir, "config", "user.name", "Test")
+	captureGit(t, dir, "config", "user.email", "test@example.invalid")
+	captureGit(t, dir, "config", "commit.gpgsign", "false")
+	for _, name := range []string{"one", "two", "three"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name+".txt"), []byte(name+"\n"), 0o644))
+		captureGit(t, dir, "add", name+".txt")
+		captureGit(t, dir, "commit", "--quiet", "-m", name)
+	}
+	return dir
+}
+
+func TestCaptureRepositorySnapshot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	t.Run("full history has no marker", func(t *testing.T) {
+		snapshot, err := captureRepositorySnapshot(newShallowTestRepo(t))
+		require.NoError(t, err)
+		assert.False(t, snapshot.Shallow.Present)
+		assert.Nil(t, snapshot.Shallow.Data)
+		assert.True(t, snapshot.IsCheckout)
+	})
+
+	t.Run("shallow clone is captured and disappears after unshallow", func(t *testing.T) {
+		src := newShallowTestRepo(t)
+		clone := filepath.Join(t.TempDir(), "clone")
+		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+src, clone)
+
+		want, err := os.ReadFile(filepath.Join(clone, ".git", "shallow"))
+		require.NoError(t, err)
+		snapshot, err := captureRepositorySnapshot(clone)
+		require.NoError(t, err)
+		require.True(t, snapshot.Shallow.Present)
+		assert.Equal(t, want, snapshot.Shallow.Data)
+		assert.True(t, snapshot.IsCheckout)
+		assert.Equal(t, "1", captureGit(t, clone, "rev-list", "--count", "HEAD"))
+
+		// A pre-script may legitimately unshallow the host checkout before
+		// upload; the captured state must then carry no boundary.
+		captureGit(t, clone, "fetch", "--quiet", "--unshallow")
+		snapshot, err = captureRepositorySnapshot(clone)
+		require.NoError(t, err)
+		assert.False(t, snapshot.Shallow.Present)
+		assert.True(t, snapshot.IsCheckout)
+		assert.Equal(t, "3", captureGit(t, clone, "rev-list", "--count", "HEAD"))
+	})
+
+	t.Run("empty marker is distinct from absence", func(t *testing.T) {
+		repo := newShallowTestRepo(t)
+		require.NoError(t, os.WriteFile(filepath.Join(repo, ".git", "shallow"), nil, 0o644))
+		snapshot, err := captureRepositorySnapshot(repo)
+		require.NoError(t, err)
+		assert.True(t, snapshot.Shallow.Present)
+		assert.Empty(t, snapshot.Shallow.Data)
+		assert.True(t, snapshot.IsCheckout)
+	})
+
+	t.Run("linked worktree gitfile is unsupported", func(t *testing.T) {
+		repo := newShallowTestRepo(t)
+		wt := filepath.Join(t.TempDir(), "wt")
+		captureGit(t, repo, "worktree", "add", "--quiet", wt, "-b", "wt-branch")
+
+		snapshot, err := captureRepositorySnapshot(wt)
+		require.Error(t, err)
+		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
+	})
+
+	t.Run("plain directory without .git is accepted", func(t *testing.T) {
+		snapshot, err := captureRepositorySnapshot(t.TempDir())
+		require.NoError(t, err)
+		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
+	})
+
+	t.Run("plain directory does not capture a parent shallow checkout", func(t *testing.T) {
+		src := newShallowTestRepo(t)
+		parent := filepath.Join(t.TempDir(), "parent")
+		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+src, parent)
+		plain := filepath.Join(parent, "plain")
+		require.NoError(t, os.Mkdir(plain, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(plain, "file.txt"), []byte("content\n"), 0o644))
+
+		snapshot, err := captureRepositorySnapshot(plain)
+		require.NoError(t, err)
+		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot,
+			"plain input must not inherit the parent checkout's shallow boundary")
+	})
+
+	t.Run("bare repository root is rejected", func(t *testing.T) {
+		bare := filepath.Join(t.TempDir(), "bare.git")
+		captureGit(t, t.TempDir(), "init", "--quiet", "--bare", bare)
+
+		snapshot, err := captureRepositorySnapshot(bare)
+		require.Error(t, err)
+		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
+	})
+
+	t.Run("broken git metadata fails closed", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+		_, err := captureRepositorySnapshot(dir)
+		require.Error(t, err)
+	})
+
+	t.Run("non-regular marker is rejected", func(t *testing.T) {
+		repo := newShallowTestRepo(t)
+		require.NoError(t, os.Mkdir(filepath.Join(repo, ".git", "shallow"), 0o755))
+		_, err := captureRepositorySnapshot(repo)
+		require.Error(t, err)
+	})
+
+	t.Run("non-directory repo path fails closed", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, os.WriteFile(path, []byte("x\n"), 0o644))
+		_, err := captureRepositorySnapshot(path)
+		require.Error(t, err)
+	})
+
+	t.Run("unreadable marker fails closed", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root bypasses permission checks")
+		}
+		repo := newShallowTestRepo(t)
+		marker := filepath.Join(repo, ".git", "shallow")
+		require.NoError(t, os.WriteFile(marker, []byte("0123456789012345678901234567890123456789\n"), 0o644))
+		require.NoError(t, os.Chmod(marker, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(marker, 0o644) })
+
+		_, err := captureRepositorySnapshot(repo)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reading git shallow metadata")
+	})
+}
+
+func TestCaptureRepositorySnapshot_Reftable(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	// Reftable storage is available from Git 2.45; older hosts skip.
+	if err := captureGitTry(t, t.TempDir(), "init", "--quiet", "--ref-format=reftable", "--initial-branch=main", "."); err != nil {
+		t.Skip("git does not support --ref-format=reftable")
+	}
+
+	// newReftableTestRepo creates a two-commit reftable repository with a
+	// replacement ref, so a capture must leave both the ref backend config and
+	// the ordinary ref untouched.
+	newReftableTestRepo := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		captureGit(t, dir, "init", "--quiet", "--initial-branch=main", "--ref-format=reftable", ".")
+		captureGit(t, dir, "config", "user.name", "Test")
+		captureGit(t, dir, "config", "user.email", "test@example.invalid")
+		captureGit(t, dir, "config", "commit.gpgsign", "false")
+		for _, name := range []string{"one", "two"} {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, name+".txt"), []byte(name+"\n"), 0o644))
+			captureGit(t, dir, "add", name+".txt")
+			captureGit(t, dir, "commit", "--quiet", "-m", name)
+		}
+		captureGit(t, dir, "replace", "HEAD~1", "HEAD")
+		return dir
+	}
+
+	t.Run("reftable checkout is captured read-only", func(t *testing.T) {
+		if !hostGitAtLeast(t, 2, 53) {
+			t.Skip("host git predates reftable capture support")
+		}
+		repo := newReftableTestRepo(t)
+		assert.Equal(t, "reftable", captureGit(t, repo, "config", "--local", "--get", "extensions.refStorage"))
+		configBefore, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+		require.NoError(t, err)
+		refsBefore := captureGit(t, repo, "for-each-ref", "refs/replace")
+		require.NotEmpty(t, refsBefore)
+
+		snapshot, err := captureRepositorySnapshot(repo)
+		require.NoError(t, err)
+		assert.False(t, snapshot.Shallow.Present)
+		assert.True(t, snapshot.IsCheckout)
+
+		configAfter, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+		require.NoError(t, err)
+		assert.Equal(t, configBefore, configAfter)
+		assert.Equal(t, refsBefore, captureGit(t, repo, "for-each-ref", "refs/replace"))
+	})
+
+	t.Run("reftable input is rejected when host git reports 2.52", func(t *testing.T) {
+		repo := newReftableTestRepo(t)
+		useFakeGitVersion(t, "2.52.0")
+		configBefore, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+		require.NoError(t, err)
+		refsBefore := captureGit(t, repo, "for-each-ref", "refs/replace")
+
+		snapshot, err := captureRepositorySnapshot(repo)
+		require.Error(t, err)
+		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
+
+		configAfter, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+		require.NoError(t, err)
+		assert.Equal(t, configBefore, configAfter)
+		assert.Equal(t, refsBefore, captureGit(t, repo, "for-each-ref", "refs/replace"))
+	})
+
+	t.Run("file-based checkout is accepted when host git reports 2.52", func(t *testing.T) {
+		repo := newShallowTestRepo(t)
+		useFakeGitVersion(t, "2.52.0")
+
+		snapshot, err := captureRepositorySnapshot(repo)
+		require.NoError(t, err)
+		assert.False(t, snapshot.Shallow.Present)
+		assert.True(t, snapshot.IsCheckout)
+	})
+}
+
+func TestCaptureGitIgnoresInheritedGitEnv(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	decoy := newShallowTestRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(decoy, "decoy.txt"), []byte("decoy\n"), 0o644))
+	captureGit(t, decoy, "add", "decoy.txt")
+	captureGit(t, decoy, "commit", "--quiet", "-s", "-m", "decoy")
+
+	decoyHead := captureGit(t, decoy, "rev-parse", "HEAD")
+	decoyConfigPath := filepath.Join(decoy, ".git", "config")
+	decoyConfig, err := os.ReadFile(decoyConfigPath)
+	require.NoError(t, err)
+	decoyIndexPath := filepath.Join(decoy, ".git", "index")
+	decoyIndex, err := os.ReadFile(decoyIndexPath)
+	require.NoError(t, err)
+
+	decoyGlobal := filepath.Join(t.TempDir(), "global.gitconfig")
+	require.NoError(t, os.WriteFile(decoyGlobal, []byte("[user]\n\tname = Decoy\n"), 0o644))
+
+	t.Setenv("GIT_DIR", filepath.Join(decoy, ".git"))
+	t.Setenv("GIT_WORK_TREE", decoy)
+	t.Setenv("GIT_INDEX_FILE", decoyIndexPath)
+	t.Setenv("GIT_CONFIG_GLOBAL", decoyGlobal)
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "user.name")
+	t.Setenv("GIT_CONFIG_VALUE_0", "Injected")
+
+	repo := newShallowTestRepo(t)
+	_, err = os.Stat(filepath.Join(repo, ".git", "config"))
+	require.NoError(t, err)
+	assert.Equal(t, "3", captureGit(t, repo, "rev-list", "--count", "HEAD"))
+	assert.Equal(t, "Test", captureGit(t, repo, "log", "-1", "--format=%an"))
+
+	decoyConfigAfter, err := os.ReadFile(decoyConfigPath)
+	require.NoError(t, err)
+	assert.Equal(t, decoyConfig, decoyConfigAfter)
+	decoyIndexAfter, err := os.ReadFile(decoyIndexPath)
+	require.NoError(t, err)
+	assert.Equal(t, decoyIndex, decoyIndexAfter)
+	assert.Equal(t, "4", captureGit(t, decoy, "rev-list", "--count", "HEAD"))
+	assert.Equal(t, decoyHead, captureGit(t, decoy, "rev-parse", "HEAD"))
 }

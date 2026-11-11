@@ -2460,6 +2460,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		uploadExcludes = append(uploadExcludes, rel)
 		gitExtraExcludes = append(gitExtraExcludes, rel+"/")
 	}
+	// Freeze the trusted host repository state once, after the pre-script
+	// (which may unshallow the checkout) and immediately before the only
+	// upload. Every later download and validation iteration is reconciled
+	// to it.
+	hostRepositorySnapshot, err := captureRepositorySnapshot(hostRepositoryDir)
+	if err != nil {
+		printer.StepFail("Failed to copy project code")
+		return fmt.Errorf("capturing shallow repository state: %w", err)
+	}
 	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir, uploadExcludes...); err != nil {
 		printer.StepFail("Failed to copy project code")
 		return fmt.Errorf("copying project code: %w", err)
@@ -3010,7 +3019,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
-		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir); err != nil {
+		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir, hostRepositorySnapshot); err != nil {
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				tx.EmitTranscriptErrors(os.Stderr, es)
 			}
@@ -8309,6 +8318,47 @@ func forceRemoveAll(path string) error {
 		return nil
 	})
 	return os.RemoveAll(path)
+}
+
+// captureRepositorySnapshot validates and captures the trusted shallow state
+// after the pre-script and before the only upload, so every later download is
+// reconciled to it. A plain input returns a zero snapshot without Git
+// discovery, so a parent checkout is never captured. A materialized checkout
+// records IsCheckout so the downloaded root must remain a checkout.
+func captureRepositorySnapshot(repoDir string) (sandbox.RepositorySnapshot, error) {
+	plain, err := sandbox.ValidateRepositoryRoot(repoDir)
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("validating target repository: %w", err)
+	}
+	if plain {
+		return sandbox.RepositorySnapshot{}, nil
+	}
+	snapshot := sandbox.RepositorySnapshot{IsCheckout: true}
+
+	shallowPath, err := revParse(repoDir, "--git-path", "shallow")
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("resolving git shallow path: %w", err)
+	}
+	if !filepath.IsAbs(shallowPath) {
+		shallowPath = filepath.Join(repoDir, shallowPath)
+	}
+
+	info, err := os.Stat(shallowPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return snapshot, nil
+	}
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("inspecting git shallow metadata: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("git shallow metadata %s is not a regular file", shallowPath)
+	}
+	data, err := os.ReadFile(shallowPath)
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("reading git shallow metadata %s: %w", shallowPath, err)
+	}
+	snapshot.Shallow = sandbox.ShallowState{Present: true, Data: data}
+	return snapshot, nil
 }
 
 // checkProviderProfileIntegrity validates that every provider references a
