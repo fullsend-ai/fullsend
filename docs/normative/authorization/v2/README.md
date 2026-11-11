@@ -474,6 +474,7 @@ to the compatibility rules until implementation migration is complete.
 | A needed CEL actor-verdict cache entry is expired, invalidated, or scoped to another source, actor, repository, policy, or revision | Refresh from the authoritative actor-role source; if that cannot complete, the dependent result remains unknown and cannot start a sandbox |
 | The actor of a fact requiring the gate is human and below the selected harness minimum without the exact applicable human label grant for a `triage` minimum, or is a bot with no recognized role or narrow grant | The fact is excluded from that harness's authorized CEL view and cannot trigger execution |
 | Versioned normalized-entity contract is missing or incomplete | Entity-first execution denied |
+| No implemented entity-context-snapshot v2 producer covers the source and kind, or the snapshot cannot record the harness's effective `human_min_role` | Entity-first execution denied |
 
 ## Exceptions
 
@@ -587,20 +588,29 @@ contract defines its CEL-eligible fields and coverage states and an applicable
 model-facing input contract defines its prompt-eligible fields. The CEL field
 gate is a platform allowlist; a harness may request fewer fields but cannot
 expand it. [Normalized entity v1](../../normalized-entity/v1/README.md)
-defines that gate. For the Git-forge work items and change proposals in its scope,
-[entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
-defines the model-facing field gate. That snapshot does not cover Jira issues
-or GitHub Discussions; their entity-first paths require an applicable
-prompt-field gate before implementation is enabled.
+defines that gate. [Entity-context-snapshot v2](../../entity-context-snapshot/v2/README.md)
+defines the model-facing field gate for every Normalized entity v1
+provider/kind pair: GitHub issues, pull requests, and Discussions; GitLab
+issues and merge requests; and Jira issues
+([ADR 0170](../../../ADRs/0170-align-entity-context-snapshot-with-normalized-entity.md)).
+Its `collection.json` records the selected harness's effective
+`human_min_role`, and its record admission applies the per-record gates in this
+contract. [Entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
+covers only Git-forge work items and change proposals with the v1
+`triage`/`write` threshold, so it does not satisfy this prerequisite for an
+entity-source harness.
 
 > **Revision note:** The entity-first prerequisite now checks separate CEL
 > and model-facing field contracts for each source and kind. This tightens the
 > future enablement gate; entity-first execution remains unimplemented.
+> Entity-context-snapshot v2 now supplies the model-facing contract for every
+> Normalized entity v1 pair; implementation is still required.
 
 > **Planned:** Entity-source CEL is not implemented and remains disabled until
 > [Normalized entity v1](../../normalized-entity/v1/README.md),
-> the applicable prompt-field gate, and the run-time authorization and launch
-> checks described here are implemented. Legacy non-CEL, non-entity workflows
+> [entity-context-snapshot v2](../../entity-context-snapshot/v2/README.md),
+> and the run-time authorization and launch checks described here are
+> implemented for the source and kind. Legacy non-CEL, non-entity workflows
 > remain on Authorization v1.
 
 With a prompting event, the event-actor authorization gate for the selected
@@ -1100,8 +1110,10 @@ records and pins the policy identity it actually verifies through its own
 context, actor, and model-record checks.
 The dispatch/poll policy identity may differ; it is not permission and need not
 be verified as the same revision at run. Migration also requires per-harness
-event and entity actor gates and an entity-context-snapshot v2 contract that
-can represent all four allowed minimums and the changed record-admission rule.
+event and entity actor gates and an entity-context-snapshot v2 producer.
+[Entity-context-snapshot v2](../../entity-context-snapshot/v2/README.md)
+defines the contract that represents all four allowed minimums and the changed
+record-admission rule.
 [Entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
 retains its historical observation/mutation-derived `triage`/`write` rule until that
 migration.

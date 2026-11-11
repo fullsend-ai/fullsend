@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v2/reviews.schema.json",
+  "title": "ReviewRelationships",
+  "type": "object",
+  "required": ["reviews"],
+  "properties": {
+    "reviews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "record_key", "review_state", "submitted_at"],
+        "properties": {
+          "id": { "$ref": "common.schema.json#/$defs/structural_id" },
+          "record_key": { "$ref": "common.schema.json#/$defs/record_key" },
+          "review_state": {
+            "enum": ["approved", "changes_requested", "commented", "dismissed"],
+            "description": "Formal review disposition; same name and values as Normalized entity v1 review_state."
+          },
+          "reviewed_sha": { "$ref": "common.schema.json#/$defs/git_oid" },
+          "submitted_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+          "dismissed_at": {
+            "oneOf": [
+              { "$ref": "common.schema.json#/$defs/timestamp" },
+              { "type": "null" }
+            ]
+          },
+          "dismissed_by_actor_id": {
+            "oneOf": [
+              { "$ref": "common.schema.json#/$defs/structural_id" },
+              { "type": "null" }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "review_state": { "const": "dismissed" } }, "required": ["review_state"] },
+            "then": { "required": ["dismissed_at", "dismissed_by_actor_id"] },
+            "else": { "not": { "anyOf": [{ "required": ["dismissed_at"] }, { "required": ["dismissed_by_actor_id"] }] } }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

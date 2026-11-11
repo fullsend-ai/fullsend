@@ -750,13 +750,19 @@ key mismatch after a move requires re-resolution by the immutable ID. A
 mismatch is an error. Event-time fields can differ from current entity fields;
 producers MUST NOT patch entity state from an event.
 
-[Entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
-is model-facing data staged after routing. It shares GitHub/GitLab source IDs
-with this document but uses a distinct hashed snapshot `record_key` and has
-different coverage and authorization checkpoints. Its v1 scope excludes Jira
-issues and GitHub Discussions. Neither document substitutes for the other.
-The resolved entity may be partially fetched for CEL while a later snapshot fetches separate
-model-facing context.
+[Entity-context-snapshot v2](../../entity-context-snapshot/v2/README.md)
+is model-facing data staged after routing and the model-facing field gate for
+every provider/kind pair in this document. It uses this document's names and
+meanings for shared identity, source, author, actor, state, timestamp, label,
+thread, and coverage-status fields, including the same canonical `entity.id`,
+and lists its intentional shape differences in
+[its relationship section](../../entity-context-snapshot/v2/README.md#relationship-to-normalized-entity-v1).
+It uses a distinct hashed snapshot `record_key` and has different coverage and
+authorization checkpoints. [Entity-context-snapshot v1](../../entity-context-snapshot/v1/README.md)
+excludes Jira issues and GitHub Discussions and uses different field names.
+Neither snapshot version substitutes for this document, nor this document for
+a snapshot. The resolved entity may be partially fetched for CEL while a later
+snapshot fetches separate model-facing context.
 
 ## Provider mappings
 

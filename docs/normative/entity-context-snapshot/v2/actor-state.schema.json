@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v2/actor-state.schema.json",
+  "title": "ActorState",
+  "type": "object",
+  "required": ["actors"],
+  "properties": {
+    "actors": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["id", "login", "kind", "role", "role_verified"],
+        "properties": {
+          "id": { "$ref": "common.schema.json#/$defs/structural_id" },
+          "login": { "type": ["string", "null"], "minLength": 1 },
+          "kind": { "enum": ["human", "bot"] },
+          "role": {
+            "oneOf": [
+              { "$ref": "common.schema.json#/$defs/actor_role" },
+              { "type": "null" }
+            ],
+            "description": "Verified effective human role; none for a provider-classified bot; null when a human role lookup failed (Normalized entity v1 unknown with reason failed)."
+          },
+          "bot_role": {
+            "type": ["string", "null"],
+            "minLength": 1,
+            "description": "Registered ADR 0107 bot role, or null after a completed no-match or failed lookup; absent for a human."
+          },
+          "role_verified": {
+            "type": "boolean",
+            "description": "True when the applicable role lookup completed, including a bot no-match; false when it failed."
+          }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "kind": { "const": "bot" } }, "required": ["kind"] },
+            "then": {
+              "required": ["bot_role"],
+              "properties": { "role": { "const": "none" } },
+              "if": { "properties": { "role_verified": { "const": false } }, "required": ["role_verified"] },
+              "then": { "properties": { "bot_role": { "type": "null" } } }
+            }
+          },
+          {
+            "if": { "properties": { "kind": { "const": "human" } }, "required": ["kind"] },
+            "then": {
+              "not": { "required": ["bot_role"] },
+              "if": { "properties": { "role_verified": { "const": true } }, "required": ["role_verified"] },
+              "then": { "properties": { "role": { "$ref": "common.schema.json#/$defs/actor_role" } } },
+              "else": { "properties": { "role": { "type": "null" } } }
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

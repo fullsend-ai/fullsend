@@ -26,6 +26,12 @@ effective `human_min_role` above an immutable `triage` floor. Snapshot v1
 retains its historical threshold; deterministic assembly, current-revision
 checks, and filtering remain required.
 
+[ADR 0170](0170-align-entity-context-snapshot-with-normalized-entity.md)
+supersedes the v1 contract for new producers with
+[entity-context-snapshot v2](../normative/entity-context-snapshot/v2/README.md),
+which covers Jira issues and GitHub Discussions, aligns field names with
+normalized entity v1, and represents the ADR 0151 minimum.
+
 ## Context
 
 [Issue #6407](https://github.com/fullsend-ai/fullsend/issues/6407) identifies
