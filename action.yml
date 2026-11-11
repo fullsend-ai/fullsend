@@ -776,7 +776,6 @@ runs:
       if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != '' && inputs.mint-url != ''
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github_token }}
         MINT_URL: ${{ inputs.mint-url }}
         AGENT: ${{ inputs.agent }}
         STATUS_REPO: ${{ inputs.status-repo }}

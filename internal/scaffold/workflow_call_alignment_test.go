@@ -1709,6 +1709,8 @@ func TestActionReconcileStatusUsesSuppliedRoleFallback(t *testing.T) {
 		"startup failure reporter must select the failure repository and number as a pair")
 	assert.Contains(t, s, "RESOLVED_ROLE=\"${HARNESS_ROLE:-${SUPPLIED_ROLE:-${AGENT}}}\"",
 		"reconciliation must use the supplied role when an early failure prevents the harness from reporting one")
+	assert.NotContains(t, s, "        GH_TOKEN: ${{ inputs.github_token }}\n        MINT_URL:",
+		"status reconciliation mints its own token and must not receive the workflow token")
 }
 
 func TestActionReconcileStatusSupportsOlderCLIs(t *testing.T) {
@@ -1926,6 +1928,15 @@ func TestReusableDispatchStatusCommentPassthrough(t *testing.T) {
 		assert.Contains(t, section, "github_token: ${{ github.token }}")
 		assert.Contains(t, section, "failure-token: ${{ steps.app-token.outputs.token || github.token }}")
 	})
+
+	for _, agent := range []string{"code", "fix"} {
+		t.Run(agent+" uses coder role for startup reporting", func(t *testing.T) {
+			section := extractStepSection(t, s, "Run "+agent+" agent")
+			assert.Contains(t, section, "agent: "+agent)
+			assert.Contains(t, section, "role: coder",
+				"the %s composite path must use the coder identity for startup-failure deduplication", agent)
+		})
+	}
 }
 
 // TestShimPerRepoProjectNumberPassthrough validates that the per-repo shim
