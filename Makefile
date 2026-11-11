@@ -278,6 +278,13 @@ ci-local:
 # BEHAVIOUR_CAPABILITIES, on dev against the fix or on stage once it is on
 # main; when that passes, declare it here. Jira AISDLC-654 tracks that
 # step and the harnessLogPollWindow confirmation.
+# fetch-allowlist-gate (features/dispatch/fetch-allowlist-gate.feature) is
+# not declared until its scenario has passed one live run. A dev run (an
+# authorized PR or the merge queue) installs the PR head's fullsend
+# binary; a stage run (push to main) takes main's. Run make behaviour-test
+# on demand with fetch-allowlist-gate added to BEHAVIOUR_CAPABILITIES, on
+# dev against the fix or on stage once it is on main; when that passes,
+# declare it here (#9291).
 BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
 behaviour-test:

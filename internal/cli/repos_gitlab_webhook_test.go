@@ -63,7 +63,7 @@ func TestSetupGitLabWebhookFastPath_ProvisionsWithoutLeakingSecrets(t *testing.T
 	c := newWebhookCLIFake()
 	var buf bytes.Buffer
 
-	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false))
+	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false, nil))
 
 	require.Len(t, c.CreatedTriggerTokens, 1)
 	require.Len(t, c.CreatedProjectHooks, 1)
@@ -77,14 +77,14 @@ func TestSetupGitLabWebhookFastPath_ProvisionsWithoutLeakingSecrets(t *testing.T
 
 	// Re-install is silent and makes no changes.
 	buf.Reset()
-	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false))
+	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false, nil))
 	assert.Empty(t, buf.String())
 	assert.Len(t, c.CreatedTriggerTokens, 1)
 	assert.Len(t, c.CreatedProjectHooks, 1)
 
 	// Rotation mints a new token, revokes the old one, and still leaks nothing.
 	buf.Reset()
-	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", true, false))
+	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", true, false, nil))
 	require.Len(t, c.CreatedTriggerTokens, 2)
 	assert.Equal(t, []int64{c.CreatedTriggerTokens[0].ID}, c.RevokedTriggerTokenIDs)
 	assert.Contains(t, buf.String(), "Rotated pipeline trigger token")
@@ -96,7 +96,7 @@ func TestSetupGitLabWebhookFastPath_DeferredWhenNotReady(t *testing.T) {
 	c.PipelineVarOverrideRoles["group/app"] = forge.PipelineVarOverrideDeveloper
 	var buf bytes.Buffer
 
-	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false))
+	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false, nil))
 
 	assert.Contains(t, buf.String(), "deferred")
 	assert.Empty(t, c.CreatedTriggerTokens)
@@ -113,7 +113,7 @@ func TestSetupGitLabWebhookFastPath_MaintainerBackedInstallDefers(t *testing.T) 
 	c.ProjectMemberAccess[installerID] = forge.GitLabAccessLevelMaintainer
 	var buf bytes.Buffer
 
-	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false))
+	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false, nil))
 
 	assert.Empty(t, c.CreatedProjectHooks, "no webhook is enabled")
 	assert.Equal(t, []int64{c.CreatedTriggerTokens[0].ID}, c.RevokedTriggerTokenIDs, "the Maintainer-owned token is revoked")
@@ -126,7 +126,7 @@ func TestSetupGitLabWebhookFastPath_Error(t *testing.T) {
 	c.Errors = map[string]error{"CreateProjectHook": errors.New("boom")}
 	var buf bytes.Buffer
 
-	err := setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false)
+	err := setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false, nil)
 
 	require.Error(t, err)
 	assert.Contains(t, buf.String(), "GitLab webhook fast-path")
@@ -142,14 +142,14 @@ func TestRefreshGitLabWebhookTriggerRoute(t *testing.T) {
 	printer := ui.New(&buf)
 
 	// A missing managed webhook is provisioned.
-	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false))
+	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false, nil))
 	assert.Len(t, c.CreatedTriggerTokens, 1)
 
-	require.NoError(t, setupGitLabWebhookFastPath(ctx, c, printer, "group", "app", false, false))
+	require.NoError(t, setupGitLabWebhookFastPath(ctx, c, printer, "group", "app", false, false, nil))
 	require.Len(t, c.CreatedTriggerTokens, 1)
 
 	// A webhook that matches the route is left alone.
-	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false))
+	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false, nil))
 	assert.Len(t, c.CreatedTriggerTokens, 1)
 	assert.Empty(t, c.UpdatedProjectHooks)
 
@@ -158,15 +158,15 @@ func TestRefreshGitLabWebhookTriggerRoute(t *testing.T) {
 	// it is converged back to a Poller-owned trigger.
 	c.ProjectHooks["group/app"][0].Description = "Fullsend webhook fast-path (trigger token ID 9001)"
 	buf.Reset()
-	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", true), "dry runs skip the refresh")
+	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", true, nil), "dry runs skip the refresh")
 	assert.Len(t, c.CreatedTriggerTokens, 1)
-	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false))
+	require.NoError(t, refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false, nil))
 	require.Len(t, c.CreatedTriggerTokens, 2)
 	assert.Contains(t, c.ProjectHooks["group/app"][0].Description, "(trigger token ID 2)")
 	assert.NotContains(t, buf.String(), c.CreatedTriggerTokens[1].Token)
 
 	c.Errors = map[string]error{"ListProjectHooks": errors.New("503 unavailable")}
-	err := refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false)
+	err := refreshGitLabWebhookTriggerRoute(ctx, c, printer, "group", "app", false, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking the GitLab webhook trigger route")
 }

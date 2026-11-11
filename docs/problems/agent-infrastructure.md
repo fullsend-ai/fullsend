@@ -123,7 +123,31 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
 ## Open questions
 
 - What is the right level of isolation per agent (process, container, microVM, separate cluster)?
-- How do we provide agents with “resources to do their work” (clone, tools, APIs) without over-privileging them or creating a single high-value target? (Credential access decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md), with [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) as the first inference credential delivered entirely through a gateway provider, and [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) routing inference through an LLM gateway that accepts the job's OIDC token so the forge stores no reusable provider key ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md) adds an opt-in API-key mode for gateways that cannot trust forge OIDC, at the cost of a long-lived secret); tool access restrictions decided in [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md); cross-org public GitHub Packages access decided in [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md); user secrets for host-side scripts on GitHub decided in [ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md); the sandbox environment the runner provides — which env vars it injects, per runtime, and which keys it reserves from harness override — is now published as a generated, machine-checkable contract ([ADR 0146](../ADRs/0146-sandbox-environment-contract-manifest.md)); Jira access with either a bot account or an Atlassian-managed service account, through an API URL separate from the site URL, decided in [ADR 0156](../ADRs/0156-separate-jira-api-url-from-site-url.md); other resource access remains open.)
+- How do we provide agents with “resources to do their work” (clone, tools,
+  APIs) without over-privileging them or creating a single high-value target?
+  Credential access is decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md),
+  with [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) as the first
+  inference credential delivered entirely through a gateway provider and
+  [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) routing
+  inference through an LLM gateway that accepts the job's OIDC token so the
+  forge stores no reusable provider key. [ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md)
+  adds an opt-in API-key mode for gateways that cannot trust forge OIDC, at the
+  cost of a long-lived secret. Tool access restrictions are decided in
+  [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md), and
+  cross-org public GitHub Packages access in
+  [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md).
+  User-managed secrets for host-side scripts on GitHub are decided in
+  [ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md), with
+  source selection for selected runner secrets in
+  [ADR 0155](../ADRs/0155-configure-vault-backed-runner-secrets.md). The
+  runner's sandbox environment — its injected env vars, per-runtime values,
+  and keys reserved from harness override — is published as a generated,
+  machine-checkable contract in
+  [ADR 0146](../ADRs/0146-sandbox-environment-contract-manifest.md). Jira
+  access for bot and Atlassian-managed service accounts uses the separate API
+  URL decided in
+  [ADR 0156](../ADRs/0156-separate-jira-api-url-from-site-url.md). Other
+  agent resource access remains open.
 - Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
 - ~~How do we preserve end-to-end traceability for event-driven agent dispatch in GitHub Actions?~~ Decided in [ADR 0041](../ADRs/0041-synchronous-workflow-call-event-dispatch.md) (synchronous `workflow_call` dispatch for the event path).
 - How do we compare 3rd party vs internal vs build-our-own on concrete criteria: cost, time to first agent, compliance, and alignment with our security and coordination model?

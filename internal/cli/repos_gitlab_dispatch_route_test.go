@@ -6,12 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -77,6 +79,52 @@ func TestConvergeGitLabDispatchRoute_StageOrder(t *testing.T) {
 			assert.Len(t, c.CreatedProjectHooks, 1, "the webhook is provisioned in both orders")
 		})
 	}
+}
+
+// A blocker that still holds when the webhook is refreshed after the
+// trigger-account stage reports the same deferral twice; install prints it
+// once (#9250).
+func TestConvergeGitLabDispatchRoute_PrintsRepeatedDeferralOnce(t *testing.T) {
+	c := newWebhookCLIFake()
+	c.PipelineVarOverrideRoles["group/app"] = forge.PipelineVarOverrideDeveloper
+	opts := &reposInstallConfig{testConvergeTriggerAccount: func(context.Context, forge.Client, string, string, bool) error { return nil }}
+	var buf bytes.Buffer
+
+	require.NoError(t, convergeGitLabDispatchRoute(context.Background(), opts, c, ui.New(&buf), "group", "app", true, nil))
+
+	assert.Empty(t, c.CreatedProjectHooks)
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	require.NotEmpty(t, lines)
+	counts := map[string]int{}
+	for _, l := range lines {
+		counts[l]++
+	}
+	for l, n := range counts {
+		assert.Equal(t, 1, n, "line printed %d times: %s", n, l)
+	}
+	assert.Contains(t, buf.String(), "deferred")
+}
+
+func TestPrintGitLabWebhookDetails(t *testing.T) {
+	deferred := repos.GitLabWebhookResult{Action: "deferred", Details: []string{"blocked: fix it"}}
+	done := repos.GitLabWebhookResult{Action: "created", Details: []string{"Created project webhook"}}
+
+	var buf bytes.Buffer
+	p := ui.New(&buf)
+	seen := gitlabDeferralsShown{}
+	printGitLabWebhookDetails(p, "group/app", deferred, seen)
+	printGitLabWebhookDetails(p, "group/app", deferred, seen)
+	assert.Equal(t, 1, strings.Count(buf.String(), "[group/app] blocked: fix it"), "a repeated deferral is printed once")
+
+	buf.Reset()
+	printGitLabWebhookDetails(p, "group/app", deferred, nil)
+	printGitLabWebhookDetails(p, "group/app", deferred, nil)
+	assert.Equal(t, 2, strings.Count(buf.String(), "[group/app] blocked: fix it"), "a nil set prints every line")
+
+	buf.Reset()
+	printGitLabWebhookDetails(p, "group/app", done, seen)
+	printGitLabWebhookDetails(p, "group/app", done, seen)
+	assert.Equal(t, 2, strings.Count(buf.String(), "[group/app] Created project webhook"), "completed actions are not deduplicated")
 }
 
 // Convergence probes the webhook before the lifecycle settles the route, so a
@@ -187,7 +235,7 @@ func TestRefreshGitLabWebhookAfterPollerFailure_KeepsAccountHookWhenActivationWi
 	c := newWebhookCLIFake()
 	seedActiveTriggerAccountRoute(c)
 	var buf bytes.Buffer
-	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false))
+	require.NoError(t, setupGitLabWebhookFastPath(context.Background(), c, ui.New(&buf), "group", "app", false, false, nil))
 	require.Len(t, c.CreatedProjectHooks, 1)
 	require.Empty(t, c.CreatedTriggerTokens, "the account route reuses its published trigger")
 	hook := c.CreatedProjectHooks[0]
