@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"slices"
@@ -640,13 +642,52 @@ func PerRepoDefaultRoles() []string {
 	return []string{"triage", "coder", "review", "fix", "retro", "prioritize"}
 }
 
+// defaultAllowedRepos are the repositories whose raw content the default
+// allowlist admits.
+var defaultAllowedRepos = []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}
+
 // DefaultAllowedRemoteResources returns the standard allowlist prefixes
 // for base composition and agent registration URLs.
+//
+// The raw.githubusercontent.com prefixes are always included. When
+// GITHUB_SERVER_URL names a GitHub host other than github.com (for
+// example GitHub Enterprise Server), the raw-content prefixes for the
+// same repositories on that host (https://<host>/<owner>/<repo>/raw/)
+// are appended, so their copies on the configured host are admitted too.
 func DefaultAllowedRemoteResources() []string {
-	return []string{
-		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
-		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	prefixes := make([]string, 0, 2*len(defaultAllowedRepos))
+	for _, repo := range defaultAllowedRepos {
+		prefixes = append(prefixes, "https://raw.githubusercontent.com/"+repo+"/")
 	}
+	if base := githubServerBaseURL(os.Getenv("GITHUB_SERVER_URL")); base != "" {
+		for _, repo := range defaultAllowedRepos {
+			prefixes = append(prefixes, base+"/"+repo+"/raw/")
+		}
+	}
+	return prefixes
+}
+
+// githubServerBaseURL returns "https://<host>" for a GitHub server URL
+// naming a host other than github.com. It returns "" for empty input,
+// github.com, and any value that is not a bare HTTPS origin (userinfo,
+// a path, a query or a fragment), so a malformed value never widens
+// the default allowlist.
+func githubServerBaseURL(serverURL string) string {
+	serverURL = strings.TrimSpace(serverURL)
+	if serverURL == "" {
+		return ""
+	}
+	u, err := url.Parse(serverURL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return ""
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return ""
+	}
+	if strings.EqualFold(u.Hostname(), "github.com") {
+		return ""
+	}
+	return "https://" + strings.ToLower(u.Host)
 }
 
 // EnsureDefaultAllowedRemoteResources returns a new slice with default
