@@ -30,7 +30,7 @@ func mergeLabel(snapshot *normentity.Document, label string) *normentity.Documen
 // own label to the same entity with a Get, merge, Put, retry-on-conflict
 // loop. No update may be lost, and the race detector checks shared state.
 func TestMemoryConcurrentMerges(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	id := mustID(t, "I_shared")
 	other := mustID(t, "I_other")
 

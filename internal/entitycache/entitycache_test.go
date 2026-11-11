@@ -11,6 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func newMemory(t *testing.T, opts MemoryOptions) *Memory {
+	t.Helper()
+	m, err := NewMemory(opts)
+	require.NoError(t, err)
+	return m
+}
+
 func mustID(t *testing.T, sourceID string) normentity.ID {
 	t.Helper()
 	id, err := normentity.NewID("github", "github.com", "work_item", sourceID)
@@ -46,7 +53,7 @@ func titleOf(t *testing.T, d *normentity.Document) string {
 }
 
 func TestGetPut_MissThenCreate(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	id := mustID(t, "I_1")
 
 	got, r0, ok := m.Get(id)
@@ -64,7 +71,7 @@ func TestGetPut_MissThenCreate(t *testing.T) {
 }
 
 func TestPut_StaleRevisionConflicts(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	id := mustID(t, "I_1")
 	_, r0, _ := m.Get(id)
 	r1, err := m.Put(id, doc("I_1", "first"), r0)
@@ -85,7 +92,7 @@ func TestPut_StaleRevisionConflicts(t *testing.T) {
 }
 
 func TestInvalidate_RejectsPreInvalidationSnapshots(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	id := mustID(t, "I_1")
 	_, r0, _ := m.Get(id)
 	r1, err := m.Put(id, doc("I_1", "first"), r0)
@@ -114,7 +121,7 @@ func TestInvalidate_RejectsPreInvalidationSnapshots(t *testing.T) {
 }
 
 func TestInvalidate_AbsentKeyAdvancesRevision(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	id := mustID(t, "I_1")
 	_, r0, ok := m.Get(id)
 	require.False(t, ok)
@@ -132,7 +139,7 @@ func TestInvalidate_AbsentKeyAdvancesRevision(t *testing.T) {
 }
 
 func TestInvalidate_DoesNotAffectOtherKeys(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	a, b := mustID(t, "I_a"), mustID(t, "I_b")
 	_, ra, _ := m.Get(a)
 	ra1, err := m.Put(a, doc("I_a", "a"), ra)
@@ -152,7 +159,7 @@ func TestInvalidate_DoesNotAffectOtherKeys(t *testing.T) {
 }
 
 func TestTombstoneLimit_BoundsMemoryAndKeepsSnapshotsStale(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	m.maxTombstones = 3
 
 	present := mustID(t, "I_present")
@@ -201,7 +208,7 @@ func TestTombstoneLimit_BoundsMemoryAndKeepsSnapshotsStale(t *testing.T) {
 }
 
 func TestInvalidate_ReturnsCollapsedRevision(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	m.maxTombstones = 1
 	id := mustID(t, "I_1")
 	rev, err := m.Invalidate(id)
@@ -213,7 +220,7 @@ func TestInvalidate_ReturnsCollapsedRevision(t *testing.T) {
 }
 
 func TestDocumentsAreCopied(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	id := mustID(t, "I_1")
 	in := doc("I_1", "aaaa")
 	in.Entity.Labels = normentity.List[string]{
@@ -242,7 +249,7 @@ func TestDocumentsAreCopied(t *testing.T) {
 }
 
 func TestPartialDataRoundTripsUnchanged(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	// Real spec examples carrying not_loaded, partial, and unsupported
 	// markers, nulls, and every collection coverage state.
 	for _, name := range []string{
@@ -274,7 +281,7 @@ func TestPartialDataRoundTripsUnchanged(t *testing.T) {
 func TestMemoryDocumentWithMarkers(t *testing.T) {
 	// Every marker reason, a null, and each non-complete coverage state
 	// survive as distinct values.
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	id := mustID(t, "I_markers")
 	in := doc("I_markers", "")
 	e := &in.Entity
@@ -301,7 +308,7 @@ func TestMemoryDocumentWithMarkers(t *testing.T) {
 }
 
 func TestInvalidInput(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	bad := normentity.ID("fullsend:entity:v1:github:GitHub.com:work_item:I_1")
 
 	got, rev, ok := m.Get(bad)
@@ -336,14 +343,14 @@ func TestInvalidInput(t *testing.T) {
 }
 
 func TestGet_UndecodableRecordIsAMiss(t *testing.T) {
-	m := NewMemory()
+	m := newMemory(t, MemoryOptions{})
 	id := mustID(t, "I_1")
 	_, r0, _ := m.Get(id)
 	r1, err := m.Put(id, doc("I_1", "x"), r0)
 	require.NoError(t, err)
 
 	m.mu.Lock()
-	m.records[id] = record{doc: []byte("{"), rev: r1}
+	m.records[id].doc = []byte("{")
 	m.mu.Unlock()
 
 	got, rev, ok := m.Get(id)

@@ -29,8 +29,8 @@ import (
 
 // Revision identifies a version of one entity's cache state. Revisions for a
 // given entity ID strictly increase with every successful Put and every
-// Invalidate, and are never reused, so equal revisions imply no intervening
-// change. Revisions are comparable only for the same entity ID. An entity ID
+// removal of the entity (Invalidate, expiry, or eviction), and are never
+// reused, so equal revisions imply no intervening change. Revisions are comparable only for the same entity ID. An entity ID
 // the cache has never seen has revision 0.
 type Revision uint64
 
@@ -53,7 +53,10 @@ var (
 //
 // Implementations must be safe for concurrent use, must copy documents on the
 // way in and out so callers cannot mutate cached state outside Put, and must
-// store documents exactly as given.
+// store documents exactly as given. An implementation may drop an entity to
+// bound its retention, but it must then advance the entity's revision exactly
+// as Invalidate does, so a Put based on a snapshot taken before the removal
+// conflicts instead of restoring stale data.
 type Cache interface {
 	// Get returns a private copy of the cached document for id and its
 	// current revision. On a miss it returns ok false together with the
@@ -67,6 +70,7 @@ type Cache interface {
 	Put(id normentity.ID, doc *normentity.Document, expected Revision) (Revision, error)
 	// Invalidate removes any cached document for id and advances its revision,
 	// so a Put based on any earlier snapshot, including a miss, conflicts.
-	// It returns the new revision, or [ErrInvalidID].
+	// It returns the new revision, or [ErrInvalidID]. A cache that bounds
+	// retention applies the same rule when it expires or evicts an entity.
 	Invalidate(id normentity.ID) (Revision, error)
 }
