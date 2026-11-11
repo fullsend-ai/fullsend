@@ -376,10 +376,15 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 				status = "renamed"
 			}
 			files = append(files, forge.PullRequestFileDiff{
-				Path:         d.NewPath,
-				PreviousPath: d.OldPath,
-				Status:       status,
-				Patch:        d.Diff,
+				Path: d.NewPath,
+				PreviousPath: func() string {
+					if d.RenamedFile {
+						return d.OldPath
+					}
+					return ""
+				}(),
+				Status: status,
+				Patch:  d.Diff,
 			})
 		}
 
@@ -387,7 +392,7 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 			break
 		}
 		if page == 100 {
-			return nil, fmt.Errorf("merge request file diff listing exceeded pagination limit")
+			return files, fmt.Errorf("%w at page 100", forge.ErrDiffListingTruncated)
 		}
 	}
 

@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -297,6 +299,7 @@ func TestPostReviewContent_StickyFailureStillFails(t *testing.T) {
 func TestPostReviewContent_SuccessSubmitsFormalReview(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
+	fc.PullRequestHeadSHA = "abc123def456"
 	printer := ui.New(io.Discard)
 	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
 	parsed := ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"}
@@ -355,15 +358,36 @@ func TestPullRequestDiffHash_IsStableAndFailsOpenForIncompleteDiffs(t *testing.T
 	assert.Empty(t, incompleteHash)
 }
 
+func TestPullRequestDiffHash_MatchesWorkflowCanonicalJSON(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{
+			Path:   "a\u2028.txt",
+			Status: "modified",
+			Patch:  "@@ -1 +1 @@\n-old\n+new\u2029",
+		}},
+	}
+
+	hash, err := pullRequestDiffHash(context.Background(), fc, "o", "r", 1)
+	require.NoError(t, err)
+
+	// This is the field order and escaping emitted by the workflow's jq
+	// projection after normalizing U+2028/U+2029 to Go's JSON representation.
+	canonicalJSON := `[{"filename":"a\u2028.txt","previous_filename":"","status":"modified","patch":"@@ -1 +1 @@\n-old\n+new\u2029"}]`
+	wantSum := sha256.Sum256([]byte(canonicalJSON))
+	assert.Equal(t, hex.EncodeToString(wantSum[:]), hash)
+}
+
 func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
+	fc.PullRequestHeadSHA = "abc123def456"
 	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
 		"o/r/1": {{Path: "README.md", Patch: "@@ -1 +1 @@\n-old\n+new"}},
 	}
 	printer := ui.New(io.Discard)
 	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
-	parsed := ReviewResult{Body: "Looks good", Action: "approve"}
+	parsed := ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"}
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
 	require.NoError(t, err)
@@ -374,11 +398,12 @@ func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 func TestPostReviewContent_PreservesGeneratedHashAndProjectionMarkers(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
+	fc.PullRequestHeadSHA = "abc123def456"
 	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
 		"o/r/1": {{Path: "README.md", Status: "modified", Patch: "@@ -1 +1 @@\n-old\n+new"}},
 	}
 	projection := "<!-- fullsend:review-findings-v2:eyJmaW5kaW5ncyI6W119 -->"
-	parsed := ReviewResult{Body: projection + "\n\nLooks good", Action: "approve"}
+	parsed := ReviewResult{Body: projection + "\n\nLooks good", Action: "approve", HeadSHA: "abc123def456"}
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
 	require.NoError(t, err)
@@ -400,6 +425,44 @@ func TestPostReviewContent_DoesNotTrustAgentHashWhenHashUnavailable(t *testing.T
 	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "&lt;!-- fullsend:review-diff-hash:")
+}
+
+func TestPostReviewContent_DoesNotPublishHashWithoutReviewedHead(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "README.md", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1,
+		ReviewResult{Body: "Looks good", Action: "approve"},
+		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
+}
+
+func TestPostReviewContent_DoesNotPublishHashWhenHeadChanges(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.PullRequestHeadSHA = "new-head"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "README.md", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1,
+		ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "reviewed-head"},
+		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
+}
+
+func TestPullRequestDiffHash_FailsOpenForTruncatedListing(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ListPullRequestFileDiffs"] = forge.ErrDiffListingTruncated
+
+	hash, err := pullRequestDiffHash(context.Background(), fc, "o", "r", 1)
+	require.NoError(t, err)
+	assert.Empty(t, hash)
 }
 
 func TestPostReviewContent_FallbackFailureDoesNotFailCommand(t *testing.T) {

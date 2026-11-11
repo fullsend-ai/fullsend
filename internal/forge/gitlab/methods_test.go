@@ -1067,6 +1067,47 @@ func TestListPullRequestFileDiffs(t *testing.T) {
 	assert.Equal(t, "other.go", diffs[1].Path)
 }
 
+func TestListPullRequestFileDiffs_NormalizesStatusAndRenamePath(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/diffs", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"new_path": "added.go", "new_file": true, "diff": "@@ -0,0 +1 @@\n+new"},
+			{"old_path": "removed.go", "new_path": "removed.go", "deleted_file": true, "diff": "@@ -1 +0,0 @@\n-old"},
+			{"old_path": "old.go", "new_path": "new.go", "renamed_file": true, "diff": "@@ -1 +1 @@\n-old\n+new"},
+			{"new_path": "modified.go", "diff": "@@ -1 +1 @@\n-old\n+new"},
+		})
+	})
+
+	diffs, err := client.ListPullRequestFileDiffs(ctx, "myorg", "myrepo", 5)
+	require.NoError(t, err)
+	require.Len(t, diffs, 4)
+	assert.Equal(t, "added", diffs[0].Status)
+	assert.Equal(t, "removed", diffs[1].Status)
+	assert.Equal(t, "renamed", diffs[2].Status)
+	assert.Equal(t, "old.go", diffs[2].PreviousPath)
+	assert.Equal(t, "modified", diffs[3].Status)
+	assert.Empty(t, diffs[3].PreviousPath)
+}
+
+func TestListPullRequestFileDiffs_ReturnsAvailableFilesWithPaginationError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/diffs", func(w http.ResponseWriter, r *http.Request) {
+		files := make([]map[string]any, 100)
+		for i := range files {
+			files[i] = map[string]any{"new_path": "file-" + strconv.Itoa(i), "diff": "@@ -1 +1 @@\n-old\n+new"}
+		}
+		writeJSON(t, w, http.StatusOK, files)
+	})
+
+	diffs, err := client.ListPullRequestFileDiffs(ctx, "myorg", "myrepo", 5)
+	require.ErrorIs(t, err, forge.ErrDiffListingTruncated)
+	assert.Len(t, diffs, 10000)
+}
+
 func TestMergeChangeProposal(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

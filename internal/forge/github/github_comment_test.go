@@ -534,6 +534,25 @@ func TestListPullRequestFileDiffs(t *testing.T) {
 	assert.Empty(t, files[1].Patch)
 }
 
+func TestListPullRequestFileDiffs_ReturnsAvailableFilesWithTruncationError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/owner/repo/pulls/5/files", r.URL.Path)
+		files := make([]map[string]any, 100)
+		for i := range files {
+			files[i] = map[string]any{
+				"filename": "file-" + strconv.Itoa(i),
+				"patch":    "@@ -1 +1 @@\n-old\n+new",
+			}
+		}
+		json.NewEncoder(w).Encode(files)
+	}))
+	defer srv.Close()
+
+	files, err := newTestClient(t, srv).ListPullRequestFileDiffs(context.Background(), "owner", "repo", 5)
+	require.ErrorIs(t, err, forge.ErrDiffListingTruncated)
+	assert.Len(t, files, 3000)
+}
+
 func TestListPullRequestCommits(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)

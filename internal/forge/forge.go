@@ -787,13 +787,24 @@ type ReviewThreadPage struct {
 
 // PullRequestFileDiff represents a file changed in a pull request along
 // with its unified diff patch. The patch may be empty for binary files,
-// rename-only changes, or when GitHub truncates large diffs.
+// rename-only changes, or when the forge cannot represent the full diff.
+// PreviousPath is populated only for renames. Status is normalized across
+// forges to added, removed, renamed, or modified.
 type PullRequestFileDiff struct {
-	Path         string
+	Path string
+	// PreviousPath is set only when the file was renamed.
 	PreviousPath string
-	Status       string
-	Patch        string
+	// Status is normalized across forges to added, removed, renamed, or modified.
+	Status string
+	// Patch is the unified diff, when the forge can represent it.
+	Patch string
 }
+
+// ErrDiffListingTruncated indicates that a forge returned a safety-capped
+// file-diff listing. Callers that need a complete diff must fail open, while
+// callers that only need the available hunks may still use the returned
+// entries.
+var ErrDiffListingTruncated = errors.New("pull request file diff listing truncated")
 
 // RateLimit is the most recent GitHub REST rate-limit state a client
 // observed, taken from the X-RateLimit-* response headers.

@@ -50,7 +50,9 @@ var findingIDRe = regexp.MustCompile(`^f_[a-zA-Z0-9]+$`)
 // before prepending its own, so a match on the first line is trusted
 // metadata. It is left unescaped there, so it stays hidden and the next
 // review run can read it (#8544).
-var reviewProjectionMarkerRe = regexp.MustCompile(`^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->$`)
+const reviewProjectionMarkerPattern = `<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->`
+
+var reviewProjectionMarkerRe = regexp.MustCompile(`^` + reviewProjectionMarkerPattern + `$`)
 
 // reviewDiffHashMarkerRe is trusted metadata emitted by this CLI, not by the
 // review agent. It lets the dispatch workflow avoid re-running a review when
@@ -59,9 +61,8 @@ var reviewProjectionMarkerRe = regexp.MustCompile(`^<!-- fullsend:review-finding
 var reviewDiffHashMarkerRe = regexp.MustCompile(`^<!-- fullsend:review-diff-hash:[0-9a-f]{64} -->$`)
 
 func reviewTrustedLeadingLineReForHash(diffHash string) *regexp.Regexp {
-	projectionPattern := reviewProjectionMarkerRe.String()[1 : len(reviewProjectionMarkerRe.String())-1]
 	hashMarker := regexp.QuoteMeta(fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->", diffHash))
-	return regexp.MustCompile(`^(?:` + projectionPattern + `|` + hashMarker + `)$`)
+	return regexp.MustCompile(`^(?:` + reviewProjectionMarkerPattern + `|` + hashMarker + `)$`)
 }
 
 func newPostReviewCmd() *cobra.Command {
@@ -290,6 +291,13 @@ func checkStaleHead(ctx context.Context, client forge.Client, owner, repo string
 	return false, currentSHA, nil
 }
 
+func shortSHA(sha string) string {
+	if len(sha) > 12 {
+		return sha[:12]
+	}
+	return sha
+}
+
 // staleHeadError is returned when a review is discarded because the PR
 // HEAD moved after the agent reviewed it. It carries StaleHeadExitCode
 // so the CLI can exit with a distinct code that post-review.sh detects.
@@ -357,14 +365,23 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, dryRun bool, printer *ui.Printer) error {
 	cfg.TrustedLeadingLine = reviewProjectionMarkerRe
 	cfg.TrustedLeadingLines = 1
-	if !dryRun {
+	if !dryRun && parsed.HeadSHA != "" {
 		if diffHash, hashErr := pullRequestDiffHash(ctx, client, owner, repo, pr); hashErr != nil {
 			printer.StepWarn(fmt.Sprintf("Could not compute review diff hash; re-review deduplication will be unavailable: %v", hashErr))
 		} else if diffHash != "" {
-			parsed.Body = fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n%s", diffHash, parsed.Body)
-			cfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash)
-			cfg.TrustedLeadingLines = 2
+			currentSHA, headErr := client.GetPullRequestHeadSHA(ctx, owner, repo, pr)
+			if headErr != nil {
+				printer.StepWarn(fmt.Sprintf("Could not verify PR HEAD after diff fetch; re-review deduplication will be unavailable: %v", headErr))
+			} else if !strings.EqualFold(currentSHA, parsed.HeadSHA) {
+				printer.StepWarn(fmt.Sprintf("PR HEAD changed while computing the diff (reviewed %s, current %s); re-review deduplication will be unavailable", shortSHA(parsed.HeadSHA), shortSHA(currentSHA)))
+			} else {
+				parsed.Body = fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n%s", diffHash, parsed.Body)
+				cfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash)
+				cfg.TrustedLeadingLines = 2
+			}
 		}
+	} else if !dryRun {
+		printer.StepWarn("Reviewed PR HEAD is unavailable; re-review deduplication will be unavailable")
 	}
 	commentURL, err := sticky.Post(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
 	if err != nil {
@@ -385,6 +402,9 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 func pullRequestDiffHash(ctx context.Context, client forge.Client, owner, repo string, pr int) (string, error) {
 	diffs, err := client.ListPullRequestFileDiffs(ctx, owner, repo, pr)
 	if err != nil {
+		if errors.Is(err, forge.ErrDiffListingTruncated) {
+			return "", nil
+		}
 		return "", err
 	}
 	if len(diffs) == 0 {
@@ -406,19 +426,15 @@ func pullRequestDiffHash(ctx context.Context, client forge.Client, owner, repo s
 		}
 		return diffs[i].Status < diffs[j].Status
 	})
-	canonical := make([]struct {
+	type canonicalDiff struct {
 		Filename         string `json:"filename"`
 		PreviousFilename string `json:"previous_filename"`
 		Status           string `json:"status"`
 		Patch            string `json:"patch"`
-	}, 0, len(diffs))
+	}
+	canonical := make([]canonicalDiff, 0, len(diffs))
 	for _, diff := range diffs {
-		canonical = append(canonical, struct {
-			Filename         string `json:"filename"`
-			PreviousFilename string `json:"previous_filename"`
-			Status           string `json:"status"`
-			Patch            string `json:"patch"`
-		}{Filename: diff.Path, PreviousFilename: diff.PreviousPath, Status: diff.Status, Patch: diff.Patch})
+		canonical = append(canonical, canonicalDiff{Filename: diff.Path, PreviousFilename: diff.PreviousPath, Status: diff.Status, Patch: diff.Patch})
 	}
 	var canonicalJSON bytes.Buffer
 	encoder := json.NewEncoder(&canonicalJSON)
@@ -475,11 +491,16 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	}
 
 	var diffHunks map[string][][2]int
-	if fileDiffs, err := client.ListPullRequestFileDiffs(ctx, owner, repo, pr); err != nil {
-		printer.StepInfo(fmt.Sprintf("Could not list PR files (%v), inline comments may be rejected", err))
+	fileDiffs, diffErr := client.ListPullRequestFileDiffs(ctx, owner, repo, pr)
+	if diffErr != nil && !errors.Is(diffErr, forge.ErrDiffListingTruncated) {
+		printer.StepInfo(fmt.Sprintf("Could not list PR files (%v), inline comments may be rejected", diffErr))
+		fileDiffs = nil
 	} else if len(fileDiffs) == 0 {
 		printer.StepInfo("PR file list is empty, inline comments disabled")
 	} else {
+		if diffErr != nil {
+			printer.StepInfo(fmt.Sprintf("PR file list is truncated (%v); validating inline comments against available hunks", diffErr))
+		}
 		diffHunks = make(map[string][][2]int, len(fileDiffs))
 		for _, f := range fileDiffs {
 			diffHunks[f.Path] = parseDiffLineRanges(f.Patch)

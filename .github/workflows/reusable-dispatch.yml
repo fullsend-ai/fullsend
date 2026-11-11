@@ -466,6 +466,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           ORG_NAME: ${{ github.repository_owner }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -504,6 +505,7 @@ jobs:
               empty
             else
               sort_by(.filename, .previous_filename, .status)
+              | map({filename: .filename, previous_filename: .previous_filename, status: .status, patch: .patch})
             end'); then
             echo "::warning::Could not canonicalize PR file diffs; running review"
             exit 0
@@ -521,17 +523,24 @@ jobs:
           fi
           current_hash="$(printf '%s' "${hash_input}" | sha256sum | awk '{print $1}')"
 
-          if ! prior_body=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+          if ! prior_review=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
             --paginate --jq '.[]' \
             | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
-                --arg custom_bot "${CUSTOM_REVIEW_BOT}" -s -r '
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -s -c '
               [.[] | select((.user.login == $bot or .user.login == $shared_bot
                 or ($custom_bot != "" and .user.login == $custom_bot))
-                and (.body | contains("<!-- fullsend:review-agent -->")))]
-              | last | .body // ""'); then
+                and (.body | contains("<!-- fullsend:review-agent -->"))
+                and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))]
+              | sort_by(.created_at) | last // {}'); then
             echo "::warning::Could not fetch the previous review; running review"
             exit 0
           fi
+          if [[ -z "${prior_review}" || "${prior_review}" == "{}" ]]; then
+            echo "::notice::No app-verified previous review found; running review"
+            exit 0
+          fi
+          prior_body="$(printf '%s' "${prior_review}" | jq -r '.body // ""')"
+          prior_url="$(printf '%s' "${prior_review}" | jq -r '.html_url // ""')"
 
           prior_section="${prior_body%%<!-- sticky:history-start -->*}"
           prior_hash="$(printf '%s\n' "${prior_section}" \
@@ -542,8 +551,37 @@ jobs:
             exit 0
           fi
 
+          if ! prior_state=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/reviews" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" -s -r '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and ((.submitted_at // "") != ""))]
+              | sort_by(.submitted_at) | last | .state // ""'); then
+            echo "::warning::Could not determine the previous formal review verdict; running review"
+            exit 0
+          fi
+          if [[ "${prior_state}" != "APPROVED" ]]; then
+            echo "::notice::Previous formal review is ${prior_state:-unknown}; running review"
+            exit 0
+          fi
+
           if [[ "${current_hash}" == "${prior_hash}" ]]; then
-            echo "::notice::Skipping review: synchronize event has the same effective diff as the previous review"
+            skip_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review${prior_url:+ (${prior_url})}. No new review findings were generated."
+            status_comment_id="$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+              --paginate --jq '.[] | select(.body | startswith("<!-- fullsend:review-skip -->")) | .id' \
+              | tail -1 || true)"
+            if [[ -n "${status_comment_id}" ]]; then
+              if ! gh api --method PATCH "repos/${SOURCE_REPO}/issues/comments/${status_comment_id}" -f body="${skip_body}" >/dev/null; then
+                echo "::warning::Could not update the review-skip status note; running review"
+                exit 0
+              fi
+            elif ! gh api --method POST "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" -f body="${skip_body}" >/dev/null; then
+              echo "::warning::Could not post the review-skip status note; running review"
+              exit 0
+            fi
+            echo "::notice::Skipping review: synchronize event has the same effective diff as the previous approved review"
             echo "skip=true" >> "${GITHUB_OUTPUT}"
           else
             echo "::notice::PR effective diff changed; running review"

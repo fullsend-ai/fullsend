@@ -4055,10 +4055,11 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 				Patch:        f.Patch,
 			})
 		}
-		// GitHub may cap the files endpoint at 3,000 entries. Do not let a
-		// potentially partial listing become a hash that can suppress review.
+		// GitHub may cap the files endpoint at 3,000 entries. Return the
+		// available entries with a typed error so inline-comment validation
+		// can still use their hunks while hash consumers fail open.
 		if len(files) >= 3000 {
-			return nil, fmt.Errorf("pull request file diff listing may be truncated at 3000 files")
+			return files, fmt.Errorf("%w at 3000 files", forge.ErrDiffListingTruncated)
 		}
 		if len(raw) < 100 {
 			break
