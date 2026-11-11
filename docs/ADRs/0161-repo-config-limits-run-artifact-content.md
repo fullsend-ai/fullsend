@@ -85,6 +85,12 @@ artifacts:
   `schedule` (a scheduled run). It is the same value CEL triggers see as
   `event.source.system`. An adapter for another tracker adds its own source
   name, and that name works as a key with no change to this setting.
+- `by_source` looks only at where the run started, not at every private
+  system the agent can read. A run started from `github` at `all` still
+  publishes Jira text if its harness gives it Jira access on that run. A
+  source level protects private data only when access to that data is
+  attached per source, as in the shipped harnesses. Otherwise, set a stricter
+  `content` for the whole repo.
 
 | Level | Artifact holds |
 |---|---|
@@ -148,6 +154,11 @@ All forges read the same `config.yaml` setting.
 - The retro agent, session resumption and follow-up workflows that download
   the artifact get no transcripts or security findings under `metadata` and
   no artifact under `none`, which the user guide must document.
+- This ADR adds no private store for the withheld files, and none is
+  planned. The full `output/` exists only on the runner and is gone when the
+  job ends. To keep conversation content privately, export it over OTLP to a
+  backend the repo owner controls (ADR 0050). A private store that later
+  workflows read from is out of scope.
 - When the setting is unset, the artifact is the same as today.
 - Changing the level is a `config.yaml` change, so it goes through the repo's
   normal review and CODEOWNERS.
