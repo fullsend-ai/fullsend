@@ -313,13 +313,6 @@ implementation
 ([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). See
 [Issue commands](issues-commands.md) for usage.
 
-## Public repos and private data
-
-On a public repository, the run artifact of a Jira-started run can publish
-what the agent read from the Jira issue. To stop that, set
-`artifacts.by_source.jira` to `metadata` or `none` in `.fullsend/config.yaml`.
-See [Run artifacts and private data](run-artifacts-and-private-data.md).
-
 ## Prerequisites
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
@@ -465,6 +458,22 @@ follows v0.52.0 or later, you need no harness changes to receive dispatches.
 Otherwise, add a harness override with a Jira `trigger` expression for each
 agent that should handle Jira events (see step 6 and
 [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)).
+
+### Public repos and private data
+
+On a public repository, the run artifact of a Jira-started run publishes what
+the agent read from the Jira issue. Any signed-in user can download it. To
+stop that, add this to `.fullsend/config.yaml`:
+
+```yaml
+artifacts:
+  by_source:
+    jira: metadata      # keeps metrics and traces, removes the conversation
+```
+
+Use `none` if issue keys and branch names must stay private too. To check
+that it worked, and to see what each level keeps, follow
+[Run artifacts and private data](run-artifacts-and-private-data.md).
 
 ### Letting the assignee start Code
 

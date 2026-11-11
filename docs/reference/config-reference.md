@@ -892,18 +892,44 @@ Model configuration, currently containing only `aliases`.
 
 ### `artifacts`
 
-Limits what the CI run artifact publishes
-([ADR 0161](../ADRs/0161-repo-config-limits-run-artifact-content.md)): the
-`fullsend-<agent>` artifact on GitHub Actions and the job artifact on GitLab
-CI. The runner leaves `output/` untouched, so `fullsend eval-measure` and
-post-scripts read the full run; `fullsend stage-artifacts` then builds a staged
-copy, and only that copy is uploaded.
+Limits what the CI run artifact publishes: the `fullsend-<agent>` artifact on
+GitHub Actions and the job artifact on GitLab CI. For a walkthrough, see
+[Run artifacts and private data](../guides/user/run-artifacts-and-private-data.md).
+
+```yaml
+artifacts:
+  content: all            # every run: all (default) | metadata | none
+  by_source:              # per run source; the stricter level wins
+    jira: metadata        # runs started from a Jira issue
+```
+
+The runner leaves `output/` untouched, so `fullsend eval-measure` and
+post-scripts read the full run. `fullsend stage-artifacts` then builds a
+filtered copy (the staged copy), and only that copy is uploaded
+([ADR 0161](../ADRs/0161-repo-config-limits-run-artifact-content.md)).
 
 | Level | Artifact holds |
 |---|---|
 | `all` | Everything in `output/`. This is the default, so an unset block keeps the artifact as before. |
-| `metadata` | Only the run-level files of each run directory: `metrics.json`, `eval-measurements.jsonl` and `run-telemetry.jsonl`. `metrics.json` is copied as written: it holds counts, costs, model fallback reasons and runner paths. In the telemetry copy, every attribute and event that content capture adds (`gen_ai.input.messages`, `gen_ai.output.messages`, `fullsend.content.*` and the other GenAI content attributes) is removed, as are span status messages, exception messages and stack traces, and the pre-script skip reason (`fullsend.prescript.skip_reason`; `fullsend.prescript.skipped` stays). In the measurements copy, every row labelled `skip` gets a fixed explanation, because skip explanations can quote pre-script output. If a record of either file can't be parsed, that file is left out. Every `iteration-<N>/` directory, `security/findings.jsonl` and any other file is left out. |
+| `metadata` | Only `metrics.json`, `eval-measurements.jsonl` and `run-telemetry.jsonl` of each run directory, with content removed as listed below. |
 | `none` | No artifact is uploaded. The job still succeeds. |
+
+Under `metadata`:
+
+- `metrics.json` is copied as written. It holds counts, costs, model fallback
+  reasons and runner paths.
+- The telemetry copy loses every attribute and event that content capture
+  adds (`gen_ai.input.messages`, `gen_ai.output.messages`,
+  `fullsend.content.*` and the other GenAI content attributes).
+- The telemetry copy also loses span status messages, exception messages and
+  stack traces, and the pre-script skip reason
+  (`fullsend.prescript.skip_reason`; `fullsend.prescript.skipped` stays).
+- In the measurements copy, every row labelled `skip` gets a fixed
+  explanation, because skip explanations can quote pre-script output.
+- If a record of the telemetry or measurements file can't be parsed, that
+  file is left out.
+- Every `iteration-<N>/` directory, `security/findings.jsonl` and any other
+  file is left out.
 
 - **`content`** — The level for every run. Unset means `all`.
 - **`by_source`** — Levels for runs started from one source. Keys are the
