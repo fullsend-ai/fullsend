@@ -2078,7 +2078,15 @@ func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo str
 	if f.PRFileDiffs != nil {
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if files, ok := f.PRFileDiffs[key]; ok {
-			return slices.Clone(files), nil
+			cloned := slices.Clone(files)
+			for i := range cloned {
+				// Fake diffs represent complete fixtures unless a test
+				// explicitly models unavailable forge metadata.
+				if !cloned[i].ModesVerified {
+					cloned[i].ModesVerified = true
+				}
+			}
+			return cloned, nil
 		}
 	}
 	return nil, nil

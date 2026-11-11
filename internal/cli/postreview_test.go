@@ -374,7 +374,7 @@ func TestPullRequestDiffHash_MatchesWorkflowCanonicalJSON(t *testing.T) {
 	// This is the field order and escaping emitted by the workflow's jq
 	// projection after normalizing jq's U+2028/U+2029/DEL escaping to Go's
 	// JSON representation.
-	canonicalJSON := `[{"filename":"a\u2028.txt","previous_filename":"","status":"modified","patch":"@@ -1 +1 @@\n-old\n+new\u2029` + "\x7f" + `"}]`
+	canonicalJSON := `[{"filename":"a\u2028.txt","previous_filename":"","status":"modified","old_mode":"","new_mode":"","patch":"@@ -1 +1 @@\n-old\n+new\u2029` + "\x7f" + `"}]`
 	wantSum := sha256.Sum256([]byte(canonicalJSON))
 	assert.Equal(t, hex.EncodeToString(wantSum[:]), hash)
 }
@@ -394,6 +394,23 @@ func TestPullRequestDiffHash_DistinguishesDELFromLiteralUnicodeEscape(t *testing
 	literalHash, err := pullRequestDiffHash(context.Background(), withLiteralEscape, "o", "r", 1)
 	require.NoError(t, err)
 	assert.NotEqual(t, delHash, literalHash)
+}
+
+func TestPullRequestDiffHash_DistinguishesFileModes(t *testing.T) {
+	regular := forge.NewFakeClient()
+	regular.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "script.sh", Status: "modified", OldMode: "100644", NewMode: "100644", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+	executable := forge.NewFakeClient()
+	executable.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "script.sh", Status: "modified", OldMode: "100644", NewMode: "100755", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+
+	regularHash, err := pullRequestDiffHash(context.Background(), regular, "o", "r", 1)
+	require.NoError(t, err)
+	executableHash, err := pullRequestDiffHash(context.Background(), executable, "o", "r", 1)
+	require.NoError(t, err)
+	assert.NotEqual(t, regularHash, executableHash)
 }
 
 func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {

@@ -425,7 +425,7 @@ func pullRequestDiffHash(ctx context.Context, client forge.Client, owner, repo s
 	}
 
 	for _, diff := range diffs {
-		if diff.Patch == "" {
+		if diff.Patch == "" || !diff.ModesVerified {
 			return "", nil
 		}
 	}
@@ -443,11 +443,13 @@ func pullRequestDiffHash(ctx context.Context, client forge.Client, owner, repo s
 		Filename         string `json:"filename"`
 		PreviousFilename string `json:"previous_filename"`
 		Status           string `json:"status"`
+		OldMode          string `json:"old_mode"`
+		NewMode          string `json:"new_mode"`
 		Patch            string `json:"patch"`
 	}
 	canonical := make([]canonicalDiff, 0, len(diffs))
 	for _, diff := range diffs {
-		canonical = append(canonical, canonicalDiff{Filename: diff.Path, PreviousFilename: diff.PreviousPath, Status: diff.Status, Patch: diff.Patch})
+		canonical = append(canonical, canonicalDiff{Filename: diff.Path, PreviousFilename: diff.PreviousPath, Status: diff.Status, OldMode: diff.OldMode, NewMode: diff.NewMode, Patch: diff.Patch})
 	}
 	var canonicalJSON bytes.Buffer
 	encoder := json.NewEncoder(&canonicalJSON)

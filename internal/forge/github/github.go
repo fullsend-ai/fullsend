@@ -4002,6 +4002,66 @@ func (c *LiveClient) ListPullRequestFiles(ctx context.Context, owner, repo strin
 	return files, nil
 }
 
+// pullRequestFileModes returns Git tree modes keyed by path. GitHub's PR file
+// endpoint omits mode changes, so the base and head trees are the source of
+// truth for the review-deduplication identity.
+type pullRequestFileModesResult struct {
+	old map[string]string
+	new map[string]string
+}
+
+func (c *LiveClient) pullRequestFileModes(ctx context.Context, owner, repo string, number int) (pullRequestFileModesResult, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))
+	if err != nil {
+		return pullRequestFileModesResult{}, err
+	}
+	var pr struct {
+		Base struct {
+			SHA string `json:"sha"`
+		} `json:"base"`
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := decodeJSON(resp, &pr); err != nil {
+		return pullRequestFileModesResult{}, err
+	}
+	if pr.Base.SHA == "" || pr.Head.SHA == "" {
+		return pullRequestFileModesResult{}, fmt.Errorf("pull request is missing base or head SHA")
+	}
+	result := pullRequestFileModesResult{old: make(map[string]string), new: make(map[string]string)}
+	for i, sha := range []string{pr.Base.SHA, pr.Head.SHA} {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, sha))
+		if err != nil {
+			return pullRequestFileModesResult{}, err
+		}
+		var tree struct {
+			Truncated bool `json:"truncated"`
+			Tree      []struct {
+				Path string `json:"path"`
+				Mode string `json:"mode"`
+				Type string `json:"type"`
+			} `json:"tree"`
+		}
+		if err := decodeJSON(resp, &tree); err != nil {
+			return pullRequestFileModesResult{}, err
+		}
+		if tree.Truncated {
+			return pullRequestFileModesResult{}, fmt.Errorf("git tree is truncated")
+		}
+		for _, entry := range tree.Tree {
+			if entry.Type == "blob" && entry.Path != "" && entry.Mode != "" {
+				if i == 0 {
+					result.old[entry.Path] = entry.Mode
+				} else {
+					result.new[entry.Path] = entry.Mode
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
 // ListPullRequestCommits returns the commit SHAs on a pull request,
 // oldest first (the order GitHub's API reports them in). GitHub caps PR
 // commit lists at 250 commits regardless of pagination.
@@ -4063,6 +4123,30 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 		}
 		if len(raw) < 100 {
 			break
+		}
+	}
+	// The pull-files endpoint does not expose Git tree modes. Enrich the
+	// listing from the base and head trees when possible; if that metadata is
+	// unavailable, hash consumers fail open rather than suppressing a review.
+	if modes, err := c.pullRequestFileModes(ctx, owner, repo, number); err == nil {
+		for i := range files {
+			oldPath := files[i].PreviousPath
+			if oldPath == "" && files[i].Status != "added" {
+				oldPath = files[i].Path
+			}
+			newPath := files[i].Path
+			if files[i].Status == "removed" {
+				newPath = ""
+			}
+			files[i].OldMode = modes.old[oldPath]
+			files[i].NewMode = modes.new[newPath]
+			files[i].ModesVerified = true
+			if files[i].Status != "added" && files[i].OldMode == "" {
+				files[i].ModesVerified = false
+			}
+			if files[i].Status != "removed" && files[i].NewMode == "" {
+				files[i].ModesVerified = false
+			}
 		}
 	}
 	return files, nil

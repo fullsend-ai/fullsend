@@ -359,6 +359,8 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 			NewFile     bool   `json:"new_file"`
 			RenamedFile bool   `json:"renamed_file"`
 			DeletedFile bool   `json:"deleted_file"`
+			OldMode     string `json:"a_mode"`
+			NewMode     string `json:"b_mode"`
 			Diff        string `json:"diff"`
 		}
 		if err := decodeJSON(resp, &diffs); err != nil {
@@ -381,7 +383,12 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 				Path:         d.NewPath,
 				PreviousPath: previousPath,
 				Status:       status,
-				Patch:        d.Diff,
+				OldMode:      d.OldMode,
+				NewMode:      d.NewMode,
+				ModesVerified: (status == "added" && d.NewMode != "") ||
+					(status == "removed" && d.OldMode != "") ||
+					(status != "added" && status != "removed" && d.OldMode != "" && d.NewMode != ""),
+				Patch: d.Diff,
 			})
 		}
 

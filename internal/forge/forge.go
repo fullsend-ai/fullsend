@@ -796,6 +796,12 @@ type PullRequestFileDiff struct {
 	PreviousPath string
 	// Status is normalized across forges to added, removed, renamed, or modified.
 	Status string
+	// OldMode and NewMode are the Git tree modes for the old and new paths.
+	// ModesVerified is false when the forge could not provide mode metadata;
+	// hash consumers must fail open in that case.
+	OldMode       string
+	NewMode       string
+	ModesVerified bool
 	// Patch is the unified diff, when the forge can represent it.
 	Patch string
 }
