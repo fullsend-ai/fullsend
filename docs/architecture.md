@@ -145,24 +145,42 @@ repo baseline and overrides)
   published as generated, tag-pinned JSON Schemas enforced by an always-on
   golden test ([ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md);
   [contract](normative/sandbox-env/v1/README.md)).
-- Runner secrets on GitHub (interim until external secret manager support
-  or #6359 settles the long-term route, then kept as the fallback for
-  workflows without GitHub OIDC or WIF; integrations fullsend owns keep their
-  own named secrets): user secrets
-  reach host-side scripts through one
-  optional stored secret, `FULLSEND_GITHUB_RUNNER_SECRETS` (a JSON object of name →
-  value), staged by the composite action in a mode 0600 file that
-  `fullsend run` deletes after reading, and filtered by the resolved
-  `env.runner`. The bundle is never in the environment of `fullsend run` or
-  its children. `fullsend run` refuses runner-owned names, values too short
-  to redact, and references from `env.sandbox`, provider credentials,
-  expanded `host_files`, and overlays guarded by anything other than
-  `runtime.forge` or `config` (interim until ADR 0112's guarded-field check).
-  GitLab is unchanged: one masked CI/CD variable per secret, none of these
-  rules ([ADR 0136](ADRs/0136-runner-secrets-through-one-stored-secret.md)).
-  The refusal does not consult the credential deny-list that the
-  `env.sandbox` gate also checks
+- Runner secrets on GitHub: the user-managed bundle is an interim native source
+  for custom host-side scripts until Vault-backed resolution is implemented.
+  Native remains the default when no Vault connection is selected, including
+  workflows without GitHub OIDC/WIF. Fullsend-owned integrations keep their own
+  named secrets, and the broader BYOA custom-secret question remains tracked in
+  #6359. User secrets reach host-side scripts through one optional stored
+  secret, `FULLSEND_GITHUB_RUNNER_SECRETS` (a JSON object of name → value),
+  staged by the composite action in a mode 0600 file that `fullsend run`
+  deletes after reading, and filtered by the resolved `env.runner`. The bundle
+  is never in the environment of `fullsend run` or its children. `fullsend run`
+  refuses runner-owned names, values too short to redact, and references from
+  `env.sandbox`, provider credentials, expanded `host_files`, and overlays
+  guarded by anything other than `runtime.forge` or `config` (interim until
+  ADR 0112's guarded-field check). GitLab is unchanged: one masked CI/CD
+  variable per secret, none of these rules
+  ([ADR 0136](ADRs/0136-runner-secrets-through-one-stored-secret.md)). The
+  refusal does not consult the credential deny-list that the `env.sandbox`
+  gate also checks
   ([ADR 0145](ADRs/0145-keep-credential-deny-list-out-of-runner-secret-refusal.md)).
+- External source selection for user-managed runner secrets (target state; not
+  yet implemented): named connections under `connections` define service kinds
+  and settings, while `secrets` entries select a connection (native when
+  omitted). A Vault connection has an address and JWT role/audience, defaulting
+  to `fullsend-runner` and `https://fullsend.sh/vault`; secret paths are ordered
+  and templated from trusted repository context. Connection definitions and
+  secret entries, including source selection and path order, must come from
+  trusted configuration revisions; PR-head and event-provided config cannot
+  define or override these entries, including removing a trusted Vault
+  selection or omitting its `connection` to restore native. Fullsend validates
+  and encodes every path component and validates the completed relative KV API
+  path before access. Vault access uses job OIDC/WIF. Native remains the
+  default only when no Vault connection is selected;
+  an explicit Vault selection fails closed when WIF or Vault resolution is
+  unavailable. Installer-managed GitLab credentials remain native until Vault
+  write and rotation behavior is decided
+  ([ADR 0155](ADRs/0155-configure-vault-backed-runner-secrets.md)).
 - Agent configuration env vars: behavioral knobs use `{AGENT}_{SETTING_NAME}`
   naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via `env.runner` and
   `env.sandbox` in the harness YAML. Each agent documents its config vars in
