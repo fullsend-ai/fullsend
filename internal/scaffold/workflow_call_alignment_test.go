@@ -1125,6 +1125,66 @@ func TestReusableDispatchJobsReceiveMintOIDC(t *testing.T) {
 		"the workflow must not copy the OIDC request token into logs or matrix data")
 }
 
+// TestRouteJobPayloadStepPinsPrintEventCall pins the route job's payload
+// builder beyond the string _normalized_event (which the jq embed line also
+// matches, so a removed or broken `fullsend dispatch --print-event` call would
+// still pass TestRouteJobPayloadEmbedsNormalizedEvent): the step must invoke
+// the normalizer with --print-event, --event-action and --config-dir, and
+// neither it nor any step of the payload-cli install ladder may set
+// continue-on-error — the embed fails closed by design (AISDLC-505).
+func TestRouteJobPayloadStepPinsPrintEventCall(t *testing.T) {
+	type workflowStep struct {
+		Name            string `yaml:"name"`
+		Run             string `yaml:"run"`
+		ContinueOnError any    `yaml:"continue-on-error"`
+	}
+	type workflowJob struct {
+		Steps []workflowStep `yaml:"steps"`
+	}
+	var workflow struct {
+		Jobs map[string]workflowJob `yaml:"jobs"`
+	}
+
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	route, ok := workflow.Jobs["route"]
+	require.True(t, ok, "reusable-dispatch.yml must have a route job")
+
+	var payload workflowStep
+	ladder := make([]workflowStep, 0, 9)
+	for _, step := range route.Steps {
+		if step.Name == "Build event payload" {
+			payload = step
+		}
+		if strings.Contains(step.Name, "event payload") {
+			ladder = append(ladder, step)
+		}
+	}
+	require.NotEmpty(t, payload.Name, "the route job must keep its 'Build event payload' step")
+	require.Len(t, ladder, 9,
+		"the payload step plus the eight payload-cli install ladder steps must stay in the route job")
+
+	assert.Contains(t, payload.Run, "--print-event",
+		"the payload step must normalize the event with `fullsend dispatch --print-event`; without it the stage jobs get no _normalized_event")
+	assert.Contains(t, payload.Run, `--event-action "${EVENT_ACTION}"`,
+		"the payload step must pass the event action so the normalizer resolves the transition")
+	assert.Contains(t, payload.Run, "--config-dir .fullsend",
+		"the payload step must resolve the repository config the same way the routed stages do")
+
+	for _, step := range ladder {
+		switch v := step.ContinueOnError.(type) {
+		case nil:
+		case bool:
+			assert.False(t, v,
+				"step %q must not set continue-on-error: the payload embed fails closed (an install or normalization failure stops the route job)", step.Name)
+		default:
+			assert.Fail(t, "step %q must not set continue-on-error (got %v): the payload embed fails closed", step.Name, v)
+		}
+	}
+}
+
 // TestCustomAppSetReviewBotWiring ensures every GitHub review/fix dispatch
 // path receives the configured app-set prefix and recognizes its exact review
 // bot identity.
