@@ -122,7 +122,13 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
 
 ## Open questions
 
-- What is the right level of isolation per agent (process, container, microVM, separate cluster)?
+- What is the right level of isolation per agent (process, container, microVM,
+  separate cluster)? (Repository boundaries for Kubernetes execution are decided
+  in [ADR 0037](../ADRs/0037-kubernetes-repository-security-boundaries.md): one
+  namespace per repository, with the mint deriving its expected name from the
+  requested repository URL and checking it against the verified service account
+  token using a full SHA-256 digest, without per-repository mint enrollment;
+  per-agent containment remains a separate requirement.)
 - How do we provide agents with “resources to do their work” (clone, tools, APIs) without over-privileging them or creating a single high-value target? (Credential access decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md), with [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) as the first inference credential delivered entirely through a gateway provider, and [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md) routing inference through an LLM gateway that accepts the job's OIDC token so the forge stores no reusable provider key ([ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md) adds an opt-in API-key mode for gateways that cannot trust forge OIDC, at the cost of a long-lived secret); tool access restrictions decided in [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md); cross-org public GitHub Packages access decided in [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md); user secrets for host-side scripts on GitHub decided in [ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md); the sandbox environment the runner provides — which env vars it injects, per runtime, and which keys it reserves from harness override — is now published as a generated, machine-checkable contract ([ADR 0146](../ADRs/0146-sandbox-environment-contract-manifest.md)); Jira access with either a bot account or an Atlassian-managed service account, through an API URL separate from the site URL, decided in [ADR 0156](../ADRs/0156-separate-jira-api-url-from-site-url.md); other resource access remains open.)
 - Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
 - ~~How do we preserve end-to-end traceability for event-driven agent dispatch in GitHub Actions?~~ Decided in [ADR 0041](../ADRs/0041-synchronous-workflow-call-event-dispatch.md) (synchronous `workflow_call` dispatch for the event path).

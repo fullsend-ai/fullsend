@@ -46,6 +46,14 @@ sole supported installation model
 
 **Decided:**
 
+- Kubernetes execution uses one namespace per repository. The mint verifies a
+  projected service account token through a trusted issuer's JWKS and compares
+  its namespace with the name derived from the requested canonical repository
+  URL, including the full SHA-256 digest. Public mints require no per-repository
+  enrollment or namespace metadata lookup; issuer and provisioner trust remain
+  required. Namespace RBAC, network and admission policies complement per-agent
+  sandboxing ([ADR 0037](ADRs/0037-kubernetes-repository-security-boundaries.md),
+  [identity contract](normative/kubernetes-repository-identity/v1/README.md)).
 - Tenant configuration for a possible centrally managed service reuses the
   existing `repos.yaml` v1 format directly through `repos.Manifest`. Whether
   to offer the service, its source of truth, and its delivery mechanism remain
