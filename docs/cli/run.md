@@ -544,6 +544,10 @@ settings](../reference/harness-reference.md#migrating-proxy-and-certificate-sett
 
 Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process. Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
 
+## Token-free output
+
+If a program runs `fullsend run` as a subprocess and captures its output, pass `--token-free-output` or set `FULLSEND_TOKEN_FREE_OUTPUT=1`. In this mode the run does not write `::add-mask::` commands, and it writes no credential values to stdout or stderr. This covers the first token and every refreshed one. Each value is still registered with fullsend's own redactor. See [Token-free output](README.md#token-free-output).
+
 ## Related
 
 - [Running Agents Locally](../guides/user/running-agents-locally.md) for a step-by-step walkthrough

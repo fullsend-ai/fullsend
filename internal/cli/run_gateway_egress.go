@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -293,12 +292,6 @@ func ensureGatewayAPIKeyProvider(ctx context.Context, profile gatewayProfile, sa
 	return storeGatewayProvider(ctx, profile, sandboxName, key, expiresAt, printer)
 }
 
-// gatewayMaskData percent-encodes a value for a workflow command's data
-// part ("%" first by construction, then CR and LF), which the runner
-// decodes, so the registered mask equals the value even when it holds a
-// "%25" or "%0A" sequence.
-var gatewayMaskData = strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
-
 // storeGatewayProvider registers token for redaction, imports the per-host
 // profile and creates the run-scoped provider carrying token with
 // expiresAt as its credential expiry.
@@ -306,9 +299,9 @@ func storeGatewayProvider(ctx context.Context, profile gatewayProfile, sandboxNa
 	if !security.RegisterRuntimeSecret(token) {
 		return "", "", errors.New("inference gateway: the token is too short to redact reliably; refusing to use it")
 	}
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", gatewayMaskData.Replace(token))
-	}
+	// maskActionsValue percent-encodes the data part, so the registered
+	// mask equals the value even when it holds a "%25" or "%0A" sequence.
+	maskActionsValue(token)
 	profileID, err = ensureGatewayProfile(ctx, profile, printer)
 	if err != nil {
 		return "", "", err

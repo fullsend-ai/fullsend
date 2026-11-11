@@ -5408,18 +5408,6 @@ func dropUnusableCredentialFile(printer *ui.Printer, setEnv func(key, value stri
 	return false
 }
 
-// actionsCommandEscaper escapes a workflow command's data the way the
-// runner unescapes it, so a value holding %25, %0D or %0A (or a raw CR or
-// LF) is masked as written rather than as its unescaped form.
-var actionsCommandEscaper = strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
-
-// maskActionsValue asks GitHub Actions to mask a secret in the job log.
-func maskActionsValue(value string) {
-	if value != "" && os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", actionsCommandEscaper.Replace(value))
-	}
-}
-
 // validateExistingGCPCredentialFile checks a credential file prepared by an
 // earlier workflow step before the run relies on it. An external_account
 // file must read its subject token from a file: the sandbox cannot reach a
@@ -6930,9 +6918,7 @@ func newStatusGitHubForgeClient(ctx context.Context, mintURL, role, repo string)
 	if !mintTokenPattern.MatchString(result.Token) {
 		return nil, fmt.Errorf("minted status token contains unexpected characters")
 	}
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
-	}
+	maskActionsValue(result.Token)
 	return statusNewForgeClientFn(result.Token), nil
 }
 
@@ -7419,9 +7405,7 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 	}
 
 	// TODO(ADR-0045 R22): use forge platform context instead of raw env check.
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
-	}
+	maskActionsValue(result.Token)
 
 	// NOTE: os.Setenv is not goroutine-safe. Minting MUST complete
 	// before any goroutines that read env vars (sandbox streaming,
@@ -7480,7 +7464,7 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 				os.Setenv(workflowTokenEnv, preMint)
 				envVars = append(envVars, workflowTokenEnv)
 				security.RegisterRuntimeSecret(preMint)
-				fmt.Fprintf(os.Stderr, "::add-mask::%s\n", preMint)
+				maskActionsValue(preMint)
 			}
 		}
 	}

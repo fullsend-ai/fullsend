@@ -76,10 +76,10 @@ Prints the token to stdout for capture in shell scripts.`,
 				return fmt.Errorf("mint returned token with unexpected characters")
 			}
 
-			if os.Getenv("GITHUB_ACTIONS") == "true" {
-				fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
-			}
+			maskActionsValue(result.Token)
 
+			// The token on stdout is this command's result, so it is
+			// printed even under token-free output (see docs/cli/mint.md).
 			fmt.Fprint(cmd.OutOrStdout(), result.Token)
 			return nil
 		},

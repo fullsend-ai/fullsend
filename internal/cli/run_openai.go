@@ -902,9 +902,7 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 	if !security.RegisterRuntimeSecret(cred.value) {
 		return openAIProviderHandle{}, fmt.Errorf("provider %q: the resolved credential is too short to redact reliably; refusing to use it", pd.Name)
 	}
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", cred.value)
-	}
+	maskActionsValue(cred.value)
 	printer.StepDone("OpenAI credential ready (" + cred.detail + ")")
 	for _, w := range cred.warnings {
 		printer.StepWarn(w)
@@ -1086,9 +1084,7 @@ func refreshOpenAIProvider(ctx context.Context, h openAIProviderHandle, placehol
 		if !security.RegisterRuntimeSecret(cred.value) {
 			return time.Time{}, placeholder, errOpenAIUnredactable
 		}
-		if os.Getenv("GITHUB_ACTIONS") == "true" {
-			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", cred.value)
-		}
+		maskActionsValue(cred.value)
 		creds := make(map[string]string, len(h.keys))
 		for _, k := range h.keys {
 			creds[k] = cred.value

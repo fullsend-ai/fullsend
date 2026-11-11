@@ -73,10 +73,12 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
-		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			telemetry.InstallOTELRedactingLogger()
+			return applyTokenFreeOutputFlag(cmd)
 		},
 	}
+	addTokenFreeOutputFlag(cmd)
 	cmd.AddCommand(newAgentCmd())
 	cmd.AddCommand(newAdminCmd())
 	cmd.AddCommand(newGitHubCmd())

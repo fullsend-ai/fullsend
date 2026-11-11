@@ -400,6 +400,8 @@ Read-only — makes no changes.
 
 Mints a short-lived GitHub App installation token via OIDC exchange. Primarily used for testing.
 
+The token is printed to stdout. In GitHub Actions the command also writes an `::add-mask::` command for the token to stderr. With [token-free output](README.md#token-free-output) (`--token-free-output` or `FULLSEND_TOKEN_FREE_OUTPUT=1`), the mask command is not written, but the token is still printed to stdout because it is the command's result.
+
 ```bash
 fullsend mint token \
   --role <name> \
