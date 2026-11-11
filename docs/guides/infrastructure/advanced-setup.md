@@ -127,11 +127,20 @@ elsewhere. Configure the endpoint in one of these ways:
 
 When an endpoint is configured, the action skips the Podman installation,
 the rootless Podman configuration, and the local gateway configuration,
-and sandboxes are created on the remote gateway. A non-empty repository
+and sandboxes are created on the remote gateway. The gateway must
+already be registered on the runner: `openshell gateway add` stores the
+gateway's mTLS or authentication material, and the action never
+registers a gateway itself. Set the variable to the endpoint exactly as
+it was registered — OpenShell matches the configured endpoint against
+the registered gateways, and a value that does not match (for example
+`https://gw:443` where `https://gw` is registered) makes the sandbox
+fail later at the TLS or authentication handshake, with an error that
+does not point at the mismatch. The runner operator who registered the
+gateway can confirm the exact registered value. A non-empty repository
 or organization variable deliberately takes precedence over a value
 configured in the runner's process environment: repository
-administrators choose the gateway for their runs. The value must be a single `https://` URL with no
-whitespace. If the `openshell` CLI is already on the runner's `PATH`, the
+administrators choose the gateway for their runs. The value must be a
+single `https://` URL with no whitespace. If the `openshell` CLI is already on the runner's `PATH`, the
 action also skips the OpenShell CLI installer, which needs `sudo` and
 starts a local gateway service. Install the CLI version pinned in
 `.github/scripts/openshell-version.sh` in the runner image.
