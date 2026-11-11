@@ -2394,10 +2394,9 @@ func readRefStorage(cwd, gitDir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// nativeGitSupportsReftable reports whether the native Git is 2.53 or newer,
-// the first release whose strict ref verification rejects malformed reftable
-// tables. Only the major and minor fields of "git version M.m.patch [suffix]"
-// are parsed; an unrecognized version is an error, not a guess.
+// nativeGitSupportsReftable reports whether native Git meets the 2.53 minimum
+// used for reftable verification. Only the major and minor version fields are
+// parsed; an unrecognized version is an error, not a guess.
 func nativeGitSupportsReftable(cwd string) (bool, error) {
 	out, err := runBoundedGit(cwd, "", nil, "--version")
 	if err != nil {
@@ -2530,9 +2529,8 @@ func removeReplacementRefs(cwd, gitDir string) error {
 			if name == "" {
 				return fmt.Errorf("unexpected empty replacement ref name in %s", gitDir)
 			}
-			// Git prints the raw suffix after refs/replace/; strict verification
-			// above already validated it as a ref name, and the batch is passed
-			// over stdin with NUL delimiters, never through a shell.
+			// Pass raw suffixes over NUL-delimited stdin, not through a shell.
+			// The final relist fails if replacement refs remain.
 			batch = append(batch, "delete refs/replace/"...)
 			batch = append(batch, name...)
 			batch = append(batch, 0, 0)
