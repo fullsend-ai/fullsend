@@ -2471,3 +2471,37 @@ func TestRunAgentSet_OpenAISubagentWarnsWithoutProvider(t *testing.T) {
 		})
 	}
 }
+
+// The agent-editing commands resolve the allowlist the way the commands
+// that run agents do (config.EffectiveAllowedResources, via
+// validateAgentConfig): a base allowed_remote_resources: [] with a
+// non-empty overlay list admits an agent covered only by a default
+// prefix — the shape run/lint/lock and the dispatch family admit
+// (TestAllowlistExpectedOutcomes_LayeredShapes) — while an explicit []
+// as the resolved effective value still denies it.
+func TestRunAgentSet_AllowlistOverBaseEmptyList(t *testing.T) {
+	defaultPrefix := config.DefaultAllowedRemoteResources()[0]
+	integrity := "#sha256=" + strings.Repeat("a", 64)
+	source := defaultPrefix + "harness/probe.yaml" + integrity
+
+	writeShape := func(t *testing.T, base, overlayAllowlist string) string {
+		t.Helper()
+		dir := t.TempDir()
+		overlay := overlayAllowlist + fmt.Sprintf("agents:\n  - name: probe\n    source: %q\n", source)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.OverlayConfigFile), []byte(overlay), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.BaseConfigFile), []byte(base), 0o644))
+		return dir
+	}
+
+	// A non-empty overlay list over a base [] resolves non-empty, so the
+	// ensured default prefixes apply and the default-prefix agent passes.
+	dir := writeShape(t, "allowed_remote_resources: []\n", "allowed_remote_resources:\n  - https://overlay.example.com/\n")
+	var out bytes.Buffer
+	require.NoError(t, runAgentSet(dir, "probe", agentSetFlags{model: "opus", modelSet: true}, ui.New(&out)))
+
+	// An explicit [] as the resolved effective value stays deny-all.
+	dir = writeShape(t, "", "allowed_remote_resources: []\n")
+	err := runAgentSet(dir, "probe", agentSetFlags{model: "opus", modelSet: true}, ui.New(&out))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not covered by allowed_remote_resources")
+}
