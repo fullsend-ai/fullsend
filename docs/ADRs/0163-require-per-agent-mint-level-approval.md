@@ -65,6 +65,12 @@ are approved; a missing or empty list approves no role, so the agent cannot
 launch. The list must cover every role requested by any effective harness
 variant.
 
+This is positive approval syntax: repositories list roles they intend an
+agent to use, rather than listing roles to deny. Omitting `approved_roles` is
+the broad-denial path. For an approved role, the optional level map expresses
+the desired boundary around the common level profile; a deny-only agent entry
+has no purpose in this model.
+
 An entry may also have an `approved_privilege_levels` map whose values are
 lists of levels and whose run-stage keys correspond to the harness's
 `privilege_levels` map. This map applies to each approved role. If the map is
@@ -150,9 +156,10 @@ bypass.
 
 ## Consequences
 
-- Missing `approved_roles` denies every role; an approved role with no level
-  map uses Ralph's profile, including `post_script` write, so deleting the
-  entire map deliberately restores that profile.
+- `approved_roles` is the positive authorization gate: omit it to deny all
+  roles; listing an agent solely to deny it has no effect. An approved role
+  with no level map uses Ralph's profile, including `post_script` write, so
+  deleting the entire map deliberately restores that profile.
 - In an explicit level map, omitted stages default to `[read]`; `{}` is
   equivalent to `default: [read]`, and removing a stage-specific empty list
   grants that default, while `default: []` denies unlisted stages.
