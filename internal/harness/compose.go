@@ -254,6 +254,12 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 				return nil, nil, fmt.Errorf("resolving URL-sourced plugins: %w", err)
 			}
 			deps = append(deps, pluginDeps...)
+
+			// A relative runtime_workflow.source resolves in this harness's
+			// repository at its commit (ADR 0130 rule 1), like a base's.
+			if err := resolveURLHarnessWorkflowSource(child.RuntimeWorkflow, opts.SourceURL, opts.OrgAllowlist); err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced runtime workflow: %w", err)
+			}
 		}
 
 		if err := child.validateForge(); err != nil {
@@ -387,6 +393,16 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			return nil, nil, fmt.Errorf("resolving URL-sourced plugins after base composition: %w", err)
 		}
 		deps = append(deps, pluginDeps...)
+
+		// The child's own relative runtime_workflow.source resolves in its
+		// repository at its commit, like a base's; one inherited from a URL
+		// base is already a URL, and one from a local base (DeclaredIn) is
+		// left for resolution to refuse.
+		if w := child.RuntimeWorkflow; w != nil && w.DeclaredIn() == "" {
+			if err := resolveURLHarnessWorkflowSource(w, opts.SourceURL, allowlist); err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced runtime workflow after base composition: %w", err)
+			}
+		}
 	}
 
 	// ResolveForge and ResolveOverlays once on the merged result
@@ -513,6 +529,13 @@ func loadBaseChain(
 		}
 		deps = append(deps, pluginDeps...)
 
+		// A relative runtime_workflow.source names a path in the base's own
+		// repository (ADR 0130 rule 1): pin it to the base's commit here,
+		// before the child sees it. Resolution fetches it at run time.
+		if err := ResolveBaseWorkflowSource(base.RuntimeWorkflow, baseRef, allowlist); err != nil {
+			return nil, nil, fmt.Errorf("resolving base workflow from %s: %w", cleanURL, err)
+		}
+
 		baseDir = childDir
 	} else {
 		// Local path base
@@ -594,6 +617,10 @@ func loadBaseChain(
 				return nil, nil, fmt.Errorf("base harness %s: %w", resolvedBasePath, err)
 			}
 		}
+		// A relative runtime_workflow.source names a path in the checkout that
+		// holds this base file (ADR 0130 rule 1), which may not be the
+		// child's: record where it was declared.
+		markLocalBaseWorkflow(base.RuntimeWorkflow, filepath.Dir(resolvedBasePath))
 
 		baseDir = filepath.Dir(absBasePath)
 	}
@@ -920,6 +947,11 @@ func mergeBaseIntoChild(base, child *Harness) error {
 			return err
 		}
 		child.Skills = skills
+	}
+	// RuntimeWorkflow: child replaces base wholesale (if non-nil).
+	if child.RuntimeWorkflow == nil && base.RuntimeWorkflow != nil {
+		w := *base.RuntimeWorkflow
+		child.RuntimeWorkflow = &w
 	}
 	if base.Plugins != nil {
 		merged := make([]PluginSpec, 0, len(base.Plugins)+len(child.Plugins))
@@ -2586,6 +2618,19 @@ func urlIndexLookup(workspaceRoot, rawURL string) (string, bool) {
 	}
 	hash, ok := index[rawURL]
 	return hash, ok
+}
+
+// LookupURLIndex returns the tree hash the URL-to-hash index records for
+// key. Base composition keeps the index; a runtime_workflow: source that
+// composition pinned to a base's commit (ADR 0130) is resolved after
+// composition and uses it the same way a base plugin does.
+func LookupURLIndex(workspaceRoot, key string) (string, bool) {
+	return urlIndexLookup(workspaceRoot, key)
+}
+
+// RecordURLIndex records key→hash in the URL-to-hash index.
+func RecordURLIndex(workspaceRoot, key, hash string) error {
+	return urlIndexPut(workspaceRoot, key, hash)
 }
 
 // urlIndexPut records a URL→SHA256 mapping in the index file.

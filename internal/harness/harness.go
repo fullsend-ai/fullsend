@@ -378,7 +378,8 @@ type Harness struct {
 	Image                  string                  `yaml:"image,omitempty"`
 	Policy                 string                  `yaml:"policy,omitempty"`
 	Skills                 []SkillEntry            `yaml:"skills,omitempty"`
-	Plugins                []PluginSpec            `yaml:"plugins,omitempty"` // runtime-scoped plugin directories (ADR 0094)
+	Plugins                []PluginSpec            `yaml:"plugins,omitempty"`          // runtime-scoped plugin directories (ADR 0094)
+	RuntimeWorkflow        *RuntimeWorkflowSpec    `yaml:"runtime_workflow,omitempty"` // runtime-workflow repository and the workflow to start (ADR 0130)
 	Providers              []string                `yaml:"providers,omitempty"`
 	OpenShell              *OpenShellConfig        `yaml:"openshell,omitempty"`
 	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
@@ -553,6 +554,9 @@ func (h *Harness) Validate() error {
 		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)
 	}
 	if err := h.validatePlugins(); err != nil {
+		return err
+	}
+	if err := h.validateWorkflow(); err != nil {
 		return err
 	}
 	for i, p := range h.Providers {
@@ -1309,7 +1313,7 @@ func (h *Harness) HasURLDirResources() bool {
 }
 
 // HasURLReferences reports whether any declarative field (agent, policy, skills,
-// plugins, profiles, providers) contains a URL reference. Used to skip remote
+// plugins, profiles, providers, runtime_workflow.source) contains a URL reference. Used to skip remote
 // resource validation and resolution when the harness references only local paths.
 func (h *Harness) HasURLReferences() bool {
 	if IsURL(h.Agent) || IsURL(h.Policy) {
@@ -1339,6 +1343,11 @@ func (h *Harness) HasURLReferences() bool {
 		if IsURL(p) {
 			return true
 		}
+	}
+	// A remote runtime_workflow: source is resolved in its own step, but it needs
+	// the config-level allowlist like every URL resource.
+	if h.RuntimeWorkflow != nil && h.RuntimeWorkflow.IsRemote() {
+		return true
 	}
 	return false
 }

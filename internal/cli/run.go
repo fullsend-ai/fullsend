@@ -778,6 +778,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Declare result outside the URL references block so it's accessible
 	// later for profile import and provider resolution.
 	var result resolve.ResolveResult
+	// lockedWorkflowHash is the runtime workflow's tree hash from a
+	// current lock entry; it binds the runtime workflow resolved below.
+	var lockedWorkflowHash, lockedWorkflowURL string
 
 	// The config-level subset check runs for URL-referencing harnesses (as
 	// before) and for every harness whose runtime fetch service can start
@@ -816,6 +819,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		usedLock := false
 
 		if entry := lockState.entry; entry != nil && !lockState.stale {
+			// Read the runtime workflow's locked hash before the
+			// replay: it binds the runtime workflow whether the replay
+			// succeeds or falls back to normal resolution, so the
+			// URL index never picks the tree of a locked runtime workflow.
+			var wfErr error
+			lockedWorkflowURL, lockedWorkflowHash, wfErr = lockedRuntimeWorkflow(entry, agentName, fullsendDir)
+			if wfErr != nil {
+				printer.StepFail("Lock file workflow entry is malformed")
+				return wfErr
+			}
+			// An entry written before the runtime workflow was locked (such
+			// as a version 1 lock with a source from a URL base) is still
+			// current but leaves it to the URL index.
+			if lockedWorkflowHash == "" && h.RuntimeWorkflow != nil && h.RuntimeWorkflow.IsRemote() {
+				wfURL, _, _ := harness.ParseIntegrityHash(h.RuntimeWorkflow.Source)
+				printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin the runtime workflow (%s); run 'fullsend lock --update %s%s' to pin it",
+					agentName, wfURL, agentName, fullsendDirArg(fullsendDir)))
+			}
 			printer.StepStart("Using pinned dependencies from lock file")
 			lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
 			if lockResolveErr != nil {
@@ -1288,6 +1309,50 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, expander)
 	}
 
+	// Check the runtime before resolving the runtime workflow (ADR
+	// 0130), so a codex agent fails before the runtime workflow is fetched; the
+	// harness's own other remote resources (base, skills, plugins,
+	// providers) were resolved above. The runtime workflow joins h.Plugins, so
+	// ValidateFilesExist below checks it and bootstrap uploads it like any
+	// plugin of its kind.
+	if err := checkWorkflowRuntime(h, agentName, runtimeBackend.Runtime.Name()); err != nil {
+		printer.StepFail(err.Error())
+		return err
+	}
+	resolvedWorkflow, workflowDep, err := resolveHarnessWorkflow(ctx, h, workflowLocation(harnessPath, absFullsendDir, composeOpts.SourceURL != ""), resolve.ResolveOpts{
+		WorkspaceRoot: absFullsendDir,
+		FetchPolicy:   policy,
+		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+		OrgAllowlist:  orgAllowlist,
+		TreeFetcher:   rFlags.treeFetcher,
+		GitToken:      composeGitToken,
+
+		LockedWorkflowSHA256: lockedWorkflowHash,
+		LockedWorkflowURL:    lockedWorkflowURL,
+	})
+	if err != nil {
+		printer.StepFail("Runtime workflow resolution failed")
+		return fmt.Errorf("resolving runtime workflow: %w", err)
+	}
+	// The locked hash covers only the url it was locked for; a source that
+	// now resolves elsewhere was resolved without it (see
+	// resolve.ResolveRuntimeWorkflow).
+	if lockedWorkflowHash != "" && workflowDep != nil && workflowDep.URL != lockedWorkflowURL {
+		printer.StepWarn(fmt.Sprintf("Lock entry for %s pins the runtime workflow at %s, but it now resolves to %s; run 'fullsend lock --update %s%s' to re-pin it",
+			agentName, lockedWorkflowURL, workflowDep.URL, agentName, fullsendDirArg(fullsendDir)))
+	}
+	if workflowDep != nil {
+		if workflowDep.CacheHit {
+			printer.StepInfo(fmt.Sprintf("Resolved %s (cache hit)", workflowDep.URL))
+		} else {
+			printer.StepInfo(fmt.Sprintf("Fetched %s -> %s", workflowDep.URL, workflowDep.LocalPath))
+		}
+	}
+	if err := checkWorkflowKind(resolvedWorkflow, agentName, runtimeBackend.Runtime.Name()); err != nil {
+		printer.StepFail(err.Error())
+		return err
+	}
+
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
 		return fmt.Errorf("validating files: %w", err)
@@ -1412,6 +1477,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	if len(h.Plugins) > 0 {
 		printer.KeyValue("Plugins", strings.Join(describePlugins(h.Plugins), ", "))
+	}
+	if resolvedWorkflow != nil {
+		printer.KeyValue("Runtime workflow", describeWorkflow(resolvedWorkflow))
 	}
 	if h.AgentInput != "" {
 		printer.KeyValue("Agent input", h.AgentInput)

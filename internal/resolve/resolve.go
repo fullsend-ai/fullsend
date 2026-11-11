@@ -240,6 +240,18 @@ type ResolveOpts struct {
 	// resources") would prevent even non-transitive URL resolution.
 	MaxDepth     int
 	MaxResources int
+
+	// LockedWorkflowSHA256 is the tree hash .fullsend/lock.yaml records
+	// for the runtime workflow when fullsend run has a current lock
+	// entry, whether or not the rest of the entry replays (see
+	// ResolveRuntimeWorkflow). It is the hash the runtime workflow must have:
+	// the cache is read by it and a fetched tree must match it. Empty when
+	// there is no current lock entry or it records no definition.
+	LockedWorkflowSHA256 string
+	// LockedWorkflowURL is the url the same lock entry records for the
+	// runtime workflow. LockedWorkflowSHA256 applies only to a source that
+	// resolves to this url; for another url it is ignored.
+	LockedWorkflowURL string
 }
 
 type resolveState struct {
