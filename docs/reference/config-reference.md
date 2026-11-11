@@ -667,10 +667,12 @@ declared config value overrides the variable; changing only the variable has
 no effect while config sets `mint_url`. When every layer is silent, dispatch
 uses the variable and does not apply the compiled CLI default
 (`https://mint.fullsend.sh`). Dispatch fails when a config file exists but
-`yq` is missing, a config file does not parse, the resolved URL is not HTTPS
-(file values must be HTTPS; loopback HTTP is allowed only on the variable
-fallback), or the URL contains userinfo. When config and the variable differ,
-the route job emits a workflow notice naming the effective mint host. See
+`yq` is missing, a config file does not parse, or the resolved URL fails
+validation (file values must be HTTPS with no userinfo; the variable
+fallback may use loopback HTTP only when config is silent on `mint_url`).
+When a declared config value differs from the workflow variable snapshot
+(including an unset variable), dispatch follows config and the route job
+may emit a workflow notice naming the effective mint host. See
 [Layered configuration reference](../guides/infrastructure/layered-config-reference.md)
 and [Mint administration — dispatch mint URL migration](../guides/infrastructure/mint-administration.md#dispatch-mint-url-migration).
 

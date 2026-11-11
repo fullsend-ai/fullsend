@@ -48,14 +48,17 @@ infrastructure yourself.
 If `.fullsend/config.yaml` or `config.base.yaml` declares `mint_url`,
 dispatch uses that endpoint instead of `FULLSEND_MINT_URL`. To retarget a
 repo, change or remove the config field (removing it restores the variable
-fallback). When both are set, dispatch follows config and emits a workflow
-notice if the values differ.
+fallback). When config declares a value that differs from the workflow
+`FULLSEND_MINT_URL` snapshot (including when that variable is unset),
+dispatch follows config and emits a workflow notice naming the effective
+mint host when it can be parsed safely.
 
-Config-sourced values must be HTTPS with no userinfo. Dispatch now fails
-when config is present but `yq` is missing, YAML does not parse, the
-resolved URL is invalid, or a declared config URL is not HTTPS (loopback
-HTTP remains allowed only on the variable fallback when config is silent on
-`mint_url`).
+Config-sourced values must be HTTPS with no userinfo. The resolved URL is
+validated on every run: declared config values must be HTTPS (no userinfo).
+The variable fallback when config is silent on `mint_url` must also be a
+valid URL and may use loopback HTTP (`localhost` / `127.0.0.1`) only on
+that fallback path. Dispatch fails when config is present but `yq` is
+missing, YAML does not parse, or the resolved URL fails validation.
 
 ## Prerequisites
 

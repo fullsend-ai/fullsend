@@ -1185,16 +1185,21 @@ func TestReusableDispatchStageJobsResolvedMintURL(t *testing.T) {
 	wantHarness := "${{ steps.resolve-mint.outputs.mint_url }}"
 	harnessRun, ok := workflow.Jobs["harness-run"]
 	require.True(t, ok, "harness-run job must exist")
+	var harnessMintToken, harnessAgent bool
 	for _, step := range harnessRun.Steps {
 		if step.Uses == "./.defaults/.github/actions/mint-token" {
+			harnessMintToken = true
 			assert.Equal(t, wantHarness, step.With["mint_url"],
 				"harness-run mint-token must use job-local resolve output")
 		}
 		if step.Uses == "./.defaults/" {
+			harnessAgent = true
 			assert.Equal(t, wantHarness, step.With["mint-url"],
 				"harness-run agent action must use job-local resolve output")
 		}
 	}
+	assert.True(t, harnessMintToken, "harness-run must mint an app token")
+	assert.True(t, harnessAgent, "harness-run must run the agent composite")
 
 	prioritizePath := filepath.Join("..", "..", ".github", "workflows", "reusable-prioritize.yml")
 	prioritizeContent, err := os.ReadFile(prioritizePath)
@@ -1254,15 +1259,19 @@ func TestReusableDispatchMintResolverFetchesFromWorkflow(t *testing.T) {
 			job, ok := workflow.Jobs[jobName]
 			require.True(t, ok, "job %q must exist", jobName)
 			names := make([]string, 0, len(job.Steps))
-			var checkoutStep workflowStep
+			var checkoutStep, resolveStep workflowStep
 			for _, step := range job.Steps {
 				names = append(names, step.Name)
 				if step.Name == "Checkout workflow mint URL resolver" {
 					checkoutStep = step
 				}
+				if step.Name == "Resolve effective mint URL" {
+					resolveStep = step
+				}
 			}
 			assert.Contains(t, names, "Prepare mint URL resolver script")
 			assert.Contains(t, names, "Checkout workflow mint URL resolver")
+			assert.Contains(t, names, "Resolve effective mint URL")
 			assert.Contains(t, checkoutStep.If, "mint-resolver-script.outputs.fetched")
 			switch jobName {
 			case "route":
@@ -1270,11 +1279,19 @@ func TestReusableDispatchMintResolverFetchesFromWorkflow(t *testing.T) {
 					stepIndex(names, "Prepare mint URL resolver script"),
 					"route must resolve mint URL after the kill switch")
 				assert.Contains(t, checkoutStep.If, "steps.route.outputs.stage")
+				assert.Contains(t, resolveStep.If, "steps.route.outputs.stage",
+					"route must not resolve mint URL when no stage is selected")
 			case "harness-dispatch":
 				assert.Less(t, stepIndex(names, "Detect registered harness triggers"),
 					stepIndex(names, "Prepare mint URL resolver script"),
 					"harness-dispatch must resolve mint URL after trigger detection")
 				assert.Contains(t, checkoutStep.If, "has_triggers")
+				assert.Contains(t, resolveStep.If, "has_triggers",
+					"harness-dispatch must not resolve mint URL without registered triggers")
+			case "harness-run":
+				assert.Less(t, stepIndex(names, "Checkout upstream defaults"),
+					stepIndex(names, "Resolve effective mint URL"),
+					"harness-run must resolve mint URL only after upstream defaults are available")
 			}
 		})
 	}
@@ -1285,11 +1302,29 @@ func TestReusableDispatchMintResolverFetchesFromWorkflow(t *testing.T) {
 	assert.NotContains(t, string(content), "RUNNER_TEMP}/workflow-mint-resolver",
 		"resolver script path must stay under GITHUB_WORKSPACE")
 
-	prioritize := string(loadRepoFile(".github/workflows/reusable-prioritize.yml")(t))
+	prioritizeContent, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-prioritize.yml"))
+	require.NoError(t, err)
+	prioritize := string(prioritizeContent)
 	assert.Contains(t, prioritize, "Checkout workflow mint URL resolver")
 	assert.Contains(t, prioritize, "Prepare mint URL resolver script")
 	assert.Contains(t, prioritize, "path: .workflow-mint-resolver")
 	assert.NotContains(t, prioritize, "runner.temp }}/workflow-mint-resolver")
+	var prioritizeWF struct {
+		Jobs map[string]workflowJob `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(prioritizeContent, &prioritizeWF))
+	for jobName, job := range prioritizeWF.Jobs {
+		names := make([]string, 0, len(job.Steps))
+		for _, step := range job.Steps {
+			names = append(names, step.Name)
+		}
+		assert.Less(t, stepIndex(names, "Checkout upstream defaults"),
+			stepIndex(names, "Resolve effective mint URL"),
+			"reusable-prioritize job %q must resolve mint URL after upstream defaults", jobName)
+		assert.Less(t, stepIndex(names, "Resolve effective mint URL"),
+			stepIndex(names, "Validate enrollment and extract repository metadata"),
+			"reusable-prioritize job %q must resolve mint URL before composite actions", jobName)
+	}
 
 	w := string(content)
 	assert.NotContains(t, w, "for candidate in .github/scripts/resolve-effective-mint-url.sh",
