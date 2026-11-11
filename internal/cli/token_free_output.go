@@ -65,14 +65,23 @@ var actionsCommandEscaper = strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "
 // maskActionsValue asks GitHub Actions to mask a secret in the job log.
 // It is the single place fullsend emits `::add-mask::`. Under token-free
 // output it prints no mask command: it registers the value with the
-// process-wide redactor instead, so fullsend's own console and trace
-// redaction still covers it, and prints one value-free notice.
+// process-wide redactor instead (in any environment, not only in Actions),
+// so fullsend's own console and trace redaction still covers it, and, in
+// Actions, prints one value-free notice.
 func maskActionsValue(value string) {
-	if value == "" || os.Getenv("GITHUB_ACTIONS") != "true" {
+	if value == "" {
 		return
 	}
-	if tokenFreeOutputEnabled() {
+	tokenFree := tokenFreeOutputEnabled()
+	if tokenFree {
+		// Register in every environment, not only in Actions, so the
+		// in-process redactor covers the value wherever the mode is on.
 		security.RegisterRuntimeSecret(value)
+	}
+	if os.Getenv("GITHUB_ACTIONS") != "true" {
+		return
+	}
+	if tokenFree {
 		tokenFreeNoticeOnce.Do(func() {
 			fmt.Fprintln(os.Stderr, "fullsend: token-free output is on ("+tokenFreeOutputEnv+"); GitHub Actions mask commands are suppressed and credentials are redacted in-process only")
 		})

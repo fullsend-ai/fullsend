@@ -45,6 +45,8 @@ func resetTokenFreeNotice(t *testing.T) {
 func assertRedacted(t *testing.T, value string) {
 	t.Helper()
 	scan := security.NewSecretRedactor().Scan("log " + value + " here")
+	// Sanitized is empty when nothing was redacted, so check Safe too.
+	assert.False(t, scan.Safe, "value must be registered for in-process redaction")
 	assert.NotContains(t, scan.Sanitized, value, "value must be registered for in-process redaction")
 }
 
@@ -83,6 +85,23 @@ func TestMaskActionsValue_OutsideActionsPrintsNothing(t *testing.T) {
 			assert.Empty(t, captureStderr(t, func() { maskActionsValue(tokenFreeInitialToken) }))
 		})
 	}
+}
+
+// Under token-free output the value is registered with the in-process
+// redactor even outside Actions; without the mode it is not registered.
+func TestMaskActionsValue_OutsideActionsRegistersOnlyWhenTokenFree(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+
+	const offValue = "synthetic-outside-actions-off-value"
+	t.Setenv(tokenFreeOutputEnv, "")
+	maskActionsValue(offValue)
+	scan := security.NewSecretRedactor().Scan("log " + offValue + " here")
+	assert.True(t, scan.Safe, "default mode registers nothing outside Actions")
+
+	const onValue = "synthetic-outside-actions-on-value"
+	t.Setenv(tokenFreeOutputEnv, "1")
+	maskActionsValue(onValue)
+	assertRedacted(t, onValue)
 }
 
 func TestMaskActionsValue_TokenFreeSuppressesValue(t *testing.T) {

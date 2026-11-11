@@ -6,6 +6,7 @@ This guide provides implementation details for fullsend CLI internals: command s
 
 ```
 fullsend
+├── --token-free-output                      # Never write credential values to stdout/stderr ($FULLSEND_TOKEN_FREE_OUTPUT)
 ├── admin                                    # Manage fullsend installation for a repository
 │   ├── install      <owner/repo>            # Deprecated: use inference provision + github setup / repos install (GitLab)
 │   └── foreign                              # Cross-org mint authorization (FULLSEND_FOREIGN_<ROLE>_REPOS)
