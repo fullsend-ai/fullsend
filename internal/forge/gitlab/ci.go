@@ -1063,17 +1063,21 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 	var b strings.Builder
 	var totalRead int64
 	for _, j := range jobs {
-		if totalRead >= maxAggregateSize {
-			fmt.Fprintf(&b, "=== %s (%d bytes) reached, skipping remaining jobs ===\n", forge.LogNoteAggregateTraceLimit, maxAggregateSize)
-			break
-		}
 		// A skipped job never ran, so it has no trace to fetch: in the
 		// runs observed, its trace request answered 404 (not a documented
 		// API guarantee), which would read as a fetch that failed — the
 		// same skip the GitHub client carries before its log download.
+		// Checked before the aggregate limit: the limit caps fetched
+		// bytes, not the job listing, so a skipped job's header is
+		// written even once the cap is reached and the snapshot stays
+		// complete for the behaviour reader.
 		if j.Conclusion == "skipped" {
 			fmt.Fprintf(&b, "=== Job %d (%s) [skipped] ===\n", j.ID, j.Name)
 			continue
+		}
+		if totalRead >= maxAggregateSize {
+			fmt.Fprintf(&b, "=== %s (%d bytes) reached, skipping remaining jobs ===\n", forge.LogNoteAggregateTraceLimit, maxAggregateSize)
+			break
 		}
 		tracePath := fmt.Sprintf("/projects/%s/jobs/%d/trace",
 			projectPath(owner, repo), j.ID)
