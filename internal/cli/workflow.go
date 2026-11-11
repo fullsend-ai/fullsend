@@ -270,8 +270,11 @@ func newWorkflowLaunch(rw *resolve.ResolvedRuntimeWorkflow) *workflowLaunch {
 }
 
 // workflowSpanAttr is the agent span's fullsend.runtime_workflow attribute: for a
-// Claude plugin, the /<namespace>:<name> the runner starts, without args,
-// which stay out of traces; for a pi extension, the source.
+// Claude plugin, the /<namespace>:<name> the runner starts, without args;
+// for a pi extension, the source. The attribute is metadata, exported at
+// every trace level, so it leaves args out. Level 3 content capture, when
+// enabled, records the full command, args included, as the iteration's
+// prompt (contentCollector.attachInput).
 func workflowSpanAttr(rw *resolve.ResolvedRuntimeWorkflow) attribute.KeyValue {
 	if rw.Kind == pluginformat.KindClaude {
 		return boundedStringAttr("fullsend.runtime_workflow", "/"+rw.PluginName+":"+rw.Name)

@@ -12,7 +12,7 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude and pi runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
+| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude and pi runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed; on a Claude runtime-workflow harness, the workflow command with its args on every iteration) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
 All levels produce metadata (timing, token counts, tool names, errors),
 including up to one `execute_tool` span per id-bearing tool call under each
@@ -78,10 +78,13 @@ unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 
 Fullsend assembles Level 3 content from the normalized event stream the
 console renders, redacts it through the security output pipeline, and
-attaches it to the per-iteration `agent` span. The one input it records,
-a retry's validation-feedback prompt, is composed by the runner — fixed
-framing around the previous iteration's validation output — rather than
-read from the stream, and goes through the same redaction. On both sides
+attaches it to the per-iteration `agent` span. The input it records is
+composed by the runner rather than read from the stream, and goes through
+the same redaction: a retry's validation-feedback prompt (fixed framing
+around the previous iteration's validation output), or, on a harness with a
+Claude Code `runtime_workflow:`, the slash command the runner starts on every
+iteration, args included. The `fullsend.runtime_workflow` attribute leaves
+the args out, but content capture records them with the command. On both sides
 of the pipeline — on the text as written, and again on what the pipeline
 returns, since its normalization can join a value the stream split or
 spelled in compatibility characters — the value of each sensitive runner
@@ -363,7 +366,7 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 | Attribute | Present on | Description |
 |-----------|------------|-------------|
 | `fullsend.runtime` | `agent` | Harness identity (`claude`, `pi`, …), distinct from `gen_ai.system` (the serving endpoint) |
-| `fullsend.runtime_workflow` | `agent` | On a harness with `runtime_workflow:` only: the `/<namespace>:<name>` workflow the runner started, without its args, or, for a pi extension, its source ([ADR 0130](../../ADRs/0130-runtime-workflows-are-harness-resources.md)) |
+| `fullsend.runtime_workflow` | `agent` | On a harness with `runtime_workflow:` only: the `/<namespace>:<name>` workflow the runner started, without its args (Level 3 `gen_ai.input.messages` records the full command), or, for a pi extension, its source ([ADR 0130](../../ADRs/0130-runtime-workflows-are-harness-resources.md)) |
 | `fullsend.work_item_id` | `run` | Work item identity (e.g. `owner/repo#123`); primary cross-run correlation key |
 | `fullsend.agent` | `run` | Agent name |
 | `fullsend.cost_usd` | `run` (aggregated), `agent` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)) |
@@ -377,7 +380,7 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 | `fullsend.prescript.skipped` | `run` | Whether the pre-script signaled a skip |
 | `fullsend.prescript.skip_reason` | `run` | Human-readable skip reason from the pre-script |
 | `fullsend.transcript_error` | `agent` | Present (`true`) when the agent exited 0 but its transcript reported an error — the span's status is Error while `exit_code` keeps the raw process exit |
-| `gen_ai.input.messages` | `agent` | Level 3 only, on a retry iteration that carries validation feedback: the prompt the runner composed, as a JSON string (see Content capture) |
+| `gen_ai.input.messages` | `agent` | Level 3 only, on a retry iteration that carries validation feedback, or on every iteration of a Claude runtime-workflow harness: the prompt the runner composed (for a workflow harness, the slash command with its args), as a JSON string (see Content capture) |
 | `gen_ai.output.messages` | `agent` | Level 3 only: the iteration's conversation content as a JSON string (see Content capture) |
 | `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content, a tool call's arguments were dropped whole, or a kept tool result is a parser-side fragment or an oversized line's empty stand-in (`fullsend.truncated` on the part; no byte count for the last two) |
 | `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact part bytes removed by the size budget — content, ids, arguments dropped whole (counted as re-encoded JSON when the bound drops them, or as redacted text when the arguments were not one JSON object; a member the recorded list leaves out is not counted), and the fixed footprint of an errored-empty or oversized stand-in part — otherwise in raw bytes, whichever bound made the cut; the bytes of a skipped oversized line were never decoded and are not counted |

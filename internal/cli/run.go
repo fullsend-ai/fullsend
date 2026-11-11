@@ -2913,7 +2913,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// tool-span tracker is per iteration for the same reason and is not
 		// gated: execute_tool spans are metadata.
 		collector := newContentCollectorIfEnabled(h.RunnerEnv)
-		collector.attachInput(agentSpan, agentPrompt, promptHidesAlterations(validationFeedback, promptSanitized))
+		collector.attachInput(agentSpan, agentPrompt, inputAlteredUpstream(injected, validationFeedback, promptSanitized))
 		toolSpans := newToolSpanTracker(tracer, agentCtx)
 		toolSpans.runnerEnv = h.RunnerEnv
 		renderer := agentruntime.NewEventRenderer(printer)
@@ -4401,6 +4401,15 @@ func buildFeedbackPrompt(feedback string) (string, int) {
 			feedbackDelimiterClose + "\n\n" +
 			"Fix the issues described in the validation output above and try again.",
 		sanitizedFindings
+}
+
+// inputAlteredUpstream is attachInput's alteredUpstream for one
+// iteration: only a prompt that carries the validation feedback (injected)
+// can hide an alteration of it. A Claude runtime workflow's prompt is its
+// slash command, which holds no feedback, so feedback the runner did not
+// inject never masks it.
+func inputAlteredUpstream(injected bool, feedback string, sanitized int) bool {
+	return injected && promptHidesAlterations(feedback, sanitized)
 }
 
 // promptHidesAlterations reports whether the retry prompt's telemetry copy

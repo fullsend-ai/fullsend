@@ -513,6 +513,30 @@ func TestIterationPrompt(t *testing.T) {
 	}
 }
 
+// Level 3 content capture records a Claude workflow harness's prompt, the
+// slash command with its args, on every iteration. Validation feedback the
+// runner did not inject into that prompt never masks it, even feedback
+// that would mask an injected retry prompt (cut while holding a URL).
+func TestIterationPrompt_WorkflowCommandRecordedUnmasked(t *testing.T) {
+	rw := &resolve.ResolvedRuntimeWorkflow{Kind: pluginformat.KindClaude, Name: "probe", Args: "--issue 7", PluginName: "wfplug"}
+	feedback := strings.Repeat("x", maxFeedbackBytes) + " https://user:pass@example.com/"
+	require.True(t, promptHidesAlterations(feedback, 0), "precondition: this feedback masks an injected prompt")
+
+	var noted bool
+	prompt, sanitized, injected, _ := iterationPrompt(rw, 2, true, feedback, &noted)
+	require.False(t, injected)
+	assert.False(t, inputAlteredUpstream(injected, feedback, sanitized))
+
+	attrs := recordedInput(t, newContentCollector(maxContentBytes), prompt, inputAlteredUpstream(injected, feedback, sanitized))
+	var msgs []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(attrs["gen_ai.input.messages"].AsString()), &msgs))
+	require.Len(t, msgs, 1)
+	assert.Equal(t, []any{map[string]any{"type": "text", "content": "/wfplug:probe --issue 7"}}, msgs[0]["parts"])
+
+	// An injected retry prompt with the same feedback is still masked.
+	assert.True(t, inputAlteredUpstream(true, feedback, 0))
+}
+
 func TestWorkflowLaunchInMetricsJSON(t *testing.T) {
 	hash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 	tests := []struct {
@@ -1376,7 +1400,7 @@ func TestRunAgent_WorkflowArgsExpanded(t *testing.T) {
 func TestWorkflowSpanAttr(t *testing.T) {
 	attr := workflowSpanAttr(&resolve.ResolvedRuntimeWorkflow{Kind: pluginformat.KindClaude, PluginName: "wfplug", Name: "probe", Args: "issue 7"})
 	assert.Equal(t, "fullsend.runtime_workflow", string(attr.Key))
-	assert.Equal(t, "/wfplug:probe", attr.Value.AsString(), "args stay out of traces")
+	assert.Equal(t, "/wfplug:probe", attr.Value.AsString(), "the span attribute leaves args out")
 
 	attr = workflowSpanAttr(&resolve.ResolvedRuntimeWorkflow{Kind: pluginformat.KindPi, Source: "https://github.com/example-org/sample-pipeline/tree/" + cliWorkflowSHA})
 	assert.Equal(t, "https://github.com/example-org/sample-pipeline/tree/"+cliWorkflowSHA, attr.Value.AsString(), "a pi extension is named by its source")

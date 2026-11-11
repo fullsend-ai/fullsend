@@ -174,9 +174,11 @@ func attachContent(span trace.Span, res contentResult) {
 }
 
 // attachInput records the prompt the runner composed for this iteration
-// as gen_ai.input.messages: one user message with one text part. Only a
-// retry under feedback_mode: append composes a prompt; otherwise prompt
-// is empty and nothing is recorded, as with a nil collector (gate off).
+// as gen_ai.input.messages: one user message with one text part. A retry
+// under feedback_mode: append composes a prompt, and a Claude runtime
+// workflow harness's prompt is its slash command, args included, on every
+// iteration; otherwise prompt is empty and nothing is recorded, as with a
+// nil collector (gate off).
 //
 // The recorded copy goes through the same redaction as output content.
 // redactFeedback already scanned the feedback, before it was sanitized,
