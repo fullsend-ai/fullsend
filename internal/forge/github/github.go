@@ -4814,22 +4814,22 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 		// Download logs for each job (returns plain text, 302 redirect to download URL).
 		jobResp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/actions/jobs/%d/logs", owner, repo, job.ID), nil)
 		if err != nil {
-			fmt.Fprintf(&buf, "[failed to fetch logs: %v]\n\n", err)
+			fmt.Fprintf(&buf, "%s %v]\n\n", forge.LogNoteFailedToFetchLogs, err)
 			continue
 		}
 		if jobResp.StatusCode < 200 || jobResp.StatusCode >= 300 {
 			jobResp.Body.Close()
-			fmt.Fprintf(&buf, "[logs unavailable: HTTP %d]\n\n", jobResp.StatusCode)
+			fmt.Fprintf(&buf, "%s HTTP %d]\n\n", forge.LogNoteLogsUnavailable, jobResp.StatusCode)
 			continue
 		}
 		logData, readErr := io.ReadAll(io.LimitReader(jobResp.Body, maxJobLogBytes+1))
 		jobResp.Body.Close()
 		if readErr != nil {
-			fmt.Fprintf(&buf, "[failed to read logs: %v]\n\n", readErr)
+			fmt.Fprintf(&buf, "%s %v]\n\n", forge.LogNoteFailedToReadLogs, readErr)
 			continue
 		}
 		if len(logData) > maxJobLogBytes {
-			fmt.Fprintf(&buf, "%s\n[log truncated: job %d exceeds %d bytes]\n", string(logData[:maxJobLogBytes]), job.ID, maxJobLogBytes)
+			fmt.Fprintf(&buf, "%s\n%s job %d exceeds %d bytes]\n", string(logData[:maxJobLogBytes]), forge.LogNoteLogTruncated, job.ID, maxJobLogBytes)
 			continue
 		}
 		fmt.Fprintf(&buf, "%s\n", string(logData))
@@ -4837,7 +4837,7 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 	// The jobs listing is a single page; say so when jobs were left out so
 	// callers do not mistake the snapshot for a complete one.
 	if jobsResult.TotalCount > len(jobsResult.Jobs) {
-		fmt.Fprintf(&buf, "[job list truncated: %d of %d jobs included]\n", len(jobsResult.Jobs), jobsResult.TotalCount)
+		fmt.Fprintf(&buf, "%s %d of %d jobs included]\n", forge.LogNoteJobListTruncated, len(jobsResult.Jobs), jobsResult.TotalCount)
 	}
 	return buf.String(), nil
 }

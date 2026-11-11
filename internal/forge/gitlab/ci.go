@@ -1049,8 +1049,9 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 	return result, nil
 }
 
-// GetWorkflowRunLogs concatenates the trace (log output) of all jobs in
-// a pipeline, separated by headers.
+// GetWorkflowRunLogs concatenates the trace (log output) of each job in a
+// pipeline that was not skipped, separated by headers; a skipped job never
+// ran, so only its header is written and its trace is not fetched.
 func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error) {
 	jobs, err := c.ListWorkflowRunJobs(ctx, owner, repo, runID)
 	if err != nil {
@@ -1063,19 +1064,27 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 	var totalRead int64
 	for _, j := range jobs {
 		if totalRead >= maxAggregateSize {
-			fmt.Fprintf(&b, "=== aggregate trace limit (%d bytes) reached, skipping remaining jobs ===\n", maxAggregateSize)
+			fmt.Fprintf(&b, "=== %s (%d bytes) reached, skipping remaining jobs ===\n", forge.LogNoteAggregateTraceLimit, maxAggregateSize)
 			break
+		}
+		// A skipped job never ran, so it has no trace to fetch: in the
+		// runs observed, its trace request answered 404 (not a documented
+		// API guarantee), which would read as a fetch that failed — the
+		// same skip the GitHub client carries before its log download.
+		if j.Conclusion == "skipped" {
+			fmt.Fprintf(&b, "=== Job %d (%s) [skipped] ===\n", j.ID, j.Name)
+			continue
 		}
 		tracePath := fmt.Sprintf("/projects/%s/jobs/%d/trace",
 			projectPath(owner, repo), j.ID)
 		resp, err := c.do(ctx, http.MethodGet, tracePath, nil)
 		if err != nil {
-			fmt.Fprintf(&b, "=== Job %d (%s): error fetching trace: %v ===\n", j.ID, j.Name, err)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %v ===\n", j.ID, j.Name, forge.LogNoteErrorFetchingTrace, err)
 			continue
 		}
 		if err := checkStatus(resp, http.StatusOK); err != nil {
 			resp.Body.Close()
-			fmt.Fprintf(&b, "=== Job %d (%s): error fetching trace: %v ===\n", j.ID, j.Name, err)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %v ===\n", j.ID, j.Name, forge.LogNoteErrorFetchingTrace, err)
 			continue
 		}
 		remaining := maxAggregateSize - totalRead
@@ -1085,7 +1094,7 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, remaining+1))
 		resp.Body.Close()
 		if readErr != nil {
-			fmt.Fprintf(&b, "=== Job %d (%s): error reading trace: %v ===\n", j.ID, j.Name, readErr)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %v ===\n", j.ID, j.Name, forge.LogNoteErrorReadingTrace, readErr)
 			continue
 		}
 		truncated := int64(len(data)) > remaining
@@ -1095,7 +1104,7 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 		totalRead += int64(len(data))
 		fmt.Fprintf(&b, "=== Job %d (%s) ===\n%s\n", j.ID, j.Name, string(data))
 		if truncated {
-			fmt.Fprintf(&b, "=== Job %d (%s): trace truncated at %d bytes ===\n", j.ID, j.Name, remaining)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %d bytes ===\n", j.ID, j.Name, forge.LogNoteTraceTruncated, remaining)
 		}
 	}
 	return b.String(), nil
