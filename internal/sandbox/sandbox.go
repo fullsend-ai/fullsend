@@ -214,6 +214,11 @@ func sanitizeDownload(localDir string) error {
 				// symlink before that validation rejects it. Nested
 				// repositories keep the ordinary walk behavior.
 				if filepath.Dir(filepath.Dir(path)) == absLocal {
+					// The name matched case-insensitively, so a case variant
+					// would defer too and skip the generic symlink handling.
+					if !d.Type().IsRegular() {
+						return fmt.Errorf("git shallow metadata %s is not a regular file", path)
+					}
 					return nil
 				}
 			default:

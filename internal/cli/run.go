@@ -2467,7 +2467,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	hostRepositorySnapshot, err := captureRepositorySnapshot(hostRepositoryDir)
 	if err != nil {
 		printer.StepFail("Failed to copy project code")
-		return fmt.Errorf("capturing shallow repository state: %w", err)
+		return fmt.Errorf("validating target repository before upload: %w", err)
 	}
 	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir, uploadExcludes...); err != nil {
 		printer.StepFail("Failed to copy project code")
@@ -8335,13 +8335,11 @@ func captureRepositorySnapshot(repoDir string) (sandbox.RepositorySnapshot, erro
 	}
 	snapshot := sandbox.RepositorySnapshot{IsCheckout: true}
 
-	shallowPath, err := revParse(repoDir, "--git-path", "shallow")
-	if err != nil {
-		return sandbox.RepositorySnapshot{}, fmt.Errorf("resolving git shallow path: %w", err)
-	}
-	if !filepath.IsAbs(shallowPath) {
-		shallowPath = filepath.Join(repoDir, shallowPath)
-	}
+	// Validation proved .git is a real directory that resolves as itself, so
+	// the boundary lives directly there. Resolving it with a Git query would
+	// honor inherited selectors such as GIT_DIR or GIT_COMMON_DIR and could
+	// capture another repository's boundary.
+	shallowPath := filepath.Join(repoDir, ".git", "shallow")
 
 	info, err := os.Stat(shallowPath)
 	if errors.Is(err, os.ErrNotExist) {

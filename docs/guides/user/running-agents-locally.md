@@ -209,8 +209,8 @@ First clone your target repository locally:
 git clone git@github:{org}/{target_repository} /tmp/target-repo
 ```
 
-The target may be a plain directory or a non-bare Git checkout. See the
-[`--target-repo` requirements](../../cli/run.md#flags).
+The target may be a plain directory or a normal clone with a real root `.git`
+directory. See the [`--target-repo` requirements](../../cli/run.md#flags).
 
 Next clone the repository where the agent definitions live. The canonical
 source is `fullsend-ai/agents`. To learn more about custom agents visit

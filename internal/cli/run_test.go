@@ -10775,6 +10775,44 @@ func TestCaptureRepositorySnapshot(t *testing.T) {
 		assert.Equal(t, "3", captureGit(t, clone, "rev-list", "--count", "HEAD"))
 	})
 
+	t.Run("inherited selectors cannot choose the shallow boundary", func(t *testing.T) {
+		decoySrc := newShallowTestRepo(t)
+		require.NoError(t, os.WriteFile(filepath.Join(decoySrc, "decoy.txt"), []byte("decoy\n"), 0o644))
+		captureGit(t, decoySrc, "add", "decoy.txt")
+		captureGit(t, decoySrc, "commit", "--quiet", "-m", "decoy")
+		decoy := filepath.Join(t.TempDir(), "decoy")
+		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+decoySrc, decoy)
+		decoyMarker, err := os.ReadFile(filepath.Join(decoy, ".git", "shallow"))
+		require.NoError(t, err)
+
+		trusted := filepath.Join(t.TempDir(), "trusted")
+		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+newShallowTestRepo(t), trusted)
+		trustedMarker, err := os.ReadFile(filepath.Join(trusted, ".git", "shallow"))
+		require.NoError(t, err)
+		require.NotEqual(t, decoyMarker, trustedMarker,
+			"fixtures must have distinct boundaries for this test to discriminate")
+
+		t.Setenv("GIT_DIR", filepath.Join(decoy, ".git"))
+		t.Setenv("GIT_WORK_TREE", decoy)
+		t.Setenv("GIT_COMMON_DIR", filepath.Join(decoy, ".git"))
+
+		snapshot, err := captureRepositorySnapshot(trusted)
+		require.NoError(t, err)
+		require.True(t, snapshot.Shallow.Present)
+		assert.Equal(t, trustedMarker, snapshot.Shallow.Data,
+			"inherited selectors must not substitute another repository's boundary")
+		assert.True(t, snapshot.IsCheckout)
+
+		// Unshallowing the trusted checkout must clear its boundary even while
+		// the inherited selectors name a shallow repository.
+		captureGit(t, trusted, "fetch", "--quiet", "--unshallow")
+		snapshot, err = captureRepositorySnapshot(trusted)
+		require.NoError(t, err)
+		assert.False(t, snapshot.Shallow.Present)
+		assert.Nil(t, snapshot.Shallow.Data)
+		assert.True(t, snapshot.IsCheckout)
+	})
+
 	t.Run("empty marker is distinct from absence", func(t *testing.T) {
 		repo := newShallowTestRepo(t)
 		require.NoError(t, os.WriteFile(filepath.Join(repo, ".git", "shallow"), nil, 0o644))

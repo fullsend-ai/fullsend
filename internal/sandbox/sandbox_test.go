@@ -1619,17 +1619,19 @@ exit 0
 
 func TestSafeDownload_DoesNotPublishUnsupportedGitMetadata(t *testing.T) {
 	cases := map[string]string{
-		"root git":              `/bin/mkdir -p "$5/real-git" && /bin/ln -s real-git "$5/.git"`,
-		"objects":               `/bin/mkdir -p "$5/.git" && /bin/ln -s ../real-objects "$5/.git/objects"`,
-		"gitfile":               `/bin/mkdir -p "$5/real-git" && printf 'gitdir: real-git\n' > "$5/.git"`,
-		"commondir":             `/bin/mkdir -p "$5/.git" "$5/real-git" && printf '../real-git\n' > "$5/.git/commondir"`,
-		"reftable symlink":      `/bin/mkdir -p "$5/.git" && /bin/ln -s ../outside "$5/.git/reftable"`,
-		"nested git symlink":    `/bin/mkdir -p "$5/vendor/dep/real-git" && /bin/ln -s real-git "$5/vendor/dep/.git"`,
-		"alternates":            `/bin/mkdir -p "$5/.git/objects/info" && printf '/elsewhere/objects\n' > "$5/.git/objects/info/alternates"`,
-		"http-alternates":       `/bin/mkdir -p "$5/.git/objects/info" && printf 'https://example.invalid/objects\n' > "$5/.git/objects/info/http-alternates"`,
-		"shallow symlink":       `/bin/mkdir -p "$5/.git" && /bin/ln -s ../../outside "$5/.git/shallow"`,
-		"shallow directory":     `/bin/mkdir -p "$5/.git/shallow"`,
-		"packed-refs directory": `/bin/mkdir -p "$5/.git/packed-refs"`,
+		"root git":                       `/bin/mkdir -p "$5/real-git" && /bin/ln -s real-git "$5/.git"`,
+		"objects":                        `/bin/mkdir -p "$5/.git" && /bin/ln -s ../real-objects "$5/.git/objects"`,
+		"gitfile":                        `/bin/mkdir -p "$5/real-git" && printf 'gitdir: real-git\n' > "$5/.git"`,
+		"commondir":                      `/bin/mkdir -p "$5/.git" "$5/real-git" && printf '../real-git\n' > "$5/.git/commondir"`,
+		"reftable symlink":               `/bin/mkdir -p "$5/.git" && /bin/ln -s ../outside "$5/.git/reftable"`,
+		"nested git symlink":             `/bin/mkdir -p "$5/vendor/dep/real-git" && /bin/ln -s real-git "$5/vendor/dep/.git"`,
+		"alternates":                     `/bin/mkdir -p "$5/.git/objects/info" && printf '/elsewhere/objects\n' > "$5/.git/objects/info/alternates"`,
+		"http-alternates":                `/bin/mkdir -p "$5/.git/objects/info" && printf 'https://example.invalid/objects\n' > "$5/.git/objects/info/http-alternates"`,
+		"shallow symlink":                `/bin/mkdir -p "$5/.git" && /bin/ln -s ../../outside "$5/.git/shallow"`,
+		"shallow directory":              `/bin/mkdir -p "$5/.git/shallow"`,
+		"shallow symlink case variant":   `/bin/mkdir -p "$5/.git" && /bin/ln -s ../../outside "$5/.git/SHALLOW"`,
+		"shallow directory case variant": `/bin/mkdir -p "$5/.git/Shallow"`,
+		"packed-refs directory":          `/bin/mkdir -p "$5/.git/packed-refs"`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
