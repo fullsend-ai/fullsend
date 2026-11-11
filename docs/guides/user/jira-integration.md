@@ -4,6 +4,29 @@
 
 Connect fullsend to a Jira project so that Jira issue activity — comments, label changes — triggers the same agents that run on GitHub and GitLab.
 
+> [!WARNING]
+> **Connect a private Jira project only to a private repository.** A public
+> repository can expose private Jira data through its workflow artifacts.
+>
+> An agent run that starts from a Jira issue reads the issue's title,
+> description, comments, and other fields, including custom fields. Every run
+> uploads its whole `output/` directory as a workflow artifact. That artifact
+> holds JSONL files that record what the agent read: the raw conversation
+> stream (`output.jsonl`), the agent transcripts (`transcripts/*.jsonl`), and,
+> when content capture is on, `run-telemetry.jsonl`.
+>
+> - On a public GitHub repository, any signed-in GitHub user can download the
+>   artifact until it expires.
+> - A public GitLab project can expose its job artifacts in the same way.
+> - The output scan masks secret values. It does not remove customer names,
+>   personal data, or other private text.
+> - Agents can also quote Jira text in pull requests, commits, and workflow
+>   logs on the code host.
+>
+> Fullsend has no setting that narrows the artifact today. See [Private Jira
+> projects need a private
+> repository](../infrastructure/private-repositories.md#private-jira-projects-need-a-private-repository).
+
 ## Setup overview
 
 1. **Create a dedicated Jira account** for fullsend and choose an API token
@@ -482,6 +505,8 @@ implementation
 ## Prerequisites
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
+  If the Jira project is private, the repo must be private too. See the
+  [warning at the top of this guide](#jira-integration).
 - A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
 - A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens))
   for a [dedicated non-human account](#use-a-dedicated-account-for-the-poller)
@@ -1304,3 +1329,4 @@ However, more pollers against the same Jira project means more API calls per cyc
 - [Bring Your Own Agent](bring-your-own-agent.md) — adding custom agents
 - [Configuring agent behavior](customizing-agents.md) — harness configuration
 - [Issue commands](issues-commands.md) — `fullsend issues get`, `create`, and `post-comment`, including Jira
+- [Enabling fullsend on private repositories](../infrastructure/private-repositories.md#private-jira-projects-need-a-private-repository) — why a private Jira project needs a private repository
