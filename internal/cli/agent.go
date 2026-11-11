@@ -27,6 +27,19 @@ func loadAgentConfig(configPath string) (config.ConfigWriter, error) {
 	return config.LoadConfigWriter(filepath.Dir(configPath), config.LoadOpts{MissingOK: false})
 }
 
+// validateAgentConfig validates a config the agent-editing commands are
+// about to write, resolving the allowlist the way the commands that run
+// agents do: fullsend's default prefixes are ensured on top of a
+// non-empty layered result (config.EffectiveAllowedResources), so an
+// agent covered only by a default prefix passes here too, and an
+// explicit [] as the resolved value stays deny-all.
+func validateAgentConfig(cfg config.ConfigWriter) error {
+	if err := cfg.ValidateGlobal(); err != nil {
+		return err
+	}
+	return config.ValidateAgentEntries(cfg.AgentEntries(), config.EffectiveAllowedResources(cfg))
+}
+
 func newAgentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -284,7 +297,7 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 	local := config.UpsertAgentSettings(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, runtimeName, model, effort, subagents)
 	w.SetAgents(local)
 
-	if err := cfg.Validate(); err != nil {
+	if err := validateAgentConfig(cfg); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 	data, err := cfg.Marshal()
@@ -376,8 +389,11 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 
 		prefix := allowlistPrefixForURL(pinnedSource)
 		if prefix != "" {
-			resources := cfg.AllowedResources()
-			if !hasAllowlistPrefix(resources, prefix) {
+			// Checked against the effective list (defaults ensured on a
+			// non-empty result) so a default prefix the running commands
+			// already cover is not written into config.yaml.
+			if !hasAllowlistPrefix(config.EffectiveAllowedResources(cfg), prefix) {
+				resources := cfg.AllowedResources()
 				printer.StepInfo("Adding " + prefix + " to allowed_remote_resources")
 				cfg.SetAllowedRemoteResources(append(resources, prefix))
 			}
@@ -401,7 +417,7 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 
 	cfg.SetAgents(append(agents, entry))
 
-	if err := cfg.Validate(); err != nil {
+	if err := validateAgentConfig(cfg); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
@@ -514,7 +530,7 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 			cfg.SetAgents(agents)
 		}
 
-		if err := cfg.Validate(); err != nil {
+		if err := validateAgentConfig(cfg); err != nil {
 			return fmt.Errorf("config validation failed: %w", err)
 		}
 
@@ -725,7 +741,7 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 		}
 	}
 
-	if err := cfg.Validate(); err != nil {
+	if err := validateAgentConfig(cfg); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 

@@ -690,10 +690,12 @@ func githubServerBaseURL(serverURL string) string {
 	return "https://" + strings.ToLower(u.Host)
 }
 
-// EffectiveAllowedResources returns the config-level allowlist every
-// command family resolves: the layered chain as-is (an omitted key falls
-// through to the parent, an explicit [] denies all remote resources, a
-// non-empty list unions with the parent's), then fullsend's default
+// EffectiveAllowedResources returns the config-level allowlist the command
+// families that run or edit agents resolve — run/lint/lock, harness
+// dispatch, dispatch --route, the Jira poll and the agent-editing commands
+// (agent set/add/update/remove): the layered chain as-is (an omitted key
+// falls through to the parent, an explicit [] denies all remote resources,
+// a non-empty list unions with the parent's), then fullsend's default
 // prefixes ensured on top of a non-empty result.
 func EffectiveAllowedResources(cfg ConfigReader) []string {
 	return EnsureDefaultAllowedRemoteResources(cfg.AllowedResources())
@@ -1178,8 +1180,11 @@ func (c *perRepoConfig) Validate() error {
 		return err
 	}
 	// Agents are validated against the resolved allowlist (including
-	// parent resources) so that URL agents covered by a parent or
-	// default prefix pass validation.
+	// parent resources) as-is, without fullsend's default prefixes
+	// ensured. The command families that run or edit agents validate
+	// through EffectiveAllowedResources instead (ValidateAgentEntries
+	// plus ValidateGlobal), so a URL agent covered only by a default
+	// prefix passes there.
 	// The merged set is validated so an overlay entry that only tunes an
 	// agent registered in the base layer sees that agent's source.
 	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true)
