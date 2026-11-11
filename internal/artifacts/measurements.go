@@ -11,13 +11,13 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
 )
 
-// StagedSkipExplanation replaces the explanation of every skip row in the
-// staged eval-measurements.jsonl.
-const StagedSkipExplanation = "skipped; explanation removed from the staged copy"
+// RemovedSkipExplanation replaces the explanation of every skip row in the
+// eval-measurements.jsonl that CI uploads.
+const RemovedSkipExplanation = "skipped; explanation removed from the run artifact"
 
 // StripMeasurements returns a copy of an eval-measurements.jsonl file
 // (one evalmeasure.EvaluationResult per line) in which every skip row's
-// explanation is replaced with StagedSkipExplanation. The trace_fitness
+// explanation is replaced with RemovedSkipExplanation. The trace_fitness
 // and run_health scorers append the pre-script's free-text skip reason to
 // the explanation of their skip rows; the rows are found by label, not by
 // their text, because a measurement manifest can rename either scorer.
@@ -72,7 +72,7 @@ func stripMeasurement(out *bytes.Buffer, record []byte) error {
 		return errors.New("record has no string label")
 	}
 	if _, has := root["explanation"]; has && label == evalmeasure.LabelSkip {
-		root["explanation"] = StagedSkipExplanation
+		root["explanation"] = RemovedSkipExplanation
 	}
 	enc := json.NewEncoder(out)
 	enc.SetEscapeHTML(false)

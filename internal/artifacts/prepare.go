@@ -1,8 +1,8 @@
-// Package artifacts builds the staged copy of a run's output directory
+// Package artifacts builds the copy of a run's output directory
 // that CI uploads as the run artifact (ADR 0161).
 //
 // The runner leaves output/ untouched so eval-measure and post-scripts
-// read the full run. Stage then copies what the resolved level allows
+// read the full run. Prepare then copies what the resolved level allows
 // into a separate directory, and only that directory is uploaded:
 //
 //   - all: everything in output/.
@@ -39,45 +39,45 @@ func MetadataFiles() []string {
 	return []string{MetricsFile, evalmeasure.MeasurementsFile, telemetry.TelemetryFile}
 }
 
-// PrepareStagedDir empties stagedDir (creating it when absent), so a
-// failed resolution or stage leaves nothing to upload. It refuses a
-// stagedDir that overlaps outputDir.
-func PrepareStagedDir(outputDir, stagedDir string) error {
-	if stagedDir == "" {
-		return errors.New("staged directory is required")
+// ResetArtifactDir empties artifactDir (creating it when absent), so a
+// failed resolution or copy leaves nothing to upload. It refuses an
+// artifactDir that overlaps outputDir.
+func ResetArtifactDir(outputDir, artifactDir string) error {
+	if artifactDir == "" {
+		return errors.New("artifact directory is required")
 	}
-	if err := checkDisjoint(outputDir, stagedDir); err != nil {
+	if err := checkDisjoint(outputDir, artifactDir); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(stagedDir); err != nil {
-		return fmt.Errorf("clearing staged directory: %w", err)
+	if err := os.RemoveAll(artifactDir); err != nil {
+		return fmt.Errorf("clearing artifact directory: %w", err)
 	}
-	if err := os.MkdirAll(stagedDir, 0o755); err != nil {
-		return fmt.Errorf("creating staged directory: %w", err)
+	if err := os.MkdirAll(artifactDir, 0o755); err != nil {
+		return fmt.Errorf("creating artifact directory: %w", err)
 	}
 	return nil
 }
 
-// Stage copies what level allows from outputDir into stagedDir. stagedDir
-// is emptied first. On error, stagedDir is emptied again so a partial
-// copy is never uploaded. A missing outputDir stages nothing.
-func Stage(outputDir, stagedDir, level string) error {
-	if err := PrepareStagedDir(outputDir, stagedDir); err != nil {
+// Prepare copies what level allows from outputDir into artifactDir,
+// which is emptied first. On error, artifactDir is emptied again so a partial
+// copy is never uploaded. A missing outputDir copies nothing.
+func Prepare(outputDir, artifactDir, level string) error {
+	if err := ResetArtifactDir(outputDir, artifactDir); err != nil {
 		return err
 	}
 	var err error
 	switch level {
 	case config.ArtifactContentAll:
-		err = stageAll(outputDir, stagedDir)
+		err = prepareAll(outputDir, artifactDir)
 	case config.ArtifactContentMetadata:
-		err = stageMetadata(outputDir, stagedDir)
+		err = prepareMetadata(outputDir, artifactDir)
 	case config.ArtifactContentNone:
 		err = nil
 	default:
 		err = fmt.Errorf("unknown artifact content level %q", level)
 	}
 	if err != nil {
-		if clearErr := PrepareStagedDir(outputDir, stagedDir); clearErr != nil {
+		if clearErr := ResetArtifactDir(outputDir, artifactDir); clearErr != nil {
 			return errors.Join(err, clearErr)
 		}
 		return err
@@ -85,22 +85,22 @@ func Stage(outputDir, stagedDir, level string) error {
 	return nil
 }
 
-// checkDisjoint rejects a staged directory equal to, inside, or
+// checkDisjoint rejects an artifact directory equal to, inside, or
 // containing the output directory: copying into it would recurse or
 // clearing it would destroy the raw output. Both paths are compared after
 // resolving symlinks, so a path reached through a symlinked parent cannot
 // hide an overlap.
-func checkDisjoint(outputDir, stagedDir string) error {
+func checkDisjoint(outputDir, artifactDir string) error {
 	out, err := resolvePath(outputDir)
 	if err != nil {
 		return err
 	}
-	staged, err := resolvePath(stagedDir)
+	art, err := resolvePath(artifactDir)
 	if err != nil {
 		return err
 	}
-	if within(out, staged) || within(staged, out) {
-		return fmt.Errorf("staged directory %s must not overlap output directory %s", stagedDir, outputDir)
+	if within(out, art) || within(art, out) {
+		return fmt.Errorf("artifact directory %s must not overlap output directory %s", artifactDir, outputDir)
 	}
 	return nil
 }
@@ -143,10 +143,10 @@ func within(parent, child string) bool {
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
-// stageAll copies the whole output tree. Symlinks are recreated as
+// prepareAll copies the whole output tree. Symlinks are recreated as
 // symlinks with the same target, so the upload sees what it saw when it
 // uploaded output/ directly.
-func stageAll(outputDir, stagedDir string) error {
+func prepareAll(outputDir, artifactDir string) error {
 	if _, err := os.Lstat(outputDir); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
@@ -161,7 +161,7 @@ func stageAll(outputDir, stagedDir string) error {
 		if rel == "." {
 			return nil
 		}
-		dst := filepath.Join(stagedDir, rel)
+		dst := filepath.Join(artifactDir, rel)
 		switch {
 		case d.Type()&fs.ModeSymlink != 0:
 			target, err := os.Readlink(path)
@@ -185,7 +185,7 @@ func stageAll(outputDir, stagedDir string) error {
 }
 
 // metadataFilters rewrite the metadata files that can carry free text.
-// A file whose filter fails is left out of the staged copy.
+// A file whose filter fails is left out of the copy CI uploads.
 var metadataFilters = map[string]func([]byte) ([]byte, error){
 	telemetry.TelemetryFile:      StripTelemetry,
 	evalmeasure.MeasurementsFile: StripMeasurements,
@@ -198,12 +198,12 @@ var unfilteredMetadataFiles = map[string]string{
 	MetricsFile: "runner-written counts, costs, model fallback reasons and runner paths; no agent, tracker or pre-script text",
 }
 
-// stageMetadata copies the allowlisted run-level files from the top of
+// prepareMetadata copies the allowlisted run-level files from the top of
 // each host run directory under outputDir. The telemetry copy has
 // content capture and pre-script free text stripped, and the measurements
 // copy has skip explanations replaced; a file that cannot be filtered is
 // left out.
-func stageMetadata(outputDir, stagedDir string) error {
+func prepareMetadata(outputDir, artifactDir string) error {
 	entries, err := os.ReadDir(outputDir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
@@ -217,7 +217,7 @@ func stageMetadata(outputDir, stagedDir string) error {
 			continue
 		}
 		srcDir := filepath.Join(outputDir, e.Name())
-		dstDir := filepath.Join(stagedDir, e.Name())
+		dstDir := filepath.Join(artifactDir, e.Name())
 		for _, name := range MetadataFiles() {
 			src := filepath.Join(srcDir, name)
 			info, err := os.Lstat(src)

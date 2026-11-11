@@ -186,9 +186,10 @@ stages:
     # chunk variable's value, so a caller can control what data ends up
     # in the file but never what command runs. Truncate first — each
     # statement only appends.
-    # Remove a staged copy a previous job left on a runner that keeps its
-    # workspace, before the installer below can fail: artifacts: uploads
-    # fullsend-artifact/ with when: always (ADR 0161). A fixed command.
+    # Remove the artifact directory a previous job left on a runner that
+    # keeps its workspace, before the installer below can fail:
+    # artifacts: uploads fullsend-artifact/ with when: always (ADR 0161).
+    # A fixed command.
     - rm -rf -- "${CI_PROJECT_DIR:-.}/fullsend-artifact"
     - ': > /tmp/.fs-dispatch-payload.b64'
     - printf %s "${EVENT_PAYLOAD_CHUNK_00:-}" >> /tmp/.fs-dispatch-payload.b64
@@ -204,9 +205,9 @@ stages:
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/install-fullsend-cli.sh"
   script:
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/run-agent-job.sh"
-  # The staged copy run-agent-job.sh builds from output/ (ADR 0161):
-  # config.yaml's artifacts setting decides what it holds, and it does not
-  # exist when the level is none or cannot be resolved.
+  # The copy CI uploads, built by run-agent-job.sh from output/
+  # (ADR 0161): config.yaml's artifacts setting decides what it holds,
+  # and it does not exist when the level is none or cannot be resolved.
   artifacts:
     when: always
     paths:

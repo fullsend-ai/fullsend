@@ -191,22 +191,22 @@ newer `agents@v0` manifest this binary does not implement yet) also writes
 ```text
 GitHub Actions job
 ├── fullsend run
-├── fullsend eval-measure   # reads output/<runDir>/run-telemetry.jsonl; never fails the job
-├── fullsend stage-artifacts # staged copy of output/ per config.yaml artifacts (ADR 0161)
-└── upload-artifact         # uploads the staged copy (skipped for artifacts level none)
+├── fullsend eval-measure      # reads output/<runDir>/run-telemetry.jsonl; never fails the job
+├── fullsend prepare-artifacts # copy of output/ per config.yaml artifacts (ADR 0161)
+└── upload-artifact            # uploads that copy (skipped for artifacts level none)
 
 GitLab CI agent job
-├── fullsend run            # --output-dir $CI_PROJECT_DIR/output
-├── fullsend eval-measure   # always (even if run failed); || true
-├── fullsend stage-artifacts # --artifact-dir $CI_PROJECT_DIR/fullsend-artifact
+├── fullsend run               # --output-dir $CI_PROJECT_DIR/output
+├── fullsend eval-measure      # always (even if run failed); || true
+├── fullsend prepare-artifacts # --artifact-dir $CI_PROJECT_DIR/fullsend-artifact
 └── artifacts: fullsend-artifact/ # when: always (parity with the GHA upload)
 ```
 
 Both JSONL files reach the artifact under the `all` and `metadata`
 [artifact levels](../../reference/config-reference.md#artifacts). Under
-`metadata`, the staged `run-telemetry.jsonl` has its content-capture
+`metadata`, the uploaded `run-telemetry.jsonl` has its content-capture
 attributes, span status messages, exception text and pre-script skip reason
-removed, and every `skip` row in the staged `eval-measurements.jsonl` gets a
+removed, and every `skip` row in the uploaded `eval-measurements.jsonl` gets a
 fixed explanation. A file that cannot be parsed is left out. The files in
 `output/` are not changed.
 

@@ -70,38 +70,38 @@ func fullRun() map[string]string {
 	}
 }
 
-func TestStage_All(t *testing.T) {
+func TestPrepare_All(t *testing.T) {
 	out := t.TempDir()
-	staged := filepath.Join(t.TempDir(), "staged")
+	artifactDir := filepath.Join(t.TempDir(), "artifact")
 	writeTree(t, out, fullRun())
 	require.NoError(t, os.Symlink("metrics.json", filepath.Join(out, testRunDir, "link.json")))
 	before := listTree(t, out)
 
-	require.NoError(t, Stage(out, staged, "all"))
-	assert.Equal(t, before, listTree(t, staged), "all stages the whole tree")
-	got, err := os.ReadFile(filepath.Join(staged, testRunDir, "run-telemetry.jsonl"))
+	require.NoError(t, Prepare(out, artifactDir, "all"))
+	assert.Equal(t, before, listTree(t, artifactDir), "all copies the whole tree")
+	got, err := os.ReadFile(filepath.Join(artifactDir, testRunDir, "run-telemetry.jsonl"))
 	require.NoError(t, err)
 	assert.Equal(t, contentTelemetry, string(got), "all leaves telemetry as written")
-	target, err := os.Readlink(filepath.Join(staged, testRunDir, "link.json"))
+	target, err := os.Readlink(filepath.Join(artifactDir, testRunDir, "link.json"))
 	require.NoError(t, err)
 	assert.Equal(t, "metrics.json", target, "symlinks stay symlinks")
 	assert.Equal(t, before, listTree(t, out), "output is untouched")
 }
 
-func TestStage_Metadata(t *testing.T) {
+func TestPrepare_Metadata(t *testing.T) {
 	out := t.TempDir()
-	staged := filepath.Join(t.TempDir(), "staged")
+	artifactDir := filepath.Join(t.TempDir(), "artifact")
 	writeTree(t, out, fullRun())
 	before := listTree(t, out)
 
-	require.NoError(t, Stage(out, staged, "metadata"))
+	require.NoError(t, Prepare(out, artifactDir, "metadata"))
 	assert.Equal(t, []string{
 		testRunDir + "/eval-measurements.jsonl",
 		testRunDir + "/metrics.json",
 		testRunDir + "/run-telemetry.jsonl",
-	}, listTree(t, staged))
+	}, listTree(t, artifactDir))
 
-	tel, err := os.ReadFile(filepath.Join(staged, testRunDir, "run-telemetry.jsonl"))
+	tel, err := os.ReadFile(filepath.Join(artifactDir, testRunDir, "run-telemetry.jsonl"))
 	require.NoError(t, err)
 	s := string(tel)
 	assert.NotContains(t, s, "private")
@@ -121,19 +121,19 @@ func TestStage_Metadata(t *testing.T) {
 const testMeasurements = `{"name":"trace_fitness","label":"pass","explanation":"all spans present","trace_id":"01","span_id":"02","agent":"code","version":"em-001@1","value":1}` + "\n" +
 	`{"name":"health","label":"skip","explanation":"pre-script skipped run; excluded from run_health: PROJ-1 private summary","trace_id":"01","span_id":"02","agent":"code","version":"em-002@1","value":0}` + "\n"
 
-// Under metadata the staged measurements keep every row but no skip
+// Under metadata the uploaded measurements keep every row but no skip
 // explanation, so the pre-script's text never leaves the runner.
-func TestStage_MetadataReplacesSkipExplanations(t *testing.T) {
+func TestPrepare_MetadataReplacesSkipExplanations(t *testing.T) {
 	out := t.TempDir()
-	staged := filepath.Join(t.TempDir(), "staged")
+	artifactDir := filepath.Join(t.TempDir(), "artifact")
 	writeTree(t, out, fullRun())
-	require.NoError(t, Stage(out, staged, "metadata"))
+	require.NoError(t, Prepare(out, artifactDir, "metadata"))
 
-	got, err := os.ReadFile(filepath.Join(staged, testRunDir, "eval-measurements.jsonl"))
+	got, err := os.ReadFile(filepath.Join(artifactDir, testRunDir, "eval-measurements.jsonl"))
 	require.NoError(t, err)
 	s := string(got)
 	assert.NotContains(t, s, "private summary")
-	assert.Contains(t, s, `"explanation":"`+StagedSkipExplanation+`"`)
+	assert.Contains(t, s, `"explanation":"`+RemovedSkipExplanation+`"`)
 	assert.Contains(t, s, `"explanation":"all spans present"`, "non-skip rows are kept as written")
 	assert.Equal(t, 2, strings.Count(s, "\n"))
 	raw, err := os.ReadFile(filepath.Join(out, testRunDir, "eval-measurements.jsonl"))
@@ -141,7 +141,7 @@ func TestStage_MetadataReplacesSkipExplanations(t *testing.T) {
 	assert.Equal(t, testMeasurements, string(raw), "output is untouched")
 }
 
-func TestStage_MetadataDropsUnparseableMeasurements(t *testing.T) {
+func TestPrepare_MetadataDropsUnparseableMeasurements(t *testing.T) {
 	for name, content := range map[string]string{
 		"not json": testMeasurements + "{not json\n",
 		"no label": `{"name":"x","explanation":"private"}` + "\n",
@@ -149,31 +149,31 @@ func TestStage_MetadataDropsUnparseableMeasurements(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			out := t.TempDir()
-			staged := filepath.Join(t.TempDir(), "staged")
+			artifactDir := filepath.Join(t.TempDir(), "artifact")
 			writeTree(t, out, map[string]string{
 				testRunDir + "/metrics.json":            `{}`,
 				testRunDir + "/eval-measurements.jsonl": content,
 			})
-			require.NoError(t, Stage(out, staged, "metadata"))
-			assert.Equal(t, []string{testRunDir + "/metrics.json"}, listTree(t, staged))
+			require.NoError(t, Prepare(out, artifactDir, "metadata"))
+			assert.Equal(t, []string{testRunDir + "/metrics.json"}, listTree(t, artifactDir))
 		})
 	}
 }
 
-func TestStage_MetadataDropsUnparseableTelemetry(t *testing.T) {
+func TestPrepare_MetadataDropsUnparseableTelemetry(t *testing.T) {
 	out := t.TempDir()
-	staged := filepath.Join(t.TempDir(), "staged")
+	artifactDir := filepath.Join(t.TempDir(), "artifact")
 	writeTree(t, out, map[string]string{
 		testRunDir + "/metrics.json":        `{}`,
 		testRunDir + "/run-telemetry.jsonl": contentTelemetry + "{not json\n",
 	})
-	require.NoError(t, Stage(out, staged, "metadata"))
-	assert.Equal(t, []string{testRunDir + "/metrics.json"}, listTree(t, staged))
+	require.NoError(t, Prepare(out, artifactDir, "metadata"))
+	assert.Equal(t, []string{testRunDir + "/metrics.json"}, listTree(t, artifactDir))
 }
 
-func TestStage_MetadataSkipsSymlinks(t *testing.T) {
+func TestPrepare_MetadataSkipsSymlinks(t *testing.T) {
 	out := t.TempDir()
-	staged := filepath.Join(t.TempDir(), "staged")
+	artifactDir := filepath.Join(t.TempDir(), "artifact")
 	secret := filepath.Join(t.TempDir(), "secret.json")
 	require.NoError(t, os.WriteFile(secret, []byte("secret"), 0o644))
 	require.NoError(t, os.MkdirAll(filepath.Join(out, testRunDir), 0o755))
@@ -182,72 +182,72 @@ func TestStage_MetadataSkipsSymlinks(t *testing.T) {
 	writeTree(t, linkedRun, map[string]string{"metrics.json": "linked"})
 	require.NoError(t, os.Symlink(linkedRun, filepath.Join(out, "agent-code-1-2")))
 
-	require.NoError(t, Stage(out, staged, "metadata"))
-	assert.Empty(t, listTree(t, staged))
+	require.NoError(t, Prepare(out, artifactDir, "metadata"))
+	assert.Empty(t, listTree(t, artifactDir))
 }
 
-func TestStage_None(t *testing.T) {
+func TestPrepare_None(t *testing.T) {
 	out := t.TempDir()
-	staged := filepath.Join(t.TempDir(), "staged")
+	artifactDir := filepath.Join(t.TempDir(), "artifact")
 	writeTree(t, out, fullRun())
-	writeTree(t, staged, map[string]string{"stale.txt": "previous job"})
+	writeTree(t, artifactDir, map[string]string{"stale.txt": "previous job"})
 
-	require.NoError(t, Stage(out, staged, "none"))
-	assert.Empty(t, listTree(t, staged))
+	require.NoError(t, Prepare(out, artifactDir, "none"))
+	assert.Empty(t, listTree(t, artifactDir))
 }
 
-func TestStage_UnknownLevelLeavesStagedEmpty(t *testing.T) {
+func TestPrepare_UnknownLevelLeavesArtifactDirEmpty(t *testing.T) {
 	out := t.TempDir()
-	staged := filepath.Join(t.TempDir(), "staged")
+	artifactDir := filepath.Join(t.TempDir(), "artifact")
 	writeTree(t, out, fullRun())
-	err := Stage(out, staged, "everything")
+	err := Prepare(out, artifactDir, "everything")
 	require.Error(t, err)
-	assert.Empty(t, listTree(t, staged))
+	assert.Empty(t, listTree(t, artifactDir))
 }
 
-func TestStage_MissingOutputDir(t *testing.T) {
-	staged := filepath.Join(t.TempDir(), "staged")
+func TestPrepare_MissingOutputDir(t *testing.T) {
+	artifactDir := filepath.Join(t.TempDir(), "artifact")
 	missing := filepath.Join(t.TempDir(), "absent")
 	for _, level := range []string{"all", "metadata", "none"} {
-		require.NoError(t, Stage(missing, staged, level), level)
-		assert.Empty(t, listTree(t, staged), level)
+		require.NoError(t, Prepare(missing, artifactDir, level), level)
+		assert.Empty(t, listTree(t, artifactDir), level)
 	}
 }
 
-func TestPrepareStagedDir_RejectsOverlap(t *testing.T) {
+func TestResetArtifactDir_RejectsOverlap(t *testing.T) {
 	out := t.TempDir()
 	writeTree(t, out, map[string]string{"keep.txt": "raw"})
-	for _, staged := range []string{out, filepath.Join(out, "staged"), filepath.Dir(out)} {
-		err := PrepareStagedDir(out, staged)
-		require.Error(t, err, staged)
+	for _, artifactDir := range []string{out, filepath.Join(out, "artifact"), filepath.Dir(out)} {
+		err := ResetArtifactDir(out, artifactDir)
+		require.Error(t, err, artifactDir)
 		assert.True(t, strings.Contains(err.Error(), "overlap"), err.Error())
 	}
-	assert.Error(t, PrepareStagedDir(out, ""))
-	assert.Equal(t, []string{"keep.txt"}, listTree(t, out), "the raw output survives a rejected stage")
+	assert.Error(t, ResetArtifactDir(out, ""))
+	assert.Equal(t, []string{"keep.txt"}, listTree(t, out), "the raw output survives a rejected prepare")
 }
 
-// A staged path reached through a symlinked parent resolves into the
+// An artifact path reached through a symlinked parent resolves into the
 // output directory and is rejected before RemoveAll can touch it, both
-// when the staged directory exists and when it does not exist yet.
-func TestPrepareStagedDir_RejectsOverlapThroughSymlink(t *testing.T) {
+// when the artifact directory exists and when it does not exist yet.
+func TestResetArtifactDir_RejectsOverlapThroughSymlink(t *testing.T) {
 	out := t.TempDir()
 	writeTree(t, out, map[string]string{"keep.txt": "raw", "sub/inner.txt": "raw"})
 	link := filepath.Join(t.TempDir(), "link")
 	require.NoError(t, os.Symlink(out, link))
 
-	for _, staged := range []string{
+	for _, artifactDir := range []string{
 		filepath.Join(link, "sub"),
-		filepath.Join(link, "missing", "staged"),
+		filepath.Join(link, "missing", "artifact"),
 		link,
 	} {
-		err := PrepareStagedDir(out, staged)
-		require.Error(t, err, staged)
+		err := ResetArtifactDir(out, artifactDir)
+		require.Error(t, err, artifactDir)
 		assert.Contains(t, err.Error(), "overlap")
 	}
 	// The output directory itself reached through the link is rejected too.
-	staged := filepath.Join(t.TempDir(), "staged")
-	require.Error(t, PrepareStagedDir(link, filepath.Join(out, "x")))
-	require.NoError(t, PrepareStagedDir(link, staged), "disjoint paths still pass")
+	artifactDir := filepath.Join(t.TempDir(), "artifact")
+	require.Error(t, ResetArtifactDir(link, filepath.Join(out, "x")))
+	require.NoError(t, ResetArtifactDir(link, artifactDir), "disjoint paths still pass")
 	assert.Equal(t, []string{"keep.txt", "sub/inner.txt"}, listTree(t, out), "the raw output survives")
 }
 

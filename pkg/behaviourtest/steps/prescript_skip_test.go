@@ -220,7 +220,7 @@ func zipArtifact(t *testing.T, files map[string]string) []byte {
 }
 
 // The real CI drivers extract into dest/<driver artifact name>/, and the
-// two forges keep different prefixes: upload-artifact strips the staged
+// two forges keep different prefixes: upload-artifact strips the artifact
 // directory, GitLab artifacts:paths keeps it (fullsend-artifact/, or
 // output/ on older scaffolds). A skipped run must pass on all of them.
 func TestThenHarnessRunSkippedByPreScript_RealDriverLayouts(t *testing.T) {

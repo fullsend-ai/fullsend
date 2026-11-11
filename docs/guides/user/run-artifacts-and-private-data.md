@@ -14,7 +14,7 @@ the details.
 
 - A repository with fullsend installed, and write access to its
   `.fullsend/config.yaml`.
-- A fullsend release that has the `fullsend stage-artifacts` command. See
+- A fullsend release that has the `fullsend prepare-artifacts` command. See
   [Upgrading](#upgrading).
 
 ## Stop Jira text from reaching the artifact
@@ -40,7 +40,7 @@ source name (`github` or `gitlab`) in place of `jira`.
    [Jira integration](jira-integration.md)).
 
 4. Open the run's job log. On GitHub Actions, look in the
-   **Stage fullsend artifacts** step; on GitLab CI, look near the end of the
+   **Prepare fullsend artifacts** step; on GitLab CI, look near the end of the
    agent job log. You should see:
 
    ```text
@@ -63,7 +63,7 @@ source name (`github` or `gitlab`) in place of `jira`.
    no `iteration-<N>/` directory and no `security/findings.jsonl`.
 
 The log line and file list above come from running
-`fullsend stage-artifacts` locally on a sample run directory with this
+`fullsend prepare-artifacts` locally on a sample run directory with this
 config and a Jira event. If you see something else, go to
 [Troubleshooting](#troubleshooting).
 
@@ -195,7 +195,7 @@ annotations on the run.
 | `invalid artifacts.by_source key "Jira": source keys are lowercase with no surrounding spaces; use "jira"` | A source key is not lowercase. The run uploads no artifact. | Rename the key as the message says. |
 | `invalid artifacts.content "meta": must be one of all, metadata, none` | A level is misspelled. The run uploads no artifact. | Use `all`, `metadata` or `none`. |
 | `Run artifact level could not be resolved; no run artifact is uploaded` (on GitLab: `WARNING: run artifact level could not be resolved; no run artifact is uploaded`) | The config or the event could not be read. The line above it in the log gives the cause. | Fix the cause named in the log. |
-| `The installed fullsend CLI predates stage-artifacts, so no run artifact is uploaded. Set the version input to at least the fullsend release that ships this action.` | The workflow pins an older fullsend CLI through the action's `version` input. | Raise `version`. See [Upgrading](#upgrading). |
+| `The installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded. Set the version input to at least the fullsend release that ships this action.` | The workflow pins an older fullsend CLI through the action's `version` input. | Raise `version`. See [Upgrading](#upgrading). |
 | `The fullsend CLI is not installed (check the install step), so no run artifact is uploaded.` | The install step failed earlier in the job. | Fix the install step. |
 | No artifact, no warning | The level is `none`, or on GitLab the job was cancelled or timed out before the end of the job script. | Check the `Run artifact level` line in the log. |
 
@@ -237,8 +237,8 @@ artifacts:
   Add `fullsend-artifact/` to your `.gitignore` next to `output/`.
 - **GitHub Actions `version` input.** If your workflow pins the fullsend CLI
   through the fullsend action's `version` input, set it to this release or
-  later. An older CLI has no `stage-artifacts` command, so the run uploads no
-  run artifact and logs the "predates stage-artifacts" warning.
+  later. An older CLI has no `prepare-artifacts` command, so the run uploads no
+  run artifact and logs the "predates prepare-artifacts" warning.
 - **GitLab jobs killed mid-run.** The artifact is prepared at the end of the
   job script. A job that is cancelled or times out before then uploads no
   run artifact.
@@ -259,6 +259,6 @@ literals; it does not remove personal data, customer names or other private
 business text.
 
 `fullsend run` leaves `output/` untouched. At the end of the job,
-`fullsend stage-artifacts` builds a filtered copy at the level you set, and
+`fullsend prepare-artifacts` builds a filtered copy at the level you set, and
 CI uploads only that copy. The field reference is
 [`artifacts`](../../reference/config-reference.md#artifacts).

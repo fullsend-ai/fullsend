@@ -25,7 +25,7 @@ _fs_exit_cleanup() {
 trap '_fs_exit_cleanup' EXIT
 
 # The job uploads fullsend-artifact/ with `when: always` (ADR 0161). A
-# runner that keeps its workspace still holds the previous job's staged
+# runner that keeps its workspace still holds the previous job's artifact
 # copy, so empty it before any early exit below (the CI_DEBUG_TRACE guard
 # included) can leave it for upload. Only an absolute CI_PROJECT_DIR is
 # trusted as the workspace root.
@@ -1123,7 +1123,7 @@ if [ "${STAGE}" = "fix" ]; then
   _FS_TARGET_REPO="${FIX_TARGET_REPO}"
 fi
 mkdir -p "${CI_PROJECT_DIR}/output"
-# A persistent runner may keep a previous job's staged artifact copy (built
+# A persistent runner may keep a previous job's artifact directory (built
 # at the end of this script); clear it so it never reaches this run's
 # sandbox or artifact.
 rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"
@@ -1195,34 +1195,35 @@ if [ -n "${DEFAULT_BRANCH_SHA}" ]; then
 fi
 fullsend eval-measure "${MEASURE_ARGS[@]}" || true
 
-# Stage the job artifact (ADR 0161): artifacts.content and
+# Prepare the job artifact (ADR 0161): artifacts.content and
 # artifacts.by_source in .fullsend/config.yaml pick the level (all,
 # metadata or none) for this run's source, read from the same event file
-# fullsend run received. The job's artifacts: path is the staged copy, not
-# output/, which stays untouched for the steps above. Fails closed: when the
-# level cannot be resolved the staged directory is removed, and GitLab
-# finds no artifact files (a warning, not a job failure).
-_FS_STAGED_DIR="${CI_PROJECT_DIR}/fullsend-artifact"
-if _FS_ARTIFACT_LEVEL=$(fullsend stage-artifacts \
+# fullsend run received. The job's artifacts: path is the copy CI
+# uploads, not output/, which stays untouched for the steps above. Fails
+# closed: when the level cannot be resolved the artifact directory is
+# removed, and GitLab finds no artifact files (a warning, not a job
+# failure).
+_FS_ARTIFACT_DIR="${CI_PROJECT_DIR}/fullsend-artifact"
+if _FS_ARTIFACT_LEVEL=$(fullsend prepare-artifacts \
   --output-dir "${CI_PROJECT_DIR}/output" \
-  --artifact-dir "${_FS_STAGED_DIR}" \
+  --artifact-dir "${_FS_ARTIFACT_DIR}" \
   --fullsend-dir .fullsend \
   ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}); then
   echo "Run artifact content level: ${_FS_ARTIFACT_LEVEL}"
   # GitLab archives an empty directory that matches artifacts: paths, so
   # remove it for none: the job then has no artifact at all.
   if [ "${_FS_ARTIFACT_LEVEL}" = "none" ]; then
-    rm -rf -- "${_FS_STAGED_DIR}"
+    rm -rf -- "${_FS_ARTIFACT_DIR}"
   fi
 else
-  rm -rf -- "${_FS_STAGED_DIR}"
+  rm -rf -- "${_FS_ARTIFACT_DIR}"
   # Tell apart a missing binary (a failed install), a CLI that predates
   # the command (cobra exits non-zero for an unknown subcommand even with
   # --help) and a failed resolution.
   if ! command -v fullsend >/dev/null 2>&1; then
     echo "WARNING: the fullsend CLI is not installed (did install-fullsend-cli.sh fail?), so no run artifact is uploaded" >&2
-  elif ! fullsend stage-artifacts --help >/dev/null 2>&1; then
-    echo "WARNING: the installed fullsend CLI predates stage-artifacts, so no run artifact is uploaded; install-fullsend-cli.sh must pin a fullsend release at least as new as this script (re-sync the .fullsend scaffold)" >&2
+  elif ! fullsend prepare-artifacts --help >/dev/null 2>&1; then
+    echo "WARNING: the installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded; install-fullsend-cli.sh must pin a fullsend release at least as new as this script (re-sync the .fullsend scaffold)" >&2
   else
     echo "WARNING: run artifact level could not be resolved; no run artifact is uploaded" >&2
   fi

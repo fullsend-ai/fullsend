@@ -1,5 +1,5 @@
 # Recommended ignore for host runDir / eval-measure artifacts
-# (output/) and the staged copy GitLab CI uploads (fullsend-artifact/).
+# (output/) and the artifact directory GitLab CI uploads (fullsend-artifact/).
 # Not installed as a root .gitignore —
 # CollectGitLabPerRepoInstallFiles skips this file so it cannot overwrite
 # a consumer's existing ignore list. Copy the lines below into your repo

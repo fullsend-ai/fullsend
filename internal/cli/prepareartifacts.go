@@ -17,20 +17,20 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-func newStageArtifactsCmd() *cobra.Command {
+func newPrepareArtifactsCmd() *cobra.Command {
 	var (
 		outputDir   string
-		stagedDir   string
+		artifactDir string
 		fullsendDir string
 		eventFile   string
 	)
 	cmd := &cobra.Command{
-		Use:   "stage-artifacts",
-		Short: "Build the staged copy of a run's output that CI uploads",
+		Use:   "prepare-artifacts",
+		Short: "Build the copy of a run's output that CI uploads",
 		Long: `Resolve the run artifact level from config.yaml (artifacts.content and
 artifacts.by_source, ADR 0161) for the run's source, then copy what that
 level allows from --output-dir into --artifact-dir. CI uploads only the
-staged directory; --output-dir is never modified.
+artifact directory; --output-dir is never modified.
 
   all       everything in --output-dir (the default)
   metadata  only metrics.json, eval-measurements.jsonl and
@@ -54,7 +54,7 @@ be resolved or the copy fails, --artifact-dir is left empty and the command
 exits non-zero.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			level, err := runStageArtifacts(outputDir, stagedDir, fullsendDir, eventFile, cmd.ErrOrStderr())
+			level, err := runPrepareArtifacts(outputDir, artifactDir, fullsendDir, eventFile, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -63,7 +63,7 @@ exits non-zero.`,
 		},
 	}
 	cmd.Flags().StringVar(&outputDir, "output-dir", "", "run output directory written by fullsend run (required)")
-	cmd.Flags().StringVar(&stagedDir, "artifact-dir", "", "directory to build the staged copy in; emptied first (required)")
+	cmd.Flags().StringVar(&artifactDir, "artifact-dir", "", "directory to build the copy CI uploads in; emptied first (required)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", ".", "fullsend config directory holding config.yaml")
 	cmd.Flags().StringVar(&eventFile, "event-file", "", "normalized event JSON passed to fullsend run, if any")
 	_ = cmd.MarkFlagRequired("output-dir")
@@ -71,17 +71,17 @@ exits non-zero.`,
 	return cmd
 }
 
-// runStageArtifacts empties stagedDir, resolves the artifact level and
-// stages the copy. Any failure after the directory is emptied leaves it
+// runPrepareArtifacts empties artifactDir, resolves the artifact level and
+// prepares the copy. Any failure after the directory is emptied leaves it
 // empty, so the raw output is never uploaded in its place.
-func runStageArtifacts(outputDir, stagedDir, fullsendDir, eventFile string, stderr io.Writer) (string, error) {
-	if err := artifacts.PrepareStagedDir(outputDir, stagedDir); err != nil {
+func runPrepareArtifacts(outputDir, artifactDir, fullsendDir, eventFile string, stderr io.Writer) (string, error) {
+	if err := artifacts.ResetArtifactDir(outputDir, artifactDir); err != nil {
 		return "", err
 	}
 	printer := ui.New(stderr)
 	res, err := resolveArtifactLevel(fullsendDir, eventFile)
 	if err != nil {
-		fmt.Fprintf(stderr, "fullsend: artifact level could not be resolved; nothing is staged: %v\n", err)
+		fmt.Fprintf(stderr, "fullsend: artifact level could not be resolved; nothing is prepared: %v\n", err)
 		return "", fmt.Errorf("resolving artifact level: %w", err)
 	}
 	ruleLine := "Run artifact level " + res.level + ": " + res.rule
@@ -101,9 +101,9 @@ func runStageArtifacts(outputDir, stagedDir, fullsendDir, eventFile string, stde
 			fmt.Fprintf(stderr, "::warning::%s\n", msg)
 		}
 	}
-	if err := artifacts.Stage(outputDir, stagedDir, res.level); err != nil {
-		fmt.Fprintf(stderr, "fullsend: staging run artifact failed; nothing is staged: %v\n", err)
-		return "", fmt.Errorf("staging artifacts: %w", err)
+	if err := artifacts.Prepare(outputDir, artifactDir, res.level); err != nil {
+		fmt.Fprintf(stderr, "fullsend: preparing run artifact failed; nothing is prepared: %v\n", err)
+		return "", fmt.Errorf("preparing artifacts: %w", err)
 	}
 	return res.level, nil
 }
@@ -170,7 +170,7 @@ func normalizeSource(s string) string {
 // artifactRunSource returns the run's normalized event.source.system
 // (trimmed, lowercase), from the same inputs fullsend run reads:
 // --event-file when given, else the dispatch payload. An --event-file that
-// cannot be read or parsed is an error (nothing is staged).
+// cannot be read or parsed is an error (nothing is prepared).
 //
 // Without any normalized event, a native GitHub event gives the source
 // github (see nativeGitHubEvent).

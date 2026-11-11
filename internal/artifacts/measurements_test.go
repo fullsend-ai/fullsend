@@ -22,9 +22,9 @@ func TestStripMeasurements_Rows(t *testing.T) {
 
 	var gotSkip map[string]any
 	require.NoError(t, json.Unmarshal([]byte(lines[0]), &gotSkip))
-	assert.Equal(t, StagedSkipExplanation, gotSkip["explanation"])
+	assert.Equal(t, RemovedSkipExplanation, gotSkip["explanation"])
 	assert.NotContains(t, lines[0], "PROJ-1")
-	wantSkip := strings.Replace(skip, `"pre-script skipped run; excluded from run_health: PROJ-1 <private>"`, `"`+StagedSkipExplanation+`"`, 1)
+	wantSkip := strings.Replace(skip, `"pre-script skipped run; excluded from run_health: PROJ-1 <private>"`, `"`+RemovedSkipExplanation+`"`, 1)
 	assert.JSONEq(t, wantSkip, lines[0], "other skip-row fields are kept")
 
 	assert.JSONEq(t, pass, lines[1], "a non-skip row keeps every field and value")
@@ -49,15 +49,15 @@ func TestStripMeasurements_Errors(t *testing.T) {
 	}
 }
 
-func TestStripMeasurements_StagingLeavesFileOutOnError(t *testing.T) {
+func TestStripMeasurements_PrepareLeavesFileOutOnError(t *testing.T) {
 	out := t.TempDir()
-	staged := filepath.Join(t.TempDir(), "staged")
+	artifactDir := filepath.Join(t.TempDir(), "artifact")
 	writeTree(t, out, map[string]string{
 		testRunDir + "/metrics.json":            `{}`,
 		testRunDir + "/eval-measurements.jsonl": testMeasurements + `{"label":"pass"} trailing` + "\n",
 	})
-	require.NoError(t, Stage(out, staged, "metadata"))
-	assert.Equal(t, []string{testRunDir + "/metrics.json"}, listTree(t, staged))
+	require.NoError(t, Prepare(out, artifactDir, "metadata"))
+	assert.Equal(t, []string{testRunDir + "/metrics.json"}, listTree(t, artifactDir))
 }
 
 // Every filter targets an allowlisted file, and every allowlisted file is

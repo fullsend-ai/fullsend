@@ -12,16 +12,16 @@ import (
 )
 
 const (
-	stageTestRunDir = "fs-cod-abc123"
-	// stageJiraEvent and stageGitHubEvent are valid normalized events
+	prepareTestRunDir = "fs-cod-abc123"
+	// prepareJiraEvent and prepareGitHubEvent are valid normalized events
 	// (the _normalized_event values of the dispatch payloads below).
-	stageJiraEvent   = `{"repo":"org/repo","entity":{"kind":"work_item","id":10042,"key":"PROJ-1","url":"https://example.atlassian.net/browse/PROJ-1"},"transition":{"kind":"comment_added","comment":{"body":"/fs-code","command":"/fs-code"}},"actor":{"id":"u1","kind":"human","role":"write","is_entity_author":false},"state":{"labels":[]},"source":{"system":"jira","raw_type":"comment"}}`
-	stageGitHubEvent = `{"repo":"org/repo","entity":{"kind":"work_item","id":10,"url":"https://github.com/org/repo/issues/10"},"transition":{"kind":"label_changed","label":{"name":"ready-to-code","action":"added"}},"actor":{"id":"u1","kind":"human","role":"write","is_entity_author":false},"state":{"labels":["ready-to-code"]},"source":{"system":"github","raw_type":"issues"}}`
+	prepareJiraEvent   = `{"repo":"org/repo","entity":{"kind":"work_item","id":10042,"key":"PROJ-1","url":"https://example.atlassian.net/browse/PROJ-1"},"transition":{"kind":"comment_added","comment":{"body":"/fs-code","command":"/fs-code"}},"actor":{"id":"u1","kind":"human","role":"write","is_entity_author":false},"state":{"labels":[]},"source":{"system":"jira","raw_type":"comment"}}`
+	prepareGitHubEvent = `{"repo":"org/repo","entity":{"kind":"work_item","id":10,"url":"https://github.com/org/repo/issues/10"},"transition":{"kind":"label_changed","label":{"name":"ready-to-code","action":"added"}},"actor":{"id":"u1","kind":"human","role":"write","is_entity_author":false},"state":{"labels":["ready-to-code"]},"source":{"system":"github","raw_type":"issues"}}`
 )
 
-// stageFixture lays out a fullsend dir with config, and a run output dir
+// prepareFixture lays out a fullsend dir with config, and a run output dir
 // holding run-level metadata plus transcript files.
-func stageFixture(t *testing.T, configYAML string) (fullsendDir, outputDir, stagedDir string) {
+func prepareFixture(t *testing.T, configYAML string) (fullsendDir, outputDir, artifactDir string) {
 	t.Helper()
 	t.Setenv("GITHUB_EVENT_PATH", "")
 	t.Setenv("GITHUB_ACTIONS", "")
@@ -33,7 +33,7 @@ func stageFixture(t *testing.T, configYAML string) (fullsendDir, outputDir, stag
 		require.NoError(t, os.WriteFile(filepath.Join(fullsendDir, "config.yaml"), []byte(configYAML), 0o644))
 	}
 	outputDir = t.TempDir()
-	run := filepath.Join(outputDir, stageTestRunDir)
+	run := filepath.Join(outputDir, prepareTestRunDir)
 	require.NoError(t, os.MkdirAll(filepath.Join(run, "iteration-1", "transcripts"), 0o755))
 	for rel, content := range map[string]string{
 		"metrics.json":                      `{}`,
@@ -46,11 +46,11 @@ func stageFixture(t *testing.T, configYAML string) (fullsendDir, outputDir, stag
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
 		require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
 	}
-	stagedDir = filepath.Join(t.TempDir(), "staged")
-	return fullsendDir, outputDir, stagedDir
+	artifactDir = filepath.Join(t.TempDir(), "artifact")
+	return fullsendDir, outputDir, artifactDir
 }
 
-func stagedFiles(t *testing.T, dir string) []string {
+func preparedFiles(t *testing.T, dir string) []string {
 	t.Helper()
 	var out []string
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
@@ -71,22 +71,22 @@ func stagedFiles(t *testing.T, dir string) []string {
 	return out
 }
 
-func runStageCmd(t *testing.T, args ...string) (string, error) {
+func runPrepareCmd(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	level, _, err := runStageCmdStderr(t, args...)
+	level, _, err := runPrepareCmdStderr(t, args...)
 	return level, err
 }
 
-// runStageCmdStderr runs stage-artifacts and returns stdout (trimmed) and
+// runPrepareCmdStderr runs prepare-artifacts and returns stdout (trimmed) and
 // stderr separately: stdout must hold only the level.
-func runStageCmdStderr(t *testing.T, args ...string) (string, string, error) {
+func runPrepareCmdStderr(t *testing.T, args ...string) (string, string, error) {
 	t.Helper()
 	cmd := newRootCmd()
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
-	cmd.SetArgs(append([]string{"stage-artifacts"}, args...))
+	cmd.SetArgs(append([]string{"prepare-artifacts"}, args...))
 	err := cmd.Execute()
 	return strings.TrimSpace(stdout.String()), stderr.String(), err
 }
@@ -95,7 +95,7 @@ func runStageCmdStderr(t *testing.T, args ...string) (string, string, error) {
 // strictest of content and every by_source entry, never the forge's level,
 // even on a forge CI runner. A dispatch payload that names a source it
 // cannot back makes the source unknown too.
-func TestStageArtifactsCmd_UnknownSourceUsesStrictest(t *testing.T) {
+func TestPrepareArtifactsCmd_UnknownSourceUsesStrictest(t *testing.T) {
 	tests := []struct {
 		name       string
 		config     string
@@ -124,14 +124,14 @@ func TestStageArtifactsCmd_UnknownSourceUsesStrictest(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fullsendDir, outputDir, stagedDir := stageFixture(t, tc.config)
+			fullsendDir, outputDir, artifactDir := prepareFixture(t, tc.config)
 			if tc.gitlabCI {
 				t.Setenv("GITLAB_CI", "true")
 			}
 			if tc.payload != "" {
 				writeDispatchPayload(t, fullsendDir, tc.payload)
 			}
-			level, stderr, err := runStageCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+			level, stderr, err := runPrepareCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, level)
 			assert.Contains(t, stderr, "Run artifact level "+tc.want+": run source unknown (")
@@ -144,7 +144,7 @@ func TestStageArtifactsCmd_UnknownSourceUsesStrictest(t *testing.T) {
 // The standard GitHub stage jobs get no normalized event: a native forge
 // event on GitHub Actions, with no payload claiming a source, is github.
 // Anything else stays unknown.
-func TestStageArtifactsCmd_NativeGitHubEvent(t *testing.T) {
+func TestPrepareArtifactsCmd_NativeGitHubEvent(t *testing.T) {
 	nativeEvent := `{"action":"created","issue":{"number":10},"comment":{"id":1,"body":"/fs-code"},"repository":{"full_name":"org/repo","visibility":"private"}}`
 	tests := []struct {
 		name       string
@@ -166,7 +166,7 @@ func TestStageArtifactsCmd_NativeGitHubEvent(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fullsendDir, outputDir, stagedDir := stageFixture(t, tc.config)
+			fullsendDir, outputDir, artifactDir := prepareFixture(t, tc.config)
 			t.Setenv("GITHUB_ACTIONS", tc.actions)
 			t.Setenv("GITHUB_EVENT_NAME", tc.eventName)
 			ev := filepath.Join(t.TempDir(), "event.json")
@@ -175,7 +175,7 @@ func TestStageArtifactsCmd_NativeGitHubEvent(t *testing.T) {
 			if tc.payload != "" {
 				writeDispatchPayload(t, fullsendDir, tc.payload)
 			}
-			level, stderr, err := runStageCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+			level, stderr, err := runPrepareCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, level)
 			assert.Contains(t, stderr, tc.wantStderr)
@@ -185,62 +185,62 @@ func TestStageArtifactsCmd_NativeGitHubEvent(t *testing.T) {
 
 // An unknown source that tightens the level beyond artifacts.content is a
 // warning (and an annotation on GitHub Actions), not an info line.
-func TestStageArtifactsCmd_UnknownSourceStricterThanContentWarns(t *testing.T) {
-	fullsendDir, outputDir, stagedDir := stageFixture(t, "version: \"1\"\nartifacts:\n  by_source:\n    jira: metadata\n")
+func TestPrepareArtifactsCmd_UnknownSourceStricterThanContentWarns(t *testing.T) {
+	fullsendDir, outputDir, artifactDir := prepareFixture(t, "version: \"1\"\nartifacts:\n  by_source:\n    jira: metadata\n")
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_EVENT_NAME", "schedule")
-	level, stderr, err := runStageCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+	level, stderr, err := runPrepareCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 	require.NoError(t, err)
 	assert.Equal(t, "metadata", level, "stdout holds only the level")
 	assert.Contains(t, stderr, "::warning::Run artifact level metadata: run source unknown (no valid normalized event)")
 
 	// When the unknown source does not tighten anything, it stays info.
-	fullsendDir, outputDir, stagedDir = stageFixture(t, "version: \"1\"\nartifacts:\n  content: metadata\n")
+	fullsendDir, outputDir, artifactDir = prepareFixture(t, "version: \"1\"\nartifacts:\n  content: metadata\n")
 	t.Setenv("GITHUB_ACTIONS", "true")
-	_, stderr, err = runStageCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+	_, stderr, err = runPrepareCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 	require.NoError(t, err)
 	assert.NotContains(t, stderr, "::warning::Run artifact level")
 }
 
 // A valid event whose source differs from another dispatch payload's
 // claim leaves the source unknown.
-func TestStageArtifactsCmd_ConflictingPayloadSourceIsUnknown(t *testing.T) {
-	fullsendDir, outputDir, stagedDir := stageFixture(t, "version: \"1\"\nartifacts:\n  by_source:\n    jira: none\n")
-	writeDispatchPayload(t, fullsendDir, `{"_normalized_event":`+stageGitHubEvent+`}`)
+func TestPrepareArtifactsCmd_ConflictingPayloadSourceIsUnknown(t *testing.T) {
+	fullsendDir, outputDir, artifactDir := prepareFixture(t, "version: \"1\"\nartifacts:\n  by_source:\n    jira: none\n")
+	writeDispatchPayload(t, fullsendDir, `{"_normalized_event":`+prepareGitHubEvent+`}`)
 	ghEvent := filepath.Join(t.TempDir(), "gh-event.json")
-	inner := strings.ReplaceAll(`{"_normalized_event":`+stageJiraEvent+`}`, `"`, `\"`)
+	inner := strings.ReplaceAll(`{"_normalized_event":`+prepareJiraEvent+`}`, `"`, `\"`)
 	require.NoError(t, os.WriteFile(ghEvent, []byte(`{"inputs":{"event_payload":"`+inner+`"}}`), 0o644))
 	t.Setenv("GITHUB_EVENT_PATH", ghEvent)
-	level, stderr, err := runStageCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+	level, stderr, err := runPrepareCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 	require.NoError(t, err)
 	assert.Equal(t, "none", level)
 	assert.Contains(t, stderr, `names source "jira", not the run's source "github"`)
 }
 
 // An event source in another case still matches its lowercase key, and a
-// by_source key that is not lowercase fails closed at staging.
-func TestStageArtifactsCmd_SourceCase(t *testing.T) {
+// by_source key that is not lowercase fails closed at prepare time.
+func TestPrepareArtifactsCmd_SourceCase(t *testing.T) {
 	t.Run("event source is lowercased", func(t *testing.T) {
-		fullsendDir, outputDir, stagedDir := stageFixture(t, "version: \"1\"\nartifacts:\n  by_source:\n    jira: none\n")
-		writeDispatchPayload(t, fullsendDir, `{"_normalized_event":`+strings.Replace(stageJiraEvent, `"system":"jira"`, `"system":"Jira"`, 1)+`}`)
-		level, err := runStageCmd(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+		fullsendDir, outputDir, artifactDir := prepareFixture(t, "version: \"1\"\nartifacts:\n  by_source:\n    jira: none\n")
+		writeDispatchPayload(t, fullsendDir, `{"_normalized_event":`+strings.Replace(prepareJiraEvent, `"system":"jira"`, `"system":"Jira"`, 1)+`}`)
+		level, err := runPrepareCmd(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 		require.NoError(t, err)
 		assert.Equal(t, "none", level)
 	})
 	t.Run("uppercase by_source key fails closed", func(t *testing.T) {
-		fullsendDir, outputDir, stagedDir := stageFixture(t, "version: \"1\"\nartifacts:\n  by_source:\n    Jira: metadata\n")
-		writeDispatchPayload(t, fullsendDir, `{"_normalized_event":`+stageJiraEvent+`}`)
-		level, err := runStageCmd(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+		fullsendDir, outputDir, artifactDir := prepareFixture(t, "version: \"1\"\nartifacts:\n  by_source:\n    Jira: metadata\n")
+		writeDispatchPayload(t, fullsendDir, `{"_normalized_event":`+prepareJiraEvent+`}`)
+		level, err := runPrepareCmd(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `invalid artifacts.by_source key "Jira"`)
 		assert.Empty(t, level)
-		assert.Empty(t, stagedFiles(t, stagedDir))
+		assert.Empty(t, preparedFiles(t, artifactDir))
 	})
 }
 
-func TestStageArtifactsCmd_NoForgeFlag(t *testing.T) {
-	fullsendDir, outputDir, stagedDir := stageFixture(t, "version: \"1\"\n")
-	_, err := runStageCmd(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir, "--forge", "gitlab")
+func TestPrepareArtifactsCmd_NoForgeFlag(t *testing.T) {
+	fullsendDir, outputDir, artifactDir := prepareFixture(t, "version: \"1\"\n")
+	_, err := runPrepareCmd(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir, "--forge", "gitlab")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown flag")
 }
@@ -282,9 +282,9 @@ func TestDetectRepoVisibility_GitHub(t *testing.T) {
 	}
 }
 
-const stageWarningText = "Run started from jira: the run artifact publishes the full transcript"
+const prepareWarningText = "Run started from jira: the run artifact publishes the full transcript"
 
-func TestStageArtifactsCmd_PublicTranscriptWarning(t *testing.T) {
+func TestPrepareArtifactsCmd_PublicTranscriptWarning(t *testing.T) {
 	tests := []struct {
 		name     string
 		config   string
@@ -293,22 +293,22 @@ func TestStageArtifactsCmd_PublicTranscriptWarning(t *testing.T) {
 		ghaEvent string
 		wantWarn bool
 	}{
-		{name: "jira with nothing set", event: stageJiraEvent, wantWarn: true},
-		{name: "jira with only another source set", config: "version: \"1\"\nartifacts:\n  by_source:\n    linear: none\n", event: stageJiraEvent, wantWarn: true},
-		{name: "explicit content all", config: "version: \"1\"\nartifacts:\n  content: all\n", event: stageJiraEvent},
-		{name: "by_source jira all", config: "version: \"1\"\nartifacts:\n  by_source:\n    jira: all\n", event: stageJiraEvent},
-		{name: "jira at metadata", config: "version: \"1\"\nartifacts:\n  by_source:\n    jira: metadata\n", event: stageJiraEvent},
-		{name: "github source", event: stageGitHubEvent},
-		{name: "private github repo", event: stageJiraEvent, env: map[string]string{"GITHUB_ACTIONS": "true"}, ghaEvent: `{"repository":{"private":true}}`},
-		{name: "public github repo", event: stageJiraEvent, env: map[string]string{"GITHUB_ACTIONS": "true"}, ghaEvent: `{"repository":{"private":false}}`, wantWarn: true},
-		{name: "github visibility unknown", event: stageJiraEvent, env: map[string]string{"GITHUB_ACTIONS": "true"}, ghaEvent: `{}`, wantWarn: true},
-		{name: "private gitlab project", event: stageJiraEvent, env: map[string]string{"GITLAB_CI": "true", "CI_PROJECT_VISIBILITY": "private"}},
-		{name: "internal gitlab project", event: stageJiraEvent, env: map[string]string{"GITLAB_CI": "true", "CI_PROJECT_VISIBILITY": "internal"}, wantWarn: true},
-		{name: "gitlab visibility unknown", event: stageJiraEvent, env: map[string]string{"GITLAB_CI": "true"}, wantWarn: true},
+		{name: "jira with nothing set", event: prepareJiraEvent, wantWarn: true},
+		{name: "jira with only another source set", config: "version: \"1\"\nartifacts:\n  by_source:\n    linear: none\n", event: prepareJiraEvent, wantWarn: true},
+		{name: "explicit content all", config: "version: \"1\"\nartifacts:\n  content: all\n", event: prepareJiraEvent},
+		{name: "by_source jira all", config: "version: \"1\"\nartifacts:\n  by_source:\n    jira: all\n", event: prepareJiraEvent},
+		{name: "jira at metadata", config: "version: \"1\"\nartifacts:\n  by_source:\n    jira: metadata\n", event: prepareJiraEvent},
+		{name: "github source", event: prepareGitHubEvent},
+		{name: "private github repo", event: prepareJiraEvent, env: map[string]string{"GITHUB_ACTIONS": "true"}, ghaEvent: `{"repository":{"private":true}}`},
+		{name: "public github repo", event: prepareJiraEvent, env: map[string]string{"GITHUB_ACTIONS": "true"}, ghaEvent: `{"repository":{"private":false}}`, wantWarn: true},
+		{name: "github visibility unknown", event: prepareJiraEvent, env: map[string]string{"GITHUB_ACTIONS": "true"}, ghaEvent: `{}`, wantWarn: true},
+		{name: "private gitlab project", event: prepareJiraEvent, env: map[string]string{"GITLAB_CI": "true", "CI_PROJECT_VISIBILITY": "private"}},
+		{name: "internal gitlab project", event: prepareJiraEvent, env: map[string]string{"GITLAB_CI": "true", "CI_PROJECT_VISIBILITY": "internal"}, wantWarn: true},
+		{name: "gitlab visibility unknown", event: prepareJiraEvent, env: map[string]string{"GITLAB_CI": "true"}, wantWarn: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fullsendDir, outputDir, stagedDir := stageFixture(t, tc.config)
+			fullsendDir, outputDir, artifactDir := prepareFixture(t, tc.config)
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
@@ -319,7 +319,7 @@ func TestStageArtifactsCmd_PublicTranscriptWarning(t *testing.T) {
 			}
 			eventFile := filepath.Join(t.TempDir(), "event.json")
 			require.NoError(t, os.WriteFile(eventFile, []byte(tc.event), 0o644))
-			level, stderr, err := runStageCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", stagedDir,
+			level, stderr, err := runPrepareCmdStderr(t, "--output-dir", outputDir, "--artifact-dir", artifactDir,
 				"--fullsend-dir", fullsendDir, "--event-file", eventFile)
 			require.NoError(t, err)
 			assert.NotContains(t, level, "Run started", "stdout holds only the level")
@@ -328,10 +328,10 @@ func TestStageArtifactsCmd_PublicTranscriptWarning(t *testing.T) {
 				return
 			}
 			assert.Equal(t, "all", level)
-			assert.Contains(t, stderr, stageWarningText)
+			assert.Contains(t, stderr, prepareWarningText)
 			assert.Contains(t, stderr, "set artifacts.by_source.jira to metadata or none in config.yaml; set it to all to silence this warning.")
 			if tc.env["GITHUB_ACTIONS"] == "true" {
-				assert.Contains(t, stderr, "::warning::"+stageWarningText, "on GitHub Actions the warning is an annotation")
+				assert.Contains(t, stderr, "::warning::"+prepareWarningText, "on GitHub Actions the warning is an annotation")
 			} else {
 				assert.NotContains(t, stderr, "::warning::")
 			}
@@ -352,41 +352,41 @@ func TestPublicTranscriptWarning_SanitizesSource(t *testing.T) {
 	assert.NotContains(t, msg, "\x1b")
 }
 
-func TestStageArtifactsCmd_UnsetStagesEverything(t *testing.T) {
-	fullsendDir, outputDir, stagedDir := stageFixture(t, "")
-	level, err := runStageCmd(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+func TestPrepareArtifactsCmd_UnsetCopiesEverything(t *testing.T) {
+	fullsendDir, outputDir, artifactDir := prepareFixture(t, "")
+	level, err := runPrepareCmd(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 	require.NoError(t, err)
 	assert.Equal(t, "all", level)
-	assert.ElementsMatch(t, stagedFiles(t, outputDir), stagedFiles(t, stagedDir))
+	assert.ElementsMatch(t, preparedFiles(t, outputDir), preparedFiles(t, artifactDir))
 }
 
-func TestStageArtifactsCmd_ContentMetadata(t *testing.T) {
-	fullsendDir, outputDir, stagedDir := stageFixture(t, "version: \"1\"\nartifacts:\n  content: metadata\n")
-	level, err := runStageCmd(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+func TestPrepareArtifactsCmd_ContentMetadata(t *testing.T) {
+	fullsendDir, outputDir, artifactDir := prepareFixture(t, "version: \"1\"\nartifacts:\n  content: metadata\n")
+	level, err := runPrepareCmd(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 	require.NoError(t, err)
 	assert.Equal(t, "metadata", level)
 	assert.ElementsMatch(t, []string{
-		stageTestRunDir + "/metrics.json",
-		stageTestRunDir + "/run-telemetry.jsonl",
-	}, stagedFiles(t, stagedDir))
+		prepareTestRunDir + "/metrics.json",
+		prepareTestRunDir + "/run-telemetry.jsonl",
+	}, preparedFiles(t, artifactDir))
 }
 
-func TestStageArtifactsCmd_BySourceFromEventFile(t *testing.T) {
+func TestPrepareArtifactsCmd_BySourceFromEventFile(t *testing.T) {
 	cfg := "version: \"1\"\nartifacts:\n  by_source:\n    jira: metadata\n"
 	tests := []struct {
 		name  string
 		event string
 		want  string
 	}{
-		{name: "jira run", event: stageJiraEvent, want: "metadata"},
-		{name: "github run", event: stageGitHubEvent, want: "all"},
+		{name: "jira run", event: prepareJiraEvent, want: "metadata"},
+		{name: "github run", event: prepareGitHubEvent, want: "all"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fullsendDir, outputDir, stagedDir := stageFixture(t, cfg)
+			fullsendDir, outputDir, artifactDir := prepareFixture(t, cfg)
 			eventFile := filepath.Join(t.TempDir(), "event.json")
 			require.NoError(t, os.WriteFile(eventFile, []byte(tc.event), 0o644))
-			level, err := runStageCmd(t, "--output-dir", outputDir, "--artifact-dir", stagedDir,
+			level, err := runPrepareCmd(t, "--output-dir", outputDir, "--artifact-dir", artifactDir,
 				"--fullsend-dir", fullsendDir, "--event-file", eventFile)
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, level)
@@ -394,25 +394,25 @@ func TestStageArtifactsCmd_BySourceFromEventFile(t *testing.T) {
 	}
 }
 
-func TestStageArtifactsCmd_StricterContentWinsForDispatchedJiraRun(t *testing.T) {
-	fullsendDir, outputDir, stagedDir := stageFixture(t,
+func TestPrepareArtifactsCmd_StricterContentWinsForDispatchedJiraRun(t *testing.T) {
+	fullsendDir, outputDir, artifactDir := prepareFixture(t,
 		"version: \"1\"\nartifacts:\n  content: none\n  by_source:\n    jira: metadata\n")
-	writeDispatchPayload(t, fullsendDir, `{"_normalized_event":`+stageJiraEvent+`}`)
-	level, err := runStageCmd(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+	writeDispatchPayload(t, fullsendDir, `{"_normalized_event":`+prepareJiraEvent+`}`)
+	level, err := runPrepareCmd(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 	require.NoError(t, err)
 	assert.Equal(t, "none", level)
-	assert.Empty(t, stagedFiles(t, stagedDir))
+	assert.Empty(t, preparedFiles(t, artifactDir))
 }
 
-func TestStageArtifactsCmd_DispatchedJiraRunUsesSourceLevel(t *testing.T) {
-	fullsendDir, outputDir, stagedDir := stageFixture(t, "version: \"1\"\nartifacts:\n  by_source:\n    jira: none\n")
-	writeDispatchPayload(t, fullsendDir, `{"_normalized_event":`+stageJiraEvent+`}`)
-	level, err := runStageCmd(t, "--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir)
+func TestPrepareArtifactsCmd_DispatchedJiraRunUsesSourceLevel(t *testing.T) {
+	fullsendDir, outputDir, artifactDir := prepareFixture(t, "version: \"1\"\nartifacts:\n  by_source:\n    jira: none\n")
+	writeDispatchPayload(t, fullsendDir, `{"_normalized_event":`+prepareJiraEvent+`}`)
+	level, err := runPrepareCmd(t, "--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir)
 	require.NoError(t, err)
 	assert.Equal(t, "none", level)
 }
 
-func TestStageArtifactsCmd_FailsClosed(t *testing.T) {
+func TestPrepareArtifactsCmd_FailsClosed(t *testing.T) {
 	tests := []struct {
 		name    string
 		config  string
@@ -455,67 +455,67 @@ func TestStageArtifactsCmd_FailsClosed(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			fullsendDir, outputDir, stagedDir := stageFixture(t, tc.config)
-			require.NoError(t, os.MkdirAll(stagedDir, 0o755))
-			require.NoError(t, os.WriteFile(filepath.Join(stagedDir, "stale.txt"), []byte("old"), 0o644))
-			args := []string{"--output-dir", outputDir, "--artifact-dir", stagedDir, "--fullsend-dir", fullsendDir}
+			fullsendDir, outputDir, artifactDir := prepareFixture(t, tc.config)
+			require.NoError(t, os.MkdirAll(artifactDir, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(artifactDir, "stale.txt"), []byte("old"), 0o644))
+			args := []string{"--output-dir", outputDir, "--artifact-dir", artifactDir, "--fullsend-dir", fullsendDir}
 			if tc.setup != nil {
 				args = append(args, tc.setup(t, fullsendDir)...)
 			}
-			level, err := runStageCmd(t, args...)
+			level, err := runPrepareCmd(t, args...)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
 			assert.Empty(t, level)
-			assert.Empty(t, stagedFiles(t, stagedDir), "nothing from output/ is staged")
+			assert.Empty(t, preparedFiles(t, artifactDir), "nothing from output/ is prepared")
 		})
 	}
 }
 
-func TestStageArtifactsCmd_RejectsOverlappingDirs(t *testing.T) {
-	fullsendDir, outputDir, _ := stageFixture(t, "")
-	before := stagedFiles(t, outputDir)
-	_, err := runStageCmd(t, "--output-dir", outputDir, "--artifact-dir", filepath.Join(outputDir, "staged"),
+func TestPrepareArtifactsCmd_RejectsOverlappingDirs(t *testing.T) {
+	fullsendDir, outputDir, _ := prepareFixture(t, "")
+	before := preparedFiles(t, outputDir)
+	_, err := runPrepareCmd(t, "--output-dir", outputDir, "--artifact-dir", filepath.Join(outputDir, "artifact"),
 		"--fullsend-dir", fullsendDir)
 	require.Error(t, err)
-	assert.Equal(t, before, stagedFiles(t, outputDir))
+	assert.Equal(t, before, preparedFiles(t, outputDir))
 }
 
-// action.yml builds the staged copy after eval-measure and uploads only
+// action.yml builds the copy CI uploads after eval-measure and uploads only
 // that copy, skipping the upload for none or an unresolved level.
-func TestActionYML_UploadsStagedCopy(t *testing.T) {
+func TestActionYML_UploadsPreparedCopy(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", "action.yml"))
 	require.NoError(t, err)
 	s := string(b)
 	measureIdx := strings.Index(s, "name: Eval measurements")
-	stageIdx := strings.Index(s, "name: Stage fullsend artifacts")
+	prepareIdx := strings.Index(s, "name: Prepare fullsend artifacts")
 	uploadIdx := strings.Index(s, "name: Upload fullsend artifacts")
 	require.Greater(t, measureIdx, 0)
-	require.Greater(t, stageIdx, measureIdx, "staging runs after eval-measure")
-	require.Greater(t, uploadIdx, stageIdx, "upload runs after staging")
+	require.Greater(t, prepareIdx, measureIdx, "prepare runs after eval-measure")
+	require.Greater(t, uploadIdx, prepareIdx, "upload runs after prepare")
 
-	stage := s[stageIdx:uploadIdx]
-	assert.Contains(t, stage, "id: stage-artifacts")
-	assert.Contains(t, stage, "if: always() && inputs.agent != '__install_only__'")
-	assert.Contains(t, stage, "fullsend stage-artifacts")
-	assert.Contains(t, stage, `--output-dir "${GITHUB_WORKSPACE}/output"`)
-	assert.Contains(t, stage, `LEVEL="unresolved"`)
-	assert.Contains(t, stage, `rm -rf -- "${STAGED_DIR}"`)
+	prepare := s[prepareIdx:uploadIdx]
+	assert.Contains(t, prepare, "id: prepare-artifacts")
+	assert.Contains(t, prepare, "if: always() && inputs.agent != '__install_only__'")
+	assert.Contains(t, prepare, "fullsend prepare-artifacts")
+	assert.Contains(t, prepare, `--output-dir "${GITHUB_WORKSPACE}/output"`)
+	assert.Contains(t, prepare, `LEVEL="unresolved"`)
+	assert.Contains(t, prepare, `rm -rf -- "${ARTIFACT_DIR}"`)
 	// A CLI older than the command gets its own warning, still with no
 	// upload; the probe runs only in the failure branch.
-	elseIdx := strings.Index(stage, `LEVEL="unresolved"`)
-	missingIdx := strings.Index(stage, "if ! command -v fullsend >/dev/null 2>&1; then")
-	probeIdx := strings.Index(stage, "elif ! fullsend stage-artifacts --help >/dev/null 2>&1; then")
-	require.Greater(t, missingIdx, elseIdx, "the binary check runs only after staging failed")
+	elseIdx := strings.Index(prepare, `LEVEL="unresolved"`)
+	missingIdx := strings.Index(prepare, "if ! command -v fullsend >/dev/null 2>&1; then")
+	probeIdx := strings.Index(prepare, "elif ! fullsend prepare-artifacts --help >/dev/null 2>&1; then")
+	require.Greater(t, missingIdx, elseIdx, "the binary check runs only after prepare failed")
 	require.Greater(t, probeIdx, missingIdx, "a missing binary is told apart before the version probe")
-	assert.Contains(t, stage, "::warning::The fullsend CLI is not installed")
-	assert.Contains(t, stage, "::warning::The installed fullsend CLI predates stage-artifacts, so no run artifact is uploaded. Set the version input")
-	assert.Contains(t, stage, "::warning::Run artifact level could not be resolved; no run artifact is uploaded")
+	assert.Contains(t, prepare, "::warning::The fullsend CLI is not installed")
+	assert.Contains(t, prepare, "::warning::The installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded. Set the version input")
+	assert.Contains(t, prepare, "::warning::Run artifact level could not be resolved; no run artifact is uploaded")
 
 	upload := s[uploadIdx:]
 	if end := strings.Index(upload, "\n    - name:"); end > 0 {
 		upload = upload[:end]
 	}
-	assert.Contains(t, upload, `contains(fromJSON('["all","metadata"]'), steps.stage-artifacts.outputs.level)`)
-	assert.Contains(t, upload, "path: ${{ steps.stage-artifacts.outputs.dir }}")
+	assert.Contains(t, upload, `contains(fromJSON('["all","metadata"]'), steps.prepare-artifacts.outputs.level)`)
+	assert.Contains(t, upload, "path: ${{ steps.prepare-artifacts.outputs.dir }}")
 	assert.NotContains(t, upload, "github.workspace }}/output", "the raw output/ is never uploaded")
 }

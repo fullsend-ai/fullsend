@@ -102,40 +102,40 @@ func TestGitLabGitignoreExcludesOutput(t *testing.T) {
 	assert.Contains(t, s, "fullsend-artifact/")
 }
 
-// The GitLab job uploads only the staged copy (ADR 0161): the artifact
+// The GitLab job uploads only the prepared copy (ADR 0161): the artifact
 // path is fullsend-artifact/, never output/, and the job script builds it
 // after eval-measure from the event file fullsend run received, before
 // that file is removed.
-func TestGitLabAgentArtifactIsStagedCopy(t *testing.T) {
+func TestGitLabAgentArtifactIsPreparedCopy(t *testing.T) {
 	tmpl := gitlabPerRepoText(t, ".gitlab/ci/fullsend-agent.yml")
 	assert.Contains(t, tmpl, "    paths:\n      - fullsend-artifact/\n")
 	assert.NotContains(t, tmpl, "      - output/\n")
 
 	s := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
 	measureIdx := strings.Index(s, `fullsend eval-measure "${MEASURE_ARGS[@]}"`)
-	stageIdx := strings.Index(s, "fullsend stage-artifacts")
+	prepareIdx := strings.Index(s, "fullsend prepare-artifacts")
 	exitIdx := strings.LastIndex(s, `exit "${RUN_STATUS}"`)
 	require.Greater(t, measureIdx, 0)
-	require.Greater(t, stageIdx, measureIdx, "staging runs after eval-measure")
-	require.Greater(t, exitIdx, stageIdx)
-	stage := s[stageIdx:exitIdx]
-	assert.Contains(t, stage, `--output-dir "${CI_PROJECT_DIR}/output"`)
-	assert.Contains(t, stage, `--artifact-dir "${_FS_STAGED_DIR}"`)
-	assert.Contains(t, stage, "--fullsend-dir .fullsend")
-	assert.NotContains(t, stage, "--forge", "the source never falls back to the forge platform")
-	assert.Contains(t, stage, `${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}`)
-	assert.Contains(t, stage, `rm -rf -- "${_FS_STAGED_DIR}"`, "a failed resolution leaves the staged copy empty")
-	// The EXIT trap removes the event file after staging; no manual rm.
-	assert.NotContains(t, stage, `rm -f "${GITLAB_EVENT_FILE}"`)
-	missingIdx := strings.Index(stage, "if ! command -v fullsend >/dev/null 2>&1; then")
-	probeIdx := strings.Index(stage, "elif ! fullsend stage-artifacts --help >/dev/null 2>&1; then")
+	require.Greater(t, prepareIdx, measureIdx, "prepare runs after eval-measure")
+	require.Greater(t, exitIdx, prepareIdx)
+	prepare := s[prepareIdx:exitIdx]
+	assert.Contains(t, prepare, `--output-dir "${CI_PROJECT_DIR}/output"`)
+	assert.Contains(t, prepare, `--artifact-dir "${_FS_ARTIFACT_DIR}"`)
+	assert.Contains(t, prepare, "--fullsend-dir .fullsend")
+	assert.NotContains(t, prepare, "--forge", "the source never falls back to the forge platform")
+	assert.Contains(t, prepare, `${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}`)
+	assert.Contains(t, prepare, `rm -rf -- "${_FS_ARTIFACT_DIR}"`, "a failed resolution leaves no artifact directory")
+	// The EXIT trap removes the event file after prepare; no manual rm.
+	assert.NotContains(t, prepare, `rm -f "${GITLAB_EVENT_FILE}"`)
+	missingIdx := strings.Index(prepare, "if ! command -v fullsend >/dev/null 2>&1; then")
+	probeIdx := strings.Index(prepare, "elif ! fullsend prepare-artifacts --help >/dev/null 2>&1; then")
 	require.Greater(t, missingIdx, 0)
 	require.Greater(t, probeIdx, missingIdx, "a missing binary is told apart before the version probe")
-	assert.Contains(t, stage, "WARNING: the fullsend CLI is not installed")
-	assert.Contains(t, stage, "WARNING: the installed fullsend CLI predates stage-artifacts, so no run artifact is uploaded")
-	assert.Contains(t, s, `_FS_STAGED_DIR="${CI_PROJECT_DIR}/fullsend-artifact"`)
+	assert.Contains(t, prepare, "WARNING: the fullsend CLI is not installed")
+	assert.Contains(t, prepare, "WARNING: the installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded")
+	assert.Contains(t, s, `_FS_ARTIFACT_DIR="${CI_PROJECT_DIR}/fullsend-artifact"`)
 
-	// The stale staged copy is cleared at the very top, before the
+	// The stale artifact directory is cleared at the very top, before the
 	// CI_DEBUG_TRACE guard and every other early exit, only for an
 	// absolute CI_PROJECT_DIR, and again before the sandbox is built.
 	guardIdx := strings.Index(s, `case "${CI_DEBUG_TRACE:-}" in`)
@@ -149,19 +149,19 @@ func TestGitLabAgentArtifactIsStagedCopy(t *testing.T) {
 	// The directory is removed, not recreated: GitLab archives an empty
 	// directory that matches artifacts: paths.
 	assert.NotContains(t, s, `mkdir -p -- "${CI_PROJECT_DIR}/fullsend-artifact"`)
-	assert.NotContains(t, s, `mkdir -p -- "${_FS_STAGED_DIR}"`)
-	assert.Contains(t, s, `if [ "${_FS_ARTIFACT_LEVEL}" = "none" ]; then`+"\n    rm -rf -- \"${_FS_STAGED_DIR}\"")
+	assert.NotContains(t, s, `mkdir -p -- "${_FS_ARTIFACT_DIR}"`)
+	assert.Contains(t, s, `if [ "${_FS_ARTIFACT_LEVEL}" = "none" ]; then`+"\n    rm -rf -- \"${_FS_ARTIFACT_DIR}\"")
 
 	// The job template clears it too, before the installer can fail.
 	tmpl = gitlabPerRepoText(t, ".gitlab/ci/fullsend-agent.yml")
 	clearIdx := strings.Index(tmpl, `- rm -rf -- "${CI_PROJECT_DIR:-.}/fullsend-artifact"`)
 	installIdx := strings.Index(tmpl, "install-fullsend-cli.sh\"")
 	require.Greater(t, clearIdx, 0)
-	assert.Less(t, clearIdx, installIdx, "before_script clears the staged copy before the installer runs")
+	assert.Less(t, clearIdx, installIdx, "before_script clears the artifact directory before the installer runs")
 
 	runIdx := strings.Index(s, `fullsend run "${STAGE}"`)
 	laterClear := strings.LastIndex(s[:runIdx], `rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"`)
-	assert.Greater(t, laterClear, topClear, "the staged copy is cleared again before the sandbox is built")
+	assert.Greater(t, laterClear, topClear, "the artifact directory is cleared again before the sandbox is built")
 
 	// Event files and credential temp files go through one EXIT trap.
 	trapIdx := strings.Index(s, "trap '_fs_exit_cleanup' EXIT")
@@ -173,8 +173,8 @@ func TestGitLabAgentArtifactIsStagedCopy(t *testing.T) {
 }
 
 // A job that exits early still runs the cleanup trap: the event file is
-// removed and the previous job's staged copy does not survive for upload.
-func TestRunAgentJobScript_EarlyExitClearsStagedCopyAndEventFile(t *testing.T) {
+// removed and the previous job's artifact directory does not survive for upload.
+func TestRunAgentJobScript_EarlyExitClearsArtifactDirAndEventFile(t *testing.T) {
 	root := t.TempDir()
 	stale := filepath.Join(root, "fullsend-artifact", "fs-cod-old", "iteration-1", "output.jsonl")
 	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
@@ -204,14 +204,14 @@ func TestRunAgentJobScript_EarlyExitClearsStagedCopyAndEventFile(t *testing.T) {
 	require.Error(t, err, "the job fails under set -e: %s", out)
 
 	_, err = os.Stat(filepath.Join(root, "fullsend-artifact"))
-	assert.True(t, os.IsNotExist(err), "the previous job's staged copy is gone")
+	assert.True(t, os.IsNotExist(err), "the previous job's artifact directory is gone")
 	_, err = os.Stat(eventFile)
 	assert.True(t, os.IsNotExist(err), "the EXIT trap removed the event file")
 }
 
-// The CI_DEBUG_TRACE abort is an early exit too: the previous job's staged
-// copy must already be gone when it fires.
-func TestRunAgentJobScript_DebugTraceAbortClearsStagedCopy(t *testing.T) {
+// The CI_DEBUG_TRACE abort is an early exit too: the previous job's
+// artifact directory must already be gone when it fires.
+func TestRunAgentJobScript_DebugTraceAbortClearsArtifactDir(t *testing.T) {
 	root := t.TempDir()
 	stale := filepath.Join(root, "fullsend-artifact", "old.jsonl")
 	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
@@ -235,7 +235,7 @@ func TestRunAgentJobScript_DebugTraceAbortClearsStagedCopy(t *testing.T) {
 	assert.Contains(t, string(out), "CI_DEBUG_TRACE enabled")
 	assert.NotContains(t, string(out), "unreachable")
 	_, err = os.Stat(filepath.Join(root, "fullsend-artifact"))
-	assert.True(t, os.IsNotExist(err), "the previous job's staged copy is gone")
+	assert.True(t, os.IsNotExist(err), "the previous job's artifact directory is gone")
 }
 
 func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {

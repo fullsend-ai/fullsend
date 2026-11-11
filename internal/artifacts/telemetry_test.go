@@ -28,7 +28,7 @@ func TestStripTelemetry_RemovesContentAttributesAndEvents(t *testing.T) {
 }
 
 // Span status descriptions and exception events carry err.Error() text,
-// which can quote what the agent read: the staged copy keeps the status
+// which can quote what the agent read: the copy CI uploads keeps the status
 // code and the exception type only.
 func TestStripTelemetry_DropsFreeErrorText(t *testing.T) {
 	record := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"run","status":{"code":2,"message":"open PROJ-1: customer data"},` +
@@ -47,7 +47,7 @@ func TestStripTelemetry_DropsFreeErrorText(t *testing.T) {
 	assert.Error(t, err, "a status that is not an object fails closed")
 }
 
-// The pre-script skip reason is pre-script output; the staged copy keeps
+// The pre-script skip reason is pre-script output; the copy CI uploads keeps
 // only the boolean skipped signal.
 func TestStripTelemetry_DropsPrescriptSkipReason(t *testing.T) {
 	record := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"run","attributes":[` +

@@ -904,8 +904,8 @@ artifacts:
 ```
 
 The runner leaves `output/` untouched, so `fullsend eval-measure` and
-post-scripts read the full run. `fullsend stage-artifacts` then builds a
-filtered copy (the staged copy), and only that copy is uploaded
+post-scripts read the full run. `fullsend prepare-artifacts` then builds a
+filtered copy, and CI uploads only that copy
 ([ADR 0161](../ADRs/0161-repo-config-limits-run-artifact-content.md)).
 
 | Level | Artifact holds |
@@ -940,8 +940,8 @@ Under `metadata`:
   source name works as a key with no schema change: validation rejects
   unknown levels, not unknown keys. Keys must be lowercase with no
   surrounding spaces; `Jira: none` is rejected with a hint to use `jira`,
-  both by config validation and by `fullsend stage-artifacts`, which then
-  stages nothing.
+  both by config validation and by `fullsend prepare-artifacts`, which then
+  prepares nothing.
 
 **Resolution.** The runner picks one level per run: the stricter of
 `content` and the `by_source` entry for the run's source. A source with no
@@ -950,7 +950,7 @@ than `all`, so a `by_source` entry can tighten a run's level but never loosen
 `content`. With `content: none` and `by_source: {jira: metadata}`, a Jira run
 uploads nothing.
 
-**Run source.** `fullsend stage-artifacts` finds the source in this order
+**Run source.** `fullsend prepare-artifacts` finds the source in this order
 and prints the rule it applied on stderr:
 
 1. A run with a valid normalized event uses its `source.system`, trimmed and
@@ -977,8 +977,8 @@ or is known to be private.
 
 **Fails closed.** If the level cannot be resolved — an invalid level, a
 config file that cannot be loaded, an unreadable event, or a CLI too old to
-know `fullsend stage-artifacts` — the staged copy is empty and no artifact is
-uploaded. The raw `output/` is never uploaded in its place.
+know `fullsend prepare-artifacts` — the artifact directory is empty and no
+artifact is uploaded. The raw `output/` is never uploaded in its place.
 
 **Layers.** Across `config.base.yaml` and `config.yaml`, an explicit
 `content` overrides and `by_source` merges per key. When `fullsend repos`

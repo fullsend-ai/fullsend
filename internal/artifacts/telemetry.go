@@ -137,7 +137,7 @@ func stripRecord(record []byte) ([]byte, error) {
 
 // exceptionEventName is the OpenTelemetry exception event. Its message and
 // stack trace carry free error text (err.Error()), which can quote what the
-// agent read, so the staged copy keeps only exception.type.
+// agent read, so the copy CI uploads keeps only exception.type.
 const exceptionEventName = "exception"
 
 // exceptionTextAttributeKeys are the exception event attributes that hold
