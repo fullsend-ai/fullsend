@@ -213,9 +213,11 @@ cross-field equality.
 
 For `comment_added`, adapters extract `command` and `instruction` from the
 **raw** comment body before applying the 4096-character truncation stored in
-`comment.body` (a `/fs-*` command body is exempt: the Jira source carries it
-whole past the cap so the dispatch door can measure and refuse it; JSON Schema
-`maxLength` counts Unicode code points). This keeps slash-command routing and
+`comment.body` (a `/fs-*` command body is exempt on the GitLab target: the
+Jira source carries it whole past the cap there so the dispatch door can
+measure and refuse it, while the GitHub target keeps the cap for command
+bodies too — its transport has no chunk budget; JSON Schema `maxLength` counts
+Unicode code points). This keeps slash-command routing and
 fix instructions intact even when the stored body is truncated for transport.
 
 This moves instruction extraction from downstream workflow steps (e.g.
@@ -530,7 +532,9 @@ two forms:
   it). `run-agent-job.sh` passes it to `fullsend run --event-file`, so
   overlays and root-span telemetry see the same fields as on GitHub — with
   two bounds: `state.labels` is truncated to a 1024-byte JSON prefix
-  (entries past the bound are dropped), and each other attacker-shaped
+  (entries past the bound are dropped, except fullsend's own control
+  labels, `fullsend-fix` and `fullsend-no-fix`, which the bound keeps
+  so the fix kill switch survives it), and each other attacker-shaped
   single string the event carries (branch refs, repo paths, entity URLs,
   logins, the label name) to a 258-byte JSON prefix, both like the
   comment-body bound below, so a trigger or overlay keyed on a value past
@@ -542,7 +546,10 @@ two forms:
   `state.labels` see different values. A label past the bound is
   invisible, so a negative-label guard (`!("hold" in event.state.labels)`)
   is unsafe: any label the forge returns before the guarded one can push it
-  past the bound and make the guard match. The payload's flat top-level
+  past the bound and make the guard match. The control labels
+  `fullsend-fix` and `fullsend-no-fix` are the exception: the bound
+  keeps them, so the repo's own no-fix gate cannot be pushed out by
+  padding labels. The payload's flat top-level
   `labels` key is dropped in this form — labels travel only at
   `_normalized_event.state.labels`.
 - **Comment-only fallback.** Otherwise, for a note event, `_normalized_event`
@@ -560,8 +567,10 @@ as a full NormalizedEvent. Both forms carry the note body at
 `_normalized_event.transition.comment.body`, which `run-agent-job.sh` reads for
 the `/fs-fix` instruction and the retro comment.
 
-A body that starts with `/fs-` is carried untruncated, and dispatch fails closed
-when the payload exceeds the chunk budget. Any other body is bounded to 270
+A body that starts with `/fs-` is carried untruncated through this door, and
+dispatch fails closed when the payload exceeds the chunk budget; the
+Jira-sourced GitHub target keeps the 4096-code-point adapter cap for command
+bodies instead, its transport having no chunk budget. Any other body is bounded to 270
 Unicode code points, with a truncation marker appended when it is cut. The
 bound came down from the 800 of earlier releases. The chunk budget is the sum
 of every attacker-controlled field: an escape-heavy body, a full labels bound

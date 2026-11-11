@@ -83,7 +83,7 @@ The `event` variable has the following top-level fields:
 | `event.actor.role_verified` | boolean | Optional lookup status. For humans, true means `actor.role` is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result |
 | `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
 | `event.actor.is_entity_assignee` | boolean | True when the actor is one of the entity's current assignees on GitHub, GitLab or Jira; false when it is unassigned, the actor is not an assignee, or the assignees are unknown. Reviewers are not assignees |
-| `event.state.labels` | list | Label names on the entity at event time. On the GitLab and Jira dispatch transports the carried list is bounded to a 1024-byte JSON prefix (entries past the bound dropped) — see the caveat below |
+| `event.state.labels` | list | Label names on the entity at event time. On the GitLab and Jira dispatch transports the carried list is bounded to a 1024-byte JSON prefix (entries past the bound dropped, except fullsend's control labels `fullsend-fix` and `fullsend-no-fix`, which are kept) — see the caveat below |
 | `event.state.change_proposal` | object | Present when a change proposal is involved (includes `is_fork`, `head_ref`, `base_ref`) |
 | `event.state.conversation` | object | Required when `entity.kind == "conversation"` (includes `category.name`; optional `category.id` / `slug` / `format`) |
 | `event.source.system` | string | `"github"`, `"gitlab"`, `"jira"`, `"manual"`, or `"schedule"` |
@@ -243,7 +243,9 @@ trigger: >
 
 > **Dispatch-transport bound caveat.** On the GitLab and Jira dispatch
 > transports, `event.state.labels` is bounded to a 1024-byte JSON prefix
-> (entries past the bound are dropped), and on the GitLab transport each other
+> (entries past the bound are dropped, except fullsend's own control labels,
+> `fullsend-fix` and `fullsend-no-fix`, which the bound keeps), and on the
+> GitLab transport each other
 > attacker-shaped single string the event carries (branch refs, repo paths,
 > entity URLs, logins, the label name) is bounded to a 258-byte JSON prefix.
 > A trigger keyed on a label past the labels bound — or on the tail of an
@@ -251,7 +253,8 @@ trigger: >
 > past the bound is invisible to the trigger, so a negative-label guard such
 > as `!("hold" in event.state.labels)` is unsafe on these transports: any
 > label the forge returns before the guarded one can push it past the bound
-> and make the guard match. See the
+> and make the guard match. The control labels `fullsend-fix` and
+> `fullsend-no-fix` are never dropped, so guards keyed on them stay safe. See the
 > [GitLab dispatch payload](../../normative/normalized-event/v1/README.md#gitlab-dispatch-payload)
 > section of the normalized-event spec for the bounds and their rationale.
 

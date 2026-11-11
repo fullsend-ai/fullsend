@@ -270,7 +270,9 @@ complete event does not fit the budget fails the dispatch closed instead of
 falling back.
 In the complete form the
 event's `state.labels` is bounded to a 1024-byte JSON prefix; entries past
-the bound are dropped. A non-command comment body is bounded to 270 runes.
+the bound are dropped, except fullsend's own control labels (`fullsend-fix`,
+`fullsend-no-fix`), which the bound keeps so the fix kill switch survives it.
+A non-command comment body is bounded to 270 runes.
 Each other attacker-shaped single string (branch refs, repo paths, entity
 URLs, logins, the label name) is bounded to a 258-byte JSON prefix. Together
 these bounds keep the worst attacker-shaped payload inside the transport

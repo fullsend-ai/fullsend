@@ -130,14 +130,20 @@ than depending on either.
   [Validation and skipping](#validation-and-skipping) for how an issue served
   without the field is treated. The
   dispatch door bounds them to a 1024-byte JSON prefix, like the
-  [GitLab dispatch payload](README.md#gitlab-dispatch-payload), so labels
-  past the bound never reach the harness on this transport; an `/fs-*`
+  [GitLab dispatch payload](README.md#gitlab-dispatch-payload), so user
+  labels past the bound never reach the harness on this transport
+  (fullsend's own control labels, `fullsend-fix` and `fullsend-no-fix`,
+  are kept past the bound, like on the GitLab transport); an `/fs-*`
   command body that does not fit the dispatch budget fails the dispatch
-  instead of arriving shortened, and a command body is carried whole
-  through normalization so the door measures the complete body — but a
-  raw non-command body past the schema's 4096-code-point cap is cut at
-  normalization, before the dispatch door sees it, so that guarantee
-  covers what the schema carries. Body-keyed triggers see the
+  instead of arriving shortened. On the GitLab target a command body is
+  carried whole through normalization so the door measures the complete
+  body; the GitHub target's transport has no fail-closed budget door
+  (its records travel whole through the dispatch file into the poll
+  job's matrix output), so there every body, command or not, keeps the
+  schema's 4096-code-point cap at normalization. A raw non-command body
+  past that cap is cut at normalization on both targets, before the
+  dispatch door sees it, so that guarantee covers what the schema
+  carries. Body-keyed triggers see the
   adapter-truncated body, while the transported non-command body is
   shortened further (the shortening ladder on the GitLab target; the
   GitHub target carries the adapter-truncated body). On
