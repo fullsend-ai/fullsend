@@ -38,6 +38,8 @@ target after the pre-script and before upload, and sanitizes and validates the
 returned tree before publication; a plain directory may come back as a plain
 directory or a valid checkout, while a checkout must come back as a checkout.
 Reftable ref storage requires Git 2.53 or newer on the host running Fullsend.
+Fullsend rejects a downloaded `.git/packed-refs` larger than 32 MiB and a
+downloaded `.git/shallow` larger than 4 MiB.
 See [SafeDownload](../guides/dev/cli-internals.md#security-sanitizedownload).
 
 ## Plan block

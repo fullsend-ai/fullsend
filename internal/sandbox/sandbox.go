@@ -360,14 +360,36 @@ func removeGitMetadata(path string) error {
 // contain non-ASCII whitespace do not match the separator.
 var replaceRefRecord = regexp.MustCompile(`^[^[:space:]]+[[:space:]]+refs/replace/`)
 
+const (
+	maxPackedRefsBytes = 32 << 20
+	maxShallowBytes    = 4 << 20
+)
+
+// readBoundedFile reads up to limit+1 bytes to detect oversized files.
+func readBoundedFile(path string, limit int64) ([]byte, bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = file.Close() }()
+	data, err := io.ReadAll(io.LimitReader(file, limit+1))
+	if err != nil {
+		return nil, false, err
+	}
+	return data, int64(len(data)) > limit, nil
+}
+
 // filterPackedRefs drops refs/replace lines and one immediately following
 // peeled line, keeping every other line byte-for-byte. Matching is
 // case-sensitive because Git ref names are. The rewrite uses a sibling
 // temporary file so a hardlinked packed-refs target is replaced, not truncated.
 func filterPackedRefs(path string) error {
-	data, err := os.ReadFile(path)
+	data, oversized, err := readBoundedFile(path, maxPackedRefsBytes)
 	if err != nil {
 		return fmt.Errorf("reading git metadata %s: %w", path, err)
+	}
+	if oversized {
+		return fmt.Errorf("git metadata %s is larger than %d bytes", path, maxPackedRefsBytes)
 	}
 
 	var out strings.Builder
@@ -2161,9 +2183,12 @@ func restoreTrustedShallow(localDir string, trusted ShallowState) error {
 	case err == nil && !info.Mode().IsRegular():
 		return fmt.Errorf("git shallow metadata %s is not a regular file", path)
 	case err == nil:
-		returned, err := os.ReadFile(path)
+		returned, oversized, err := readBoundedFile(path, maxShallowBytes)
 		if err != nil {
 			return fmt.Errorf("reading downloaded git shallow metadata %s: %w", path, err)
+		}
+		if oversized {
+			return fmt.Errorf("downloaded git shallow metadata %s is larger than %d bytes", path, maxShallowBytes)
 		}
 		// A sandbox fetch --depth may add cutoffs the host never trusted, so
 		// every returned boundary entry must already be in the trusted set.

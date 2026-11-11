@@ -1134,6 +1134,21 @@ func TestSanitizeDownload_PackedRefsDropsReplacements(t *testing.T) {
 			in:   testOID + " refs/replace/x\n\n^" + testOID + "\n",
 			want: "\n^" + testOID + "\n",
 		},
+		{
+			name: "final line without newline is preserved",
+			in:   testOID + " refs/heads/main\n# tail",
+			want: testOID + " refs/heads/main\n# tail",
+		},
+		{
+			name: "final replacement line without newline is dropped",
+			in:   testOID + " refs/heads/main\n" + testOID + " refs/replace/x",
+			want: testOID + " refs/heads/main\n",
+		},
+		{
+			name: "crlf replacement record and peeled line are dropped",
+			in:   testOID + " refs/replace/x\r\n^" + testOID + "\r\n" + testOID + " refs/heads/main\r\n",
+			want: testOID + " refs/heads/main\r\n",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1211,6 +1226,85 @@ func TestSanitizeDownload_PackedRefsDropsReplacements(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "packed-refs")
 	})
+}
+
+// TestReadBoundedFile checks the exact bound: limit bytes are accepted and one
+// more is reported as oversized.
+func TestReadBoundedFile(t *testing.T) {
+	cases := []struct {
+		name      string
+		content   string
+		limit     int64
+		oversized bool
+	}{
+		{name: "empty file", limit: 8},
+		{name: "exactly the limit", content: "12345678", limit: 8},
+		{name: "one over the limit", content: "123456789", limit: 8, oversized: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "file")
+			require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o644))
+
+			data, oversized, err := readBoundedFile(path, tc.limit)
+			require.NoError(t, err)
+			assert.Equal(t, tc.oversized, oversized)
+			assert.Equal(t, tc.content, string(data))
+		})
+	}
+}
+
+// TestFilterPackedRefs_Limits rejects an oversized packed-refs file without
+// touching it and skips the rewrite when nothing is removed.
+func TestFilterPackedRefs_Limits(t *testing.T) {
+	t.Run("oversized file fails closed", func(t *testing.T) {
+		root := t.TempDir()
+		packed := writeFile(t, root, "packed-refs", "")
+		require.NoError(t, os.Truncate(packed, maxPackedRefsBytes+1))
+
+		err := filterPackedRefs(packed)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), fmt.Sprintf("larger than %d bytes", maxPackedRefsBytes))
+		info, statErr := os.Stat(packed)
+		require.NoError(t, statErr)
+		assert.Equal(t, int64(maxPackedRefsBytes+1), info.Size(), "a rejected file must be left untouched")
+		entries, readErr := os.ReadDir(root)
+		require.NoError(t, readErr)
+		require.Len(t, entries, 1, "no temporary file is created")
+	})
+
+	t.Run("unchanged file is not replaced", func(t *testing.T) {
+		root := t.TempDir()
+		packed := writeFile(t, root, "packed-refs", testOID+" refs/heads/main\n")
+		alias := filepath.Join(t.TempDir(), "alias")
+		if err := os.Link(packed, alias); err != nil {
+			t.Skipf("hardlinks unavailable: %v", err)
+		}
+
+		require.NoError(t, filterPackedRefs(packed))
+		packedInfo, err := os.Stat(packed)
+		require.NoError(t, err)
+		aliasInfo, err := os.Stat(alias)
+		require.NoError(t, err)
+		assert.True(t, os.SameFile(packedInfo, aliasInfo), "an unchanged file must keep its inode")
+	})
+}
+
+// TestRestoreTrustedShallow_RejectsOversizedMarker rejects a marker above the
+// whole-file limit and leaves it untouched.
+func TestRestoreTrustedShallow_RejectsOversizedMarker(t *testing.T) {
+	localDir := t.TempDir()
+	gitDir := filepath.Join(localDir, ".git")
+	require.NoError(t, os.Mkdir(gitDir, 0o755))
+	shallowPath := writeFile(t, gitDir, "shallow", "")
+	require.NoError(t, os.Truncate(shallowPath, maxShallowBytes+1))
+
+	err := restoreTrustedShallow(localDir, ShallowState{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("larger than %d bytes", maxShallowBytes))
+	info, statErr := os.Stat(shallowPath)
+	require.NoError(t, statErr)
+	assert.Equal(t, int64(maxShallowBytes+1), info.Size(), "a rejected marker must be left untouched")
 }
 
 // TestSanitizeDownload_RejectsAlternateObjectStores rejects repositories that
