@@ -59,7 +59,7 @@ var errDispatchedWorkflow = errors.New("the workflow dispatch step ran in this s
 // unchanged.
 func whenWorkflowDispatchedWithPayload(ctx context.Context, w *world.World, file, payload string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repository leased; start with \"the enrolled test repository\"")
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before dispatching a workflow")
 	}
 	d, err := workflowDispatcher(w)
 	if err != nil {
@@ -128,7 +128,7 @@ func whenWorkflowDispatchedWithPayload(ctx context.Context, w *world.World, file
 // successfully" does that).
 func thenWorkflowFailsLogging(ctx context.Context, w *world.World, file, needle string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repository leased; dispatch the workflow first")
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before asserting the workflow's failure")
 	}
 	// The step pairs with the dispatch step: without one there is no
 	// dispatched run to wait for, and the whole-scenario window would
