@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -181,13 +182,17 @@ func TestRunAgentValidationLoop_RejectedRepositoryFeedsNextIteration(t *testing.
 
 	feedback, readErr := os.ReadFile(filepath.Join(outputBase, mustRunDir(t, outputBase), "iteration-1", validationFeedbackFile))
 	require.NoError(t, readErr)
-	assert.Equal(t, repoValidationFeedback, string(feedback), "the audit artifact carries the trusted feedback")
+	assert.Contains(t, string(feedback), "real root .git directory",
+		"the audit artifact carries the rejection feedback")
+	assert.Contains(t, string(feedback), "preserving existing work")
 
 	raw, readErr := os.ReadFile(onlyTelemetryFile(t, outputBase))
 	require.NoError(t, readErr)
-	assert.Contains(t, string(raw), "Repository output could not be validated",
-		"the trusted feedback reaches the next agent prompt")
-	assert.Contains(t, string(raw), "could also be a runner, Git, or filesystem problem")
+	assert.Contains(t, string(raw), "one or more repository requirements were not met",
+		"the rejection feedback reaches the next agent prompt")
+	assert.Contains(t, string(raw), "plain directory is supported")
+	assert.Contains(t, string(raw), "commondir or alternate object stores")
+	assert.Contains(t, string(raw), "preserving existing work")
 	assert.NotContains(t, string(raw), "is not a real directory",
 		"the sandbox-provided error must not be injected into the prompt")
 }
@@ -218,17 +223,16 @@ func TestRunAgentValidationLoop_CheckoutValidationFailureFeedsGenericFeedback(t 
 
 	raw, readErr := os.ReadFile(onlyTelemetryFile(t, outputBase))
 	require.NoError(t, readErr)
-	assert.Contains(t, string(raw), "Repository output could not be validated",
-		"the generic feedback reaches the next agent prompt")
-	assert.Contains(t, string(raw), "Check the checkout metadata and shallow state")
+	assert.Contains(t, string(raw), "The checkout may be invalid",
+		"the ambiguous-failure feedback reaches the next agent prompt")
+	assert.Contains(t, string(raw), "Git, the runner, or the filesystem may have failed")
 	assert.NotContains(t, string(raw), "not a gitdir",
 		"the sandbox-provided error must not be injected into the prompt")
 }
 
-// TestRunAgentValidationLoop_CheckoutValidationFailureStopsWithoutFeedback
-// proves a repository-validation failure stops the retries without feedback,
-// and the post-loop sweep still validates the output.
-func TestRunAgentValidationLoop_CheckoutValidationFailureStopsWithoutFeedback(t *testing.T) {
+// TestRunAgentValidationLoop_CheckoutValidationFailureRetriesWithoutFeedback
+// proves an ambiguous Git validation failure keeps retrying without feedback.
+func TestRunAgentValidationLoop_CheckoutValidationFailureRetriesWithoutFeedback(t *testing.T) {
 	repoDir := newShallowTestRepo(t)
 	downloads := useFakeOpenshellRepoDownload(t,
 		"if [ \"$n\" -eq 1 ]; then cp -R "+shellQuoteForTest(repoDir)+"/. \"$dest\"/ && /bin/rm \"$dest/.git/HEAD\"; else cp -R "+shellQuoteForTest(repoDir)+"/. \"$dest\"/; fi", "")
@@ -236,18 +240,53 @@ func TestRunAgentValidationLoop_CheckoutValidationFailureStopsWithoutFeedback(t 
 	outputBase := t.TempDir()
 
 	out, err := runValidationLoopAgent(t, dir, outputBase, repoDir)
-	require.NoError(t, err, "the post-loop sweep still validates the iteration output")
-	assert.Equal(t, 1, downloads(), "no second agent iteration runs")
-	assert.NotContains(t, out, "Iteration 2 of 2")
-	assert.Contains(t, out, "Repository validation failed; stopping agent retries")
-	assert.Contains(t, out, "Post-loop validation (iteration 1)")
+	require.NoError(t, err)
+	assert.Equal(t, 2, downloads(), "the ambiguous failure retries the next iteration")
+	assert.Contains(t, out, "Iteration 2 of 2")
+	assert.NotContains(t, out, "Injecting validation feedback into agent prompt")
 	_, statErr := os.Stat(filepath.Join(outputBase, mustRunDir(t, outputBase), "iteration-1", validationFeedbackFile))
 	assert.True(t, os.IsNotExist(statErr), "no feedback artifact is written without append")
+	assert.Contains(t, out, "Validation passed")
+}
+
+// TestRunAgentValidationLoop_GitTimeoutRetriesWithoutFeedback covers a native
+// Git query that exceeds its deadline: the first checkout is not validated, the
+// next iteration retries and validates.
+func TestRunAgentValidationLoop_GitTimeoutRetriesWithoutFeedback(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	delayed := filepath.Join(t.TempDir(), "delayed")
+	stubDir := t.TempDir()
+	stub := "#!/bin/sh\n" +
+		"case \"$*\" in\n" +
+		"  *rev-parse*--resolve-git-dir*.fullsend-safe-download-*)\n" +
+		"    if [ ! -f " + shellQuoteForTest(delayed) + " ]; then\n" +
+		"      : > " + shellQuoteForTest(delayed) + "\n" +
+		"      exec /bin/sleep 10\n" +
+		"    fi ;;\n" +
+		"esac\n" +
+		"exec " + shellQuoteForTest(realGit) + " \"$@\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "git"), []byte(stub), 0o755))
+
+	repoDir := newShallowTestRepo(t)
+	downloads := useFakeOpenshellRepoDownload(t,
+		"cp -R "+shellQuoteForTest(repoDir)+"/. \"$dest\"/", "")
+	t.Setenv("PATH", stubDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dir := writeValidationLoopFullsendDir(t, passingValidationScript, "", 2, "")
+
+	out, err := runValidationLoopAgent(t, dir, t.TempDir(), repoDir)
+	require.NoError(t, err)
+	require.FileExists(t, delayed, "the first staging Git query must have been delayed")
+	assert.Equal(t, 2, downloads(), "a published first checkout would have validated and ended the loop")
+	assert.Contains(t, out, "context deadline exceeded")
+	assert.Contains(t, out, "Iteration 2 of 2")
+	assert.NotContains(t, out, "Injecting validation feedback into agent prompt")
+	assert.Contains(t, out, "Validation passed")
 }
 
 // TestRunAgentValidationLoop_RejectedRepositoryWithoutFeedbackStops proves a
-// rejected repository stops the retry loop when no feedback can reach another
-// iteration, and the post-loop sweep still validates the output.
+// directly detected malformed repository stops the retry loop without feedback,
+// and the post-loop sweep still validates the output.
 func TestRunAgentValidationLoop_RejectedRepositoryWithoutFeedbackStops(t *testing.T) {
 	repoDir := newShallowTestRepo(t)
 	downloads := useFakeOpenshellRepoDownload(t, ": > \"$dest/.git\"", "")
@@ -257,7 +296,23 @@ func TestRunAgentValidationLoop_RejectedRepositoryWithoutFeedbackStops(t *testin
 	require.NoError(t, err, "the post-loop sweep still validates the iteration output")
 	assert.Equal(t, 1, downloads(), "no second agent iteration runs")
 	assert.NotContains(t, out, "Iteration 2 of 2")
-	assert.Contains(t, out, "Repository validation failed; stopping agent retries")
+	assert.Contains(t, out, "Repository output rejected; stopping agent retries")
+	assert.Contains(t, out, "Post-loop validation (iteration 1)")
+}
+
+// TestRunAgentValidationLoop_ReftableHeadRejectionStopsWithoutFeedback: a
+// directory .git/HEAD fails the sanitizer before Git runs.
+func TestRunAgentValidationLoop_ReftableHeadRejectionStopsWithoutFeedback(t *testing.T) {
+	repoDir := newShallowTestRepo(t)
+	downloads := useFakeOpenshellRepoDownload(t,
+		"mkdir -p \"$dest/.git/reftable\" \"$dest/.git/HEAD\"", "")
+	dir := writeValidationLoopFullsendDir(t, passingValidationScript, "", 2, "")
+
+	out, err := runValidationLoopAgent(t, dir, t.TempDir(), repoDir)
+	require.NoError(t, err, "the post-loop sweep still validates the iteration output")
+	assert.Equal(t, 1, downloads(), "no second agent iteration runs")
+	assert.NotContains(t, out, "Iteration 2 of 2")
+	assert.Contains(t, out, "Repository output rejected; stopping agent retries")
 	assert.Contains(t, out, "Post-loop validation (iteration 1)")
 }
 

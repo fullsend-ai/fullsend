@@ -589,9 +589,9 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                   │ With validation_loop: failures clean up  │
 │  │                   │ the repo dir and retry; a validation     │
 │  │                   │ failure may get feedback for another     │
-│  │                   │ iteration; without feedback validation   │
-│  │                   │ failures stop. Output files are kept     │
-│  │                   │ for the post-loop sweep.                 │
+│  │                   │ iteration; without feedback rejected     │
+│  │                   │ output stops, other failures retry.      │
+│  │                   │ Output files are kept for the sweep.     │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────────────────────────────┐                   │
@@ -747,11 +747,12 @@ alter `.git`. A plain target may return either a plain directory or a valid
 checkout; a checkout target must return a valid checkout. Otherwise, the
 download is rejected and the local destination is left unchanged. With a
 `validation_loop` and `feedback_mode: append`, a repository-validation failure
-sends fixed generic feedback for the next iteration, when one remains. Without
-`append`, repository-validation failures stop the retries, while transport and
-publication failures keep the ordinary clean-up-and-retry behavior. A timed-out
-iteration or the last iteration stops retries either way. Extracted output
-files stay in place for the output-only post-loop sweep.
+sends fixed feedback for the next iteration, when one remains. Without
+`append`, directly rejected repository output stops the retries, while other
+validation, transport, and publication failures keep the ordinary
+clean-up-and-retry behavior. A timed-out iteration or the last iteration stops
+retries either way. Extracted output files stay in place for the output-only
+post-loop sweep.
 
 Git metadata outside the target's root `.git/` directory—for example, selected
 through `GIT_DIR` or `--git-dir`—is outside this sanitization guarantee.

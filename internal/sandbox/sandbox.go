@@ -112,6 +112,13 @@ const (
 // publication failures are not tagged.
 var ErrRepositoryValidation = errors.New("repository validation failed")
 
+// ErrRepositoryRejected marks a direct, deterministic content rejection: the
+// same downloaded output cannot pass. Timeouts, Git query failures, and
+// filesystem errors are never tagged.
+var ErrRepositoryRejected = errors.New("repository rejected")
+
+func rejectRepository(err error) error { return fmt.Errorf("%w: %w", ErrRepositoryRejected, err) }
+
 // RetrySleepFn is the function called between retry attempts in
 // CreateWithRetry. It defaults to time.Sleep. Override in tests to
 // avoid real delays.
@@ -165,7 +172,7 @@ func sanitizeDownload(localDir string) error {
 			// file could redirect or block native Git.
 			if folded == "reftable" {
 				if d.Type()&fs.ModeSymlink != 0 || !d.IsDir() {
-					return fmt.Errorf("git reftable storage %s is not a real directory", path)
+					return rejectRepository(fmt.Errorf("git reftable storage %s is not a real directory", path))
 				}
 				gitDir := filepath.Dir(path)
 				if !reftableSeen[gitDir] {
@@ -176,7 +183,7 @@ func sanitizeDownload(localDir string) error {
 			}
 			if strings.HasPrefix(folded, "reftable/") {
 				if !d.Type().IsRegular() {
-					return fmt.Errorf("git reftable storage entry %s is not a regular file", path)
+					return rejectRepository(fmt.Errorf("git reftable storage entry %s is not a regular file", path))
 				}
 				return nil
 			}
@@ -188,28 +195,28 @@ func sanitizeDownload(localDir string) error {
 				// A symlinked .git hides metadata from this walk at any depth;
 				// root gitfiles redirect it outside the inspected directory.
 				if d.Type()&fs.ModeSymlink != 0 {
-					return fmt.Errorf("repository git metadata %s is a symlink", path)
+					return rejectRepository(fmt.Errorf("repository git metadata %s is a symlink", path))
 				}
 				if filepath.Dir(path) == absLocal && !d.IsDir() {
-					return fmt.Errorf("repository git metadata %s is not a real directory", path)
+					return rejectRepository(fmt.Errorf("repository git metadata %s is not a real directory", path))
 				}
 			case "commondir":
-				return fmt.Errorf("unsupported git metadata redirect %s", path)
+				return rejectRepository(fmt.Errorf("unsupported git metadata redirect %s", path))
 			case "objects/info/alternates", "objects/info/http-alternates":
 				// Alternate stores can carry unfiltered commit graphs.
-				return fmt.Errorf("unsupported git metadata alternate object store %s", path)
+				return rejectRepository(fmt.Errorf("unsupported git metadata alternate object store %s", path))
 			case "refs", "info", "objects", "objects/info":
 				// These containers must be real directories: Git follows
 				// symlinks that the directory walker does not.
 				if d.Type()&fs.ModeSymlink != 0 || !d.IsDir() {
-					return fmt.Errorf("git metadata container %s is not a real directory", path)
+					return rejectRepository(fmt.Errorf("git metadata container %s is not a real directory", path))
 				}
 			case "packed-refs":
 				// WalkDir has already read a directory entry before the
 				// callback; removing it here would make the walk read a
 				// deleted path. Reject the layout instead.
 				if d.IsDir() {
-					return fmt.Errorf("unsupported git metadata storage %s", path)
+					return rejectRepository(fmt.Errorf("unsupported git metadata storage %s", path))
 				}
 				if !d.Type().IsRegular() {
 					return removeGitMetadata(path)
@@ -225,7 +232,7 @@ func sanitizeDownload(localDir string) error {
 					// The name matched case-insensitively, so a case variant
 					// would defer too and skip the generic symlink handling.
 					if !d.Type().IsRegular() {
-						return fmt.Errorf("git shallow metadata %s is not a regular file", path)
+						return rejectRepository(fmt.Errorf("git shallow metadata %s is not a regular file", path))
 					}
 					return nil
 				}
@@ -302,7 +309,7 @@ func sanitizeDownload(localDir string) error {
 	// that this walker does not inspect.
 	for _, gitDir := range reftableDirs {
 		if worktreeDirs[gitDir] {
-			return fmt.Errorf("unsupported reftable worktree metadata %s", filepath.Join(gitDir, "worktrees"))
+			return rejectRepository(fmt.Errorf("unsupported reftable worktree metadata %s", filepath.Join(gitDir, "worktrees")))
 		}
 	}
 
@@ -389,7 +396,7 @@ func filterPackedRefs(path string) error {
 		return fmt.Errorf("reading git metadata %s: %w", path, err)
 	}
 	if oversized {
-		return fmt.Errorf("git metadata %s is larger than %d bytes", path, maxPackedRefsBytes)
+		return rejectRepository(fmt.Errorf("git metadata %s is larger than %d bytes", path, maxPackedRefsBytes))
 	}
 
 	var out strings.Builder
@@ -2181,14 +2188,14 @@ func restoreTrustedShallow(localDir string, trusted ShallowState) error {
 	info, err := os.Lstat(path)
 	switch {
 	case err == nil && !info.Mode().IsRegular():
-		return fmt.Errorf("git shallow metadata %s is not a regular file", path)
+		return rejectRepository(fmt.Errorf("git shallow metadata %s is not a regular file", path))
 	case err == nil:
 		returned, oversized, err := readBoundedFile(path, maxShallowBytes)
 		if err != nil {
 			return fmt.Errorf("reading downloaded git shallow metadata %s: %w", path, err)
 		}
 		if oversized {
-			return fmt.Errorf("downloaded git shallow metadata %s is larger than %d bytes", path, maxShallowBytes)
+			return rejectRepository(fmt.Errorf("downloaded git shallow metadata %s is larger than %d bytes", path, maxShallowBytes))
 		}
 		// A sandbox fetch --depth may add cutoffs the host never trusted, so
 		// every returned boundary entry must already be in the trusted set.
@@ -2200,7 +2207,7 @@ func restoreTrustedShallow(localDir string, trusted ShallowState) error {
 		}
 		for _, entry := range strings.Fields(string(returned)) {
 			if !allowed[entry] {
-				return fmt.Errorf("unsupported sandbox shallow boundary change in %s: returned shallow cutoffs were not in the trusted snapshot; sandbox fetch --depth or --deepen must not introduce new boundaries", path)
+				return rejectRepository(fmt.Errorf("unsupported sandbox shallow boundary change in %s: returned shallow cutoffs were not in the trusted snapshot; sandbox fetch --depth or --deepen must not introduce new boundaries", path))
 			}
 		}
 		if !trusted.Present {
@@ -2319,7 +2326,7 @@ func ValidateRepositoryRoot(tree string) (plain bool, err error) {
 		present[name] = err == nil
 	}
 	if present["HEAD"] && (present["commondir"] || (present["objects"] && present["refs"])) {
-		return false, fmt.Errorf("checking git checkout %s: unsupported git layout: root has Git directory metadata but no .git directory; use a normal .git checkout or a plain directory", absTree)
+		return false, rejectRepository(fmt.Errorf("checking git checkout %s: unsupported git layout: root has Git directory metadata but no .git directory; use a normal .git checkout or a plain directory", absTree))
 	}
 	return true, nil
 }
@@ -2431,10 +2438,13 @@ func sanitizeReftableStore(cwd, gitDir string) error {
 	// file is only a sentinel; reject a malformed one rather than proceed.
 	head, err := os.Lstat(filepath.Join(gitDir, "HEAD"))
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return rejectRepository(fmt.Errorf("inspecting HEAD in %s: %w", gitDir, err))
+		}
 		return fmt.Errorf("inspecting HEAD in %s: %w", gitDir, err)
 	}
 	if !head.Mode().IsRegular() {
-		return fmt.Errorf("git HEAD %s is not a regular file", filepath.Join(gitDir, "HEAD"))
+		return rejectRepository(fmt.Errorf("git HEAD %s is not a regular file", filepath.Join(gitDir, "HEAD")))
 	}
 
 	storage, err := readRefStorage(cwd, gitDir)
@@ -2600,7 +2610,7 @@ func SafeDownload(sandboxName, remoteDir, localDir string, snapshot RepositorySn
 			plain, err = ValidateRepositoryRoot(stagingDir)
 		}
 		if err == nil && snapshot.IsCheckout && plain {
-			err = fmt.Errorf("downloaded directory %s is a plain directory, but the input repository was a git checkout; a checkout input must remain a git checkout", stagingDir)
+			err = rejectRepository(fmt.Errorf("downloaded directory %s is a plain directory, but the input repository was a git checkout; a checkout input must remain a git checkout", stagingDir))
 		}
 		if err == nil {
 			err = restoreTrustedShallow(stagingDir, snapshot.Shallow)

@@ -94,10 +94,9 @@ const (
 	// lint/type-check diagnostics without overwhelming the model's context.
 	maxFeedbackBytes = 10 * 1024
 
-	// repoValidationFeedback is the fixed prompt feedback after repository
-	// output fails download validation. The sandbox error and paths never
-	// reach the prompt.
-	repoValidationFeedback = "Repository output could not be validated. Check the checkout metadata and shallow state: a plain directory is allowed, but a bare Git repository layout is not; a checkout needs a real root .git directory, no redirected Git metadata (for example commondir), and no new shallow boundary. The failure could also be a runner, Git, or filesystem problem. Correct the repository state and try again."
+	// Fixed feedback keeps sandbox errors and paths out of the prompt.
+	repoRejectedFeedback            = "Repository output was rejected because one or more repository requirements were not met. A plain directory is supported. For a checkout, keep a real root .git directory, avoid shared or redirected Git metadata such as commondir or alternate object stores, and do not introduce new shallow boundaries; if the needed history is missing, fetch full history when possible instead of editing shallow state directly. Downloaded .git/packed-refs must be at most 32 MiB and .git/shallow at most 4 MiB. Inspect the checkout, correct any requirement violation while preserving existing work, then retry."
+	repoValidationUncertainFeedback = "Repository output could not be validated. The checkout may be invalid, or Git, the runner, or the filesystem may have failed. Check the checkout and retry."
 
 	// Run-scoped inference providers resolved from the selected agent.
 	runProviderVertex = "vertex"
@@ -3046,15 +3045,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				}
 				repoExtractedOK = false
 				validationFailed := errors.Is(err, sandbox.ErrRepositoryValidation)
+				rejected := errors.Is(err, sandbox.ErrRepositoryRejected)
 				if validationFailed && !lastIterTimedOut {
 					if feedbackEnabled && iteration < maxIterations {
-						validationFeedback = writeValidationFeedback(iterDir, []byte(repoValidationFeedback), nil, h.RunnerEnv, printer)
+						feedback := repoValidationUncertainFeedback
+						if rejected {
+							feedback = repoRejectedFeedback
+						}
+						validationFeedback = writeValidationFeedback(iterDir, []byte(feedback), nil, h.RunnerEnv, printer)
 						printer.StepWarn("Repository validation failed; retrying with validation feedback")
 						printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
-					} else if feedbackEnabled {
+						continue
+					}
+					if feedbackEnabled {
 						printer.StepWarn("Repository validation failed; no iterations remain (the post-loop sweep still validates this iteration's output)")
-					} else {
-						printer.StepWarn("Repository validation failed; stopping agent retries (feedback_mode is not append)")
+						continue
+					}
+					if rejected {
+						printer.StepWarn("Repository output rejected; stopping agent retries (feedback_mode is not append)")
 						break
 					}
 					continue

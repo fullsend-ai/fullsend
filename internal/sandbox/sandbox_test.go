@@ -995,12 +995,16 @@ func TestSanitizeDownload_ReftableLayoutMatrix(t *testing.T) {
 func TestSanitizeDownload_ReftableRejectsNonRegularHEAD(t *testing.T) {
 	requireReftableSanitization(t)
 	cases := []struct {
-		name  string
-		setup func(t *testing.T, path string)
+		name         string
+		setup        func(t *testing.T, path string)
+		wantRejected bool
+		wantNotExist bool
 	}{
 		{
-			name:  "missing",
-			setup: func(t *testing.T, path string) { require.NoError(t, os.Remove(path)) },
+			name:         "missing",
+			setup:        func(t *testing.T, path string) { require.NoError(t, os.Remove(path)) },
+			wantRejected: true,
+			wantNotExist: true,
 		},
 		{
 			name: "directory",
@@ -1008,6 +1012,7 @@ func TestSanitizeDownload_ReftableRejectsNonRegularHEAD(t *testing.T) {
 				require.NoError(t, os.Remove(path))
 				require.NoError(t, os.Mkdir(path, 0o755))
 			},
+			wantRejected: true,
 		},
 		{
 			name: "symlink",
@@ -1015,6 +1020,7 @@ func TestSanitizeDownload_ReftableRejectsNonRegularHEAD(t *testing.T) {
 				require.NoError(t, os.Remove(path))
 				require.NoError(t, os.Symlink("config", path))
 			},
+			wantRejected: true,
 		},
 	}
 	for _, tc := range cases {
@@ -1023,7 +1029,12 @@ func TestSanitizeDownload_ReftableRejectsNonRegularHEAD(t *testing.T) {
 			r.commitFile("file.txt", "original")
 			tc.setup(t, filepath.Join(r.dir, ".git", "HEAD"))
 
-			require.Error(t, sanitizeDownload(r.dir))
+			err := sanitizeDownload(r.dir)
+			require.Error(t, err)
+			assert.Equal(t, tc.wantRejected, errors.Is(err, ErrRepositoryRejected), "got %v", err)
+			if tc.wantNotExist {
+				assert.True(t, errors.Is(err, os.ErrNotExist), "a missing HEAD keeps its cause: %v", err)
+			}
 		})
 	}
 }
@@ -1047,6 +1058,7 @@ func TestSanitizeDownload_RejectsReftableWorktreeMetadata(t *testing.T) {
 	err := sanitizeDownload(r.dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "worktree")
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
 	assert.NoFileExists(t, sentinel, "worktree manifest must not be followed")
 }
 
@@ -1264,6 +1276,7 @@ func TestFilterPackedRefs_Limits(t *testing.T) {
 
 		err := filterPackedRefs(packed)
 		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
 		assert.Contains(t, err.Error(), fmt.Sprintf("larger than %d bytes", maxPackedRefsBytes))
 		info, statErr := os.Stat(packed)
 		require.NoError(t, statErr)
@@ -1301,6 +1314,7 @@ func TestRestoreTrustedShallow_RejectsOversizedMarker(t *testing.T) {
 
 	err := restoreTrustedShallow(localDir, ShallowState{})
 	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
 	assert.Contains(t, err.Error(), fmt.Sprintf("larger than %d bytes", maxShallowBytes))
 	info, statErr := os.Stat(shallowPath)
 	require.NoError(t, statErr)
@@ -1745,6 +1759,7 @@ func TestSafeDownload_DoesNotPublishUnsupportedGitMetadata(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "sanitizing downloaded directory")
 			assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+			assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
 			_, statErr := os.Lstat(localDir)
 			assert.True(t, os.IsNotExist(statErr), "unsafe download must not be published")
 		})
@@ -2042,6 +2057,7 @@ func TestSafeDownload_RejectsPlainOutputForCheckoutInput(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "must remain a git checkout")
 		assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
 	}
 
 	t.Run("absent destination remains absent", func(t *testing.T) {
@@ -2126,7 +2142,7 @@ func TestSafeDownload_RejectsMissingOrInvalidRootCheckout(t *testing.T) {
 	r := newGitRepo(t)
 	r.commitFile("file.txt", "content")
 
-	reject := func(t *testing.T, src string) {
+	reject := func(t *testing.T, src string) error {
 		t.Helper()
 		serveDownloadFrom(t, src)
 		localDir := filepath.Join(t.TempDir(), "repo")
@@ -2137,13 +2153,15 @@ func TestSafeDownload_RejectsMissingOrInvalidRootCheckout(t *testing.T) {
 		assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
 		_, statErr := os.Lstat(localDir)
 		assert.True(t, os.IsNotExist(statErr), "a rejected checkout must not be published")
+		return err
 	}
 
 	t.Run("root git directory metadata", func(t *testing.T) {
 		tree := t.TempDir()
 		writeFile(t, tree, "HEAD", "ref: refs/heads/main\n")
 		writeFile(t, tree, "commondir", "../.git\n")
-		reject(t, tree)
+		err := reject(t, tree)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "a bare-shaped root is detected directly: %v", err)
 	})
 
 	t.Run("bare root", func(t *testing.T) {
@@ -2151,7 +2169,8 @@ func TestSafeDownload_RejectsMissingOrInvalidRootCheckout(t *testing.T) {
 		r.git("clone", "--bare", "--quiet", r.dir, bare)
 		assert.Equal(t, "true", r.gitAt(bare, "rev-parse", "--is-bare-repository"),
 			"native Git must recognize the bare root")
-		reject(t, bare)
+		err := reject(t, bare)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "a bare root is detected directly: %v", err)
 	})
 
 	t.Run("empty .git beside bare root", func(t *testing.T) {
@@ -2160,13 +2179,15 @@ func TestSafeDownload_RejectsMissingOrInvalidRootCheckout(t *testing.T) {
 		writeFile(t, tree, "objects/pack/source.idx", "source\n")
 		writeFile(t, tree, "refs/heads/main", r.git("rev-parse", "HEAD")+"\n")
 		require.NoError(t, os.Mkdir(filepath.Join(tree, ".git"), 0o755))
-		reject(t, tree)
+		err := reject(t, tree)
+		assert.False(t, errors.Is(err, ErrRepositoryRejected), "a Git query failure is not a rejection: %v", err)
 	})
 
 	t.Run("invalid .git layout", func(t *testing.T) {
 		tree := t.TempDir()
 		writeFile(t, tree, ".git/HEAD", "ref: refs/heads/main\n")
-		reject(t, tree)
+		err := reject(t, tree)
+		assert.False(t, errors.Is(err, ErrRepositoryRejected), "a Git layout query failure is not a rejection: %v", err)
 	})
 }
 
@@ -2187,6 +2208,7 @@ func TestSafeDownload_RejectsSpecialHEAD(t *testing.T) {
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded), "want a deadline error, got %v", err)
+	assert.False(t, errors.Is(err, ErrRepositoryRejected), "a timeout is not a rejection: %v", err)
 	_, statErr := os.Lstat(localDir)
 	assert.True(t, os.IsNotExist(statErr), "a special HEAD must not be published")
 }
@@ -2368,6 +2390,7 @@ func TestSafeDownload_RejectsShallowCloneAddedCutoff(t *testing.T) {
 	err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, trusted)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
 	assert.Contains(t, err.Error(), "unsupported sandbox shallow boundary change")
 	assert.Contains(t, err.Error(), "fetch --depth")
 	got, err := os.ReadFile(prior)
@@ -2410,6 +2433,7 @@ func TestSafeDownload_FailurePhaseMarkers(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "checking git checkout")
 		assert.True(t, errors.Is(err, ErrRepositoryValidation), "a Git query failure happens in root validation: %v", err)
+		assert.False(t, errors.Is(err, ErrRepositoryRejected), "a Git query failure is not a rejection: %v", err)
 	})
 
 	t.Run("filesystem failure during sanitization", func(t *testing.T) {
@@ -2436,6 +2460,7 @@ exit 0
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "sanitizing downloaded directory")
 		assert.True(t, errors.Is(err, ErrRepositoryValidation), "a sanitization failure happens in the validation phase: %v", err)
+		assert.False(t, errors.Is(err, ErrRepositoryRejected), "a filesystem failure is not a rejection: %v", err)
 		var symErr *errSymlink
 		assert.True(t, errors.As(err, &symErr), "the filesystem cause must stay reachable: %v", err)
 	})
