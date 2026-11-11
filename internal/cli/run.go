@@ -829,6 +829,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepFail("Lock file workflow entry is malformed")
 				return wfErr
 			}
+			// An entry written before the runtime workflow was locked (such
+			// as a version 1 lock with a source from a URL base) is still
+			// current but leaves it to the URL index.
+			if lockedWorkflowHash == "" && h.RuntimeWorkflow != nil && h.RuntimeWorkflow.IsRemote() {
+				wfURL, _, _ := harness.ParseIntegrityHash(h.RuntimeWorkflow.Source)
+				printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin the runtime workflow (%s); run 'fullsend lock --update %s%s' to pin it",
+					agentName, wfURL, agentName, fullsendDirArg(fullsendDir)))
+			}
 			printer.StepStart("Using pinned dependencies from lock file")
 			lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
 			if lockResolveErr != nil {

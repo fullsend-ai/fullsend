@@ -650,6 +650,7 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 		require.NoError(t, os.Remove(filepath.Join(dir, ".fullsend-cache", "url-index.json")))
 		out := assertLockedTreeDelivered(t, resolveFlags{offline: true}, dir)
 		assert.Contains(t, out, "dependencies from lock file")
+		assert.NotContains(t, out, "does not pin the runtime workflow")
 	})
 	t.Run("index repointed at another cached tree", func(t *testing.T) {
 		dir := setup(t)
@@ -702,6 +703,24 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 		assert.Equal(t, []string{"pipelines/sample"}, fetched)
 		_, statErr := os.Stat(filepath.Join(lockedTreePath(t, dir), "tree", "stray"))
 		assert.True(t, os.IsNotExist(statErr), "the refetched tree replaces the one with the stray entry")
+	})
+	t.Run("entry without the runtime workflow warns and runs", func(t *testing.T) {
+		dir := setup(t)
+		lockPath := filepath.Join(dir, "lock.yaml")
+		lf, err := lock.Load(lockPath)
+		require.NoError(t, err)
+		entry := lf.Lookup("code")
+		var kept []lock.DependencyEntry
+		for _, d := range entry.Dependencies {
+			if d.Field != resolve.RuntimeWorkflowDependencyField {
+				kept = append(kept, d)
+			}
+		}
+		entry.Dependencies = kept
+		lf.SetHarness("code", *entry)
+		require.NoError(t, lock.Save(lockPath, lf))
+		out := assertLockedTreeDelivered(t, resolveFlags{offline: true}, dir)
+		assert.Contains(t, out, "Lock entry for code does not pin the runtime workflow ("+cleanURL+"); run 'fullsend lock --update code --fullsend-dir "+dir+"' to pin it")
 	})
 	t.Run("malformed workflow entry fails closed", func(t *testing.T) {
 		dir := setup(t)
