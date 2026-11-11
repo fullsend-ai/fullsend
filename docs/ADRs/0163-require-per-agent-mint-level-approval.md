@@ -1,5 +1,5 @@
 ---
-title: "163. Require per-agent approval for mint privilege levels"
+title: "163. Require per-agent approval for mint roles and privilege levels"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -12,7 +12,7 @@ topics:
   - mint
 ---
 
-# 163. Require per-agent approval for mint privilege levels
+# 163. Require per-agent approval for mint roles and privilege levels
 
 Date: 2026-11-10
 
@@ -26,24 +26,22 @@ Accepted
 configuration. [ADR 0073](0073-named-mint-privilege-levels.md) lets an agent's
 harness request a named mint level for each run-stage; when the harness omits
 `privilege_levels`, it requests `write` for every stage. The `agents[]` entry
-does not currently record which levels the repository owner approved for that
-agent. A registered source can therefore request the authority available to
-its mint role without a separate per-agent grant.
+does not currently record which mint roles or levels the repository owner
+approved for that agent. A registered source can therefore request the
+authority available to its mint role without a separate per-agent grant.
 
 An agent can have multiple effective harness variants, including inherited
-configuration and overlays. Those variants may request different levels for
-the same run-stage, so a grant must cover their union. [ADR 0112](0112-overlays-may-set-any-harness-field.md)
+configuration and overlays. Those variants may request different roles and
+levels for the same run-stage, so grants must cover their union. [ADR 0112](0112-overlays-may-set-any-harness-field.md)
 allows overlays to set harness fields, but the current overlay schema does not
 carry `privilege_levels`; adding guarded overlay-level requests is a
 prerequisite for implementing this decision. The related concern about
 explicit permissions before granting action rights is tracked in
 [#7548](https://github.com/fullsend-ai/fullsend/issues/7548).
 
-This ADR aims to make each config-registered agent's maximum mint authority
-explicit and fail closed when any effective harness variant requests a level
-outside its effective grant. The built-in profile below is a deliberate
-compatibility exception: an omitted grant resolves to that profile rather than
-being denied.
+This ADR aims to require explicit approval for every mint role an agent may
+assume, and to define the privilege-level defaults that apply within approved
+roles.
 
 ## Options
 
@@ -51,29 +49,37 @@ being denied.
   request. This is concise but makes source registration an implicit grant.
 - Store one flat ceiling per agent. This cannot express different grants for
   different run-stages or account for overlays that select different levels.
-- Store approved level sets per agent and run-stage. This makes the grant
-  explicit while representing all effective harness variants. Missing stages
-  could deny every level, which provides the strongest fail-closed behavior
-  but requires existing entries to be migrated. We instead retain a built-in
-  compatibility profile for omitted grants, as described below.
+- Store an approved role list and approved level sets per agent and run-stage.
+  This separates approval to assume a role from the authority requested within
+  that role, while representing all effective harness variants. A missing role
+  list denies all roles; approved roles use the built-in level profile unless
+  an explicit level map overrides it.
 
 ## Decision
 
-We adopt per-agent, per-stage mint-level approvals in repository config so
-agent installation records the maximum authority each harness may request.
+We require per-agent mint-role approval and define per-stage level approvals in
+repository config so an agent can use only approved roles and levels.
 
-Each `agents[]` entry may have an `approved_privilege_levels` map with the same
-run-stage keys as the harness's `privilege_levels` map. Values are lists of
-levels. The built-in profile is `[read]` for `pre_script` and `runtime`, and
-`[write]` for `post_script`; `validation_loop` uses the `runtime` grant.
-Omitting `approved_privilege_levels` applies this profile. In an explicit map,
-a stage-specific entry wins; `default` supplies the grant for other stages
-when present, otherwise the built-in profile applies to each unlisted stage.
-This fallback is an intentional compatibility trade-off, not a record of
-operator consent: it implicitly grants `post_script` write. Removing an
-explicit stage entry therefore uses the map's `default` list when present;
-otherwise it restores that stage's built-in grant. An empty list is required
-to deny every level for that stage.
+Each `agents[]` entry may specify an `approved_roles` list. Only listed roles
+are approved; a missing or empty list approves no role, so the agent cannot
+launch. The list must cover every role requested by any effective harness
+variant.
+
+An entry may also have an `approved_privilege_levels` map whose values are
+lists of levels and whose run-stage keys correspond to the harness's
+`privilege_levels` map. This map applies to each approved role. If the map is
+absent, the built-in profile applies: `[read]` for `pre_script` and `runtime`,
+and `[write]` for `post_script`; `validation_loop` uses the `runtime` grant.
+This is Ralph's compatibility default, scoped to roles that the repository
+owner explicitly approved.
+
+When `approved_privilege_levels` is present, its values take precedence over
+the built-in profile. A stage-specific entry wins; `default` supplies the
+grant for other stages when present. If there is no explicit `default`,
+unlisted stages use `[read]`. An empty stage list denies every level for that
+stage; `default: []` denies every level for stages without an explicit entry.
+Removing the whole level map restores Ralph's built-in profile for the
+explicitly approved roles.
 
 For example:
 
@@ -81,6 +87,7 @@ For example:
 agents:
   - name: triage
     source: https://example.com/triage.yaml#sha256=...
+    approved_roles: [triage]
     approved_privilege_levels:
       default: [read]
       post_script: [write] # shorthand for [read, write]
@@ -88,45 +95,47 @@ agents:
 
 The `[write]` shorthand expands to `[read, write]`. Other custom levels must
 be listed explicitly. An empty list denies every level for that stage. Unknown
-stage names, malformed maps or lists, and levels unavailable to the agent's
-role are validation errors and fail closed.
+roles, stage names, malformed maps or lists, and levels unavailable to an
+approved role are validation errors and fail closed.
 
-Overlay entries may set `privilege_levels` as a guarded field. Their maps merge
-in overlay order: a later overlay replaces earlier values for the stages it
-names and inherits values for other stages. For each stage, the approval must
-contain every level any effective harness variant can request after
-inheritance and overlay composition. The validator and management commands
-use the union across all possible overlay outcomes, even when a particular
-run would match only one overlay.
+Overlay entries may set `role` and `privilege_levels` as guarded fields. Their
+values compose in overlay order. For each effective harness variant, the
+approval must include its requested role and every level it can request at
+each run-stage. The validator and management commands use the union across all
+possible overlay outcomes, even when a particular run would match only one
+overlay.
 
 The agent add/install and update/upgrade flows resolve the agent's effective
-harness variants, show the complete required level set, and ask the operator
-to approve all of it. Approval writes the complete grant to
-`approved_privilege_levels`; declining aborts the install or upgrade without
-changing the config. Partial approval is not supported. A standalone
-`fullsend agent approve <name>` command performs the same review and writes
-the grant for an existing agent.
+harness variants, show the complete required role and level sets, and ask the
+operator to approve all of them. Approval writes the roles to `approved_roles`
+and writes an `approved_privilege_levels` map when needed to represent the
+approved levels; if those levels match the built-in profile, the map may be
+omitted. Declining any requested role or level aborts the install or upgrade
+without changing the config. Partial approval is not supported. A standalone
+`fullsend agent approve <name>` command performs the same review for an
+existing agent.
 
-Before launch, fullsend validates the selected agent's entire required level
-set against its config grant. If any required level is missing or the
-agent's effective requirements cannot be resolved, the agent is ineligible
-and does not launch; validation returns an error naming the stage and missing
-levels. Manually adding an agent without sufficient grants has the same
-result. Harness requests continue to select the actual level sent to the
-mint; this approval check does not expand the harness request or change the
-mint role's permissions.
+Before launch, fullsend validates the selected agent's required role and
+entire required level set against its config grant. If the role is not listed,
+any required level is missing, or the agent's effective requirements cannot
+be resolved, the agent is ineligible and does not launch; validation returns
+an error naming the missing role or stage and levels. Manually adding an agent
+without an approved role has the same result. Harness requests continue to
+select the actual level sent to the mint; this approval check does not expand
+the harness request or change the mint role's permissions.
 
-The config value is the grant. A harness's `privilege_levels` declaration is a
-request, not an approval. For unmanaged repositories, the grant lives in
-`.fullsend/config.yaml`. For repositories managed through `repos.yaml`, the
-manifest's `config.agents[]` entry is authoritative and the generated
-`.fullsend/config.yaml` carries that value ([ADR 0122](0122-declarative-repo-configuration.md)).
+The config values are the grants. A harness's `role` and `privilege_levels`
+declarations are requests, not approvals. For unmanaged repositories, grants
+live in `.fullsend/config.yaml`. For repositories managed through `repos.yaml`,
+the manifest's `config.agents[]` entry is authoritative and the generated
+`.fullsend/config.yaml` carries those values ([ADR 0122](0122-declarative-repo-configuration.md)).
 `fullsend agent approve <name>` must persist managed grants in the owning
 manifest, not only in the generated file. The CLI prompt is the supported way
-to create the grant, but it is not a separate signed approval record; a config
-change that adds levels is itself an authorization change and must remain
-under the repository's existing policy for protecting agent configuration.
-This ADR does not add an out-of-band or cryptographic approval record.
+to create grants, but it is not a separate signed approval record; a config
+change that adds roles or levels is itself an authorization change and must
+remain under the repository's existing policy for protecting agent
+configuration. This ADR does not add an out-of-band or cryptographic approval
+record.
 
 ## Forge scope
 
@@ -138,30 +147,28 @@ bypass.
 
 ## Consequences
 
-- Operators see the full privilege request before adding or updating an agent,
-  and the repository config records the grant by stage.
-- Entries without an approval map use the built-in profile, including its
-  implicit `post_script` write grant. This deliberately preserves Ralph's
-  proposed default, but does not satisfy #7548's no-write-by-default criterion
-  for agents registered by editing config directly. Deleting an explicit
-  `post_script: []` restores the map's `default` list when present; only when
-  that key is absent does it restore the built-in post-script write grant. A
-  repository that requires every write grant to be recorded must set
-  `post_script: []` or another explicit grant; changing the fallback to
-  deny-by-default would require a separate migration decision.
+- Operators see the full role and privilege request before adding or updating
+  an agent, and repository config records the approved roles and any
+  non-default level grants.
+- Missing `approved_roles` denies every role. An approved role with no level
+  map uses Ralph's profile, including `post_script` write; an explicit map
+  overrides it and defaults unlisted stages to `read`. This makes role
+  approval the required authorization boundary while preserving the agreed
+  level defaults within that boundary.
 - The supported add/install and update/upgrade commands show the effective
-  requested levels and require full approval before writing the grant. That
-  supplies deliberate consent for those CLI flows; it does not turn an omitted
-  config grant into evidence of approval.
+  requested roles and levels and require full approval before writing grants.
+  That supplies deliberate consent for those CLI flows; manually editing the
+  config remains subject to the repository's policy for protecting agent
+  configuration.
 - Harnesses that omit `privilege_levels` still request `write` at every stage
   per ADR 0073, so they need additional grants beyond the built-in profile
   before they can launch.
 - The default approves the level named `read`; it does not inspect a custom
   role's underlying permissions. Custom-role owners are responsible for
   defining levels that match their intended access.
-- Overlay variants can require approval of a higher level even when that
-  variant is not selected for a particular run, and managed repositories keep
-  grants in their `repos.yaml` source of truth.
+- Overlay variants can require approval of additional roles or higher levels
+  even when a particular variant is not selected for a run, and managed
+  repositories keep grants in their `repos.yaml` source of truth.
 - Repository protections remain essential because the config entry is the
   authority record; the CLI does not provide a separate approval signature.
 - Implementation requires coordinated changes to agent management commands,

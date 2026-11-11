@@ -23,9 +23,9 @@ No agent trusts another agent's output because of who (or what) produced it. Tru
 
 This mirrors how humans work today. You don't trust a code reviewer because they claim to be senior. You trust their authority to block because GitHub shows they have approval rights on that path.
 
-The per-agent mint authority decision separates a harness's run-stage request
-from the levels approved in its repository config entry
-([ADR 0163](../ADRs/0163-require-per-agent-mint-level-approval.md)).
+The per-agent mint authority decision requires explicit approval of the roles
+an agent may assume, then bounds the run-stage levels it may request within
+those roles ([ADR 0163](../ADRs/0163-require-per-agent-mint-level-approval.md)).
 
 ## Two-phase review model
 
