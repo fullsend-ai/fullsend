@@ -169,6 +169,16 @@ func (p *Poller) BuildWebhookEvents(ctx context.Context, raw []byte) ([]WebhookE
 		}
 		we := WebhookEvent{Event: event, Normalized: ne, ActorID: actorID}
 		if p.router != nil {
+			// Bound state.labels and the attacker-shaped single strings
+			// before trigger matching, the same bounds the dispatch door
+			// applies when encoding and the poller's Route applies
+			// (poll.go): a trigger keyed on a label or string tail past
+			// the bound must not launch an agent whose transported event
+			// lacks it. The bounded event is also the one dispatch
+			// carries, so the matcher and the payload agree.
+			where := fmt.Sprintf("webhook %s event on IID %d", event.Type, event.IID)
+			we.Normalized.State.Labels = LogBoundTransportLabels(where, we.Normalized.State.Labels)
+			logBoundTransportEventStrings(where, &we.Normalized)
 			stages, err := p.router.Route(&we.Normalized)
 			if err != nil {
 				err = fmt.Errorf("route webhook %s event on IID %d: %w", event.Type, event.IID, err)

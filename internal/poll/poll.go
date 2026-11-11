@@ -341,6 +341,31 @@ func (p *Poller) Run(ctx context.Context) error {
 
 		var stages []string
 		if p.router != nil {
+			// Bound state.labels and the attacker-shaped single strings
+			// before trigger matching with the same bounds the dispatch
+			// door applies when encoding (LogBoundTransportLabels,
+			// logBoundTransportEventStrings): a trigger keyed on a label
+			// or string tail past the bound must not launch an agent
+			// whose transported event lacks it — the silent
+			// trigger/payload mismatch the transport bounds exist to
+			// prevent, and exactly what the cel-triggers-reference
+			// bound caveat documents. The bounded event is also the one
+			// dispatch carries, so the matcher and the payload agree on
+			// those fields. The comment body is deliberately not
+			// bounded here: the routed body is the raw body while the
+			// transported body is cut at noteBodyTransportLimit, so a
+			// user-authored trigger keyed on body text past that bound
+			// (for example the review bot's changes-requested marker,
+			// matched anywhere in the body) can still fire on text the
+			// transported event drops — a known residual; bounding the
+			// body before Route is a follow-up. The Jira poller's
+			// GitLab-target door bounds state.labels the same way
+			// (jirapoll/poller.go); its dispatch door carries the other
+			// single strings as-is, failing closed on budget
+			// (jira_dispatch.go).
+			where := fmt.Sprintf("%s event on IID %d", event.Type, event.IID)
+			normalizedEvent.State.Labels = LogBoundTransportLabels(where, normalizedEvent.State.Labels)
+			logBoundTransportEventStrings(where, &normalizedEvent)
 			stages, err = p.router.Route(&normalizedEvent)
 			if err != nil {
 				log.Printf("dispatch core error for %s: %v", eventKey, err)
