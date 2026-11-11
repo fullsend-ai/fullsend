@@ -52,6 +52,33 @@ func useBotRoleResolver(t *testing.T, r botidentity.BotRoleResolver) {
 
 var errFakeLookup = fmt.Errorf("%w: mint answered HTTP 503: unavailable", botidentity.ErrLookup)
 
+var errFakeConfig = fmt.Errorf("%w: %w: no mint URL", botidentity.ErrLookup, errBotRoleConfig)
+
+// captureBotRoleReports runs reportBotRoleDenial as in GitHub Actions, with
+// its annotations captured in the returned buffer and its step summary in a
+// temp file, so tests never write to the real job's summary or annotations.
+func captureBotRoleReports(t *testing.T) (*bytes.Buffer, string) {
+	t.Helper()
+	var annotations bytes.Buffer
+	orig := botRoleAnnotationWriter
+	botRoleAnnotationWriter = &annotations
+	t.Cleanup(func() { botRoleAnnotationWriter = orig })
+	summary := filepath.Join(t.TempDir(), "step-summary.md")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_STEP_SUMMARY", summary)
+	return &annotations, summary
+}
+
+func readSummary(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	require.NoError(t, err)
+	return string(data)
+}
+
 func botRoleTestEvent(kind normevent.ActorKind, system normevent.SourceSystem, transition normevent.Transition) *normevent.Event {
 	return &normevent.Event{
 		Repo:       "fullsend-ai/demo",
@@ -78,6 +105,12 @@ func TestApplyBotRoleLookup(t *testing.T) {
 		wantActor    normevent.Actor
 		wantLog      string
 		wantDenyNote string
+		// wantReport is the annotation title of a denial; "" means no
+		// annotation and no step summary line.
+		wantReport string
+		// wantRemedy is text the denial must carry to tell the reader
+		// what to do.
+		wantRemedy string
 	}{
 		{
 			name:        "recognized bot gets its registered role",
@@ -95,6 +128,8 @@ func TestApplyBotRoleLookup(t *testing.T) {
 			wantActor:    normevent.Actor{ID: "fullsend-ai-coder[bot]", Kind: normevent.ActorBot, Role: normevent.RoleNone, RoleVerified: &verified},
 			wantLog:      "has no registered role",
 			wantDenyNote: "bot has no registered role",
+			wantReport:   "Fullsend bot has no registered role",
+			wantRemedy:   "Register fullsend-ai-coder[bot] with the mint",
 		},
 		{
 			name:         "lookup failure is unverified, not an error",
@@ -104,6 +139,19 @@ func TestApplyBotRoleLookup(t *testing.T) {
 			wantActor:    normevent.Actor{ID: "fullsend-ai-coder[bot]", Kind: normevent.ActorBot, Role: normevent.RoleNone, RoleVerified: &unverified},
 			wantLog:      "Bot-role lookup failed",
 			wantDenyNote: "bot-role lookup failed",
+			wantReport:   "Fullsend bot-role lookup failed",
+			wantRemedy:   "re-run the workflow",
+		},
+		{
+			name:         "unresolved mint configuration is named as a setup problem",
+			event:        botRoleTestEvent(normevent.ActorBot, normevent.SystemGitHub, opened),
+			resolver:     &fakeBotRoleResolver{err: errFakeConfig},
+			wantQueried:  true,
+			wantActor:    normevent.Actor{ID: "fullsend-ai-coder[bot]", Kind: normevent.ActorBot, Role: normevent.RoleNone, RoleVerified: &unverified},
+			wantLog:      "could not resolve the mint configuration",
+			wantDenyNote: "bot-role lookup failed",
+			wantReport:   "Fullsend bot-role configuration unresolved",
+			wantRemedy:   "Fix this repository's Fullsend setup",
 		},
 		{
 			name:         "missing resolver fails closed",
@@ -112,6 +160,7 @@ func TestApplyBotRoleLookup(t *testing.T) {
 			wantActor:    normevent.Actor{ID: "fullsend-ai-coder[bot]", Kind: normevent.ActorBot, Role: normevent.RoleNone, RoleVerified: &unverified},
 			wantLog:      "no bot-role resolver",
 			wantDenyNote: "bot-role lookup failed",
+			wantReport:   "Fullsend bot-role lookup failed",
 		},
 		{
 			name:         "label removed still needs the lookup",
@@ -120,6 +169,7 @@ func TestApplyBotRoleLookup(t *testing.T) {
 			wantQueried:  true,
 			wantActor:    normevent.Actor{ID: "fullsend-ai-coder[bot]", Kind: normevent.ActorBot, Role: normevent.RoleNone, RoleVerified: &verified},
 			wantDenyNote: "bot has no registered role",
+			wantReport:   "Fullsend bot has no registered role",
 		},
 		{
 			name:      "label added keeps the exception without a lookup",
@@ -142,6 +192,7 @@ func TestApplyBotRoleLookup(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			annotations, summaryPath := captureBotRoleReports(t)
 			var buf bytes.Buffer
 			resolver := tc.resolver
 			if tc.nilResolver {
@@ -160,15 +211,70 @@ func TestApplyBotRoleLookup(t *testing.T) {
 				assert.Contains(t, buf.String(), tc.wantLog)
 			}
 			assert.Equal(t, tc.wantDenyNote, botRoleDenialReason(tc.event.Actor))
+
+			summary := readSummary(t, summaryPath)
+			if tc.wantReport == "" {
+				assert.Empty(t, annotations.String())
+				assert.Empty(t, summary)
+				return
+			}
+			// One ::warning:: workflow command naming the reason, the
+			// actor and the repository, and one step summary line.
+			lines := strings.Split(strings.TrimSuffix(annotations.String(), "\n"), "\n")
+			require.Len(t, lines, 1, "annotations: %q", annotations.String())
+			assert.True(t, strings.HasPrefix(lines[0], "::warning title="+tc.wantReport+"::"), "annotation: %q", lines[0])
+			assert.Contains(t, lines[0], "fullsend-ai-coder[bot]")
+			assert.Contains(t, lines[0], "fullsend-ai/demo")
+			assert.Contains(t, lines[0], tc.wantRemedy)
+			assert.Contains(t, summary, tc.wantReport)
+			assert.Contains(t, summary, "fullsend-ai-coder[bot]")
+			assert.Contains(t, summary, tc.wantRemedy)
+			assert.Equal(t, 1, strings.Count(summary, "\n"), "summary: %q", summary)
 		})
 	}
 
 	t.Run("nil event and nil printer are safe", func(t *testing.T) {
+		captureBotRoleReports(t)
 		applyBotRoleLookup(context.Background(), nil, &fakeBotRoleResolver{}, nil)
 		ev := botRoleTestEvent(normevent.ActorBot, normevent.SystemGitHub, opened)
 		applyBotRoleLookup(context.Background(), ev, &fakeBotRoleResolver{role: "review"}, nil)
 		assert.Equal(t, "review", ev.Actor.BotRole)
 	})
+}
+
+// Event data in a denial cannot inject a second workflow command or break
+// the summary line.
+func TestReportBotRoleDenial_EscapesEventData(t *testing.T) {
+	annotations, summaryPath := captureBotRoleReports(t)
+	ev := botRoleTestEvent(normevent.ActorBot, normevent.SystemGitHub, normevent.Transition{Kind: normevent.TransitionOpened})
+	ev.Actor.ID = "evil[bot]\n::error::injected\r\n%0A::set-output name=x::y"
+	applyBotRoleLookup(context.Background(), ev, &fakeBotRoleResolver{}, ui.New(io.Discard))
+
+	out := annotations.String()
+	require.Equal(t, 1, strings.Count(out, "\n"), "annotations: %q", out)
+	assert.True(t, strings.HasPrefix(out, "::warning title=Fullsend bot has no registered role::"), "annotation: %q", out)
+	assert.NotContains(t, out, "\r")
+	assert.Contains(t, out, "%250A", "a literal %0A must not decode to a newline")
+	assert.Equal(t, 1, strings.Count(readSummary(t, summaryPath), "\n"))
+}
+
+// Outside GitHub Actions no workflow command is printed, and without
+// GITHUB_STEP_SUMMARY nothing is written; an unwritable summary is ignored.
+// The deny decision is the same in every case.
+func TestReportBotRoleDenial_OutsideActions(t *testing.T) {
+	annotations, _ := captureBotRoleReports(t)
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITHUB_STEP_SUMMARY", "")
+	ev := botRoleTestEvent(normevent.ActorBot, normevent.SystemGitHub, normevent.Transition{Kind: normevent.TransitionOpened})
+	applyBotRoleLookup(context.Background(), ev, &fakeBotRoleResolver{}, ui.New(io.Discard))
+	assert.Empty(t, annotations.String())
+	assert.Equal(t, "bot has no registered role", botRoleDenialReason(ev.Actor))
+
+	t.Setenv("GITHUB_STEP_SUMMARY", t.TempDir()) // a directory cannot be opened for append
+	ev = botRoleTestEvent(normevent.ActorBot, normevent.SystemGitHub, normevent.Transition{Kind: normevent.TransitionOpened})
+	applyBotRoleLookup(context.Background(), ev, &fakeBotRoleResolver{err: errFakeLookup}, ui.New(io.Discard))
+	assert.Empty(t, annotations.String())
+	assert.Equal(t, "bot-role lookup failed", botRoleDenialReason(ev.Actor))
 }
 
 func TestBotRoleDenialReason_RecognizedAndHuman(t *testing.T) {
@@ -226,6 +332,7 @@ func TestDefaultDispatchBotRoleResolver_FailsClosedWithoutEnvironment(t *testing
 	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, botidentity.ErrLookup))
+	assert.True(t, errors.Is(err, errBotRoleConfig), "a missing OIDC environment is a setup problem: %v", err)
 
 	t.Setenv(forge.VarMintURL, "")
 	_, err = newDispatchBotRoleResolverFn("").ResolveBotRole(context.Background(), botidentity.BotRoleQuery{
@@ -233,6 +340,25 @@ func TestDefaultDispatchBotRoleResolver_FailsClosedWithoutEnvironment(t *testing
 	})
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, botidentity.ErrLookup))
+	assert.True(t, errors.Is(err, errBotRoleConfig), "an unset mint URL is a setup problem: %v", err)
+	assert.Contains(t, err.Error(), "no mint URL")
+}
+
+// A mint that answers with an error is a lookup failure, not a setup
+// problem, so its denial asks for a retry rather than a config fix.
+func TestDefaultDispatchBotRoleResolver_MintErrorIsNotConfigFailure(t *testing.T) {
+	envMintServers(t)
+	mint := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(mint.Close)
+	t.Setenv(forge.VarMintURL, mint.URL)
+	_, err := newDispatchBotRoleResolverFn("").ResolveBotRole(context.Background(), botidentity.BotRoleQuery{
+		Forge: "github", Target: "fullsend-ai/demo", Login: "fullsend-ai-review[bot]",
+	})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, botidentity.ErrLookup))
+	assert.False(t, errors.Is(err, errBotRoleConfig), "err: %v", err)
 }
 
 func TestDefaultDispatchBotRoleResolver_UsesLayeredMintURL(t *testing.T) {
@@ -322,6 +448,8 @@ func writeGHABotPREvent(t *testing.T, action, label string) {
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 	t.Setenv("GITHUB_EVENT_PATH", path)
 	t.Setenv("GITHUB_REPOSITORY", "fullsend-ai/demo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITHUB_STEP_SUMMARY", "")
 	t.Setenv("GITHUB_EVENT_NAME", "pull_request_target")
 	t.Setenv("GITHUB_ACTOR", "")
 	t.Setenv("GH_TOKEN", "")
@@ -358,16 +486,19 @@ func TestRunDispatch_GHAEventBotRoleMatrix(t *testing.T) {
 		resolver    *fakeBotRoleResolver
 		wantProbe   bool
 		wantQueried bool
+		wantReport  string
 	}{
 		{name: "recognized bot dispatches", action: "opened", resolver: &fakeBotRoleResolver{role: "coder"}, wantProbe: true, wantQueried: true},
-		{name: "unregistered bot is denied", action: "opened", resolver: &fakeBotRoleResolver{}, wantQueried: true},
-		{name: "lookup failure is denied without an error", action: "opened", resolver: &fakeBotRoleResolver{err: errFakeLookup}, wantQueried: true},
+		{name: "unregistered bot is denied", action: "opened", resolver: &fakeBotRoleResolver{}, wantQueried: true, wantReport: "Fullsend bot has no registered role"},
+		{name: "lookup failure is denied without an error", action: "opened", resolver: &fakeBotRoleResolver{err: errFakeLookup}, wantQueried: true, wantReport: "Fullsend bot-role lookup failed"},
+		{name: "unresolved configuration is denied without an error", action: "opened", resolver: &fakeBotRoleResolver{err: errFakeConfig}, wantQueried: true, wantReport: "Fullsend bot-role configuration unresolved"},
 		{name: "label added by an unregistered bot is the control", action: "labeled", label: "ready-for-probe", resolver: &fakeBotRoleResolver{err: errFakeLookup}, wantProbe: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := writeBotProbeFixture(t)
 			writeGHABotPREvent(t, tc.action, tc.label)
+			annotations, summaryPath := captureBotRoleReports(t)
 			useBotRoleResolver(t, tc.resolver)
 
 			out, err := captureDispatch(t, dispatchOpts{inputDriver: "gha-event", outputDriver: "gha-matrix", configDir: dir})
@@ -383,6 +514,14 @@ func TestRunDispatch_GHAEventBotRoleMatrix(t *testing.T) {
 				assert.Empty(t, matrix.Include)
 			}
 			assert.Equal(t, tc.wantQueried, len(tc.resolver.queries) == 1, "queries: %v", tc.resolver.queries)
+			// The denial is reported, but the command still succeeds
+			// with an empty matrix.
+			if tc.wantReport == "" {
+				assert.Empty(t, annotations.String())
+			} else {
+				assert.Contains(t, annotations.String(), "::warning title="+tc.wantReport+"::")
+				assert.Contains(t, readSummary(t, summaryPath), tc.wantReport)
+			}
 		})
 	}
 }
@@ -413,6 +552,7 @@ func TestRunDispatch_GHAEventBotRoleRoute(t *testing.T) {
 				files: map[string]string{"harness/review.yaml": routeTestHarnessBody},
 			})
 			writeGHABotPREvent(t, "opened", "")
+			annotations, _ := captureBotRoleReports(t)
 			useBotRoleResolver(t, tc.resolver)
 
 			out, err := captureDispatch(t, dispatchOpts{inputDriver: "gha-event", configDir: dir, route: "review"})
@@ -422,6 +562,14 @@ func TestRunDispatch_GHAEventBotRoleRoute(t *testing.T) {
 			assert.Equal(t, tc.wantDecision, got.Decision)
 			assert.Equal(t, tc.wantReason, got.Reason)
 			require.Len(t, tc.resolver.queries, 1)
+			// A routeSkip denial is annotated like a harness dispatch one;
+			// the annotation stays off stdout, which holds only the decision.
+			if tc.wantDecision == routeSkip {
+				assert.Contains(t, annotations.String(), "::warning title=")
+			} else {
+				assert.Empty(t, annotations.String())
+			}
+			assert.NotContains(t, out, "::warning")
 		})
 	}
 }
@@ -480,6 +628,7 @@ func TestDefaultDispatchBotRoleResolver_ConfigLoadFailureIsLookupFailure(t *test
 			_, err := newDispatchBotRoleResolverFn(dir).ResolveBotRole(context.Background(), query)
 			require.Error(t, err)
 			assert.True(t, errors.Is(err, botidentity.ErrLookup), "err: %v", err)
+			assert.True(t, errors.Is(err, errBotRoleConfig), "err: %v", err)
 			assert.Equal(t, int32(0), hits.Load(), "a malformed config must not fall back to FULLSEND_MINT_URL")
 		})
 	}
