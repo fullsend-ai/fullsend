@@ -506,13 +506,23 @@ def _credential_like(value: str, strength: str, *, literal: bool = True) -> bool
     return len(value) >= 20 and classes >= 2 and (has_digit or has_upper)
 
 
+# An auth scheme word inside the quotes, before the credential:
+# ``TOKEN="basic <base64>"``, ``{"token": "Bearer <token>"}``. Non-capturing,
+# so the value group holds only the credential: _credential_like judges it and
+# the mask keeps the scheme word visible. Only after an opening quote — a bare
+# value ends at the first space.
+_SCHEME_PREFIX = r"""(?:(?<=["'])(?i:basic|bearer|token)[ \t]+)?"""
+
 # NAME=value / export NAME=value / name = "value". Group 4 is the opening
 # quote (empty when bare); the closing quote must match it. The chain driver
 # additionally re-runs redact_text on an NFKC copy of each field (fullwidth
 # obfuscation); the standalone main() below does not — adapters call the chain.
 _ENV_ASSIGN_RE = re.compile(
     r"(?:^|(?<=[\s;,(]))(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)([ \t]*)=([ \t]*)(['\"]?)"
-    r"(" + _VALUE_CLASS + r"{8,})\4",
+    + _SCHEME_PREFIX
+    + r"("
+    + _VALUE_CLASS
+    + r"{8,})\4",
     re.MULTILINE,
 )
 # What may follow an unquoted value for it to be a value and not the head of an
@@ -522,7 +532,7 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # "name": "value" / 'name': 'value' / name: "value" (JSON, dicts, YAML).
 _KV_RE = re.compile(
     r"""(?:(["'])([^"'\n]{1,64})\1|(?<![A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_-]{0,63}))"""
-    r"""\s*:\s*(["'])(""" + _VALUE_CLASS + r"""{8,})\4"""
+    r"""\s*:\s*(["'])""" + _SCHEME_PREFIX + r"""(""" + _VALUE_CLASS + r"""{8,})\4"""
 )
 
 _PRIVATE_KEY_RE = re.compile(

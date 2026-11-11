@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for secret_redact_posttool.py hook."""
 
+import base64
 import inspect
 import json
 import os
@@ -1082,6 +1083,49 @@ class TestQualifiedKeyUnderPaginationWords(unittest.TestCase):
     def test_gitlab_prefixed_fakes_are_left_alone(self):
         fixtures = '"token": "glptt-new"\nToken: "gldt-example"\n"runner": "glrt-test"\n'
         _, stdout, _ = run_hook(fixtures)
+        self.assertEqual(stdout, "")
+
+
+class TestSchemePrefixedValues(unittest.TestCase):
+    """A ``<scheme> <credential>`` value inside quotes is still a secret (#9327)."""
+
+    # base64 of "fakefakefakefake:fakefakefakefakefake" — not a real credential.
+    FAKE = base64.b64encode(b"fakefakefakefake:fakefakefakefakefake").decode()
+
+    def test_scheme_prefixed_values_redacted(self):
+        cases = [
+            (f'export SVC_TOKEN="basic {self.FAKE}"', "env_secret", '"basic '),
+            (f'export SVC_TOKEN="Basic {self.FAKE}"', "env_secret", '"Basic '),
+            (f'export SVC_TOKEN="bearer {self.FAKE}"', "env_secret", '"bearer '),
+            (f"export SVC_TOKEN='Bearer {self.FAKE}'", "env_secret", "'Bearer "),
+            (f'SVC_AUTH="Basic {self.FAKE}"', "env_secret", '"Basic '),
+            (f'{{"token": "basic {self.FAKE}"}}', "json_secret", '"basic '),
+        ]
+        for line, pattern, scheme in cases:
+            with self.subTest(line=line):
+                _, stdout, _ = run_hook(line + "\n")
+                self.assertTrue(stdout, "Expected redaction output")
+                result = json.loads(stdout)
+                self.assertNotIn(self.FAKE, result["tool_result"])
+                self.assertIn(scheme + self.FAKE[:4] + "...", result["tool_result"])
+                self.assertEqual(result["metadata"]["patterns"], [pattern])
+
+    def test_unprefixed_and_authorization_header_still_redacted(self):
+        for line in (f'export SVC_TOKEN="{self.FAKE}"', f"Authorization: Basic {self.FAKE}"):
+            with self.subTest(line=line):
+                _, stdout, _ = run_hook(line + "\n")
+                self.assertTrue(stdout, "Expected redaction output")
+                self.assertNotIn(self.FAKE, json.loads(stdout)["tool_result"])
+
+    def test_scheme_without_a_credential_untouched(self):
+        _, stdout, _ = run_hook(
+            'token = "Bearer " + tok\n'
+            '{"token": "bearer <TOKEN>"}\n'
+            'AUTH_SCHEME="Bearer"\n'
+            'export GH_TOKEN="Bearer os.environ.token"\n'
+            'TOKEN="token https://example.com/oauth/token"\n'
+            '{"password": "basic changeme"}\n'
+        )
         self.assertEqual(stdout, "")
 
 
