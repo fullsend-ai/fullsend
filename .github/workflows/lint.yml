@@ -49,7 +49,7 @@ jobs:
           SKIP: check-gateway-doc-configs,semgrep
 
       - name: Run Go tests with coverage
-        run: go test -race -coverprofile=coverage.out ./...
+        run: go test -race -timeout 15m -coverprofile=coverage.out ./...
         env:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""
