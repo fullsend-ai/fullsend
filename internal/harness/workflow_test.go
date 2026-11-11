@@ -331,6 +331,27 @@ func TestLoadWithBase_URLHarness_RelativeWorkflowSource(t *testing.T) {
 			assert.Equal(t, "https://raw.githubusercontent.com/example-org/agents/"+testWorkflowSHA+"/pipelines/sample/", h.RuntimeWorkflow.InheritedFromBase())
 		})
 	}
+	t.Run("a harness under .fullsend/ resolves from the repository root", func(t *testing.T) {
+		// The agent file resolves under .fullsend/, the directory that
+		// holds harness/; the runtime workflow path does not.
+		dir := t.TempDir()
+		cacheDir := filepath.Join(dir, "cache")
+		repo := "https://raw.githubusercontent.com/example-org/agents/" + testWorkflowSHA
+		agentURL := repo + "/.fullsend/agents/a.md"
+		require.NoError(t, fetch.CachePut(cacheDir, agentURL, []byte("agent")))
+		require.NoError(t, RecordURLIndex(cacheDir, agentURL, fetch.ComputeSHA256([]byte("agent"))))
+		path := writeTestHarness(t, dir, "code.yaml", "agent: agents/a.md\nrole: test\n"+own)
+		h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+			OrgAllowlist:  []string{allow},
+			SourceURL:     repo + "/.fullsend/harness/code.yaml",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "https://github.com/example-org/agents/tree/"+testWorkflowSHA+"/pipelines/sample", h.RuntimeWorkflow.Source)
+		assert.Equal(t, repo+"/pipelines/sample/", h.RuntimeWorkflow.InheritedFromBase())
+		assert.NotContains(t, h.RuntimeWorkflow.Source, ".fullsend/")
+	})
 	t.Run("a source inherited from a URL base is untouched", func(t *testing.T) {
 		h, err := load(t, testWorkflowSHA, "base: SEED\n", allow)
 		require.NoError(t, err)

@@ -1002,7 +1002,7 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 				lockDep.Field, lockDep.URL)
 		}
 		// The runtime workflow is not replayed here: runAgent reads its
-		// hash from the entry (lockedWorkflowSHA256) and
+		// hash from the entry (lockedRuntimeWorkflow) and
 		// resolve.ResolveRuntimeWorkflow reads the cache by it, or
 		// refetches and verifies against it, so a runtime workflow missing from
 		// the cache does not send every other dependency to normal
