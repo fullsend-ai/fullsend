@@ -20,7 +20,8 @@ configuration flags to `repos install`, see
 
 ## Prerequisites
 
-- **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
+- **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases),
+  or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later)
 
 The remaining prerequisites are forge-specific:
 

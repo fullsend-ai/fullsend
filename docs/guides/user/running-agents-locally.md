@@ -18,7 +18,8 @@ Linux are supported with Podman as the container runtime.
 
 ## Download the fullsend CLI
 
-Download the latest release from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases).
+Download the latest release from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases),
+or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
 Pick the archive matching your platform:
 
 | Platform | Archive |
