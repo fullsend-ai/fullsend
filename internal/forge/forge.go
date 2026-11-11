@@ -1393,6 +1393,10 @@ type Client interface {
 	// ListPullRequestFileDiffs returns the files changed by a pull request
 	// along with their unified diff patches. Use this when you need to
 	// determine which lines are within diff hunks (e.g. for inline comments).
+	// When a forge reaches its safety cap, it returns the entries collected so
+	// far together with forge.ErrDiffListingTruncated; callers that require a
+	// complete listing must fail open, while callers that can use partial hunks
+	// may continue with the returned entries.
 	ListPullRequestFileDiffs(ctx context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error)
 
 	// Pull request review operations.

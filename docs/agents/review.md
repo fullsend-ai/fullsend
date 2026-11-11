@@ -38,6 +38,7 @@ write or higher.
 The `/fs-review` command does not accept arguments and always forces a review. The review agent also runs automatically when a PR is opened,
 when its effective diff changes on a synchronize event, or when it is moved out of draft by a user with triage-level repository permission or higher.
 For GitHub `pull_request_target` synchronize events, the review is skipped when the complete effective diff matches the previous app-verified approved review. GitLab diff metadata uses the same normalized model, but the GitLab poller does not consume this marker yet and continues to review synchronized merge requests.
+The deduplication check runs after CEL routing, so a CEL route that selects the review stage does not bypass the unchanged-diff guard.
 The guard fails open and runs the review when there is no prior diff hash, the prior review cannot be verified, a required hash/head API call fails,
 the file listing is incomplete or truncated, or any file has no representable patch (for example, a binary or rename-only change).
 If a built-in GitHub review run is cancelled while its commit is still the

@@ -364,20 +364,19 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 // a posted verdict into a workflow Failure (#3548).
 func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, dryRun bool, printer *ui.Printer) error {
 	cfg.TrustedLeadingLine = reviewProjectionMarkerRe
-	cfg.TrustedLeadingLines = 1
+	cfg.MaxTrustedLeadingLines = 1
+	var diffHash string
 	if !dryRun && parsed.HeadSHA != "" {
-		if diffHash, hashErr := pullRequestDiffHash(ctx, client, owner, repo, pr); hashErr != nil {
+		if computedHash, hashErr := pullRequestDiffHash(ctx, client, owner, repo, pr); hashErr != nil {
 			printer.StepWarn(fmt.Sprintf("Could not compute review diff hash; re-review deduplication will be unavailable: %v", hashErr))
-		} else if diffHash != "" {
+		} else if computedHash != "" {
 			currentSHA, headErr := client.GetPullRequestHeadSHA(ctx, owner, repo, pr)
 			if headErr != nil {
 				printer.StepWarn(fmt.Sprintf("Could not verify PR HEAD after diff fetch; re-review deduplication will be unavailable: %v", headErr))
 			} else if !strings.EqualFold(currentSHA, parsed.HeadSHA) {
 				printer.StepWarn(fmt.Sprintf("PR HEAD changed while computing the diff (reviewed %s, current %s); re-review deduplication will be unavailable", shortSHA(parsed.HeadSHA), shortSHA(currentSHA)))
 			} else {
-				parsed.Body = fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n%s", diffHash, parsed.Body)
-				cfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash)
-				cfg.TrustedLeadingLines = 2
+				diffHash = computedHash
 			}
 		}
 	} else if !dryRun {
@@ -388,8 +387,20 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 		return err
 	}
 
-	if err := submitFormalReview(ctx, client, owner, repo, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer); err != nil {
-		printer.StepWarn(fmt.Sprintf("Formal review submission failed (%v); sticky review comment was posted", err))
+	formalReviewErr := submitFormalReview(ctx, client, owner, repo, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer)
+	if formalReviewErr != nil {
+		printer.StepWarn(fmt.Sprintf("Formal review submission failed (%v); sticky review comment was posted", formalReviewErr))
+	} else if !dryRun && diffHash != "" && strings.EqualFold(parsed.Action, "approve") {
+		// Publish the deduplication marker only after the matching formal
+		// approval succeeds. A request-changes/comment result or a failed
+		// formal submission must never leave an approved-looking hash behind.
+		hashBody := fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n%s", diffHash, parsed.Body)
+		hashCfg := cfg
+		hashCfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash)
+		hashCfg.MaxTrustedLeadingLines = 2
+		if _, hashErr := sticky.Post(ctx, client, owner, repo, pr, hashBody, hashCfg, printer); hashErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not publish review diff hash after approval; re-review deduplication will be unavailable: %v", hashErr))
+		}
 	}
 
 	return postApprovedFollowUpIssues(ctx, owner, repo, pr, parsed, printer)

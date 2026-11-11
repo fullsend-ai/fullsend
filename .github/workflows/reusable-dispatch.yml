@@ -167,6 +167,39 @@ jobs:
             /OWNERS_ALIASES
           sparse-checkout-cone-mode: false
 
+      # Keep the route job's platform token read-only. For synchronize events,
+      # mint a review-app token solely for the PR-visible skip status note.
+      - name: Checkout upstream defaults for review token
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            internal/scaffold/fullsend-repo/
+          sparse-checkout-cone-mode: false
+
+      - name: Prepare workspace for review token
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
+        id: review-token-workspace
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          source_repo: ${{ github.repository }}
+
+      - name: Mint review token for skip status
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
+        id: review-token
+        continue-on-error: true
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace.outputs.repo_name }}
+          level: write
+          mint_url: ${{ inputs.mint_url }}
+
       - name: Determine stage
         id: bash-route
         env:
@@ -457,11 +490,11 @@ jobs:
       # PR without changing the PR's effective diff. Avoid paying for another
       # full review when the previous review recorded the same complete diff.
       # Missing or incomplete metadata deliberately fails open.
-      - name: Skip unchanged review diff
+      - name: Check unchanged review diff
         id: review-diff
         if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.review-token.outputs.token || github.token }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           ORG_NAME: ${{ github.repository_owner }}
@@ -478,6 +511,11 @@ jobs:
           CUSTOM_REVIEW_BOT=""
           if [[ -n "${FULLSEND_APP_SET}" ]]; then
             CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
+
+          if ! head_before=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '.head.sha'); then
+            echo "::warning::Could not read PR HEAD before diff fetch; running review"
+            exit 0
           fi
 
           if ! file_json=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/files" \
@@ -523,6 +561,16 @@ jobs:
           fi
           current_hash="$(printf '%s' "${hash_input}" | sha256sum | awk '{print $1}')"
 
+          if ! head_after=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '.head.sha'); then
+            echo "::warning::Could not verify PR HEAD after diff fetch; running review"
+            exit 0
+          fi
+          if [[ "${head_before}" != "${head_after}" ]]; then
+            echo "::notice::PR HEAD changed while fetching the diff; running review"
+            exit 0
+          fi
+          current_head_sha="${head_after}"
+
           if ! prior_review=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
             --paginate --jq '.[]' \
             | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
@@ -551,23 +599,33 @@ jobs:
             exit 0
           fi
 
-          if ! prior_state=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/reviews" \
+          if ! prior_formal_review=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/reviews" \
             --paginate --jq '.[]' \
             | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
-                --arg custom_bot "${CUSTOM_REVIEW_BOT}" -s -r '
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" -s -c '
               [.[] | select((.user.login == $bot or .user.login == $shared_bot
                 or ($custom_bot != "" and .user.login == $custom_bot))
                 and ((.submitted_at // "") != ""))]
-              | sort_by(.submitted_at) | last | .state // ""'); then
+              | sort_by(.submitted_at) | last // {}'); then
             echo "::warning::Could not determine the previous formal review verdict; running review"
             exit 0
           fi
-          if [[ "${prior_state}" != "APPROVED" ]]; then
-            echo "::notice::Previous formal review is ${prior_state:-unknown}; running review"
+          prior_state="$(printf '%s' "${prior_formal_review}" | jq -r '.state // ""')"
+          prior_commit_sha="$(printf '%s' "${prior_formal_review}" | jq -r '.commit_id // ""')"
+          if [[ "${prior_state}" != "APPROVED" || "${prior_commit_sha}" != "${current_head_sha}" ]]; then
+            echo "::notice::No approved bot review for current PR HEAD; running review"
             exit 0
           fi
 
           if [[ "${current_hash}" == "${prior_hash}" ]]; then
+            if ! final_head_sha=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '.head.sha'); then
+              echo "::warning::Could not verify PR HEAD before skip; running review"
+              exit 0
+            fi
+            if [[ "${final_head_sha}" != "${current_head_sha}" ]]; then
+              echo "::notice::PR HEAD changed before skip; running review"
+              exit 0
+            fi
             skip_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review${prior_url:+ (${prior_url})}. No new review findings were generated."
             status_comment_id="$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
               --paginate --jq '.[] | select(.body | startswith("<!-- fullsend:review-skip -->")) | .id' \

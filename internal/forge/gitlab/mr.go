@@ -367,6 +367,7 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 
 		for _, d := range diffs {
 			status := "modified"
+			previousPath := ""
 			switch {
 			case d.NewFile:
 				status = "added"
@@ -374,17 +375,13 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 				status = "removed"
 			case d.RenamedFile:
 				status = "renamed"
+				previousPath = d.OldPath
 			}
 			files = append(files, forge.PullRequestFileDiff{
-				Path: d.NewPath,
-				PreviousPath: func() string {
-					if d.RenamedFile {
-						return d.OldPath
-					}
-					return ""
-				}(),
-				Status: status,
-				Patch:  d.Diff,
+				Path:         d.NewPath,
+				PreviousPath: previousPath,
+				Status:       status,
+				Patch:        d.Diff,
 			})
 		}
 

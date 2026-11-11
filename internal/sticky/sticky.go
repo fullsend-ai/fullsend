@@ -27,11 +27,11 @@ type Config struct {
 	// TrustedLeadingLine, when set, matches a marker line that the trusted
 	// caller places at the start of the body. Matching leading lines are
 	// posted as-is and the rest of the body has its marker syntax escaped.
-	// TrustedLeadingLines limits how many consecutive leading lines may be
+	// MaxTrustedLeadingLines limits how many consecutive leading lines may be
 	// preserved; it defaults to one. A match anywhere else is escaped like
 	// any other marker. The pattern must be anchored with ^ and $.
-	TrustedLeadingLine  *regexp.Regexp
-	TrustedLeadingLines int
+	TrustedLeadingLine     *regexp.Regexp
+	MaxTrustedLeadingLines int
 }
 
 func (c Config) maxSize() int {
@@ -119,7 +119,7 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 // Escaping starts after the last trusted line, so it cannot join with it.
 func neutralizeBody(body string, cfg Config) string {
 	if cfg.TrustedLeadingLine != nil {
-		limit := cfg.TrustedLeadingLines
+		limit := cfg.MaxTrustedLeadingLines
 		if limit <= 0 {
 			limit = 1
 		}

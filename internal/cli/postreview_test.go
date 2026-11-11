@@ -395,6 +395,24 @@ func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 	assert.Regexp(t, reviewDiffHashMarkerRe, strings.SplitN(fc.IssueComments["o/r/1"][0].Body, "\n", 3)[1])
 }
 
+func TestPostReviewContent_PublishesDiffHashOnlyAfterApproval(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.PullRequestHeadSHA = "abc123def456"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "README.md", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+
+	requestChanges := ReviewResult{Body: "Needs changes", Action: "request-changes", HeadSHA: "abc123def456"}
+	require.NoError(t, postReviewContent(context.Background(), fc, "o", "r", 1, requestChanges, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard)))
+	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
+
+	fc.Errors["CreatePullRequestReview"] = fmt.Errorf("approval API error")
+	approval := ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"}
+	require.NoError(t, postReviewContent(context.Background(), fc, "o", "r", 1, approval, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard)))
+	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
+}
+
 func TestPostReviewContent_PreservesGeneratedHashAndProjectionMarkers(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
@@ -454,6 +472,53 @@ func TestPostReviewContent_DoesNotPublishHashWhenHeadChanges(t *testing.T) {
 		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
+}
+
+func TestPostReviewContent_DoesNotPublishHashWhenHeadLookupFails(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.PullRequestHeadSHA = "reviewed-head"
+	fc.Errors["GetPullRequestHeadSHA"] = fmt.Errorf("head lookup failed")
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "README.md", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1,
+		ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "reviewed-head"},
+		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
+}
+
+type failSecondReviewCommentUpdateClient struct {
+	*forge.FakeClient
+	updates int
+}
+
+func (c *failSecondReviewCommentUpdateClient) UpdateIssueComment(ctx context.Context, owner, repo string, id int, body string) error {
+	c.updates++
+	if c.updates > 0 {
+		return fmt.Errorf("hash marker update failed")
+	}
+	return c.FakeClient.UpdateIssueComment(ctx, owner, repo, id, body)
+}
+
+func TestPostReviewContent_HashPublicationFailureIsBestEffort(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.PullRequestHeadSHA = "abc123def456"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "README.md", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+	client := &failSecondReviewCommentUpdateClient{FakeClient: fc}
+
+	var buf bytes.Buffer
+	err := postReviewContent(context.Background(), client, "o", "r", 1,
+		ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"},
+		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(&buf))
+	require.NoError(t, err)
+	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
+	assert.Contains(t, buf.String(), "Could not publish review diff hash after approval")
 }
 
 func TestPullRequestDiffHash_FailsOpenForTruncatedListing(t *testing.T) {
