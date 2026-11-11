@@ -67,7 +67,8 @@ yourself.
 
 * Download the latest [gcloud](https://docs.cloud.google.com/sdk/docs/install-sdk) CLI and
 authenticate with it.
-* Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
+* Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI,
+  or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
 
 ## Create a GCP project
 
