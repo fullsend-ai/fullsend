@@ -250,8 +250,7 @@ type ResolveOpts struct {
 	LockedWorkflowSHA256 string
 	// LockedWorkflowURL is the url the same lock entry records for the
 	// runtime workflow. LockedWorkflowSHA256 applies only to a source that
-	// resolves to this url; another url fails closed with
-	// ErrLockedWorkflowURLMismatch.
+	// resolves to this url; for another url it is ignored.
 	LockedWorkflowURL string
 }
 

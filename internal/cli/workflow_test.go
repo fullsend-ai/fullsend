@@ -745,10 +745,11 @@ func TestRunAgent_WorkflowLockReplayIgnoresURLIndex(t *testing.T) {
 // The lock entry's hash binds only the source it was locked for. Here the
 // child's local base harness moves its URL base to another commit: the
 // child file is unchanged, so the entry is still current, but the
-// runtime workflow now resolves to another tree URL. The run fails closed
-// instead of delivering the commit-1 tree, which is still cached under the
-// locked hash, under a plan line that names commit 2.
-func TestRunAgent_WorkflowLockForAnotherURLFailsClosed(t *testing.T) {
+// runtime workflow now resolves to another tree URL. The run warns and
+// resolves the new source without the locked hash, as it does for other
+// dependencies the entry does not pin: it delivers the commit-2 tree,
+// never the commit-1 tree that is still cached under the locked hash.
+func TestRunAgent_WorkflowLockForAnotherURLWarns(t *testing.T) {
 	usePreScriptStub(t)
 	trees, fetcher := refTrees()
 	dir := newSkipHarnessDir(t, "")
@@ -772,22 +773,26 @@ func TestRunAgent_WorkflowLockForAnotherURLFailsClosed(t *testing.T) {
 
 	writeLocalBase(cliWorkflowSHA2)
 	gitIn(t, dir, "add", "-A")
+	newURL := "https://raw.githubusercontent.com/example-org/sample-pipeline/" + cliWorkflowSHA2 + "/pipelines/sample/"
+	oldHash, newHash := fetch.ComputeTreeHash(trees[cliWorkflowSHA]), fetch.ComputeTreeHash(trees[cliWorkflowSHA2])
+	require.NotEqual(t, oldHash[:12], newHash[:12])
 	out, err := runWorkflowAgent(t, dir, resolveFlags{treeFetcher: fetcher})
 	require.Error(t, err)
 	assert.NotContains(t, out, "Harness has changed since lock file was generated", "the child file is unchanged, so the entry is current")
-	assert.ErrorIs(t, err, resolve.ErrLockedWorkflowURLMismatch)
-	assert.Contains(t, err.Error(), "runtime_workflow.source resolves to https://raw.githubusercontent.com/example-org/sample-pipeline/"+cliWorkflowSHA2+"/pipelines/sample/, but .fullsend/lock.yaml records the runtime workflow at "+dep.URL)
-	assert.Contains(t, err.Error(), "run `fullsend lock --update code --fullsend-dir "+dir+"` to re-lock it")
-	assert.NotContains(t, err.Error(), "creating sandbox")
-	assert.NotContains(t, out, "delivered as claude plugin")
+	assert.Contains(t, out, "Lock entry for code pins the runtime workflow at "+dep.URL+", but it now resolves to "+newURL+"; run 'fullsend lock --update code --fullsend-dir "+dir+"' to re-pin it")
+	assert.Contains(t, err.Error(), "creating sandbox", "the run reaches sandbox creation")
+	assert.Contains(t, out, "(sha256:"+newHash[:12]+") delivered as claude plugin wfplug")
+	assert.NotContains(t, out, "sha256:"+oldHash[:12], "never the locked tree")
 
-	// `fullsend lock --update` records the new source, and the run then
-	// delivers its tree.
+	// `fullsend lock --update` records the new source, and the run no
+	// longer warns.
 	require.NoError(t, runLock(context.Background(), "code", dir, "", true, resolveFlags{treeFetcher: fetcher}, ui.New(io.Discard)))
+	require.Equal(t, newURL, lockedWorkflow(t, dir).URL)
 	out, err = runWorkflowAgent(t, dir, resolveFlags{treeFetcher: fetcher})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating sandbox")
-	assert.Contains(t, out, "(sha256:"+fetch.ComputeTreeHash(trees[cliWorkflowSHA2])[:12]+") delivered as claude plugin wfplug")
+	assert.NotContains(t, out, "now resolves to")
+	assert.Contains(t, out, "(sha256:"+newHash[:12]+") delivered as claude plugin wfplug")
 }
 
 func TestLockedRuntimeWorkflow(t *testing.T) {

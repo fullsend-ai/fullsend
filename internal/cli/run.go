@@ -1332,10 +1332,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	})
 	if err != nil {
 		printer.StepFail("Runtime workflow resolution failed")
-		if errors.Is(err, resolve.ErrLockedWorkflowURLMismatch) {
-			return fmt.Errorf("resolving runtime workflow: %w; run `fullsend lock --update %s%s` to re-lock it", err, agentName, fullsendDirArg(fullsendDir))
-		}
 		return fmt.Errorf("resolving runtime workflow: %w", err)
+	}
+	// The locked hash covers only the url it was locked for; a source that
+	// now resolves elsewhere was resolved without it (see
+	// resolve.ResolveRuntimeWorkflow).
+	if lockedWorkflowHash != "" && workflowDep != nil && workflowDep.URL != lockedWorkflowURL {
+		printer.StepWarn(fmt.Sprintf("Lock entry for %s pins the runtime workflow at %s, but it now resolves to %s; run 'fullsend lock --update %s%s' to re-pin it",
+			agentName, lockedWorkflowURL, workflowDep.URL, agentName, fullsendDirArg(fullsendDir)))
 	}
 	if workflowDep != nil {
 		if workflowDep.CacheHit {

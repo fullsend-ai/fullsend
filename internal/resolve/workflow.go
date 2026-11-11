@@ -26,11 +26,6 @@ import (
 // as version 2 (see lock.Save).
 const RuntimeWorkflowDependencyField = lock.RuntimeWorkflowField
 
-// ErrLockedWorkflowURLMismatch is returned when the lock entry records the
-// runtime workflow at a url other than the one the source resolves to: the
-// entry is out of date, and the caller tells the user to re-lock the agent.
-var ErrLockedWorkflowURLMismatch = errors.New("the lock entry is out of date for the runtime workflow")
-
 // ResolvedRuntimeWorkflow is the runtime-workflow repository a harness
 // runtime_workflow: field pins (ADR 0130), fetched or read, verified, cached and
 // classified as a Claude plugin or a pi extension.
@@ -122,8 +117,10 @@ type WorkflowLocation struct {
 // opts.LockedWorkflowSHA256 is the hash instead, whether or not the rest
 // of the entry replays: the lock wins over the URL index and over a fetch.
 // It applies only when the entry records the url this source resolves to
-// (opts.LockedWorkflowURL); for another url resolution fails closed with
-// ErrLockedWorkflowURLMismatch. The returned Dependency (Field "runtime_workflow")
+// (opts.LockedWorkflowURL); for another url it is ignored and the source
+// resolves as if the entry recorded no runtime workflow, so the locked
+// tree is never served under another url (fullsend run warns that the
+// entry needs re-locking). The returned Dependency (Field "runtime_workflow")
 // is what `fullsend lock` records. A path source is read from the git
 // index of the checkout that holds the harness file that declared it
 // (loc.HarnessDir, or a local base's directory; tracked files only, see
@@ -256,12 +253,15 @@ func fetchRemoteWorkflow(ctx context.Context, spec *harness.RuntimeWorkflowSpec,
 	// The lock's hash is for the url it was recorded under, which is
 	// allowKey (see the Dependency below). A source that now resolves to
 	// another url, such as one inherited through a local base whose URL
-	// base moved without the child harness changing, is not covered by it.
+	// base moved, or a harness re-pinned by `fullsend agent update`,
+	// without the child harness file changing, is not covered by it: the
+	// source resolves as if the entry did not lock it.
 	indexKey := RuntimeWorkflowDependencyField + ":" + cleanURL
 	locked := opts.LockedWorkflowSHA256
+	if opts.LockedWorkflowURL != allowKey {
+		locked = ""
+	}
 	switch {
-	case locked != "" && opts.LockedWorkflowURL != allowKey:
-		return nil, "", fmt.Errorf("runtime_workflow.source resolves to %s, but .fullsend/lock.yaml records the runtime workflow at %s, so its locked tree hash does not cover this source: %w", allowKey, opts.LockedWorkflowURL, ErrLockedWorkflowURLMismatch)
 	case locked != "" && hasHash && locked != expectedHash:
 		return nil, "", fmt.Errorf("runtime_workflow.source: the harness pins sha256=%s for %s, but .fullsend/lock.yaml records sha256=%s; run `fullsend lock` to update the lock file", expectedHash, cleanURL, locked)
 	case locked != "":

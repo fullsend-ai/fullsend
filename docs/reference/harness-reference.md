@@ -417,6 +417,12 @@ A path the allowlist does not cover fails with:
 runtime_workflow.source "pipelines/sample" resolves to https://raw.githubusercontent.com/example-org/agents/0123456789abcdef0123456789abcdef01234567/pipelines/sample/, which is not in allowed_remote_resources; add a prefix that covers it to allowed_remote_resources in config.yaml
 ```
 
+**Lock entries.** `fullsend run` delivers a locked runtime workflow at the tree hash `lock.yaml` records for it, but only for the URL it was locked at. If the source now resolves to another URL while the entry is still current (for example after `fullsend agent update` re-pins the harness to a commit where the harness file itself is unchanged), the run ignores the locked hash, resolves the new source as if it were not locked, and warns:
+
+```text
+Lock entry for code pins the runtime workflow at https://raw.githubusercontent.com/example-org/agents/0123456789abcdef0123456789abcdef01234567/pipelines/sample/, but it now resolves to https://raw.githubusercontent.com/example-org/agents/89abcdef0123456789abcdef0123456789abcdef/pipelines/sample/; run 'fullsend lock --update code' to re-pin it
+```
+
 **The tree's kind decides what runs it.** After the fetch, fullsend classifies the runtime workflow the way it classifies a `plugins:` entry, and the kind must match the agent's runtime; a mismatch fails at plan time naming both:
 
 | Definition | Runtime | Delivered as |

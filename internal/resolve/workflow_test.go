@@ -1076,26 +1076,44 @@ func TestResolveRuntimeWorkflow_LockedHashWinsOverURLIndex(t *testing.T) {
 		assert.Contains(t, err.Error(), "runtime_workflow.source: the harness pins sha256="+otherHash+" for https://github.com/example-org/sample-pipeline/tree/"+wfSHA+", but .fullsend/lock.yaml records sha256="+lockedHash+"; run `fullsend lock` to update the lock file")
 		assert.Equal(t, 0, calls)
 	})
-	t.Run("a lock entry for another url fails closed without a cache hit", func(t *testing.T) {
-		// The locked tree is cached, so applying its hash would hit.
+	// A lock entry for another url does not cover this source: its hash is
+	// ignored and the source resolves as if there were no lock entry, so
+	// the locked tree (cached here) is never served under this url.
+	t.Run("a lock entry for another url is ignored for the URL index", func(t *testing.T) {
 		calls := 0
-		o := replayOpts(t, "", fetchOf(files, &calls))
+		o := replayOpts(t, otherHash, fetchOf(other, &calls))
 		o.LockedWorkflowURL = "https://raw.githubusercontent.com/example-org/sample-pipeline/" + wfSHA2 + "/pipelines/sample/"
-		_, _, err := ResolveRuntimeWorkflow(context.Background(), inherited(t), WorkflowLocation{}, o)
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrLockedWorkflowURLMismatch)
-		assert.Contains(t, err.Error(), "runtime_workflow.source resolves to "+rawDirURL+", but .fullsend/lock.yaml records the runtime workflow at "+o.LockedWorkflowURL+", so its locked tree hash does not cover this source")
+		rw, dep, err := ResolveRuntimeWorkflow(context.Background(), inherited(t), WorkflowLocation{}, o)
+		require.NoError(t, err)
+		assert.Equal(t, otherHash, rw.TreeHash, "never the locked tree")
+		assert.Equal(t, rawDirURL, dep.URL)
 		assert.Equal(t, 0, calls)
 	})
-	t.Run("a pinned source checks the url too", func(t *testing.T) {
+	t.Run("a lock entry for another url is ignored for a fetch", func(t *testing.T) {
 		calls := 0
-		_, _, err := resolveWF(wfHarness(), wfURL(files), WorkflowLocation{}, ResolveOpts{
-			WorkspaceRoot: t.TempDir(), OrgAllowlist: []string{"https://github.com/example-org/"},
-			TreeFetcher: fetchOf(files, &calls), LockedWorkflowSHA256: lockedHash,
+		o := replayOpts(t, "", fetchOf(other, &calls))
+		o.WorkspaceRoot = t.TempDir()
+		o.FetchPolicy.Offline = false
+		o.LockedWorkflowURL = "https://raw.githubusercontent.com/example-org/sample-pipeline/" + wfSHA2 + "/pipelines/sample/"
+		rw, dep, err := ResolveRuntimeWorkflow(context.Background(), inherited(t), WorkflowLocation{}, o)
+		require.NoError(t, err)
+		assert.Equal(t, otherHash, rw.TreeHash)
+		assert.Equal(t, otherHash, dep.SHA256)
+		assert.Equal(t, 1, calls)
+	})
+	t.Run("a pinned source for another url uses its own pin", func(t *testing.T) {
+		calls := 0
+		ws := t.TempDir()
+		_, err := fetch.CachePutMaterializedDir(context.Background(), ws, cleanURL, files)
+		require.NoError(t, err)
+		rw, _, err := resolveWF(wfHarness(), wfURL(other), WorkflowLocation{}, ResolveOpts{
+			WorkspaceRoot: ws, OrgAllowlist: []string{"https://github.com/example-org/"},
+			TreeFetcher: fetchOf(other, &calls), LockedWorkflowSHA256: lockedHash,
 			LockedWorkflowURL: "https://github.com/example-org/sample-pipeline/tree/" + wfSHA2,
 		})
-		assert.ErrorIs(t, err, ErrLockedWorkflowURLMismatch)
-		assert.Equal(t, 0, calls)
+		require.NoError(t, err)
+		assert.Equal(t, otherHash, rw.TreeHash)
+		assert.Equal(t, 1, calls)
 	})
 }
 
