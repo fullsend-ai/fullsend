@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -41,10 +42,25 @@ func checkDefaultFullsendDir(explicit bool, dir string) error {
 
 // fullsendDirArg renders the --fullsend-dir argument for a printed command
 // hint: empty when dir is the default, so hints match the short form users
-// type, and " --fullsend-dir <dir>" otherwise.
+// type, and " --fullsend-dir '<dir>'" otherwise, single-quoted (with embedded
+// quotes escaped) so a path with spaces survives the shell.
 func fullsendDirArg(dir string) string {
 	if filepath.Clean(dir) == defaultFullsendDir {
 		return ""
 	}
-	return " --fullsend-dir " + dir
+	return " --fullsend-dir '" + strings.ReplaceAll(dir, "'", `'\''`) + "'"
+}
+
+// shellQuoteArg quotes a printed command hint's argument: bare when every
+// rune is shell-safe (letters, digits, '-', '_', '.', '/'), otherwise
+// wrapped in single quotes with embedded quotes escaped, so a hint naming
+// an agent whose file has a space or shell metacharacter in it stays one
+// argument when the hint is copied as written.
+func shellQuoteArg(s string) string {
+	for _, r := range s {
+		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./", r) {
+			return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+		}
+	}
+	return s
 }
