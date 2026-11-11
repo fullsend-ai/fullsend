@@ -119,7 +119,7 @@ func TestWorkflowDispatchSteps_RunFloor(t *testing.T) {
 func TestWhenWorkflowDispatchedWithPayload_Errors(t *testing.T) {
 	err := whenWorkflowDispatchedWithPayload(context.Background(), &world.World{CI: &fakeDispatcherCI{}}, "prioritize.yml", "{}")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no repository leased")
+	assert.Contains(t, err.Error(), "no repo configured")
 
 	err = whenWorkflowDispatchedWithPayload(context.Background(), &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}}, "prioritize.yml", "{}")
 	require.Error(t, err)
@@ -174,7 +174,7 @@ func TestThenWorkflowFailsLogging(t *testing.T) {
 
 	err := thenWorkflowFailsLogging(context.Background(), &world.World{CI: &fakeDispatcherCI{}}, "prioritize.yml", needle)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no repository leased")
+	assert.Contains(t, err.Error(), "no repo configured")
 
 	// Without a dispatch step the failure step fails fast instead of
 	// waiting out the whole-scenario window on a run that never comes.
@@ -416,12 +416,10 @@ func TestThenWorkflowFailsLogging_Refetch(t *testing.T) {
 // A fetch error is fetched again, and a cancelled scenario stops the wait
 // with the reason the logs were unusable.
 func TestThenWorkflowFailsLogging_RefetchErrorAndCancel(t *testing.T) {
-	oldWindow, oldInterval := logPollWindow, logPollInterval
-	t.Cleanup(func() { logPollWindow, logPollInterval = oldWindow, oldInterval })
+	shrinkLogPoll(t, time.Minute)
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	failed := &forge.WorkflowRun{ID: 7, Status: "completed", Conclusion: "failure"}
 
-	logPollWindow, logPollInterval = time.Minute, time.Millisecond
 	f := &fakeDispatcherCI{run: failed, errSeq: []error{errors.New("502")}, logsSeq: []string{"x needle y"}}
 	require.NoError(t, thenWorkflowFailsLogging(context.Background(), &world.World{Org: "org", RepoName: "repo", ScenarioStart: start, CI: f, DispatchedWorkflowFile: "prioritize.yml", DispatchedWorkflowAt: start}, "prioritize.yml", "needle"))
 	assert.Equal(t, 2, f.logCalls, "a fetch error is fetched again")
