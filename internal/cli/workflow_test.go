@@ -1235,6 +1235,31 @@ func TestExpandWorkflowArgs_CredentialReferenceRefused(t *testing.T) {
 	assert.Contains(t, err.Error(), "(a runner-only credential no harness may expand)")
 }
 
+// Args reach the sandbox prompt, so the runner expands them with the
+// sandbox-bound lookup: a host-only Jira credential whose name passes
+// the credential-shape check expands empty instead of carrying its
+// value into the prompt, the plan and metrics.json.
+func TestExpandWorkflowArgs_SandboxDeniedKeysExpandEmpty(t *testing.T) {
+	const email = "bot@example.com"
+	const clientID = "jira-client-id-value"
+	lookup := sandboxBoundLookup(func(k string) (string, bool) {
+		switch k {
+		case "ISSUE_NUMBER":
+			return "7", true
+		case "FULLSEND_JIRA_EMAIL":
+			return email, true
+		case "FULLSEND_JIRA_CLIENT_ID":
+			return clientID, true
+		}
+		return "", false
+	})
+	got, err := expandWorkflowArgs("issue ${ISSUE_NUMBER} ${FULLSEND_JIRA_EMAIL}${FULLSEND_JIRA_CLIENT_ID}", lookup)
+	require.NoError(t, err)
+	assert.Equal(t, "issue 7 ", got)
+	assert.NotContains(t, got, email)
+	assert.NotContains(t, got, clientID)
+}
+
 // A value that looks like a credential in an allowed variable is refused
 // after expansion, without printing it.
 func TestExpandWorkflowArgs_CredentialValueRefused(t *testing.T) {

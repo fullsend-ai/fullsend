@@ -281,6 +281,9 @@ splitting or quoting. Every variable it names must be set in the runner
 environment (an empty value is allowed), and it must stay on one line: an
 unset variable, or one that holds a newline, carriage return or NUL, fails
 the run before the sandbox starts.
+The Jira repository secrets (`FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+`FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`) expand empty, as
+they do in `env.sandbox`, because args reach the sandbox.
 
 Name work-item identifiers only. Args reach the model prompt, the run plan
 and `metrics.json`, so a variable whose name looks like a credential is

@@ -1277,12 +1277,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Sandbox-bound sites expand sandboxDeniedKeys empty instead of failing,
 	// so validation must resolve them there whether or not the host variable
 	// is set (the action unsets FULLSEND_JIRA_TOKEN on non-Jira runs).
-	sandboxLookup := func(key string) (string, bool) {
-		if sandboxDeniedKeys[key] {
-			return "", true
-		}
-		return lookup(key)
-	}
+	sandboxLookup := sandboxBoundLookup(lookup)
 	if err := h.ValidateRunnerEnvSites(withRunnerSecretLookup(runnerSecrets, lookup), sandboxLookup); err != nil {
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
@@ -1320,8 +1315,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// can hand the work item to the workflow; the result must stay one
 	// line, because it is the tail of the slash command the runner starts,
 	// and is scanned for credentials whether or not it names a variable.
+	// Args reach the sandbox prompt, so they expand like other sandbox-bound
+	// sites: host-only credentials (sandboxDeniedKeys) expand empty.
 	if h.RuntimeWorkflow != nil {
-		args, err := expandWorkflowArgs(h.RuntimeWorkflow.Args, lookup)
+		args, err := expandWorkflowArgs(h.RuntimeWorkflow.Args, sandboxLookup)
 		if err != nil {
 			printer.StepFail("Environment validation failed")
 			return err
@@ -3656,6 +3653,19 @@ var sandboxDeniedKeys = map[string]bool{
 	jira.EmailEnvVar:        true,
 	jira.ClientIDEnvVar:     true,
 	jira.ClientSecretEnvVar: true,
+}
+
+// sandboxBoundLookup wraps lookup for sites whose values reach the
+// sandbox: sandboxDeniedKeys resolve, but to the empty string, so a
+// reference to a host-only credential neither fails validation nor
+// carries its value into the sandbox.
+func sandboxBoundLookup(lookup func(string) (string, bool)) func(string) (string, bool) {
+	return func(key string) (string, bool) {
+		if sandboxDeniedKeys[key] {
+			return "", true
+		}
+		return lookup(key)
+	}
 }
 
 // expandSandboxEnvValue expands ${VAR} references in an env.sandbox value
