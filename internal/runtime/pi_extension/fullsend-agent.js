@@ -38,6 +38,7 @@
 // PiRuntime.Bootstrap wrote (FULLSEND_PI_MANIFEST).
 import { spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -503,7 +504,7 @@ export async function extensionTreeHash(root) {
 // personaName, when non-empty, names the persona driving the dispatch; the
 // session dir becomes "sessions/<persona>-<seq>" instead of
 // "sessions/agent-<seq>" so transcripts are labelled by persona (#7031).
-export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
+export function childArgs(agent, { seq, modelSpec, tools, activeTools = tools, personaName }) {
   const args = [
     "--print", "--mode", "json", "--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
     "--session-dir", childSessionDir(agent, seq, personaName),
@@ -519,12 +520,21 @@ export function childArgs(agent, { seq, modelSpec, tools, personaName }) {
   // --no-builtin-tools leaves extension tools active. An explicit empty
   // --tools value filters those too, so a disjoint intersection fails closed.
   args.push("--tools", tools.join(","));
+  // The CLI allowlist controls registration as well as activation. Keep the
+  // callable union registered, then restore only the inherited active subset
+  // before the first model request. This child-only mode registers no Agent.
+  if (activeTools.length !== tools.length || activeTools.some((t, i) => t !== tools[i])) {
+    args.push("-e", fileURLToPath(import.meta.url), "--fullsend-child-active-tools", JSON.stringify(activeTools));
+  }
   // pi 1.5.0 keeps MCP registrations when a nonempty --tools list has no
   // mcp__ entry. They remain callable through codemode/deferred exposure,
   // even if inactive. Resource tools are in the same MCP category. Deny
   // unselected names explicitly, preserving any selected resources.
   if (tools.length > 0 && !tools.some((t) => t.startsWith("mcp__"))) {
-    const resources = JSON.parse(readFileSync(new URL("./mcp-resource-tools.json", import.meta.url), "utf8"));
+    const resources = agent.mcpResourceTools;
+    if (!Array.isArray(resources) || resources.some((name) => typeof name !== "string")) {
+      throw new Error("missing MCP resource permissions in child manifest");
+    }
     args.push("--exclude-tools", ["mcp__*", ...resources.filter((name) => !tools.some((pattern) => toolMatches(pattern, name)))].join(","));
   }
   args.push("--model", modelSpec);
@@ -992,11 +1002,17 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
   // timed out after limitMs. It resolves a handle synchronously through
   // `out` so the caller can terminate the child on abort or shutdown while
   // it is still running.
-  const runChild = (id, params, modelSpec, tools, out, personaName, limitMs) =>
+  const childLoadout = (type) => {
+    const active = activeTools();
+    const tools = childTools(agent, type, active, registeredTools());
+    const activeNames = active ?? childTools(agent, type, undefined);
+    return { tools, activeTools: tools.filter((t) => activeNames.includes(t)) };
+  };
+  const runChild = (id, params, modelSpec, loadout, out, personaName, limitMs) =>
     new Promise((resolve) => {
       const state = newStreamState();
       const startedAt = now();
-      const args = childArgs(agent, { seq: id, modelSpec, tools, personaName });
+      const args = childArgs(agent, { seq: id, modelSpec, ...loadout, personaName });
       const spawnEnv = childEnv(env, modelSpec);
       let gatewayCopy;
       if (verifiedGatewayConfig) {
@@ -1223,7 +1239,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
         // every attempt of the fallback chain shares it, so a chain never
         // runs longer than a single child could.
         const deadline = now() + timeoutMs;
-        outcome = await runChild(id, params, modelSpec, childTools(agent, params?.subagent_type, activeTools(), registeredTools()), ticket, personaName, timeoutMs);
+        outcome = await runChild(id, params, modelSpec, childLoadout(params?.subagent_type), ticket, personaName, timeoutMs);
         // Walk the alias's fallback chain while the project does not serve
         // the model (#8426). The abandoned attempt's session is removed so
         // it is not extracted as an error on a dispatch that succeeded. A
@@ -1247,7 +1263,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
             log(`${LOG_PREFIX} #${id} cannot remove the abandoned attempt's session: ${err.message}`);
           }
           modelSpec = next;
-          outcome = await runChild(id, params, modelSpec, childTools(agent, params?.subagent_type, activeTools(), registeredTools()), ticket, personaName, remainingMs);
+          outcome = await runChild(id, params, modelSpec, childLoadout(params?.subagent_type), ticket, personaName, remainingMs);
         }
       } finally {
         release();
@@ -1319,6 +1335,15 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
 }
 
 export default function (pi) {
+  if (process.argv.includes("--fullsend-child-active-tools")) {
+    pi.registerFlag("fullsend-child-active-tools", { type: "string", description: "Inherited child active tool loadout" });
+    pi.on("session_start", () => {
+      const active = JSON.parse(pi.getFlag("fullsend-child-active-tools"));
+      if (!Array.isArray(active) || active.some((t) => typeof t !== "string")) throw new Error("invalid child active tools");
+      pi.setActiveTools(active);
+    });
+    return;
+  }
   if (process.env[DEPTH_ENV] !== undefined) {
     console.error(`${LOG_PREFIX} ${DEPTH_ENV} is set: this is a sub-agent, the Agent tool is not registered (no recursion)`);
     return;

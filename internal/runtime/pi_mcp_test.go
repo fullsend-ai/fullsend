@@ -42,10 +42,10 @@ func TestBuildPiRunCommand_MCPExclusions(t *testing.T) {
 			require.NoError(t, err)
 			script := `import {childArgs} from "./pi_extension/fullsend-agent.js";
 const tools = JSON.parse(process.argv[1]) ?? [];
-const args = childArgs({}, {seq: 1, modelSpec: "m", tools});
+const args = childArgs({mcpResourceTools: JSON.parse(process.argv[2])}, {seq: 1, modelSpec: "m", tools});
 const i = args.indexOf("--exclude-tools");
 process.stdout.write(i < 0 ? "" : args[i+1]);`
-			out, err := exec.Command("node", "--input-type=module", "-e", script, string(encoded)).CombinedOutput()
+			out, err := exec.Command("node", "--input-type=module", "-e", script, string(encoded), string(piMCPResourceJSON)).CombinedOutput()
 			require.NoError(t, err, string(out))
 			assert.Equal(t, tc.want, string(out))
 		})

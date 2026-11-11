@@ -401,7 +401,11 @@ is `codemode` or `deferred`. Pi permits nested calls to those tools even when
 inactive. Inactive direct tools (including `defaultActive: false` direct tools)
 and other inactive registrations are not added. Explicit parent selections
 and persona patterns still restrict this union; registration alone is not a grant.
-An empty child allowlist hides both built-in and extension tools. Explicit
+The child registration allowlist retains the callable union, but a child-only
+loadout guard restores the inherited active subset before the first model
+request. Inactive codemode/deferred tools remain nested-call permissions rather
+than becoming directly available to the model. The guard script is digest-checked
+before dispatch. An empty child allowlist hides both built-in and extension tools. Explicit
 nonempty parent and child selections without `mcp__` entries also get
 `--exclude-tools`: `mcp__*` plus each unselected MCP resource tool
 (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`).
@@ -415,7 +419,9 @@ search extensions do not load automatically. The tool mapper does not accept
 `codemode` or `tool_search` in explicit frontmatter. The nested-call fixtures
 exercise pi's execution API; they are not examples of supported frontmatter.
 
-Parent and child resource exclusions share `mcp-resource-tools.json`. A parity
+Parent and child resource exclusions originate from `mcp-resource-tools.json`.
+Bootstrap copies the names into the integrity-checked manifest; the child
+dispatcher never rereads a writable resource-list file. A parity
 test reads the complete upstream resource category and fails on drift.
 CI runs the offline real-pi regressions against `PI_VERSION` from
 `images/sandbox/Containerfile`, including nested execution and selected resources.

@@ -1061,7 +1061,17 @@ mapper. The nested-execution fixtures test pi's API, not that configuration path
 The offline direct-MCP regression starts with real frontmatter and Bootstrap,
 then runs the rendered parent selection and generated child selection in real pi.
 
-Go and the child dispatcher share `pi_extension/mcp-resource-tools.json`.
+Go embeds `pi_extension/mcp-resource-tools.json` and copies its resource names
+into the digest-covered manifest as `agent.mcpResourceTools`. The child dispatcher
+uses that loaded snapshot, not a mutable sidecar file. Changing the manifest
+resource names after load refuses the next dispatch.
+
+Child launch keeps registration permissions separate from activation. The
+registration allowlist retains the callable union, while a child-only mode of
+`fullsend-agent.js` restores only the inherited active subset at `session_start`,
+before any model request. Inactive codemode/deferred tools stay callable through
+an executor without being declared directly to the model. The dispatcher script
+is included in `extensionDigests` because children now load this guard too.
 Bootstrap uploads this file beside the dispatcher. The pinned-pi parity test
 reads the complete upstream resource category, so additions fail the test.
 

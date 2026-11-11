@@ -117,6 +117,7 @@ function fixture() {
     tools: null,
     hooks: { groups: [], toolNames: {} },
     agent: {
+      mcpResourceTools: JSON.parse(readFileSync(new URL("./mcp-resource-tools.json", import.meta.url))),
       enabled: true,
       piBin,
       sessionsDir: join(dir, "sessions"),
@@ -672,7 +673,7 @@ test("run: the usage record's description is capped", async () => {
   assert.ok(Buffer.byteLength(JSON.stringify(rec) + "\n") < 4096);
 });
 
-test("run: a manifest rewritten after load stops the next dispatch", async () => {
+test("run: tampering with manifest MCP resource permissions stops the next dispatch", async () => {
   const { dir, manifest } = fixture();
   const path = join(dir, "manifest.json");
   writeFileSync(path, JSON.stringify(manifest));
@@ -690,7 +691,7 @@ test("run: a manifest rewritten after load stops the next dispatch", async () =>
   // The manifest names the binary children run, their -e list (the hook
   // adapter among them) and their tool allowlist, and it sits in a dir the
   // agent can write to: the launch guard checked it once, minutes ago.
-  writeFileSync(path, JSON.stringify({ ...manifest, agent: { ...manifest.agent, extensions: [], tools: ["bash"] } }));
+  writeFileSync(path, JSON.stringify({ ...manifest, agent: { ...manifest.agent, mcpResourceTools: [] } }));
   const res = await tool.run({ prompt: "p2" }, {});
   assert.equal(res.isError, true);
   assert.equal(res.error, "manifest changed since load; refusing to dispatch");
@@ -2225,4 +2226,26 @@ test("callable exposure union retains nested tools but never inactive direct too
   agent.tools = ["list_mcp_*"];
   assert.deepEqual(childTools(agent, undefined, ["codemode"], registry), ["list_mcp_resources"]);
   assert.deepEqual(childTools(agent, "docs", ["codemode"], registry), []);
+});
+
+test("run: dispatcher separates active tools from callable registrations", async () => {
+  const {manifest} = fixture();
+  manifest.agent.toolMode = "default";
+  const {spawn, children} = fakeSpawn();
+  const tool = createAgentTool(manifest, {...quiet, spawn,
+    activeTools: () => ["read"],
+    registeredTools: () => [{name: "mcp__docs__nested", exposure: "deferred"}],
+  });
+  const pending = tool.run({prompt: "p"}, {});
+  await untilChildren(children, 1);
+  const args = children[0].args;
+  assert.equal(args[args.indexOf("--tools") + 1], "read,mcp__docs__nested");
+  assert.equal(args[args.indexOf("--fullsend-child-active-tools") + 1], '["read"]');
+  children[0].child.finish(okStream("done"));
+  assert.equal((await pending).isError, false);
+});
+
+test("childArgs fails closed without manifest resource permissions", () => {
+  assert.throws(() => childArgs({}, {seq: 1, modelSpec: "m", tools: ["read"]}),
+    /missing MCP resource permissions/);
 });

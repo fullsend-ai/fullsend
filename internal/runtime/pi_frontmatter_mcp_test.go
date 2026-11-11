@@ -39,7 +39,7 @@ func TestPiBootstrap_DirectMCPRealPi(t *testing.T) {
 	encoded, err := json.Marshal(m.Agent)
 	require.NoError(t, err)
 	node := exec.Command("node", "testdata/pi-direct-mcp.mjs", string(encoded), command, extension)
-	require.Equal(t, piMCPResourceJSON, storedUpload(t, store, PiRuntime{}.ConfigDir()+"/mcp-resource-tools.json"))
+	require.Equal(t, piMCPResourceTools, m.Agent.MCPResourceTools)
 	node.Env = append(os.Environ(), "FULLSEND_TEST_PI_BIN="+bin)
 	out, err := node.CombinedOutput()
 	require.NoError(t, err, string(out))

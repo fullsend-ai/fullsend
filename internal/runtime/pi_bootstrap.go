@@ -81,6 +81,7 @@ type piAgentManifest struct {
 	// DeclaredExtensions are the vetted harness plugins inherited by children.
 	// The dispatcher rechecks their tree hashes before every child launch.
 	DeclaredExtensions []piManifestExtension `json:"declaredExtensions,omitempty"`
+	MCPResourceTools   []string              `json:"mcpResourceTools"`
 	// ExtensionDigests is the sha256 (hex) of each Extensions entry that
 	// Bootstrap itself wrote under the runner-owned config dir. The
 	// extension re-hashes them before every dispatch; see
@@ -349,9 +350,6 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 	}
 
 	if agentTool {
-		if err := uploadBytes(sandboxName, cfg+"/mcp-resource-tools.json", piMCPResourceJSON); err != nil {
-			return fmt.Errorf("installing MCP resource names: %w", err)
-		}
 		if err := uploadBytes(sandboxName, cfg+"/"+piAgentExtensionFile, piAgentExtensionJS); err != nil {
 			return fmt.Errorf("installing agent extension: %w", err)
 		}
@@ -360,6 +358,12 @@ func (r PiRuntime) Bootstrap(input BootstrapInput) error {
 			return err
 		}
 		block.DeclaredExtensions = extensions
+		block.MCPResourceTools = append([]string{}, piMCPResourceTools...)
+		if block.ExtensionDigests == nil {
+			block.ExtensionDigests = map[string]string{}
+		}
+		sum := sha256.Sum256(piAgentExtensionJS)
+		block.ExtensionDigests[cfg+"/"+piAgentExtensionFile] = hex.EncodeToString(sum[:])
 		manifest.Agent = block
 	}
 
@@ -696,7 +700,9 @@ func piApplyChildFallbacks(m *piAgentManifest, personas []piPersona, subagentsCf
 	}
 }
 
-// piAgentExtensionDigests records the sha256 of every child -e entry that
+// piAgentExtensionDigests records hook/repair digests. Bootstrap additionally
+// records fullsend-agent.js, whose child-only mode restores the active loadout.
+// These cover each child -e entry that
 // Bootstrap itself writes under the runner-owned config dir — the hook
 // adapter (the same bytes piHooksGuard checks before pi starts) and the
 // edit-repair extension (piEditRepairGuard's bytes). fullsend-agent.js

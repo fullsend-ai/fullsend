@@ -4,7 +4,9 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { childArgs, childTools } from "./fullsend-agent.js";
+import { childArgs as renderChildArgs, childTools } from "./fullsend-agent.js";
+const resources = JSON.parse(readFileSync(new URL("./mcp-resource-tools.json", import.meta.url)));
+const childArgs = (agent, options) => renderChildArgs({mcpResourceTools: resources, ...agent}, options);
 
 // Exercise the same nested execution API used by codemode, with both MCP
 // exposures that stay callable even when inactive. The unguarded control
@@ -126,7 +128,7 @@ export default function(pi) {
     // Even a persona explicitly requesting the inactive tool cannot get it.
     if (!empty) agent.personas.docs.tools.push("mcp__docs__hidden");
     const tools = childTools(agent, "docs", active, registered);
-    const args = childArgs(agent, {seq: index + 1, modelSpec: "faux/faux-1", tools});
+    const args = childArgs(agent, {seq: index + 1, modelSpec: "faux/faux-1", tools, activeTools: tools.filter((t) => active.includes(t))});
     const result = spawnSync(process.env.FULLSEND_TEST_PI_BIN, args, {
       cwd: home, input: "search docs", encoding: "utf8", timeout: 45_000,
       env: {PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: home, TEST_EXPOSURE: exposure},
