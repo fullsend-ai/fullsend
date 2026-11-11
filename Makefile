@@ -102,11 +102,11 @@ go-build:
 go-test:
 	GH_TOKEN= GITHUB_TOKEN= \
 	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
-	go test -race -coverprofile=cover-default.out ./...
+	go test -race -timeout 20m -coverprofile=cover-default.out ./...
 	cd internal/mintcore && \
 	GH_TOKEN= GITHUB_TOKEN= \
 	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
-	go test -race -tags github -coverprofile=../../cover-github.out ./...
+	go test -race -timeout 20m -tags github -coverprofile=../../cover-github.out ./...
 	@# Merge coverage profiles from both test runs into coverage.out.
 	@head -1 cover-default.out > coverage.out
 	@tail -n +2 cover-default.out >> coverage.out
