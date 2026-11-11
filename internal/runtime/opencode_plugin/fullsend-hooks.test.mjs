@@ -52,6 +52,33 @@ test("parent tool and trusted policy ceilings apply to every session", async (t)
   await assert.rejects(h.before("write", { filePath: "file" }), /parent allowlist/);
 });
 
+test("native invalid diagnostics preserve restricted capabilities and output scanning", async (t) => {
+  const source = "import json,sys\np=json.load(sys.stdin); v=p['tool_response']; v['output']=v['output'].replace('original','sanitized')\nprint(json.dumps({'hookSpecificOutput':{'updatedToolOutput':v}}))\n";
+  const h = await setup(t, { tools: ["Read"], permission: { "*": "deny" },
+    groups: [{ Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py"] }] }, { "post.py": source });
+  const args = { tool: "write", error: "malformed arguments" };
+  await h.before("invalid", args);
+  const result = await h.after("invalid", args, "The arguments provided to the tool are invalid: original");
+  assert.equal(result.output, "The arguments provided to the tool are invalid: sanitized");
+  assert.deepEqual(result.metadata, {});
+  assert.deepEqual(result.attachments, []);
+  await assert.rejects(h.before("write", { filePath: "file" }), /parent allowlist/);
+  await assert.rejects(h.before("read", { filePath: "file" }), /trusted permission/);
+  writeFileSync(path.join(h.dir, "post.py"), "tampered");
+  await assert.rejects(h.before("invalid", args), /hook script missing or modified/);
+});
+
+test("trusted Bash patterns reject path-qualified programs without restricting argument paths", async (t) => {
+  const h = await setup(t, { permission: { bash: { "*": "allow", "rm *": "deny" } } });
+  await assert.rejects(h.before("bash", { command: "rm -rf x" }), /trusted permission/);
+  for (const command of ["/bin/rm -rf x", "./rm -rf x", "printf safe; /bin/rm -rf x", "printf safe | ./rm -rf x"]) {
+    await assert.rejects(h.before("bash", { command }), /path-qualified program/, command);
+  }
+  await h.before("bash", { command: "printf /tmp/file" });
+  const unrestricted = await setup(t, { permission: { bash: "allow" } });
+  await unrestricted.before("bash", { command: "/usr/bin/printf safe" });
+});
+
 test("trusted Bash patterns reject unquoted argument globs", async (t) => {
   const commands = ["gh secre? list", "gh s[e]cret list", "gh s*t list"];
   for (const bashAllowlist of [null, ["gh"]]) {
