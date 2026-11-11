@@ -694,7 +694,7 @@ func githubServerBaseURL(serverURL string) string {
 // command family resolves: the layered chain as-is (an omitted key falls
 // through to the parent, an explicit [] denies all remote resources, a
 // non-empty list unions with the parent's), then fullsend's default
-// prefixes ensured on top of a non-empty result (AISDLC-512).
+// prefixes ensured on top of a non-empty result.
 func EffectiveAllowedResources(cfg ConfigReader) []string {
 	return EnsureDefaultAllowedRemoteResources(cfg.AllowedResources())
 }
