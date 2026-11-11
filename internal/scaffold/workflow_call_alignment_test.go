@@ -1703,6 +1703,10 @@ func TestActionReconcileStatusUsesSuppliedRoleFallback(t *testing.T) {
 		"reconcile step must receive the supplied role")
 	assert.Contains(t, s, "ROLE: ${{ inputs.role || inputs.agent }}",
 		"startup failure reporter must receive a role even when the run step is skipped")
+	assert.Contains(t, s, "FAILURE_REPO: ${{ inputs.failure-repo != '' && inputs.failure-number != '' && inputs.failure-repo || inputs.status-repo }}",
+		"startup failure reporter must select the failure repository and number as a pair")
+	assert.Contains(t, s, "FAILURE_NUMBER: ${{ inputs.failure-repo != '' && inputs.failure-number != '' && inputs.failure-number || inputs.status-number }}",
+		"startup failure reporter must select the failure repository and number as a pair")
 	assert.Contains(t, s, "RESOLVED_ROLE=\"${HARNESS_ROLE:-${SUPPLIED_ROLE:-${AGENT}}}\"",
 		"reconciliation must use the supplied role when an early failure prevents the harness from reporting one")
 }

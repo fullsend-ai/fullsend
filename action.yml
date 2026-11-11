@@ -726,8 +726,8 @@ runs:
         GH_TOKEN: ${{ inputs.failure-token || inputs.github_token }}
         AGENT: ${{ inputs.agent }}
         ROLE: ${{ inputs.role || inputs.agent }}
-        FAILURE_REPO: ${{ inputs.failure-repo || inputs.status-repo }}
-        FAILURE_NUMBER: ${{ inputs.failure-number || inputs.status-number }}
+        FAILURE_REPO: ${{ inputs.failure-repo != '' && inputs.failure-number != '' && inputs.failure-repo || inputs.status-repo }}
+        FAILURE_NUMBER: ${{ inputs.failure-repo != '' && inputs.failure-number != '' && inputs.failure-number || inputs.status-number }}
         FULLSEND_FAILURE_TRUSTED_BOTS: ${{ inputs.failure-trusted-bots }}
         RUN_URL: ${{ inputs.run-url }}
         INSTALL_CLI_OUTCOME: ${{ steps.detect.outcome }}
