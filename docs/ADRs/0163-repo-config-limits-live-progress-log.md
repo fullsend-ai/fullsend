@@ -43,8 +43,9 @@ remove personal data, customer names or private business text
 ([#9123](https://github.com/fullsend-ai/fullsend/issues/9123)).
 
 Suppressing an agent's extracted transcripts
-([ADR 0021](0021-jsonl-reasoning-trace-exposure.md)) does not cover the job
-log. A run started from an issue tracker that is not public still prints the
+([ADR 0021](0021-jsonl-reasoning-trace-exposure.md)) and limiting the run
+artifact per run source ([ADR 0161](0161-repo-config-limits-run-artifact-content.md)) do not cover
+the job log. A run started from an issue tracker that is not public still prints the
 issue's text, and anything the agent quotes from it, to a public job log.
 
 This ADR aims to let a repo owner stop the live log from showing model- and
@@ -73,6 +74,9 @@ progress:
   Common Expression Language (CEL) triggers see as `event.source.system`, such as `github`, `gitlab`, `jira`,
   `manual` or `schedule`. Keys are open strings, so an adapter for another
   tracker adds its source name with no schema change.
+- **`by_source` looks only at where the run started**, not at every private
+  system the agent can read. A source level protects private data only when
+  access to that data is attached per source, as in the shipped agents.
 - **The stricter level wins.** The runner uses the stricter of `verbosity` and
   the `by_source` entry for the run's source. A source with no entry gets
   `verbosity`. `quiet` is stricter than `tools`, which is stricter than
@@ -81,7 +85,8 @@ progress:
   explicit `verbosity` overrides, and `by_source` merges per key.
   Lowering an effective level toward `full` is a relaxation under the
   [ADR 0122](0122-declarative-repo-configuration.md) safety gate, so it needs
-  an explicit declaration.
+  an explicit declaration. These rules match the `artifacts` setting in
+  [ADR 0161](0161-repo-config-limits-run-artifact-content.md).
 - **One setting for every runtime.** Claude Code, Codex, OpenCode and pi runs
   print through the same renderer and runner loop, so the level applies to
   all of them.
@@ -117,7 +122,11 @@ All forges read the same `config.yaml` setting.
   logs and keep `full` for other sources.
 - Under `quiet`, someone debugging a run sees no reasoning, tool lines or
   error text in the log; they need OpenTelemetry (OTLP) export to a backend the repo owner
-  controls, or the run artifact.
+  controls, or the run artifact if [ADR 0161](0161-repo-config-limits-run-artifact-content.md)
+  allows it.
+- This ADR adds no private log for the hidden lines, and none is planned.
+  To keep reasoning and tool lines privately, export them over OTLP to a
+  backend the repo owner controls (ADR 0050).
 - When the setting is unset, the log is the same as today.
 - Changing the level is a `config.yaml` change, so it goes through the repo's
   normal review and CODEOWNERS.
