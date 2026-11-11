@@ -422,7 +422,7 @@ fails with `dest "..." is reserved for the runner` when a `dest` is one of:
 - `/sandbox/workspace/bin/` followed by `claude`, `codex`, `pi`, `opencode`,
   `fullsend` or `fullsend-check-output`
 - anything under `/sandbox/claude-config`, `/sandbox/codex-config`,
-  `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`,
+  `/sandbox/pi-config`, `/sandbox/opencode-config`, `/sandbox/workspace/.fullsend`,
   `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`
 
 `dest` must also be an absolute path under `/sandbox/` or `/tmp/` with no `..`
