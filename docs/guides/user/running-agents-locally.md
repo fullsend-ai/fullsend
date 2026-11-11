@@ -414,7 +414,9 @@ cache has since fetched newer content for the same URL. `fullsend run` prints
 `Pinning N dependencies from lock file` when it applies these pins. If locked
 content is missing from the cache, an `--offline` run fails and its error names
 the command to run (`fullsend lock <agent> --update`, with `--fullsend-dir` when
-the directory is not the default), and an online run re-fetches it and fails if
+the directory is not the default, and `--forge <platform>` when the run composed
+forge-specific files for a child with no `forge:` block), and an online run
+re-fetches it and fails if
 it no longer matches the lock (the same command re-pins it). A lock entry for
 an agent fetched from a URL that was written before fullsend recorded these
 files does not pin them; run `fullsend lock <agent> --update` to add them.
