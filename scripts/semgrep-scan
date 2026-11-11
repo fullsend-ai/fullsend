@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(CDPATH='' cd -- "${SCRIPT_DIR}/.." && pwd)"
+RULESET_COMMIT="$(tr -d '[:space:]' < "${SCRIPT_DIR}/semgrep-ruleset-commit")"
+RULESET_SHA256="$(tr -d '[:space:]' < "${SCRIPT_DIR}/semgrep-ruleset.sha256")"
+RULESET_FILES_FILE="${SCRIPT_DIR}/semgrep-ruleset-files.txt"
+RULESET_CACHE_ROOT="${XDG_CACHE_HOME:-${HOME}/.cache}/fullsend/semgrep"
+RULESET_ARCHIVE="${RULESET_CACHE_ROOT}/${RULESET_COMMIT}-${RULESET_SHA256}.tar.gz"
+RULESET_TMP=
+RULESET_DIR=
+
+cleanup() {
+	if [[ -n "$RULESET_TMP" ]]; then
+		rm -f "$RULESET_TMP"
+	fi
+	if [[ -n "$RULESET_DIR" ]]; then
+		rm -rf "$RULESET_DIR"
+	fi
+}
+trap cleanup EXIT
+
+sha256_file() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | cut -d ' ' -f 1
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$1" | cut -d ' ' -f 1
+	else
+		echo "semgrep-scan: sha256sum or shasum is required to verify the ruleset" >&2
+		return 1
+	fi
+}
+
+semgrep_required=true
+case "${SEMGREP_REQUIRED:-1}" in
+1)
+	;;
+
+0)
+	semgrep_required=false
+	;;
+*)
+	echo "semgrep-scan: SEMGREP_REQUIRED must be 1, 0, or unset" >&2
+	exit 2
+	;;
+esac
+
+scan_prerequisite_failure() {
+	if [[ "$semgrep_required" == true ]]; then
+		echo "semgrep-scan: $1; failing the required scan" >&2
+		exit 1
+	fi
+	echo "semgrep-scan: SKIPPED — $1; no files were analyzed because SEMGREP_REQUIRED=0." >&2
+	exit 0
+}
+
+ruleset_integrity_failure() {
+	echo "semgrep-scan: $1; refusing to scan with an unverified ruleset" >&2
+	exit 1
+}
+
+if [[ ! "$RULESET_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+	ruleset_integrity_failure "upstream ruleset commit is not a full lowercase Git SHA"
+fi
+if [[ ! "$RULESET_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+	ruleset_integrity_failure "upstream ruleset archive pin is not a SHA-256"
+fi
+
+RULESET_URL="https://codeload.github.com/semgrep/semgrep-rules/tar.gz/${RULESET_COMMIT}"
+
+if ! command -v uv >/dev/null 2>&1; then
+	scan_prerequisite_failure "uv is not installed"
+fi
+
+if ! mkdir -p "$RULESET_CACHE_ROOT"; then
+	scan_prerequisite_failure "cannot create the local ruleset cache"
+fi
+
+if [[ -f "$RULESET_ARCHIVE" ]]; then
+	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_ARCHIVE")"; then
+		ruleset_integrity_failure "cannot verify cached upstream rules archive"
+	fi
+	if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
+		ruleset_integrity_failure "cached upstream rules archive SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
+	fi
+else
+	if ! RULESET_TMP="$(mktemp "${RULESET_CACHE_ROOT}/.security-audit.XXXXXX")"; then
+		scan_prerequisite_failure "cannot create a temporary ruleset file"
+	fi
+	if ! curl --connect-timeout 10 --max-time 60 \
+		--fail --location --silent --show-error "$RULESET_URL" \
+		--output "$RULESET_TMP"; then
+		scan_prerequisite_failure "unable to download the pinned ruleset from ${RULESET_URL}"
+	fi
+	if ! RULESET_ACTUAL_SHA256="$(sha256_file "$RULESET_TMP")"; then
+		ruleset_integrity_failure "cannot verify downloaded ruleset"
+	fi
+	if [[ "$RULESET_ACTUAL_SHA256" != "$RULESET_SHA256" ]]; then
+		ruleset_integrity_failure "downloaded upstream rules archive SHA-256 does not match the pin (expected ${RULESET_SHA256}, got ${RULESET_ACTUAL_SHA256})"
+	fi
+	if ! mv "$RULESET_TMP" "$RULESET_ARCHIVE"; then
+		scan_prerequisite_failure "cannot cache the verified upstream rules archive"
+	fi
+	RULESET_TMP=
+fi
+
+if ! RULESET_DIR="$(mktemp -d "${RULESET_CACHE_ROOT}/.security-audit-rules.XXXXXX")"; then
+	scan_prerequisite_failure "cannot create a temporary ruleset directory"
+fi
+if ! tar -xzf "$RULESET_ARCHIVE" -C "$RULESET_DIR" --strip-components=1; then
+	ruleset_integrity_failure "cannot extract the pinned upstream rules archive"
+fi
+
+if [[ ! -f "$RULESET_FILES_FILE" ]]; then
+	ruleset_integrity_failure "pinned security-audit source file list is missing"
+fi
+
+RULE_CONFIG_ARGS=()
+selected_rule_files=0
+while IFS= read -r relative_rule_file || [[ -n "$relative_rule_file" ]]; do
+	case "$relative_rule_file" in
+	"" | \#*)
+		continue
+		;;
+	/* | ../* | */../* | */..)
+		ruleset_integrity_failure "pinned security-audit source path is not relative: ${relative_rule_file}"
+		;;
+	*/security/*.yaml | */security/*.yml)
+		;;
+	*)
+		ruleset_integrity_failure "pinned security-audit source path is outside the approved scope: ${relative_rule_file}"
+		;;
+	esac
+	case "$relative_rule_file" in
+	*.test.yaml | *.test.yml)
+		ruleset_integrity_failure "upstream rule test fixture is in the approved source list: ${relative_rule_file}"
+		;;
+	esac
+	rule_file="${RULESET_DIR}/${relative_rule_file}"
+	if [[ ! -f "$rule_file" ]]; then
+		ruleset_integrity_failure "pinned security-audit source file is missing from the archive: ${relative_rule_file}"
+	fi
+	RULE_CONFIG_ARGS+=(--config "$relative_rule_file")
+	selected_rule_files=$((selected_rule_files + 1))
+done < "$RULESET_FILES_FILE"
+
+if ((selected_rule_files == 0)); then
+	ruleset_integrity_failure "pinned security-audit source file list is empty"
+fi
+echo "semgrep-scan: using ${selected_rule_files} pinned security-audit source files"
+
+SCAN_ARGS=()
+while (($#)); do
+	case "$1" in
+	--sarif-output | --json-output | --output)
+		if (($# < 2)); then
+			echo "semgrep-scan: $1 requires an output path" >&2
+			exit 2
+		fi
+		output_path="$2"
+		if [[ "$output_path" != /* ]]; then
+			output_path="${REPO_ROOT}/${output_path}"
+		fi
+		SCAN_ARGS+=("$1" "$output_path")
+		shift 2
+		;;
+	-*)
+		SCAN_ARGS+=("$1")
+		shift
+		;;
+	*)
+		target_path="$1"
+		if [[ "$target_path" != /* ]]; then
+			target_path="${REPO_ROOT}/${target_path}"
+		fi
+		SCAN_ARGS+=("$target_path")
+		shift
+		;;
+	esac
+done
+
+cd "$RULESET_DIR"
+if ! uv sync --project "${REPO_ROOT}/tools/semgrep" --locked; then
+	scan_prerequisite_failure "unable to prepare the pinned Semgrep environment"
+fi
+
+uv run --project "${REPO_ROOT}/tools/semgrep" --no-sync semgrep scan \
+	"${RULE_CONFIG_ARGS[@]}" \
+	--metrics=off \
+	--disable-version-check \
+	-j 1 \
+	--timeout 15 \
+	--strict \
+	--error \
+	"${SCAN_ARGS[@]}"

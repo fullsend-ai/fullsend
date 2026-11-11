@@ -46,7 +46,7 @@ needed only for Vertex agents.
 ### Creating a manifest from scratch
 
 `repos.yaml` is the single source of persistent, non-secret install
-settings and of the repositories Fullsend manages. Create it and declare
+settings and of the repositories fullsend manages. Create it and declare
 repositories with [`repos set`](#editing-the-manifest-from-the-command-line),
 or write the YAML by hand:
 
@@ -156,7 +156,7 @@ Identity Federation, GitHub only). There is no implicit default. A
 repo with no selection is reported as a configuration error by
 `repos install` and `repos status`, before any forge change is made for
 that repo. Uninstall does not need the setting: it removes every
-Fullsend-managed inference credential whether `inference.auth` is set,
+fullsend-managed inference credential whether `inference.auth` is set,
 valid, or missing.
 
 The selection can be set under `defaults`, in each forge section, and on
@@ -195,7 +195,7 @@ provisions only the credentials of each repo's selected method; see
 [Inference credentials](../../cli/repos.md#inference-credentials) and
 [Effective infrastructure values](../../cli/repos.md#effective-infrastructure-values).
 
-`openai-wif` needs no Fullsend-managed secret. Instead, each repo needs a
+`openai-wif` needs no fullsend-managed secret. Instead, each repo needs a
 complete set of OpenAI WIF identifiers: the `FULLSEND_OPENAI_*` repository
 variables, or `inference.openai` in its layered `.fullsend/config.yaml`
 (see [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md#4-tell-fullsend-the-three-identifiers)).
@@ -271,7 +271,7 @@ preset resolves for a repository (none is declared, or `source: none`
 disables inheritance), the desired state is no
 `.fullsend/config.base.yaml`. An existing base file is then drift, not
 an unmanaged file to keep: `repos status` reports it for every manifest
-repository (including one with no Fullsend components yet), and fresh and
+repository (including one with no fullsend components yet), and fresh and
 repeat installs, including `--dry-run`, stop for that repository before
 any writes. A zero-byte base file counts as existing. To resolve it,
 declare a `config_base` source (and optional `sha256`) that matches the
@@ -288,7 +288,7 @@ installed base) with the proposed one (proposed overlay over the declared
 preset). If the replacement would implicitly relax a restriction the
 overlay does not declare — `kill_switch`, `roles`,
 `allowed_remote_resources`, agent suppressions,
-`create_issues.allow_targets`, `inference.gateway.url`, or
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`, or
 `inference.gateway.audience` — that repository fails before any write and
 the output names the keys. Changing a preset source alone is not an
 explicit declaration of a less-restrictive setting.
@@ -349,10 +349,10 @@ with only the ownership marker. An existing overlay without the marker
 blocks that repository's install (adoption required) even when the
 repository has no `config` key; the other selected repositories still
 converge. On a first install with no `config_base` preset and no
-explicit `create_issues` declaration, install records
-`config.create_issues.allow_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]` in the
+explicit `tracker` declaration, install records
+`config.tracker.github.allowed_targets.repos: [fullsend-ai/fullsend, fullsend-ai/agents]` in the
 GitHub repository's manifest entry before rendering the overlay. For GitLab, it
-records `config.create_issues.allow_targets: {}` instead: additional project
+records `config.tracker.gitlab.allowed_targets: {}` instead: additional project
 targets must be configured explicitly for the GitLab host. If the manifest is an
 HTTPS URL or read-only, install fails with the exact edit to make.
 Resolution is code defaults, then `config_base`, then `defaults.config`,
@@ -455,7 +455,7 @@ drift, and convergence rewrites the file deterministically — unless the
 candidate would become less restrictive than the current effective
 configuration without an explicit manifest declaration. That pre-write
 safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
-agent `enabled: false` suppressions, `create_issues.allow_targets`,
+agent `enabled: false` suppressions, `tracker.<provider>.allowed_targets`,
 `inference.gateway.url`, and `inference.gateway.audience` through the full
 overlay → base → code-defaults accessor chain. Omitted
 keys fall through rather than being treated as unset; an explicit empty
@@ -488,7 +488,7 @@ replaced. `.fullsend/config.base.yaml` is managed as described under
 When the manifest is read-only (an HTTPS URL, or a local file without write
 permission), install fails before attempting any manifest write and prints
 the exact entry to add to its source, including for a glob-covered
-repository whose first-install `create_issues` default needs an explicit
+repository whose first-install `tracker` default needs an explicit
 entry. `--dry-run`, live install and `repos status` agree.
 
 ```bash
@@ -722,7 +722,7 @@ errors exist, making it suitable for CI checks.
 
 Inference credentials are checked against each repo's own
 `inference.auth`. A missing credential of the selected method and a
-leftover Fullsend-managed secret of the other method are both reported as
+leftover fullsend-managed secret of the other method are both reported as
 drift, by name only. See
 [`repos status` output](../../cli/repos.md#output).
 
@@ -790,7 +790,7 @@ trigger token, webhook secret, and project webhook are created or repaired
 only once the readiness gates are met, otherwise deferred without changes;
 a trigger token owned above Developer, or whose owner cannot be verified, is
 revoked with its webhook and the fast path stays disabled — install-time
-Maintainer access is never kept as a runtime credential; hooks Fullsend
+Maintainer access is never kept as a runtime credential; hooks fullsend
 does not own are left untouched) — a disabled GitLab schedule is
 reported as drift and reactivated only when `--reactivate-schedules` is
 passed; GitLab pipeline-variable override-role inspection — typed
@@ -868,7 +868,7 @@ See [Managed configuration](#managed-configuration) and the
 
 ### Removing repos
 
-Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches, deletes the Fullsend-owned webhook fast-path project webhook, revokes its managed Poller-owned pipeline trigger token, and deletes the `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables (on the trigger-account route the account's trigger is revoked by the trigger-account removal below, and `FULLSEND_TRIGGER_TOKEN` was already deleted at install); if that cleanup fails, the scaffold is not removed and the manifest entry is kept for retry. After the webhook fast path is removed and before role cleanup, GitLab uninstall removes the trigger-only service account: the published `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN` variable, the trigger token, the protected-branch push entry, the deploy key, the managed polling schedules the account owns (deleted without an installer-owned copy), the service account, and finally the `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger. When a ledger exists, uninstall requires the dedicated trigger-account removal capability, and it keeps the ledger until cleanup succeeds, so a failed uninstall stops, keeps the manifest entry, and a retry resumes. Generic role-variable cleanup never deletes the ledger or the token variable. Before deleting anything, GitLab uninstall reads the `FULLSEND_GITLAB_ROLE_ROTATION` ownership variable and stops if it is unreadable or malformed. It then revokes role project access tokens and deletes verified Fullsend-managed service accounts, leaving administrator-supplied accounts and their credentials in place. The rotation variable is removed last, or kept as an exclusions-only document when it records administrator-supplied service accounts. Pass `--direct` to push file deletions to the default branch:
+Remove a repo from the manifest and tear down its installation. File deletions open a PR by default (variables and secrets are deleted immediately via the API). For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches, deletes the fullsend-owned webhook fast-path project webhook, revokes its managed Poller-owned pipeline trigger token, and deletes the `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables (on the trigger-account route the account's trigger is revoked by the trigger-account removal below, and `FULLSEND_TRIGGER_TOKEN` was already deleted at install); if that cleanup fails, the scaffold is not removed and the manifest entry is kept for retry. After the webhook fast path is removed and before role cleanup, GitLab uninstall removes the trigger-only service account: the published `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN` variable, the trigger token, the protected-branch push entry, the deploy key, the managed polling schedules the account owns (deleted without an installer-owned copy), the service account, and finally the `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger. When a ledger exists, uninstall requires the dedicated trigger-account removal capability, and it keeps the ledger until cleanup succeeds, so a failed uninstall stops, keeps the manifest entry, and a retry resumes. Generic role-variable cleanup never deletes the ledger or the token variable. Before deleting anything, GitLab uninstall reads the `FULLSEND_GITLAB_ROLE_ROTATION` ownership variable and stops if it is unreadable or malformed. It then revokes role project access tokens and deletes verified fullsend-managed service accounts, leaving administrator-supplied accounts and their credentials in place. The rotation variable is removed last, or kept as an exclusions-only document when it records administrator-supplied service accounts. Pass `--direct` to push file deletions to the default branch:
 
 ```bash
 fullsend repos uninstall acme/old-api

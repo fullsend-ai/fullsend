@@ -541,6 +541,58 @@ func TestListTriggeredHarnesses_LoadFailureAnnotation(t *testing.T) {
 	assert.Contains(t, annotation, "load failed")
 }
 
+// A registered harness declaring an unsupported schema_version must surface
+// the parse funnel's version rejection through enumeration (ADR 0127
+// Decision 1). The enumerate path loads registered harnesses via
+// LoadWithBase, whose child load runs parseRaw → validateSchemaVersion, so
+// the rejection arrives as an ordinary load failure: the agent is skipped
+// with a ::error:: annotation and, because it is the only registered agent,
+// enumeration returns the aggregated error rather than an empty result.
+func TestListTriggeredHarnesses_UnsupportedSchemaVersion(t *testing.T) {
+	buf := captureAnnotations(t)
+
+	dir := t.TempDir()
+	harnessDir := filepath.Join(dir, "harness")
+	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+	// Otherwise-valid harness whose only defect is the too-new version
+	// declaration, so the failure can only come from the version check.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(harnessDir, "future.yaml"),
+		[]byte(`agent: agents/triage.md
+role: triage
+slug: future-schema
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+trigger: event.entity.kind == "work_item"
+schema_version: 2
+`), 0o644))
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	cfg.SetAgents([]config.AgentEntry{
+		{Name: "future", Source: "harness/future.yaml"},
+	})
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
+	require.Error(t, err)
+	assert.Empty(t, out)
+	assert.Contains(t, err.Error(), "no agents could be loaded")
+	assert.Contains(t, err.Error(), "future")
+	assert.Contains(t, err.Error(), "load failed")
+	// The version rejection itself, carried through the parse funnel.
+	assert.Contains(t, err.Error(), "parsing harness YAML")
+	assert.Contains(t, err.Error(), "schema_version 2 is not supported by this version of fullsend")
+
+	annotation := buf.String()
+	assert.Contains(t, annotation, "::error::")
+	assert.Contains(t, annotation, "future")
+	assert.Contains(t, annotation, "schema_version 2 is not supported by this version of fullsend")
+}
+
 func TestMatchHarnesses_TriggerEvalFailureAnnotation(t *testing.T) {
 	buf := captureAnnotations(t)
 

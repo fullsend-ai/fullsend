@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -73,6 +74,53 @@ func TestExtractFullsendFromTarGz_PathTraversal(t *testing.T) {
 	err = ExtractFullsendFromTarGz(&buf, destPath)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found in archive")
+}
+
+func TestExtractFullsendFromTarGz_InvalidGzip(t *testing.T) {
+	err := ExtractFullsendFromTarGz(bytes.NewReader([]byte("not gzip")), filepath.Join(t.TempDir(), "fullsend"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gzip reader")
+}
+
+func TestExtractFullsendFromTarGz_CreatingDestinationFails(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	content := []byte("valid binary content")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend",
+		Size:     int64(len(content)),
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gw.Close())
+
+	err = ExtractFullsendFromTarGz(&buf, t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating")
+}
+
+func TestExtractFullsendFromTarGz_TruncatedBinary(t *testing.T) {
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend",
+		Size:     100,
+		Mode:     0o755,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write([]byte("short"))
+	require.NoError(t, err)
+	_ = tw.Close() // The deliberately incomplete entry makes this return an error.
+	require.NoError(t, gw.Close())
+
+	err = ExtractFullsendFromTarGz(&buf, filepath.Join(t.TempDir(), "fullsend"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extracting fullsend")
 }
 
 func TestExtractFullsendFromTarGz_ValidEntry(t *testing.T) {
@@ -615,7 +663,17 @@ func TestExtractSourceTreeExtractsSmallFile(t *testing.T) {
 
 	content := []byte("hello")
 	require.NoError(t, tw.WriteHeader(&tar.Header{
-		Name:     "fullsend-repo/README.md",
+		Name:     "fullsend-repo/nested/",
+		Typeflag: tar.TypeDir,
+		Mode:     0o755,
+	}))
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend-repo/..unsafe",
+		Typeflag: tar.TypeReg,
+		Mode:     0o644,
+	}))
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend-repo/nested/README.md",
 		Typeflag: tar.TypeReg,
 		Size:     int64(len(content)),
 		Mode:     0o644,
@@ -628,9 +686,39 @@ func TestExtractSourceTreeExtractsSmallFile(t *testing.T) {
 	dest := t.TempDir()
 	require.NoError(t, extractSourceTree(bytes.NewReader(buf.Bytes()), dest))
 
-	data, err := os.ReadFile(filepath.Join(dest, "README.md"))
+	data, err := os.ReadFile(filepath.Join(dest, "nested", "README.md"))
 	require.NoError(t, err)
 	assert.Equal(t, content, data)
+}
+
+func TestExtractSourceTree_InvalidGzip(t *testing.T) {
+	err := extractSourceTree(bytes.NewReader([]byte("not gzip")), filepath.Join(t.TempDir(), "source"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gzip reader")
+}
+
+func TestExtractSourceTreeRejectsTruncatedEntry(t *testing.T) {
+	origMax := maxDownloadSize
+	maxDownloadSize = 64
+	t.Cleanup(func() { maxDownloadSize = origMax })
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend-repo/truncated.bin",
+		Size:     100,
+		Mode:     0o644,
+		Typeflag: tar.TypeReg,
+	}))
+	_, err := tw.Write([]byte("short"))
+	require.NoError(t, err)
+	_ = tw.Close() // The deliberately incomplete entry makes this return an error.
+	require.NoError(t, gz.Close())
+
+	err = extractSourceTree(bytes.NewReader(buf.Bytes()), filepath.Join(t.TempDir(), "source"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "extracting truncated.bin")
 }
 
 func TestCopyDirContentsPreservesMode(t *testing.T) {
@@ -740,3 +828,63 @@ func TestFetchSourceTree_HTTPError(t *testing.T) {
 
 // Ensure io is used in download tests.
 var _ = io.Discard
+
+func TestFetchReleaseFile_EnforcesMaxSize(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Write([]byte("0123456789"))
+	}))
+	defer srv.Close()
+	origURL := ReleaseBaseURL
+	ReleaseBaseURL = srv.URL
+	defer func() { ReleaseBaseURL = origURL }()
+
+	got, err := FetchReleaseFile(context.Background(), "v1.0.0", "asset", 10)
+	require.NoError(t, err)
+	assert.Equal(t, "0123456789", string(got))
+	_, err = FetchReleaseFile(context.Background(), "1.0.0", "asset", 9)
+	require.ErrorContains(t, err, "exceeds maximum size")
+	assert.Equal(t, int32(2), calls.Load(), "handler was not called for each fetch")
+}
+
+func TestFetchReleaseFile_NotFound(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	origURL := ReleaseBaseURL
+	ReleaseBaseURL = srv.URL
+	defer func() { ReleaseBaseURL = origURL }()
+
+	_, err := FetchReleaseFile(context.Background(), "v9.9.9", "asset", 10)
+	require.ErrorIs(t, err, ErrReleaseFileNotFound)
+	assert.Equal(t, int32(1), calls.Load(), "handler was not called")
+}
+
+func TestFetchReleaseFile_StopsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		cancel()
+		<-r.Context().Done() // Stall until the client gives up.
+	}))
+	defer srv.Close()
+	origURL := ReleaseBaseURL
+	ReleaseBaseURL = srv.URL
+	defer func() { ReleaseBaseURL = origURL }()
+
+	_, err := FetchReleaseFile(ctx, "v1.0.0", "asset", 10)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, int32(1), calls.Load(), "handler was not called")
+}
+
+func TestResolveLatestReleaseTag_StopsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := ResolveLatestReleaseTag(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+}

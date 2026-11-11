@@ -394,6 +394,7 @@ func TestRunAgent_PerRepoConfig(t *testing.T) {
 }
 
 func TestTryLoadFullsendConfig_PerRepoFallback(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(
@@ -479,6 +480,7 @@ func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
 }
 
 func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(
@@ -2470,6 +2472,107 @@ func TestSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
 	assert.Equal(t, "/prefix//suffix", safeExpandEnv("/prefix/${FULLSEND_GCP_OIDC_AUTH_FILE}/suffix"))
 }
 
+// TestSandboxDeniedKeys_JiraSecrets verifies that the Jira repository secrets
+// stay declarable in env.runner but expand empty at sandbox-bound sites:
+// env.sandbox values and expanded host_files content (#9079).
+func TestSandboxDeniedKeys_JiraSecrets(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "process-jira-client-id")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "process-jira-client-secret")
+
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		value := os.Getenv(key)
+		assert.True(t, sandboxDeniedKeys[key], key)
+
+		// env.runner may still declare it.
+		assert.Equal(t, value, harnessEnvExpand(key), "env.runner must still resolve %s", key)
+		got, ok := harnessEnvLookup(key)
+		assert.True(t, ok)
+		assert.Equal(t, value, got)
+
+		// Sandbox-bound sites refuse it.
+		assert.Equal(t, "x--y", expandSandboxEnvValue("x-${"+key+"}-y", harnessEnvExpand))
+		assert.NotContains(t, shellSafeExpandEnv("export V=\"${"+key+"}\""), value)
+	}
+
+	t.Setenv("OTHER_VAR", "kept")
+	assert.Equal(t, "kept", expandSandboxEnvValue("${OTHER_VAR}", harnessEnvExpand))
+}
+
+// TestExpandRunnerEntry_OutputFileRefusesJiraSecrets verifies that
+// FULLSEND_OUTPUT_FILE, the runner entry exported verbatim into the sandbox,
+// cannot carry the Jira repository secrets from runner_env or env.runner,
+// while other runner entries still resolve them (#9079).
+func TestExpandRunnerEntry_OutputFileRefusesJiraSecrets(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		value := os.Getenv(key)
+		got := expandRunnerEntry("FULLSEND_OUTPUT_FILE", "x-${"+key+"}-y", harnessEnvExpand)
+		assert.Equal(t, "x--y", got)
+		assert.NotContains(t, got, value)
+		assert.Equal(t, value, expandRunnerEntry("SOME_SCRIPT_VAR", "${"+key+"}", harnessEnvExpand),
+			"other runner entries must still resolve %s", key)
+	}
+}
+
+// TestValidateThenExpand_SandboxJiraRefsWithTokenUnset runs validation
+// followed by expansion with the Jira secrets unset (the action unsets
+// FULLSEND_JIRA_TOKEN on non-Jira runs). Sandbox-bound references must
+// resolve empty without a validation error, while an env.runner reference
+// to the unset token still fails (#9079).
+func TestValidateThenExpand_SandboxJiraRefsWithTokenUnset(t *testing.T) {
+	// t.Setenv registers the restore of the original values; unset after it.
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		t.Setenv(key, "")
+		require.NoError(t, os.Unsetenv(key))
+	}
+
+	sandboxLookup := func(key string) (string, bool) {
+		if sandboxDeniedKeys[key] {
+			return "", true
+		}
+		return harnessEnvLookup(key)
+	}
+	newHarness := func() *harness.Harness {
+		return &harness.Harness{
+			RunnerEnv:      map[string]string{"FULLSEND_OUTPUT_FILE": "out-${FULLSEND_JIRA_TOKEN}.json"},
+			Env:            &harness.EnvConfig{Sandbox: map[string]string{"FOO": "${FULLSEND_JIRA_TOKEN}", "BAR": "${FULLSEND_JIRA_EMAIL}"}},
+			ValidationLoop: &harness.ValidationLoop{Schema: "/schemas/${FULLSEND_JIRA_TOKEN}.json"},
+		}
+	}
+
+	h := newHarness()
+	require.NoError(t, h.ValidateRunnerEnvSites(harnessEnvLookup, sandboxLookup))
+	h.RunnerEnv["FULLSEND_OUTPUT_FILE"] = expandRunnerEntry("FULLSEND_OUTPUT_FILE", h.RunnerEnv["FULLSEND_OUTPUT_FILE"], harnessEnvExpand)
+	for k, v := range h.Env.Sandbox {
+		h.Env.Sandbox[k] = expandSandboxEnvValue(v, harnessEnvExpand)
+	}
+	h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, harnessEnvExpand)
+	assert.Equal(t, "out-.json", h.RunnerEnv["FULLSEND_OUTPUT_FILE"])
+	assert.Equal(t, map[string]string{"FOO": "", "BAR": ""}, h.Env.Sandbox)
+	assert.Equal(t, "/schemas/.json", h.ValidationLoop.Schema)
+
+	// An ordinary env.runner reference keeps the missing-token error.
+	runnerH := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"FULLSEND_JIRA_TOKEN": "${FULLSEND_JIRA_TOKEN}"}}}
+	err := runnerH.ValidateRunnerEnvSites(harnessEnvLookup, sandboxLookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is not set")
+}
+
+// TestValidationLoopSchemaRefusesJiraSecrets verifies that a schema path
+// cannot carry the Jira repository secrets into a file-validation error.
+func TestValidationLoopSchemaRefusesJiraSecrets(t *testing.T) {
+	const token = "process-scoped-jira-token"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+
+	schema := expandSandboxEnvValue("/missing/${FULLSEND_JIRA_TOKEN}.json", harnessEnvExpand)
+	assert.Equal(t, "/missing/.json", schema)
+	assert.NotContains(t, schema, token)
+}
+
 // TestReservedSandboxKeys_IncludesOIDCVars verifies that OIDC credential vars
 // are in reservedSandboxKeys so env.sandbox cannot inject them (#5832).
 func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
@@ -3396,6 +3499,37 @@ func TestRedactFeedback_RedactsWorkflowTokenFromProcessEnv(t *testing.T) {
 	assert.Contains(t, out, "[REDACTED:"+workflowTokenEnv+"]")
 	assert.Contains(t, out, "leaked ")
 	assert.Contains(t, out, " here")
+}
+
+func TestRedactFeedback_RedactsJiraSecretsAliasedToNonSensitiveRunnerKeys(t *testing.T) {
+	const token = "jira-token-opaque-redaction-test"
+	const email = "jira-email-redaction-test@example.invalid"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+	t.Setenv("FULLSEND_JIRA_EMAIL", email)
+
+	runnerEnv := map[string]string{
+		"ACCOUNT_ALIAS": email,
+		"BUILD_LABEL":   token,
+	}
+	assert.False(t, sensitiveEnvKey("ACCOUNT_ALIAS"))
+	assert.False(t, sensitiveEnvKey("BUILD_LABEL"))
+
+	literalOut := redactSecretLiterals("token="+token+" email="+email, runnerEnv)
+	assert.Equal(t, "token=[REDACTED:FULLSEND_JIRA_TOKEN] email=[REDACTED:FULLSEND_JIRA_EMAIL]", literalOut)
+	assert.Contains(t, security.RuntimeSecrets(), token)
+	assert.Contains(t, security.RuntimeSecrets(), email)
+
+	const clientSecret = "jira-client-secret-redaction-test"
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", clientSecret)
+	assert.Equal(t, "secret=[REDACTED:FULLSEND_JIRA_CLIENT_SECRET]",
+		redactSecretLiterals("secret="+clientSecret, map[string]string{"BUILD_LABEL": clientSecret}))
+	assert.Contains(t, security.RuntimeSecrets(), clientSecret)
+
+	out := redactFeedback("token="+token+" email="+email, runnerEnv)
+	assert.NotContains(t, out, token)
+	assert.NotContains(t, out, email)
+	assert.Contains(t, out, "token=")
+	assert.Contains(t, out, " email=")
 }
 
 func TestSensitiveEnvKey(t *testing.T) {
@@ -5858,9 +5992,9 @@ func TestSetupStatusNotifier_Jira(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "")
 
 	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.NoError(t, err)
@@ -5869,7 +6003,7 @@ func TestSetupStatusNotifier_Jira(t *testing.T) {
 	assert.False(t, n.HasClientFactory(), "Jira should use a static client, not a factory")
 }
 
-func TestSetupStatusNotifier_Jira_NoBaseURL(t *testing.T) {
+func TestSetupStatusNotifier_Jira_NoJiraConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
 
@@ -5880,12 +6014,14 @@ func TestSetupStatusNotifier_Jira_NoBaseURL(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	// A config.yaml without tracker.jira connection settings; no
+	// environment fallback supplies them.
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte("version: \"1\"\n"), 0o600))
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
 
 	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_BASE_URL required")
+	assert.Contains(t, err.Error(), "tracker.jira.base_url")
 }
 
 func TestSetupStatusNotifier_Jira_NoToken(t *testing.T) {
@@ -5899,15 +6035,15 @@ func TestSetupStatusNotifier_Jira_NoToken(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "")
 
 	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_TOKEN required")
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is required")
 }
 
-func TestSetupStatusNotifier_Jira_NoEmail(t *testing.T) {
+func TestSetupStatusNotifier_Jira_NoEmailUsesServiceAccount(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
 
@@ -5918,13 +6054,15 @@ func TestSetupStatusNotifier_Jira_NoEmail(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "")
+	// FULLSEND_JIRA_EMAIL is optional: without it the token is a
+	// service-account token sent as a Bearer token.
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "")
 
-	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_USER_EMAIL required")
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
 }
 
 func TestParseJiraKey(t *testing.T) {
@@ -5967,9 +6105,9 @@ func TestSetupStatusNotifier_Jira_UsesGitHubRunID(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "bot@example.com")
 	t.Setenv("GITHUB_RUN_ID", "98765")
 
 	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
@@ -5988,9 +6126,9 @@ func TestSetupStatusNotifier_Jira_FallsBackToSyntheticRunID(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "bot@example.com")
 	t.Setenv("GITHUB_RUN_ID", "") // unset
 
 	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
@@ -7326,6 +7464,107 @@ func TestMintAgentToken_NestedRemintRestoresGitHubTokenPerMint(t *testing.T) {
 	assert.Equal(t, "ghp_caller_gh_token", os.Getenv("GH_TOKEN"), "cleanup restores the pre-mint GH_TOKEN")
 	_, githubSet := os.LookupEnv("GITHUB_TOKEN")
 	assert.False(t, githubSet, "cleanup unsets GITHUB_TOKEN that was unset before the first mint")
+}
+
+// TestMintAgentToken_SwapsEnterpriseTokens covers #8952: gh reads
+// GH_ENTERPRISE_TOKEN/GITHUB_ENTERPRISE_TOKEN instead of GH_TOKEN/GITHUB_TOKEN
+// on hosts other than github.com, so the mint must set them too, and cleanup
+// must restore a pre-set value or unset a name that was unset.
+func TestMintAgentToken_SwapsEnterpriseTokens(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const minted = "ghs_enterprise_minted_token"
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: minted, ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_caller_gh_token")
+	unsetEnvForTest(t, "GITHUB_TOKEN")
+	t.Setenv("GH_ENTERPRISE_TOKEN", "ghp_caller_enterprise_token")
+	unsetEnvForTest(t, "GITHUB_ENTERPRISE_TOKEN")
+
+	printer := ui.New(io.Discard)
+	ok, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		assert.Equal(t, minted, os.Getenv(name), "%s must hold the minted token", name)
+	}
+
+	cleanup()
+	assert.Equal(t, "ghp_caller_gh_token", os.Getenv("GH_TOKEN"), "cleanup restores the pre-mint GH_TOKEN")
+	assert.Equal(t, "ghp_caller_enterprise_token", os.Getenv("GH_ENTERPRISE_TOKEN"), "cleanup restores the pre-mint GH_ENTERPRISE_TOKEN")
+	_, githubSet := os.LookupEnv("GITHUB_TOKEN")
+	assert.False(t, githubSet, "cleanup unsets GITHUB_TOKEN that was unset before the mint")
+	_, enterpriseSet := os.LookupEnv("GITHUB_ENTERPRISE_TOKEN")
+	assert.False(t, enterpriseSet, "cleanup unsets GITHUB_ENTERPRISE_TOKEN that was unset before the mint")
+}
+
+// TestRemintAgentTokenForPostScript_RefreshesEnterpriseTokens covers #8952:
+// after a remint, the enterprise token names hold the refreshed token both
+// in the process env and in a runner_env declaration, so the post-script's
+// gh calls on a GitHub Enterprise Server host use it; the remint's cleanup
+// restores the first mint's token.
+func TestRemintAgentTokenForPostScript_RefreshesEnterpriseTokens(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const callerToken = "ghp_caller_enterprise_token"
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GH_ENTERPRISE_TOKEN", callerToken)
+	t.Setenv("GITHUB_ENTERPRISE_TOKEN", callerToken)
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	ok, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer cleanup()
+
+	declared := &harness.Harness{
+		Role:      "coder",
+		RunnerEnv: map[string]string{"GH_ENTERPRISE_TOKEN": os.Getenv("GH_ENTERPRISE_TOKEN")},
+	}
+	inherited := &harness.Harness{Role: "coder"}
+
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), declared, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+	require.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_refreshed_token", declared.RunnerEnv["GH_ENTERPRISE_TOKEN"], "syncRunnerEnvTokens refreshes a declared GH_ENTERPRISE_TOKEN")
+
+	for name, h := range map[string]*harness.Harness{"declared": declared, "inherited": inherited} {
+		env := postScriptEnv(h, "")
+		for _, key := range []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+			assert.NotContains(t, env, key+"="+callerToken, "%s: the caller's %s must not reach the post-script", name, key)
+			assert.Equal(t, "ghs_refreshed_token", envLast(env, key), "%s: post-script %s is the freshly minted token", name, key)
+		}
+	}
+
+	remintCleanup()
+	assert.Equal(t, "ghs_original_token", os.Getenv("GH_ENTERPRISE_TOKEN"), "remintCleanup restores the first mint's GH_ENTERPRISE_TOKEN")
+	assert.Equal(t, "ghs_original_token", os.Getenv("GITHUB_ENTERPRISE_TOKEN"), "remintCleanup restores the first mint's GITHUB_ENTERPRISE_TOKEN")
+
+	cleanup()
+	assert.Equal(t, callerToken, os.Getenv("GH_ENTERPRISE_TOKEN"), "cleanup restores the pre-mint GH_ENTERPRISE_TOKEN")
+	assert.Equal(t, callerToken, os.Getenv("GITHUB_ENTERPRISE_TOKEN"), "cleanup restores the pre-mint GITHUB_ENTERPRISE_TOKEN")
 }
 
 // TestMintAgentToken_PreservesWorkflowTokenFromGitHubToken covers #8530: on

@@ -3,6 +3,7 @@ package scaffold
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -83,7 +84,7 @@ func TestRunPollJobScript_RejectsInvalidPollMode(t *testing.T) {
 	}, pinTLSEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "stdout/stderr: %s", out)
-	assert.Contains(t, string(out), "FULLSEND_POLL_MODE must be 'slash' or 'events'")
+	assert.Contains(t, string(out), "FULLSEND_POLL_MODE must be 'slash', 'events' or 'jira'")
 }
 
 func TestRunPollJobScript_DebugTraceAborts(t *testing.T) {
@@ -182,7 +183,7 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	}
 	writeStub("fullsend", "echo POLL_RAN\necho POLL_ANALYST_USER_ID=\"${FULLSEND_GITLAB_ANALYST_USER_ID-unset}\"\nexit 0\n")
 
-	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo ACCOUNT_TRIGGER="${FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"`)
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo CODER="${FULLSEND_GITLAB_CODER_TOKEN-unset}"; echo SHARED="${FULLSEND_FORGE_TOKEN-unset}"; echo JOB="${FULLSEND_JOB_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo ACCOUNT_TRIGGER="${FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"; echo JIRA_TOKEN="${FULLSEND_JIRA_TOKEN-unset}"; echo JIRA_EMAIL="${FULLSEND_JIRA_EMAIL-unset}"; echo JIRA_CLIENT_ID="${FULLSEND_JIRA_CLIENT_ID-unset}"; echo JIRA_CLIENT_SECRET="${FULLSEND_JIRA_CLIENT_SECRET-unset}"`)
 	cmd.Env = append([]string{
 		"SCRIPT=" + script,
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
@@ -197,6 +198,10 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 		"FULLSEND_TRIGGER_TOKEN=trigger-bearer",
 		"FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN=account-bearer",
 		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
+		"FULLSEND_JIRA_TOKEN=jira-api-token",
+		"FULLSEND_JIRA_EMAIL=jira@example.com",
+		"FULLSEND_JIRA_CLIENT_ID=jira-client-id",
+		"FULLSEND_JIRA_CLIENT_SECRET=jira-client-secret",
 		"FULLSEND_POLL_MODE=events",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=group/project",
@@ -218,6 +223,80 @@ func TestRunPollJobScript_BlanksSiblingSecretsBeforePoll(t *testing.T) {
 	assert.Contains(t, got, "TRIGGER=unset", "the webhook trigger bearer must not outlive the job preamble")
 	assert.Contains(t, got, "ACCOUNT_TRIGGER=unset", "the account trigger bearer must not outlive the job preamble")
 	assert.Contains(t, got, "WEBHOOK_SECRET=unset", "the webhook secret must not outlive the job preamble")
+	assert.Contains(t, got, "JIRA_TOKEN=unset", "the Jira token must not reach the slash/events poller")
+	assert.Contains(t, got, "JIRA_EMAIL=unset", "the Jira email must not reach the slash/events poller")
+	assert.Contains(t, got, "JIRA_CLIENT_ID=unset", "the Jira OAuth client ID must not reach the slash/events poller")
+	assert.Contains(t, got, "JIRA_CLIENT_SECRET=unset", "the Jira OAuth client secret must not reach the slash/events poller")
+	assert.NotContains(t, got, "jira-api-token")
+	assert.NotContains(t, got, "jira-client-secret")
+}
+
+// TestRunPollJobScript_JiraModeRunsJiraPoller covers the Jira poll mode the
+// job rules select for the "fullsend jira poll" schedule (#9108): the Jira
+// credentials reach `fullsend poll --input-driver jira-poll` alone, with no
+// Jira site, project or query argument, while every other credential is
+// still blanked.
+func TestRunPollJobScript_JiraModeRunsJiraPoller(t *testing.T) {
+	root := t.TempDir()
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
+	writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
+	writeGitLabScript(t, root, ".gitlab/ci/scripts/select-gitlab-role-token.sh")
+	script := writeGitLabScript(t, root, gitlabRunPollJobScriptPath)
+
+	st := &pinAPIState{
+		jobJSON:      pinJobJSON("42", "100", "main"),
+		projectJSON:  `{"id":42,"default_branch":"main","path_with_namespace":"group/project"}`,
+		branchJSON:   `{"name":"main","protected":true}`,
+		pipelineJSON: `{"id":100,"source":"schedule"}`,
+		userIDByPAT:  map[string]int{"poll-pat": 10, "analyst-pat": 55},
+	}
+	srv := startPinAPI(t, st)
+	t.Cleanup(srv.Close)
+
+	bin := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte("#!/bin/sh\n"+
+		"echo POLL_ARGS=\"$*\"\n"+
+		"echo POLL_JIRA_TOKEN=\"${FULLSEND_JIRA_TOKEN-unset}\"\n"+
+		"echo POLL_JIRA_EMAIL=\"${FULLSEND_JIRA_EMAIL-unset}\"\n"+
+		"echo POLL_JIRA_CLIENT_ID=\"${FULLSEND_JIRA_CLIENT_ID-unset}\"\n"+
+		"echo POLL_JIRA_CLIENT_SECRET=\"${FULLSEND_JIRA_CLIENT_SECRET-unset}\"\n"+
+		"echo POLL_REF=\"${CI_COMMIT_REF_NAME-unset}\"\n"+
+		"exit 0\n"), 0o755))
+
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"; echo ANALYST="${FULLSEND_GITLAB_ANALYST_TOKEN-unset}"; echo TRIGGER="${FULLSEND_TRIGGER_TOKEN-unset}"; echo WEBHOOK_SECRET="${FULLSEND_WEBHOOK_SECRET-unset}"`)
+	cmd.Env = append([]string{
+		"SCRIPT=" + script,
+		"PATH=" + bin + ":" + os.Getenv("PATH"),
+		"HOME=" + t.TempDir(),
+		"CI_PROJECT_DIR=" + root,
+		"RUNNER_TEMP=" + t.TempDir(),
+		"CI_JOB_TOKEN=job-token",
+		"FULLSEND_GITLAB_POLLER_TOKEN=poll-pat",
+		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
+		"FULLSEND_TRIGGER_TOKEN=trigger-bearer",
+		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
+		"FULLSEND_JIRA_TOKEN=jira-api-token",
+		"FULLSEND_JIRA_EMAIL=jira@example.com",
+		"FULLSEND_JIRA_CLIENT_ID=jira-client-id",
+		"FULLSEND_JIRA_CLIENT_SECRET=jira-client-secret",
+		"FULLSEND_POLL_MODE=jira",
+		"CI_PROJECT_ID=1",
+		"CI_PROJECT_PATH=group/project",
+		"CI_SERVER_URL=https://gitlab.example",
+	}, pinTLSEnv(t, srv)...)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	got := string(out)
+	assert.Contains(t, got, "POLL_ARGS=poll --input-driver jira-poll --target-forge gitlab --project group/project --gitlab-url "+srv.URL+" --fullsend-dir .fullsend\n")
+	assert.NotContains(t, got, "--mode", "the slash/events poller does not run in Jira mode")
+	assert.Contains(t, got, "POLL_JIRA_TOKEN=jira-api-token", "the Jira poller receives the Jira token")
+	assert.Contains(t, got, "POLL_JIRA_EMAIL=jira@example.com", "the Jira poller receives the optional Jira email")
+	assert.Contains(t, got, "POLL_JIRA_CLIENT_ID=jira-client-id", "the Jira poller receives the OAuth client ID")
+	assert.Contains(t, got, "POLL_JIRA_CLIENT_SECRET=jira-client-secret", "the Jira poller receives the OAuth client secret")
+	assert.Contains(t, got, "POLL_REF=main", "the Jira poller dispatches to the pinned ref")
+	assert.Contains(t, got, "ANALYST=unset")
+	assert.Contains(t, got, "TRIGGER=unset")
+	assert.Contains(t, got, "WEBHOOK_SECRET=unset")
 }
 
 // TestRunPollJobScript_AnalystUserIDLookupFailureIsNonFatal covers the
@@ -1061,8 +1140,95 @@ func TestRunAgentJobScript_MapsOnlyPrefixedOpenAIKey(t *testing.T) {
 	}
 }
 
-// runAgentJobScriptForFullsendRun runs run-agent-job.sh for the triage
-// stage against a fake GitLab API, with a stub `fullsend` binary that
+func TestRunAgentJobScript_MRLifecycleActorAuthorization(t *testing.T) {
+	tests := []struct {
+		name        string
+		eventType   string
+		payload     string
+		payloadB64  string
+		omitPayload bool
+		stage       string
+		actorID     string
+		mrAuthorID  string
+		wantRun     bool
+	}{
+		{
+			name:      "closed MR without closed_by",
+			eventType: "mr_event",
+			payload:   `{"type":"mr_event","action":"closed"}`,
+		},
+		{
+			// Poll-discovered merge payloads carry mr_author_id but no action.
+			name:      "merged MR without merger identity",
+			eventType: "mr_event",
+			payload:   `{"type":"mr_event","iid":11,"mr_author_id":42}`,
+		},
+		{
+			name:       "unreadable payload",
+			eventType:  "mr_event",
+			payloadB64: "%%%",
+		},
+		{
+			name:        "missing payload",
+			eventType:   "mr_event",
+			omitPayload: true,
+		},
+		{
+			name:        "MR note without commenter identity",
+			eventType:   "mr_note",
+			omitPayload: true,
+		},
+		{
+			name:       "opened MR uses Developer author fallback for review",
+			eventType:  "mr_event",
+			payload:    `{"type":"mr_event","action":"opened"}`,
+			stage:      "review",
+			mrAuthorID: "5",
+			wantRun:    true,
+		},
+		{
+			name:      "Developer can start retro for a closed MR",
+			eventType: "mr_event",
+			payload:   `{"type":"mr_event","action":"closed"}`,
+			stage:     "retro",
+			actorID:   "5",
+			wantRun:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload := tt.payloadB64
+			if payload == "" && !tt.omitPayload {
+				payload = base64.StdEncoding.EncodeToString([]byte(tt.payload))
+			}
+			stage := tt.stage
+			if stage == "" {
+				stage = "retro"
+			}
+			mrAuthorID := tt.mrAuthorID
+			if mrAuthorID == "" {
+				mrAuthorID = "42"
+			}
+			got, srvURL := runAgentJobScriptForFullsendRun(t, []string{
+				"STAGE=" + stage,
+				"EVENT_TYPE=" + tt.eventType,
+				"EVENT_PAYLOAD_B64=" + payload,
+				"ACTOR_ID=" + tt.actorID,
+				"MR_AUTHOR_ID=" + mrAuthorID,
+			})
+			if tt.wantRun {
+				assert.Contains(t, got, "FULLSEND_GITLAB_URL: "+srvURL)
+				assert.NotContains(t, got, "No actor identity available — skipping stage")
+			} else {
+				assert.Contains(t, got, "No actor identity available — skipping stage")
+				assert.NotContains(t, got, "FULLSEND_GITLAB_URL:", "MR lifecycle authorization must not run as the MR author")
+			}
+		})
+	}
+}
+
+// runAgentJobScriptForFullsendRun runs run-agent-job.sh against a fake
+// GitLab API, with a stub `fullsend` binary that
 // prints the FULLSEND_GITLAB_URL and OPENAI_API_KEY it receives. extraEnv
 // is appended to the job environment. It returns the combined output and
 // the fake API's URL.
@@ -1116,7 +1282,34 @@ fi
 `), 0o755))
 
 	const secret = "test-hmac-secret"
-	hmacHex := computeDispatchHMAC(secret, "5", "", "", "", "", "", "", "", "test-key", "triage", "")
+	dispatchEnv := map[string]string{
+		"ACTOR_ID":              "5",
+		"EVENT_PAYLOAD_B64":     "",
+		"EVENT_TYPE":            "",
+		"FULLSEND_POLL_JOB_URL": "",
+		"IS_FORK":               "",
+		"MR_AUTHOR_ID":          "",
+		"ORIGINATING_URL":       "",
+		"REPO_FULL_NAME":        "",
+		"RESOURCE_KEY":          "test-key",
+		"STAGE":                 "triage",
+		"STATUS_IID":            "",
+	}
+	for _, item := range extraEnv {
+		key, value, ok := strings.Cut(item, "=")
+		if ok {
+			if _, signed := dispatchEnv[key]; signed {
+				dispatchEnv[key] = value
+			}
+		}
+	}
+	hmacHex := computeDispatchHMAC(secret,
+		dispatchEnv["ACTOR_ID"], dispatchEnv["EVENT_PAYLOAD_B64"], dispatchEnv["EVENT_TYPE"],
+		dispatchEnv["FULLSEND_POLL_JOB_URL"], dispatchEnv["IS_FORK"], dispatchEnv["MR_AUTHOR_ID"],
+		dispatchEnv["ORIGINATING_URL"], dispatchEnv["REPO_FULL_NAME"], dispatchEnv["RESOURCE_KEY"],
+		dispatchEnv["STAGE"], dispatchEnv["STATUS_IID"],
+	)
+	dispatchEnv["FULLSEND_DISPATCH_HMAC"] = hmacHex
 
 	setupPinnedConfigOrigin(t, root)
 
@@ -1131,16 +1324,23 @@ fi
 		"CI_JOB_TOKEN=job-token",
 		"FULLSEND_GITLAB_POLLER_TOKEN=poller-pat",
 		"FULLSEND_GITLAB_ANALYST_TOKEN=analyst-pat",
-		"STAGE=triage",
-		"RESOURCE_KEY=test-key",
-		"ACTOR_ID=5",
 		"FULLSEND_DISPATCH_SECRET=" + secret,
-		"FULLSEND_DISPATCH_HMAC=" + hmacHex,
 		"CI_PIPELINE_URL=https://gitlab.example/pinned/project/-/pipelines/999",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=pinned/project",
 	}
-	env = append(env, extraEnv...)
+	for key, value := range dispatchEnv {
+		env = append(env, key+"="+value)
+	}
+	for _, item := range extraEnv {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok {
+			continue
+		}
+		if _, signed := dispatchEnv[key]; !signed {
+			env = append(env, item)
+		}
+	}
 	cmd.Env = append(env, pinTLSEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)

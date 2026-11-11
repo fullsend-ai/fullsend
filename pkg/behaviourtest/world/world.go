@@ -228,6 +228,11 @@ type World struct {
 	// CleanupScenario deletes it before the leased repo is deallocated.
 	GatewayAPIKeySecretSet bool
 
+	// RunnerSecretsSecretSet records that this scenario set the enrolled
+	// repo's FULLSEND_GITHUB_RUNNER_SECRETS secret (ADR 0136).
+	// CleanupScenario deletes it before the leased repo is deallocated.
+	RunnerSecretsSecretSet bool
+
 	// OwnersAuthActivated records whether this scenario committed an
 	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
 	// CleanupScenario removes both.
@@ -237,6 +242,19 @@ type World struct {
 	JiraMockServer *httptest.Server
 	JiraMockState  *jiramock.State
 	JiraConfigDir  string // temp dir holding .fullsend/ layout for the poller
+
+	// JiraPollerLog is the standard-logger output captured during the last
+	// "the Jira poller runs" step. The poller reports validation skips
+	// there, not in the dispatch output, so a Then step can tell a
+	// validation skip from any other reason an event produced no dispatch.
+	JiraPollerLog string
+
+	// JiraPollCLIOutput and JiraPollCLIExitCode record the last
+	// `fullsend poll --input-driver jira-poll` run by the Jira poll CLI step;
+	// JiraPollCLIOutputPath is the --output path that run was given.
+	JiraPollCLIOutput     string
+	JiraPollCLIExitCode   int
+	JiraPollCLIOutputPath string
 
 	// PlaybackEntries accumulates the ordered list of canned-result
 	// directories a playback scenario will serve, built up by "a <agent>
@@ -479,6 +497,12 @@ type MintProbeResult struct {
 	RepositorySelection string            `json:"repository_selection,omitempty"`
 	GrantedRepos        []string          `json:"granted_repos,omitempty"`
 	GrantedPermissions  map[string]string `json:"granted_permissions,omitempty"`
+
+	// TokenHSTS and HealthHSTS are the Strict-Transport-Security values
+	// of the mint's /v1/token and /health responses, empty when the
+	// header or the response is missing.
+	TokenHSTS  string `json:"hsts_token,omitempty"`
+	HealthHSTS string `json:"hsts_health,omitempty"`
 }
 
 // Clone creates a shallow copy of w. Drivers and shared state (SCM,

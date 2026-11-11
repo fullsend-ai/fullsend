@@ -63,6 +63,10 @@ fullsend
 │   │   ├── --vertex-project <id>            #   GCP project ID for Vertex inference (else declared inference.project; never in repos.yaml)
 │   │   ├── --vertex-wif-provider <path>     #   Full WIF provider resource name (else declared inference.wif_provider; skips per-repo derivation)
 │   │   ├── --openai-api-key <key>           #   FULLSEND_OPENAI_API_KEY for openai-api-key repos (CLI-only; never in repos.yaml)
+│   │   ├── --jira-token <token>             #   FULLSEND_JIRA_TOKEN when no OAuth client credentials are configured (CLI-only; never in repos.yaml)
+│   │   ├── --jira-email <email>             #   FULLSEND_JIRA_EMAIL for repos whose tracker.jira.poll.enabled is true (optional; CLI-only)
+│   │   ├── --jira-client-id <id>            #   FULLSEND_JIRA_CLIENT_ID instead of --jira-token (CLI-only)
+│   │   ├── --jira-client-secret <secret>    #   FULLSEND_JIRA_CLIENT_SECRET instead of --jira-token (CLI-only; never logged)
 │   │   ├── --fullsend-binary <path>         #   Pre-built binary to vendor (requires a selected repo with vendor: true)
 │   │   ├── --fullsend-source <path>         #   Source checkout to vendor from (requires a selected repo with vendor: true)
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
@@ -142,6 +146,9 @@ fullsend
 │   ├── output                               # Scan agent output for leaked secrets
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
+├── self-update                              # Replace the local binary with a verified release
+│   ├── --version <tag>                      #   Release to install (default: latest)
+│   └── --dry-run                            #   Report the update without downloading
 ├── issues                                   # Read and write issue content across trackers
 │   ├── get                                  #   Read issue content (title, type, body, comments, labels, Jira custom fields)
 │   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
@@ -442,6 +449,14 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
+`fullsend self-update` (`internal/selfupdate`) uses the release helpers in
+`internal/binary` (`ResolveLatestReleaseTag`, `FetchReleaseFile`,
+`ChecksumForAsset`, `ExtractFullsendFromTarGz`) for the current OS and
+architecture. Before it trusts `checksums.txt`, it verifies
+`checksums.txt.sigstore.json` with sigstore-go against the identity of the
+release workflow for the exact tag. See
+[`fullsend self-update`](../../cli/self-update.md#signature-verification).
+
 Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `.fullsend/bin/fullsend` when `--vendor` is not set. `repos install` removes them for GitHub repositories whose `repos.yaml` settings resolve `vendor: false`. The read-only plan comes from `scaffold.FindStaleVendoredAssets` and `internal/repos/stale_vendored.go`, and install, dry run and `repos status` all use it. The deletions and any caller rewrites go into the scaffold commit. Ownership comes from the embedded `.defaults/` layout plus the explicit historical lists in `internal/scaffold/vendorhistory.go`, never from the manifest alone. On an established install with stale assets, `convergeEstablishedPhases` completes this planning before any variable or secret write and reuses the plan for the scaffold commit.
 
 ---
@@ -660,6 +675,12 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+The `bootstrapEnv()` writes and the `iteration.env` names in this diagram are
+the runner's exports. The full, machine-checkable inventory — what every
+sandbox receives, per gate and per runtime, and what arrives only through
+harness configuration — is the generated [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md).
 
 ### Sandbox Constants
 

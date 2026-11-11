@@ -29,6 +29,25 @@ func TestSearchReturnsAddedIssues(t *testing.T) {
 	assert.Len(t, issues, 2)
 }
 
+// An issue without labels is served with "labels": [], as Jira serves it,
+// not null.
+func TestIssueWithoutLabelsHasEmptyList(t *testing.T) {
+	t.Parallel()
+	srv, state := NewServer()
+	defer srv.Close()
+
+	state.AddIssue("PROJ-1", nil)
+
+	client, err := jira.New("test-token", jira.WithBaseURL(srv.URL))
+	require.NoError(t, err)
+
+	issues, err := client.SearchIssues(context.Background(), "project = PROJ", 0)
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	assert.NotNil(t, issues[0].Fields.Labels)
+	assert.Empty(t, issues[0].Fields.Labels)
+}
+
 func TestCommentsReturned(t *testing.T) {
 	t.Parallel()
 	srv, state := NewServer()

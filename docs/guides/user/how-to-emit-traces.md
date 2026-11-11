@@ -151,11 +151,11 @@ it read. Make sure your backend's access controls are appropriate before
 enabling capture.
 :::
 
-What gets recorded depends on the agent runtime. Claude runs include tool
-arguments and results; the pi and codex runtimes do not yet (see
-[Runtimes](../../runtimes.md)). With the `claude` runtime, tool calls also
-appear as `execute_tool` child spans at every level. Those spans are metadata,
-and this variable does not affect them.
+What gets recorded depends on the agent runtime. Claude and pi runs include
+tool arguments and results; the codex runtime does not yet (see
+[Runtimes](../../runtimes.md)). With the `claude` and `pi` runtimes, tool calls
+also appear as `execute_tool` child spans at every level. Those spans are
+metadata, and this variable does not affect them.
 
 For accepted values, redaction rules, size limits, and the attributes that
 hold content, see

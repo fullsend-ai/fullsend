@@ -1,0 +1,115 @@
+{
+  "schema_version": "normalized-entity/v1",
+  "entity": {
+    "kind": "work_item",
+    "source": {
+      "system": "github",
+      "host": "github.com",
+      "repository": "fullsend-ai/demo",
+      "repository_id": "R_kgDOExample"
+    },
+    "id": "fullsend:entity:v1:github:github.com:work_item:I_kwDOExample53",
+    "source_id": "I_kwDOExample53",
+    "key": "#53",
+    "number": 53,
+    "url": "https://github.com/fullsend-ai/demo/issues/53",
+    "state": "closed",
+    "title": {
+      "$unknown": "not_loaded"
+    },
+    "author": {
+      "id": "U_kgDOBob",
+      "login": "bob",
+      "kind": "human",
+      "role": "write",
+      "role_verified": true
+    },
+    "created_at": "2026-10-12T09:00:00.000000000Z",
+    "updated_at": "2026-10-13T11:20:00.000000000Z",
+    "body": null,
+    "comments": [],
+    "label_applications": [],
+    "threads": [],
+    "labels": [],
+    "assignees": [
+      {
+        "id": "U_kgDOAssignee",
+        "login": "assignee",
+        "kind": "human",
+        "role": {
+          "$unknown": "not_loaded"
+        },
+        "role_verified": {
+          "$unknown": "not_loaded"
+        }
+      }
+    ],
+    "reactions": [
+      {
+        "id": "123456",
+        "content": "+1",
+        "actor": {
+          "id": "B_kgDOAgent",
+          "login": "agent[bot]",
+          "kind": "bot",
+          "role": "none",
+          "bot_role": "review",
+          "role_verified": true
+        },
+        "created_at": {
+          "$unknown": "not_loaded"
+        }
+      }
+    ],
+    "lifecycle": {
+      "closed_at": "2026-10-13T11:20:00.000000000Z",
+      "closed_by": {
+        "id": "U_kgDOCloser",
+        "login": "closer",
+        "kind": "human",
+        "role": "write",
+        "role_verified": true
+      }
+    },
+    "work_item": {
+      "source_status": {
+        "name": "CLOSED",
+        "category": {
+          "$unknown": "unsupported"
+        }
+      },
+      "issue_type": {
+        "$unknown": "unsupported"
+      },
+      "state_reason": "completed"
+    }
+  },
+  "coverage": {
+    "labels": {
+      "status": "complete"
+    },
+    "comments": {
+      "status": "complete"
+    },
+    "label_applications": {
+      "status": "complete"
+    },
+    "threads": {
+      "status": "complete"
+    },
+    "thread_comments": [],
+    "assignees": {
+      "status": "complete"
+    },
+    "reactions": {
+      "status": "partial",
+      "reason": "other_reactions_not_loaded"
+    },
+    "extension_lists": []
+  },
+  "view": {
+    "human_min_role": "triage",
+    "resolved_at": "2026-10-14T06:00:02.000000000Z",
+    "filter_version": "example-filter-v1"
+  }
+}

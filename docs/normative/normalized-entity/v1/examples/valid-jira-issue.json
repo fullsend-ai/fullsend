@@ -1,0 +1,103 @@
+{
+  "schema_version": "normalized-entity/v1",
+  "entity": {
+    "kind": "work_item",
+    "source": {
+      "system": "jira",
+      "host": "acme.atlassian.net",
+      "project": "PROJ",
+      "project_id": "10010"
+    },
+    "id": "fullsend:entity:v1:jira:acme.atlassian.net:work_item:10042",
+    "source_id": "10042",
+    "number": 123,
+    "url": "https://acme.atlassian.net/browse/PROJ-123",
+    "state": {
+      "$unknown": "not_loaded"
+    },
+    "title": "Review Jira source data",
+    "author": {
+      "id": "557058:abc123",
+      "login": null,
+      "kind": "human",
+      "role": "write",
+      "role_verified": true
+    },
+    "created_at": "2026-10-12T09:00:00.000000000Z",
+    "updated_at": "2026-10-13T11:20:00.000000000Z",
+    "body": {
+      "$unknown": "consistency_unknown"
+    },
+    "comments": [
+      {
+        "id": "20015",
+        "created_at": "2026-10-12T10:00:00.000000000Z",
+        "revised_at": "2026-10-12T10:00:00.000000000Z",
+        "actor": {
+          "id": "557058:abc123",
+          "login": null,
+          "kind": "human",
+          "role": "write",
+          "role_verified": true
+        },
+        "text": "/fs-triage\nPlease review this issue.",
+        "command": "/fs-triage",
+        "thread_id": null,
+        "is_entity_author": true
+      }
+    ],
+    "label_applications": [],
+    "threads": [],
+    "labels": [],
+    "key": "PROJ-123",
+    "assignees": [],
+    "reactions": [],
+    "lifecycle": {
+      "closed_at": {
+        "$unknown": "not_loaded"
+      },
+      "closed_by": {
+        "$unknown": "not_loaded"
+      }
+    },
+    "work_item": {
+      "source_status": {
+        "$unknown": "not_loaded"
+      },
+      "issue_type": {
+        "$unknown": "not_loaded"
+      },
+      "state_reason": {
+        "$unknown": "not_loaded"
+      }
+    }
+  },
+  "coverage": {
+    "labels": {
+      "status": "complete"
+    },
+    "comments": {
+      "status": "complete"
+    },
+    "label_applications": {
+      "status": "partial",
+      "reason": "changelog_window"
+    },
+    "threads": {
+      "status": "complete"
+    },
+    "thread_comments": [],
+    "assignees": {
+      "status": "not_loaded"
+    },
+    "reactions": {
+      "status": "not_loaded"
+    },
+    "extension_lists": []
+  },
+  "view": {
+    "human_min_role": "triage",
+    "resolved_at": "2026-10-14T06:00:02.000000000Z",
+    "filter_version": "example-filter-v1"
+  }
+}

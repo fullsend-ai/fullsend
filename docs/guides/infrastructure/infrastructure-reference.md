@@ -167,7 +167,7 @@ Recommended operator order for adding **`packages:read`** to `coder` (code / fix
    (hosted: `https://github.com/organizations/fullsend-ai/settings/apps/<app-slug>/permissions`).
    Optionally include a short note to users explaining why.
 2. Update the App used by the pool installations as well, and have each
-   `halfsend-01` … `halfsend-12` and `halfsend` installation owner Accept its pending update.
+   `halfsend-01` … `halfsend-22` and `halfsend` installation owner Accept its pending update.
    For the test-app setup, including the e2e pool organizations, that is
    `fullsend-test-coder`. Neither app set should be left permanently on
    permission-drop warnings.
@@ -249,7 +249,7 @@ A single mint instance can serve multiple orgs:
 
 `POST /v1/bot-role` resolves a GitHub App bot login to the mint role
 registered for that App. Dispatch authorization uses it to recognize
-Fullsend's own bots.
+fullsend's own bots.
 
 - **Authentication:** GitHub Actions OIDC bearer token, with the same per-repo enrollment and workflow-host checks as `POST /v1/token`.
 - **Request:** `{"actor_login": "<app-slug>[bot]", "repo": "owner/repo"}`. `repo` must be the token's `repository` claim (otherwise `403`). Other fields, such as `role`, are ignored.
@@ -346,12 +346,14 @@ Secrets and variables are deployed on the target repository.
 - `FULLSEND_INFERENCE_GATEWAY_API_KEY` — inference gateway API key for repos
   whose `inference.gateway.auth` is `api-key` (set by the repository admin,
   not by `github setup`)
+- `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL` — Jira API token and optional account email for repos whose effective `tracker.jira.poll.enabled` is `true`, used by the poller and Jira-originated agent status updates (written by `repos install --jira-token` / `--jira-email`; an omitted flag keeps the existing secret; deleted by `repos uninstall`; not set by `github setup`)
+- `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` — a service account's OAuth 2.0 credential, an alternative to `FULLSEND_JIRA_TOKEN` (never both). GitHub poll and Jira-originated dispatch workflows forward them to the Jira client, and `repos install` writes them on GitHub and GitLab; `repos uninstall` deletes them
 - `FULLSEND_GITHUB_RUNNER_SECRETS` — optional, set by you: a JSON object of
   name → literal value for host-side scripts, resolved through each harness's
   `env.runner`
   ([setup](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github))
 
-Repos whose `inference.auth` is `openai-wif` need no Fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
+Repos whose `inference.auth` is `openai-wif` need no fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
@@ -368,7 +370,9 @@ Ordinary unflagged `repos install` provisions role credentials; it does not remo
 - `FULLSEND_DISPATCH_SECRET` — Shared HMAC secret for signing dispatch variables and poll-state documents. Auto-provisioned by `repos install` (on both fresh installs and re-run/convergence of already-enrolled repos) as a masked, protected CI/CD variable.
 - `FULLSEND_TRIGGER_TOKEN` — GitLab pipeline trigger token for the webhook fast-path dispatcher. Stored as a masked, protected CI/CD variable when the fast-path is enabled, and deleted once the webhook uses the trigger-only account's token (`FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN`). Never logged.
 - `FULLSEND_WEBHOOK_SECRET` — GitLab project-webhook secret (`X-Gitlab-Token`) for the webhook fast-path. Stored as a masked, protected CI/CD variable when the fast-path is enabled. Never logged.
-- `FULLSEND_POLL_MODE` — Job-local variable (`"slash"` or `"events"`), selected by job rules from `CI_PIPELINE_SCHEDULE_DESCRIPTION`; managed schedules do not submit pipeline variables. Typed activation refuses while a legacy schedule-level override remains; remove it manually.
+- `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL` — Jira API token and optional account email for projects whose effective `tracker.jira.poll.enabled` is `true`. Written by `repos install --jira-token` / `--jira-email` (an omitted flag keeps the existing variable) as masked, protected CI/CD variables; the token is never stored unmasked. The Jira poller and Jira-originated agent runs use them. The webhook dispatcher job, and the poll job in slash and event mode, clear both before running other code. Only the Jira poll job started by the `fullsend jira poll` schedule keeps them. `repos uninstall` deletes both.
+- `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` — a service account's OAuth 2.0 credential, used instead of the token and email. Written by `repos install --jira-client-id` / `--jira-client-secret` as protected CI/CD variables; the client secret is never stored unmasked. Supplying them removes an existing token and email, and supplying `--jira-token` removes them. They are cleared and kept exactly like the token. `repos uninstall` deletes both.
+- `FULLSEND_POLL_MODE` — Job-local variable (`"slash"`, `"events"`, or `"jira"` for the `fullsend jira poll` schedule), selected by job rules from `CI_PIPELINE_SCHEDULE_DESCRIPTION`; managed schedules do not submit pipeline variables. Typed activation refuses while a legacy schedule-level override remains; remove it manually.
 - `FULLSEND_GITLAB_DISPATCH_ROUTE` — Job-local variable (`"child-pipeline"` or `"api"`), exported by `pin-ci-job-identity.sh` in the poll and dispatcher jobs and read by `fullsend poll` in both the cron and webhook drivers, and by `fullsend poll --input-driver jira-poll --target-forge gitlab`. `child-pipeline` is selected only when the trigger account ledger is ready, the `FULLSEND_GITLAB_DISPATCH_ACTIVATION` record names that exact ledger generation, the installed CLI reports support for the route (`fullsend poll --print-dispatch-routes`; an older CLI makes the job stop before any dispatch), and both the pipeline creator and the running job's user are the trigger account; otherwise `api` keeps dispatch on the Poller credential. Never a CI/CD variable ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#trigger-only-service-account)).
 - `FULLSEND_GITLAB_ANALYST_USER_ID` — Job-local numeric GitLab user ID of the registered Analyst identity. `pin-ci-job-identity.sh` exports it in the poll and dispatcher jobs, resolving it with the Analyst credential before that credential is blanked. `fullsend poll` reads it in both the cron and webhook drivers. Only a `<!-- fullsend:changes-requested -->` marker note authored by this identity reaches the fix stage. Unset (lookup failed, or an older job script) means no marker is retained, and a malformed value fails the command. Never a CI/CD variable ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#how-a-job-selects-its-credential)).
 - `FULLSEND_GITLAB_DISPATCH_ACTIVATION` — protected, unmasked activation record for the trigger-account dispatch route (the ledger generation it was recorded for: nonce, account, deploy key, grant and trigger token IDs; no secrets). `repos install` writes it only after the activation gate passes; every install, repair, rotation, containment pass and uninstall deletes it first. It is separate from the ledger because older CLIs reject unknown ledger fields; a record that no longer matches the ledger is ignored ([gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md#trigger-only-service-account)).

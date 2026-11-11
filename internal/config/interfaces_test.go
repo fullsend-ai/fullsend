@@ -93,15 +93,17 @@ func TestPerRepoConfig_AllowedResources(t *testing.T) {
 	assert.Equal(t, resources, cfg.AllowedResources())
 }
 
-func TestPerRepoConfig_IssueCreationConfig(t *testing.T) {
-	ci := &CreateIssuesConfig{AllowTargets: AllowTargets{Repos: []string{"org/repo"}}}
-	cfg := &perRepoConfig{CreateIssues: ci}
-	assert.Equal(t, ci, cfg.IssueCreationConfig())
+func TestPerRepoConfig_IssueTracking(t *testing.T) {
+	tracking := &TrackingConfig{GitHub: &GitHubTrackingConfig{AllowedTargets: GitHubAllowedTargets{Repos: []string{"org/repo"}}}}
+	cfg := &perRepoConfig{Tracker: tracking}
+	assert.Equal(t, tracking, cfg.IssueTracking())
 }
 
-func TestPerRepoConfig_IssueCreationConfig_Nil(t *testing.T) {
+func TestPerRepoConfig_IssueTracking_Nil(t *testing.T) {
 	cfg := &perRepoConfig{}
-	assert.Nil(t, cfg.IssueCreationConfig())
+	assert.Nil(t, cfg.IssueTracking())
+	var nilTracking *TrackingConfig
+	assert.Empty(t, nilTracking.Provider())
 }
 
 func TestPerRepoConfig_ConfigVersion(t *testing.T) {
@@ -327,15 +329,45 @@ func TestPerRepoConfig_ConfigForge(t *testing.T) {
 }
 
 func TestPerRepoConfig_ConfigTracker(t *testing.T) {
-	t.Run("returns tracker when set", func(t *testing.T) {
-		cfg := &perRepoConfig{Tracker: "jira"}
+	jiraTracker := &TrackingConfig{Jira: &JiraTrackingConfig{}}
+	gitlabTracker := &TrackingConfig{GitLab: &GitLabTrackingConfig{}}
+
+	t.Run("returns the selected provider when set", func(t *testing.T) {
+		cfg := &perRepoConfig{Tracker: jiraTracker}
 		assert.Equal(t, "jira", cfg.ConfigTracker())
 	})
 
 	t.Run("falls through to parent", func(t *testing.T) {
-		parent := &perRepoConfig{Tracker: "gitlab"}
+		parent := &perRepoConfig{Tracker: gitlabTracker}
 		child := &perRepoConfig{parent: parent}
 		assert.Equal(t, "gitlab", child.ConfigTracker())
+	})
+
+	t.Run("a child tracker replaces the parent's whole mapping", func(t *testing.T) {
+		parent := &perRepoConfig{Tracker: gitlabTracker}
+		child := &perRepoConfig{Tracker: &TrackingConfig{}, parent: parent}
+		assert.Equal(t, "", child.ConfigTracker(), "an empty child mapping selects no provider, not the parent's")
+	})
+
+	t.Run("a provider block selects the provider from YAML", func(t *testing.T) {
+		cfg, err := ParsePerRepoConfig([]byte("tracker:\n  jira: {}\n"))
+		require.NoError(t, err)
+		assert.Equal(t, "jira", cfg.ConfigTracker())
+	})
+
+	t.Run("scalar tracker is rejected with a migration message", func(t *testing.T) {
+		_, err := ParsePerRepoConfig([]byte("tracker: jira\n"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "scalar form")
+		assert.Contains(t, err.Error(), "jira: {}")
+	})
+
+	t.Run("multiple provider blocks are rejected", func(t *testing.T) {
+		cfg, err := ParsePerRepoConfigWriter([]byte("tracker:\n  github: {}\n  jira: {}\n"))
+		require.NoError(t, err)
+		err = cfg.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "at most one provider")
 	})
 
 	t.Run("returns empty when unset", func(t *testing.T) {
@@ -345,7 +377,7 @@ func TestPerRepoConfig_ConfigTracker(t *testing.T) {
 
 	t.Run("independent of forge", func(t *testing.T) {
 		// A repo hosted on GitHub can still track issues in Jira.
-		cfg := &perRepoConfig{Forge: "github", Tracker: "jira"}
+		cfg := &perRepoConfig{Forge: "github", Tracker: jiraTracker}
 		assert.Equal(t, "github", cfg.ConfigForge())
 		assert.Equal(t, "jira", cfg.ConfigTracker())
 	})

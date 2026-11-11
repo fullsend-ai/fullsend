@@ -26,8 +26,7 @@ import (
 // The ids come from pi's first-party Anthropic catalog
 // (packages/ai/src/providers/data/anthropic.json), which the vendored
 // anthropic-vertex extension re-points at Vertex: ids and pricing are
-// preserved, while the routing fields and the compat allowlist differ (the
-// provider swap also flips pi's supportsToolReferences default off). The
+// preserved, while the routing fields and the compat allowlist differ. The
 // extension registers the catalog of the *running* pi, so this table tracks
 // PI_VERSION — re-check it against the pinned pi's anthropic.json on a
 // bump, as "fable" needed when 0.85.0 added claude-fable-5-1 (#6882).
@@ -785,7 +784,8 @@ func piChildLaunchExport() string {
 // different file while the extension source, its tree hash
 // (piExtensionsGuard) and the hook adapter's SHA-256 (piHooksGuard) all
 // stay clean, because none of them can see the substitution. Verified on
-// pi 0.84.4 and re-checked on 0.85.0, jiti 2.7.0 in both; the shell half is
+// pi 0.84.4, re-checked on 0.85.0 and 1.5.0 (jiti 2.7.0 throughout); the
+// shell half is
 // internal/runtime/testdata/pi/jiti-cache-check.sh.
 //
 // The list is every JITI_* name jiti reads (jiti/dist/jiti.cjs) except

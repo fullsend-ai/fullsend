@@ -1567,6 +1567,58 @@ github:
 	assert.NotContains(t, string(data), "test-openai-key", "--openai-api-key must never be written to repos.yaml")
 }
 
+func TestRunReposInstall_JiraCredentialsWrittenNotPersisted(t *testing.T) {
+	manifestPath := writeTestManifest(t, `version: 1
+github:
+  inference:
+    auth: openai-api-key
+  repos:
+    - name: acme/api
+      config:
+        tracker:
+          jira:
+            base_url: https://example.atlassian.net
+            project: PROJ
+            poll:
+              enabled: true
+`)
+	fc := newInstallFakeClient("acme/api")
+	// repos install verifies that the upstream ref it resolves (main here)
+	// contains the reusable Jira poll workflow before writing credentials.
+	fc.FileContentsRef["fullsend-ai/fullsend/.github/workflows/reusable-poll-jira.yml@main"] = []byte("name: Poll Jira\n")
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:     manifestPath,
+		concurrency:  4,
+		direct:       true,
+		openAIAPIKey: "test-openai-key",
+		jiraToken:    "test-jira-token",
+		jiraEmail:    "poller@example.com",
+		testClient:   fc,
+	})
+	require.NoError(t, err)
+	assert.True(t, fc.Secrets["acme/api/"+forge.SecretJiraToken])
+	assert.True(t, fc.Secrets["acme/api/"+forge.SecretJiraEmail])
+
+	data, readErr := os.ReadFile(manifestPath)
+	require.NoError(t, readErr)
+	assert.NotContains(t, string(data), "test-jira-token", "--jira-token must never be written to repos.yaml")
+	assert.NotContains(t, string(data), "poller@example.com", "--jira-email must never be written to repos.yaml")
+}
+
+func TestReposInstallCmd_JiraFlags(t *testing.T) {
+	cmd := newReposInstallCmd()
+	for _, name := range []string{"jira-token", "jira-email", "jira-client-id", "jira-client-secret"} {
+		f := cmd.Flags().Lookup(name)
+		require.NotNil(t, f, name)
+		assert.Empty(t, f.DefValue, "%s has no default", name)
+	}
+	// Jira site, project and query come only from the effective config.
+	for _, name := range []string{"jira-url", "jira-project", "jql"} {
+		assert.Nil(t, cmd.Flags().Lookup(name), name)
+	}
+}
+
 func TestRunReposInstall_WIFProviderSkipsProjectNumberLookup(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstallFakeClient("acme/api")

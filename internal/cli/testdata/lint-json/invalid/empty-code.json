@@ -1,0 +1,17 @@
+{
+  "schema_version": 2,
+  "success": false,
+  "summary": {
+    "errors": 1,
+    "warnings": 0
+  },
+  "diagnostics": [
+    {
+      "code": "",
+      "agent": "my-agent",
+      "severity": "error",
+      "field": "role",
+      "message": "empty code is not allowed"
+    }
+  ]
+}

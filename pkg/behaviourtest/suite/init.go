@@ -189,10 +189,15 @@ func resetScenarioWorld(w *world.World) {
 	w.GatewayConfigOverridden = false
 	w.GatewayConfigOriginal = nil
 	w.GatewayAPIKeySecretSet = false
+	w.RunnerSecretsSecretSet = false
 	w.OwnersAuthActivated = false
 	w.JiraMockServer = nil
 	w.JiraMockState = nil
 	w.JiraConfigDir = ""
+	w.JiraPollerLog = ""
+	w.JiraPollCLIOutput = ""
+	w.JiraPollCLIExitCode = 0
+	w.JiraPollCLIOutputPath = ""
 	w.PlaybackEntries = nil
 	w.PlaybackCommitted = false
 	w.ConsumedHarnessRunIDs = nil

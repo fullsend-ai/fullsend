@@ -261,9 +261,11 @@ func TestStatus_ObsoleteSecretLookupErrorReportsStatusError(t *testing.T) {
 func TestManagedInferenceSecrets_SharedByUninstallAndOrphanDetection(t *testing.T) {
 	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey}
 	assert.Equal(t, want, managedInferenceSecrets())
-	assert.Equal(t, want, UninstallSecretsForForge(ForgeGitHub))
+	jira := []string{forge.SecretJiraToken, forge.SecretJiraEmail, forge.SecretJiraClientID, forge.SecretJiraClientSecret}
+	// Uninstall also removes the Jira polling credentials install provisions.
+	assert.Equal(t, append(append([]string{}, want...), jira...), UninstallSecretsForForge(ForgeGitHub))
 	// GitLab uninstall also removes the webhook fast-path credentials.
-	assert.Equal(t, append(append([]string{}, want...), forge.SecretTriggerToken, forge.SecretWebhookSecret), UninstallSecretsForForge(ForgeGitLab))
+	assert.Equal(t, slices.Concat(want, []string{forge.SecretTriggerToken, forge.SecretWebhookSecret}, jira), UninstallSecretsForForge(ForgeGitLab))
 	for _, auth := range ValidInferenceAuths() {
 		for _, name := range append(inferenceSecretsForAuth(auth), obsoleteInferenceSecrets(auth)...) {
 			assert.Contains(t, want, name, "every selected or obsolete secret must be removed by uninstall")

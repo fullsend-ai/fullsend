@@ -8,7 +8,7 @@
 
 This is a research note. It records what a public lab demonstrated when it
 used [Gemara](https://github.com/gemaraproj/gemara/tree/9d36c253484d14922010252bfffe58bdcd49a144)
-policy and evaluation artifacts to gate auto-merge for Fullsend-reviewed pull
+policy and evaluation artifacts to gate auto-merge for fullsend-reviewed pull
 requests. It also records which capabilities came from upstream, which
 integration the lab authored, and which questions remain open.
 
@@ -250,7 +250,7 @@ change.
 | Selected OpenSSF source file | 250 YAML lines | Supplies zero executable GitHub checks |
 | Shared integration | 1,726 source/tooling, 960 test, 619 policy/config/CI | Lab-authored |
 | Auto-merge integration | 7,215 source/tooling, 5,157 test, 2,649 policy/config/orchestration | Lab-authored |
-| Local Fullsend patch | +190/−6 source, +170 test, +63 docs | A lab build, not an upstream release ([patch](https://github.com/fullsend-ai/auto-merge/blob/4c86073ea6e05aff69b22b261eb7e2c74f3a5f71/gemara-auto-merge/local-fullsend.patch), [build provenance](https://github.com/fullsend-ai/auto-merge/blob/4c86073ea6e05aff69b22b261eb7e2c74f3a5f71/.fullsend/local-build.json)) |
+| Local fullsend patch | +190/−6 source, +170 test, +63 docs | A lab build, not an upstream release ([patch](https://github.com/fullsend-ai/auto-merge/blob/4c86073ea6e05aff69b22b261eb7e2c74f3a5f71/gemara-auto-merge/local-fullsend.patch), [build provenance](https://github.com/fullsend-ai/auto-merge/blob/4c86073ea6e05aff69b22b261eb7e2c74f3a5f71/.fullsend/local-build.json)) |
 | OSPS-specific dedicated files | 165 adapter, 132 policy/pin, 157 test (454 total) | Excludes reused generic machinery and copied upstream YAML and license; not a complete marginal-change count |
 
 These figures are not a minimum customer installation, a pure "Gemara tax", or
@@ -303,12 +303,12 @@ it.
 - What window, sample minimum, and threshold would an owner need to justify a
   quality condition, and who reviews those choices?
 - Does Gemara's artifact standardization pay for itself compared with a
-  native Fullsend structure such as the
+  native fullsend structure such as the
   [trust scorecard](../problems/trustworthiness-evidence.md#a-concrete-artifact-the-trust-scorecard)?
 - How should revocation work when a historical signal degrades below
   threshold after enrollment but before the queue merges?
 - Which parts of the trust-boundary integration (pinning, trusted-base
-  execution, queue revalidation) would Fullsend need regardless of the policy
+  execution, queue revalidation) would fullsend need regardless of the policy
   format?
 
 ## Public source register
@@ -364,4 +364,4 @@ evidence archive.
   auto-merge authority boundary. **Open**, not an accepted decision.
 - [PR #8467](https://github.com/fullsend-ai/fullsend/pull/8467): earlier
   repo-restricted writer prototype. **Closed without merge.** The successful
-  lab writer lives in the auto-merge repository, not in Fullsend.
+  lab writer lives in the auto-merge repository, not in fullsend.

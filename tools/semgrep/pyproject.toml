@@ -1,0 +1,8 @@
+[project]
+name = "fullsend-semgrep"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["semgrep==1.182.1"]
+
+[tool.uv]
+package = false

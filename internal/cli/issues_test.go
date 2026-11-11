@@ -42,7 +42,7 @@ func TestNewIssuesCmd_SubcommandRegistration(t *testing.T) {
 func TestNewIssuesLinkCmd_Flags(t *testing.T) {
 	cmd := newIssuesLinkCmd()
 
-	for _, name := range []string{"tracker", "from", "to", "type", "token", "jira-url", "jira-email", "fullsend-dir"} {
+	for _, name := range []string{"tracker", "from", "to", "type", "token", "fullsend-dir"} {
 		require.NotNil(t, cmd.Flags().Lookup(name), "flag %q should exist", name)
 	}
 	for _, name := range []string{"from", "to", "type"} {
@@ -104,9 +104,7 @@ func TestRunIssuesLink_TypeWhitespacePreserved(t *testing.T) {
 }
 
 func TestRunIssuesLink_InvalidKeyBeforeCredentials(t *testing.T) {
-	t.Setenv("JIRA_BASE_URL", "")
-	t.Setenv("JIRA_USER_EMAIL", "")
-	t.Setenv("JIRA_API_TOKEN", "")
+	t.Setenv("FULLSEND_JIRA_TOKEN", "")
 	cfg := &issuesLinkConfig{
 		trackerName: trackerJira,
 		from:        "bogus",
@@ -319,10 +317,62 @@ func TestNewIssuesGetCmd_RequiredFlags(t *testing.T) {
 func TestNewIssuesGetCmd_OptionalFlags(t *testing.T) {
 	cmd := newIssuesGetCmd()
 
-	for _, name := range []string{"token", "jira-url", "jira-email"} {
+	for _, name := range []string{"token", "fullsend-dir", "fields"} {
 		f := cmd.Flags().Lookup(name)
 		require.NotNil(t, f, "flag %q should exist", name)
 	}
+}
+
+// TestIssuesCmds_NoLegacyJiraFlags checks that Jira connection settings
+// are no longer accepted on the command line: they come only from
+// tracker.jira in config.yaml.
+func TestIssuesCmds_NoLegacyJiraFlags(t *testing.T) {
+	for _, cmd := range []*cobra.Command{newIssuesGetCmd(), newIssuesCreateCmd(), newIssuesPostCommentCmd(), newIssuesLinkCmd()} {
+		for _, name := range []string{"jira-url", "jira-email"} {
+			assert.Nil(t, cmd.Flags().Lookup(name), "%s: flag %q should no longer exist", cmd.Name(), name)
+		}
+	}
+}
+
+func TestRunIssuesGet_JiraProjectDefaultsFromConfig(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := &issuesGetConfig{
+		trackerName:      trackerJira,
+		number:           5,
+		testClient:       newJiraTrackerWithTypedIssue(t),
+		testWriter:       &buf,
+		testConfigReader: parseTestConfig(t, testJiraConfig),
+	}
+	require.NoError(t, runIssuesGet(context.Background(), cfg))
+
+	var result issueGetResult
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &result))
+	assert.Equal(t, "https://acme.atlassian.net/browse/PROJ-5", result.URL, "the issue is read from tracker.jira.project")
+}
+
+func TestRunIssuesGet_ProjectRequiredForForge(t *testing.T) {
+	cfg := &issuesGetConfig{
+		trackerName: trackerGitHub,
+		number:      1,
+		testClient:  newFakeTrackerWithIssue(t, "acme/widgets", 1),
+		testWriter:  &bytes.Buffer{},
+	}
+	err := runIssuesGet(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project must not be empty for --tracker github")
+}
+
+func TestRunIssuesGet_JiraWithoutConfig(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-token")
+	cfg := &issuesGetConfig{
+		trackerName: trackerJira,
+		project:     "PROJ",
+		number:      1,
+		testWriter:  &bytes.Buffer{},
+	}
+	err := runIssuesGet(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tracker.jira.base_url")
 }
 
 func TestNewIssuesPostCommentCmd_RequiredFlags(t *testing.T) {
@@ -987,6 +1037,40 @@ func TestRunIssuesPostComment_JiraAcceptsMarkerWithSpecialChars(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunIssuesPostComment_JiraProjectDefaultsFromConfig(t *testing.T) {
+	tc, fake, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+
+	cfg := &issuesPostCommentConfig{
+		trackerName:      trackerJira,
+		number:           42,
+		marker:           "<!-- fullsend:triage-agent -->",
+		testClient:       tc,
+		testPrinter:      ui.New(io.Discard),
+		testBody:         "body",
+		testConfigReader: parseTestConfig(t, testJiraConfig),
+	}
+	require.NoError(t, runIssuesPostComment(context.Background(), cfg))
+	assert.NotEmpty(t, fake.Comments["PROJ-42"], "the comment is posted to tracker.jira.project")
+}
+
+func TestRunIssuesPostComment_JiraProjectWithoutConfig(t *testing.T) {
+	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+
+	cfg := &issuesPostCommentConfig{
+		trackerName: trackerJira,
+		number:      42,
+		marker:      "<!-- fullsend:triage-agent -->",
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "body",
+	}
+	err = runIssuesPostComment(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no default Jira project is configured")
+}
+
 func TestRunIssuesPostComment_JiraRoundTripUpdatesInPlace(t *testing.T) {
 	// Drives the Jira property-based sticky comment path twice through
 	// tracker.JiraClient (via NewFakeJiraClientWithFake) so comment
@@ -1177,17 +1261,17 @@ func TestRunIssuesPostComment_JiraNeutralizesStoredMarkersInHistory(t *testing.T
 	assert.Contains(t, body, `\&lt;!-- fullsend:review-agent -->`)
 }
 
-func TestRunIssuesPostComment_JiraPropertyPermissionFailure(t *testing.T) {
-	// When the Jira API rejects property writes (e.g. 403), the
-	// update should fail with an actionable error rather than
-	// silently falling back to a visible marker.
+func TestRunIssuesPostComment_JiraPropertyMarkedSkipsPropertyWrite(t *testing.T) {
+	// An existing comment whose marker property already matches is
+	// updated without rewriting the property, so a Jira rejection of
+	// property writes (e.g. 403) does not block the body update.
 	tc, fc, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	ctx := context.Background()
 
 	marker := "<!-- fullsend:triage-agent -->"
 
-	// First run succeeds (no property error on create).
+	// First run creates the comment with the property set inline.
 	cfg := &issuesPostCommentConfig{
 		trackerName: trackerJira,
 		project:     "PROJ",
@@ -1198,14 +1282,53 @@ func TestRunIssuesPostComment_JiraPropertyPermissionFailure(t *testing.T) {
 		testBody:    "first run",
 	}
 	require.NoError(t, runIssuesPostComment(ctx, cfg))
+	assert.Zero(t, fc.PropertyWrites, "creation sets the property inline, not via a separate write")
 
-	// Now simulate a property write failure for the update path.
 	fc.PropertyError = fmt.Errorf("set comment property: %w", forge.ErrForbidden)
 
 	cfg.testBody = "second run"
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+	assert.Zero(t, fc.PropertyWrites, "an exact property match must not rewrite the property")
+
+	comments, err := tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.Contains(t, string(comments[0].Body), "second run")
+}
+
+func TestRunIssuesPostComment_JiraLegacyPropertyPermissionFailure(t *testing.T) {
+	// When the Jira API rejects the property write that migrates a
+	// legacy comment, the update fails with an actionable error and the
+	// body keeps its legacy marker rather than losing it.
+	tc, fc, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	marker := "<!-- fullsend:triage-agent -->"
+	_, err = fc.CreateComment(ctx, "PROJ-42", marker+"\nlegacy content")
+	require.NoError(t, err)
+
+	fc.PropertyError = fmt.Errorf("set comment property: %w", forge.ErrForbidden)
+
+	cfg := &issuesPostCommentConfig{
+		trackerName: trackerJira,
+		project:     "PROJ",
+		number:      42,
+		marker:      marker,
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    "second run",
+	}
 	err = runIssuesPostComment(ctx, cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sticky marker property")
+	assert.Equal(t, 1, fc.PropertyWrites)
+
+	comments, err := tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.NotContains(t, string(comments[0].Body), "second run")
+	assert.Contains(t, string(comments[0].Body), marker)
 }
 
 func TestPostJiraStickyComment_DryRun_Create(t *testing.T) {
@@ -1305,7 +1428,7 @@ func TestRunIssuesPostComment_GitHubUnchangedByJiraPropertyFeature(t *testing.T)
 // default is supplied via config.
 
 func TestResolveTracker_FlagOverridesConfig(t *testing.T) {
-	reader, err := config.ParsePerRepoConfig([]byte("tracker: jira\n"))
+	reader, err := config.ParsePerRepoConfig([]byte("tracker:\n  jira: {}\n"))
 	require.NoError(t, err)
 
 	got, err := resolveTracker(trackerGitHub, "", reader)
@@ -1314,7 +1437,7 @@ func TestResolveTracker_FlagOverridesConfig(t *testing.T) {
 }
 
 func TestResolveTracker_FallsBackToConfigReader(t *testing.T) {
-	reader, err := config.ParsePerRepoConfig([]byte("tracker: jira\n"))
+	reader, err := config.ParsePerRepoConfig([]byte("tracker:\n  jira: {}\n"))
 	require.NoError(t, err)
 
 	got, err := resolveTracker("", "", reader)
@@ -1324,7 +1447,7 @@ func TestResolveTracker_FallsBackToConfigReader(t *testing.T) {
 
 func TestResolveTracker_FallsBackToFullsendDirConfig(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tracker: gitlab\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("tracker:\n  gitlab: {}\n"), 0o644))
 
 	got, err := resolveTracker("", dir, nil)
 	require.NoError(t, err)
@@ -1418,7 +1541,7 @@ func TestRunIssuesPostComment_TrackerFromConfig(t *testing.T) {
 	fc.AuthenticatedUser = "bot"
 	tc := tracker.NewForgeClient(fc)
 
-	reader, err := config.ParsePerRepoConfig([]byte("tracker: github\n"))
+	reader, err := config.ParsePerRepoConfig([]byte("tracker:\n  github: {}\n"))
 	require.NoError(t, err)
 
 	cfg := &issuesPostCommentConfig{
@@ -1447,7 +1570,7 @@ func TestRunIssuesPostComment_TrackerFlagOverridesConfig(t *testing.T) {
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 
-	reader, err := config.ParsePerRepoConfig([]byte("tracker: github\n"))
+	reader, err := config.ParsePerRepoConfig([]byte("tracker:\n  github: {}\n"))
 	require.NoError(t, err)
 
 	cfg := &issuesPostCommentConfig{

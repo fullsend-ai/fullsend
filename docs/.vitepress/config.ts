@@ -236,6 +236,7 @@ export default defineConfig({
             { text: "fullsend mint", link: "/cli/mint" },
             { text: "fullsend repos", link: "/cli/repos" },
             { text: "fullsend run", link: "/cli/run" },
+            { text: "fullsend self-update", link: "/cli/self-update" },
           ],
         },
       ],
@@ -279,6 +280,7 @@ export default defineConfig({
             { text: "Fix", link: "/agents/fix" },
             { text: "Retro", link: "/agents/retro" },
             { text: "Prioritize", link: "/agents/prioritize" },
+            { text: "Scribe", link: "/agents/scribe" },
           ],
         },
         {
@@ -349,6 +351,7 @@ export default defineConfig({
           items: [
             { text: "Config Reference", link: "/reference/config-reference" },
             { text: "Harness Field Reference", link: "/reference/harness-reference" },
+            { text: "Trace Context Reference", link: "/reference/trace-context" },
           ],
         },
         {
