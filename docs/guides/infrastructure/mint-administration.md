@@ -586,7 +586,7 @@ fullsend mint token --role triage --repos my-repo --level read --mint-url "$FULL
 
 The `--level` flag selects the privilege level for the minted token: `read` returns read-only permissions, `write` returns the full permission set. Both the CLI and the server default to `write` when omitted (temporary compatibility default — a future release will change the server default to `read`).
 
-The command prints the token to stdout for shell capture. When running in GitHub Actions (`GITHUB_ACTIONS=true`), it also emits `::add-mask::` to stderr to prevent the token from appearing in logs. With [token-free output](../../cli/README.md#token-free-output) (`--token-free-output` or `FULLSEND_TOKEN_FREE_OUTPUT=1`), the mask command is not written. The token is still printed to stdout.
+The command prints the token to stdout for shell capture. When running in GitHub Actions (`GITHUB_ACTIONS=true`), it also emits `::add-mask::` to stderr to prevent the token from appearing in logs.
 
 **Required environment:** The calling GitHub Actions job must declare `id-token: write` permission so that `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN` are available.
 

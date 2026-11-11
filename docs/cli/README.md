@@ -39,23 +39,4 @@ To update an installed binary later, run [`fullsend self-update`](self-update.md
 
 All commands that interact with GitHub resolve authentication via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token` (in that order). Explicit token flags such as `--token` and `--forge-token` override the chain. For GitLab, set `GITLAB_TOKEN` or pass `--gitlab-token` to `repos` subcommands. The CLI runs preflight checks and tells you exactly which OAuth scopes are missing before making any changes.
 
-### Token-free output
-
-When fullsend runs in GitHub Actions (`GITHUB_ACTIONS=true`), it writes each credential it mints, refreshes, or receives to stderr in an `::add-mask::<value>` command so that the Actions runner masks the value in the job log. If your program runs fullsend as a subprocess and captures its output, those commands never reach a log processor, so the raw credential ends up in the captured output.
-
-To stop this, pass `--token-free-output` to any command, or set `FULLSEND_TOKEN_FREE_OUTPUT=1` in the environment. The mode is opt-in, and output is unchanged by default.
-
-In this mode:
-
-- fullsend writes no `::add-mask::` commands and no credential values to stdout or stderr. This covers the first token and every refreshed token: the agent token and its post-script remint, status tokens, the preserved workflow token, inference gateway and OpenAI WIF credentials, the GCP WIF subject token, runner secrets, and Jira credentials.
-- Each value is still registered with fullsend's own redactor, so fullsend's console, trace, and artifact redaction keeps covering it. Authentication is unaffected.
-- The first time a mask command is skipped, fullsend prints one line that names the mode and contains no credential value. Other diagnostics, such as `Agent token minted (expires …)`, are unchanged.
-- The flag exports `FULLSEND_TOKEN_FREE_OUTPUT=1`, so fullsend commands run by pre-scripts and post-scripts inherit the mode.
-
-Without mask commands, the Actions runner does not mask these values. Turn the mode on only when nothing that reads fullsend's output depends on runner masking.
-
-`FULLSEND_TOKEN_FREE_OUTPUT` is off when it is unset, empty, or a false value (`0`, `false`). Any other value turns it on, so a misspelled opt-in such as `yes` still keeps credentials out of the output.
-
-[`fullsend mint token`](mint.md#mint-token) is the exception: its only job is to print the minted token, so it still writes the token to stdout. It does not write the mask command.
-
 For the complete command tree with implementation details, see [CLI internals](../guides/dev/cli-internals.md).

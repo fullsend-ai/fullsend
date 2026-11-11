@@ -6,7 +6,6 @@ This guide provides implementation details for fullsend CLI internals: command s
 
 ```
 fullsend
-├── --token-free-output                      # Never write credential values to stdout/stderr ($FULLSEND_TOKEN_FREE_OUTPUT)
 ├── admin                                    # Manage fullsend installation for a repository
 │   ├── install      <owner/repo>            # Deprecated: use inference provision + github setup / repos install (GitLab)
 │   └── foreign                              # Cross-org mint authorization (FULLSEND_FOREIGN_<ROLE>_REPOS)
@@ -133,6 +132,7 @@ fullsend
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
 │   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 │   ├── --no-post-script                     #   Skip post-script execution
+│   ├── --no-github-mask-commands            #   Do not write ::add-mask:: commands ($FULLSEND_NO_GITHUB_MASK_COMMANDS)
 │   ├── --debug [filter]                     #   Enable agent runtime debug logging
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth (0 disables)

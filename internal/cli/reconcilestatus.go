@@ -236,7 +236,9 @@ func reconcileGitHubClient(cmd *cobra.Command, mintURL, role, repoName string, o
 	if !mintTokenPattern.MatchString(result.Token) {
 		return nil, fmt.Errorf("minted status token contains unexpected characters")
 	}
-	maskActionsValue(result.Token)
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
+	}
 	return reconcileNewForgeClient(result.Token), nil
 }
 

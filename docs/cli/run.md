@@ -28,6 +28,7 @@ A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, UR
 | `--env-file` | Load environment variables from a dotenv file (repeatable) |
 | `--no-post-script` | Skip post-script execution |
 | `--keep-sandbox` | Skip sandbox deletion after the run |
+| `--no-github-mask-commands` | Do not write GitHub Actions `::add-mask::` commands; also `FULLSEND_NO_GITHUB_MASK_COMMANDS`. See [Suppressing GitHub mask commands](#suppressing-github-mask-commands) |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run stops, because its Jira API gateway address needs a network lookup |
@@ -544,9 +545,21 @@ settings](../reference/harness-reference.md#migrating-proxy-and-certificate-sett
 
 Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process. Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
 
-## Token-free output
+## Suppressing GitHub mask commands
 
-If a program runs `fullsend run` as a subprocess and captures its output, pass `--token-free-output` or set `FULLSEND_TOKEN_FREE_OUTPUT=1`. In this mode the run does not write `::add-mask::` commands, and it writes no credential values to stdout or stderr. This covers the first token and every refreshed one. Each value is still registered with fullsend's own redactor. See [Token-free output](README.md#token-free-output).
+When `fullsend run` runs in GitHub Actions (`GITHUB_ACTIONS=true`), it writes each credential it mints, refreshes, or receives to stderr in an `::add-mask::<value>` command so that the Actions runner masks the value in the job log. If a program runs `fullsend run` as a subprocess and captures its output, those commands never reach a log processor, so the raw credential ends up in the captured output.
+
+To stop `fullsend run` from writing them, pass `--no-github-mask-commands` or set `FULLSEND_NO_GITHUB_MASK_COMMANDS=1`. An explicitly set flag wins over the environment variable. The variable is off when it is unset, empty, or a false value (`0`, `false`). Any other value turns it on, so a misspelled opt-in such as `yes` still suppresses the commands. The default output is unchanged.
+
+The flag and the variable affect only `fullsend run`. Other commands, including [`fullsend mint token`](mint.md#mint-token) and `fullsend reconcile-status`, keep writing mask commands, and fullsend commands that a pre-script or post-script runs are not affected.
+
+With suppression on:
+
+- `fullsend run` writes no `::add-mask::` commands. This covers the first token and every refreshed one: the agent token and its post-script remint, status tokens, the preserved workflow token, inference gateway and OpenAI credentials, the GCP WIF subject token, and runner secrets. Authentication is unaffected.
+- Each value is still registered with fullsend's own redactor, so fullsend's console, trace, and artifact redaction keeps covering it.
+- The first time a mask command is skipped, fullsend prints one line that names the setting and contains no credential value. Other diagnostics, such as `Agent token minted (expires …)`, are unchanged.
+
+This option suppresses the mask commands. It does not guarantee that the output is free of tokens. Output from pre-scripts, post-scripts, and the agent can bypass fullsend's redactor, and without mask commands the Actions runner does not mask these values in the job log. Turn it on only when nothing that reads the output depends on runner masking.
 
 ## Related
 

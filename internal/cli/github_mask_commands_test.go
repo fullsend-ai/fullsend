@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -27,17 +26,19 @@ import (
 
 // Synthetic values only: none of these is a real credential.
 const (
-	tokenFreeInitialToken  = "ghs_synthetic_initial_token_value_0001"
-	tokenFreeRefreshToken  = "ghs_synthetic_refresh_token_value_0002"
-	tokenFreeWorkflowToken = "ghs_synthetic_workflow_token_value_0003"
+	maskTestInitialToken  = "synthetic-initial-token-aaaa1111"
+	maskTestRefreshToken  = "synthetic-refresh-token-bbbb2222"
+	maskTestWorkflowToken = "synthetic-workflow-token-cccc3333"
 )
 
-// resetTokenFreeNotice gives the test its own once-per-process notice.
-func resetTokenFreeNotice(t *testing.T) {
+// suppressMaskCommands turns suppression on for the test and restores it.
+func suppressMaskCommands(t *testing.T) {
 	t.Helper()
-	orig := tokenFreeNoticeOnce
-	tokenFreeNoticeOnce = &sync.Once{}
-	t.Cleanup(func() { tokenFreeNoticeOnce = orig })
+	githubMaskCommandsSuppressed.Store(true)
+	t.Cleanup(func() { githubMaskCommandsSuppressed.Store(false) })
+	orig := noGitHubMaskCommandsNoticeOnce
+	noGitHubMaskCommandsNoticeOnce = &sync.Once{}
+	t.Cleanup(func() { noGitHubMaskCommandsNoticeOnce = orig })
 }
 
 // assertRedacted checks that value is registered with the process-wide
@@ -50,7 +51,7 @@ func assertRedacted(t *testing.T, value string) {
 	assert.NotContains(t, scan.Sanitized, value, "value must be registered for in-process redaction")
 }
 
-func TestTokenFreeOutputEnabled(t *testing.T) {
+func TestNoGitHubMaskCommandsEnvEnabled(t *testing.T) {
 	for value, want := range map[string]bool{
 		"":      false,
 		"  ":    false,
@@ -59,78 +60,80 @@ func TestTokenFreeOutputEnabled(t *testing.T) {
 		"FALSE": false,
 		"1":     true,
 		"true":  true,
-		" on ":  true, // not a ParseBool value: fails toward token-free
+		" on ":  true, // not a ParseBool value: fails toward suppressing
 		"yes":   true,
 	} {
 		t.Run(fmt.Sprintf("%q", value), func(t *testing.T) {
-			t.Setenv(tokenFreeOutputEnv, value)
-			assert.Equal(t, want, tokenFreeOutputEnabled())
+			t.Setenv(noGitHubMaskCommandsEnv, value)
+			assert.Equal(t, want, noGitHubMaskCommandsEnvEnabled())
 		})
 	}
 }
 
 func TestMaskActionsValue_DefaultEmitsAddMask(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
-	t.Setenv(tokenFreeOutputEnv, "")
-	stderr := captureStderr(t, func() { maskActionsValue(tokenFreeInitialToken) })
-	assert.Equal(t, "::add-mask::"+tokenFreeInitialToken+"\n", stderr)
+	// The environment variable alone does not affect maskActionsValue; only
+	// `fullsend run` reads it.
+	t.Setenv(noGitHubMaskCommandsEnv, "1")
+	stderr := captureStderr(t, func() { maskActionsValue(maskTestInitialToken) })
+	assert.Equal(t, "::add-mask::"+maskTestInitialToken+"\n", stderr)
 }
 
 func TestMaskActionsValue_OutsideActionsPrintsNothing(t *testing.T) {
-	for _, mode := range []string{"", "1"} {
-		t.Run("token-free="+mode, func(t *testing.T) {
-			resetTokenFreeNotice(t)
+	for _, suppressed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("suppressed=%v", suppressed), func(t *testing.T) {
+			if suppressed {
+				suppressMaskCommands(t)
+			}
 			t.Setenv("GITHUB_ACTIONS", "")
-			t.Setenv(tokenFreeOutputEnv, mode)
-			assert.Empty(t, captureStderr(t, func() { maskActionsValue(tokenFreeInitialToken) }))
+			assert.Empty(t, captureStderr(t, func() { maskActionsValue(maskTestInitialToken) }))
 		})
 	}
 }
 
-// Under token-free output the value is registered with the in-process
-// redactor even outside Actions; without the mode it is not registered.
-func TestMaskActionsValue_OutsideActionsRegistersOnlyWhenTokenFree(t *testing.T) {
+// While suppressed, the value is registered with the in-process redactor
+// even outside Actions; without suppression it is not registered.
+func TestMaskActionsValue_OutsideActionsRegistersOnlyWhenSuppressed(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "")
 
 	const offValue = "synthetic-outside-actions-off-value"
-	t.Setenv(tokenFreeOutputEnv, "")
 	maskActionsValue(offValue)
 	scan := security.NewSecretRedactor().Scan("log " + offValue + " here")
 	assert.True(t, scan.Safe, "default mode registers nothing outside Actions")
 
+	suppressMaskCommands(t)
 	const onValue = "synthetic-outside-actions-on-value"
-	t.Setenv(tokenFreeOutputEnv, "1")
 	maskActionsValue(onValue)
 	assertRedacted(t, onValue)
 }
 
-func TestMaskActionsValue_TokenFreeSuppressesValue(t *testing.T) {
-	resetTokenFreeNotice(t)
+func TestMaskActionsValue_SuppressedWritesNoMaskCommand(t *testing.T) {
+	suppressMaskCommands(t)
 	t.Setenv("GITHUB_ACTIONS", "true")
-	t.Setenv(tokenFreeOutputEnv, "1")
 	const multiLine = "synthetic-line-one-value\nsynthetic-line-two-value"
 	stderr := captureStderr(t, func() {
-		maskActionsValue(tokenFreeInitialToken)
-		maskActionsValue(tokenFreeRefreshToken)
+		maskActionsValue(maskTestInitialToken)
+		maskActionsValue(maskTestRefreshToken)
 		maskActionsValue(multiLine)
 	})
 	assert.NotContains(t, stderr, "::add-mask::")
-	for _, v := range []string{tokenFreeInitialToken, tokenFreeRefreshToken, "synthetic-line-one-value", "synthetic-line-two-value"} {
+	for _, v := range []string{maskTestInitialToken, maskTestRefreshToken, "synthetic-line-one-value", "synthetic-line-two-value"} {
 		assert.NotContains(t, stderr, v)
 	}
-	assert.Equal(t, 1, bytes.Count([]byte(stderr), []byte("token-free output is on")), "one value-free notice per process")
-	assertRedacted(t, tokenFreeInitialToken)
-	assertRedacted(t, tokenFreeRefreshToken)
+	assert.Equal(t, 1, bytes.Count([]byte(stderr), []byte("mask commands are suppressed")), "one value-free notice per process")
+	assert.Contains(t, stderr, "may bypass that redactor")
+	assertRedacted(t, maskTestInitialToken)
+	assertRedacted(t, maskTestRefreshToken)
 }
 
 // Initial and refreshed (post-script remint) agent tokens: no value
 // reaches stderr, the tokens still land in the environment, and the
 // "Agent token minted" diagnostic is still printed.
-func TestMintAgentToken_TokenFreeInitialAndRemint(t *testing.T) {
-	resetTokenFreeNotice(t)
+func TestMintAgentToken_SuppressedInitialAndRemint(t *testing.T) {
+	suppressMaskCommands(t)
 	origMint := statusMintToken
 	t.Cleanup(func() { statusMintToken = origMint })
-	tokens := []string{tokenFreeInitialToken, tokenFreeRefreshToken}
+	tokens := []string{maskTestInitialToken, maskTestRefreshToken}
 	var calls atomic.Int32
 	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
 		i := calls.Add(1) - 1
@@ -139,8 +142,7 @@ func TestMintAgentToken_TokenFreeInitialAndRemint(t *testing.T) {
 
 	t.Setenv("REPO_FULL_NAME", "org/my-repo")
 	t.Setenv("GITHUB_ACTIONS", "true")
-	t.Setenv(tokenFreeOutputEnv, "true")
-	t.Setenv("GH_TOKEN", tokenFreeWorkflowToken)
+	t.Setenv("GH_TOKEN", maskTestWorkflowToken)
 	t.Setenv("PUSH_TOKEN", "")
 	t.Setenv("PUSH_TOKEN_SOURCE", "")
 	t.Setenv(workflowTokenEnv, "")
@@ -162,38 +164,36 @@ func TestMintAgentToken_TokenFreeInitialAndRemint(t *testing.T) {
 	}
 
 	assert.NotContains(t, stderr, "::add-mask::")
-	for _, v := range append(tokens, tokenFreeWorkflowToken) {
+	for _, v := range append(tokens, maskTestWorkflowToken) {
 		assert.NotContains(t, stderr, v)
 		assert.NotContains(t, out.String(), v)
 		assertRedacted(t, v)
 	}
-	assert.Contains(t, stderr, "token-free output is on")
+	assert.Contains(t, stderr, "mask commands are suppressed")
 	assert.Contains(t, out.String(), "Agent token minted")
 }
 
-// A refreshed OIDC token is not printed under token-free output.
-func TestRefreshOIDCToken_TokenFree(t *testing.T) {
-	resetTokenFreeNotice(t)
+// A refreshed OIDC token is not printed while mask commands are suppressed.
+func TestRefreshOIDCToken_Suppressed(t *testing.T) {
+	suppressMaskCommands(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"value": tokenFreeRefreshToken})
+		_ = json.NewEncoder(w).Encode(map[string]string{"value": maskTestRefreshToken})
 	}))
 	defer srv.Close()
 	t.Setenv("GITHUB_ACTIONS", "true")
-	t.Setenv(tokenFreeOutputEnv, "1")
 	stderr := captureStderr(t, func() {
 		_ = refreshOIDCToken(context.Background(), "nonexistent-sandbox", srv.URL, "bearer test-auth")
 	})
-	assert.NotContains(t, stderr, tokenFreeRefreshToken)
+	assert.NotContains(t, stderr, maskTestRefreshToken)
 	assert.NotContains(t, stderr, "::add-mask::")
-	assertRedacted(t, tokenFreeRefreshToken)
+	assertRedacted(t, maskTestRefreshToken)
 }
 
-// A rotated inference gateway token is not printed under token-free
-// output, and the rotation still updates the provider.
-func TestRotateGatewayTokenOnce_TokenFree(t *testing.T) {
-	resetTokenFreeNotice(t)
+// A rotated inference gateway token is not printed while mask commands are
+// suppressed, and the rotation still updates the provider.
+func TestRotateGatewayTokenOnce_Suppressed(t *testing.T) {
+	suppressMaskCommands(t)
 	t.Setenv("GITHUB_ACTIONS", "true")
-	t.Setenv(tokenFreeOutputEnv, "1")
 	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
 	iat := time.Now().Truncate(time.Second)
 	stubGatewayAssertion(t, func(context.Context, actionsoidc.AssertionConfig) (*actionsoidc.Assertion, error) {
@@ -217,23 +217,23 @@ func TestRotateGatewayTokenOnce_TokenFree(t *testing.T) {
 	assert.Equal(t, map[string]string{gatewayCredentialKey: gatewayTestJWT}, updated)
 }
 
-// fullsend mint token: the mask line is suppressed, but the token is still
-// printed on stdout because it is the command's result.
-func TestMintTokenCmd_TokenFree(t *testing.T) {
-	resetTokenFreeNotice(t)
+// The flag and the environment variable only exist for `fullsend run`:
+// other commands keep emitting mask commands, and the root command has no
+// such flag.
+func TestMintTokenCmd_KeepsMaskCommandWithEnvSet(t *testing.T) {
 	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"value": "oidc-jwt"})
 	}))
 	defer oidcServer.Close()
 	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(mintclient.MintResult{Token: tokenFreeInitialToken, ExpiresAt: "2026-06-11T23:30:00Z"})
+		_ = json.NewEncoder(w).Encode(mintclient.MintResult{Token: maskTestInitialToken, ExpiresAt: "2026-06-11T23:30:00Z"})
 	}))
 	defer mintServer.Close()
 
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", oidcServer.URL+"?d=1")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
 	t.Setenv("GITHUB_ACTIONS", "true")
-	t.Setenv(tokenFreeOutputEnv, "1")
+	t.Setenv(noGitHubMaskCommandsEnv, "1")
 
 	var stdout bytes.Buffer
 	cmd := newMintTokenCmd()
@@ -241,38 +241,40 @@ func TestMintTokenCmd_TokenFree(t *testing.T) {
 	cmd.SetArgs([]string{"--role", "triage", "--repos", "my-repo", "--mint-url", mintServer.URL})
 	stderr := captureStderr(t, func() { require.NoError(t, cmd.Execute()) })
 
-	assert.NotContains(t, stderr, tokenFreeInitialToken)
-	assert.NotContains(t, stderr, "::add-mask::")
-	assert.Equal(t, tokenFreeInitialToken, stdout.String())
+	assert.Contains(t, stderr, "::add-mask::"+maskTestInitialToken)
+	assert.Equal(t, maskTestInitialToken, stdout.String())
+	assert.Nil(t, cmd.Flags().Lookup(noGitHubMaskCommandsFlag))
+	assert.Nil(t, newRootCmd().PersistentFlags().Lookup(noGitHubMaskCommandsFlag))
 }
 
-// The root --token-free-output flag turns the mode on for any subcommand
-// and exports it for child processes; without it the default is kept.
-func TestRootCmd_TokenFreeOutputFlag(t *testing.T) {
+func TestRunCmd_HasNoGitHubMaskCommandsFlag(t *testing.T) {
+	f := newRunCmd().Flags().Lookup(noGitHubMaskCommandsFlag)
+	require.NotNil(t, f)
+	assert.Equal(t, "false", f.DefValue)
+	assert.Contains(t, f.Usage, "::add-mask::")
+	assert.Contains(t, f.Usage, noGitHubMaskCommandsEnv)
+	assert.Contains(t, f.Usage, "bypass")
+}
+
+func TestResolveNoGitHubMaskCommands(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []string
+		env  string
 		want bool
 	}{
-		{"flag set", []string{"--token-free-output", "probe"}, true},
-		{"flag after subcommand", []string{"probe", "--token-free-output"}, true},
-		{"default", []string{"probe"}, false},
+		{"default", nil, "", false},
+		{"flag", []string{"--" + noGitHubMaskCommandsFlag}, "", true},
+		{"env", nil, "1", true},
+		{"env false", nil, "false", false},
+		{"explicit false flag beats env", []string{"--" + noGitHubMaskCommandsFlag + "=false"}, "1", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(tokenFreeOutputEnv, "")
-			var got bool
-			root := newRootCmd()
-			root.AddCommand(&cobra.Command{
-				Use: "probe",
-				RunE: func(*cobra.Command, []string) error {
-					got = tokenFreeOutputEnabled()
-					return nil
-				},
-			})
-			root.SetOut(io.Discard)
-			root.SetArgs(tc.args)
-			require.NoError(t, root.Execute())
-			assert.Equal(t, tc.want, got)
+			t.Setenv(noGitHubMaskCommandsEnv, tc.env)
+			cmd := &cobra.Command{Use: "probe"}
+			addNoGitHubMaskCommandsFlag(cmd)
+			require.NoError(t, cmd.ParseFlags(tc.args))
+			assert.Equal(t, tc.want, resolveNoGitHubMaskCommands(cmd))
 		})
 	}
 }

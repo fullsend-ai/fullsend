@@ -449,6 +449,8 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
+			githubMaskCommandsSuppressed.Store(resolveNoGitHubMaskCommands(cmd))
+			defer githubMaskCommandsSuppressed.Store(false)
 			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
@@ -475,6 +477,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, opencode, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi, codex, and opencode — codex takes OpenAI ids and gateway/<model> only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
+	addNoGitHubMaskCommandsFlag(cmd)
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
