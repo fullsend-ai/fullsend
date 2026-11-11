@@ -717,8 +717,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	composeOpts.RunnerSecretNames = runnerSecretNameSet(runnerSecrets)
 
 	// Pin-mismatch and offline-miss errors advise this command, which
-	// names the harness and succeeds as written.
-	composeOpts.LockUpdateCommand = fmt.Sprintf("fullsend lock %s --update%s", shellQuoteArg(agentName), fullsendDirArg(fullsendDir))
+	// names the harness and succeeds as written. The harness is not
+	// resolved yet, so the hint cannot carry --forge; it is rebuilt
+	// once the harness path is known.
+	composeOpts.LockUpdateCommand = lockUpdateHint(agentName, fullsendDir, "", forgePlatform)
 
 	// Resolve the agent source and compose the harness. fullsend prepare
 	// composes through the same function, so the image it warms is the one

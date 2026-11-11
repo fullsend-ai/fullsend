@@ -112,6 +112,12 @@ func composeRunHarness(ctx context.Context, in runHarnessInput, printer *ui.Prin
 		useAgentsRepoHostFetch(&composeOpts, fallbackForgeClient)
 	}
 
+	// The harness path is known now, so the lock-update advice can name
+	// the forge platform: for a child with no forge: block run under one,
+	// the advised re-lock must carry --forge or it composes with platform
+	// "" and drops the forge-specific base files (#8988).
+	composeOpts.LockUpdateCommand = lockUpdateHint(agentName, in.fullsendDir, harnessPath, composeOpts.ForgePlatform)
+
 	// If the harness has a URL base and org config failed to load,
 	// load it strictly now so LoadWithBase gets a proper error path
 	// rather than an unhelpful "URL base requires allowed_remote_resources".
@@ -168,12 +174,7 @@ func composeRunHarness(ctx context.Context, in runHarnessInput, printer *ui.Prin
 			// Without --forge, lock reads forge keys from the child only
 			// (#8988), so a child with no forge: block needs the platform
 			// named. A child with forge keys is locked for all of them.
-			forgeArg := ""
-			if composeOpts.ForgePlatform != "" {
-				if rawH, rawErr := harness.LoadRaw(harnessPath); rawErr == nil && len(rawH.Forge) == 0 {
-					forgeArg = " --forge " + composeOpts.ForgePlatform
-				}
-			}
+			forgeArg := lockForgeArg(harnessPath, composeOpts.ForgePlatform)
 			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run fullsend lock --update%s %s%s to pin them",
 				agentName, len(unpinned), noun, unpinned[0], forgeArg, shellQuoteArg(agentName), fullsendDirArg(in.fullsendDir)))
 		}

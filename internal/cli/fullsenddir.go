@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
 // defaultFullsendDir is the --fullsend-dir default for commands a user runs
@@ -63,4 +65,27 @@ func shellQuoteArg(s string) string {
 		}
 	}
 	return s
+}
+
+// lockForgeArg renders the --forge argument a printed lock-update hint
+// needs: empty unless a forge platform is set and the harness at
+// harnessPath declares no forge: block of its own — without --forge, lock
+// reads forge keys from the child only (#8988), so re-locking such a child
+// composes with platform "" and drops the forge-specific base files. An
+// empty harnessPath (the harness is not resolved yet) skips the check.
+func lockForgeArg(harnessPath, forgePlatform string) string {
+	if forgePlatform == "" || harnessPath == "" {
+		return ""
+	}
+	if rawH, err := harness.LoadRaw(harnessPath); err == nil && len(rawH.Forge) == 0 {
+		return " --forge " + forgePlatform
+	}
+	return ""
+}
+
+// lockUpdateHint returns the lock-update command the run, lint and lock
+// advice prints: it names the harness and succeeds as written, and carries
+// --forge when the re-lock needs the platform named (lockForgeArg).
+func lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform string) string {
+	return fmt.Sprintf("fullsend lock %s --update%s%s", shellQuoteArg(agentName), fullsendDirArg(fullsendDir), lockForgeArg(harnessPath, forgePlatform))
 }
