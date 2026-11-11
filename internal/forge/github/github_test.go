@@ -4556,6 +4556,7 @@ func TestGetIssueComment(t *testing.T) {
 			"id":         42,
 			"node_id":    "IC_42",
 			"html_url":   "https://github.com/org/repo/issues/1#issuecomment-42",
+			"issue_url":  "https://api.github.com/repos/org/repo/issues/7",
 			"body":       "playback-current: 3",
 			"user":       map[string]string{"login": "fullsend-bot"},
 			"created_at": "2026-01-01T00:00:00Z",
@@ -4570,6 +4571,7 @@ func TestGetIssueComment(t *testing.T) {
 	assert.Equal(t, "IC_42", comment.NodeID)
 	assert.Equal(t, "playback-current: 3", comment.Body)
 	assert.Equal(t, "fullsend-bot", comment.Author)
+	assert.Equal(t, 7, comment.IssueNumber)
 }
 
 func TestGetIssueComment_NotFound(t *testing.T) {

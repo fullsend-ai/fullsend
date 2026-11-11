@@ -97,7 +97,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newEvalMeasureCmd())
 	cmd.AddCommand(newResolveMRSourceCmd())
 	cmd.AddCommand(newCheckProtectedBranchCmd())
-	cmd.AddCommand(newCiCmd())
+	cmd.AddCommand(newCICmd())
 	cmd.AddCommand(newLintCmd())
 	cmd.AddCommand(newSelfUpdateCmd())
 	return cmd

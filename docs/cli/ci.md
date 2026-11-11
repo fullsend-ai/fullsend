@@ -54,7 +54,7 @@ and `--repo`, or set `PR_NUMBER` and `GITHUB_REPOSITORY`.
 
 | Variable | Used when | Description |
 |----------|-----------|-------------|
-| `EVENT_NAME` | always | `issue_comment` selects `/ok-to-test` comment mode |
+| `EVENT_NAME` | always | `issue_comment` selects `/ok-to-test` comment mode; empty or `pull_request` / `labeled` / `pull_request_target` use author/label policy; other values are rejected with `reason=error` |
 | `COMMENT_ID` | `issue_comment` | Comment id to fetch from the API (required in comment mode) |
 | `COMMENTER_LOGIN` | `issue_comment` | Who posted the comment (optional; API author is used when empty) |
 | `EVENT_ACTION` | `pull_request` / `labeled` | GitHub event action |

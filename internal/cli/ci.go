@@ -4,7 +4,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func newCiCmd() *cobra.Command {
+func newCICmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "ci",
 		Short: "CI helper commands",
@@ -14,6 +14,6 @@ interactive operator tools.
 fullsend ci check-e2e-authorization decides whether a pull request may
 run credentialed e2e tests.`,
 	}
-	cmd.AddCommand(newCiCheckE2EAuthorizationCmd())
+	cmd.AddCommand(newCICheckE2EAuthorizationCmd())
 	return cmd
 }

@@ -46,7 +46,7 @@ var newE2EAuthGateFn = func(explicitToken string) (e2eauth.GitHubGate, error) {
 	return gate, nil
 }
 
-func newCiCheckE2EAuthorizationCmd() *cobra.Command {
+func newCICheckE2EAuthorizationCmd() *cobra.Command {
 	var (
 		opts       checkE2EAuthOpts
 		forgeToken string

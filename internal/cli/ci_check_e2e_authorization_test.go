@@ -70,7 +70,7 @@ func TestCiCommand_RegisteredInRoot(t *testing.T) {
 	}
 	assert.True(t, found, "expected ci subcommand registered in root")
 
-	ci := newCiCmd()
+	ci := newCICmd()
 	names := make(map[string]bool)
 	for _, sub := range ci.Commands() {
 		names[sub.Name()] = true
@@ -96,7 +96,7 @@ func clearE2EAuthEnv(t *testing.T) {
 
 func TestCiCheckE2EAuthorizationCmd_RequiresPR(t *testing.T) {
 	clearE2EAuthEnv(t)
-	cmd := newCiCheckE2EAuthorizationCmd()
+	cmd := newCICheckE2EAuthorizationCmd()
 	cmd.SetArgs([]string{"--repo", "fullsend-ai/fullsend"})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -105,7 +105,7 @@ func TestCiCheckE2EAuthorizationCmd_RequiresPR(t *testing.T) {
 
 func TestCiCheckE2EAuthorizationCmd_RequiresRepo(t *testing.T) {
 	clearE2EAuthEnv(t)
-	cmd := newCiCheckE2EAuthorizationCmd()
+	cmd := newCICheckE2EAuthorizationCmd()
 	cmd.SetArgs([]string{"42"})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -114,7 +114,7 @@ func TestCiCheckE2EAuthorizationCmd_RequiresRepo(t *testing.T) {
 
 func TestCiCheckE2EAuthorizationCmd_InvalidPR(t *testing.T) {
 	clearE2EAuthEnv(t)
-	cmd := newCiCheckE2EAuthorizationCmd()
+	cmd := newCICheckE2EAuthorizationCmd()
 	cmd.SetArgs([]string{"nope", "fullsend-ai/fullsend"})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -311,7 +311,7 @@ func TestCiCheckE2EAuthorizationCmd_ExecuteTrustedAuthor(t *testing.T) {
 	outPath := filepath.Join(t.TempDir(), "github-output")
 	t.Setenv("GITHUB_OUTPUT", outPath)
 
-	cmd := newCiCheckE2EAuthorizationCmd()
+	cmd := newCICheckE2EAuthorizationCmd()
 	var stdout, stderr bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
@@ -332,7 +332,7 @@ func TestCiCheckE2EAuthorizationCmd_MissingToken(t *testing.T) {
 	t.Setenv("PATH", "/nonexistent")
 
 	var stdout, stderr strings.Builder
-	cmd := newCiCheckE2EAuthorizationCmd()
+	cmd := newCICheckE2EAuthorizationCmd()
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"42", "fullsend-ai/fullsend"})

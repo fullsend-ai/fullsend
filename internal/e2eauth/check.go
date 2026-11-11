@@ -51,7 +51,11 @@ type Result struct {
 
 // Check decides whether a pull request may run credentialed e2e tests in CI.
 func Check(ctx context.Context, gh GitHubGate, in Input) Result {
-	if strings.TrimSpace(in.EventName) == "issue_comment" {
+	mode, err := resolveEventMode(in)
+	if err != nil {
+		return errorResult(err)
+	}
+	if mode == "issue_comment" {
 		return checkIssueComment(ctx, gh, in)
 	}
 
