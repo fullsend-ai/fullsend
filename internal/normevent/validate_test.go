@@ -79,6 +79,34 @@ func TestValidate_CrossFieldRules(t *testing.T) {
 	assert.Error(t, ev.Validate())
 }
 
+// TestValidate_JiraKeyPattern: for jira events the key must be a Jira work
+// item key (the shape fullsend run's identity resolution and the GitLab jira
+// dispatch driver enforce), so one Validate gate covers both consumers and a
+// malformed key is refused before dispatch rather than after it.
+func TestValidate_JiraKeyPattern(t *testing.T) {
+	jira := func(key string) *Event {
+		return &Event{
+			Repo:       "o/r",
+			Entity:     Entity{Kind: EntityWorkItem, ID: 10042, Key: key, URL: "https://acme.atlassian.net/browse/PROJ-123"},
+			Transition: Transition{Kind: TransitionOpened},
+			Actor:      Actor{ID: "alice", Kind: ActorHuman, Role: RoleWrite},
+			State:      State{Labels: []string{}},
+			Source:     Source{System: SystemJira, RawType: "issue"},
+		}
+	}
+	require.NoError(t, jira("PROJ-123").Validate())
+
+	// The malformed keys fullsend run and the GitLab driver refuse.
+	for _, key := range []string{"P-1", "10042", "proj-1", "PROJ-0", "PROJ-", "-1", "PROJ-1 x", "PROJ-1\n", "../PROJ-1", "PROJ-1;id"} {
+		assert.Error(t, jira(key).Validate(), "key %q", key)
+	}
+
+	// The pattern is jira-scoped: the same key stays valid for other systems.
+	gh := jira("P-1")
+	gh.Source.System = SystemGitHub
+	require.NoError(t, gh.Validate())
+}
+
 func TestMapGitHubPermission_AllRoles(t *testing.T) {
 	assert.Equal(t, RoleMaintain, MapGitHubPermission("maintain"))
 	assert.Equal(t, RoleTriage, MapGitHubPermission("triage"))

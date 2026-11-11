@@ -25,7 +25,7 @@ This mirrors how humans work today. You don't trust a code reviewer because they
 
 The per-agent mint authority decision separates a harness's run-stage request
 from the levels approved in its repository config entry
-([ADR 0162](../ADRs/0162-require-per-agent-mint-level-approval.md)).
+([ADR 0163](../ADRs/0163-require-per-agent-mint-level-approval.md)).
 
 ## Two-phase review model
 

@@ -50,8 +50,9 @@ func (o *TriggerOwner) CreateReplacementPoller(ctx context.Context, owner, repo 
 // handoff runs it before every elevation attempt, so a membership or policy
 // failure in an earlier run is retried rather than left to quarantine the
 // generation after a trigger was minted. A policy that does not admit the
-// account is reported as a *repos.PollerGenerationUnsafeError, which defers
-// the handoff; fullsend never writes the branch rule for a replacement.
+// account is reported as a *repos.ReplacementPollerBranchAccessError naming
+// the account's username, which defers the handoff with remediation; fullsend
+// never writes the branch rule for a replacement.
 func (o *TriggerOwner) EnsureReplacementPollerAccess(ctx context.Context, owner, repo string, userID int64) error {
 	if err := o.ensureReplacementMember(ctx, owner, repo, userID); err != nil {
 		return err
@@ -59,11 +60,33 @@ func (o *TriggerOwner) EnsureReplacementPollerAccess(ctx context.Context, owner,
 	if err := repos.VerifyGitLabPollerProtectedPipelineAccess(ctx, o.Admin, owner, repo, int(userID)); err != nil {
 		var denied *repos.PollerPipelineAccessDeniedError
 		if errors.As(err, &denied) {
-			return &repos.PollerGenerationUnsafeError{Reason: denied.Error() + "; fullsend does not broaden branch protection, so allow the Poller to start pipelines on that branch"}
+			return &repos.ReplacementPollerBranchAccessError{
+				UserID:   userID,
+				Username: o.serviceAccountUsername(ctx, owner, repo, userID),
+				Branch:   denied.Branch,
+				RuleName: denied.RuleName,
+			}
 		}
 		return fmt.Errorf("reading protected default-branch pipeline access for the replacement Poller service account (user ID %d): %w", userID, err)
 	}
 	return nil
+}
+
+// serviceAccountUsername returns the GitLab username of the project service
+// account with the given ID, or "" when the inventory cannot be read or does
+// not list it. It only labels operator guidance, so a lookup failure falls
+// back to the numeric ID instead of failing the check.
+func (o *TriggerOwner) serviceAccountUsername(ctx context.Context, owner, repo string, userID int64) string {
+	accounts, err := o.Admin.ListProjectServiceAccounts(ctx, owner, repo)
+	if err != nil {
+		return ""
+	}
+	for _, sa := range accounts {
+		if int64(sa.ID) == userID {
+			return sa.Username
+		}
+	}
+	return ""
 }
 
 // ensureReplacementMember makes the account a direct project member at

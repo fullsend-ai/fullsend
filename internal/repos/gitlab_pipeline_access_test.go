@@ -152,6 +152,11 @@ func TestVerifyGitLabPollerProtectedPipelineAccess(t *testing.T) {
 	err := VerifyGitLabPollerProtectedPipelineAccess(ctx, fc, "group", "project", 99)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `user ID 99 cannot start pipelines on protected branch "release"`)
+	var denied *PollerPipelineAccessDeniedError
+	require.ErrorAs(t, err, &denied)
+	assert.Equal(t, 99, denied.UserID)
+	assert.Equal(t, "release", denied.Branch)
+	assert.Equal(t, "release", denied.RuleName)
 	assert.Empty(t, fc.GrantedProtectedBranchMergeUsers, "the probe never grants access")
 
 	fc.Errors = map[string]error{"GetProtectedBranch": forge.ErrNotSupported}

@@ -2320,6 +2320,58 @@ func TestIsStaleTreeSHAError(t *testing.T) {
 	}
 }
 
+func TestIsTransientTreeError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name:   "stale tree SHA",
+			apiErr: &APIError{StatusCode: 422, Message: "Tree SHA does not exist"},
+			want:   true,
+		},
+		{
+			name:   "blob not yet visible",
+			apiErr: &APIError{StatusCode: 422, Message: "tree.sha 62d317f8a1b2c3d4e5f60718293a4b5c6d7e8f90 is not a valid blob"},
+			want:   true,
+		},
+		{
+			name: "blob not yet visible in error detail",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors:     []APIErrorDetail{{Message: "tree.sha 3daff95c is not a valid blob"}},
+			},
+			want: true,
+		},
+		{
+			name:   "GitHub-side request timeout",
+			apiErr: &APIError{StatusCode: 422, Message: "Sorry, your request timed out. It's likely that your input was too large to process."},
+			want:   true,
+		},
+		{
+			name: "validation failure",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors:     []APIErrorDetail{{Message: "tree.mode is not a valid mode"}},
+			},
+			want: false,
+		},
+		{
+			name:   "unrelated 422",
+			apiErr: &APIError{StatusCode: 422, Message: "Reference already exists"},
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isTransientTreeError(tt.apiErr))
+		})
+	}
+}
+
 func TestIsAlreadyExistsError(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -5625,6 +5677,161 @@ func TestCommitFiles_StaleTreeSHAOnCommitRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, committed)
 	assert.Equal(t, 2, commitPostCount)
+}
+
+// transientTree422Messages are the transient 422 bodies GitHub returns from
+// the create-tree endpoint that CommitFiles retries from scratch.
+var transientTree422Messages = map[string]map[string]any{
+	"blob not yet visible": {
+		"message": "tree.sha 62d317f8a1b2c3d4e5f60718293a4b5c6d7e8f90 is not a valid blob",
+	},
+	"request timed out": {
+		"message": "Sorry, your request timed out. It's likely that your input was too large to process.",
+	},
+}
+
+// transientTreeServer serves the Git Data commit path, answering the first
+// failTreePosts POST /git/trees calls with body and 422.
+func transientTreeServer(t *testing.T, body map[string]any, failTreePosts int, treePosts *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/commits/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			*treePosts++
+			if *treePosts <= failTreePosts {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				json.NewEncoder(w).Encode(body)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+}
+
+func TestCommitFiles_TransientTree422Retry(t *testing.T) {
+	for name, body := range transientTree422Messages {
+		t.Run(name, func(t *testing.T) {
+			treePosts := 0
+			srv := transientTreeServer(t, body, 1, &treePosts)
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+				// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+				{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+			})
+			require.NoError(t, err)
+			assert.True(t, committed)
+			assert.Equal(t, 2, treePosts)
+		})
+	}
+}
+
+func TestCommitFiles_TransientTree422Exhausted(t *testing.T) {
+	for name, body := range transientTree422Messages {
+		t.Run(name, func(t *testing.T) {
+			treePosts := 0
+			srv := transientTreeServer(t, body, 1000, &treePosts)
+			defer srv.Close()
+
+			after, delays := recordingAfter()
+			client := New("test-token").WithBaseURL(srv.URL).WithAfterFunc(after)
+			_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+				// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+				{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "create tree: ")
+			assert.Equal(t, 3, treePosts, "bounded at three attempts")
+
+			// The delay between attempts grows: 100-500ms, then 200-1000ms.
+			got := delays()
+			if assert.Len(t, got, 2) {
+				assert.GreaterOrEqual(t, got[0], 100*time.Millisecond)
+				assert.Less(t, got[0], 500*time.Millisecond)
+				assert.GreaterOrEqual(t, got[1], 200*time.Millisecond)
+				assert.Less(t, got[1], 1000*time.Millisecond)
+			}
+		})
+	}
+}
+
+func TestCommitFiles_TransientCommit422Retry(t *testing.T) {
+	commitPosts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/commits/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			commitPosts++
+			if commitPosts == 1 {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				json.NewEncoder(w).Encode(transientTree422Messages["request timed out"])
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 2, commitPosts)
+}
+
+func TestCommitFiles_ValidationTree422NotRetried(t *testing.T) {
+	treePosts := 0
+	srv := transientTreeServer(t, map[string]any{
+		"message": "Validation Failed",
+		"errors":  []map[string]string{{"message": "tree.mode is not a valid mode"}},
+	}, 1000, &treePosts)
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		// Mode 100755 pins the Git Data REST path (see usesGitDataPath).
+		{Path: "f.sh", Content: []byte("x"), Mode: "100755"},
+	})
+	require.Error(t, err)
+	assert.False(t, forge.IsNonFastForward(err))
+	assert.Equal(t, 1, treePosts)
 }
 
 func TestCommitFiles_NonFastForward(t *testing.T) {
