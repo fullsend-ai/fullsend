@@ -623,6 +623,8 @@ func cloneAgentEntries(in []AgentEntry) []AgentEntry {
 			}
 			out[i].Subagents = m
 		}
+		out[i].Harness = a.Harness.clone()
+		out[i].inheritedHarness = cloneAgentHarnesses(a.inheritedHarness)
 	}
 	return out
 }

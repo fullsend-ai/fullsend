@@ -171,13 +171,13 @@ repository's concrete `repos.yaml` entry is the only managed layer that may
 declare it, and install renders the whole block into the managed overlay. See
 [Config Reference — `trace_context`](../../reference/config-reference.md#trace_context).
 
-### Per-agent `runtime`, `model`, `effort`, `subagents`, `trigger` on `agents:` entries
+### Per-agent `runtime`, `model`, `effort`, `subagents`, `trigger`, `harness` on `agents:` entries
 
-An `agents:` entry may set `runtime`, `model`, `effort`, `subagents` and
-`trigger` for that agent. The `ref` field records the branch or tag that was resolved when
-the agent was adopted via `agent add`; `agent update` re-resolves against
-this ref instead of the default branch when it is present (empty for
-SHA-pinned or legacy entries).
+An `agents:` entry may set `runtime`, `model`, `effort`, `subagents`,
+`trigger` and a `harness:` block for that agent. The `ref` field records the
+branch or tag that was resolved when the agent was adopted via `agent add`;
+`agent update` re-resolves against this ref instead of the default branch
+when it is present (empty for SHA-pinned or legacy entries).
 
 An enabled entry without `source:` is an *override-only* entry that tunes a
 built-in agent by name (or, in an overlay, a custom agent registered in the
@@ -188,6 +188,17 @@ parent's. `subagents` uses
 per-key merge: overlay entries override or tombstone (`~`) individual
 persona keys while unstated keys inherit from the parent. There is no way to
 unset a parent's scalar value from the overlay short of restating the entry.
+
+The `harness:` block does not merge field by field like the other settings.
+Each layer's block stays a layer of the harness chain. The chain is the
+agent's harness, then the `config.base.yaml` block, then the `config.yaml`
+block, composed by the `base:` rules. The overlay can replace a base value
+but not remove it. An overlay entry with no block, an empty one
+(`harness: {}`) or a null one keeps the base block
+([ADR 0162](../../ADRs/0162-agent-entries-may-carry-harness-overrides.md);
+see the [`harness` field](../../reference/config-reference.md#agents)).
+`repos.yaml` managed blocks render into one `config.yaml`, so only one of the
+`defaults`, forge and repository `config` layers may set an agent's block.
 
 ```yaml
 # config.base.yaml (preset)
