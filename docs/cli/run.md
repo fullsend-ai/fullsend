@@ -534,7 +534,7 @@ them into the sandbox. Matching is case-insensitive. It warns twice:
 `fullsend lint` also reports the load-time warning, and
 `fullsend lint --strict` exits non-zero on it. `fullsend lock` prints the
 load-time warning when it composes a harness. A current lock entry is not
-composed; run `fullsend lock --update` to check its keys. `lock` composes
+composed; run `fullsend lock <agent> --update` to check its keys. `lock` composes
 without event context, so a key added by an overlay
 guarded on `event` is reported only by `fullsend run`. The reserved names are
 listed in [Harness Field Reference § Reserved `env.sandbox`

@@ -412,14 +412,21 @@ a URL) names by relative path: agent, policy, skills, skill file overrides,
 scripts, plugins and the rest. They resolve to the locked content even when the
 cache has since fetched newer content for the same URL. `fullsend run` prints
 `Pinning N dependencies from lock file` when it applies these pins. If locked
-content is missing from the cache, an `--offline` run fails and asks you to run
-`fullsend lock --update`, and an online run re-fetches it and fails if it no
-longer matches the lock (`fullsend lock --update` re-pins it). A lock entry for
+content is missing from the cache, an `--offline` run fails and its error names
+the command to run (`fullsend lock <agent> --update`, with `--fullsend-dir` when
+the directory is not the default), and an online run re-fetches it and fails if
+it no longer matches the lock (the same command re-pins it). A lock entry for
 an agent fetched from a URL that was written before fullsend recorded these
-files does not pin them; run `fullsend lock --update` to add them. `fullsend run`
-warns when a current lock entry leaves any of these files unpinned.
+files does not pin them; run `fullsend lock <agent> --update` to add them.
+`fullsend run` warns when a current lock entry leaves any of these files
+unpinned.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
+It re-resolves the URLs the lock entry records, and the files the base names
+by relative path, from their sources, so a file that changed upstream is
+recorded even on the cache that wrote the lock (the URL cache index is not
+consulted for `--update`). A base's own `#sha256=` pin still wins: to move a
+base itself, change the pinned SHA in the harness file.
 A current entry is also not composed, so `fullsend lock` does not check it for
 reserved `env.sandbox` keys; see
 [Reserved `env.sandbox` keys](../../cli/run.md#reserved-envsandbox-keys).
