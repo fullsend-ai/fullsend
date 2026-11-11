@@ -309,7 +309,7 @@ func TestRunLock_WorkflowRelativeSourceInHarnessAddedByURL(t *testing.T) {
 	out, err := runWorkflowAgent(t, dir, resolveFlags{offline: true, treeFetcher: fetcher})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating sandbox", "the workflow resolved and the run reached sandbox creation")
-	assert.Contains(t, out, "example-org/agents@"+cliWorkflowSHA[:12]+"/pipelines/sample (sha256:"+lockedHash[:12]+") delivered as claude plugin wfplug")
+	assert.Contains(t, out, "example-org/agents@"+cliWorkflowSHA[:12]+"/pipelines/sample (sha256:"+lockedHash[:12]+") → /wfplug:probe")
 	assert.Len(t, fetched, 1)
 
 	t.Run("a source that escapes the repository is refused", func(t *testing.T) {
@@ -993,7 +993,7 @@ func TestRunAgent_WorkflowLockForAnotherURLWarns(t *testing.T) {
 	assert.NotContains(t, out, "Harness has changed since lock file was generated", "the child file is unchanged, so the entry is current")
 	assert.Contains(t, out, "Lock entry for code pins the runtime workflow at "+dep.URL+", but it now resolves to "+newURL+"; run 'fullsend lock --update code --fullsend-dir "+dir+"' to re-pin it")
 	assert.Contains(t, err.Error(), "creating sandbox", "the run reaches sandbox creation")
-	assert.Contains(t, out, "(sha256:"+newHash[:12]+") delivered as claude plugin wfplug")
+	assert.Contains(t, out, "(sha256:"+newHash[:12]+") → /wfplug:probe")
 	assert.NotContains(t, out, "sha256:"+oldHash[:12], "never the locked tree")
 
 	// `fullsend lock --update` records the new source, and the run no
@@ -1004,7 +1004,7 @@ func TestRunAgent_WorkflowLockForAnotherURLWarns(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating sandbox")
 	assert.NotContains(t, out, "now resolves to")
-	assert.Contains(t, out, "(sha256:"+newHash[:12]+") delivered as claude plugin wfplug")
+	assert.Contains(t, out, "(sha256:"+newHash[:12]+") → /wfplug:probe")
 }
 
 func TestLockedRuntimeWorkflow(t *testing.T) {
