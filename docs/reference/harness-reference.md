@@ -382,7 +382,7 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
-**`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
+**`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox. A relative `script` resolves like the other host-side scripts: a local harness's entry resolves against the `.fullsend` configuration root, and a `base:` harness fetched via URL has its entry fetched from the base's source — under the same `allowed_remote_resources` and integrity rules as the other base paths — with the composed harness naming the cached copy. `fullsend lock` records the script as a dependency and lock replay restores it.
 
 ## Reserved `env.sandbox` names
 
@@ -578,7 +578,7 @@ agent: agents/triage.md              # → {base}/agents/triage.md
 agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=abc...
 ```
 
-**Scripts are local-only** — `pre_script`, `post_script`, and `validation_loop.script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed.
+**Scripts are local-only** — `pre_script`, `post_script`, `validation_loop.script`, and `api_servers[].script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed — composition fetches them from the base's source under the same allowlist and integrity rules as the other base paths, and the composed harness names the cached copy.
 
 **`validation_loop.preflight_check` is a command, not a script resource** — The runner validates `${VAR}` references against the preflight allowlist environment (host `PATH`/`HOME`/`TMPDIR`, runner-forced `FULLSEND_DIR`/`PYTHONDONTWRITEBYTECODE`, and `env.runner` declarations), expands them, and passes the result to `sh -c` on the host; it does not fetch or stage a file named by the command. A reference outside that environment — including any credential name, whether inherited from the process environment or declared under `env.runner` — fails the run before the command executes. Do not interpolate untrusted values, even within shell quotes: on failure or timeout the diagnostics embed the command and output with declared secret values redacted.
 
