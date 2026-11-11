@@ -718,7 +718,7 @@ Observability is a cross-cutting concern that touches every other component. Eac
 
 **Decided:**
 
-- JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)).
+- JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)). A repo-level `artifacts` setting in `config.yaml` replaces that per-agent opt-out and can leave out transcripts or the whole artifact, for every run or per run source ([ADR 0161](ADRs/0161-repo-config-limits-run-artifact-content.md)).
 - Event-driven stage dispatch remains traceable end-to-end in the GitHub Actions UI by using synchronous `workflow_call` dispatch (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Scheduled entity-discovery runs are attributable to the verified fullsend
   invocation identity, target repository, effective policy, harness revision,
@@ -754,7 +754,7 @@ Observability is a cross-cutting concern that touches every other component. Eac
 - What signals matter most — cost, latency, token usage, action logs, decision traces, or something else?
 - ~~How do we balance detailed tracing (useful for debugging) with the volume of data agents will produce?~~ Decided in [ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md): instrument all lifecycle steps comprehensively; volume is managed by backends not by suppressing data at the source.
 - ~~How do we score wild agent traces for trends without a second export stack?~~ Decided in [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md): eval measurements write local JSONL beside telemetry when at least one new score row is produced (including `label: skip`); portable remote export uses the same OTLP config as traces (`gen_ai.evaluation.result` events). The JSONL is absent (not empty) when telemetry/manifest is missing, no traces match, or every candidate is already in the ledger.
-- What is the retention and access model for agent logs? Who can see what? (JSONL trace access model decided in [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md); retention policy and broader log access remain open.)
+- What is the retention and access model for agent logs? Who can see what? (JSONL trace access model decided in [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md); repo-level limits on what a run artifact publishes, per run source, decided in [ADR 0161](ADRs/0161-repo-config-limits-run-artifact-content.md); retention policy and broader log access remain open.)
 - How does observability interact with the security requirement that "every
   action is logged, attributable, and reviewable"? Scheduled entity-discovery
   attribution is decided in
