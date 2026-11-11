@@ -52,7 +52,8 @@ roles.
 - Store an approved role list and approved level sets per agent and run-stage.
   This separates approval to assume a role from the authority requested within
   that role, while representing all effective harness variants. A missing role
-  list denies all roles; an omitted level map selects Ralph's built-in profile.
+  list denies all roles; an omitted level map selects the built-in privilege
+  profile.
   A present level map must cover every run-stage or provide an explicit
   `default`.
 
@@ -69,17 +70,18 @@ variant.
 This is positive approval syntax: repositories list roles they intend an
 agent to use, rather than listing roles to deny. Omitting `approved_roles` is
 the broad-denial path. For an approved role, the optional level map expresses
-the level grants the repository approves. When the map is omitted, Ralph's
-built-in profile applies. A deny-only agent entry has no purpose in this
-model.
+the level grants the repository approves. When the map is omitted, the
+built-in privilege profile applies. A deny-only agent entry has no purpose in
+this model.
 
 An entry may also have an `approved_privilege_levels` map whose values are
 lists of levels and whose run-stage keys correspond to the harness's
 `privilege_levels` map. This map applies to each approved role. If the map is
-absent, Ralph's built-in profile applies: `[read]` for `pre_script` and
+absent, the built-in privilege profile applies: `[read]` for `pre_script` and
 `runtime`, and `[write]` for `post_script`; `validation_loop` uses the
-`runtime` grant. This is Ralph's compatibility default, scoped to roles that
-the repository owner explicitly approved.
+`runtime` grant. This default keeps the standard stage profile concise and
+applies only to roles that the repository owner explicitly approved. A
+repository that wants narrower levels must provide an explicit map.
 
 When `approved_privilege_levels` is present, it must be a non-empty map whose
 values are non-empty lists. The map must either provide a non-empty `default`
@@ -89,7 +91,7 @@ stage key. Stage-specific lists override `default`. An empty map, an empty
 stage list (including `default: []`), or a map that omits stages without a
 `default` is invalid configuration and prevents the agent from launching.
 Thus only omission of the entire `approved_privilege_levels` key selects
-Ralph's built-in profile; an empty map is not equivalent to omission.
+the built-in privilege profile; an empty map is not equivalent to omission.
 
 For example:
 
@@ -163,8 +165,11 @@ bypass.
 
 - `approved_roles` is the positive authorization gate: omit it to deny all
   roles; listing an agent solely to deny it has no effect. An approved role
-  with no level map uses Ralph's built-in profile, including `post_script`
-  write, so deleting the entire map restores that profile.
+  with no level map uses the built-in privilege profile, including
+  `post_script` write, so deleting the entire map restores that profile. This
+  is intentional for approved roles; repositories that do not approve that
+  level must keep an explicit map, and changes to this authorization config
+  remain subject to repository policy.
 - An explicit level map must be non-empty and complete: either every run-stage
   has a non-empty list or a non-empty `default` covers omitted stages. Empty
   lists and incomplete maps without `default` invalidate the config and block
