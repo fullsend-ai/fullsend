@@ -257,6 +257,10 @@ type aggregateMetrics struct {
 	// at the same index (see agentruntime.RunMetrics.FallbackReasons), from
 	// the same iteration. Absent when none fell back.
 	FallbackReasons []string `json:"fallback_reasons,omitempty"`
+	// RuntimeWorkflow records the runtime workflow the run delivered and, for
+	// a Claude plugin, the command it started (ADR 0130), on every
+	// runtime; absent without a harness runtime_workflow: field.
+	RuntimeWorkflow *workflowLaunch `json:"runtime_workflow,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -738,6 +742,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run 'fullsend lock --update%s %s%s' to pin them",
 				agentName, len(unpinned), noun, unpinned[0], forgeArg, agentName, fullsendDirArg(fullsendDir)))
 		}
+	}
+	if err := checkWorkflowArgsLiteral(h); err != nil {
+		printer.StepFail("Failed to load harness")
+		return err
 	}
 
 	// Emit the harness-resolved role as a step output so the finalize step
@@ -1269,12 +1277,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Sandbox-bound sites expand sandboxDeniedKeys empty instead of failing,
 	// so validation must resolve them there whether or not the host variable
 	// is set (the action unsets FULLSEND_JIRA_TOKEN on non-Jira runs).
-	sandboxLookup := func(key string) (string, bool) {
-		if sandboxDeniedKeys[key] {
-			return "", true
-		}
-		return lookup(key)
-	}
+	sandboxLookup := sandboxBoundLookup(lookup)
 	if err := h.ValidateRunnerEnvSites(withRunnerSecretLookup(runnerSecrets, lookup), sandboxLookup); err != nil {
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
@@ -1307,6 +1310,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// resolves before ValidateFilesExist stat-checks it.
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
 		h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, expander)
+	}
+	// Expand ${VAR} references in runtime_workflow.args (ADR 0130), so a harness
+	// can hand the work item to the workflow; the result must stay one
+	// line, because it is the tail of the slash command the runner starts,
+	// and is scanned for credentials whether or not it names a variable.
+	// Args reach the sandbox prompt, so they expand like other sandbox-bound
+	// sites: host-only credentials (sandboxDeniedKeys) expand empty.
+	if h.RuntimeWorkflow != nil {
+		args, err := expandWorkflowArgs(h.RuntimeWorkflow.Args, sandboxLookup)
+		if err != nil {
+			printer.StepFail("Environment validation failed")
+			return err
+		}
+		h.RuntimeWorkflow.Args = args
 	}
 
 	// Check the runtime before resolving the runtime workflow (ADR
@@ -1359,6 +1376,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	if err := validateRunnerSecretHostFiles(h, runnerSecrets); err != nil {
 		printer.StepFail("Runner secret validation failed")
+		return err
+	}
+	if err := checkWorkflowAgentTools(h, agentName, resolvedWorkflow); err != nil {
+		printer.StepFail(err.Error())
+		return err
+	}
+	if err := checkWorkflowToolAllowlist(h, resolvedWorkflow); err != nil {
+		printer.StepFail(err.Error())
 		return err
 	}
 	// Ensure scripts are executable. The GitHub Contents API does not
@@ -2439,6 +2464,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	aggMetrics.RuntimeSource = configSource
 	aggMetrics.RequestedModel = h.Model
 	aggMetrics.OverrideSource = aliasOverrideSource(modelOverrideSource(overrides, h.Model), modelRemapped, runCfg.source)
+	aggMetrics.RuntimeWorkflow = newWorkflowLaunch(resolvedWorkflow)
 	tx := backend.Transcripts
 
 	// The dummy-playback runtime (e2e behaviour tests) reads and updates a
@@ -2788,6 +2814,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// injected into the agent prompt so the agent can self-correct. See #1050.
 	var validationFeedback string
 	feedbackEnabled := h.ValidationLoop != nil && h.ValidationLoop.FeedbackMode == "append"
+	// workflowFeedbackNoted keeps workflowFeedbackNote to once per run.
+	var workflowFeedbackNoted bool
 
 	// Per-iteration sandbox writes follow the run's cancellation.
 	execCtx := func(name, command string, timeout time.Duration) (string, string, int, error) {
@@ -2837,10 +2865,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Build the agent prompt. On retry iterations with feedback_mode:
 		// append, the previous validation failure is injected so the agent
 		// can self-correct instead of re-running blindly (#1050, #6494).
-		agentPrompt := ""
-		promptSanitized := 0
-		if iteration > 1 && feedbackEnabled && validationFeedback != "" {
-			agentPrompt, promptSanitized = buildFeedbackPrompt(validationFeedback)
+		// A workflow harness starts its workflow command on every
+		// iteration instead (ADR 0130 rule 3).
+		agentPrompt, promptSanitized, injected, noteFeedback := iterationPrompt(resolvedWorkflow, iteration, feedbackEnabled, validationFeedback, &workflowFeedbackNoted)
+		if noteFeedback {
+			printer.StepWarn(workflowFeedbackNote)
+		}
+		if injected {
 			printer.StepInfo("Injecting validation feedback into agent prompt")
 			if promptSanitized > 0 {
 				printer.StepWarn(fmt.Sprintf(
@@ -2856,6 +2887,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Start the agent span before writeIterationEnv so the runtime
 		// TRACEPARENT names this iteration's span, not the run root.
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		if resolvedWorkflow != nil {
+			agentSpan.SetAttributes(workflowSpanAttr(resolvedWorkflow))
+		}
 		agentTraceparent := iterationTraceparent(agentSpan, tid.PropagatedFlags)
 
 		agentStart := time.Now()
@@ -2879,7 +2913,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// tool-span tracker is per iteration for the same reason and is not
 		// gated: execute_tool spans are metadata.
 		collector := newContentCollectorIfEnabled(h.RunnerEnv)
-		collector.attachInput(agentSpan, agentPrompt, promptHidesAlterations(validationFeedback, promptSanitized))
+		collector.attachInput(agentSpan, agentPrompt, inputAlteredUpstream(injected, validationFeedback, promptSanitized))
 		toolSpans := newToolSpanTracker(tracer, agentCtx)
 		toolSpans.runnerEnv = h.RunnerEnv
 		renderer := agentruntime.NewEventRenderer(printer)
@@ -3621,6 +3655,19 @@ var sandboxDeniedKeys = map[string]bool{
 	jira.ClientSecretEnvVar: true,
 }
 
+// sandboxBoundLookup wraps lookup for sites whose values reach the
+// sandbox: sandboxDeniedKeys resolve, but to the empty string, so a
+// reference to a host-only credential neither fails validation nor
+// carries its value into the sandbox.
+func sandboxBoundLookup(lookup func(string) (string, bool)) func(string) (string, bool) {
+	return func(key string) (string, bool) {
+		if sandboxDeniedKeys[key] {
+			return "", true
+		}
+		return lookup(key)
+	}
+}
+
 // expandSandboxEnvValue expands ${VAR} references in an env.sandbox value
 // with expander, refusing sandboxDeniedKeys (they expand empty).
 func expandSandboxEnvValue(v string, expander func(string) string) string {
@@ -4354,6 +4401,15 @@ func buildFeedbackPrompt(feedback string) (string, int) {
 			feedbackDelimiterClose + "\n\n" +
 			"Fix the issues described in the validation output above and try again.",
 		sanitizedFindings
+}
+
+// inputAlteredUpstream is attachInput's alteredUpstream for one
+// iteration: only a prompt that carries the validation feedback (injected)
+// can hide an alteration of it. A Claude runtime workflow's prompt is its
+// slash command, which holds no feedback, so feedback the runner did not
+// inject never masks it.
+func inputAlteredUpstream(injected bool, feedback string, sanitized int) bool {
+	return injected && promptHidesAlterations(feedback, sanitized)
 }
 
 // promptHidesAlterations reports whether the retry prompt's telemetry copy

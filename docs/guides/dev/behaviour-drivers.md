@@ -7,6 +7,7 @@ Behaviour tests isolate forge-specific code behind drivers so Gherkin scenarios 
 | Interface | Package | Responsibility |
 |-----------|---------|----------------|
 | `scm.Driver` | `pkg/behaviourtest/drivers/scm` | Issues, comments, labels (via GetIssue), file commits |
+| `scm.FileDeleter` | `pkg/behaviourtest/drivers/scm` | Optional: file deletes, for steps that remove what they committed (GitHub and GitLab drivers implement it) |
 | `ci.Driver` | `pkg/behaviourtest/drivers/ci` | Workflow polling, logs, artifact download |
 | `install.Driver` | `pkg/behaviourtest/drivers/install` | Unified surface: repo allocation/deallocation, mint lifecycle, and suite teardown |
 | `install.Factory` | `pkg/behaviourtest/drivers/install` | `func(install.PoolConfig) (Driver, error)`: builds the one shared `Driver` over the pool orgs; `PoolConfig` carries the pool layout, per-org `TokenFor` and `NewClient`, CLI binary, GCP project, and logger |

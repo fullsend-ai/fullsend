@@ -90,6 +90,10 @@ func (p *panickingSCM) CreateUserFork(context.Context, string, string) (string, 
 func (p *panickingSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
 	return nil
 }
+
+func (p *panickingSCM) DeleteFile(context.Context, string, string, string, string) error {
+	return nil
+}
 func (p *panickingSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
@@ -187,6 +191,7 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		GatewayConfigOriginal:      []byte("runtime: dummy\n"),
 		PlaybackEntries:            []runtime.PlaybackEntry{{Result: "triage/bug"}},
 		PlaybackCommitted:          true,
+		RuntimeWorkflowFiles:       []string{"pipelines/sample-pipeline/.claude-plugin/plugin.json"},
 		ConsumedHarnessRunIDs:      map[string]map[int]bool{"review": {10: true}},
 		JiraPollCLIOutput:          "{\n  \"dispatches\": []\n}\n",
 		JiraPollCLIExitCode:        1,
@@ -222,6 +227,7 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Nil(t, w.GatewayConfigOriginal)
 	assert.Nil(t, w.PlaybackEntries)
 	assert.False(t, w.PlaybackCommitted)
+	assert.Nil(t, w.RuntimeWorkflowFiles)
 	assert.Nil(t, w.ConsumedHarnessRunIDs)
 }
 

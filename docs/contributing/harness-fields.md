@@ -62,7 +62,7 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `image`            | Container image                                    |
 | `api_servers`      | REST proxies abstract forge details                |
 | `plugins`          | Plugin directories; each entry is a local path or a pinned URL and keeps its own `env`/`pi` options (ADR-0038, ADR-0094) |
-| `runtime_workflow` | Pins a runtime-workflow repository (`source`) and, for a Claude plugin, the workflow and its literal args (ADR-0130) |
+| `runtime_workflow` | Pins a runtime-workflow repository (`source`) and, for a Claude plugin, the workflow and its args, expanded from the runner environment (ADR-0130) |
 | `agent_input`      | Agent prompt input                                 |
 | `timeout_minutes`  | Run timeout                                        |
 | `sandbox_timeout_seconds` | Sandbox-level timeout                       |

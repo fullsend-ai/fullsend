@@ -17,7 +17,7 @@ const repoVisibleAttempts = 5
 
 var repoVisibleDelay = time.Second
 
-// Driver implements scm.Driver using forge.Client.
+// Driver implements scm.Driver and scm.FileDeleter using forge.Client.
 type Driver struct {
 	Client forge.Client
 }
@@ -49,6 +49,12 @@ func (d *Driver) CommitFile(ctx context.Context, owner, repo, path, message stri
 		Mode:    "100644",
 	}})
 	return err
+}
+
+var _ scm.FileDeleter = (*Driver)(nil)
+
+func (d *Driver) DeleteFile(ctx context.Context, owner, repo, path, message string) error {
+	return d.Client.DeleteFile(ctx, owner, repo, path, message)
 }
 
 func (d *Driver) GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error) {

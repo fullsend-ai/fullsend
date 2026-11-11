@@ -45,3 +45,36 @@ func AgentDefinitionModel(path string) string {
 	}
 	return def.Model
 }
+
+// AgentToolAccess is what a Claude-style agent definition says about its
+// tools: Tools is the frontmatter `tools:` list with any `(...)` argument
+// restriction stripped, Listed is false when there is no tools: entry (the
+// agent then gets the runtime's default tool set), and Disallowed is the
+// `disallowedTools:` list.
+type AgentToolAccess struct {
+	Tools      []string
+	Listed     bool
+	Disallowed []string
+}
+
+// AgentDefinitionTools reads the tool entries of the agent definition at
+// path. Unlike AgentDefinitionModel it returns read and parse errors, so a
+// caller that decides on the tool set can refuse a broken definition
+// instead of reading it as one without a tools: entry.
+func AgentDefinitionTools(path string) (AgentToolAccess, error) {
+	if path == "" {
+		return AgentToolAccess{}, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return AgentToolAccess{}, err
+	}
+	def, err := parsePiAgent(data)
+	if err != nil {
+		return AgentToolAccess{}, err
+	}
+	if def.DisallowedErr != nil {
+		return AgentToolAccess{}, fmt.Errorf("agent definition: %w", def.DisallowedErr)
+	}
+	return AgentToolAccess{Tools: def.Tools, Listed: def.Tools != nil, Disallowed: def.DisallowedTools}, nil
+}
