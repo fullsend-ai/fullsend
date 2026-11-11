@@ -210,7 +210,7 @@ const (
 	// the STAGE org) whose members may call the mint's /v1/status with
 	// a GitHub user token. The CF mint drivers deploy their mint with
 	// --status-auth=oidc,github --status-github-group=ORG/<slug>; the
-	// team itself is created by hack/setup-new-e2e-org.sh.
+	// team itself is created by e2e/org-pool/setup-org.sh.
 	MintStatusTeamSlug = "mint-status"
 )
 

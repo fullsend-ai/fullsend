@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# setup-new-e2e-org_test.sh — tests for the mint-status team step of
-# setup-new-e2e-org.sh (ensure_status_team) against a stubbed gh.
+# setup-org_test.sh — tests for the mint-status team step of
+# the e2e org pool setup (ensure_status_team in lib.sh) against a stubbed
+# gh.
 #
 # Covers: a missing team is created, its creator removed and the write actor
 # added; a second run on a provisioned org makes no changes; a non-404 error
@@ -20,12 +21,18 @@
 # holding the write or triage role fails; and a role-user listing error
 # fails closed (#8448).
 #
+# Also covers the foreign e2e allowlist step (ensure_foreign_e2e_repos):
+# an absent variable is created with visibility all; a listed caller makes
+# no changes; a read error or a non-"all" visibility fails closed; and an
+# unlisted caller is appended without dropping existing entries.
+#
 # Run from the repo root:
-#   bash hack/setup-new-e2e-org_test.sh
+#   bash e2e/org-pool/setup-org_test.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SETUP="${SCRIPT_DIR}/setup-new-e2e-org.sh"
+LIB="${SCRIPT_DIR}/lib.sh"
+SETUP="${SCRIPT_DIR}/setup-org.sh"
 FAILURES=0
 ORG="halfsend-01"
 TEAM="mint-status"
@@ -61,6 +68,9 @@ trap 'rm -rf "${SHIM_DIR}" "${STATE}"' EXIT
 # ${S}/role_users_error     listing the users of any org role fails with
 #                           HTTP 500
 # ${S}/role_put_noop        an org role PUT succeeds but assigns nothing
+# ${S}/foreign               org actions variable FULLSEND_FOREIGN_E2E_REPOS
+#                           exists; content is its JSON
+# ${S}/foreign_get_error     GET of the variable fails with HTTP 500
 # Pending memberships show up in the invitations list, not the members list.
 cat > "${SHIM_DIR}/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -68,13 +78,18 @@ S="${STUB_STATE}"
 echo "gh $*" >> "${S}/gh.log"
 [[ "${1:-}" == "api" ]] || { echo "unexpected gh $*" >&2; exit 2; }
 shift
-method=GET path="" jq_filter="" put_role="member"
+method=GET path="" jq_filter="" put_role="member" f_value="" f_name="" f_visibility=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -X) method="$2"; shift 2 ;;
     --jq) jq_filter="$2"; shift 2 ;;
     -f|-F)
-      case "$2" in role=*) put_role="${2#role=}" ;; esac
+      case "$2" in
+        role=*) put_role="${2#role=}" ;;
+        value=*) f_value="${2#value=}" ;;
+        name=*) f_name="${2#name=}" ;;
+        visibility=*) f_visibility="${2#visibility=}" ;;
+      esac
       shift 2 ;;
     --silent|--paginate) shift ;;
     /*) path="${1%%\?*}"; shift ;;
@@ -155,6 +170,18 @@ case "${method} ${path}" in
     login="${path##*/}"
     [[ -f "${S}/members/${login}" ]] || notfound
     rm -f "${S}/members/${login}" ;;
+  "GET /orgs/${STUB_ORG}/actions/variables/FULLSEND_FOREIGN_E2E_REPOS")
+    [[ -f "${S}/foreign_get_error" ]] && servererr
+    [[ -f "${S}/foreign" ]] || notfound
+    out "$(cat "${S}/foreign")" ;;
+  "PATCH /orgs/${STUB_ORG}/actions/variables/FULLSEND_FOREIGN_E2E_REPOS")
+    [[ -f "${S}/foreign" ]] || notfound
+    printf '{"value":"%s","visibility":"%s"}\n' "${f_value}" "$(jq -r .visibility <"${S}/foreign")" > "${S}/foreign" ;;
+  "GET /orgs/${STUB_ORG}/actions/variables")
+    # gh api sends no -X with -f fields; a body implies the create call.
+    [[ -n "${f_name}" ]] || { echo "unexpected gh api ${method} ${path}" >&2; exit 2; }
+    [[ -f "${S}/foreign" ]] && { echo "gh: already exists (HTTP 422)" >&2; exit 1; }
+    printf '{"value":"%s","visibility":"%s"}\n' "${f_value}" "${f_visibility}" > "${S}/foreign" ;;
   *)
     echo "unexpected gh api ${method} ${path}" >&2; exit 2 ;;
 esac
@@ -182,7 +209,7 @@ run_step() {
     STUB_TEAM="${TEAM}" STUB_OPERATOR="${OPERATOR}" \
     TEST_ACTOR_WRITE_PAT="pat-value-must-not-leak" \
     bash -c 'source "$1"; ensure_status_team "$2" "$3"' _ \
-    "${SETUP}" "${ORG}" "${WRITE}" 2>&1) || RC=$?
+    "${LIB}" "${ORG}" "${WRITE}" 2>&1) || RC=$?
 }
 
 # mutations lists the non-GET gh calls made.
@@ -363,7 +390,7 @@ else
 fi
 
 # --- 13. no legacy hosted-GCP-mint check (#8416) ---------------------------
-if grep -nE 'MINT_PROJECT|MINT_FUNCTION|MINT_REGION|gcloud|ROLE_APP_IDS' "${SETUP}"; then
+if grep -nE 'MINT_PROJECT|MINT_FUNCTION|MINT_REGION|gcloud|ROLE_APP_IDS' "${LIB}" "${SETUP}" "${SCRIPT_DIR}/setup-manual.sh"; then
   fail "legacy mint check: script still references hosted-GCP-mint settings"
 else
   pass "legacy mint check: no hosted-GCP-mint settings referenced"
@@ -380,7 +407,7 @@ run_fn() {
   RC=0
   OUT=$(PATH="${SHIM_DIR}:${PATH}" STUB_STATE="${STATE}" STUB_ORG="${ORG}" \
     STUB_TEAM="${TEAM}" STUB_OPERATOR="${OPERATOR}" \
-    bash -c 'source "$1"; shift; "$@"' _ "${SETUP}" "$@" 2>&1) || RC=$?
+    bash -c 'source "$1"; shift; "$@"' _ "${LIB}" "$@" 2>&1) || RC=$?
 }
 
 # legacy_role_get reports calls to the unsupported per-user role route.
@@ -465,11 +492,68 @@ else
   fail "outsider check listing error: rc=${RC}: ${OUT}"
 fi
 
-# 14h. the unsupported per-user role route is gone from the script.
-if grep -nE 'organization-roles/users/\$\{[A-Za-z_]+\}"' "${SETUP}"; then
+# 14h. the unsupported per-user role route is gone from the scripts.
+if grep -nE 'organization-roles/users/\$\{[A-Za-z_]+\}"' "${LIB}" "${SETUP}"; then
   fail "per-user role route: script still GETs /organization-roles/users/{username}"
 else
   pass "per-user role route: not used"
+fi
+
+# --- 15. foreign e2e allowlist (ensure_foreign_e2e_repos) ------------------
+CALLER="fullsend-ai/fullsend"
+
+# 15a. absent variable: created with the caller and visibility all.
+new_state
+run_fn ensure_foreign_e2e_repos "${ORG}" "${CALLER}"
+if [[ "${RC}" -eq 0 ]] \
+  && jq -e --arg c "${CALLER}" '.value == $c and .visibility == "all"' "${STATE}/foreign" >/dev/null; then
+  pass "foreign: absent variable created with caller, visibility all"
+else
+  fail "foreign: absent variable: rc=${RC}: ${OUT}"
+fi
+
+# 15b. caller already listed: no mutation.
+new_state
+echo '{"value":"other/org, fullsend-ai/fullsend","visibility":"all"}' > "${STATE}/foreign"
+run_fn ensure_foreign_e2e_repos "${ORG}" "${CALLER}"
+if [[ "${RC}" -eq 0 && "$(wc -l < "${STATE}/gh.log")" -eq 1 ]] \
+  && grep -q "lists ${CALLER}" <<< "${OUT}"; then
+  pass "foreign: caller listed, no changes"
+else
+  fail "foreign: caller listed: rc=${RC}: ${OUT}"
+fi
+
+# 15c. read error: fails closed, no mutation.
+new_state
+touch "${STATE}/foreign_get_error"
+run_fn ensure_foreign_e2e_repos "${ORG}" "${CALLER}"
+if [[ "${RC}" -ne 0 ]] && grep -q "could not read" <<< "${OUT}" \
+  && [[ "$(wc -l < "${STATE}/gh.log")" -eq 1 ]]; then
+  pass "foreign: read error fails closed"
+else
+  fail "foreign: read error: rc=${RC}: ${OUT}"
+fi
+
+# 15d. visibility not "all": fails.
+new_state
+echo '{"value":"other/org","visibility":"selected"}' > "${STATE}/foreign"
+run_fn ensure_foreign_e2e_repos "${ORG}" "${CALLER}"
+if [[ "${RC}" -ne 0 ]] && grep -q "visibility" <<< "${OUT}" \
+  && [[ "$(wc -l < "${STATE}/gh.log")" -eq 1 ]]; then
+  pass "foreign: non-all visibility fails"
+else
+  fail "foreign: non-all visibility: rc=${RC}: ${OUT}"
+fi
+
+# 15e. present without caller: appended, existing entries kept.
+new_state
+echo '{"value":"other/org","visibility":"all"}' > "${STATE}/foreign"
+run_fn ensure_foreign_e2e_repos "${ORG}" "${CALLER}"
+if [[ "${RC}" -eq 0 ]] \
+  && jq -e --arg c "${CALLER}" '.value == "other/org, " + $c and .visibility == "all"' "${STATE}/foreign" >/dev/null; then
+  pass "foreign: unlisted caller appended, entries kept"
+else
+  fail "foreign: unlisted caller: rc=${RC}: ${OUT}"
 fi
 
 if [[ "${FAILURES}" -gt 0 ]]; then
