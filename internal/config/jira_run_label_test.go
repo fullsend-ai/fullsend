@@ -14,11 +14,12 @@ func TestJiraRunLabel(t *testing.T) {
 			cfg := &TrackingConfig{Jira: j}
 			if label == "" || label == "ai-coding-agent" {
 				require.NoError(t, validateTracking(cfg))
-				require.NoError(t, j.ValidateConnection())
+				require.NoError(t, j.ValidateRunLabel())
 			} else {
 				require.ErrorContains(t, validateTracking(cfg), "run_label")
-				require.ErrorContains(t, j.ValidateConnection(), "run_label")
+				require.ErrorContains(t, j.ValidateRunLabel(), "run_label")
 			}
+			require.NoError(t, j.ValidateConnection(), "optional label must not block connection consumers")
 			require.Equal(t, label, cloneTracking(cfg).Jira.RunLabel)
 		})
 	}
@@ -29,4 +30,9 @@ func TestJiraRunLabel(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(data), "run_label: ai-coding-agent")
 	require.ErrorContains(t, (&JiraTrackingConfig{RunLabel: "ai-coding-agent"}).ValidateConnection(), "base_url is required")
+}
+
+func TestValidateRunLabel_Nil(t *testing.T) {
+	var cfg *JiraTrackingConfig
+	require.NoError(t, cfg.ValidateRunLabel())
 }

@@ -18,6 +18,10 @@ func addJiraRunLabel(ctx context.Context, tracking *config.TrackingConfig, opts 
 		printer.StepDone("Jira run label skipped: tracker.jira.run_label is not configured")
 		return
 	}
+	if err := tracking.Jira.ValidateRunLabel(); err != nil {
+		printer.StepWarn("Jira run label skipped: " + err.Error())
+		return
+	}
 	settings, err := jiraTrackingSettings(tracking)
 	if err != nil {
 		printer.StepWarn("Jira run label skipped: " + redactFeedback(err.Error(), nil))

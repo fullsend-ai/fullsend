@@ -11,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -18,17 +19,19 @@ func TestAddJiraRunLabel(t *testing.T) {
 	for _, tc := range []struct {
 		name, source, label                                 string
 		existing, fail, missingIdentity, missingCredentials bool
+		noRequests, nilTracking                             bool
 		want                                                string
 		writes                                              int
 	}{
+		{name: "nil tracking", source: "jira", nilTracking: true, noRequests: true, want: "not configured"},
 		{name: "configured", source: "jira", label: "ai-coding-agent", want: "Jira run label applied", writes: 1},
 		{name: "retry", source: "jira", label: "ai-coding-agent", existing: true, want: "Jira run label applied"},
-		{name: "disabled", source: "jira", want: "not configured"},
-		{name: "other tracker", source: "github", label: "ai-coding-agent"},
+		{name: "disabled", source: "jira", noRequests: true, want: "not configured"},
+		{name: "other tracker", source: "github", noRequests: true, label: "ai-coding-agent"},
 		{name: "write failure", source: "jira", label: "ai-coding-agent", fail: true, want: "Failed to add Jira run label", writes: 1},
 		{name: "missing identity", source: "jira", label: "ai-coding-agent", missingIdentity: true, want: "missing work-item identity"},
 		{name: "missing credentials", source: "jira", label: "ai-coding-agent", missingCredentials: true, want: "Jira run label skipped"},
-		{name: "invalid setting", source: "jira", label: "bad label", want: "run_label must not contain"},
+		{name: "invalid setting", source: "jira", noRequests: true, label: "bad label", want: "run_label must not contain"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requests, writes := 0, 0
@@ -38,8 +41,8 @@ func TestAddJiraRunLabel(t *testing.T) {
 					fmt.Fprint(w, `{"cloudId":"`+testCloudID+`"}`)
 					return
 				}
-				require.Equal(t, "/ex/jira/"+testCloudID+"/rest/api/3/issue/PROJ-7", r.URL.Path)
-				require.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+				assert.Equal(t, "/ex/jira/"+testCloudID+"/rest/api/3/issue/PROJ-7", r.URL.Path)
+				assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
 				if r.Method == http.MethodGet {
 					labels := []string{"existing"}
 					if tc.existing {
@@ -49,7 +52,7 @@ func TestAddJiraRunLabel(t *testing.T) {
 					fmt.Fprintf(w, `{"fields":{"labels":%s}}`, data)
 					return
 				}
-				require.Equal(t, http.MethodPut, r.Method)
+				assert.Equal(t, http.MethodPut, r.Method)
 				writes++
 				if tc.fail {
 					w.WriteHeader(403)
@@ -69,6 +72,9 @@ func TestAddJiraRunLabel(t *testing.T) {
 			}
 			tracking := jiraTracking(server.URL, server.URL)
 			tracking.Jira.RunLabel = tc.label
+			if tc.nilTracking {
+				tracking = nil
+			}
 			opts := statusOpts{trackerSource: tc.source, trackerProject: "PROJ", statusNum: 7}
 			if tc.missingIdentity {
 				opts.statusNum = 0
@@ -77,22 +83,22 @@ func TestAddJiraRunLabel(t *testing.T) {
 			addJiraRunLabel(context.Background(), tracking, opts, ui.New(&out))
 			require.Contains(t, out.String(), tc.want)
 			require.Equal(t, tc.writes, writes)
-			if tc.label == "" || tc.source != "jira" {
+			if tc.noRequests {
 				require.Zero(t, requests)
 			}
 		})
 	}
 }
 
-func TestJiraRunLabelValidatedBeforeDiscovery(t *testing.T) {
+func TestInvalidJiraRunLabelDoesNotBlockDiscovery(t *testing.T) {
 	cfg := jiraTracking(testJiraSite, "")
 	cfg.Jira.RunLabel = "not a label"
-	_, err := resolveJiraRunEnv(context.Background(), "jira", cfg, false, func(context.Context, jira.ScopedConfig) (string, error) {
-		t.Fatal("invalid run label reached discovery")
-		return "", nil
+	discovered := false
+	env, err := resolveJiraRunEnv(context.Background(), "jira", cfg, false, func(context.Context, jira.ScopedConfig) (string, error) {
+		discovered = true
+		return "https://api.atlassian.com/ex/jira/" + testCloudID, nil
 	})
-	require.ErrorContains(t, err, "tracker.jira.run_label")
-	var out bytes.Buffer
-	addJiraRunLabel(context.Background(), nil, statusOpts{trackerSource: "jira"}, ui.New(&out))
-	require.Contains(t, out.String(), "not configured")
+	require.NoError(t, err)
+	require.True(t, discovered)
+	require.NotEmpty(t, env[envJiraAPIURL])
 }

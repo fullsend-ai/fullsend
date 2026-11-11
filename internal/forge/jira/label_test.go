@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,7 +26,7 @@ func TestAddIssueLabel(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			writes := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				require.Equal(t, "/rest/api/3/issue/PROJ-7", r.URL.Path)
+				assert.Equal(t, "/rest/api/3/issue/PROJ-7", r.URL.Path)
 				if r.Method == http.MethodGet {
 					w.WriteHeader(tc.getStatus)
 					labels := []string{"existing"}
@@ -36,11 +37,11 @@ func TestAddIssueLabel(t *testing.T) {
 					fmt.Fprintf(w, `{"fields":{"labels":%s}}`, body)
 					return
 				}
-				require.Equal(t, http.MethodPut, r.Method)
+				assert.Equal(t, http.MethodPut, r.Method)
 				writes++
 				var body map[string]any
-				require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-				require.Equal(t, map[string]any{"update": map[string]any{"labels": []any{map[string]any{"add": "ai-coding-agent"}}}}, body)
+				assert.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+				assert.Equal(t, map[string]any{"update": map[string]any{"labels": []any{map[string]any{"add": "ai-coding-agent"}}}}, body)
 				w.WriteHeader(tc.putStatus)
 			}))
 			defer server.Close()

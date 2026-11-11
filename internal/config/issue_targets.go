@@ -214,7 +214,7 @@ func (j *JiraTrackingConfig) PollJQL() string {
 }
 
 // HasConnectionSettings reports whether the mapping sets any setting
-// beyond allowed_targets (base_url, api_url, project, or poll).
+// beyond allowed_targets (base_url, api_url, project, run_label, or poll).
 func (j *JiraTrackingConfig) HasConnectionSettings() bool {
 	return j != nil && (j.BaseURL != "" || j.APIURL != "" || j.Project != "" || j.RunLabel != "" || j.Poll != nil)
 }
@@ -510,6 +510,9 @@ func validateTracking(cfg *TrackingConfig) error {
 		}
 	}
 	if jira := cfg.Jira; jira != nil {
+		if err := jira.ValidateRunLabel(); err != nil {
+			return err
+		}
 		if err := jira.ValidateConnection(); err != nil {
 			return err
 		}
@@ -522,6 +525,15 @@ func validateTracking(cfg *TrackingConfig) error {
 	return nil
 }
 
+// ValidateRunLabel checks the optional tracking label independently of Jira
+// connection settings so a malformed label cannot stop runs or polling.
+func (j *JiraTrackingConfig) ValidateRunLabel() error {
+	if j != nil && strings.ContainsFunc(j.RunLabel, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
+		return fmt.Errorf("tracker.jira.run_label must not contain whitespace or control characters")
+	}
+	return nil
+}
+
 // ValidateConnection checks the Jira site, API gateway, project, and poll
 // settings. base_url and project have no defaults, so both are required
 // once any of these settings is present; a mapping that only selects Jira
@@ -529,9 +541,6 @@ func validateTracking(cfg *TrackingConfig) error {
 // stays valid. Runtime loading does not run Validate, so commands that
 // consume these settings call it directly.
 func (j *JiraTrackingConfig) ValidateConnection() error {
-	if j != nil && strings.ContainsFunc(j.RunLabel, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) {
-		return fmt.Errorf("tracker.jira.run_label must not contain whitespace or control characters")
-	}
 	if !j.HasConnectionSettings() {
 		return nil
 	}

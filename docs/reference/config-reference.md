@@ -347,6 +347,8 @@ tracker:
   when any Jira-sourced agent run starts, before sandbox setup. Default: empty
   (disabled, with a skip log). Use a nonempty name without whitespace or control
   characters, for example `fs-code-agent`; no product-branded label is supplied.
+  Configuration validation rejects invalid names. At runtime, an invalid name
+  produces a warning and skips labeling without blocking Jira runs or polling.
   Existing labels are preserved, and an issue that already has the label is not
   updated. This runs independently of status-comment settings. API failures
   warn without failing the run. The label remains after cancellation or failure.

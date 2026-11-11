@@ -243,7 +243,9 @@ tracker:
 
 `tracker.jira.run_label` has no default. Omit it or set it to `""` to disable
 label writes; Jira-sourced runs log that labeling was skipped. A configured
-name must not contain whitespace or control characters. The setting applies to
+name must not contain whitespace or control characters. Configuration validation
+rejects invalid names. If an invalid name reaches runtime, labeling logs a
+warning and is skipped; Jira runs and polling continue. The setting applies to
 all Jira-sourced agents, so choose a role-appropriate name for your repository.
 
 The runner adds the label alongside the start-status notification, before
