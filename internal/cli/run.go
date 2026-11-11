@@ -94,6 +94,11 @@ const (
 	// lint/type-check diagnostics without overwhelming the model's context.
 	maxFeedbackBytes = 10 * 1024
 
+	// repoValidationFeedback is the fixed prompt feedback after repository
+	// output fails download validation. The sandbox error and paths never
+	// reach the prompt.
+	repoValidationFeedback = "Repository output could not be validated. Check the checkout metadata and shallow state: a plain directory is allowed, but a bare Git repository layout is not; a checkout needs a real root .git directory, no redirected Git metadata (for example commondir), and no new shallow boundary. The failure could also be a runner, Git, or filesystem problem. Correct the repository state and try again."
+
 	// Run-scoped inference providers resolved from the selected agent.
 	runProviderVertex = "vertex"
 	runProviderOpenAI = "openai"
@@ -2659,7 +2664,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// no iteration passed inline. This is the #5393 fix: it catches the
 	// case where an iteration produced valid output but its inline
 	// validation was skipped because SafeDownload failed on that same
-	// iteration (extraction failure triggers `continue`, bypassing 9e).
+	// iteration (an extraction failure skips 9e with `continue`; a rejected
+	// repository can also `break`).
 	// The sweep re-validates all completed iteration directories, latest
 	// first, using only the output files (TARGET_REPO_DIR is empty because
 	// hostRepositoryDownloadDir may not correspond to the validated
@@ -2996,6 +3002,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// always treated as fatal for the current iteration's repo state —
 		// we clean up the directory and skip to the next iteration.
 		//
+		// Repository-validation failures instead get feedback-driven retries or
+		// stop the loop; the post-loop sweep still validates this iteration's
+		// output.
+		//
 		// The forceRemoveAll pre-clear guards against a stale destination:
 		// whether "openshell sandbox download" fully replaces a non-empty
 		// destination directory or merges onto it is not verified anywhere
@@ -3028,13 +3038,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// unsanitized content (sanitizeDownload aborts on first
 				// error, leaving subsequent dangerous symlinks intact).
 				// Clean up to prevent unsanitized content from reaching
-				// validation or the post-script, then continue the retry
-				// loop. Output files (extracted in 9b) are unaffected.
+				// validation or the post-script. Output files (extracted in
+				// 9b) are unaffected.
 				printer.StepWarn(fmt.Sprintf("Failed to extract target repo (cleaning up): %v", err))
 				if rmErr := forceRemoveAll(hostRepositoryDownloadDir); rmErr != nil {
 					printer.StepWarn(fmt.Sprintf("Failed to clean up repo dir after extraction failure: %v", rmErr))
 				}
 				repoExtractedOK = false
+				validationFailed := errors.Is(err, sandbox.ErrRepositoryValidation)
+				if validationFailed && !lastIterTimedOut {
+					if feedbackEnabled && iteration < maxIterations {
+						validationFeedback = writeValidationFeedback(iterDir, []byte(repoValidationFeedback), nil, h.RunnerEnv, printer)
+						printer.StepWarn("Repository validation failed; retrying with validation feedback")
+						printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
+					} else if feedbackEnabled {
+						printer.StepWarn("Repository validation failed; no iterations remain (the post-loop sweep still validates this iteration's output)")
+					} else {
+						printer.StepWarn("Repository validation failed; stopping agent retries (feedback_mode is not append)")
+						break
+					}
+					continue
+				}
 				if lastIterTimedOut {
 					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
 					break
@@ -3056,9 +3080,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
 		// At this point repoExtractedOK is always true: SafeDownload
-		// failure sets it to false and continues (skipping step 9e),
-		// while success sets it to true immediately above. Pass the
-		// repo dir directly.
+		// failure sets it to false and skips step 9e (with `continue`, or
+		// with `break` when the repository is rejected), while success sets
+		// it to true immediately above. Pass the repo dir directly.
 		// Strip OIDC credential vars from the full composed env so keys
 		// injected via h.RunnerEnv are also removed (#5832), and drop
 		// inherited named workflow secrets (#8154).

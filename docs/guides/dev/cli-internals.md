@@ -586,10 +586,12 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                   │ - Remove dangerous symlinks (escape)     │
 │  │                   │ - Remove .git/hooks/ (hook injection)    │
 │  │                   │ - Filter ancestry metadata               │
-│  │                   │ With validation_loop: SafeDownload       │
-│  │                   │ failure is non-fatal — clean up repo dir │
-│  │                   │ and continue to next iteration. Output   │
-│  │                   │ files (extracted separately) are kept.   │
+│  │                   │ With validation_loop: failures clean up  │
+│  │                   │ the repo dir and retry; a validation     │
+│  │                   │ failure may get feedback for another     │
+│  │                   │ iteration; without feedback validation   │
+│  │                   │ failures stop. Output files are kept     │
+│  │                   │ for the post-loop sweep.                 │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────────────────────────────┐                   │
@@ -604,7 +606,7 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │   if killed at timeout: sweep stray      │                   │
 │  │     processes (agent still runs, #7042)  │                   │
 │  │   extract output                         │                   │
-│  │   SafeDownload repo (non-fatal on fail)  │                   │
+│  │   SafeDownload (validation may retry)    │                   │
 │  │   run validation script                  │                   │
 │  │   if pass → break (early exit)           │                   │
 │  │   if killed at timeout → break (#7042)   │                   │
@@ -743,7 +745,13 @@ after the pre-script and before upload, then sanitizes and validates the
 returned tree after download and before publication, because the agent can
 alter `.git`. A plain target may return either a plain directory or a valid
 checkout; a checkout target must return a valid checkout. Otherwise, the
-download is rejected and the local destination is left unchanged.
+download is rejected and the local destination is left unchanged. With a
+`validation_loop` and `feedback_mode: append`, a repository-validation failure
+sends fixed generic feedback for the next iteration, when one remains. Without
+`append`, repository-validation failures stop the retries, while transport and
+publication failures keep the ordinary clean-up-and-retry behavior. A timed-out
+iteration or the last iteration stops retries either way. Extracted output
+files stay in place for the output-only post-loop sweep.
 
 Git metadata outside the target's root `.git/` directory—for example, selected
 through `GIT_DIR` or `--git-dir`—is outside this sanitization guarantee.

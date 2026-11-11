@@ -802,6 +802,7 @@ func TestSanitizeDownload_ReftableCorruptTableFailsClosed(t *testing.T) {
 	localDir := filepath.Join(t.TempDir(), "repo")
 	err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
 	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
 	assert.NoDirExists(t, localDir, "corrupt reftable storage must not be published")
 }
 
@@ -1562,6 +1563,7 @@ func TestSafeDownload_ReturnsErrorWhenReplacingExistingDownloadFails(t *testing.
 	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "replacing existing download directory")
+	assert.False(t, errors.Is(err, ErrRepositoryValidation), "a publication failure is not a validation failure: %v", err)
 }
 
 func TestSafeDownload_ReturnsErrorWhenSanitizationFails(t *testing.T) {
@@ -1605,6 +1607,9 @@ exit 0
 	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sanitizing downloaded directory")
+	assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+	var symErr *errSymlink
+	assert.True(t, errors.As(err, &symErr), "the sanitization cause must stay reachable: %v", err)
 
 	_, statErr := os.Lstat(localDir)
 	assert.True(t, os.IsNotExist(statErr), "unsafe download must not be published")
@@ -1645,6 +1650,7 @@ func TestSafeDownload_DoesNotPublishUnsupportedGitMetadata(t *testing.T) {
 			err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "sanitizing downloaded directory")
+			assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
 			_, statErr := os.Lstat(localDir)
 			assert.True(t, os.IsNotExist(statErr), "unsafe download must not be published")
 		})
@@ -1941,6 +1947,7 @@ func TestSafeDownload_RejectsPlainOutputForCheckoutInput(t *testing.T) {
 			RepositorySnapshot{IsCheckout: true})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "must remain a git checkout")
+		assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
 	}
 
 	t.Run("absent destination remains absent", func(t *testing.T) {
@@ -2033,6 +2040,7 @@ func TestSafeDownload_RejectsMissingOrInvalidRootCheckout(t *testing.T) {
 			RepositorySnapshot{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "checking git checkout")
+		assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
 		_, statErr := os.Lstat(localDir)
 		assert.True(t, os.IsNotExist(statErr), "a rejected checkout must not be published")
 	}
@@ -2083,6 +2091,7 @@ func TestSafeDownload_RejectsSpecialHEAD(t *testing.T) {
 	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
 		RepositorySnapshot{})
 	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
 	assert.True(t, errors.Is(err, context.DeadlineExceeded), "want a deadline error, got %v", err)
 	_, statErr := os.Lstat(localDir)
 	assert.True(t, os.IsNotExist(statErr), "a special HEAD must not be published")
@@ -2264,6 +2273,7 @@ func TestSafeDownload_RejectsShallowCloneAddedCutoff(t *testing.T) {
 
 	err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, trusted)
 	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
 	assert.Contains(t, err.Error(), "unsupported sandbox shallow boundary change")
 	assert.Contains(t, err.Error(), "fetch --depth")
 	got, err := os.ReadFile(prior)
@@ -2271,6 +2281,70 @@ func TestSafeDownload_RejectsShallowCloneAddedCutoff(t *testing.T) {
 	assert.Equal(t, "prior\n", string(got), "an earlier output must remain untouched")
 	_, err = os.Lstat(filepath.Join(localDir, ".git"))
 	assert.True(t, os.IsNotExist(err), "the rejected download must not be published")
+}
+
+// TestSafeDownload_FailurePhaseMarkers tags failures inside post-download
+// validation with the phase marker, leaves transport failures untagged, and
+// preserves every original cause.
+func TestSafeDownload_FailurePhaseMarkers(t *testing.T) {
+	t.Run("download failure", func(t *testing.T) {
+		binDir := t.TempDir()
+		script := "#!/bin/sh\nif [ \"$2\" = \"download\" ]; then\n  exit 1\nfi\nexit 0\n"
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+		t.Setenv("PATH", binDir)
+
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, ErrRepositoryValidation), "a failed transfer is not a validation failure: %v", err)
+		var exitErr *exec.ExitError
+		assert.True(t, errors.As(err, &exitErr), "the transfer cause must stay reachable: %v", err)
+	})
+
+	t.Run("git query failure", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "content")
+
+		binDir := t.TempDir()
+		download := fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = \"download\" ]; then\n  /bin/cp -R \"%s/.\" \"$5/\"\nfi\nexit 0\n", r.dir)
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(download), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "git"), []byte("#!/bin/sh\nexit 129\n"), 0o755))
+		t.Setenv("PATH", binDir)
+
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "checking git checkout")
+		assert.True(t, errors.Is(err, ErrRepositoryValidation), "a Git query failure happens in root validation: %v", err)
+	})
+
+	t.Run("filesystem failure during sanitization", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root bypasses permission checks")
+		}
+		binDir := t.TempDir()
+		script := `#!/bin/sh
+if [ "$2" = "download" ]; then
+  printf 'safe\n' > "$5/safe.txt"
+  /bin/ln -s /etc/passwd "$5/dangerous-link"
+  /bin/chmod 0555 "$5"
+  exit 0
+fi
+exit 0
+`
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+		t.Setenv("PATH", binDir)
+
+		parent := t.TempDir()
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+		localDir := filepath.Join(parent, "repo")
+		err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sanitizing downloaded directory")
+		assert.True(t, errors.Is(err, ErrRepositoryValidation), "a sanitization failure happens in the validation phase: %v", err)
+		var symErr *errSymlink
+		assert.True(t, errors.As(err, &symErr), "the filesystem cause must stay reachable: %v", err)
+	})
 }
 
 // TestRestoreTrustedShallow_EntrySets checks the boundary-entry contract:

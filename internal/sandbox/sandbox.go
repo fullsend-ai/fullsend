@@ -104,6 +104,14 @@ const (
 	safeDownloadAttempts = 2
 )
 
+// ErrRepositoryValidation marks a failure in post-download repository
+// processing: sanitization, root validation, or shallow reconciliation after
+// the download itself succeeded. It names the phase only and wraps the cause,
+// so errors.Is and errors.As still report the underlying condition (for
+// example context.DeadlineExceeded or an fs error). Transport, staging, and
+// publication failures are not tagged.
+var ErrRepositoryValidation = errors.New("repository validation failed")
+
 // RetrySleepFn is the function called between retry attempts in
 // CreateWithRetry. It defaults to time.Sleep. Override in tests to
 // avoid real delays.
@@ -2575,6 +2583,9 @@ func SafeDownload(sandboxName, remoteDir, localDir string, snapshot RepositorySn
 			err = restoreTrustedShallow(stagingDir, snapshot.Shallow)
 		}
 		if err != nil {
+			// One phase marker for everything above, before cleanup joins its
+			// own errors: the cause keeps its identity via the second %w.
+			err = fmt.Errorf("%w: %w", ErrRepositoryValidation, err)
 			cleanupErr := cleanupStagingDir(stagingDir)
 			if cleanupErr == nil {
 				return fmt.Errorf("sanitizing downloaded directory: %w", err)
