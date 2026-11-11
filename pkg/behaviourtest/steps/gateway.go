@@ -191,7 +191,10 @@ func givenTestInferenceGatewayAPIKey(w *world.World, pathPrefix string) error {
 	}
 	// Mark first, so cleanup still runs after a partly failed create.
 	w.GatewayAPIKeySecretSet = true
-	if err := ghDriver.Client.CreateRepoSecret(context.Background(), w.Org, w.RepoName, forge.SecretInferenceGatewayAPIKey, key); err != nil {
+	// mutationCtx, not a plain background context: the lease guard
+	// re-verifies slot ownership before this name-based write, the same
+	// protection the runner-secret step's create carries.
+	if err := ghDriver.Client.CreateRepoSecret(mutationCtx(w), w.Org, w.RepoName, forge.SecretInferenceGatewayAPIKey, key); err != nil {
 		return fmt.Errorf("setting repository secret %s: %w", forge.SecretInferenceGatewayAPIKey, err)
 	}
 	return commitInferenceGateway(w, map[string]any{"url": gatewayURL + pathPrefix, "auth": config.GatewayAuthAPIKey, "models": testGatewayModels()})
