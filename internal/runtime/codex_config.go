@@ -496,6 +496,21 @@ const codexSpawnGuardMatcher = "^(multi_agent_v1|collaboration)|(spawn|resume)_a
 // in place of a hook-script phase.
 const codexSpawnGuardMode = "SpawnGuard"
 
+// codexSubagentStopEvent is the codex hook event and adapter phase of the
+// child-result gate (PROTOTYPE, #9085 item 8).
+const codexSubagentStopEvent = "SubagentStop"
+
+// codexGroupCoversAgent reports whether a hook group's tools include a
+// sub-agent's result on the other runtimes: every tool, or Agent/Task.
+func codexGroupCoversAgent(tools []string) bool {
+	for _, t := range tools {
+		if t == security.AllTools || t == "Agent" || t == "Task" {
+			return true
+		}
+	}
+	return false
+}
+
 // codexHooksJSON renders $CODEX_HOME/hooks.json from the runtime-neutral
 // security.HookPlan, and returns the notes Bootstrap prints for tools that
 // have no codex counterpart.
@@ -566,6 +581,19 @@ func codexHooksJSON(configDir, python string, hooks security.SandboxHookConfig) 
 				Timeout: security.HookTimeoutSeconds,
 			}},
 		})
+		// PROTOTYPE (#9085 item 8): the child-result gate. The PostToolUse
+		// scripts that cover Agent also run on SubagentStop, in the child,
+		// on the final message that would become the child's result.
+		if g.Phase == security.HookPhasePostToolUse && codexGroupCoversAgent(g.Tools) {
+			cfg.Hooks[codexSubagentStopEvent] = append(cfg.Hooks[codexSubagentStopEvent], codexHookMatcherSet{
+				Hooks: []codexHookEntry{{
+					Type: "command",
+					Command: strings.Join(append(
+						[]string{python, "-I", adapter, codexSubagentStopEvent}, g.Scripts...), " "),
+					Timeout: security.HookTimeoutSeconds,
+				}},
+			})
+		}
 	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")

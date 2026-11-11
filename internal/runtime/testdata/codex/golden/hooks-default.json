@@ -52,6 +52,17 @@
           }
         ]
       }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I /sandbox/codex-config/fullsend-codex-hook.py SubagentStop posttool_chain.py",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

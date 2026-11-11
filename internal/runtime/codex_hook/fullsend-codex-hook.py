@@ -128,6 +128,15 @@ MAX_SCRIPT_BYTES = 1 << 20
 
 PHASE_PRE = "PreToolUse"
 PHASE_POST = "PostToolUse"
+# PROTOTYPE (#9085 item 8): the child-result gate. codex runs SubagentStop in
+# a thread-spawned child with the final message that would become the child's
+# result, before the parent is notified. A block (exit 2 + reason) makes the
+# child continue instead of finishing, so a flagged result is never delivered.
+PHASE_SUBAGENT_STOP = "SubagentStop"
+SUBAGENT_STOP_PROMPT = (
+    "fullsend: your final message was withheld by the security chain and was "
+    "not delivered. Reply with exactly: RESULT WITHHELD BY FULLSEND"
+)
 
 # argv[1] of the spawn guard handler, which takes no script.
 MODE_SPAWN_GUARD = "SpawnGuard"
@@ -445,6 +454,11 @@ def log_finding(name: str, severity: str, detail: str, action: str) -> None:
             os.close(fd)
 
 
+# PROTOTYPE: appended to a block reason on SubagentStop, where the reason is
+# the continuation prompt the child reads.
+_BLOCK_SUFFIX = ""
+
+
 def block(reason: str) -> None:
     """Exit 2 with a non-empty reason on stderr — codex's blocking contract.
 
@@ -490,7 +504,7 @@ def block(reason: str) -> None:
     # by signal, which codex does not treat as a block.
     signal.setitimer(signal.ITIMER_REAL, 0)
     text = (reason or "").strip() or "fullsend hook blocked this tool call"
-    truncated = text[:MAX_TEXT]
+    truncated = text[:MAX_TEXT] + _BLOCK_SUFFIX
     with contextlib.suppress(BaseException):
         data = truncated.encode("utf-8", "replace")
         while data:
@@ -958,6 +972,29 @@ def run_post_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name:
     sys.exit(0)
 
 
+def run_subagent_stop(scripts: list[str], hook_input: dict[str, Any]) -> None:
+    """PROTOTYPE: run the PostToolUse chain on a child's final message.
+
+    The message is presented to the scripts as an Agent tool result, the shape
+    the other runtimes give a sub-agent's answer. Every block in the chain
+    leaves through block() (exit 2 + reason), which SubagentStop reads as
+    "continue the child" (codex-rs/hooks/src/events/stop.rs), so the flagged
+    text is not delivered. `continue: false` is never emitted: codex would end
+    the child and deliver the flagged message.
+    """
+    message = hook_input.get("last_assistant_message")
+    if not isinstance(message, str) or message == "":
+        sys.exit(0)
+    synthetic = {
+        "tool_input": {},
+        "tool_response": message,
+        **_cwd(hook_input),
+    }
+    global _BLOCK_SUFFIX
+    _BLOCK_SUFFIX = "\n\n" + SUBAGENT_STOP_PROMPT
+    run_post_tool_use(scripts, synthetic, "Agent")
+
+
 def main() -> None:
     phase = sys.argv[1] if len(sys.argv) > 1 else ""
     if phase != MODE_SPAWN_GUARD and len(sys.argv) < 3:
@@ -999,6 +1036,9 @@ def main() -> None:
         # Before tool-name translation: the policy is written in codex's own
         # names and a child's payload is told apart by untranslated fields.
         run_spawn_guard(hook_input)
+
+    if phase == PHASE_SUBAGENT_STOP:
+        run_subagent_stop(scripts, hook_input)
 
     codex_tool = hook_input.get("tool_name")
     codex_tool = codex_tool if isinstance(codex_tool, str) else ""
