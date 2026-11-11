@@ -71,7 +71,8 @@ Those blocks are not `config_base` presets: `config` is a sparse overlay
 written to `.fullsend/config.yaml`, while `config_base` copies a preset
 byte-for-byte to `.fullsend/config.base.yaml`. Managed blocks use this
 same schema (every field, including `runtime` and
-`allowed_remote_resources`) and the per-field merge rules below. The former
+`allowed_remote_resources`, except `trace_context`, which only a concrete
+repository entry accepts) and the per-field merge rules below. The former
 sibling `runtime` / `allowed_remote_resources` keys under `defaults` and
 repository entries are rejected. Managed configuration is
 not an opt-in: every repository selected from the manifest has a managed
@@ -158,9 +159,15 @@ the overlay → base → code defaults chain.
 | `tracker` | `*TrackingConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 | `authorization` | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |
+| `trace_context` | `*TraceContextConfig` | Overlay only (not layered) | `nil` |
 
 `authorization` is overlay-only: setting it in `config.base.yaml` has no
 effect, so each repo must opt in explicitly.
+
+`trace_context` is overlay-only too: `config.base.yaml` never supplies it. The
+repository's concrete `repos.yaml` entry is the only managed layer that may
+declare it, and install renders the whole block into the managed overlay. See
+[Config Reference — `trace_context`](../../reference/config-reference.md#trace_context).
 
 ### Per-agent `runtime`, `model`, `effort`, `subagents`, `trigger` on `agents:` entries
 
@@ -569,6 +576,7 @@ compiled-in defaults apply:
 | `tracker` | `nil` (no provider — `--tracker` is required unless set) |
 | `status_notifications` | `nil` |
 | `authorization` | `nil` |
+| `trace_context` | `nil` (no trace-context keys) |
 
 ## Related
 
