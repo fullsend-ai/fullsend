@@ -162,7 +162,7 @@ fullsend repository, where it lives at
    to get the real one (`...` marks cut lines):
 
    ```console
-   $ fullsend agent new sample-triage --runtime-workflow-source https://github.com/fullsend-ai/fullsend/tree/261a813893445bbbba070a59d40c94d53499d059/e2e/behaviour/fixtures/workflow/sample-pipeline --runtime-workflow-name triage-fanout --description "Triage an issue with the sample pipeline"
+   $ fullsend agent new sample-triage --runtime-workflow-source https://github.com/fullsend-ai/fullsend/tree/7068965f69266bbc2326fd308aa9f11c8ea65f2a/e2e/behaviour/fixtures/workflow/sample-pipeline --runtime-workflow-name triage-fanout --description "Triage an issue with the sample pipeline"
      ✓ Created agent "sample-triage" in .fullsend
      harness/sample-triage.yaml
      agents/sample-triage.md
@@ -187,7 +187,7 @@ fullsend repository, where it lives at
    → Locking dependencies: sample-triage
 
      ✗ Runtime workflow resolution failed
-   Error: resolving runtime workflow: runtime_workflow.source URL "https://github.com/fullsend-ai/fullsend/tree/261a813893445bbbba070a59d40c94d53499d059/e2e/behaviour/fixtures/workflow/sample-pipeline" is not covered by allowed_remote_resources; add a prefix that covers it, such as https://github.com/fullsend-ai/fullsend/, to allowed_remote_resources in config.yaml
+   Error: resolving runtime workflow: runtime_workflow.source URL "https://github.com/fullsend-ai/fullsend/tree/7068965f69266bbc2326fd308aa9f11c8ea65f2a/e2e/behaviour/fixtures/workflow/sample-pipeline" is not covered by allowed_remote_resources; add a prefix that covers it, such as https://github.com/fullsend-ai/fullsend/, to allowed_remote_resources in config.yaml
    ```
 
    Add it to `.fullsend/config.yaml`:
@@ -207,14 +207,14 @@ fullsend repository, where it lives at
    → Locking dependencies: sample-triage
 
      ✗ Runtime workflow resolution failed
-   Error: resolving runtime workflow: runtime_workflow.source: tree hash mismatch for https://github.com/fullsend-ai/fullsend/tree/261a813893445bbbba070a59d40c94d53499d059/e2e/behaviour/fixtures/workflow/sample-pipeline: the harness pins sha256=0000000000000000000000000000000000000000000000000000000000000000 but the fetched tree hashes to sha256=e645c8d64206ff44d00ead5cd3f1ac5002b300771bc9f07a494873fdcf864cb7; if the commit is the one you meant, update the #sha256= fragment
+   Error: resolving runtime workflow: runtime_workflow.source: tree hash mismatch for https://github.com/fullsend-ai/fullsend/tree/7068965f69266bbc2326fd308aa9f11c8ea65f2a/e2e/behaviour/fixtures/workflow/sample-pipeline: the harness pins sha256=0000000000000000000000000000000000000000000000000000000000000000 but the fetched tree hashes to sha256=99be97667c85e242602b920f5b6cc244607606eefb046bc706e67571caf2ce56; if the commit is the one you meant, update the #sha256= fragment
    ```
 
 5. **Copy the hash into the fragment and lock.**
 
    ```console
    $ grep "source: https" .fullsend/harness/sample-triage.yaml
-     source: https://github.com/fullsend-ai/fullsend/tree/261a813893445bbbba070a59d40c94d53499d059/e2e/behaviour/fixtures/workflow/sample-pipeline#sha256=e645c8d64206ff44d00ead5cd3f1ac5002b300771bc9f07a494873fdcf864cb7
+     source: https://github.com/fullsend-ai/fullsend/tree/7068965f69266bbc2326fd308aa9f11c8ea65f2a/e2e/behaviour/fixtures/workflow/sample-pipeline#sha256=99be97667c85e242602b920f5b6cc244607606eefb046bc706e67571caf2ce56
    $ fullsend lock sample-triage
    ⚡ fullsend dev
      Autonomous agentic development for Git-hosted organizations
@@ -224,7 +224,7 @@ fullsend repository, where it lives at
      ✓ Resolved 0 dependencies
      • Writing lock file
      ✓ Locked 1 dependencies for sample-triage -> ~/src/sample-repo/.fullsend/lock.yaml
-         runtime_workflow: https://github.com/fullsend-ai/fullsend/tree/261a813893445bbbba070a59d40c94d53499d059/e2e/behaviour/fixtures/workflow/sample-pipeline (fetched)
+         runtime_workflow: https://github.com/fullsend-ai/fullsend/tree/7068965f69266bbc2326fd308aa9f11c8ea65f2a/e2e/behaviour/fixtures/workflow/sample-pipeline (fetched)
    ```
 
    `.fullsend/lock.yaml` (format `version: 2`) now records the runtime workflow as a
@@ -240,9 +240,9 @@ fullsend repository, where it lives at
            source: harness/sample-triage.yaml
    ...
            dependencies:
-               - field: workflow
-                 url: https://github.com/fullsend-ai/fullsend/tree/261a813893445bbbba070a59d40c94d53499d059/e2e/behaviour/fixtures/workflow/sample-pipeline
-                 sha256: e645c8d64206ff44d00ead5cd3f1ac5002b300771bc9f07a494873fdcf864cb7
+               - field: runtime_workflow
+                 url: https://github.com/fullsend-ai/fullsend/tree/7068965f69266bbc2326fd308aa9f11c8ea65f2a/e2e/behaviour/fixtures/workflow/sample-pipeline
+                 sha256: 99be97667c85e242602b920f5b6cc244607606eefb046bc706e67571caf2ce56
                  type: directory
                  files:
                    - path: .claude-plugin/plugin.json
@@ -258,7 +258,7 @@ With the remote pin, the run's `Workflow:` line names the commit instead of a
 path:
 
 ```text
-    Runtime workflow: fullsend-ai/fullsend@261a81389344/e2e/behaviour/fixtures/workflow/sample-pipeline (sha256:e645c8d64206) → /sample-pipeline:triage-fanout
+    Runtime workflow: fullsend-ai/fullsend@7068965f6926/e2e/behaviour/fixtures/workflow/sample-pipeline (sha256:99be97667c85) → /sample-pipeline:triage-fanout
 ```
 
 The later steps use the path source.
@@ -322,10 +322,11 @@ pin locked, `fullsend lock sample-triage` prints
 `✓ Lock entry for sample-triage is up to date (1 dependencies)`. Any definition
 problem prints `✗ Runtime workflow resolution failed` and an `Error:` line
 from the [troubleshooting table](#troubleshooting). `fullsend lock` also
-refuses a credential-shaped variable in `args`. Four checks need
+refuses a credential-shaped variable in `args`. Five checks need
 `fullsend run`: the runtime, the runtime workflow's kind against it, the agent's
-`tools:`, and the expanded `args`. `fullsend run` runs them before it checks
-for OpenShell, so a failure costs no sandbox.
+`tools:`, the tool allowlist hook's `Workflow` entry, and the expanded `args`.
+`fullsend run` runs them before it checks for OpenShell, so a failure costs no
+sandbox.
 
 ## Step 4: Run locally
 
@@ -345,37 +346,42 @@ of posting it. Output, trimmed to the lines that matter (`...` marks cut lines):
 
   ✓ Agent sample-triage resolved from config (local path)
 ...
-  ✓ Harness loaded (0.0s)
+  ✓ Harness loaded (0.1s)
 ...
     Runtime: claude (from ~/src/sample-repo/.fullsend/config.yaml)
 ...
-    Runtime workflow: pipelines/sample-pipeline (sha256:9d2717dc50ed) → /sample-pipeline:triage-fanout issue 8204
+    Runtime workflow: pipelines/sample-pipeline (sha256:99be97667c85) → /sample-pipeline:triage-fanout issue 8204
 ...
-  • Creating sandbox: fs-sam-a5f10d8db64b
-  ✓ Sandbox created (5.6s)
+  • Creating sandbox: fs-sam-890154e65466
+  ✓ Sandbox created (5.5s)
 ...
   • Running agent
 
-...
-→ Agent: claude-opus-4-6 (v2.1.258)
-  🧠 The user wants me to run the "sample-pipeline:triage-fanout" workflow with the args "issue 8204". Let me invoke it.
+→ Agent: claude-opus-5-5 (v2.1.296)
   ⚙ Workflow
-  💬 The **sample-pipeline:triage-fanout** workflow has been launched (Task ID: `w12kc1301`, Run ID: `wf_644d534e-b74`). It will:
 ...
-  💬 The result file has been written to `$FULLSEND_OUTPUT_DIR/agent-result.json` with status **`findings`**. The post-script will pick it up and post the comment on issue #8204.
+  ⚙ Task w5l41ih9l: Read an issue, check each checklist item in parallel, then report — running
 ...
-  ✓ Agent exited with code 0 (110.3s)
+  ⚙ Task w5l41ih9l: Report: report — completed (tool: report)
 ...
-    Run directory: ~/src/out/fs-sam-a5f10d8db64b
+  💬 Issue #8204 has no unchecked checklist items, so nothing was triaged. The result file is written with status `findings`.
+...
+  ✓ Agent exited with code 0 (47.5s)
+...
+    Run directory: ~/src/out/fs-sam-890154e65466
 ...
 post-sample-triage: dry run, not posting
-  ✓ Post-script completed (0.1s)
+  ✓ Post-script completed (0.2s)
 ```
+
+Issue #8204 is closed with every checklist item ticked, so this run found no
+unchecked item to check and reported `findings` with nothing to fix. An issue
+with open `- [ ]` items gets one check per item.
 
 For the harness above, with `ISSUE_NUMBER=8204`, the plan block prints:
 
 ```text
-    Runtime workflow: pipelines/sample-pipeline (sha256:9d2717dc50ed) → /sample-pipeline:triage-fanout issue 8204
+    Runtime workflow: pipelines/sample-pipeline (sha256:99be97667c85) → /sample-pipeline:triage-fanout issue 8204
 ```
 
 What success looks like:
@@ -400,10 +406,10 @@ The runner records the runtime workflow and what it started in the run directory
 `metrics.json`:
 
 ```console
-$ jq .runtime_workflow ~/src/out/fs-sam-a5f10d8db64b/metrics.json
+$ jq .runtime_workflow ~/src/out/fs-sam-890154e65466/metrics.json
 {
   "source": "pipelines/sample-pipeline",
-  "pin_sha256": "9d2717dc50ed46a59bb200b86053b14fa4cc3fb648b45d2672faf5b5aeb56705",
+  "pin_sha256": "99be97667c85e242602b920f5b6cc244607606eefb046bc706e67571caf2ce56",
   "kind": "claude-plugin",
   "command": "/sample-pipeline:triage-fanout issue 8204"
 }
