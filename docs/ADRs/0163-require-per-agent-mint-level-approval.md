@@ -52,8 +52,9 @@ roles.
 - Store an approved role list and approved level sets per agent and run-stage.
   This separates approval to assume a role from the authority requested within
   that role, while representing all effective harness variants. A missing role
-  list denies all roles, and a missing level map approves no levels. Within an
-  explicit level map, an omitted stage can use the built-in level profile.
+  list denies all roles; an omitted level map selects Ralph's built-in profile.
+  A present level map must cover every run-stage or provide an explicit
+  `default`.
 
 ## Decision
 
@@ -68,9 +69,9 @@ variant.
 This is positive approval syntax: repositories list roles they intend an
 agent to use, rather than listing roles to deny. Omitting `approved_roles` is
 the broad-denial path. For an approved role, the optional level map expresses
-the level grants the repository approves. A missing level map grants no levels;
-within a present map, unspecified stages can use the common level profile. A
-deny-only agent entry has no purpose in this model.
+the level grants the repository approves. When the map is omitted, Ralph's
+built-in profile applies. A deny-only agent entry has no purpose in this
+model.
 
 An entry may also have an `approved_privilege_levels` map whose values are
 lists of levels and whose run-stage keys correspond to the harness's
@@ -80,15 +81,15 @@ absent, Ralph's built-in profile applies: `[read]` for `pre_script` and
 `runtime` grant. This is Ralph's compatibility default, scoped to roles that
 the repository owner explicitly approved.
 
-When `approved_privilege_levels` is present, its explicit values take
-precedence over the built-in profile. A stage-specific entry wins, including
-an empty list, which denies every level for that stage. For a stage with no
-entry, `default` supplies the grant when present; otherwise that stage uses
-Ralph's built-in profile. Thus an explicit empty map `{}` uses the built-in
-profile for every stage, just like an absent map. `default: []` denies every
-level for stages without an explicit entry. Removing the whole level map
-restores Ralph's built-in profile; removing only a stage entry exposes that
-stage to the explicit `default` or, if absent, Ralph's built-in profile.
+When `approved_privilege_levels` is present, it must be a non-empty map whose
+values are non-empty lists. The map must either provide a non-empty `default`
+list or explicitly list every run-stage: `pre_script`, `runtime`, and
+`post_script`. `validation_loop` uses the `runtime` grant and is not a separate
+stage key. Stage-specific lists override `default`. An empty map, an empty
+stage list (including `default: []`), or a map that omits stages without a
+`default` is invalid configuration and prevents the agent from launching.
+Thus only omission of the entire `approved_privilege_levels` key selects
+Ralph's built-in profile; an empty map is not equivalent to omission.
 
 For example:
 
@@ -103,9 +104,9 @@ agents:
 ```
 
 The `[write]` shorthand expands to `[read, write]`. Other custom levels must
-be listed explicitly. An empty list denies every level for that stage. Unknown
-roles, stage names, malformed maps or lists, and a requested level unavailable
-to its requested role are validation errors and fail closed.
+be listed explicitly. Unknown roles or stage names, malformed maps or lists,
+empty lists, incomplete maps without `default`, and a requested level
+unavailable to its requested role are validation errors and fail closed.
 
 Overlay entries may set `role` and `privilege_levels` as guarded fields. Their
 values compose in overlay order. For each effective harness variant, the
@@ -129,12 +130,13 @@ existing agent.
 
 Before launch, fullsend validates the selected agent's required role and
 entire required level set against its config grant. If the role is not listed,
-any required level is missing, or the agent's effective requirements cannot
-be resolved, the agent is ineligible and does not launch; validation returns
-an error naming the missing role or stage and levels. Manually adding an agent
-without an approved role has the same result. Harness requests continue to
-select the actual level sent to the mint; this approval check does not expand
-the harness request or change the mint role's permissions.
+any required level is missing, the privilege approval map is invalid, or the
+agent's effective requirements cannot be resolved, the agent is ineligible
+and does not launch; validation returns an error naming the missing role or
+stage and levels, or the invalid grant. Manually adding an agent without an
+approved role has the same result. Harness requests continue to select the
+actual level sent to the mint; this approval check does not expand the harness
+request or change the mint role's permissions.
 
 The config values are the grants. A harness's `role` and `privilege_levels`
 declarations are requests, not approvals. For unmanaged repositories, grants
@@ -163,11 +165,10 @@ bypass.
   roles; listing an agent solely to deny it has no effect. An approved role
   with no level map uses Ralph's built-in profile, including `post_script`
   write, so deleting the entire map restores that profile.
-- In an explicit level map, a stage-specific empty list denies that stage.
-  Missing stage entries use `default` when provided and otherwise use Ralph's
-  built-in profile. Removing a stage-specific empty list therefore restores
-  that fallback; use `default: []` to deny every stage without an explicit
-  entry.
+- An explicit level map must be non-empty and complete: either every run-stage
+  has a non-empty list or a non-empty `default` covers omitted stages. Empty
+  lists and incomplete maps without `default` invalidate the config and block
+  launch; they are not stage-level denial syntax.
 - Agent add/install, update/upgrade, and `fullsend agent approve <name>` show
   the full role and level request and require all-or-nothing approval; managed
   repositories keep these grants in their `repos.yaml` source of truth.
