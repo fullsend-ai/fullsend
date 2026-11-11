@@ -9,9 +9,10 @@
 // hook adapter with -e, a strict --tools allowlist, its own session dir.
 // pi runs sibling tool calls from one assistant message concurrently, which
 // is the parallel dispatch the skills ask for; `run_in_background` is
-// accepted and ignored. Children never receive this extension (and refuse
-// to register it if they did — FULLSEND_SUBAGENT_DEPTH), so recursion is
-// impossible.
+// accepted and ignored. Children conditionally load this file in child-only
+// mode to restore active tools before the first model request; that mode
+// returns without registering Agent. FULLSEND_SUBAGENT_DEPTH also prevents
+// Agent registration if this file loads in normal mode inside a child.
 //
 // The prompt goes over the child's stdin, never as a positional argument.
 // Without a terminator pi's argv parser (0.84.4 dist/cli/args.js) reads a
@@ -501,6 +502,13 @@ export async function extensionTreeHash(root) {
 // flag set minus the shell hygiene the parent already did. The prompt is
 // not here — it goes over stdin (see the file header).
 //
+function resourcePermissionsError(agent) {
+  const resources = agent.mcpResourceTools;
+  return !Array.isArray(resources) || resources.some((name) => typeof name !== "string")
+    ? "missing MCP resource permissions in child manifest"
+    : "";
+}
+
 // personaName, when non-empty, names the persona driving the dispatch; the
 // session dir becomes "sessions/<persona>-<seq>" instead of
 // "sessions/agent-<seq>" so transcripts are labelled by persona (#7031).
@@ -532,9 +540,8 @@ export function childArgs(agent, { seq, modelSpec, tools, activeTools = tools, p
   // unselected names explicitly, preserving any selected resources.
   if (tools.length > 0 && !tools.some((t) => t.startsWith("mcp__"))) {
     const resources = agent.mcpResourceTools;
-    if (!Array.isArray(resources) || resources.some((name) => typeof name !== "string")) {
-      throw new Error("missing MCP resource permissions in child manifest");
-    }
+    const permissionError = resourcePermissionsError(agent);
+    if (permissionError) throw new Error(permissionError);
     args.push("--exclude-tools", ["mcp__*", ...resources.filter((name) => !tools.some((pattern) => toolMatches(pattern, name)))].join(","));
   }
   args.push("--model", modelSpec);
@@ -1140,6 +1147,13 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
 
   const run = async (params, { parentModel, signal } = {}) => {
     const id = ++seq;
+    // Older manifests may omit toolMode, but must still carry the resource
+    // permissions needed to construct a safe child loadout. Reject before
+    // acquiring a slot rather than letting childArgs reject the run promise.
+    const permissionError = resourcePermissionsError(agent);
+    if (permissionError) {
+      return { seq: id, isError: true, error: permissionError, text: "", stopReason: "rejected", model: "" };
+    }
     const description = typeof params?.description === "string" ? params.description : "";
     const subagentType = typeof params?.subagent_type === "string" ? params.subagent_type.trim() : "";
     // Persona dispatch (#7031): when subagent_type names a registered persona,

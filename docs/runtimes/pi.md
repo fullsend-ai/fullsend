@@ -794,6 +794,10 @@ agent's system prompt says so, so a skill that asks for "dispatch these in paral
 
 ### What a child inherits, and what it does not
 
+A missing `toolMode` keeps explicit-list tool selection, not general compatibility
+with older manifests. Missing or malformed `mcpResourceTools` returns a structured
+`rejected` result before launch; the dispatcher does not infer resource permissions.
+
 A child starts with the parent's posture — `--no-approve`, `--no-extensions` with an explicit `-e`
 list, no prompt templates or themes, its own session dir, and a `--tools` allowlist
 (`--tools ''` when that allowlist is empty, disabling extension tools too). It inherits:

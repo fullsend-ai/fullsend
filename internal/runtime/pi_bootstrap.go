@@ -76,15 +76,16 @@ type piAgentManifest struct {
 	SessionsDir string `json:"sessionsDir"`
 	// Extensions are the -e paths every child gets, in order: the provider
 	// extensions present in the image, then the hook adapter when security
-	// is enabled. Never this extension itself.
+	// is enabled. childArgs separately adds this extension in child-only mode
+	// when it must restore the inherited active-tool subset.
 	Extensions []string `json:"extensions"`
 	// DeclaredExtensions are the vetted harness plugins inherited by children.
 	// The dispatcher rechecks their tree hashes before every child launch.
 	DeclaredExtensions []piManifestExtension `json:"declaredExtensions,omitempty"`
 	MCPResourceTools   []string              `json:"mcpResourceTools"`
-	// ExtensionDigests is the sha256 (hex) of each Extensions entry that
-	// Bootstrap itself wrote under the runner-owned config dir. The
-	// extension re-hashes them before every dispatch; see
+	// ExtensionDigests holds sha256 (hex) digests for runner-written child
+	// extensions: always fullsend-agent.js, plus hook/repair adapters when used.
+	// The dispatcher re-hashes them before every dispatch; see
 	// piAgentExtensionDigests for why the vendored ones are absent.
 	ExtensionDigests map[string]string `json:"extensionDigests,omitempty"`
 	// GatewayConfigDigest is the sha256 (hex) of the inference-gateway.json
@@ -702,11 +703,11 @@ func piApplyChildFallbacks(m *piAgentManifest, personas []piPersona, subagentsCf
 
 // piAgentExtensionDigests records hook/repair digests. Bootstrap additionally
 // records fullsend-agent.js, whose child-only mode restores the active loadout.
-// These cover each child -e entry that
-// Bootstrap itself writes under the runner-owned config dir — the hook
-// adapter (the same bytes piHooksGuard checks before pi starts) and the
-// edit-repair extension (piEditRepairGuard's bytes). fullsend-agent.js
-// re-hashes them immediately before every dispatch: the launch guard
+// Together they cover runner-written child -e files: the dispatcher itself,
+// the hook adapter (piHooksGuard's bytes) and the edit-repair extension
+// (piEditRepairGuard's bytes). The dispatcher digest is present even with
+// hooks off and no edit tool. fullsend-agent.js re-hashes all these files
+// immediately before every dispatch: the launch guard
 // fires once, and nothing else re-verifies the adapter afterwards, so a
 // parent with `write` could replace it mid-iteration and dispatch
 // children whose adapter runs no hooks and silently skips its own

@@ -391,7 +391,7 @@ test("childArgs mirrors the runner's pi command line, extensions in manifest ord
   ]);
   assert.ok(!args.some((a) => a.startsWith("do it")), "the prompt is never in argv; it goes over stdin");
   const loaded = args.filter((_, i) => i > 0 && args[i - 1] === "-e");
-  assert.ok(!loaded.some((a) => a.includes("fullsend-agent")), "children never get the Agent extension");
+  assert.ok(!loaded.some((a) => a.includes("fullsend-agent")), "equal callable and active selections need no child-only activation guard");
 
   // The parent's APPEND_SYSTEM.md must not reach a child: pi only discovers
   // it when no --append-system-prompt was given.
@@ -671,6 +671,28 @@ test("run: the usage record's description is capped", async () => {
   // The whole record has to stay under PIPE_BUF for concurrent appends to
   // be atomic.
   assert.ok(Buffer.byteLength(JSON.stringify(rec) + "\n") < 4096);
+});
+
+test("run: missing or malformed resource permissions return structured rejection without spawning", async () => {
+  for (const resourcePermissions of [undefined, null, "invalid", [null]]) {
+    for (const toolMode of [undefined, "explicit"]) {
+      const { manifest } = fixture();
+      manifest.agent.mcpResourceTools = resourcePermissions;
+      manifest.agent.toolMode = toolMode;
+      const { spawn, children } = fakeSpawn();
+      const tool = createAgentTool(manifest, { ...quiet, spawn });
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const result = await tool.run({ prompt: "probe" }, {});
+        assert.deepEqual(result, {
+          seq: attempt, isError: true,
+          error: "missing MCP resource permissions in child manifest",
+          text: "", stopReason: "rejected", model: "",
+        });
+        assert.equal(children.length, 0);
+        assert.equal(tool.inFlight(), 0, "rejection consumes no semaphore slot");
+      }
+    }
+  }
 });
 
 test("run: tampering with manifest MCP resource permissions stops the next dispatch", async () => {
@@ -1549,7 +1571,7 @@ test("default export: missing manifest, disabled block, or a set depth registers
   const ok = join(dir, "manifest.json");
   writeFileSync(ok, JSON.stringify(manifest));
   r = registerWith(ok, { FULLSEND_SUBAGENT_DEPTH: "1" });
-  assert.equal(r.tools.length, 0, "a child never registers the tool (recursion is refused)");
+  assert.equal(r.tools.length, 0, "the depth backstop prevents normal-mode Agent registration in a child");
   assert.equal(r.lines.length, 1);
   assert.match(r.lines[0], /depth/i);
 });
