@@ -271,8 +271,9 @@ resources; a non-empty list is unioned with the parent's list. See
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
 That is the accessor-level value. Commands resolve one step further: the
-`run`/`lint`/`lock` family, harness dispatch, `dispatch --route` and the
-Jira poll all resolve the list through `EffectiveAllowedResources`, which
+`run`/`lint`/`lock` family, harness dispatch, `dispatch --route`, the
+Jira poll and the agent-editing commands (`agent set/add/update/remove`)
+all resolve the list through `EffectiveAllowedResources`, which
 ensures fullsend's default prefixes on top of a non-empty result, so a
 first-party agent source covered only by a default prefix resolves with no
 configuration. A resolved empty list (an explicit `[]`) stays deny-all.
