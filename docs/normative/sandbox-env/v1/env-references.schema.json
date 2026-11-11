@@ -319,6 +319,8 @@
     "runtime_opencode": {
       "description": "Exported only when dispatch runs under opencode: its EnvExports plus the environment its launch command sets. Not reachable under other runtimes.",
       "enum": [
+        "BUN_RUNTIME_TRANSPILER_CACHE_PATH",
+        "FULLSEND_OPENCODE_HOOK_CONFIG",
         "FULLSEND_RUNTIME",
         "GOOGLE_APPLICATION_CREDENTIALS",
         "GOOGLE_CLOUD_LOCATION",
@@ -326,7 +328,9 @@
         "HOME",
         "OPENCODE_CONFIG_CONTENT",
         "OPENCODE_CONFIG_DIR",
+        "OPENCODE_DISABLE_DEFAULT_PLUGINS",
         "OPENCODE_DISABLE_EXTERNAL_SKILLS",
+        "OPENCODE_DISABLE_MODELS_FETCH",
         "OPENCODE_DISABLE_PROJECT_CONFIG"
       ]
     },
