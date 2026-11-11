@@ -4168,6 +4168,62 @@ func TestGetWorkflowRunLogs_MultipleJobs(t *testing.T) {
 	assert.Contains(t, logs, "Job 2 (test)")
 }
 
+// TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote verifies that a skipped
+// job, which has no trace, is left out without a trace request, so its 404
+// does not read as a fetch that failed — the mirror of the GitHub client's
+// test of the same name.
+func TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"failed"},{"id":2,"name":"deploy","status":"skipped"}]`)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("build failure output"))
+	})
+	skippedTraceRequests := 0
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, r *http.Request) {
+		skippedTraceRequests++
+		http.NotFound(w, r)
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "Job 1 (build)")
+	assert.Contains(t, logs, "build failure output")
+	// The literal is the shared forge log-note constant's text
+	// (forge.LogNoteErrorFetchingTrace); the note spelling itself is pinned
+	// by TestLogNoteMarkersAreSharedWithForge in pkg/behaviourtest/steps.
+	assert.NotContains(t, logs, "error fetching trace:")
+	assert.Zero(t, skippedTraceRequests, "a skipped job's trace is never requested")
+}
+
+// TestGetWorkflowRunLogs_AllJobsRan_EveryTraceFetched verifies the other
+// side of the skipped-job skip: a pipeline whose jobs all ran still has
+// every job's trace requested and included, as before.
+func TestGetWorkflowRunLogs_AllJobsRan_EveryTraceFetched(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success"},{"id":2,"name":"test","status":"success"}]`)
+	})
+	traceRequests := map[int]int{}
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		traceRequests[1]++
+		_, _ = w.Write([]byte("build output"))
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, _ *http.Request) {
+		traceRequests[2]++
+		_, _ = w.Write([]byte("test output"))
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "Job 1 (build)")
+	assert.Contains(t, logs, "build output")
+	assert.Contains(t, logs, "Job 2 (test)")
+	assert.Contains(t, logs, "test output")
+	assert.Equal(t, map[int]int{1: 1, 2: 1}, traceRequests, "every job that ran has its trace fetched exactly once")
+}
+
 func TestGetWorkflowRunLogs_TraceError(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {

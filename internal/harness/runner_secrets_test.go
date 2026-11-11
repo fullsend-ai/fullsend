@@ -1,6 +1,8 @@
 package harness
 
 import (
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -49,6 +51,32 @@ func TestOverlayGuardReadsOnlyForgeOrConfig(t *testing.T) {
 	for _, when := range refused {
 		assert.False(t, overlayGuardReadsOnlyForgeOrConfig(when), when)
 	}
+}
+
+// TestOverlayGuardDocCommentNamesNewOverlayEnvRule keeps the guard's doc
+// comment honest about its blind spot: NewOverlayEnv declares the variables
+// a when: expression can read, and the guard must handle each one, or a
+// variable added there passes the guard unchecked. The comment is the
+// contract the next reader of the guard relies on, the same way
+// TestUpstreamRefOverride_MatchesE2EBuildStamp keeps a stamp in sync.
+func TestOverlayGuardDocCommentNamesNewOverlayEnvRule(t *testing.T) {
+	src, err := os.ReadFile("runner_secrets.go")
+	require.NoError(t, err)
+	idx := strings.Index(string(src), "func overlayGuardReadsOnlyForgeOrConfig(")
+	require.NotEqual(t, -1, idx, "overlayGuardReadsOnlyForgeOrConfig stays in runner_secrets.go")
+	// The doc comment is the contiguous // block immediately above the func.
+	lines := strings.Split(strings.TrimRight(string(src[:idx]), " \t\n"), "\n")
+	var comment []string
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(line, "//") {
+			break
+		}
+		comment = append([]string{strings.TrimPrefix(line, "//")}, comment...)
+	}
+	doc := strings.Join(comment, " ")
+	assert.Contains(t, doc, "NewOverlayEnv", "the comment names the variable source the guard must keep up with")
+	assert.Contains(t, doc, "unchecked", "the comment says an unhandled variable passes the guard unchecked")
 }
 
 func TestValidateOverlayRunnerSecretRefs(t *testing.T) {

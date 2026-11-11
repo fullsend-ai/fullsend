@@ -1290,3 +1290,74 @@ func TestLogRedacted_NeutralizesWorkflowCommands(t *testing.T) {
 	assert.NotContains(t, logged[0], "::")
 	assert.Contains(t, logged[0], "injected")
 }
+
+// sharedLogNotes maps each log-note constant to the note text the forge
+// clients wrote before the constants existed: sharing where the text lives
+// must not change the text itself.
+var sharedLogNotes = map[string]string{
+	"LogNoteFailedToFetchLogs":   "[failed to fetch logs:",
+	"LogNoteLogsUnavailable":     "[logs unavailable:",
+	"LogNoteFailedToReadLogs":    "[failed to read logs:",
+	"LogNoteJobListTruncated":    "[job list truncated:",
+	"LogNoteLogTruncated":        "[log truncated:",
+	"LogNoteErrorFetchingTrace":  "error fetching trace:",
+	"LogNoteErrorReadingTrace":   "error reading trace:",
+	"LogNoteAggregateTraceLimit": "aggregate trace limit",
+	"LogNoteTraceTruncated":      "trace truncated at",
+}
+
+// TestLogNoteMarkersAreSharedWithForge keeps the log-note markers one
+// definition. The GitHub and GitLab clients embed these notes in band, and
+// without an error, when a job's log (or the whole aggregate) could not be
+// fetched in full, and partialLogMarker matches them to tell a failed fetch
+// from a complete snapshot. The text used to be repeated as literals in both
+// places, so a client-side rename silently made a failed fetch read as
+// complete logs: the markers must live as constants in internal/forge — the
+// one package both the writers and this reader import — with every side
+// referencing them by name, so a rename is a compile error instead. The
+// pattern follows TestUpstreamRefOverride_MatchesE2EBuildStamp, which keeps
+// two code sites in sync the same way.
+func TestLogNoteMarkersAreSharedWithForge(t *testing.T) {
+	read := func(path string) string {
+		src, err := os.ReadFile(path)
+		require.NoError(t, err, "reading "+path)
+		return string(src)
+	}
+	forgeSrc := read("../../../internal/forge/forge.go")
+	readerSrc := read("debuglogs.go")
+	githubSrc := read("../../../internal/forge/github/github.go")
+	gitlabSrc := read("../../../internal/forge/gitlab/ci.go")
+
+	// sayf asserts without embedding the sources in the failure message:
+	// a Contains on a whole file would print the file.
+	sayf := func(ok bool, format string, args ...any) {
+		assert.True(t, ok, fmt.Sprintf(format, args...))
+	}
+
+	for name, text := range sharedLogNotes {
+		// The constant is declared in internal/forge with the text the
+		// clients have always written.
+		declared := false
+		for _, line := range strings.Split(forgeSrc, "\n") {
+			if strings.Contains(line, name) && strings.Contains(line, strconv.Quote(text)) {
+				declared = true
+				break
+			}
+		}
+		sayf(declared, "internal/forge/forge.go declares %s = %s", name, strconv.Quote(text))
+
+		// The reader matches the constant by name, not a repeated literal.
+		sayf(strings.Contains(readerSrc, "forge."+name), "the log reader matches the shared %s", name)
+		sayf(!strings.Contains(readerSrc, "marker: "+strconv.Quote(text)), "the reader no longer repeats %s as a literal", strconv.Quote(text))
+	}
+
+	// Each client writes the shared constants instead of repeating the
+	// text: the GitLab client its trace notes, the GitHub client its
+	// job-log notes.
+	for _, name := range []string{"LogNoteErrorFetchingTrace", "LogNoteErrorReadingTrace", "LogNoteTraceTruncated", "LogNoteAggregateTraceLimit"} {
+		sayf(strings.Contains(gitlabSrc, "forge."+name), "the GitLab client writes the shared %s", name)
+	}
+	for _, name := range []string{"LogNoteFailedToFetchLogs", "LogNoteLogsUnavailable", "LogNoteFailedToReadLogs", "LogNoteJobListTruncated", "LogNoteLogTruncated"} {
+		sayf(strings.Contains(githubSrc, "forge."+name), "the GitHub client writes the shared %s", name)
+	}
+}
