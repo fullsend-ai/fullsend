@@ -238,7 +238,7 @@ tracker:
   jira:
     base_url: https://example.atlassian.net
     project: PROJ
-    run_label: ai-coding-agent
+    run_label: fs-code-agent
 ```
 
 `tracker.jira.run_label` has no default. Omit it or set it to `""` to disable
@@ -253,7 +253,7 @@ it receives no label update. A failed label read or write produces a warning
 and does not fail the run. **Edit Issues**, already in the bot's minimum
 permission set, covers the write.
 
-Use `labels = "ai-coding-agent"` in JQL to find these issues. Choose a label
+Use `labels = "fs-code-agent"` in JQL to find these issues. Choose a label
 that does not collide with your poll query's trigger or exclusion labels.
 Writes use the same configured Jira account as status comments; changes by the
 poller's own account are classified as bot actions and do not dispatch agents.
