@@ -38,6 +38,9 @@ func TestValidateArtifacts(t *testing.T) {
 		{name: "unknown by_source level", yaml: "artifacts:\n  by_source:\n    jira: hidden\n", wantErr: `invalid artifacts.by_source.jira "hidden"`},
 		{name: "empty by_source level", yaml: "artifacts:\n  by_source:\n    jira: \"\"\n", wantErr: `invalid artifacts.by_source.jira ""`},
 		{name: "empty source key", yaml: "artifacts:\n  by_source:\n    \"\": none\n", wantErr: "source key must not be empty"},
+		{name: "blank source key", yaml: "artifacts:\n  by_source:\n    \"  \": none\n", wantErr: "source key must not be empty"},
+		{name: "uppercase source key", yaml: "artifacts:\n  by_source:\n    Jira: none\n", wantErr: `invalid artifacts.by_source key "Jira": source keys are lowercase with no surrounding spaces; use "jira"`},
+		{name: "source key with spaces", yaml: "artifacts:\n  by_source:\n    \" jira \": none\n", wantErr: `use "jira"`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -65,10 +68,13 @@ func TestResolveArtifactContent(t *testing.T) {
 		{name: "content applies to every source", yaml: "artifacts:\n  content: metadata\n", source: "github", want: "metadata"},
 		{name: "by_source entry for the run source", yaml: "artifacts:\n  by_source:\n    jira: metadata\n", source: "jira", want: "metadata"},
 		{name: "other source gets content", yaml: "artifacts:\n  by_source:\n    jira: metadata\n", source: "github", want: "all"},
-		{name: "no source gets content", yaml: "artifacts:\n  content: none\n  by_source:\n    jira: metadata\n", source: "", want: "none"},
+		{name: "unknown source gets stricter content", yaml: "artifacts:\n  content: none\n  by_source:\n    jira: metadata\n", source: "", want: "none"},
+		{name: "unknown source gets strictest by_source entry", yaml: "artifacts:\n  by_source:\n    jira: metadata\n    linear: none\n    github: all\n", source: "", want: "none"},
+		{name: "unknown source without entries gets content", yaml: "artifacts:\n  content: metadata\n", source: "", want: "metadata"},
 		{name: "stricter content wins", yaml: "artifacts:\n  content: none\n  by_source:\n    jira: metadata\n", source: "jira", want: "none"},
 		{name: "stricter source wins", yaml: "artifacts:\n  content: metadata\n  by_source:\n    jira: none\n", source: "jira", want: "none"},
 		{name: "looser source entry cannot relax content", yaml: "artifacts:\n  content: metadata\n  by_source:\n    github: all\n", source: "github", want: "metadata"},
+		{name: "source is lowercased and trimmed", yaml: "artifacts:\n  by_source:\n    jira: none\n", source: " Jira ", want: "none"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,6 +105,20 @@ func TestResolveArtifactContent_InvalidLevelFails(t *testing.T) {
 	}
 }
 
+// The run-time config load does not run validateArtifacts, so an
+// uppercase or padded by_source key must fail here, not resolve to "all".
+func TestResolveArtifactContent_NonLowercaseKeyFails(t *testing.T) {
+	for _, yml := range []string{
+		"artifacts:\n  by_source:\n    Jira: metadata\n",
+		"artifacts:\n  by_source:\n    \"jira \": none\n",
+	} {
+		cfg, err := ParsePerRepoConfig([]byte(yml))
+		require.NoError(t, err)
+		_, err = ResolveArtifactContent(cfg, "jira")
+		assert.Error(t, err, yml)
+	}
+}
+
 func TestArtifacts_LayerMerge(t *testing.T) {
 	dir := t.TempDir()
 	base := "version: \"1\"\nartifacts:\n  content: metadata\n  by_source:\n    jira: none\n    gitlab: metadata\n"
@@ -121,6 +141,22 @@ func TestArtifacts_LayerMerge(t *testing.T) {
 	r = cfg.(PerRepoConfigReader)
 	assert.Equal(t, "all", r.ConfigArtifactsContent())
 	assert.Equal(t, map[string]string{"jira": "none", "gitlab": "metadata"}, r.ConfigArtifactsBySource())
+}
+
+func TestArtifacts_ContentSet(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, BaseConfigFile), []byte("version: \"1\"\nartifacts:\n  content: all\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, OverlayConfigFile), []byte("artifacts:\n  by_source:\n    jira: all\n"), 0o644))
+	cfg, err := LoadConfig(dir, LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+	r := cfg.(PerRepoConfigReader)
+	assert.True(t, r.ConfigArtifactsContentSet(), "an explicit content in the base layer counts")
+
+	unset, err := ParsePerRepoConfig([]byte("artifacts:\n  by_source:\n    jira: all\n"))
+	require.NoError(t, err)
+	assert.False(t, unset.ConfigArtifactsContentSet())
+	assert.False(t, NewEmptyPerRepoOverlay().ConfigArtifactsContentSet())
+	assert.False(t, (&perRepoDefaults{}).ConfigArtifactsContentSet())
 }
 
 func TestArtifacts_DefaultsAndMarshal(t *testing.T) {

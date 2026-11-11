@@ -902,22 +902,52 @@ copy, and only that copy is uploaded.
 | Level | Artifact holds |
 |---|---|
 | `all` | Everything in `output/`. This is the default, so an unset block keeps the artifact as before. |
-| `metadata` | Only the run-level files of each run directory: `metrics.json`, `eval-measurements.jsonl` and `run-telemetry.jsonl`. In the telemetry copy, every attribute and event that content capture adds (`gen_ai.input.messages`, `gen_ai.output.messages`, `fullsend.content.*` and the other GenAI content attributes) is removed; if a record can't be parsed or stripped, the file is left out. Every `iteration-<N>/` directory, `security/findings.jsonl` and any other file is left out. |
+| `metadata` | Only the run-level files of each run directory: `metrics.json`, `eval-measurements.jsonl` and `run-telemetry.jsonl`. `metrics.json` is copied as written: it holds counts, costs, model fallback reasons and runner paths. In the telemetry copy, every attribute and event that content capture adds (`gen_ai.input.messages`, `gen_ai.output.messages`, `fullsend.content.*` and the other GenAI content attributes) is removed, as are span status messages, exception messages and stack traces, and the pre-script skip reason (`fullsend.prescript.skip_reason`; `fullsend.prescript.skipped` stays). In the measurements copy, every row labelled `skip` gets a fixed explanation, because skip explanations can quote pre-script output. If a record of either file can't be parsed, that file is left out. Every `iteration-<N>/` directory, `security/findings.jsonl` and any other file is left out. |
 | `none` | No artifact is uploaded. The job still succeeds. |
 
 - **`content`** — The level for every run. Unset means `all`.
 - **`by_source`** — Levels for runs started from one source. Keys are the
   normalized event's `source.system`, the same value CEL triggers see as
-  `event.source.system`: `github`, `gitlab`, `jira`, `manual`, `schedule`,
-  or any source a later adapter adds. Keys are open strings; validation
-  rejects unknown levels, not unknown keys.
+  `event.source.system`. Today's adapters emit `github`, `gitlab` and `jira`.
+  `manual` and `schedule` are reserved source names that no adapter emits
+  yet; an entry for them is accepted but matches no run. A later adapter's
+  source name works as a key with no schema change: validation rejects
+  unknown levels, not unknown keys. Keys must be lowercase with no
+  surrounding spaces; `Jira: none` is rejected with a hint to use `jira`,
+  both by config validation and by `fullsend stage-artifacts`, which then
+  stages nothing.
 
 **Resolution.** The runner picks one level per run: the stricter of
 `content` and the `by_source` entry for the run's source. A source with no
-entry, or a run with no normalized event, gets `content`. `none` is stricter
-than `metadata`, which is stricter than `all`, so a `by_source` entry can
-tighten a run's level but never loosen `content`. With `content: none` and
-`by_source: {jira: metadata}`, a Jira run uploads nothing.
+entry gets `content`. `none` is stricter than `metadata`, which is stricter
+than `all`, so a `by_source` entry can tighten a run's level but never loosen
+`content`. With `content: none` and `by_source: {jira: metadata}`, a Jira run
+uploads nothing.
+
+**Run source.** `fullsend stage-artifacts` finds the source in this order
+and prints the rule it applied on stderr:
+
+1. A run with a valid normalized event uses its `source.system`, trimmed and
+   lowercased before the lookup.
+2. A run with no normalized event in any payload, on GitHub Actions, started
+   by a native GitHub event (`issues`, `issue_comment`, `pull_request`,
+   `pull_request_target`, `pull_request_review` or
+   `pull_request_review_comment`) is `github`. This covers the standard
+   GitHub stage jobs, which receive no normalized event.
+3. Everything else is unknown: manual and scheduled runs, a dispatch without
+   a valid normalized event, a dispatch payload that names a source in
+   `_normalized_event.source.system` whose event is invalid or names a
+   different source, and a GitLab event too large for the dispatch payload.
+   There is no other forge fallback. A run with an unknown source gets the
+   strictest of `content` and every `by_source` entry; when that is stricter
+   than `content`, the rule line is a warning (and a GitHub Actions warning
+   annotation).
+
+**Warning.** A run from an external tracker (a source other than `github`,
+`gitlab`, `forgejo`, `manual` or `schedule`) that uploads at `all` logs a
+warning, and a GitHub Actions warning annotation, unless the repository set
+`content` explicitly in any layer, has a `by_source` entry for that source,
+or is known to be private.
 
 **Fails closed.** If the level cannot be resolved — an invalid level, a
 config file that cannot be loaded, an unreadable event, or a CLI too old to
@@ -925,15 +955,18 @@ know `fullsend stage-artifacts` — the staged copy is empty and no artifact is
 uploaded. The raw `output/` is never uploaded in its place.
 
 **Layers.** Across `config.base.yaml` and `config.yaml`, an explicit
-`content` overrides and `by_source` merges per key. Lowering an effective
-level toward `all` (for example by dropping a `by_source` entry or a base's
-`content`) is a relaxation under the managed-configuration safety gate
-([ADR 0122](../ADRs/0122-declarative-repo-configuration.md)), so the new layer
-must declare that key explicitly.
+`content` overrides and `by_source` merges per key. When `fullsend repos`
+writes managed configuration from the `repos.yaml` manifest, its safety gate
+([ADR 0122](../ADRs/0122-declarative-repo-configuration.md)) treats lowering
+an effective level toward `all` (for example by dropping a `by_source` entry
+or a base's `content`) as a relaxation, so the proposed `config.yaml` must
+declare that key explicitly. The gate does not check a direct commit to
+`config.yaml` or `config.base.yaml`; that change goes through the
+repository's normal review and CODEOWNERS.
 
 `by_source` looks only at where the run started. For when to choose each
-level and what follow-up workflows lose, see
-[Public repos and private data](../guides/user/jira-integration.md#public-repos-and-private-data).
+level, what `metadata` still publishes and what follow-up workflows lose, see
+[Run artifacts and private data](../guides/user/run-artifacts-and-private-data.md).
 
 ## Installation model
 

@@ -7,6 +7,32 @@
 
 set -euo pipefail
 
+# Temp files removed when the job shell exits, on every path (the many
+# early fail-closed exits below and a `set -e` failure included); persistent
+# runners keep RUNNER_TEMP between jobs. Later code adds files with
+# _FS_EXIT_CLEANUP+=(...) instead of installing its own EXIT trap, which
+# would replace this one.
+_FS_EXIT_CLEANUP=()
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below
+_fs_exit_cleanup() {
+  if [ "${#_FS_EXIT_CLEANUP[@]}" -gt 0 ]; then
+    rm -f -- "${_FS_EXIT_CLEANUP[@]}"
+  fi
+}
+trap '_fs_exit_cleanup' EXIT
+
+# The job uploads fullsend-artifact/ with `when: always` (ADR 0161). A
+# runner that keeps its workspace still holds the previous job's staged
+# copy, so empty it before any early exit below (the CI_DEBUG_TRACE guard
+# included) can leave it for upload. Only an absolute CI_PROJECT_DIR is
+# trusted as the workspace root.
+case "${CI_PROJECT_DIR:-}" in
+  /*)
+    rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"
+    mkdir -p -- "${CI_PROJECT_DIR}/fullsend-artifact"
+    ;;
+esac
+
 # CI_DEBUG_TRACE guard — deny-before-admit. YAML rules also refuse to
 # start the job when debug tracing is enabled (secrets materialize at
 # job init, so a mid-script abort is too late). This script-level
@@ -74,7 +100,7 @@ FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 if [ -n "${FULLSEND_GCP_WIF_PROVIDER:-}" ]; then
   OIDC_TOKEN_FILE=$(mktemp)
   GCP_CRED_CONFIG_FILE=$(mktemp)
-  trap 'rm -f "${OIDC_TOKEN_FILE}" "${GCP_CRED_CONFIG_FILE}"' EXIT
+  _FS_EXIT_CLEANUP+=("${OIDC_TOKEN_FILE}" "${GCP_CRED_CONFIG_FILE}")
   echo "${FULLSEND_ID_TOKEN}" > "${OIDC_TOKEN_FILE}"
   if [ -n "${FULLSEND_GCP_SERVICE_ACCOUNT:-}" ]; then
     # The installer validates the email; recheck the shape here so the
@@ -1110,6 +1136,7 @@ rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"
 _FS_RUN_EVENT_ARGS=()
 if [ "${JIRA_DISPATCH}" = "true" ]; then
   JIRA_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-jira-event.XXXXXX")
+  _FS_EXIT_CLEANUP+=("${JIRA_EVENT_FILE}")
   if ! printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
     | jq -e '._normalized_event | select(type == "object" and .source.system == "jira")' > "${JIRA_EVENT_FILE}" 2>/dev/null; then
     echo "ERROR: Jira dispatch payload has no Jira normalized event — refusing to run (fail-closed)" >&2
@@ -1124,6 +1151,7 @@ else
   # _normalized_event (an older poller, or an event that did not fit) has
   # no source.system, gets no --event-file, and runs as before.
   GITLAB_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-gitlab-event.XXXXXX")
+  _FS_EXIT_CLEANUP+=("${GITLAB_EVENT_FILE}")
   if printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
     | jq -e '._normalized_event | select(type == "object" and .source.system == "gitlab")' > "${GITLAB_EVENT_FILE}" 2>/dev/null; then
     _FS_RUN_EVENT_ARGS=(--event-file "${GITLAB_EVENT_FILE}")
@@ -1183,12 +1211,18 @@ if _FS_ARTIFACT_LEVEL=$(fullsend stage-artifacts \
 else
   rm -rf -- "${_FS_STAGED_DIR}"
   mkdir -p -- "${_FS_STAGED_DIR}"
-  echo "WARNING: run artifact level could not be resolved; no run artifact is uploaded" >&2
+  # Tell apart a missing binary (a failed install), a CLI that predates
+  # the command (cobra exits non-zero for an unknown subcommand even with
+  # --help) and a failed resolution.
+  if ! command -v fullsend >/dev/null 2>&1; then
+    echo "WARNING: the fullsend CLI is not installed (did install-fullsend-cli.sh fail?), so no run artifact is uploaded" >&2
+  elif ! fullsend stage-artifacts --help >/dev/null 2>&1; then
+    echo "WARNING: the installed fullsend CLI predates stage-artifacts, so no run artifact is uploaded; install-fullsend-cli.sh must pin a fullsend release at least as new as this script (re-sync the .fullsend scaffold)" >&2
+  else
+    echo "WARNING: run artifact level could not be resolved; no run artifact is uploaded" >&2
+  fi
 fi
 
-# Persistent runners keep RUNNER_TEMP between jobs.
-if [ -n "${GITLAB_EVENT_FILE:-}" ]; then
-  rm -f "${GITLAB_EVENT_FILE}"
-fi
-
+# The EXIT trap removes the event files (persistent runners keep
+# RUNNER_TEMP between jobs).
 exit "${RUN_STATUS}"

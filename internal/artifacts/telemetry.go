@@ -38,9 +38,18 @@ func isContentAttribute(key string) bool {
 	return contentAttributeKeys[key] || strings.HasPrefix(key, contentAttributePrefix)
 }
 
+// freeTextAttributeKeys are span attributes that carry free text from
+// outside the agent run, removed like content attributes. The pre-script
+// skip reason is up to 8 KiB of pre-script output; the boolean
+// fullsend.prescript.skipped stays.
+var freeTextAttributeKeys = map[string]bool{
+	"fullsend.prescript.skip_reason": true,
+}
+
 // StripTelemetry returns a copy of a run-telemetry.jsonl file (one OTLP
 // JSON TracesData per line) with every content-capture attribute and
-// event removed. Blank lines are dropped. Any record that is not valid
+// event, span status messages, exception text and the pre-script skip
+// reason removed. Blank lines are dropped. Any record that is not valid
 // JSON or does not have the TracesData shape is an error, so the caller
 // leaves the file out instead of publishing it unstripped.
 func StripTelemetry(data []byte) ([]byte, error) {
@@ -126,8 +135,23 @@ func stripRecord(record []byte) ([]byte, error) {
 	return json.Marshal(root)
 }
 
+// exceptionEventName is the OpenTelemetry exception event. Its message and
+// stack trace carry free error text (err.Error()), which can quote what the
+// agent read, so the staged copy keeps only exception.type.
+const exceptionEventName = "exception"
+
+// exceptionTextAttributeKeys are the exception event attributes that hold
+// free error text.
+var exceptionTextAttributeKeys = map[string]bool{
+	"exception.message":    true,
+	"exception.stacktrace": true,
+}
+
 func stripSpan(span map[string]any) error {
 	if err := stripAttributes(span); err != nil {
+		return err
+	}
+	if err := stripStatusMessage(span); err != nil {
 		return err
 	}
 	events, err := objectList(span, "events", false)
@@ -148,6 +172,11 @@ func stripSpan(span map[string]any) error {
 			if carries {
 				continue
 			}
+			if name == exceptionEventName {
+				if err := dropAttributes(ev, exceptionTextAttributeKeys); err != nil {
+					return err
+				}
+			}
 			kept = append(kept, ev)
 		}
 		span["events"] = kept
@@ -161,6 +190,45 @@ func stripSpan(span map[string]any) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// stripStatusMessage drops the span status description, which carries free
+// error text; the status code stays.
+func stripStatusMessage(span map[string]any) error {
+	raw, ok := span["status"]
+	if !ok || raw == nil {
+		return nil
+	}
+	status, ok := raw.(map[string]any)
+	if !ok {
+		return errors.New("status is not an object")
+	}
+	delete(status, "message")
+	return nil
+}
+
+// dropAttributes removes the named keys from obj["attributes"].
+func dropAttributes(obj map[string]any, keys map[string]bool) error {
+	attrs, err := objectList(obj, "attributes", false)
+	if err != nil {
+		return err
+	}
+	if attrs == nil {
+		return nil
+	}
+	kept := make([]any, 0, len(attrs))
+	for _, kv := range attrs {
+		key, ok := kv["key"].(string)
+		if !ok {
+			return errors.New("attribute has no string key")
+		}
+		if keys[key] {
+			continue
+		}
+		kept = append(kept, kv)
+	}
+	obj["attributes"] = kept
 	return nil
 }
 
@@ -179,7 +247,7 @@ func stripAttributes(obj map[string]any) error {
 		if !ok {
 			return errors.New("attribute has no string key")
 		}
-		if isContentAttribute(key) {
+		if isContentAttribute(key) || freeTextAttributeKeys[key] {
 			continue
 		}
 		kept = append(kept, kv)

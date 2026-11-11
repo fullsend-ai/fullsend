@@ -119,5 +119,9 @@ func (d *perRepoDefaults) ConfigModelAliases() map[string]string { return nil }
 // the whole output/ directory, as before ADR 0161).
 func (d *perRepoDefaults) ConfigArtifactsContent() string { return ArtifactContentAll }
 
+// ConfigArtifactsContentSet reports false: the default level is not an
+// explicit choice.
+func (d *perRepoDefaults) ConfigArtifactsContentSet() bool { return false }
+
 // ConfigArtifactsBySource returns the default per-source levels (none).
 func (d *perRepoDefaults) ConfigArtifactsBySource() map[string]string { return nil }

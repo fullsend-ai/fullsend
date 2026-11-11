@@ -79,8 +79,10 @@ func validArtifactContent(level string) bool {
 }
 
 // validateArtifacts checks a layer's own artifacts block: content and
-// every by_source value must be a known level. Keys are open strings and
-// only need to be non-empty.
+// every by_source value must be a known level. Keys are open strings, but
+// must be non-empty, lowercase and without surrounding spaces: source
+// names are lowercase (event.source.system), and a key that differs only
+// in case would silently never match.
 func validateArtifacts(a *ArtifactsConfig) error {
 	if a == nil {
 		return nil
@@ -90,8 +92,12 @@ func validateArtifacts(a *ArtifactsConfig) error {
 		return fmt.Errorf("invalid artifacts.content %q: must be one of %s", a.Content, levels)
 	}
 	for _, k := range sortedKeys(a.BySource) {
-		if strings.TrimSpace(k) == "" {
+		norm := strings.ToLower(strings.TrimSpace(k))
+		if norm == "" {
 			return fmt.Errorf("artifacts.by_source: source key must not be empty")
+		}
+		if k != norm {
+			return fmt.Errorf("invalid artifacts.by_source key %q: source keys are lowercase with no surrounding spaces; use %q", k, norm)
 		}
 		if v := a.BySource[k]; !validArtifactContent(v) {
 			return fmt.Errorf("invalid artifacts.by_source.%s %q: must be one of %s", k, v, levels)
@@ -103,9 +109,13 @@ func validateArtifacts(a *ArtifactsConfig) error {
 // ResolveArtifactContent returns the run artifact level for a run started
 // from source: the stricter of the effective artifacts.content and the
 // effective artifacts.by_source entry for source. A source with no entry
-// (including an empty source) gets the content level. A nil reader (no
-// configuration) resolves to "all". An invalid level in any layer is an
-// error, so callers can fail closed.
+// gets the content level. The source is trimmed and lowercased before the
+// lookup; a by_source key that is not lowercase is an error. An empty
+// source means the run's source is
+// unknown: it gets the strictest of content and every by_source entry, so
+// a source level is never skipped because the source could not be read.
+// A nil reader (no configuration) resolves to "all". An invalid level in
+// any layer is an error, so callers can fail closed.
 func ResolveArtifactContent(r PerRepoConfigReader, source string) (string, error) {
 	if r == nil {
 		return ArtifactContentAll, nil
@@ -118,13 +128,19 @@ func ResolveArtifactContent(r PerRepoConfigReader, source string) (string, error
 		return "", fmt.Errorf("invalid artifacts.content %q: must be one of %s", content, strings.Join(validArtifactContentLevels, ", "))
 	}
 	bySource := r.ConfigArtifactsBySource()
-	for _, k := range sortedKeys(bySource) {
-		if v := bySource[k]; !validArtifactContent(v) {
-			return "", fmt.Errorf("invalid artifacts.by_source.%s %q: must be one of %s", k, v, strings.Join(validArtifactContentLevels, ", "))
-		}
+	// The run-time config load does not run validateArtifacts, so check
+	// keys and values here: a key that is not lowercase would never match
+	// and must not resolve to a weaker level.
+	if err := validateArtifacts(&ArtifactsConfig{BySource: bySource}); err != nil {
+		return "", err
 	}
+	source = strings.ToLower(strings.TrimSpace(source))
 	if source == "" {
-		return content, nil
+		level := content
+		for _, v := range bySource {
+			level = StricterArtifactContent(level, v)
+		}
+		return level, nil
 	}
 	return StricterArtifactContent(content, bySource[source]), nil
 }
@@ -139,6 +155,16 @@ func (c *perRepoConfig) ConfigArtifactsContent() string {
 		return c.parent.ConfigArtifactsContent()
 	}
 	return ArtifactContentAll
+}
+
+// ConfigArtifactsContentSet reports whether any layer sets
+// artifacts.content explicitly, so an explicit "all" can be told apart
+// from the code default.
+func (c *perRepoConfig) ConfigArtifactsContentSet() bool {
+	if c.Artifacts != nil && c.Artifacts.Content != "" {
+		return true
+	}
+	return c.parent != nil && c.parent.ConfigArtifactsContentSet()
 }
 
 // ConfigArtifactsBySource returns the effective artifacts.by_source map,

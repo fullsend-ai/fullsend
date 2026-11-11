@@ -709,7 +709,16 @@ runs:
           LEVEL="unresolved"
           rm -rf -- "${STAGED_DIR}"
           mkdir -p -- "${STAGED_DIR}"
-          echo "::warning::Run artifact level could not be resolved; no run artifact is uploaded"
+          # Tell apart a missing binary (a failed install), a CLI that
+          # predates the command (cobra exits non-zero for an unknown
+          # subcommand even with --help) and a failed resolution.
+          if ! command -v fullsend >/dev/null 2>&1; then
+            echo "::warning::The fullsend CLI is not installed (check the install step), so no run artifact is uploaded."
+          elif ! fullsend stage-artifacts --help >/dev/null 2>&1; then
+            echo "::warning::The installed fullsend CLI predates stage-artifacts, so no run artifact is uploaded. Set the version input to at least the fullsend release that ships this action."
+          else
+            echo "::warning::Run artifact level could not be resolved; no run artifact is uploaded"
+          fi
         fi
         echo "level=${LEVEL}" >> "${GITHUB_OUTPUT}"
 

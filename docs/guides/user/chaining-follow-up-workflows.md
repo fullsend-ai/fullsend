@@ -56,7 +56,7 @@ The tree below is the default, `all`. A repository that sets the
 `iteration-N/` result, transcripts or security findings. At `none`, the run
 uploads no artifact at all. A follow-up that reads the result needs `all` for
 the runs it consumes. See
-[Public repos and private data](jira-integration.md#public-repos-and-private-data).
+[Run artifacts and private data](run-artifacts-and-private-data.md).
 
 ```text
 fullsend-<agent>[.matrix-<job-index>]/ # suffix on later rows for repeated agents

@@ -56,7 +56,7 @@ func listTree(t *testing.T, root string) []string {
 func fullRun() map[string]string {
 	return map[string]string{
 		testRunDir + "/metrics.json":                         `{"iterations":1}`,
-		testRunDir + "/eval-measurements.jsonl":              `{"score":1}` + "\n",
+		testRunDir + "/eval-measurements.jsonl":              testMeasurements,
 		testRunDir + "/run-telemetry.jsonl":                  contentTelemetry,
 		testRunDir + "/security/findings.jsonl":              `{"detail":"quoted tool output"}` + "\n",
 		testRunDir + "/iteration-1/output.jsonl":             `{"type":"assistant"}` + "\n",
@@ -114,6 +114,50 @@ func TestStage_Metadata(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join(out, testRunDir, "run-telemetry.jsonl"))
 	require.NoError(t, err)
 	assert.Equal(t, contentTelemetry, string(raw))
+}
+
+// testMeasurements holds a pass row and a pre-script skip row whose
+// explanation quotes the pre-script's output.
+const testMeasurements = `{"name":"trace_fitness","label":"pass","explanation":"all spans present","trace_id":"01","span_id":"02","agent":"code","version":"em-001@1","value":1}` + "\n" +
+	`{"name":"health","label":"skip","explanation":"pre-script skipped run; excluded from run_health: PROJ-1 private summary","trace_id":"01","span_id":"02","agent":"code","version":"em-002@1","value":0}` + "\n"
+
+// Under metadata the staged measurements keep every row but no skip
+// explanation, so the pre-script's text never leaves the runner.
+func TestStage_MetadataReplacesSkipExplanations(t *testing.T) {
+	out := t.TempDir()
+	staged := filepath.Join(t.TempDir(), "staged")
+	writeTree(t, out, fullRun())
+	require.NoError(t, Stage(out, staged, "metadata"))
+
+	got, err := os.ReadFile(filepath.Join(staged, testRunDir, "eval-measurements.jsonl"))
+	require.NoError(t, err)
+	s := string(got)
+	assert.NotContains(t, s, "private summary")
+	assert.Contains(t, s, `"explanation":"`+StagedSkipExplanation+`"`)
+	assert.Contains(t, s, `"explanation":"all spans present"`, "non-skip rows are kept as written")
+	assert.Equal(t, 2, strings.Count(s, "\n"))
+	raw, err := os.ReadFile(filepath.Join(out, testRunDir, "eval-measurements.jsonl"))
+	require.NoError(t, err)
+	assert.Equal(t, testMeasurements, string(raw), "output is untouched")
+}
+
+func TestStage_MetadataDropsUnparseableMeasurements(t *testing.T) {
+	for name, content := range map[string]string{
+		"not json": testMeasurements + "{not json\n",
+		"no label": `{"name":"x","explanation":"private"}` + "\n",
+		"array":    `[1]` + "\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := t.TempDir()
+			staged := filepath.Join(t.TempDir(), "staged")
+			writeTree(t, out, map[string]string{
+				testRunDir + "/metrics.json":            `{}`,
+				testRunDir + "/eval-measurements.jsonl": content,
+			})
+			require.NoError(t, Stage(out, staged, "metadata"))
+			assert.Equal(t, []string{testRunDir + "/metrics.json"}, listTree(t, staged))
+		})
+	}
 }
 
 func TestStage_MetadataDropsUnparseableTelemetry(t *testing.T) {
@@ -180,6 +224,31 @@ func TestPrepareStagedDir_RejectsOverlap(t *testing.T) {
 	}
 	assert.Error(t, PrepareStagedDir(out, ""))
 	assert.Equal(t, []string{"keep.txt"}, listTree(t, out), "the raw output survives a rejected stage")
+}
+
+// A staged path reached through a symlinked parent resolves into the
+// output directory and is rejected before RemoveAll can touch it, both
+// when the staged directory exists and when it does not exist yet.
+func TestPrepareStagedDir_RejectsOverlapThroughSymlink(t *testing.T) {
+	out := t.TempDir()
+	writeTree(t, out, map[string]string{"keep.txt": "raw", "sub/inner.txt": "raw"})
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(out, link))
+
+	for _, staged := range []string{
+		filepath.Join(link, "sub"),
+		filepath.Join(link, "missing", "staged"),
+		link,
+	} {
+		err := PrepareStagedDir(out, staged)
+		require.Error(t, err, staged)
+		assert.Contains(t, err.Error(), "overlap")
+	}
+	// The output directory itself reached through the link is rejected too.
+	staged := filepath.Join(t.TempDir(), "staged")
+	require.Error(t, PrepareStagedDir(link, filepath.Join(out, "x")))
+	require.NoError(t, PrepareStagedDir(link, staged), "disjoint paths still pass")
+	assert.Equal(t, []string{"keep.txt", "sub/inner.txt"}, listTree(t, out), "the raw output survives")
 }
 
 func TestMetadataFiles(t *testing.T) {

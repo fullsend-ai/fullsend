@@ -203,8 +203,12 @@ GitLab CI agent job
 ```
 
 Both JSONL files reach the artifact under the `all` and `metadata`
-[artifact levels](../../reference/config-reference.md#artifacts); under
-`metadata`, `run-telemetry.jsonl` has its content-capture attributes removed.
+[artifact levels](../../reference/config-reference.md#artifacts). Under
+`metadata`, the staged `run-telemetry.jsonl` has its content-capture
+attributes, span status messages, exception text and pre-script skip reason
+removed, and every `skip` row in the staged `eval-measurements.jsonl` gets a
+fixed explanation. A file that cannot be parsed is left out. The files in
+`output/` are not changed.
 
 Add `output/` and `fullsend-artifact/` to the consuming repo's `.gitignore` so local GitLab-checkout
 runs do not stage telemetry accidentally. The GitLab per-repo scaffold embeds

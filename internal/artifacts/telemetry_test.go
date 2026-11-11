@@ -27,6 +27,39 @@ func TestStripTelemetry_RemovesContentAttributesAndEvents(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(s)), &parsed), "output stays valid JSON")
 }
 
+// Span status descriptions and exception events carry err.Error() text,
+// which can quote what the agent read: the staged copy keeps the status
+// code and the exception type only.
+func TestStripTelemetry_DropsFreeErrorText(t *testing.T) {
+	record := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"run","status":{"code":2,"message":"open PROJ-1: customer data"},` +
+		`"events":[{"name":"exception","timeUnixNano":"5","attributes":[` +
+		`{"key":"exception.type","value":{"stringValue":"*fs.PathError"}},` +
+		`{"key":"exception.message","value":{"stringValue":"read private text"}},` +
+		`{"key":"exception.stacktrace","value":{"stringValue":"goroutine 1 private frame"}}]}]}]}]}]}`
+	out, err := StripTelemetry([]byte(record))
+	require.NoError(t, err)
+	want := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"run","status":{"code":2},` +
+		`"events":[{"name":"exception","timeUnixNano":"5","attributes":[` +
+		`{"key":"exception.type","value":{"stringValue":"*fs.PathError"}}]}]}]}]}]}`
+	assert.JSONEq(t, want, strings.TrimSpace(string(out)))
+
+	_, err = StripTelemetry([]byte(`{"resourceSpans":[{"scopeSpans":[{"spans":[{"status":"bad"}]}]}]}`))
+	assert.Error(t, err, "a status that is not an object fails closed")
+}
+
+// The pre-script skip reason is pre-script output; the staged copy keeps
+// only the boolean skipped signal.
+func TestStripTelemetry_DropsPrescriptSkipReason(t *testing.T) {
+	record := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"run","attributes":[` +
+		`{"key":"fullsend.prescript.skipped","value":{"boolValue":true}},` +
+		`{"key":"fullsend.prescript.skip_reason","value":{"stringValue":"PROJ-1 private summary"}}]}]}]}]}`
+	out, err := StripTelemetry([]byte(record))
+	require.NoError(t, err)
+	want := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"run","attributes":[` +
+		`{"key":"fullsend.prescript.skipped","value":{"boolValue":true}}]}]}]}]}`
+	assert.JSONEq(t, want, strings.TrimSpace(string(out)))
+}
+
 func TestStripTelemetry_KeepsMetadataOnlyRecordEquivalent(t *testing.T) {
 	record := `{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"run","attributes":[{"key":"gen_ai.usage.output_tokens","value":{"intValue":"12"}}]}]}]}]}`
 	out, err := StripTelemetry([]byte(record))

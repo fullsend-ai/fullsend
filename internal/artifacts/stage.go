@@ -8,8 +8,9 @@
 //   - all: everything in output/.
 //   - metadata: only metrics.json, eval-measurements.jsonl and
 //     run-telemetry.jsonl from the top of each host run directory, with
-//     content-capture attributes and events stripped from the telemetry
-//     copy. Every other file stays out.
+//     content-capture attributes and events and the pre-script skip
+//     reason stripped from the telemetry copy, and skip explanations
+//     replaced in the measurements copy. Every other file stays out.
 //   - none: nothing.
 package artifacts
 
@@ -86,13 +87,15 @@ func Stage(outputDir, stagedDir, level string) error {
 
 // checkDisjoint rejects a staged directory equal to, inside, or
 // containing the output directory: copying into it would recurse or
-// clearing it would destroy the raw output.
+// clearing it would destroy the raw output. Both paths are compared after
+// resolving symlinks, so a path reached through a symlinked parent cannot
+// hide an overlap.
 func checkDisjoint(outputDir, stagedDir string) error {
-	out, err := filepath.Abs(outputDir)
+	out, err := resolvePath(outputDir)
 	if err != nil {
 		return err
 	}
-	staged, err := filepath.Abs(stagedDir)
+	staged, err := resolvePath(stagedDir)
 	if err != nil {
 		return err
 	}
@@ -100,6 +103,36 @@ func checkDisjoint(outputDir, stagedDir string) error {
 		return fmt.Errorf("staged directory %s must not overlap output directory %s", stagedDir, outputDir)
 	}
 	return nil
+}
+
+// resolvePath returns the absolute path with symlinks resolved. When the
+// path does not exist yet, its nearest existing ancestor is resolved and
+// the missing components are joined back on.
+func resolvePath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	var missing []string
+	cur := abs
+	for {
+		resolved, err := filepath.EvalSymlinks(cur)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("resolving %s: %w", p, err)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return abs, nil
+		}
+		missing = append(missing, filepath.Base(cur))
+		cur = parent
+	}
 }
 
 func within(parent, child string) bool {
@@ -151,9 +184,24 @@ func stageAll(outputDir, stagedDir string) error {
 	})
 }
 
+// metadataFilters rewrite the metadata files that can carry free text.
+// A file whose filter fails is left out of the staged copy.
+var metadataFilters = map[string]func([]byte) ([]byte, error){
+	telemetry.TelemetryFile:      StripTelemetry,
+	evalmeasure.MeasurementsFile: StripMeasurements,
+}
+
+// unfilteredMetadataFiles are the metadata files copied as written, with
+// the reason no filter applies. Every MetadataFiles entry is either here
+// or in metadataFilters (TestMetadataFilesAllFilteredOrExplained).
+var unfilteredMetadataFiles = map[string]string{
+	MetricsFile: "runner-written counts, costs, model fallback reasons and runner paths; no agent, tracker or pre-script text",
+}
+
 // stageMetadata copies the allowlisted run-level files from the top of
 // each host run directory under outputDir. The telemetry copy has
-// content capture stripped; a telemetry file that cannot be stripped is
+// content capture and pre-script free text stripped, and the measurements
+// copy has skip explanations replaced; a file that cannot be filtered is
 // left out.
 func stageMetadata(outputDir, stagedDir string) error {
 	entries, err := os.ReadDir(outputDir)
@@ -186,7 +234,8 @@ func stageMetadata(outputDir, stagedDir string) error {
 				return err
 			}
 			dst := filepath.Join(dstDir, name)
-			if name != telemetry.TelemetryFile {
+			strip, filtered := metadataFilters[name]
+			if !filtered {
 				if err := copyFile(src, dst); err != nil {
 					return err
 				}
@@ -196,7 +245,7 @@ func stageMetadata(outputDir, stagedDir string) error {
 			if err != nil {
 				return err
 			}
-			stripped, err := StripTelemetry(data)
+			stripped, err := strip(data)
 			if err != nil {
 				// Fail closed for this file only: the rest of the
 				// metadata is still useful without it.

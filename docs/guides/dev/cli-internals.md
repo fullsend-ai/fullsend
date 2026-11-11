@@ -208,7 +208,7 @@ fullsend
 │   ├── --output-dir <path>                  #   Run output directory (required; never modified)
 │   ├── --artifact-dir <path>                #   Staged copy destination, emptied first (required)
 │   ├── --fullsend-dir <path>                #   Directory holding config.yaml (default: .)
-│   └── --event-file <path>                  #   Normalized event (default: dispatch payload)
+│   └── --event-file <path>                  #   Normalized event (default: dispatch payload; else native GitHub event → github; else strictest level)
 ├── resolve-mr-source                        # Resolve a GitLab MR's source branch, SHA, and project path
 │   ├── --project <path>                     #   GitLab project path (default: $CI_PROJECT_PATH)
 │   ├── --mr-iid <int>                       #   Merge request IID (required)
