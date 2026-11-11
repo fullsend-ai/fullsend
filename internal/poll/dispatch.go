@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -304,15 +305,16 @@ const (
 	// https://docs.gitlab.com/ci/inputs/).
 	dispatchPayloadChunkSize = 1000
 	// maxEventPayloadChunks is the number of event_payload_chunk_NN
-	// scalar inputs fullsend-agent.yml declares. The 20-input shape is
-	// this repository's design bound: the configuration declares the
-	// 11 other named dispatch fields (dispatchInputNames) plus these
-	// 9 chunks, using every root input, and repos install's dispatch
-	// gate rejects any extra root input rather than growing the shape
-	// (internal/repos/gitlabci.go) — so a 10th chunk
-	// (event_payload_chunk_09) would be the pipeline's 21st declared
-	// input, a configuration the scaffold does not ship, independently
-	// of how many chunks any given dispatch actually fills in. This
+	// scalar inputs fullsend-agent.yml declares. GitLab limits a
+	// pipeline contract to 20 inputs (ADR 0131;
+	// https://docs.gitlab.com/ci/inputs/), and the configuration
+	// declares the 11 other named dispatch fields (dispatchInputNames)
+	// plus these 9 chunks, using every root input GitLab allows — so a
+	// 10th chunk (event_payload_chunk_09) would be the pipeline's 21st
+	// declared input, a shape GitLab rejects and repos install's
+	// dispatch gate refuses rather than growing
+	// (internal/repos/gitlabci.go), independently of how many chunks
+	// any given dispatch actually fills in. This
 	// bounds the largest EVENT_PAYLOAD_B64 dispatch() can
 	// transport to maxEventPayloadChunks*dispatchPayloadChunkSize base64
 	// characters, which is why buildEventPayload truncates a non-command
@@ -728,7 +730,17 @@ func boundEventStrings(ev *dispatch.NormalizedEvent, cut func(field, s string) s
 }
 
 // boundTransportLabels returns labels unchanged when their JSON serialization
-// fits transportLabelsLimit, and otherwise the longest prefix that does.
+// fits transportLabelsLimit, and otherwise the longest prefix that does —
+// plus every control label the prefix dropped (dispatch.IsControlLabel):
+// the router's no-fix gate and the shipped agent triggers evaluate the
+// bounded list, so a stop label pushed past the byte cap by padding labels
+// would fail that gate open, and a kill switch must survive its own
+// transport bound. The kept control labels (~32 JSON bytes for both) ride
+// inside the worst-case budget margin
+// (TestBoundTransportLabels_KeepsControlLabels pins both the keep and the
+// budget fit), and keeping one can only suppress or enable what the gates
+// already decided — anyone who can label the work item can add or remove
+// the label itself.
 func boundTransportLabels(labels []string) []string {
 	if labels == nil {
 		return nil
@@ -747,7 +759,17 @@ func boundTransportLabels(labels []string) []string {
 		size += len(enc)
 		kept = i + 1
 	}
-	return labels[:kept]
+	bounded := labels[:kept]
+	var control []string
+	for _, label := range labels[kept:] {
+		if dispatch.IsControlLabel(label) && !slices.Contains(bounded, label) && !slices.Contains(control, label) {
+			control = append(control, label)
+		}
+	}
+	if len(control) == 0 {
+		return bounded
+	}
+	return append(slices.Clone(bounded), control...)
 }
 
 // logBoundTransportString bounds s like boundTransportString and logs a

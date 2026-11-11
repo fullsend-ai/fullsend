@@ -89,10 +89,11 @@ spec:
 # in this file whether or not a caller supplied any chunks) that only
 # ever reference those variables' values, never interpolate caller
 # content into the script itself. Only 9 chunks (00-08) are declared,
-# not 40: the dispatch configuration's 20-input shape is a design
-# bound — the 11 other named dispatch fields plus these 9 chunks use
-# every root input, and repos install's dispatch gate rejects extra
-# root inputs rather than growing the shape (internal/repos/gitlabci.go). 9
+# not 40: GitLab limits a pipeline contract to 20 inputs (ADR 0131,
+# https://docs.gitlab.com/ci/inputs/) — the 11 other named dispatch
+# fields plus these 9 chunks use every root input GitLab allows, and
+# repos install's dispatch gate refuses extra root inputs rather than
+# growing the shape (internal/repos/gitlabci.go). 9
 # chunks of up to 1000 base64
 # characters each cover a worst-case truncate(event.NoteBody, 270) note
 # body after JSON escaping and base64 encoding; dispatch() returns an
