@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -1906,5 +1907,43 @@ func TestEncodeJiraEventPayload_LastLadderStepCarriesNoCommentText(t *testing.T)
 	if got.Transition.Comment.Body != "" || got.Transition.Comment.Instruction != "" {
 		t.Errorf("last ladder step body = %q, instruction = %q, want both empty (no truncation notice)",
 			got.Transition.Comment.Body, got.Transition.Comment.Instruction)
+	}
+}
+
+// TestEncodeJiraEventPayload_OversizedCommandBodyFailsClosed pins the Jira
+// door's command fail-closed for the body shape only the complete form
+// refuses: a multiline ASCII /fs-* command past the adapter's 4096-code-point
+// cap whose 4096-rune prefix fits the 9x1000-character budget. The jirapoll
+// adapter now carries a command body untruncated (convert.go), so this door
+// measures the complete body and must refuse it with ErrTransportBudget
+// instead of dispatching a silently shortened instruction — the defect open
+// threads 4532843765 and 4532950230 name (before that fix the adapter cut
+// the body to 4096 runes first and the prefix dispatched).
+func TestEncodeJiraEventPayload_OversizedCommandBodyFailsClosed(t *testing.T) {
+	body := "/fs-triage review the acceptance criteria\n" +
+		strings.Repeat("plain ascii review notes, one line at a time\n", 200)
+	if got := len([]rune(body)); got <= 4096 {
+		t.Fatalf("test body is %d runes, want more than the 4096-rune adapter cap", got)
+	}
+	ev := jiraTestEvent("group/sub/project")
+	ev.Transition.Comment.Body = body
+	ev.Transition.Comment.Command = "/fs-triage"
+	ev.Transition.Comment.Instruction = "review the acceptance criteria"
+
+	_, err := encodeJiraEventPayload("jira_comment", ev)
+	if !errors.Is(err, ErrTransportBudget) {
+		t.Fatalf("encodeJiraEventPayload(oversized command body) error = %v, want ErrTransportBudget", err)
+	}
+
+	// Control: the 4096-rune prefix the adapter used to cut command bodies
+	// to fits the budget, so the refusal above is the complete command
+	// body's, not an event too big on its own — exactly the silently
+	// shortened dispatch the fail-closed exists to prevent.
+	cut := *ev
+	c := *ev.Transition.Comment
+	c.Body = truncate(body, 4096)
+	cut.Transition.Comment = &c
+	if _, err := encodeJiraEventPayload("jira_comment", &cut); err != nil {
+		t.Fatalf("encodeJiraEventPayload(4096-rune command prefix) error = %v, want none: the prefix fits the budget", err)
 	}
 }
