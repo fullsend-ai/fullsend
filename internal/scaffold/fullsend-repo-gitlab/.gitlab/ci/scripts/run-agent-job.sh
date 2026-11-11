@@ -18,6 +18,9 @@ _fs_exit_cleanup() {
   if [ "${#_FS_EXIT_CLEANUP[@]}" -gt 0 ]; then
     rm -f -- "${_FS_EXIT_CLEANUP[@]}"
   fi
+  # The inference credential block below stays POSIX sh (its test runs it
+  # under /bin/sh), so its two temp files are removed by name here.
+  rm -f -- ${OIDC_TOKEN_FILE:+"${OIDC_TOKEN_FILE}"} ${GCP_CRED_CONFIG_FILE:+"${GCP_CRED_CONFIG_FILE}"}
 }
 trap '_fs_exit_cleanup' EXIT
 
@@ -29,7 +32,6 @@ trap '_fs_exit_cleanup' EXIT
 case "${CI_PROJECT_DIR:-}" in
   /*)
     rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"
-    mkdir -p -- "${CI_PROJECT_DIR}/fullsend-artifact"
     ;;
 esac
 
@@ -100,7 +102,6 @@ FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 if [ -n "${FULLSEND_GCP_WIF_PROVIDER:-}" ]; then
   OIDC_TOKEN_FILE=$(mktemp)
   GCP_CRED_CONFIG_FILE=$(mktemp)
-  _FS_EXIT_CLEANUP+=("${OIDC_TOKEN_FILE}" "${GCP_CRED_CONFIG_FILE}")
   echo "${FULLSEND_ID_TOKEN}" > "${OIDC_TOKEN_FILE}"
   if [ -n "${FULLSEND_GCP_SERVICE_ACCOUNT:-}" ]; then
     # The installer validates the email; recheck the shape here so the
@@ -1199,7 +1200,7 @@ fullsend eval-measure "${MEASURE_ARGS[@]}" || true
 # metadata or none) for this run's source, read from the same event file
 # fullsend run received. The job's artifacts: path is the staged copy, not
 # output/, which stays untouched for the steps above. Fails closed: when the
-# level cannot be resolved the staged directory is left empty, and GitLab
+# level cannot be resolved the staged directory is removed, and GitLab
 # finds no artifact files (a warning, not a job failure).
 _FS_STAGED_DIR="${CI_PROJECT_DIR}/fullsend-artifact"
 if _FS_ARTIFACT_LEVEL=$(fullsend stage-artifacts \
@@ -1208,9 +1209,13 @@ if _FS_ARTIFACT_LEVEL=$(fullsend stage-artifacts \
   --fullsend-dir .fullsend \
   ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}); then
   echo "Run artifact content level: ${_FS_ARTIFACT_LEVEL}"
+  # GitLab archives an empty directory that matches artifacts: paths, so
+  # remove it for none: the job then has no artifact at all.
+  if [ "${_FS_ARTIFACT_LEVEL}" = "none" ]; then
+    rm -rf -- "${_FS_STAGED_DIR}"
+  fi
 else
   rm -rf -- "${_FS_STAGED_DIR}"
-  mkdir -p -- "${_FS_STAGED_DIR}"
   # Tell apart a missing binary (a failed install), a CLI that predates
   # the command (cobra exits non-zero for an unknown subcommand even with
   # --help) and a failed resolution.
