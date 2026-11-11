@@ -376,10 +376,19 @@ func IsRateLimitError(err error) bool {
 		return true
 	}
 	if apiErr.StatusCode == http.StatusForbidden {
-		lower := strings.ToLower(apiErr.Message)
-		return strings.Contains(lower, "rate limit")
+		return isRateLimitMessage(apiErr.Message)
 	}
 	return false
+}
+
+// isRateLimitMessage reports whether a 403 response body or error message
+// names a GitHub rate limit. Primary limits say "API rate limit exceeded"
+// and secondary limits usually say "secondary rate limit", but the
+// content-creation throttle on some endpoints (fork creation, for one)
+// says only "was submitted too quickly", with no Retry-After header.
+func isRateLimitMessage(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "rate limit") || strings.Contains(lower, "submitted too quickly")
 }
 
 // IsPATForbiddenError reports whether err is a GitHub 403 indicating
@@ -680,7 +689,7 @@ func primaryResetWait(resp *http.Response, now time.Time) (time.Duration, bool) 
 // isRetryable returns true for responses that should trigger a retry.
 // GitHub uses 429 for primary rate limits and 403 for both primary and
 // secondary rate limits. Rate-limit 403s may include a Retry-After header,
-// or may only be identifiable by the response body containing "rate limit".
+// or may only be identifiable by the response body (see isRateLimitMessage).
 // Server errors (500, 502, 503, 504) are also retried as transient failures.
 func isRetryable(resp *http.Response) (bool, []byte) {
 	if resp.StatusCode == http.StatusTooManyRequests {
@@ -699,12 +708,13 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 		}
 		// Check body for rate limit indicators without Retry-After header.
 		// GitHub returns primary rate limits as 403 with "API rate limit
-		// exceeded" and secondary rate limits with "secondary rate limit".
+		// exceeded" and secondary rate limits with "secondary rate limit"
+		// or, for content creation such as forks, "was submitted too quickly".
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<16)) // 64KB max
 		if readErr != nil {
 			return false, nil
 		}
-		if strings.Contains(strings.ToLower(string(data)), "rate limit") {
+		if isRateLimitMessage(string(data)) {
 			return true, nil
 		}
 		// Not a rate limit — return the body so the caller can still use it.
