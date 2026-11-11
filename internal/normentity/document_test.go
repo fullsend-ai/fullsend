@@ -144,3 +144,40 @@ func TestValidate(t *testing.T) {
 		})
 	}
 }
+
+// TestDocumentUnknownChangeProposalKeepsCoverage covers a schema-valid
+// document whose change_proposal is an unknown marker: the specification still
+// requires coverage.changed_files and coverage.commits, so the model must
+// decode and re-encode them.
+func TestDocumentUnknownChangeProposalKeepsCoverage(t *testing.T) {
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(readExample(t, "valid-partial-change-proposal.json"), &raw))
+	raw["entity"].(map[string]any)["change_proposal"] = map[string]any{"$unknown": "not_loaded"}
+	cov := raw["coverage"].(map[string]any)
+	cov["changed_files"] = map[string]any{"status": "not_loaded"}
+	cov["commits"] = map[string]any{"status": "partial", "reason": "later_commits_not_requested"}
+	in, err := json.Marshal(raw)
+	require.NoError(t, err)
+
+	var d Document
+	require.NoError(t, json.Unmarshal(in, &d))
+	reason, ok := d.Entity.ChangeProposal.UnknownReason()
+	require.True(t, ok)
+	assert.Equal(t, ReasonNotLoaded, reason)
+	assert.Equal(t, CoverageNotLoaded, d.Entity.UnresolvedChangeProposal.ChangedFiles.Status)
+	assert.Equal(t, CoveragePartial, d.Entity.UnresolvedChangeProposal.Commits.Status)
+
+	out, err := json.Marshal(d)
+	require.NoError(t, err)
+	assert.Equal(t, normalize(t, in), normalize(t, out))
+
+	var again Document
+	require.NoError(t, json.Unmarshal(out, &again))
+	assert.Equal(t, d, again)
+
+	// Without a change proposal the entries describe nothing and are rejected.
+	delete(raw["entity"].(map[string]any), "change_proposal")
+	orphan, err := json.Marshal(raw)
+	require.NoError(t, err)
+	assert.Error(t, json.Unmarshal(orphan, &Document{}))
+}

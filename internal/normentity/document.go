@@ -265,6 +265,12 @@ func walkCoverage(e *Entity, s coverageSink) {
 	if cp := e.ChangeProposal.Ptr(); cp != nil {
 		list("changed_files", !cp.ChangedFiles.IsZero(), &cp.ChangedFiles.Coverage)
 		list("commits", !cp.Commits.IsZero(), &cp.Commits.Coverage)
+	} else {
+		// An unresolved change proposal still has both coverage entries.
+		u := &e.UnresolvedChangeProposal
+		present := !e.ChangeProposal.IsZero()
+		list("changed_files", present, &u.ChangedFiles)
+		list("commits", present, &u.Commits)
 	}
 
 	walkExtensions("entity", e.SourceID, e.Extensions, s)
@@ -420,12 +426,6 @@ func (a *applier) finish() error {
 	}
 	for k := range a.lists {
 		a.errs = append(a.errs, fmt.Errorf("normentity: coverage.extension_lists entry %q matches no list-valued extension", k.ownerID+"/"+k.alias))
-	}
-	for _, name := range []string{"labels", "comments", "label_applications", "reviews", "checks",
-		"threads", "reviewers", "current_approvals", "assignees", "reactions", "changed_files", "commits"} {
-		if *a.w.slot(name) != nil {
-			a.errs = append(a.errs, fmt.Errorf("normentity: coverage.%s describes a collection the entity does not have", name))
-		}
 	}
 	return errors.Join(a.errs...)
 }

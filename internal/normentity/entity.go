@@ -181,6 +181,14 @@ type Entity struct {
 	ChangeProposal Field[ChangeProposal] `json:"change_proposal,omitzero"`
 	Conversation   Field[Conversation]   `json:"conversation,omitzero"`
 
+	// UnresolvedChangeProposal holds the coverage of the change proposal's
+	// changed_files and commits collections while ChangeProposal is not
+	// known (an unknown marker). The specification still requires both
+	// coverage entries then, but there are no [List] values to carry them.
+	// It is ignored once ChangeProposal is known, where each [List] carries
+	// its own coverage. It is host-only and never serialized in the entity.
+	UnresolvedChangeProposal ChangeProposalCoverage `json:"-"`
+
 	// Body is the body action, null when the source confirms no body, or
 	// unknown. It is singular and has no coverage.
 	Body Field[TextAction] `json:"body,omitzero"`
@@ -262,6 +270,14 @@ type ChangeProposal struct {
 	Approval       Field[Approval]   `json:"approval,omitzero"`
 	ChangedFiles   List[ChangedFile] `json:"changed_files,omitzero"`
 	Commits        List[string]      `json:"commits,omitzero"`
+}
+
+// ChangeProposalCoverage is the coverage of a change proposal's changed_files
+// and commits collections, kept at entity level while the change proposal
+// itself is unresolved. See [Entity.UnresolvedChangeProposal].
+type ChangeProposalCoverage struct {
+	ChangedFiles Coverage
+	Commits      Coverage
 }
 
 // Approval is the current approval-requirement result.
