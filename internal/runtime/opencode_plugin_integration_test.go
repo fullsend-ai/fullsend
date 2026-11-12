@@ -53,7 +53,7 @@ func TestOpenCodeNativeHooks(t *testing.T) {
 	for _, scenario := range []string{"pre-block", "rewrite", "post-block", "nested", "ls-only",
 		"bash-patterns", "native-bash-patterns", "trusted-bash-patterns", "native-trusted-bash-patterns",
 		"error-rewrite", "error-canary", "error-scanner-failure", "nested-error", "repo-config-isolation",
-		"bash-failed-verification", "trusted-file-patterns", "nested-trusted-bash"} {
+		"bash-failed-verification", "trusted-file-patterns", "nested-trusted-bash", "relative-paths"} {
 		t.Run(scenario, func(t *testing.T) {
 			runOpenCodeHookProbe(t, binary, gotVersion, scenario, openCodeHookProbeDeadline(scenario))
 		})
@@ -83,7 +83,12 @@ type openCodeProbeCall struct {
 func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadline time.Duration) {
 	t.Helper()
 	dir := t.TempDir()
-	work := filepath.Join(dir, "workspace")
+	workspace := filepath.Join(dir, "workspace")
+	work := workspace
+	relativePaths := scenario == "relative-paths"
+	if relativePaths {
+		work = filepath.Join(workspace, "repo")
+	}
 	configDir := filepath.Join(dir, "config")
 	configIsolation := scenario == "repo-config-isolation"
 	failedVerification := scenario == "bash-failed-verification"
@@ -143,6 +148,14 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		require.NoError(t, os.MkdirAll(filepath.Join(work, "directory-only-entry"), 0o700))
 		require.NoError(t, os.WriteFile(filepath.Join(work, "private.txt"), []byte("FULLSEND_LS_PRIVATE_CONTENT"), 0o600))
 	}
+	if relativePaths {
+		def.Tools = []string{"Bash", "LS", "Write", "Edit"}
+		require.NoError(t, os.MkdirAll(filepath.Join(work, "a", "b"), 0o700))
+		require.NoError(t, os.Symlink("a/b", filepath.Join(work, "link")))
+		require.NoError(t, os.WriteFile(filepath.Join(workspace, ".env"), []byte("FULLSEND_PROBE=original\n"), 0o600))
+		require.NoError(t, os.Mkdir(filepath.Join(work, "private.txt"), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(workspace, "private.txt"), []byte("FULLSEND_LS_PRIVATE_CONTENT"), 0o600))
+	}
 	if failedVerification {
 		def.BashAllowlist = append(def.BashAllowlist, "scan-secrets")
 		require.NoError(t, os.MkdirAll(filepath.Join(work, "bin"), 0o700))
@@ -158,7 +171,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	agent, err := openCodeAgentMarkdown("probe-parent", def, rules)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(configDir, openCodeAgentDir, "probe-parent.md"), agent, 0o600))
-	policy := openCodeHookPolicy(filepath.Join(configDir, "hooks"), work, def, rules)
+	policy := openCodeHookPolicy(filepath.Join(configDir, "hooks"), workspace, def, rules)
 	policy.Python = python
 	policy.ShellHome = dir
 	policy.Env = map[string]string{"PATH": os.Getenv("PATH"), "FULLSEND_CANARY_TOKEN": "FULLSEND_PROBE_ORIGINAL_post-block"}
@@ -240,6 +253,14 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 			{name: "read", args: map[string]any{"filePath": work}},
 			{name: "read", args: map[string]any{"filePath": filepath.Join(work, "private.txt")}},
 			{name: "write", args: map[string]any{"filePath": filepath.Join(work, "forbidden"), "content": "must not be written"}},
+		}
+	}
+	if relativePaths {
+		steps["root"] = []openCodeProbeCall{
+			stepsForAllowedProbe(),
+			{name: "write", args: map[string]any{"filePath": "link/../../.env", "content": "overwritten", "description": "relative-write"}},
+			{name: "edit", args: map[string]any{"filePath": "link/../../.env", "oldString": "original", "newString": "overwritten", "description": "relative-edit"}},
+			{name: "read", args: map[string]any{"filePath": "link/../../private.txt", "description": "relative-read"}},
 		}
 	}
 	if errorProbe {
@@ -496,6 +517,18 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		}
 		assert.Equal(t, []string{"before", "after"}, barePhases, "native permissions must allow the bare program name")
 		t.Logf("validated generated native permissions (adapter enabled: %t, trusted pattern ceiling: %t)", !nativeOnly, trustedProbe)
+		return
+	}
+	if relativePaths {
+		contents, err := os.ReadFile(filepath.Join(workspace, ".env"))
+		require.NoError(t, err)
+		assert.Equal(t, "FULLSEND_PROBE=original\n", string(contents), "protected file must remain unchanged")
+		for _, description := range []string{"relative-write", "relative-edit", "relative-read"} {
+			result := openCodeProbeResultFor(t, captured, description)
+			assert.True(t, result.IsError, description)
+			assert.Contains(t, string(result.Content), "[fullsend-hooks]", "the adapter must deny before native permissions")
+		}
+		assert.NotContains(t, string(captured), "FULLSEND_LS_PRIVATE_CONTENT")
 		return
 	}
 	if lsProbe {

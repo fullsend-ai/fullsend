@@ -126,6 +126,24 @@ func TestOpenCodeBashPatterns(t *testing.T) {
 	assert.JSONEq(t, `{"*":"deny","gh":"allow","gh *":"allow","jq":"allow","jq *":"allow"}`, string(openCodeBashPatterns([]string{"gh", "jq"})))
 }
 
+func TestOpenCodeRuntimeBootstrap_RejectsBashPatternsBeforeSandboxSetup(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	fakeOpenshellOpenCode(t, logPath, filepath.Join(work, "store"))
+	for _, entry := range []string{"git tag:*", "gh *", "gh:*", "*", "gh?", "[g]h", "/usr/bin/gh", "./gh", "gh;rm"} {
+		t.Run(entry, func(t *testing.T) {
+			definition := strings.Replace(openCodeTestAgentDef, "Bash(gh,jq)", "Bash("+entry+")", 1)
+			err := OpenCodeRuntime{}.Bootstrap(bootstrapInput{
+				sandboxName: "sb", agentPath: writeAgentFile(t, definition),
+			})
+			require.ErrorContains(t, err, "unsupported OpenCode Bash allowlist entry")
+			assert.Contains(t, err.Error(), "Bash(gh,jq)")
+			_, statErr := os.Stat(logPath)
+			assert.True(t, os.IsNotExist(statErr), "invalid entries must fail before sandbox commands")
+		})
+	}
+}
+
 func TestOpenCodeRuntimeBootstrap_EmptyAgentPath(t *testing.T) {
 	err := OpenCodeRuntime{}.Bootstrap(bootstrapInput{sandboxName: "sb"})
 	require.Error(t, err)
