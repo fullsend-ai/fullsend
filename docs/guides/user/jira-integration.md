@@ -229,6 +229,38 @@ The `event_type` field in dispatch records (e.g. `"comment_added"`, `"label_chan
 
 For a Jira-sourced run, `fullsend run` exports the tracker-independent `FULLSEND_WORK_ITEM_SOURCE` (`jira`), `FULLSEND_WORK_ITEM_KEY` (for example `PROJ-123`), and `FULLSEND_WORK_ITEM_URL` variables from the normalized event, replacing any inherited values, and clears `ISSUE_NUMBER` because a Jira key has no GitHub or GitLab issue number. The run fails closed, rather than guessing an identity, when the dispatch payload declares Jira but its key or URL is missing or malformed. Harness scripts that handle Jira work items should read the `FULLSEND_WORK_ITEM_*` variables instead of `ISSUE_NUMBER`.
 
+### Tracking runs with an optional label
+
+To find issues an agent has worked on using JQL, opt in to a run-start label:
+
+```yaml
+tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    project: PROJ
+    run_label: fs-code-agent
+```
+
+`tracker.jira.run_label` has no default. Omit it or set it to `""` to disable
+label writes; Jira-sourced runs log that labeling was skipped. A configured
+name must not contain whitespace or control characters. Configuration validation
+rejects invalid names. If an invalid name reaches runtime, labeling logs a
+warning and is skipped; Jira runs and polling continue. The setting applies to
+all Jira-sourced agents, so choose a role-appropriate name for your repository.
+
+The runner adds the label alongside the start-status notification, before
+sandbox setup, even when status comments are disabled. It remains on failed
+or cancelled runs. Existing labels are preserved, and an issue already carrying
+it receives no label update. A failed label read or write produces a warning
+and does not fail the run. **Edit Issues**, already in the bot's minimum
+permission set, covers the write.
+
+Use `labels = "fs-code-agent"` in JQL to find these issues. Choose a label
+that does not collide with your poll query's trigger or exclusion labels.
+Writes use the same configured Jira account as status comments; changes by the
+poller's own account are classified as bot actions and do not dispatch agents.
+The label marks that a run started, not that the agent created or merged a PR.
+
 ### Jira connection variables in agent runs
 
 For a Jira-sourced run, `fullsend run` also sets two Jira URLs before harness env expansion, so `${JIRA_BASE_URL}` and `${JIRA_API_URL}` in `env.runner`, `env.sandbox`, and `host_files` entries with `expand: true` resolve to them:
