@@ -219,10 +219,27 @@ func (e *PollerMergeGrantError) Error() string {
 
 func (e *PollerMergeGrantError) Unwrap() error { return e.Err }
 
+// credentialCleanupError marks a failed attempt to revoke an unpublished
+// replacement credential after its verification failed. Its presence in a
+// token-creation error tells callers the credential may still be active.
+type credentialCleanupError struct{ err error }
+
+func (e *credentialCleanupError) Error() string { return e.err.Error() }
+func (e *credentialCleanupError) Unwrap() error { return e.err }
+
+// revokeCleanupError wraps a non-nil revocation error in a
+// credentialCleanupError and returns nil for a successful revocation.
+func revokeCleanupError(op string, revokeErr error) error {
+	if revokeErr == nil {
+		return nil
+	}
+	return &credentialCleanupError{err: safeAPIError(op, revokeErr)}
+}
+
 // pollerPipelineAccessFailureReason returns the role provisioning failure
-// reason for a Poller credential that was minted and then revoked because its
-// protected-default-branch merge grant failed, or "" when err is not such a
-// failure. Token creation itself succeeded in that case, so the reason names
+// reason for a Poller credential that was minted and then, unless the
+// revocation failed, revoked because its protected-default-branch merge grant
+// failed, or "" when err is not such a failure. Token creation itself succeeded in that case, so the reason names
 // the protected branch and the remediation instead of reporting a token
 // creation failure. The text is authored by fullsend: it carries a coarse
 // classification of the grant failure, never the server's error text.
@@ -232,7 +249,11 @@ func pollerPipelineAccessFailureReason(err error) string {
 		return ""
 	}
 	prefix := fmt.Sprintf("poller pipeline access on protected branch %q could not be granted", grantErr.Branch)
-	const revoked = "; the new credential was revoked"
+	revoked := "; the new credential was revoked"
+	var cleanupErr *credentialCleanupError
+	if errors.As(err, &cleanupErr) {
+		revoked = "; revoking the new credential failed, so the unpublished credential may still be active and needs cleanup"
+	}
 	switch {
 	case errors.Is(grantErr.Err, context.Canceled), errors.Is(grantErr.Err, context.DeadlineExceeded):
 		return prefix + " (request canceled or timed out)" + revoked + "; re-run install"

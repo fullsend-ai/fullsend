@@ -531,6 +531,21 @@ func TestPollerPipelineAccessFailureReason(t *testing.T) {
 		assert.NotContains(t, reason, "GitLab.com Free")
 		assert.NotContains(t, reason, "server-body-text")
 	})
+	t.Run("revocation failed", func(t *testing.T) {
+		withCleanupFailure := func(err error) error {
+			return errors.Join(grant(err), revokeCleanupError("revoking", fmt.Errorf("gitlab api: 500 server-body-text")))
+		}
+		for name, cause := range map[string]error{
+			"refused":   errors.New("gitlab api: 422 server-body-text"),
+			"transient": &net.DNSError{IsTimeout: true, Err: "server-body-text"},
+			"canceled":  context.DeadlineExceeded,
+		} {
+			reason := pollerPipelineAccessFailureReason(withCleanupFailure(cause))
+			assert.Contains(t, reason, "may still be active and needs cleanup", name)
+			assert.NotContains(t, reason, "the new credential was revoked", name)
+			assert.NotContains(t, reason, "server-body-text", name)
+		}
+	})
 	t.Run("canceled", func(t *testing.T) {
 		reason := pollerPipelineAccessFailureReason(grant(context.DeadlineExceeded))
 		assert.Contains(t, reason, "(request canceled or timed out)")

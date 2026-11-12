@@ -2133,6 +2133,40 @@ func TestProvisionReportsRefusedPollerMergeGrant(t *testing.T) {
 	assert.False(t, exists)
 }
 
+func TestProvisionReportsRefusedPollerMergeGrantWithFailedRevocation(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	c, sa := pollerGrantRefusedClient(fc)
+	sa.failRevoke = fmt.Errorf("gitlab api: 500 server-body-text")
+	result, err := ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{Owner: "group", Repo: "project", Client: fc, Tokens: c, Registry: gitlabroles.BuiltinRegistry()})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	reason := result.Failed[0].Reason
+	assert.Contains(t, reason, `protected branch "main"`)
+	assert.Contains(t, reason, "may still be active and needs cleanup")
+	assert.NotContains(t, reason, "the new credential was revoked")
+	assert.NotContains(t, reason, "server-body-text")
+	assertNoLeak(t, reason)
+}
+
+func TestRotationReportsRefusedPollerMergeGrantWithFailedRevocation(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	fc := seededRoleClient(t, gitlabroles.RolePoller)
+	c, sa := pollerGrantRefusedClient(fc)
+	sa.failRevoke = fmt.Errorf("gitlab api: 500 server-body-text")
+	result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{Owner: "group", Repo: "project", Client: fc, Tokens: c, Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	reason := result.Failed[0].Reason
+	assert.Contains(t, reason, "may still be active and needs cleanup")
+	assert.NotContains(t, reason, "the new credential was revoked")
+	assert.NotContains(t, reason, "server-body-text")
+	state, _, err := loadRotationState(ctx, fc, "group", "project")
+	require.NoError(t, err)
+	assert.Equal(t, reason, state.Roles["poller"].Error)
+}
+
 func TestRotationReportsRefusedPollerMergeGrant(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now()
