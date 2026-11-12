@@ -22,7 +22,7 @@ v1 reference implementations:
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_previews.go` (RepoPoolCFMintPreviews)
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_stage.go` (RepoPoolCFMintStage)
 - `pkg/behaviourtest/drivers/install/repopool_external_mint.go` (RepoPoolExternalMint)
-- `pkg/behaviourtest/drivers/install/common/setup.go` (shared helpers: `RunGitHubSetup`, `ResolveInferenceWIFProvider`, `InferenceStatusWIFProvider`, `ProvisionInference`)
+- `pkg/behaviourtest/drivers/install/common/setup.go` (shared helpers: `RunReposInstallWithOpts`, `ResolveInferenceWIFProvider`, `InferenceStatusWIFProvider`, `ProvisionInference`)
 
 ## Runner configuration
 
@@ -32,7 +32,7 @@ Set when starting the suite (not in feature files):
 BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
 BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
-BEHAVIOUR_CONFIG_PRESET=          # optional local path or HTTPS URL forwarded as github setup --config
+BEHAVIOUR_CONFIG_PRESET=          # optional local path or HTTPS URL declared as the repos.yaml config_base.source
 PLAYBACK_RUNTIME=                 # unset: normal "dummy" runtime; "dummy-playback": installs with playback tracking hooks (see behaviour-testing.md)
 ENVIRONMENT=dev                   # mint/infra target: dev (default) or stage
 ```
@@ -55,7 +55,7 @@ Each factory returns the same shared slot driver (`composed.go`), which owns the
 3. Installs fullsend into each claimed repo (concurrent-safe via singleflight). The ensurer never creates, deletes or resets the slot repo. The allocator's release deletes the repo, checking it is still the lease's, so the next lessee cannot inherit leftover state.
 4. Implements `install.LeaseDriver` (`AllocateLease` / `DeallocateLease`) and `install.LeaseVerifier` (`StillOwnsLease`, which scenario cleanup needs to mutate anything) plus `Finalize` / `Capacity`. The name-only `AllocateRepo` / `DeallocateRepo` return an error.
 
-The Factory takes an `install.PoolConfig`: the pool layout, a per-org token source (`e2etest.TokenForOrg` in the runners), a client constructor, the CLI binary, the GCP project, and the logger. Driver-specific inputs (PEMs, allowlists, mint URL, optional `BEHAVIOUR_CONFIG_PRESET`) come from env or are computed per org inside the driver. When `BEHAVIOUR_CONFIG_PRESET` is set, `github setup` receives `--config <value>` and omits `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. The suite does not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory. Godog concurrency is controlled independently of slot capacity. It defaults to the slots per org (12), not `driver.Capacity()` (every slot of every pool org), and `GODOG_CONCURRENCY` overrides it (warn, do not fail, if concurrency > Capacity).
+The Factory takes an `install.PoolConfig`: the pool layout, a per-org token source (`e2etest.TokenForOrg` in the runners), a client constructor, the CLI binary, the GCP project, and the logger. Driver-specific inputs (PEMs, allowlists, mint URL, optional `BEHAVIOUR_CONFIG_PRESET`) come from env or are computed per org inside the driver. Each pool repo is installed with manifest-driven `repos install` from a generated `repos.yaml` entry (see [Manifest-driven install](behaviour-testing.md#manifest-driven-install)). When `BEHAVIOUR_CONFIG_PRESET` is set, the entry declares it as `config_base.source` and omits `config.runtime` so the preset's `runtime: dummy` is inherited rather than pinned in the managed configuration. The suite does not construct or thread pool, ensurer, or mint driver types directly — all internal lifecycle is encapsulated inside the concrete driver returned by the factory. Godog concurrency is controlled independently of slot capacity. It defaults to the slots per org (12), not `driver.Capacity()` (every slot of every pool org), and `GODOG_CONCURRENCY` overrides it (warn, do not fail, if concurrency > Capacity).
 
 Pool orgs must already have the six `fullsend-test-*` role apps and the production `fullsend-ai-e2e` app installed, plus per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
@@ -117,7 +117,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
    the same package (e.g., `repopool_cfmint_previews.go`,
    `repopool_external_mint.go`) behind the shared `install.Driver`
    interface. Place common helpers shared across drivers in
-   `install/common/` (e.g., `RunGitHubSetup`, `ResolveInferenceWIFProvider`).
+   `install/common/` (e.g., `RunReposInstallWithOpts`, `ResolveInferenceWIFProvider`).
 5. **Register the driver** in `behaviourtest.RunSuite` (`installFactoryFor`
    in `pkg/behaviourtest/select.go`). Install driver selection is keyed by
    `ENVIRONMENT`, not `BEHAVIOUR_INSTALL_MODE`.

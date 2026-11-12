@@ -110,7 +110,7 @@ And the agent will output issues.out with:
 
 ### Runtime steps
 
-Every scenario runs the stage under the dummy runtime selected at install time (`github setup … --runtime dummy`). The runtime layer gets two kinds of coverage without leasing extra repos or adding wall time:
+Every scenario runs the stage under the dummy runtime selected at install time (`config.runtime: dummy` in the `repos.yaml` entry the install driver generates for `repos install`). The runtime layer gets two kinds of coverage without leasing extra repos or adding wall time:
 
 - **Core (every run):** `Then the run selected the "dummy" runtime` reads the `runtime` field the runner writes into `metrics.json`, proving the repo's `.fullsend/config.yaml` `runtime:` reached backend selection (or `config.base.yaml` when `BEHAVIOUR_CONFIG_PRESET` supplied a preset). Use it in one representative scenario per stage; the artifact is already downloaded for the other assertions.
 - **Runtime-specific (gated):** `Given the repository runtime is "<name>"` commits `runtime: <name>` to the leased repo's config for this scenario only (CleanupScenario restores `dummy` — slots are reused, so never set it any other way; the step refuses if the slot is not on `dummy` to begin with). The custom-harness step commits only a placeholder for a relative `agent:` path, which a real runtime cannot act on, so follow it with the agent step for the runtime under test (`And a pi agent "<name>" defined as:`, `And a codex agent "<name>" defined as:`, `And a claude agent "<name>" defined as:` — all commit the same file) and a docstring holding the full agent file (frontmatter + body) — `{{fixture:fixtures/<stage>/<file>.json}}` inlines a result fixture so the model has a concrete, deterministic file to write (the custom harness carries no post-script, so nothing validates it; the assertions are on the transcript and metrics). Then the scenario dispatches the harness and asserts on artifacts: `the run selected the "pi" runtime`, `the pi session transcript records at least one tool call` (the agent used a tool through pi; with security enabled the run refuses to start without the intact hook adapter, so the call was mediated by it — the step does not inspect hook output), `the run metrics report tokens`, and `the run used model "<id>" without a fallback` (the `model` in `metrics.json` is exactly that bare id, `fallback_from` is empty and a turn was recorded, so the alias reached a model the project serves without falling back). Such scenarios cost a real model run on the pool repo's repo-scoped Vertex WIF and must be tagged `@requires:capability:runtime-<name>` so they only run where the runner declares the capability; `make behaviour-test` declares `runtime-pi`, `inference-gateway` and `inference-gateway-api-key` by default (the two gateway capabilities reach no real model; see [Wiring it into the behaviour tests](e2e-testing.md#wiring-it-into-the-behaviour-tests)) (a `Makefile` variable, so a PR adding a gated scenario exercises it on its own run — a fork PR's `/ok-to-test <sha>` run takes `e2e.yml` from `main`, while the `Makefile` always comes from the PR head); `BEHAVIOUR_CAPABILITIES= make behaviour-test` skips them. See `features/runtime/pi.feature`. `features/runtime/pi-openai.feature` is the same shape on `openai/gpt-5.6-luna` with the `openai` provider instead of Vertex host files; it is gated on `runtime-pi-openai`, which is **not** declared by default because it needs an OpenAI organization mapped to the pool repositories plus their `FULLSEND_OPENAI_*` variables ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)). `features/runtime/codex-openai.feature` is that same shape on the codex runtime — `And a codex agent "<name>" defined as:` for the agent, and `the codex output stream records at least one tool call`, which reads the tee'd `codex exec --json` stream (`output.jsonl`) rather than a session transcript. It is gated on `runtime-codex-openai` for the same reason, and codex has no direct Vertex path, so — unlike pi, whose `runtime-pi` scenario runs on every job — codex has **no default behaviour coverage at all** until that organization exists; its evidence until then is unit tests, recorded fixtures, local smoke runs and the on-demand `runtime-codex-gateway` scenario. `features/runtime/codex-gateway.feature` is the same codex shape on a `gateway/` model through the test inference gateway (ADR 0137), pinned to `gateway/gpt-oss-120b`, which the test gateway serves on Responses (codex speaks nothing else, and fullsend renders no model catalog for it, so the id is pinned). Its token step is `the run metrics report tokens unless the requested model is "gateway/gpt-oss-120b"`: on the test gateway that model's usage arrives after the finish chunk, so codex records 0 tokens, and the step requires a recorded turn instead (the workflow and tool-call steps prove the model answered). It is gated on `runtime-codex-gateway`, also undeclared by default, because it costs a real model run on the test gateway's own Vertex service account. `features/runtime/claude-gateway.feature` runs Claude Code on `gateway/claude-haiku-5-5` through the test inference gateway in the `oidc` mode (no model list, no Vertex host files) and asserts the runtime and token metrics. It is gated on `runtime-claude-gateway`, which is **not** declared by default, skips when `E2E_INFERENCE_GATEWAY_URL` is unset, and should run against a sandbox image built from main.
@@ -412,7 +412,7 @@ gh workflow run e2e.yml --repo fullsend-ai/fullsend \
 
 This runs the branch's workflow and test target in the dev environment. The regular `behaviour` job is skipped for this playback dispatch. Artifact redaction uses the default-branch script.
 
-In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. Before `github setup`, the install driver resolves the repo-scoped inference WIF provider: it runs `fullsend inference status` and runs `fullsend inference provision` only when the provider is not healthy. Provisions are serialised across the process. A just-provisioned repo can briefly still report `not_provisioned`, so after a provision the driver re-reads `fullsend inference status` with a bounded backoff (up to 60 s of waiting) until the provider is healthy; the re-reads run after the provision lock is released, so a slow repo does not hold up other repos' provisions. The resolved provider is cached per repo name for the rest of the run, including after the repo is deleted and recreated, because the provider ID, its attribute condition and the Vertex AI grant are all keyed by `owner/repo`, not by repo ID (`Provisioner.ProvisionWIF` in `internal/dispatch/gcf/provisioner.go` creates the provider and the grant, and is the source of truth for these bindings). See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+In CI, the test runner mints cross-org `e2e` installation tokens via OIDC for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. Before `repos install`, the install driver resolves the repo-scoped inference WIF provider: it runs `fullsend inference status` and runs `fullsend inference provision` only when the provider is not healthy. Provisions are serialised across the process. A just-provisioned repo can briefly still report `not_provisioned`, so after a provision the driver re-reads `fullsend inference status` with a bounded backoff (up to 60 s of waiting) until the provider is healthy; the re-reads run after the provision lock is released, so a slow repo does not hold up other repos' provisions. The resolved provider is cached per repo name for the rest of the run, including after the repo is deleted and recreated, because the provider ID, its attribute condition and the Vertex AI grant are all keyed by `owner/repo`, not by repo ID (`Provisioner.ProvisionWIF` in `internal/dispatch/gcf/provisioner.go` creates the provider and the grant, and is the source of truth for these bindings). See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
 ### Failure classification and infrastructure retry
 
@@ -603,7 +603,7 @@ attempt 1 plus the failed scenarios finish within 60 minutes.
 
 1. Claims a free slot through the cross-org allocator (`slotpool.go`), blocking until one is free or ctx is cancelled. The claim *creates* the slot repo (the forge's `auto_init` provides the initial commit). A slot whose repo already exists belongs to another holder, possibly another suite. It is skipped for the whole of provisioning and is never reset or deleted. Orgs whose installation's rate-limit headers show the quota nearly spent are skipped until their reset, so leases move to orgs with quota left.
 2. On the first lease in any org of a mint group, deploys the group's mint: a public preview mint on `dev` and the durable STAGE mint on `stage`. The driver packs the pool orgs into the fewest groups whose `WORKFLOW_HOST_REPOS` fits in 5,000 bytes, recomputed from the layout on every run (four groups for the 22 DEV orgs at 12 slots each, one for STAGE). Every mint's `--status-github-group` is the `mint-status` team of one pool org, picked at random once per job. Concurrent first leases in a group share one deploy. A failed deploy is torn down and retried by the group's next lease, and `Finalize` tears each deployed mint down once.
-3. Installs fullsend into the claimed repo with the org's credential and mint URL. It deletes a leftover `{name}-fork` from an earlier holder of the slot, then runs `fullsend github setup` (after resolving the inference WIF provider when configured) and the post-install checks. If the install fails, the slot is released, deleting only this lease's own repo.
+3. Installs fullsend into the claimed repo with the org's credential and mint URL. It deletes a leftover `{name}-fork` from an earlier holder of the slot, then runs manifest-driven `fullsend repos install` (after resolving the inference WIF provider when configured; see [Manifest-driven install](#manifest-driven-install)) and the post-install checks. If the install fails, the slot is released, deleting only this lease's own repo.
 4. Returns an `install.RepoLease` with the org, repo, the org's token and client, and its group's mint URL, status group and workflow hosts. The step rebinds the scenario `World` to that org: `Org`, `RepoOwner`, `Token`, `MintURL`, `MintStatusGroup`, `MintWorkflowHostRepos`, and SCM/CI drivers rebuilt through `World.OrgDrivers` from the lease's client. Every step and the scenario's cleanup then act in the leased org with its credentials.
 
 #### Public preview mints
@@ -665,7 +665,7 @@ Scenarios that never lease a repo (for example the CLI mint status scenarios) st
 
 **Credential context separation:** The suite's e2e installation token and dispatch's per-repo `GITHUB_TOKEN` are distinct credential contexts with independent permission propagation graphs. After a pool repo is deleted and recreated, the suite can confirm the repo exists (via `GetRepo`), but it **cannot** observe or predict when dispatch-side collaborator permissions will be ready. Do not add `GetCollaboratorPermission` polling to the suite-side readiness checks — the suite's token resolves permissions through a different GitHub subsystem than dispatch's token. See the [package doc comment](../../../pkg/behaviourtest/drivers/install/doc.go) for details and the empirical evidence from [#6701](https://github.com/fullsend-ai/fullsend/issues/6701).
 
-**Suite duration:** Because each lease of `test-repo-NN` pays create + `github setup` (not only the first use in a run), serial godog suites take longer than a shared-repo model. CI budgets **45 minutes per `go test` attempt** and **90 minutes for the behaviour job** so one infrastructure-classified retry fits (see [Failure classification and infrastructure retry](#failure-classification-and-infrastructure-retry)).
+**Suite duration:** Because each lease of `test-repo-NN` pays create + `repos install` (not only the first use in a run), serial godog suites take longer than a shared-repo model. CI budgets **45 minutes per `go test` attempt** and **90 minutes for the behaviour job** so one infrastructure-classified retry fits (see [Failure classification and infrastructure retry](#failure-classification-and-infrastructure-retry)).
 
 Runner env (defaults shown):
 
@@ -673,11 +673,11 @@ Runner env (defaults shown):
 BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
 BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo
-BEHAVIOUR_APP_SET=fullsend-test # app identities for both mint deployment and github setup; must match the supplied role PEMs
+BEHAVIOUR_APP_SET=fullsend-test # app identities for both mint deployment and the repos.yaml app_set; must match the supplied role PEMs
 BEHAVIOUR_ARTIFACT_DIR=        # CI upload-artifact root for debug logs and run artifacts; temp dir when unset
 BEHAVIOUR_FAILURE_CLASS_FILE=  # extra direct path for failure-class.json; the retry wrapper sets it to a private temp file when BEHAVIOUR_ARTIFACT_DIR is unset
 BEHAVIOUR_TRACE_COLLECTOR=     # job-scoped OTel Collector: unset = on in GitHub Actions when BEHAVIOUR_ARTIFACT_DIR is set; true/false to force
-BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL forwarded as github setup --config
+BEHAVIOUR_CONFIG_PRESET=       # optional local path or HTTPS URL declared as the repos.yaml config_base.source
 PLAYBACK_RUNTIME=              # unset: normal "dummy" runtime; "dummy-playback": install.PlaybackDriver's installation runtime
 ENVIRONMENT=dev               # mint/infra target: dev (default, local and PRs) or stage (push to main)
 E2E_GCP_PROJECT_ID=...        # inference project; install resolves (and if needed provisions) inference WIF once per pool repo name
@@ -689,11 +689,36 @@ TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on b
 
 `ENVIRONMENT` is `dev` or `stage`. Local runs default to `dev` when unset. CI sets it to match the GitHub Environment on the behaviour job (`dev` on pull requests and the merge queue, `stage` on push to `main`).
 
-When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers forward it as `fullsend github setup --config <value>` and omit `--runtime dummy` so the preset's `runtime: dummy` is inherited rather than pinned in the overlay. Unset (the default) leaves install behaviour unchanged.
+When `BEHAVIOUR_CONFIG_PRESET` is set to a local path or HTTPS URL, install drivers declare it as the entry's `config_base.source` and omit `config.runtime` so the preset's `runtime: dummy` is inherited rather than pinned in the managed configuration. A relative local path is resolved against the module root and copied next to the generated manifest, because `repos install` only reads local presets from inside the manifest directory. Unset (the default) leaves install behaviour unchanged.
 
-`PLAYBACK_RUNTIME` only affects provisioning: when set (e.g. to `dummy-playback`), the DEV and STAGE factories install repos with that runtime (passed as `GitHubSetupOpts.Runtime`) and attach `playbackInstallHooks`, which creates the per-repo playback tracking issue/comment after install. It does not itself select `install.PlaybackDriver` as the suite's `Driver` — that wrapper (which `World.IsPlaybackMode` and the shared playback step definitions rely on) is constructed separately by the caller wrapping the factory's returned `Driver` in `install.NewPlaybackDriver`.
+`PLAYBACK_RUNTIME` only affects provisioning: when set (e.g. to `dummy-playback`), the DEV and STAGE factories install repos with that runtime (passed as `InstallOpts.Runtime` and declared as `config.runtime`, which wins over a preset's runtime) and attach `playbackInstallHooks`, which creates the per-repo playback tracking issue/comment after install. It does not itself select `install.PlaybackDriver` as the suite's `Driver` — that wrapper (which `World.IsPlaybackMode` and the shared playback step definitions rely on) is constructed separately by the caller wrapping the factory's returned `Driver` in `install.NewPlaybackDriver`.
 
-When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver which deploys a durable CF Worker mint at `stage-mint.fullsend.sh` and uses the `halfsend` org with a non-vendored per-repo install (referencing main HEAD via `--fullsend-ref=main`). The `halfsend` org uses the same repo pool pattern as the DEV pool orgs.
+When `ENVIRONMENT=stage`, the suite selects the `RepoPoolCFMintStage` driver which deploys a durable CF Worker mint at `stage-mint.fullsend.sh` and uses the `halfsend` org with a non-vendored per-repo install (referencing main HEAD via `fullsend_ref: main` in the generated manifest entry). The `halfsend` org uses the same repo pool pattern as the DEV pool orgs.
+
+### Manifest-driven install
+
+The install driver provisions each leased repo with `fullsend repos install` (`common.RunReposInstallWithOpts`). For every install attempt it writes a temporary `repos.yaml` that declares only that repo, runs install against it, and removes it afterwards:
+
+```yaml
+version: 1
+github:
+  repos:
+    - name: halfsend-01/test-repo-01
+      fullsend_ref: main          # non-vendored (STAGE) only
+      app_set: fullsend-test      # BEHAVIOUR_APP_SET
+      inference:
+        auth: vertex-wif
+      vendor: true                # false for STAGE
+      config_base:                # only when BEHAVIOUR_CONFIG_PRESET is set
+        source: https://example.com/preset.yaml
+      config:
+        runtime: dummy            # omitted with a preset unless PLAYBACK_RUNTIME is set
+        mint_url: https://mint.example.com
+```
+
+Persistent settings live in the manifest. The command line carries only `--manifest`, `--direct`, and the credential inputs `--vertex-project` / `--vertex-wif-provider` (from `E2E_GCP_PROJECT_ID` and the resolved WIF provider). The mint URL is declared as `config.mint_url` rather than the entry's `mint_url`, so it overrides a preset's `mint_url` instead of conflicting with it. `repos install` requires inference credentials for `vertex-wif`, so a run without `E2E_GCP_PROJECT_ID` fails at install unless the preset declares `inference.project` and `inference.wif_provider`.
+
+The driver retries a just-created repo's read-after-create 404 (`getting repo info: get repo …: 404 Not Found`) with bounded backoff. Before that read, `repos install` writes only the repository variables and inference secrets, both create-or-update calls with the same values on every attempt. Install converges on re-run and each attempt uses a fresh manifest, so retrying is safe. Any other install error, including a missing manifest (install never creates one), fails on the first attempt.
 
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments)
 because reusable dispatch filters bot-authored `/fs-triage` comments before
@@ -1201,7 +1226,7 @@ Reference: [`createFork`](../../../pkg/behaviourtest/steps/fork.go) — retries 
 
 ### Actions workflow readiness after repo creation
 
-After creating a repo and committing workflow files via `fullsend github setup`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
+After creating a repo and committing workflow files via `fullsend repos install`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
 
 The install driver's internal ensurer handles this by polling `GetWorkflow`
 until the workflow is visible and its state is `active`. Polls back off
@@ -1221,11 +1246,11 @@ Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ens
 ### CI timeout budgeting for lazy provisioning
 
 Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete
-leftover state + create + `github setup` + Actions settle; the first lease of
+leftover state + create + `repos install` + Actions settle; the first lease of
 each name also resolves inference WIF), including when a later scenario reuses
 the same `test-repo-NN` name. A lease whose workflow Actions does not index in
 time can take about 10 minutes longer: up to two 5-minute settle waits plus one
-more claim and `github setup`
+more claim and `repos install`
 ([Actions workflow readiness](#actions-workflow-readiness-after-repo-creation)).
 This happens rarely, so it is not budgeted per lease, but it reduces the slack
 for the whole suite. The behaviour job's `timeout-minutes` in `e2e.yml` and the
@@ -1276,7 +1301,7 @@ Background:
 
 URL-dispatch scenarios require a vendored CLI binary that includes `FetchPolicy`-aware harness dispatch. Production dispatch uses `fetch.DefaultPolicy` (allows `github.com` and `raw.githubusercontent.com`) when `Options.FetchPolicy` is nil — this is what enables URL-sourced agents to resolve `raw.githubusercontent.com` URLs.
 
-The install driver's internal ensurer always re-vendors the CLI binary (`github setup --vendor`) even when a prior install's post-install validation passes. This guarantees leased pool repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-vendoring, pool repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
+The install driver's internal ensurer always re-vendors the CLI binary (`vendor: true` in the generated `repos.yaml` entry, which makes `repos install` vendor the binary it resolves from the current checkout) even when a prior install's post-install validation passes. This guarantees leased pool repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-vendoring, pool repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
 
 `doEnsure` always installs and settles. Every lease starts from a repo its claim just created, so there is no re-vendor path that skips the settle wait: the settle step runs on every ensure.
 

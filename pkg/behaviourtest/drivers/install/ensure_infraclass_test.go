@@ -115,19 +115,19 @@ func AwaitWorkflowGetErrorForTest(t *testing.T, err error) error {
 }
 
 // InstallFullsendSetup404ExhaustedForTest runs the real installFullsend
-// retry loop against a runCLI stub whose github setup always fails with
+// retry loop against a runCLI stub whose repos install always fails with
 // the read-after-create repo-info 404, and returns the terminal error
 // the ensurer produces when every bounded attempt hit that 404. The
 // zero-value WIF configuration keeps the resolver branch out of the
-// loop; vendored setup opts pass RunGitHubSetupWithOpts's mode
+// loop; vendored install opts pass RunReposInstallWithOpts's mode
 // validation so the stub's failure is the only failure.
 func InstallFullsendSetup404ExhaustedForTest(t *testing.T) error {
 	t.Helper()
 	speedUpResetRetries(t)
 	e := &repoEnsurer{
-		setupOpts: common.GitHubSetupOpts{Vendor: true},
+		installOpts: common.InstallOpts{Vendor: true},
 		runCLI: func(_, _ string, _ ...string) (string, error) {
-			return "", fmt.Errorf("github setup org/repo failed: exit status 1\nError: getting repo info: get repo org/repo: 404 Not Found")
+			return "", fmt.Errorf("repos install org/repo: exit status 1\nError: getting repo info: get repo org/repo: 404 Not Found")
 		},
 		logf: t.Logf,
 	}
@@ -135,16 +135,16 @@ func InstallFullsendSetup404ExhaustedForTest(t *testing.T) error {
 }
 
 // InstallFullsendSetupFailureForTest runs the real installFullsend
-// attempt against a runCLI stub whose github setup fails with a
+// attempt against a runCLI stub whose repos install fails with a
 // non-404 error, and returns the unmarked error the ensurer surfaces
 // (a single attempt: only the read-after-create 404 is retried).
 func InstallFullsendSetupFailureForTest(t *testing.T) error {
 	t.Helper()
 	speedUpResetRetries(t)
 	e := &repoEnsurer{
-		setupOpts: common.GitHubSetupOpts{Vendor: true},
+		installOpts: common.InstallOpts{Vendor: true},
 		runCLI: func(_, _ string, _ ...string) (string, error) {
-			return "", fmt.Errorf("github setup org/repo failed: exit status 1\nError: writing workflow file: 422 Validation Failed")
+			return "", fmt.Errorf("repos install org/repo: exit status 1\nError: writing workflow file: 422 Validation Failed")
 		},
 		logf: t.Logf,
 	}

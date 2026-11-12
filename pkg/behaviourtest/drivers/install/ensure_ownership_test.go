@@ -13,7 +13,7 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 )
 
-// newOwnershipEnsurer returns an ensurer whose github setup is counted and
+// newOwnershipEnsurer returns an ensurer whose repos install is counted and
 // whose hooks are observed, for tests that lose the slot mid-provisioning.
 func newOwnershipEnsurer(t *testing.T, sc *stubClient, setups, beforeHooks *atomic.Int32, onSetup func(n int32) error) *repoEnsurer {
 	t.Helper()
@@ -25,7 +25,7 @@ func newOwnershipEnsurer(t *testing.T, sc *stubClient, setups, beforeHooks *atom
 		binary: "/usr/bin/fullsend",
 		token:  "tok",
 		runCLI: func(_, _ string, args ...string) (string, error) {
-			if isGitHubSetupCall(args) {
+			if isReposInstallCall(args) {
 				n := setups.Add(1)
 				if onSetup != nil {
 					if err := onSetup(n); err != nil {
@@ -36,8 +36,8 @@ func newOwnershipEnsurer(t *testing.T, sc *stubClient, setups, beforeHooks *atom
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
 		hooks: InstallHooks{
 			BeforeInstall: func(context.Context, forge.Client, string, string) (any, error) {
 				beforeHooks.Add(1)
@@ -109,7 +109,7 @@ func TestEnsureRepo_ForkOwnershipUnverifiableFailsClosed(t *testing.T) {
 }
 
 func TestEnsureRepo_StopsRetryWhenSlotReplacedWhileProvisioningDelayed(t *testing.T) {
-	// The first github setup hits the read-after-create 404 and the retry
+	// The first repos install hits the read-after-create 404 and the retry
 	// waits; the slot is replaced during that wait. The retry must not
 	// install into the replacement.
 	var setups, hooks atomic.Int32
@@ -118,7 +118,7 @@ func TestEnsureRepo_StopsRetryWhenSlotReplacedWhileProvisioningDelayed(t *testin
 	const target = "org/test-repo-delayed"
 	e := newOwnershipEnsurer(t, sc, &setups, &hooks, func(int32) error {
 		replaced.Store(true) // happens while provisioning is delayed
-		return githubSetupRepoInfo404Err(target)
+		return reposInstallRepoInfo404Err(target)
 	})
 	var checks atomic.Int32
 

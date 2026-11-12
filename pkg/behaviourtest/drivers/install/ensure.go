@@ -31,8 +31,8 @@ const (
 
 	// resetMaxAttempts bounds the read-after-write retries around a
 	// freshly claimed slot repo: GetRepo polls confirming its creation
-	// (or a leftover fork's deletion), and github setup re-runs after
-	// its first read 404s on the just-created repo. With exponential
+	// (or a leftover fork's deletion), and repos install re-runs after
+	// its repo-info read 404s on the just-created repo. With exponential
 	// backoff (2×) and a 1s initial delay, 5 attempts cover up to
 	// ~1+2+4+8 = 15s of API lag.
 	resetMaxAttempts = 5
@@ -94,8 +94,8 @@ type ensurer interface {
 	// allocator created for this lease (the forge's auto_init provides
 	// the initial commit). It waits for the repo to become visible,
 	// removes a fork an earlier holder of the slot left behind, and
-	// runs the per-repo install flow (inference WIF resolution + github
-	// setup). A slot repo that never becomes visible is an error; it is
+	// runs the per-repo install flow (inference WIF resolution + repos
+	// install). A slot repo that never becomes visible is an error; it is
 	// never created here.
 	//
 	// The optional stillOwns (at most one is used; none means the caller
@@ -103,7 +103,7 @@ type ensurer interface {
 	// slot's name is still this lease's. EnsureRepo fails closed with
 	// errLeaseLost, before any further write, when it reports false or
 	// cannot verify: before deleting a leftover fork, before the install
-	// hook and before every github setup attempt, including the ones that
+	// hook and before every repos install attempt, including the ones that
 	// follow a read-after-create retry wait. Without that, a slot repo
 	// replaced by another holder while provisioning was delayed would be
 	// installed into (or have its fork deleted).
@@ -192,8 +192,8 @@ type SettleFunc func(ctx context.Context, client forge.Client, org, repo, workfl
 
 // InstallHooks lets a specialized driver (e.g. PlaybackDriver) run extra
 // work around the standard install flow without duplicating it.
-// BeforeInstall runs after repo creation but before github setup; its
-// return value is threaded to AfterInstall, which runs after setup and
+// BeforeInstall runs after repo creation but before repos install; its
+// return value is threaded to AfterInstall, which runs after install and
 // post-install validation both succeed. Either func may be nil.
 type InstallHooks struct {
 	BeforeInstall func(ctx context.Context, client forge.Client, org, repo string) (any, error)
@@ -201,15 +201,15 @@ type InstallHooks struct {
 }
 
 type repoEnsurer struct {
-	e2eCfg    e2etest.EnvConfig
-	client    forge.Client
-	token     string
-	binary    string
-	logf      func(string, ...any)
-	runCLI    CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
-	settle    SettleFunc    // injectable; defaults to awaitWorkflowReady
-	setupOpts common.GitHubSetupOpts
-	hooks     InstallHooks
+	e2eCfg      e2etest.EnvConfig
+	client      forge.Client
+	token       string
+	binary      string
+	logf        func(string, ...any)
+	runCLI      CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
+	settle      SettleFunc    // injectable; defaults to awaitWorkflowReady
+	installOpts common.InstallOpts
+	hooks       InstallHooks
 	// actorGrants are verified once per org (membership + all-repository roles).
 	actorGrants   []actorGrant
 	outsiderLogin string
@@ -242,13 +242,13 @@ func newRepoEnsurer(
 	token, binary string,
 	logf func(string, ...any),
 ) (ensurer, error) {
-	opts := common.DefaultGitHubSetupOpts()
+	opts := common.DefaultInstallOpts()
 	opts.ConfigPreset = envConfigPreset()
 	return newRepoEnsurerWithOpts(e2eCfg, client, token, binary, opts, logf)
 }
 
 // newRepoEnsurerWithOpts returns an ensurer like newRepoEnsurer but with
-// custom GitHubSetupOpts. Used by the STAGE driver for non-vendored
+// custom InstallOpts. Used by the STAGE driver for non-vendored
 // installs with a fullsend-ref, and by playback driver construction to
 // install with the "dummy-playback" runtime. An optional InstallHooks
 // may be passed to run extra work around the install (e.g. the playback
@@ -257,7 +257,7 @@ func newRepoEnsurerWithOpts(
 	e2eCfg e2etest.EnvConfig,
 	client forge.Client,
 	token, binary string,
-	opts common.GitHubSetupOpts,
+	opts common.InstallOpts,
 	logf func(string, ...any),
 	hooks ...InstallHooks,
 ) (ensurer, error) {
@@ -277,7 +277,7 @@ func newRepoEnsurerWithOpts(
 		logf:          logf,
 		runCLI:        e2etest.TryRunCLI,
 		settle:        awaitWorkflowReady,
-		setupOpts:     opts,
+		installOpts:   opts,
 		hooks:         installHooks,
 		actorGrants:   actorGrantsFromEnv(context.Background(), logf),
 		outsiderLogin: outsiderLogin,
@@ -397,7 +397,7 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string, stillO
 		}
 	}
 
-	// Step 4: run github setup to install fullsend and push the
+	// Step 4: run repos install to install fullsend and push the
 	// current binary/ref.
 	if err := e.installFullsend(ctx, target, stillOwns); err != nil {
 		return err
@@ -405,9 +405,9 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string, stillO
 
 	// Select the appropriate post-install validator based on install mode
 	// and the runtime the repo was installed with (defaults to "dummy").
-	expectedRuntime := e.setupOpts.Runtime
+	expectedRuntime := e.installOpts.Runtime
 	var validateErr error
-	if e.setupOpts.Vendor {
+	if e.installOpts.Vendor {
 		validateErr = ValidatePerRepoPostInstallWithRuntime(ctx, e.client, org, repoName, expectedRuntime)
 	} else {
 		validateErr = ValidatePerRepoPostInstallNonVendoredWithRuntime(ctx, e.client, org, repoName, expectedRuntime)
@@ -651,37 +651,41 @@ func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target s
 }
 
 // installFullsend resolves the inference WIF provider (when a GCP
-// project is configured) and runs fullsend github setup for the target
-// repo.
+// project is configured) and runs fullsend repos install for the target
+// repo against a generated repos.yaml (see common.RunReposInstallWithOpts).
 //
 // awaitCreation confirms the repo through the suite's GetRepo, but
-// github setup is a separate CLI process whose first GetRepo (in
-// applyPerRepoScaffold) can still 404 on GitHub's read-after-create
-// lag. Retry only that specific failure, using the same bounded
-// backoff as awaitCreation. Any other setup error is a single attempt.
+// repos install is a separate CLI process whose GetRepo before the
+// scaffold commit can still 404 on GitHub's read-after-create lag.
+// Retry only that specific failure, using the same bounded backoff as
+// awaitCreation. Any other install error is a single attempt.
 //
-// Retrying is safe only because setup makes no writes before that
-// GetRepo on any path the driver uses (vendored, --fullsend-ref,
-// --config, STAGE); the calls before it are reads such as the existing
-// config and token scopes. If setup ever writes before that read, this
-// retry must be revisited.
+// Unlike github setup, repos install writes before that GetRepo: the
+// repository variables and the inference secrets, both create-or-update
+// calls with the same values on every attempt. Re-running is still safe
+// because repos install converges: a repo whose shim is not yet on the
+// default branch takes the same install path again and rewrites those
+// values. Each attempt also generates a fresh manifest, so install's own
+// manifest writebacks from a failed attempt are not carried over. If
+// install ever makes a non-idempotent write before that read, this retry
+// must be revisited.
 // The WIF resolver runs inside each attempt but hits the per-name cache
 // after the first, so a retry adds no inference CLI calls.
 //
-// stillOwns, when non-nil, is checked before every setup attempt, so the
+// stillOwns, when non-nil, is checked before every install attempt, so the
 // attempt that follows a retry wait never installs into a slot repo that
 // another holder replaced during the wait.
 func (e *repoEnsurer) installFullsend(ctx context.Context, target string, stillOwns OwnerCheck) error {
-	opts := e.setupOpts
+	opts := e.installOpts
 	opts.ResolveWIFProvider = func(target, project string) (string, error) {
 		wifProvider, err := e.resolveWIFProvider(ctx, target, project)
 		if err != nil {
 			return "", err
 		}
 		// Resolution can block on provisionGate and inference
-		// provisioning, so recheck ownership here: the setup subprocess
+		// provisioning, so recheck ownership here: the install subprocess
 		// starts immediately after this resolver returns.
-		if err := e.requireOwnership(ctx, stillOwns, target, "github setup (after WIF resolution)"); err != nil {
+		if err := e.requireOwnership(ctx, stillOwns, target, "repos install (after WIF resolution)"); err != nil {
 			return "", err
 		}
 		return wifProvider, nil
@@ -691,51 +695,51 @@ func (e *repoEnsurer) installFullsend(ctx context.Context, target string, stillO
 	var lastErr error
 	for attempt := 1; attempt <= resetMaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("context cancelled while running github setup for %s: %w", target, err)
+			return fmt.Errorf("context cancelled while running repos install for %s: %w", target, err)
 		}
 
-		if err := e.requireOwnership(ctx, stillOwns, target, "github setup"); err != nil {
+		if err := e.requireOwnership(ctx, stillOwns, target, "repos install"); err != nil {
 			return err
 		}
-		err := common.RunGitHubSetupWithOpts(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, opts, e.runCLI, e.logf)
+		err := common.RunReposInstallWithOpts(e.binary, e.token, target, e.e2eCfg.MintURL, e.e2eCfg.GCPProjectID, opts, e.runCLI, e.logf)
 		if err == nil {
 			return nil
 		}
 		lastErr = err
-		if !isGitHubSetupRepoInfo404(err) {
+		if !isRepoInfo404(err) {
 			return err
 		}
 		if attempt == resetMaxAttempts {
 			break
 		}
-		e.logf("[ensure] github setup for %s hit the read-after-create 404, attempt %d/%d — re-running setup after %v", target, attempt, resetMaxAttempts, delay)
+		e.logf("[ensure] repos install for %s hit the read-after-create 404, attempt %d/%d — re-running install after %v", target, attempt, resetMaxAttempts, delay)
 		if ctx.Err() != nil {
-			return fmt.Errorf("context cancelled while retrying github setup for %s: %w", target, ctx.Err())
+			return fmt.Errorf("context cancelled while retrying repos install for %s: %w", target, ctx.Err())
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("context cancelled while retrying github setup for %s: %w", target, ctx.Err())
+			return fmt.Errorf("context cancelled while retrying repos install for %s: %w", target, ctx.Err())
 		case <-time.After(delay):
 		}
 		delay *= 2
 	}
 	// The read-after-create 404 was the recognized failure on every
-	// attempt (isGitHubSetupRepoInfo404 gated each retry above), so this
-	// is the known setup-404 exhaustion mode, marked infrastructure per
+	// attempt (isRepoInfo404 gated each retry above), so this is the
+	// known install-404 exhaustion mode, marked infrastructure per
 	// design D3 so the suite's single automatic retry can clear it.
-	// Other setup failures return unmarked above and stay scenario;
+	// Other install failures return unmarked above and stay scenario;
 	// ownership-loss errors likewise stay unmarked (D3).
 	return behaviourfail.Mark(
-		fmt.Errorf("github setup for %s still hit the read-after-create 404 after %d attempts: %w", target, resetMaxAttempts, lastErr),
+		fmt.Errorf("repos install for %s still hit the read-after-create 404 after %d attempts: %w", target, resetMaxAttempts, lastErr),
 		"setup: read-after-create 404",
 	)
 }
 
-// isGitHubSetupRepoInfo404 reports whether err is github setup's
-// read-after-create GetRepo 404 ("getting repo info: get repo …: 404 Not Found").
-// Matching both substrings keeps every other setup failure as a single
+// isRepoInfo404 reports whether err is repos install's read-after-create
+// GetRepo 404 ("getting repo info: get repo …: 404 Not Found").
+// Matching both substrings keeps every other install failure as a single
 // attempt. The CLI error is text from a subprocess, not forge.ErrNotFound.
-func isGitHubSetupRepoInfo404(err error) bool {
+func isRepoInfo404(err error) bool {
 	if err == nil {
 		return false
 	}
