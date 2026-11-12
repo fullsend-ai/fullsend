@@ -171,7 +171,7 @@ or `.fullsend/profiles/`. A codex agent declares no Vertex provider; a pi
 agent on an `openai/` model declares none but keeps a commented-out overlay
 that adds it (see [Picking a route](#picking-a-route)).
 
-A `review` agent also gets `readonly_repo: true`: the checked-out repository is made read-only in the sandbox, so a reviewer cannot modify the code it reviews. That matches `harness/review.yaml` in fullsend-ai/agents.
+A `review` agent also gets `readonly_repo: true`: the checked-out repository's write bits are stripped in the sandbox (`.git` stays writable), which stops the reviewed code from being edited in the ordinary case. It is a file-mode control, not an integrity boundary: where the sandbox's exec user owns the tree (for example OpenShell's Kubernetes driver), the agent can restore write permission, and a stronger mechanism is tracked in #7927. That matches `harness/review.yaml` in fullsend-ai/agents.
 
 Pick the role whose permissions fit what the agent does. An unknown role fails
 immediately with this table, rather than returning `403` from the mint the
