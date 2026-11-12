@@ -142,6 +142,31 @@ either of these holds:
   A person whose display name matches is treated as a bot too, so their
   comments and label changes do not dispatch.
 
+### Route by issue type
+
+Jira events include the issue's current type in `event.state.issue_type`,
+with `id`, `name`, and `subtask` fields. Add a condition to an agent's harness
+`trigger:` to route by type, for example:
+
+```yaml
+trigger: >-
+  event.source.system == 'jira' &&
+  event.transition.kind == 'opened' &&
+  has(event.state.issue_type) &&
+  event.state.issue_type.name == 'Bug'
+```
+
+Use `id` for an identifier that survives renames within your Jira instance,
+or `name` for readable rules using your project's type names. `subtask` is a
+boolean. The object is omitted when Jira does not return an issue type, so
+guard access with `has()`. No additional configuration is required.
+
+The type comes from the current issue snapshot for every emitted event;
+it is not a historical type or an issue-type-change event. Changing only
+an issue's type does not currently emit a routable event. Use
+[`poll.query`](#custom-jql) instead when you want to filter which issue types
+the entire poller considers.
+
 ### Use a dedicated account for the poller
 
 Give the poller a Jira account of its own, rather than a person's API token.

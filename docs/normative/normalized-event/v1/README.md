@@ -358,7 +358,7 @@ until it is listed here. For example `transition.comment` (its `body`,
 `actor.kind` (some adapters infer it from a display name),
 `actor.is_entity_author` (the author makes it true by acting),
 `actor.is_entity_assignee` (anyone who can assign issues can make it true),
-`state.labels`,
+`state.labels`, `state.issue_type` (editable tracker metadata),
 `base_ref` (the author picks the target branch), `head_*` and the change facts
 are untrusted. A guarded overlay may test `has()` only on objects the schema
 always requires, such as `source`; reading `is_fork` when there is no change
@@ -441,7 +441,7 @@ contract):
 | `event_payload.issue` | `entity` when `entity.kind == "work_item"`: `{number: entity.id, html_url: entity.url}` |
 | `event_payload.pull_request` | See below |
 | `event_payload.comment` | `transition.comment` when present: `{body: transition.comment.body}` |
-| `event_payload._normalized_event` | Complete `NormalizedEvent` embedded by `buildEventPayload` for CEL overlay resolution during `fullsend run` (#6748); includes `actor.bot_role` and `actor.role_verified` only when the adapter set them (ADR 0107) |
+| `event_payload._normalized_event` | Complete `NormalizedEvent` embedded by `buildEventPayload` for CEL overlay resolution during `fullsend run` (#6748); includes optional `state.issue_type` (`id`, `name`, `subtask`) from Jira snapshots and `actor.bot_role` and `actor.role_verified` only when the adapter set them (ADR 0107) |
 | `trigger_source` (fix agent only) | See below |
 | `status-repo` | `repo` |
 | `status-number` | `entity.id` |

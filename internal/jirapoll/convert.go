@@ -49,6 +49,14 @@ func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
 		},
 	}
 
+	if event.IssueType != nil {
+		ne.State.IssueType = &normevent.IssueType{
+			ID:      event.IssueType.ID,
+			Name:    event.IssueType.Name,
+			Subtask: event.IssueType.Subtask,
+		}
+	}
+
 	switch event.Type {
 	case "comment_added":
 		cmd, instruction := extractCommand(event.CommentBody)

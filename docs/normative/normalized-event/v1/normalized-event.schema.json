@@ -390,6 +390,17 @@
           },
           "description": "Snapshot of label names on the entity at event time. See state.conversation for conversation-specific label semantics."
         },
+        "issue_type": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "name", "subtask"],
+          "description": "Current work-item type from the tracker snapshot; omitted when unavailable.",
+          "properties": {
+            "id": { "type": "string" },
+            "name": { "type": "string" },
+            "subtask": { "type": "boolean" }
+          }
+        },
         "conversation": {
           "type": "object",
           "additionalProperties": false,
