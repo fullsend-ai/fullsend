@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -60,7 +61,9 @@ func TestRunAgent_PinMismatchAdviceNamesForge(t *testing.T) {
 // advises the shared lock-update command, which names the forge platform for
 // a child harness with no forge: block — without --forge, re-locking composes
 // with platform "" and drops the forge-specific base files (#8988) — so all
-// of run's lock advice comes from the one lockUpdateHint helper.
+// of run's lock advice comes from the one lockUpdateHint helper. The warning
+// line ends with the advised command itself: a period after its last argument
+// would be copied with it and break the advice as written.
 func TestRunAgent_StaleLockAdviceNamesForge(t *testing.T) {
 	usePreScriptStub(t)
 	s := newLockAdviceSetup(t, []byte("agent v1"))
@@ -81,6 +84,17 @@ func TestRunAgent_StaleLockAdviceNamesForge(t *testing.T) {
 	assert.Contains(t, out.String(), "fullsend lock code --update")
 	assert.Contains(t, out.String(), "--fullsend-dir")
 	assert.Contains(t, out.String(), "--forge github")
+
+	// No argument ends the sentence: copying the warning line verbatim must
+	// yield a command that runs.
+	var warnLine string
+	for _, l := range strings.Split(out.String(), "\n") {
+		if strings.Contains(l, "Harness has changed since lock file was generated") {
+			warnLine = strings.TrimSpace(l)
+		}
+	}
+	assert.True(t, strings.HasSuffix(warnLine, "--forge github"),
+		"stale-lock warning must end with the advised command, got %q", warnLine)
 
 	// The advised command, run as written, re-locks and clears the warning.
 	require.NoError(t, s.runLockForge(t, "github", true))
