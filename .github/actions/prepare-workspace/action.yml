@@ -24,9 +24,11 @@ runs:
   steps:
     - name: Prepare workspace (upstream defaults + repo overrides)
       shell: bash
+      env:
+        DEFAULTS_ROOT: ${{ inputs.defaults_root }}
       run: |
         set -euo pipefail
-        SRC="${{ inputs.defaults_root }}/internal/scaffold/fullsend-repo"
+        SRC="${DEFAULTS_ROOT}/internal/scaffold/fullsend-repo"
         LAYERED_DIRS="agents skills schemas harness plugins scripts env"
         DEST=".fullsend/"
         for dir in ${LAYERED_DIRS}; do

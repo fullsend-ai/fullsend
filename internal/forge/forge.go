@@ -395,6 +395,12 @@ func IsTreeTruncated(err error) bool {
 	return errors.Is(err, ErrTreeTruncated)
 }
 
+// ErrDiffListingTruncated indicates that a forge returned a safety-capped
+// file-diff listing. Callers that need a complete diff must fail open, while
+// callers that only need the available hunks may still use the returned
+// entries.
+var ErrDiffListingTruncated = errors.New("pull request file diff listing truncated")
+
 // ErrNoChanges indicates that a change proposal could not be created
 // because there are no differences between the head and base branches.
 var ErrNoChanges = errors.New("no changes between branches")
@@ -805,12 +811,6 @@ type PullRequestFileDiff struct {
 	// Patch is the unified diff, when the forge can represent it.
 	Patch string
 }
-
-// ErrDiffListingTruncated indicates that a forge returned a safety-capped
-// file-diff listing. Callers that need a complete diff must fail open, while
-// callers that only need the available hunks may still use the returned
-// entries.
-var ErrDiffListingTruncated = errors.New("pull request file diff listing truncated")
 
 // RateLimit is the most recent GitHub REST rate-limit state a client
 // observed, taken from the X-RateLimit-* response headers.
