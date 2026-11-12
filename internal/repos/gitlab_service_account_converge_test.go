@@ -2123,7 +2123,8 @@ func TestProvisionReportsRefusedPollerMergeGrant(t *testing.T) {
 	failure := result.Failed[0]
 	assert.Equal(t, gitlabroles.RolePoller, failure.Role)
 	assert.Contains(t, failure.Reason, `poller pipeline access on protected branch "main" could not be granted`)
-	assert.Contains(t, failure.Reason, `allow Developers to merge on "main"`)
+	assert.Contains(t, failure.Reason, `select the "main" branch`)
+	assert.Contains(t, failure.Reason, `set "Allowed to merge" to Developers + Maintainers`)
 	assert.NotContains(t, failure.Reason, "project access token creation failed")
 	assert.NotContains(t, failure.Reason, "server-body-text")
 	assertNoLeak(t, failure.Reason)

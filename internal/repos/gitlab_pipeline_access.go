@@ -264,7 +264,10 @@ func pollerPipelineAccessFailureReason(err error) string {
 	if forge.IsForbidden(grantErr.Err) {
 		cause += " (forbidden)"
 	}
-	return fmt.Sprintf("%s: %s%s. GitLab.com Free does not support per-user protected-branch grants; on that tier, allow Developers to merge on %q (this lets every project Developer merge to it), then re-run install",
+	return fmt.Sprintf("%s: %s%s. GitLab.com Free does not support per-user protected-branch grants; on that tier, relax the protected-branch setting: "+
+		"open the project in GitLab under Settings → Repository → Protected branches, select the %q branch, "+
+		"set \"Allowed to merge\" to Developers + Maintainers (this lets every project Developer merge to the branch), "+
+		"then re-run `fullsend repos install`",
 		prefix, cause, revoked, grantErr.Branch)
 }
 
