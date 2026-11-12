@@ -1539,9 +1539,9 @@ Uninstall removes every fullsend-managed inference credential, whatever the repo
 **Upgrade behavior change.** Uninstall also deletes `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` on both forges, mirroring [Jira polling](#jira-polling) install. Earlier releases never touched these credentials, so a repo that provisioned them by hand for another Jira consumer loses them when you uninstall with this release. Back them up or re-provision them afterward if something else depends on them.
 
 Uninstall also deletes `FULLSEND_TRACE_SIGNING_KEY`, the trace signing key
-secret, and `FULLSEND_TRACE_SIGNING_KEY_ID`, its key ID variable, on both forges
+secret, on both forges
 ([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)).
-A repository that has neither still uninstalls.
+A repository without it still uninstalls.
 
 ```bash
 fullsend repos uninstall acme/old-api

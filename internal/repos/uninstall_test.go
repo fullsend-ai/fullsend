@@ -101,9 +101,8 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if !r.WorkflowDeleted {
 		t.Error("WorkflowDeleted = false, want true")
 	}
-	// 5 managed variables plus the FULLSEND_TRACE_SIGNING_KEY_ID ledger.
-	if r.VarsDeleted != 6 {
-		t.Errorf("VarsDeleted = %d, want 6", r.VarsDeleted)
+	if r.VarsDeleted != 5 {
+		t.Errorf("VarsDeleted = %d, want 5", r.VarsDeleted)
 	}
 	// 2 required secrets plus the opt-in FULLSEND_OPENAI_API_KEY, which
 	// uninstall always attempts to delete (idempotent: a 404 for a repo
@@ -131,8 +130,8 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 			t.Errorf("thin caller %s was not in deleted files", tcPath)
 		}
 	}
-	if len(client.DeletedVariables) != 6 {
-		t.Errorf("deleted %d variables, want 6", len(client.DeletedVariables))
+	if len(client.DeletedVariables) != 5 {
+		t.Errorf("deleted %d variables, want 5", len(client.DeletedVariables))
 	}
 	if len(client.DeletedSecrets) != 8 {
 		t.Errorf("deleted %d secrets, want 8", len(client.DeletedSecrets))
@@ -1193,9 +1192,9 @@ func TestUninstallSecretsForForge_GitLab_DeletesPrefixedOpenAIKeyOnly(t *testing
 	}
 }
 
-// Uninstall deletes the trace signing key and its ledger on both forges
-// (ADR 0154): a torn-down repository keeps no private key.
-func TestUninstall_DeletesTraceSigningKeyAndLedger(t *testing.T) {
+// Uninstall deletes the trace signing key on both forges (ADR 0154): a
+// torn-down repository keeps no private key.
+func TestUninstall_DeletesTraceSigningKey(t *testing.T) {
 	for _, tc := range []struct {
 		forgeName string
 		client    *forge.FakeClient
@@ -1207,8 +1206,6 @@ func TestUninstall_DeletesTraceSigningKeyAndLedger(t *testing.T) {
 		t.Run(tc.forgeName, func(t *testing.T) {
 			client := tc.client
 			client.Secrets["acme/api/"+forge.SecretTraceSigningKey] = true
-			client.VariableValues["acme/api/"+forge.VarTraceSigningKeyID] = "0123456789abcdef"
-			client.VariablesExist["acme/api/"+forge.VarTraceSigningKeyID] = true
 
 			results, err := Uninstall(context.Background(), UninstallConfig{
 				Manifest:       tc.manifest,
@@ -1225,14 +1222,8 @@ func TestUninstall_DeletesTraceSigningKeyAndLedger(t *testing.T) {
 			if !slices.Contains(UninstallSecretsForForge(tc.forgeName), forge.SecretTraceSigningKey) {
 				t.Errorf("UninstallSecretsForForge(%s) does not include %s", tc.forgeName, forge.SecretTraceSigningKey)
 			}
-			if !slices.Contains(UninstallVarsForForge(tc.forgeName), forge.VarTraceSigningKeyID) {
-				t.Errorf("UninstallVarsForForge(%s) does not include %s", tc.forgeName, forge.VarTraceSigningKeyID)
-			}
 			if client.Secrets["acme/api/"+forge.SecretTraceSigningKey] {
 				t.Errorf("%s still present after uninstall", forge.SecretTraceSigningKey)
-			}
-			if _, ok := client.VariableValues["acme/api/"+forge.VarTraceSigningKeyID]; ok {
-				t.Errorf("%s still present after uninstall", forge.VarTraceSigningKeyID)
 			}
 		})
 	}

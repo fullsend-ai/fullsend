@@ -13,10 +13,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
-// uninstallVariables are the variables uninstall deletes outside GitLab,
-// including the trace signing key's ledger variable,
-// FULLSEND_TRACE_SIGNING_KEY_ID (ADR 0154).
-var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID, forge.VarTraceSigningKeyID})
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID})
 
 // uninstallSecrets deletes every Fullsend-managed inference secret of
 // every inference.auth method (managedInferenceSecrets), independent of
@@ -67,7 +64,6 @@ var gitlabUninstallVars = []string{
 	forge.SecretGitLabPollerToken,
 	forge.SecretGitLabAnalystToken,
 	forge.SecretGitLabCoderToken,
-	forge.VarTraceSigningKeyID,
 }
 
 // gitlabUninstallSecrets intentionally does NOT include GitLab's
