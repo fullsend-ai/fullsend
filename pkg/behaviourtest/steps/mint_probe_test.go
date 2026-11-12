@@ -476,6 +476,9 @@ func TestClassifyMintProbeResult(t *testing.T) {
 		{"response", &world.MintProbeResult{Outcome: "error", Error: "response", HTTPStatus: 200}, "", "response"},
 		{"server", &world.MintProbeResult{Outcome: "error", Error: "http", HTTPStatus: 502, Message: "mint failed"}, "", "server"},
 		{"unprocessable", &world.MintProbeResult{Outcome: "error", Error: "http", HTTPStatus: 422}, "", "server"},
+		// The mint's 503 for a failed OIDC signing key fetch is not a host denial.
+		{"oidc key fetch 503", &world.MintProbeResult{Outcome: "error", Error: "http", HTTPStatus: 503, OIDCVerified: true,
+			Message: "OIDC signing key fetch failed; the token was not checked, retry later"}, "", "server"},
 		{"unknown error", &world.MintProbeResult{Outcome: "error", Error: "weird"}, "", "result-artifact"},
 		{"unknown outcome", &world.MintProbeResult{Outcome: "maybe"}, "", "result-artifact"},
 	} {

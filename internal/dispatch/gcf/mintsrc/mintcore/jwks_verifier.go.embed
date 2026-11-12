@@ -226,18 +226,21 @@ func (v *JWKSVerifier) refreshKeys(ctx context.Context) error {
 
 	resp, err := mintHTTP(req)
 	if err != nil {
-		return fmt.Errorf("fetching JWKS: %w", err)
+		return fmt.Errorf("%w: fetching JWKS: %w", errOIDCKeysUnavailable, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		if transientUpstreamStatus(resp.StatusCode) {
+			return fmt.Errorf("%w: JWKS endpoint returned status %d", errOIDCKeysUnavailable, resp.StatusCode)
+		}
 		return fmt.Errorf("JWKS endpoint returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSResponseLen))
 	if err != nil {
-		return fmt.Errorf("reading JWKS response: %w", err)
+		return fmt.Errorf("%w: reading JWKS response: %w", errOIDCKeysUnavailable, err)
 	}
 
 	var jwks jwksResponse
@@ -275,18 +278,21 @@ func (v *JWKSVerifier) discoverJWKSURI(ctx context.Context) (string, error) {
 
 	resp, err := mintHTTP(req)
 	if err != nil {
-		return "", fmt.Errorf("fetching discovery document: %w", err)
+		return "", fmt.Errorf("%w: fetching discovery document: %w", errOIDCKeysUnavailable, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		if transientUpstreamStatus(resp.StatusCode) {
+			return "", fmt.Errorf("%w: discovery endpoint returned status %d", errOIDCKeysUnavailable, resp.StatusCode)
+		}
 		return "", fmt.Errorf("discovery endpoint returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSResponseLen))
 	if err != nil {
-		return "", fmt.Errorf("reading discovery document: %w", err)
+		return "", fmt.Errorf("%w: reading discovery document: %w", errOIDCKeysUnavailable, err)
 	}
 
 	var doc discoveryDoc

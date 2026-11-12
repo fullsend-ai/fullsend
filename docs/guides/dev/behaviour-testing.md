@@ -600,6 +600,12 @@ The tested fullsend workflows run on separate GitHub-hosted runners, so the suit
 
 To check the per-trace routing against the pinned Collector image, run `BT_OTELCOL_INTEGRATION=1 go test ./pkg/behaviourtest/drivers/install -run PerTraceFilesWithRealCollector` (requires Podman). The test sends interleaved spans of two trace IDs across several export requests and verifies that every span is preserved and each trace ID has its own file. The test is skipped otherwise.
 
+### Troubleshooting mint errors
+
+**`503 {"error":"OIDC signing key fetch failed; the token was not checked, retry later"}`** means the mint could not get GitHub's OIDC signing keys in time, so it did not check the caller's token. Each mint instance caches the keys for an hour. A new instance has none until its first fetch succeeds. The fetch fails when GitHub's discovery document or key set endpoint times out, cannot be reached, or answers 5xx or 429. On the Cloud Function mint, the same 503 means the GCP STS exchange, which checks the token, timed out or answered 5xx or 429. The mint never accepts a request it could not check. `internal/mintclient` retries a 503 like any 5xx: up to 5 attempts with 1 s, 2 s, 4 s and 8 s between them. One failed fetch uses at most the Worker's 20 s request budget, so the retries span about 115 s and outlast a single slow fetch. A run fails on this 503 only when the key endpoint stays unreachable for about two minutes. In the trace files under `otel-collector/`, look for a failed `mint.oidc_verify` span whose error starts with `OIDC signing keys unavailable`.
+
+**`401 {"error":"authentication failed"}`** means the mint checked the token and rejected it, or could not tell why verification failed. The causes include a bad signature, the wrong audience, an expired token, a repository that is not enrolled, and a workflow host that is not approved. The mint probe scenarios count a 503 as a server failure, never as a host denial (see [Telling denials from failures](#telling-denials-from-failures)).
+
 ### Rate-limit observability
 
 When a pool org's installation token exhausts its GitHub API budget
@@ -1070,7 +1076,7 @@ The steps report a policy denial separately from an infrastructure failure. Thes
 
 - an OIDC failure: no OIDC token was obtained, or the probe could not verify it (see below);
 - a transport failure: the mint request did not complete;
-- a server failure: an unexpected HTTP status, such as a 422 for a missing App permission, or a 5xx;
+- a server failure: an unexpected HTTP status, such as a 422 for a missing App permission, or a 5xx, including the mint's 503 when it could not fetch the OIDC signing keys (see [Troubleshooting mint errors](#troubleshooting-mint-errors));
 - a malformed result: a 200 without a usable token;
 - a configuration failure: no `FULLSEND_MINT_URL`;
 - a workflow failure: the run did not succeed;

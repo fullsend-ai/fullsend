@@ -262,7 +262,7 @@ func (h *Handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		authSpan.recordError(err)
 		authSpan.end()
 		if err != nil {
-			writeError(w, http.StatusUnauthorized, "authentication failed")
+			writeOIDCAuthError(w, err)
 			return
 		}
 		h.handleStatusWithAuth(w, auth)
@@ -358,7 +358,7 @@ func (h *Handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	oidcSpan.end()
 	if oidcErr != nil {
 		log.Printf("authentication failed: %v", oidcErr)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
+		writeOIDCAuthError(w, oidcErr)
 		return
 	}
 
