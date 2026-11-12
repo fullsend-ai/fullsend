@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,12 +86,25 @@ func newTrustedPinFixture(t *testing.T) trustedPinFixture {
 	require.NoError(t, os.WriteFile(cp, data, 0o755))
 	// The copy must run outside its system directory. macOS launch
 	// constraints SIGKILL a copied Apple binary, and the pin's lookups would
-	// then fail for that reason rather than the one under test.
+	// then fail for that reason rather than the one under test. A file just
+	// written can briefly fail to exec with ETXTBSY while a parallel test's
+	// fork still holds it open (golang/go#22315), so that is retried.
 	link := filepath.Join(f.writable, "readlink-probe")
 	require.NoError(t, os.Symlink("target", link))
-	if out, err := exec.Command(cp, link).Output(); err != nil || string(out) != "target\n" {
-		t.Skipf("a copy of readlink outside its system directory does not run on this host (%v; macOS launch constraints kill copied system binaries)", err)
+	var out []byte
+	for i := 0; ; i++ {
+		out, err = exec.Command(cp, link).Output()
+		if !errors.Is(err, syscall.ETXTBSY) || i == 50 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == -1 {
+		t.Skipf("the host kills a copy of readlink run outside its system directory (%v); macOS launch constraints do this to copied system binaries", err)
+	}
+	require.NoError(t, err)
+	require.Equal(t, "target\n", string(out))
 	require.NoError(t, os.Remove(link))
 	return f
 }
