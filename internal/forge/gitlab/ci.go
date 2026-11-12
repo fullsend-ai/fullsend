@@ -1063,10 +1063,11 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 	var b strings.Builder
 	var totalRead int64
 	for _, j := range jobs {
-		// A skipped job never ran, so it has no trace to fetch: in the
-		// runs observed, its trace request answered 404 (not a documented
-		// API guarantee), which would read as a fetch that failed — the
-		// same skip the GitHub client carries before its log download.
+		// A skipped job never ran, so it has no trace to fetch: GitLab
+		// answers an empty 200 for a traceless job (lib/api/ci/jobs.rb
+		// serves "body trace || ''" after find_build! and the read
+		// check), so the request would only be wasted — the same skip
+		// the GitHub client carries before its log download.
 		// Checked before the aggregate limit: the limit caps fetched
 		// bytes, not the job listing, so a skipped job's header is
 		// written even once the cap is reached and the snapshot stays
