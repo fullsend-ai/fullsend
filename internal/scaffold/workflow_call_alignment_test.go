@@ -55,6 +55,8 @@ func TestStartupFailureReportingGuards(t *testing.T) {
 	for _, agent := range []string{"triage", "code", "review", "fix", "retro", "prioritize", "harness"} {
 		assert.Contains(t, dispatchText, "Report "+agent+" launch failure")
 	}
+	assert.Contains(t, dispatchText, "Report harness dispatch failure")
+	assert.Contains(t, dispatchText, "steps.dispatch.outcome != 'success'")
 	for _, line := range strings.Split(dispatchText, "\n") {
 		if strings.Contains(line, "if: ${{ failure()") && strings.Contains(line, "steps.run-agent.outcome") {
 			assert.Contains(t, line, "!cancelled()", "startup failure reporters must not run after cancellation")
