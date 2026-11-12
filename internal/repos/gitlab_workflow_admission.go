@@ -3,7 +3,10 @@ package repos
 import (
 	"fmt"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -102,6 +105,13 @@ type workflowExprParser struct {
 	pos int
 	env map[string]*string
 	err error
+	// unknownVars lists, in order of first use, the variables referenced
+	// as operands that are absent from env.
+	unknownVars []string
+	// invalidOperand records an operand that parsed but cannot be used, such
+	// as a regex literal that does not compile. It is tracked apart from err
+	// so evaluation is unchanged; it only classifies diagnostics.
+	invalidOperand bool
 }
 
 // evalWorkflowIf evaluates a GitLab rules:if expression against env. A
@@ -239,6 +249,9 @@ func (p *workflowExprParser) parseOperand() workflowValue {
 		val, known := p.env[name]
 		switch {
 		case !known:
+			if !slices.Contains(p.unknownVars, name) {
+				p.unknownVars = append(p.unknownVars, name)
+			}
 			return workflowValue{unknown: true}
 		case val == nil:
 			return workflowValue{null: true}
@@ -279,6 +292,7 @@ func (p *workflowExprParser) parseOperand() workflowValue {
 		}
 		re, err := regexp.Compile(pattern)
 		if err != nil {
+			p.invalidOperand = true
 			return workflowValue{unknown: true}
 		}
 		return workflowValue{re: re}
@@ -353,9 +367,12 @@ func evaluateRules(rules *yaml.Node, env map[string]*string) (ruleOutcome, int) 
 	return ruleNoMatch, 0
 }
 
-// rulesProblem describes a non-admitting outcome; kind names the rules
-// list ("workflow rule", "include rule"). It returns "" for ruleAdmitted.
-func rulesProblem(outcome ruleOutcome, idx int, kind string) string {
+// rulesProblem describes a non-admitting outcome of evaluateRules(rules,
+// env); kind names the rules list ("workflow rule", "include rule"). It
+// returns "" for ruleAdmitted. When a single rule cannot be evaluated, the
+// diagnostic quotes its condition and names what is unknown, so the reader
+// does not have to count rules or guess why admission failed closed.
+func rulesProblem(rules *yaml.Node, env map[string]*string, outcome ruleOutcome, idx int, kind string) string {
 	switch outcome {
 	case ruleRejected:
 		return fmt.Sprintf("(%s %d rejects them first)", kind, idx)
@@ -365,9 +382,107 @@ func rulesProblem(outcome ruleOutcome, idx int, kind string) string {
 		if idx == 0 {
 			return fmt.Sprintf("(the %ss cannot be evaluated, so admission cannot be established)", kind)
 		}
-		return fmt.Sprintf("(%s %d cannot be evaluated, so admission cannot be established)", kind, idx)
+		reason, stateDependent := unevaluableRuleReason(rules, idx, env)
+		if reason == "" {
+			return fmt.Sprintf("(%s %d cannot be evaluated, so admission cannot be established)", kind, idx)
+		}
+		hint := ""
+		if stateDependent {
+			hint = fmt.Sprintf(". To fix, add a rule before %s %d that admits them", kind, idx)
+		}
+		return fmt.Sprintf("(%s %d cannot be evaluated, so admission cannot be established: %s%s)", kind, idx, reason, hint)
 	}
 	return ""
+}
+
+// unevaluableRuleReason explains why the 1-based rule idx of rules cannot be
+// evaluated against env. It quotes the rule's if: condition and names the
+// variables, keywords, or values that are not known at install time.
+// stateDependent reports that the cause is project state rather than a
+// malformed rule, so an earlier admitting rule is the remedy. It returns ""
+// when no specific reason can be named.
+func unevaluableRuleReason(rules *yaml.Node, idx int, env map[string]*string) (reason string, stateDependent bool) {
+	rules = resolveAlias(rules)
+	if rules == nil || rules.Kind != yaml.SequenceNode || idx < 1 || idx > len(rules.Content) {
+		return "", false
+	}
+	n := resolveAlias(rules.Content[idx-1])
+	if n == nil || n.Kind != yaml.MappingNode {
+		return "the rule is not a mapping", false
+	}
+	var reasons []string
+	for j := 0; j+1 < len(n.Content); j += 2 {
+		switch key := n.Content[j].Value; key {
+		case "if":
+			cond := resolveAlias(n.Content[j+1])
+			if cond == nil || cond.Kind != yaml.ScalarNode {
+				reasons = append(reasons, "its if: is not a string")
+				continue
+			}
+			if r, dep := unevaluableIfReason(cond.Value, env); r != "" {
+				reasons = append(reasons, r)
+				stateDependent = stateDependent || dep
+			}
+		case "when", "variables", "auto_cancel", "inputs":
+		default:
+			reasons = append(reasons, fmt.Sprintf("its %s: clause depends on repository state that is not known at install time", escapeNonPrintable(key)))
+			stateDependent = true
+		}
+	}
+	if len(reasons) == 0 {
+		// The rule matched; only its when: can be unevaluable.
+		if when := findMappingValue(n, "when"); when != nil {
+			if w := resolveAlias(when); w == nil || w.Kind != yaml.ScalarNode || hasInterpolationSyntax(w.Value) {
+				reasons = append(reasons, "its when: is not a literal value")
+			}
+		}
+	}
+	return strings.Join(reasons, ", and "), stateDependent
+}
+
+// escapeNonPrintable returns s with control and other non-printable
+// characters replaced by Go escape sequences. Rule keys and conditions come
+// from the repository, so they must not carry terminal escape sequences or
+// line breaks into the install output.
+func escapeNonPrintable(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+			continue
+		}
+		q := strconv.QuoteToASCII(string(r))
+		b.WriteString(q[1 : len(q)-1])
+	}
+	return b.String()
+}
+
+// unevaluableIfReason explains why the rules:if expression cannot be
+// evaluated against env, or returns "" when it can. stateDependent is set
+// when the expression depends on values not known at install time, as
+// opposed to syntax this check does not support.
+func unevaluableIfReason(expr string, env map[string]*string) (reason string, stateDependent bool) {
+	if evalWorkflowIf(expr, env) != triadUnknown {
+		return "", false
+	}
+	shown := "`" + escapeNonPrintable(strings.Join(strings.Fields(expr), " ")) + "`"
+	if hasInterpolationSyntax(expr) {
+		return "its condition " + shown + " uses $[[ inputs ]] interpolation, which is not resolved at install time", true
+	}
+	p := &workflowExprParser{src: expr, env: env}
+	p.parseOr()
+	p.skipSpace()
+	// Only a well-formed expression whose sole obstacle is an unknown
+	// variable is project-state-dependent; a malformed one, including one
+	// with an invalid regex, cannot be fixed by an earlier admitting rule.
+	if p.err == nil && !p.invalidOperand && p.pos == len(p.src) && len(p.unknownVars) > 0 {
+		verb := "is"
+		if len(p.unknownVars) > 1 {
+			verb = "are"
+		}
+		return fmt.Sprintf("its condition %s depends on %s, which %s not known at install time", shown, strings.Join(p.unknownVars, ", "), verb), true
+	}
+	return "its condition " + shown + " uses syntax this check cannot evaluate", false
 }
 
 // workflowAdmissionProblem evaluates workflow:rules first-match for a
@@ -384,7 +499,7 @@ func workflowAdmissionProblem(rules *yaml.Node, defaultBranch string) string {
 func workflowAdmissionProblemForEnv(rules *yaml.Node, env map[string]*string, source string) string {
 	subject := "admits protected-default-branch " + source + " pipelines"
 	outcome, idx := evaluateRules(rules, env)
-	if p := rulesProblem(outcome, idx, "workflow rule"); p != "" {
+	if p := rulesProblem(rules, env, outcome, idx, "workflow rule"); p != "" {
 		return subject + " " + p
 	}
 	return ""
@@ -409,8 +524,9 @@ func includeAdmissionProblem(item *yaml.Node, defaultBranch, includeName string)
 	if rules == nil {
 		return ""
 	}
-	outcome, idx := evaluateRules(rules, triggerPipelineEnv(defaultBranch))
-	if p := rulesProblem(outcome, idx, "include rule"); p != "" {
+	env := triggerPipelineEnv(defaultBranch)
+	outcome, idx := evaluateRules(rules, env)
+	if p := rulesProblem(rules, env, outcome, idx, "include rule"); p != "" {
 		return "applies the " + includeName + " include to protected-default-branch trigger pipelines " + p
 	}
 	return ""

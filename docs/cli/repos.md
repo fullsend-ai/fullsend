@@ -1042,8 +1042,8 @@ direct membership already says Developer.
 Whenever install leaves the trigger account ready, including after GitLab
 refuses the Poller protected-ref grant, it also rechecks the dispatch
 activation gate (`CheckGitLabTriggerDispatchGate`) and reports either
-`GitLab trigger dispatch activation deferred: <reasons>` or
-`GitLab trigger dispatch prerequisites verified`. The recheck lists every
+`GitLab trigger dispatch activation deferred`, followed by one line per
+unmet prerequisite, or `GitLab trigger dispatch prerequisites verified`. The recheck lists every
 unmet prerequisite: managed scheduled polling no longer uses
 pipeline variables (the canonical schedule specs and every live managed
 schedule; a failed schedule read defers), the live
