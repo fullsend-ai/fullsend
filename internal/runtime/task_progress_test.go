@@ -64,10 +64,12 @@ func TestTaskProgressRendererIdentityAndLifecycle(t *testing.T) {
 func TestTaskProgressRendererBoundedState(t *testing.T) {
 	var console bytes.Buffer
 	r := newTestRenderer(&console)
-	for i := range maxTaskProgressEntries + 1 {
+	r.progress.taskEntryLimit = 8
+	limit := r.progress.maxTaskEntries()
+	for i := range limit + 1 {
 		r.Handle(TaskProgressEvent{TaskID: fmt.Sprint(i), State: TaskRunning})
 	}
-	if len(r.progress.taskProgressSeen) > maxTaskProgressEntries || len(r.progress.taskProgressRuns) > maxTaskProgressEntries {
+	if len(r.progress.taskProgressSeen) > limit || len(r.progress.taskProgressRuns) > limit {
 		t.Fatalf("unbounded task/parent state: %d rows, %d controls", len(r.progress.taskProgressSeen), len(r.progress.taskProgressRuns))
 	}
 }
