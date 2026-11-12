@@ -1,6 +1,8 @@
 # Recommended ignore for host runDir / eval-measure artifacts
-# (GitLab CI artifacts: output/). Not installed as a root .gitignore —
+# (output/) and the artifact directory GitLab CI uploads (fullsend-artifact/).
+# Not installed as a root .gitignore —
 # CollectGitLabPerRepoInstallFiles skips this file so it cannot overwrite
-# a consumer's existing ignore list. Copy the line below into your repo
+# a consumer's existing ignore list. Copy the lines below into your repo
 # .gitignore (or rely on fullsend run's UploadDir + .git/info/exclude).
 output/
+fullsend-artifact/

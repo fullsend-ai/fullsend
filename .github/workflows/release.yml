@@ -26,7 +26,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       # A final tag can share its commit with the release candidate it
       # promotes (vX.Y.Z and vX.Y.Z-rc.N on one commit). GoReleaser picks
@@ -51,6 +51,11 @@ jobs:
           fi
           echo "current=${TAG} previous=${PREV:-<goreleaser default>}"
 
+      # GoReleaser signs the release here. Installed CLIs only accept a
+      # signature made by this workflow file, for the tag, on a
+      # GitHub-hosted runner (internal/selfupdate/verify.go). Renaming this
+      # file or moving this step to another workflow breaks
+      # `fullsend self-update`.
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:

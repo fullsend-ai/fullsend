@@ -12,11 +12,11 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
+| 3 | Conversation content (assistant text, reasoning, tool calls and — on Claude and pi runs — their arguments and results; on a retry that carries validation feedback, the prompt the runner composed) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
 All levels produce metadata (timing, token counts, tool names, errors),
 including up to one `execute_tool` span per id-bearing tool call under each
-`agent` span (Claude Code today; pi and codex emit no call ids, [#7414](https://github.com/fullsend-ai/fullsend/issues/7414)),
+`agent` span (Claude Code and pi; codex emits no call ids, [#7414](https://github.com/fullsend-ai/fullsend/issues/7414)),
 capped at 1,024 per iteration.
 Level 3 adds the agent's conversation content to spans — enabled by one
 environment variable, exactly like Level 2's endpoint.
@@ -100,10 +100,11 @@ members included, masked a URL's userinfo, query or fragment in them,
 stripped an escape sequence or tag characters from them, or could not
 judge them at all (invalid UTF-8 or the replacement character): the parser cut the summary out of them before anything scanned it,
 so the secret could be there as a beginning. Where a runtime reports a summary and no
-arguments (pi, codex, OpenCode), its parser has already run the patterns
-over the summary and, for pi and codex, cut it: a value that straddles a
+arguments (codex, OpenCode), its parser has already run the patterns
+over the summary and, for codex, cut it: a value that straddles a
 cut stays in part, and one a pattern recognised stays as that pattern's
-mask. The agent runtime's own
+mask. The same holds for the result text the pi parser appends to a failed
+call's summary. The agent runtime's own
 content-logging variables (`OTEL_LOG_USER_PROMPTS`,
 `OTEL_LOG_ASSISTANT_RESPONSES`, etc.) are never set.
 
@@ -122,8 +123,8 @@ unattributed — as the `gen_ai.output.messages` span attribute: a JSON
 string following the
 [GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
 with a `finish_reason` of `stop` or `error`. Tool arguments, tool results, and the `id` that correlates a result with its call, are captured
-only when the runtime's stream provides them: Claude runs do; the pi and
-codex parsers emit none of the three yet
+only when the runtime's stream provides them: Claude and pi runs do; the
+codex parser emits none of the three yet
 ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)).
 `arguments` holds the members of the call's input that name what was
 called, listed by tool, each redacted as text: `Bash` — `command`,
@@ -133,8 +134,12 @@ called, listed by tool, each redacted as text: `Bash` — `command`,
 `Grep` — `pattern`, `path`, `glob`, `type`, `output_mode`, `context`,
 `head_limit`, `multiline`, `-A`, `-B`, `-C`, `-i`, `-n`; `Glob` —
 `pattern`, `path`; `WebFetch` — `url`; `Agent` — `description`, `model`,
-`subagent_type`; `Skill` — `skill`. Nothing else of the input is
-recorded: a file body, an edit, a prompt, a notebook source, a todo list,
+`subagent_type`; `Skill` — `skill`. pi's tools have their own names:
+`bash` — `command`, `timeout`; `read` — `path`, `offset`, `limit`; `write`
+and `edit` — `path`; `grep` — `pattern`, `path`, `glob`, `ignoreCase`,
+`literal`, `context`, `limit`; `find` — `pattern`, `path`, `limit`; `ls` —
+`path`, `limit`; its `Agent` and `Task` — as `Agent` above. Nothing else of
+the input is recorded: a file body, an edit, a prompt, a notebook source, a todo list,
 any member whose value is an object or an array, and the whole input of
 a tool not listed here (every `mcp__` tool among them) are dropped —
 scanned first, so a secret in them still counts, but neither charged nor
@@ -230,11 +235,12 @@ counts toward the 255,000 bytes. A tool result whose stream line
 exceeds the parser's 1 MiB bound is kept as an empty, marked
 `tool_call_response` part — the call was answered, its content is lost and
 its `is_error` unknown — provided the line shows the call id within its
-first 1 MiB, where Claude Code normally writes it (ahead of the content; an
+first 1 MiB, where Claude Code and pi normally write it (ahead of the content; an
 id serialized after the content is not recovered, and that call closes
 `unanswered`). Two cases are absent rather than truncated: any other stream
 line beyond 1 MiB is skipped whole by the parser, and results whose content is entirely non-text (for example
-images) produce no part. A result that mixed text with non-text blocks keeps
+images), or a pi result with no content list, produce no part unless the call
+failed. A result that mixed text with non-text blocks keeps
 its text and is marked `fullsend.truncated`; a failed call with empty
 output survives as a `tool_call_response` part carrying `is_error`. The SDK's span attribute length cap is
 lifted while capture is on; an explicit
@@ -282,8 +288,9 @@ run (root; Consumer when dispatched with TRACEPARENT, else Internal)
 ```
 
 `execute_tool` spans are named `execute_tool <tool name>`. One starts when
-the runtime reports a tool call (its arguments complete) and ends when it
-reports the result — both are runner-side receipt times, which trail the
+the runtime reports a tool call (on Claude Code, when its arguments are
+complete; on pi, when `tool_execution_start` was read) and ends when it
+reports the result — both are runner-side times, which trail the
 sandbox by the pipe latency and the parser's decode of the line, stamped after the
 console renderer's output for the call (it prints nothing for a result) and
 before that event's Level 3 content processing. Events are handled one at a
@@ -299,7 +306,7 @@ receipt, marked `fullsend.tool.result_oversized` with no status and no
 `error.type` — the tool answered, and whether it failed was never decoded; a
 result whose call was never reported (its stream line was skipped) is a
 near-zero-duration span marked `fullsend.tool.unmatched`. Runtimes whose parsers
-emit no call ids (pi, codex) produce no `execute_tool` spans, and neither
+emit no call ids (codex) produce no `execute_tool` spans, and neither
 do server-side tools, whose result never arrives as a `tool_result`. Tool
 names and call ids get the redaction span content gets (runner environment
 and provider-only values, Unicode normalization, secret redaction, then
@@ -392,12 +399,14 @@ by source:
 
 - **GitHub:** pull request events and comments on pull requests carry
   `head_sha`, so runs about a change record its head revision.
-- **GitLab:** `vcs.ref.head.revision` is recorded only when the normalized
-  event carries `head_sha`, which the poller sets only on synchronized merge
-  request events (a push to the source branch). The
-  `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` fallback applies only when fullsend
-  runs inside your own merged-results pipeline; the agent pipelines the poller
-  creates are not merge request pipelines, so it is unset there.
+- **GitLab:** the poller sets `head_sha` on every merge request event and on
+  comments on merge requests, so runs about a change record its head revision.
+  For a push to the source branch, it is the pushed head. For any other event,
+  it is the merge request's current head commit. If the poller cannot read the
+  merge request, `head_sha` is left unset and `vcs.ref.head.revision` is
+  omitted. The `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` fallback applies only when
+  fullsend runs inside your own merged-results pipeline; the agent pipelines
+  the poller creates are not merge request pipelines, so it is unset there.
 - **Jira:** `vcs.repository.url.full` is not recorded, since the work item's
   URL is on the Jira host. `vcs.provider.name` comes from the forge the run
   targets.
@@ -684,7 +693,7 @@ Non-finite float values (NaN, Infinity) are encoded as proto3 JSON strings
 The file is written synchronously per span. Spans are flushed to disk as
 they complete; the file is the forensic record for crashed runs. Every
 `execute_tool` span is one such line, so a tool-heavy iteration (a hundred
-or more id-bearing calls — Claude Code today) adds up to that many, capped
+or more id-bearing calls — Claude Code and pi) adds up to that many, capped
 at 1,024.
 
 ## Cross-run trace correlation
@@ -714,6 +723,10 @@ GitHub webhooks do not support custom trace headers.
 
 Within a single work item, `fullsend.work_item_id` on the root `run` span
 is the correlation key for filtering related traces in a backend.
+
+For durable work-item continuity, see
+[ADR 0154](../../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)
+and the [Trace Context Reference](../../reference/trace-context.md).
 
 ## Operational behavior
 

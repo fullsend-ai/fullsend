@@ -16,7 +16,8 @@ To manage GitHub repositories from `repos.yaml` instead of `github setup`, see
 ## Prerequisites
 
 * For Vertex agents, you have your WIF provider URL from [Getting Inference](getting-inference.md). OpenAI-only setup does not need it.
-* Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
+* Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI,
+  or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
 * Download the latest [gh](https://cli.github.com/) CLI and authenticate with it.
 
 > **Note:** If your organization restricts classic personal access tokens,

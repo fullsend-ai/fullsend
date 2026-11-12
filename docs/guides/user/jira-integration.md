@@ -6,7 +6,12 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 
 ## Setup overview
 
-1. **Create a dedicated Jira account** for fullsend and an API token. Store the credentials as GitHub Actions secrets. See [Credential setup](#credential-setup) and [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller).
+1. **Create a dedicated Jira account** for fullsend and choose an API token
+   or an OAuth 2.0 client credential. Store it as a GitHub Actions secret or
+   GitLab CI/CD variable. `repos install` manages these credentials on either
+   forge. See [Credential setup](#credential-setup), [Use a dedicated account
+   for the poller](#use-a-dedicated-account-for-the-poller), and [Use OAuth
+   2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account).
 2. **Grant it the minimum Jira permissions** in the target project, usually
    through the **Developers** project role. The poller needs Browse
    Projects, Edit Issues, Add Comments, and Edit Own Comments to operate on
@@ -28,10 +33,16 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    `labels: jira_editors`) authorizes them by Edit Issues instead. See
    [Actor role resolution](#actor-role-resolution).
 3. **Install fullsend** in the GitHub repository that will run the agents (`fullsend github setup`). See [Configuring GitHub](../getting-started/configuring-github.md) and [Prerequisites](#prerequisites).
-4. **Copy the Jira poller workflow** into `.github/workflows/fullsend-poll-jira.yml`. See [Scheduled workflow](#scheduled-workflow).
-
-   For a GitLab project, steps 3 and 4 differ: install fullsend in the project with `fullsend repos install` and run the poller from a scheduled GitLab CI job with `--target-forge gitlab`. See [GitLab runtime](#gitlab-runtime).
-5. **Set the Jira project key** (replace `PROJ`) and, if you want a narrower candidate set, a custom `--jql` expression in that workflow. See [Custom JQL](#custom-jql).
+4. **Configure the Jira site and project** under `tracker.jira` in
+   `.fullsend/config.yaml`: set `base_url`, `project`, and
+   `poll.enabled: true`, plus `poll.query` if you want a narrower candidate
+   set. The poller reads these settings only from the config. See
+   [Custom JQL](#custom-jql).
+5. **Run `fullsend repos install`** with either `--jira-token` (and optional
+   `--jira-email`) or `--jira-client-id` and `--jira-client-secret`. On GitHub,
+   install writes the scheduled workflow; on GitLab, it creates the pipeline
+   schedule. See [Scheduled workflow](#scheduled-workflow) and
+   [GitLab runtime](#gitlab-runtime).
 6. **Check which agents handle Jira events.** The poller dispatches an agent
    only when its harness `trigger:` CEL expression matches the Jira event, and
    produces zero dispatches for a harness with no trigger, its own or
@@ -142,15 +153,47 @@ shared Jira client supports scoped tokens through the API gateway. It uses
 `FULLSEND_JIRA_TOKEN`, plus `FULLSEND_JIRA_EMAIL` for a bot user, or no email
 for a service account (see the
 [Config Reference](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)).
-The poller and agents do not use that client yet; see
-[#9077](https://github.com/fullsend-ai/fullsend/issues/9077),
-[#9078](https://github.com/fullsend-ai/fullsend/issues/9078), and
-[#9079](https://github.com/fullsend-ai/fullsend/issues/9079). OAuth 2.0
-client credentials are not supported.
+The poller, `fullsend issues` commands, run-status notifications, and
+`fullsend reconcile-status` use that shared client. They accept either
+`FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL`, or
+`FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`. The built-in
+triage and code post-scripts still use `JIRA_TOKEN` and `JIRA_USER_EMAIL` to
+write agent results. For how the repository secrets reach Jira-consuming
+agent runs, see [Jira repository secrets in agent
+runs](#jira-repository-secrets-in-agent-runs).
+The Jira-aware harness integration is tracked in
+[agents#1900](https://github.com/fullsend-ai/agents/issues/1900).
 
-The poller and the built-in agents' Jira writes both authenticate as
-`JIRA_USER_EMAIL` / `JIRA_TOKEN`, and the poller treats that account as a
-bot. If the token belongs to a person:
+### Use OAuth 2.0 client credentials for a service account
+
+An Atlassian-managed service account can have an OAuth 2.0 credential (a
+client ID and client secret) instead of an API token. Set them as the
+`FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` repository secrets
+in place of `FULLSEND_JIRA_TOKEN`. Fullsend exchanges them with the
+`client_credentials` grant at `https://auth.atlassian.com/oauth/token` for a
+Bearer access token, which is valid for 60 minutes. The token is cached and
+refreshed before it expires, or once when Jira answers 401. Requests still go
+through the `tracker.jira.api_url` gateway
+(`/ex/jira/{cloudId}/rest/api/3/...`). The poller, `fullsend issues`,
+run-status notifications, and `fullsend reconcile-status` all accept them.
+
+The two credential types are mutually exclusive:
+
+- Setting `FULLSEND_JIRA_TOKEN` together with either client credential is an
+  error. The error names the variables, never their values.
+- The client ID and client secret must both be set.
+- `FULLSEND_JIRA_EMAIL` applies only to a token and is rejected with client
+  credentials.
+
+`fullsend repos install --jira-client-id --jira-client-secret` writes them as
+GitHub repository secrets or GitLab CI/CD variables and forwards them to the
+Jira poller and Jira-originated status updates (see
+[Jira polling](../../cli/repos.md#jira-polling)). GitLab requires the client
+secret to meet its masking rules.
+
+Use the same Jira account for the poller, status notifications, and agent
+result writes. The poller treats only its own account as a bot, so writes from
+another account dispatch agents again. If the token belongs to a person:
 
 - That person's own comments and label changes never dispatch agents,
   including their `/fs-triage` and `/fs-code` commands.
@@ -185,6 +228,62 @@ requires, as for any other trigger. See
 The `event_type` field in dispatch records (e.g. `"comment_added"`, `"label_changed"`) describes the Jira-side activity that **triggered** the dispatch — it is an **input** event, not a description of what the agent will do. When you see `event_type: "comment_added"` in `dispatches.json`, it means "a comment was added to a Jira issue, and that comment matched a routing rule." It says nothing about the agent's output.
 
 For a Jira-sourced run, `fullsend run` exports the tracker-independent `FULLSEND_WORK_ITEM_SOURCE` (`jira`), `FULLSEND_WORK_ITEM_KEY` (for example `PROJ-123`), and `FULLSEND_WORK_ITEM_URL` variables from the normalized event, replacing any inherited values, and clears `ISSUE_NUMBER` because a Jira key has no GitHub or GitLab issue number. The run fails closed, rather than guessing an identity, when the dispatch payload declares Jira but its key or URL is missing or malformed. Harness scripts that handle Jira work items should read the `FULLSEND_WORK_ITEM_*` variables instead of `ISSUE_NUMBER`.
+
+### Tracking runs with an optional label
+
+To find issues an agent has worked on using JQL, opt in to a run-start label:
+
+```yaml
+tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    project: PROJ
+    run_label: fs-code-agent
+```
+
+`tracker.jira.run_label` has no default. Omit it or set it to `""` to disable
+label writes; Jira-sourced runs log that labeling was skipped. A configured
+name must not contain whitespace or control characters. Configuration validation
+rejects invalid names. If an invalid name reaches runtime, labeling logs a
+warning and is skipped; Jira runs and polling continue. The setting applies to
+all Jira-sourced agents, so choose a role-appropriate name for your repository.
+
+The runner adds the label alongside the start-status notification, before
+sandbox setup, even when status comments are disabled. It remains on failed
+or cancelled runs. Existing labels are preserved, and an issue already carrying
+it receives no label update. A failed label read or write produces a warning
+and does not fail the run. **Edit Issues**, already in the bot's minimum
+permission set, covers the write.
+
+Use `labels = "fs-code-agent"` in JQL to find these issues. Choose a label
+that does not collide with your poll query's trigger or exclusion labels.
+Writes use the same configured Jira account as status comments; changes by the
+poller's own account are classified as bot actions and do not dispatch agents.
+The label marks that a run started, not that the agent created or merged a PR.
+
+### Jira connection variables in agent runs
+
+For a Jira-sourced run, `fullsend run` also sets two Jira URLs before harness env expansion, so `${JIRA_BASE_URL}` and `${JIRA_API_URL}` in `env.runner`, `env.sandbox`, and `host_files` entries with `expand: true` resolve to them:
+
+| Variable | Value |
+|---|---|
+| `JIRA_BASE_URL` | `tracker.jira.base_url`. It replaces any inherited value, such as the `JIRA_BASE_URL` repository variable or the `jira_base_url` dispatch input, so config is the only source. |
+| `JIRA_API_URL` | The per-site API gateway base `{api_url}/ex/jira/{cloudId}`, with no trailing slash, where `api_url` is `tracker.jira.api_url` (default `https://api.atlassian.com`). It is the same base fullsend's own Jira client uses, and the cloud ID is discovered the same way, from `{base_url}/_edge/tenant_info`. |
+
+The built-in agents send Jira REST calls to `${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/...`. Because `fullsend run` always sets `JIRA_API_URL` for a Jira-sourced run that starts, those calls go through the gateway, which accepts a service account's scoped token and an OAuth 2.0 access token; a bot user's classic token has been observed to work there too, though Atlassian does not promise it.
+
+A Jira-sourced run fails closed. It stops before the sandbox starts, rather than letting agents fall back to the site URL, where a service account's credential is rejected:
+
+| Case | Result |
+|---|---|
+| Discovery succeeds | Both variables are set; the run continues |
+| Discovery fails or times out (10-second limit) | The run stops; the error names the site URL |
+| `fullsend run --offline` | The run stops: the gateway address needs a network lookup |
+| `tracker.jira` connection settings missing or invalid (for example `base_url` or `api_url` not `https`, or with credentials, a query, or a fragment) | The run stops; the URL is never printed |
+
+Reference these variables only in a harness overlay that applies to Jira runs (`when: 'has(event.source) && event.source.system == "jira"'`). On a GitHub- or GitLab-sourced run, fullsend leaves them as they are, and an unset reference fails the run. Both values are URLs, not credentials, and a runner secret cannot override `JIRA_API_URL` or `JIRA_BASE_URL`.
+
+For sandboxed use, the network profile must allow the gateway host. The built-in agents' `jira-ro` provider profile allows `api.atlassian.com`. The legacy `atlassian-cloud` profile below allows only `*.atlassian.net`, so it serves bot-user calls to the site URL only.
 
 ### Where built-in agent results appear
 
@@ -264,17 +363,97 @@ implementation
 
 | Secret / variable | Value |
 |---|---|
-| `JIRA_TOKEN` | Your Jira API token |
-| `JIRA_USER_EMAIL` | Email associated with the token |
-| `JIRA_BASE_URL` | Jira instance URL, e.g. `https://myteam.atlassian.net` |
+| `FULLSEND_JIRA_TOKEN` | Scoped Jira API token for the poller and agent run-status updates; use instead of the client credentials below |
+| `FULLSEND_JIRA_EMAIL` | Optional. Bot user's email for a scoped user token. Omit it for a service-account token |
+| `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Alternative to `FULLSEND_JIRA_TOKEN`: a service account's OAuth 2.0 credential (see [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)) |
+| `JIRA_TOKEN` | Jira API token for built-in triage and code result writes |
+| `JIRA_USER_EMAIL` | Email associated with the token used for built-in agent result writes |
+| `JIRA_BASE_URL` | Jira site URL used by built-in agent result-write scripts. For Jira-sourced runs, `fullsend run` replaces it with `tracker.jira.base_url` and also sets `JIRA_API_URL` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) |
 
-`fullsend run` reads `JIRA_TOKEN` and `JIRA_USER_EMAIL` for its own Jira calls
-but does not pass them on to host-side pre/post/validation scripts by default. A
-harness whose scripts call Jira must declare them under `env.runner` (for
-example `JIRA_TOKEN: "${JIRA_TOKEN}"`). The built-in triage and code harnesses
-already do this in their Jira overlays, so their post-scripts can write results
-to the Jira issue. See
+The poller and Jira-originated agent workflows use either the token and
+optional email or the OAuth client ID and secret. They take the Jira site and
+API gateway from `tracker.jira` in `.fullsend/config.yaml`. `fullsend repos
+install --jira-token --jira-email` or `--jira-client-id --jira-client-secret`
+writes the selected credentials for repositories whose
+`tracker.jira.poll.enabled` is `true`.
+
+`fullsend run` uses the `FULLSEND_JIRA_*` credentials for Jira status updates.
+It does not pass them to host-side pre/post/validation scripts by default. A
+harness whose scripts call Jira must declare their credentials under
+`env.runner` (for example `JIRA_TOKEN: "${JIRA_TOKEN}"`). The built-in triage
+and code harnesses do this in their Jira overlays, so their post-scripts can
+write results to the Jira issue. See
 [Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
+
+### Jira repository secrets in agent runs
+
+`fullsend repos install` writes one Jira credential set as repository secrets
+or CI/CD variables (see [Jira polling](../../cli/repos.md#jira-polling)).
+They reach the poller and Jira-originated agent runs through their own path,
+not through `FULLSEND_GITHUB_RUNNER_SECRETS`, because that bundle refuses
+every `FULLSEND_*` name. The runtime mapping is:
+
+| Hop | API token | OAuth 2.0 client credentials |
+|---|---|---|
+| Fullsend composite action input | `jira-token`, `jira-email` | `jira-client-id`, `jira-client-secret` |
+| `fullsend run` process environment | `FULLSEND_JIRA_TOKEN`, optional `FULLSEND_JIRA_EMAIL` | `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` |
+| Host-side scripts (pre, post, validation) | Only when the harness declares the variables in `env.runner` | Only when the harness declares both variables in `env.runner` |
+| Sandbox-bound sites | Not inherited; references resolve empty (see breaking change below). | Not inherited; references resolve empty (see breaking change below). |
+
+OAuth 2.0 client credentials follow the same path. The action inputs
+`jira-client-id` and `jira-client-secret` reach `fullsend run` as
+`FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`, only when set.
+Host-side scripts receive them only when the harness declares them in
+`env.runner`. Sandbox-bound and provider expansion sites refuse them.
+
+- **Absent secrets are absent, not empty.** The action's Run fullsend step
+  unsets empty inputs. A token without an email selects scoped-token Bearer
+  auth; a token with an email selects bot-user Basic auth. The client ID and
+  secret select OAuth 2.0 client-credentials auth.
+- **Declaring them in a harness.** Host-side scripts do not inherit either
+  variable from the `fullsend run` environment. A harness whose scripts call
+  Jira declares both:
+
+  ```yaml
+  env:
+    runner:
+      FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"
+      FULLSEND_JIRA_EMAIL: "${FULLSEND_JIRA_EMAIL}"
+  ```
+
+  The email reference does not fail validation when the secret is absent.
+  The entry is dropped instead, so the script sees no `FULLSEND_JIRA_EMAIL`.
+  A missing `FULLSEND_JIRA_TOKEN` still fails the run when the harness
+  references it. A harness may also declare `FULLSEND_JIRA_CLIENT_ID` and
+  `FULLSEND_JIRA_CLIENT_SECRET`. These are optional in the same way, and with
+  client credentials set, `FULLSEND_JIRA_TOKEN` is optional too. One harness
+  can therefore declare both credential types.
+- **Breaking change: sandbox-bound expansion.** On every forge,
+  `${FULLSEND_JIRA_TOKEN}` and `${FULLSEND_JIRA_EMAIL}` references in
+  `env.sandbox`, expanded `host_files` content, `FULLSEND_OUTPUT_FILE`, and
+  provider config or credential values now resolve empty without a validation
+  error. These sites previously expanded the values from the `fullsend run`
+  process environment. Remove those references; where a trusted host-side
+  script needs Jira access, declare the credential under `env.runner` as
+  described above. Host-side scripts already require an explicit `env.runner`
+  mapping on both GitHub and GitLab, so this change does not introduce a
+  GitLab-specific host-script migration.
+- **Residual exposure in the `fullsend run` process.** The action sets both
+  values in the initial environment of the process that runs `fullsend run`,
+  because the Jira client reads them from the process environment. Other
+  same-user processes on the runner can read them from
+  `/proc/<pid>/environ` for the whole run, even when no harness declares them.
+  Unlike [runner secrets](../../cli/run.md#runner-secrets), they are not staged
+  through a file. Deploy these secrets only on runners you trust.
+- **No Jira settings as workflow inputs.** The site URL, API gateway URL,
+  project, and query stay in the effective
+  [`tracker.jira` config](../../reference/config-reference.md#trackerjira-connection-and-polling-settings).
+
+> **Planned:** The Jira-aware agents tracked in
+> [agents#1900](https://github.com/fullsend-ai/agents/issues/1900) will consume
+> these credentials through host-side mappings. No current agents-side harness
+> declares `FULLSEND_JIRA_*`; the planned harnesses must declare each value
+> they use under `env.runner`.
 
 ### Sandbox credentials and network access
 
@@ -297,7 +476,9 @@ earlier release, needs its own matching `trigger`. See
 trigger matches. For Jira-triggered runs,
 `fullsend run` exports `FULLSEND_WORK_ITEM_SOURCE`, `FULLSEND_WORK_ITEM_KEY`,
 and `FULLSEND_WORK_ITEM_URL`, clears `ISSUE_NUMBER`, and fails closed on a
-malformed Jira identity. The built-in triage and code agents write their results
+malformed Jira identity. It also sets `JIRA_BASE_URL` and `JIRA_API_URL` from
+`tracker.jira` (see
+[Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)). The built-in triage and code agents write their results
 to the Jira issue, while branches, commits, PRs or MRs, review, and merge stay
 on the code host. See
 [Where built-in agent results appear](#where-built-in-agent-results-appear) for
@@ -310,148 +491,172 @@ Otherwise, add a harness override with a Jira `trigger` expression for each
 agent that should handle Jira events (see step 6 and
 [Configuring agent behavior](customizing-agents.md#configuration-with-base-composition)).
 
-## Scheduled workflow
+### Public repos and private data
 
-1. Create `.github/workflows/fullsend-poll-jira.yml` with the following content:
+On a public repository, the run artifact of a Jira-started run publishes what
+the agent read from the Jira issue. Any signed-in user can download it. To
+stop that, add this to `.fullsend/config.yaml`:
 
 ```yaml
-name: fullsend Jira poll
-
-on:
-  schedule:
-    - cron: "*/5 * * * *"  # every 5 minutes
-  workflow_dispatch: {}     # allow manual runs
-
-permissions:
-  actions: write
-  contents: write
-  id-token: write
-  issues: write
-  packages: read
-  pull-requests: write
-
-jobs:
-  poll:
-    runs-on: ubuntu-24.04
-    concurrency:
-      group: fullsend-jira-poll
-      cancel-in-progress: false
-    outputs:
-      matrix: ${{ steps.build-matrix.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install fullsend
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download --repo fullsend-ai/fullsend -p 'fullsend_*_linux_amd64.tar.gz' -O - | tar xz
-          sudo mv fullsend /usr/local/bin/
-
-      - name: Poll Jira
-        env:
-          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
-          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
-          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
-          TARGET_REPO: ${{ github.repository }}
-        run: |
-          fullsend poll \
-            --input-driver jira-poll \
-            --jira-url "${JIRA_BASE_URL}" \
-            --jira-project PROJ \
-            --target-repo "${TARGET_REPO}" \
-            --output dispatches.json \
-            --fullsend-dir .fullsend
-
-      - name: Build dispatch matrix
-        id: build-matrix
-        run: |
-          set -euo pipefail
-          if ! jq -e 'length > 0' dispatches.json > /dev/null 2>&1; then
-            echo "No dispatches."
-            echo 'matrix={"include":[]}' >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
-          MATRIX=$(jq -c '{include: .}' dispatches.json)
-          DELIM="MATRIX_$(openssl rand -hex 8)"
-          {
-            echo "matrix<<${DELIM}"
-            printf '%s' "${MATRIX}"
-            echo
-            echo "${DELIM}"
-          } >> "${GITHUB_OUTPUT}"
-
-  harness:
-    name: Harness
-    needs: poll
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main
-    with:
-      matrix: ${{ needs.poll.outputs.matrix }}
-      mint_url: ${{ vars.FULLSEND_MINT_URL }}
-      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
-      jira_base_url: ${{ vars.JIRA_BASE_URL }}
-    secrets:
-      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
-      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
-      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
-      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
-      JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+artifacts:
+  by_source:
+    jira: metadata      # keeps metrics and traces, removes the conversation
 ```
 
-2. Replace `PROJ` with your Jira project key.
-3. Commit and push the workflow file.
+Use `none` if issue keys and branch names must stay private too. To check
+that it worked, and to see what each level keeps, follow
+[Run artifacts and private data](run-artifacts-and-private-data.md).
 
-**How this works:** The `poll` job queries Jira and builds a dispatch matrix in
+### Letting the assignee start Code
+
+The developer who works a Jira issue is usually its **assignee**, while a
+product manager, QE engineer or partner is often the **reporter**. By default
+any human with the required role can start Code with `/fs-code`. To accept
+`/fs-code` only from the reporter or the assignee, override the code
+harness's `trigger` and test `event.actor.is_entity_author` (the reporter)
+and `event.actor.is_entity_assignee` (the current assignee).
+
+**`harness/code.yaml`:**
+
+```yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.yaml#sha256=abc...
+
+trigger: >
+  event.entity.kind == "work_item"
+    && !has(event.entity.linked_change_proposal)
+    && event.source.system in ["github", "gitlab", "jira"]
+    && ((event.transition.kind == "comment_added"
+        && has(event.transition.comment.command)
+        && event.transition.comment.command == "/fs-code"
+        && event.actor.kind == "human"
+        && (event.actor.is_entity_author || event.actor.is_entity_assignee))
+      || (event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-to-code"
+        && event.transition.label.action == "added"))
+```
+
+Register it with `name: code` and `source: harness/code.yaml` under `agents:`
+in `.fullsend/config.yaml`. The override changes Jira runs only: on GitHub, a
+harness `trigger` on the built-in `code` agent does not change how GitHub
+starts it. A child `trigger` replaces the base trigger, so
+the expression above copies the default code trigger and adds the
+author-or-assignee clause to its `/fs-code` arm. The `ready-to-code` label arm
+is unchanged, because triage applies that label when it promotes an issue.
+
+The clause only narrows who can start Code with `/fs-code`. Anyone the label
+rules allow can still start Code by adding `ready-to-code`. To limit that path
+too, add the same author-or-assignee clause to the label arm.
+
+The actor still needs the role that
+[Actor role resolution](#actor-role-resolution) assigns, and anyone with
+permission to assign issues can assign themselves. The poller reads the
+assignee when it polls, so a reassignment between the poll and the run does
+not change a run that was already dispatched.
+
+To check it works, post `/fs-code` on an issue assigned to someone else, as a
+user who is neither its reporter nor its assignee: after the next poll, no
+Code run starts. Then post `/fs-code` as the assignee: the next poll starts a
+Code run.
+
+## Scheduled workflow
+
+`fullsend repos install` manages the scheduled Jira poll workflow for you.
+
+1. Set `tracker.jira.base_url`, `tracker.jira.project`, and
+   `tracker.jira.poll.enabled: true` in the repository's configuration (its
+   `config:` block in `repos.yaml`, or a `config_base` preset; see
+   [Custom JQL](#custom-jql)).
+2. Run `fullsend repos install` with one credential set:
+
+   - API token: `--jira-token "$FULLSEND_JIRA_TOKEN"`, with optional
+     `--jira-email "$FULLSEND_JIRA_EMAIL"` for a bot user's token.
+   - OAuth: `--jira-client-id "$FULLSEND_JIRA_CLIENT_ID"` and
+     `--jira-client-secret "$FULLSEND_JIRA_CLIENT_SECRET"`.
+
+   One credential set is required only on the first Jira-enabled install.
+   Later installs keep the existing secrets unless you supply new values. See
+   [Jira polling](../../cli/repos.md#jira-polling).
+
+Install writes `.github/workflows/fullsend-poll-jira.yml` in the same scaffold
+commit or pull request as the rest of the installation. The workflow:
+
+- runs every five minutes and on manual dispatch (`workflow_dispatch`);
+- calls Fullsend's shared `reusable-poll-jira.yml`, which runs
+  `fullsend poll --input-driver jira-poll` against the repository's
+  `.fullsend/config.yaml` and returns the dispatch matrix;
+- hands that matrix to `reusable-dispatch.yml`, which runs the agents;
+- passes the selected Jira credential set to the poll job. For Jira-originated
+  runs, it passes the same set to Fullsend's status writer; the values do not
+  enter the runner-secret bundle or sandbox. Agent post-scripts use
+  `JIRA_TOKEN` and `JIRA_USER_EMAIL` for their own Jira writes.
+
+The workflow has no Jira URL, project, or query inputs. The poller reads them
+from the configuration. Both reusable workflows are pinned to the scaffold's
+`fullsend_ref`, so that ref must be a Fullsend release that ships
+`reusable-poll-jira.yml`. When install manages the caller, it checks that the
+selected ref includes the reusable workflow before writing credentials or
+workflow files. If the ref is too old, install fails for that repo; upgrade
+`fullsend_ref` and run install again.
+
+Install keeps the workflow current. When `poll.enabled` is `false` or
+omitted, it removes the workflow. `repos uninstall` removes it too. Install
+changes the file only when it carries the `# fullsend-component: jira-poll`
+marker line that Fullsend writes. If you copied the poll workflow from an
+earlier version of this guide, it has no marker: install reports it and
+leaves it untouched. Delete that file and re-run `repos install` to switch to
+the managed workflow.
+
+**How this works:** The poll job queries Jira and builds a dispatch matrix in
 the format expected by `reusable-dispatch.yml`. When the `matrix` input is
 provided, `reusable-dispatch.yml` skips its routing and dispatch steps and
 goes directly to running harness agents with the pre-computed matrix. Because
-the agent stages still run inside `reusable-dispatch.yml`, dispatch and the
-agents always come from the same fullsend version, and custom pollers can
-reuse fullsend's harness infrastructure. See
+both reusable workflows are pinned to the same ref, the poller, dispatch, and
+the agents always come from the same fullsend version. Custom pollers can
+reuse fullsend's harness infrastructure the same way. See
 [Custom Poller Example](custom-poller-example.md) for more details on this
 pattern.
 
-**`concurrency.cancel-in-progress: false`** ensures overlapping poll cycles queue rather than cancel each other, which is the primary defense against concurrent runs — the GitHub Actions concurrency group means only one poll cycle for this workflow ever runs at a time in the common case. The poller's own Jira entity-property locking is a secondary guard for cases outside that group (e.g. a manually triggered run overlapping a scheduled one): it re-checks for a live lock immediately before writing, narrowing the race to the jitter window between that check and the write, but Jira entity properties have no compare-and-swap, so a lock created in that narrow window can still be clobbered by a genuinely concurrent poller. Treat the GHA concurrency group as the real safety mechanism, not the lock.
+**The poll job's concurrency group (`cancel-in-progress: false`)** makes overlapping poll cycles queue rather than cancel each other. It is the primary defense against concurrent runs: only one poll cycle for this workflow runs at a time in the common case, including manually triggered runs. The poller's own Jira entity-property locking is a secondary guard for cases outside that group: it re-checks for a live lock immediately before writing, narrowing the race to the jitter window between that check and the write, but Jira entity properties have no compare-and-swap, so a lock created in that narrow window can still be clobbered by a genuinely concurrent poller. Treat the GHA concurrency group as the real safety mechanism, not the lock.
 
 ### Custom JQL
 
 By default the poller searches for all non-done issues in the project, ordered by most recently updated.
 
-You can set the Jira site, project, and query in config instead of on the
-command line. Use
+The poller reads the Jira site, project, and query only from
 [`tracker.jira`](../../reference/config-reference.md#trackerjira-connection-and-polling-settings)
 in `.fullsend/config.yaml` or in the repository's `config:` block in
-`repos.yaml`. When the config sets them, the poller reads `base_url`,
-`project`, and `poll.query` from it. It always scopes the query as
-`project = "<project>" AND (<query>)`, keeping a trailing `ORDER BY` at the
-end. The parentheses in `poll.query` must be balanced. `--jira-url`,
-`--jira-project`, and `--jql` are then rejected, and `JIRA_BASE_URL` is
-ignored.
+`repos.yaml`:
 
-Without that config, use `--jql` to narrow the scope:
-
-```bash
-fullsend poll \
-  --input-driver jira-poll \
-  --jira-url "${JIRA_BASE_URL}" \
-  --jira-project PROJ \
-  --jql 'project = PROJ AND labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC' \
-  --target-repo "${{ github.repository }}" \
-  --output dispatches.json \
-  --fullsend-dir .fullsend
+```yaml
+tracker:
+  jira:
+    base_url: https://myteam.atlassian.net
+    project: PROJ
+    poll:
+      enabled: true
+      query: 'labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC'
 ```
 
-**`--jira-project` is required for any project using slash commands whose roles come from Jira project roles.** Without it the poller cannot resolve Jira project roles, so all actors default to the `external` role and every `/fs-*` command silently fails the role gate. When the `jira` authorization entry sets `write` or `triage` lists and does not use `labels: project_roles`, roles come from those lists instead and `--jira-project` is not needed for role resolution. Otherwise, provide `--jira-project` alongside `--jql` unless you are certain your routing rules do not depend on actor roles.
+`base_url` and `project` are required. `api_url` defaults to
+`https://api.atlassian.com`. The poller always scopes the query as
+`project = "<project>" AND (<query>)`, keeping a trailing `ORDER BY` at the
+end, so the example above runs as
+`project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
+The parentheses in `poll.query` must be balanced. When `poll.query` is
+omitted, the poller uses the default filter above. Unless `poll.enabled` is
+`true`, the poller skips the cycle without contacting Jira.
 
-Technically `--jql` can be used without `--jira-project`. That is safe in a read-only polling setup with no slash-command-based dispatch, or when the `jira` authorization entry sets `write` or `triage` lists without `labels: project_roles`, so that actor roles come from the lists and the project roles are never read (with `labels: project_roles`, label-added events still read them).
-
-Custom JQL must be a **bounded query**: Jira's enhanced search endpoint rejects queries without a search restriction (e.g. a bare `ORDER BY updated DESC`) with a 400 on every cycle. Always include at least a `project = ...` or similar restriction, as the examples above do.
+The `--jira-url`, `--jira-project`, and `--jql` flags were removed and are
+rejected, and `JIRA_BASE_URL` is not read. Because the query is always
+scoped to `project`, the poller can always resolve Jira project roles for
+slash commands and label events.
 
 ## GitLab runtime
 
-Jira work items can also dispatch agents in a GitLab project. Run the poller
-with `--target-forge gitlab` from a CI job in that project. The poller does
+Jira work items can also dispatch agents in a GitLab project. When
+`tracker.jira.poll.enabled` is true, `repos install` provisions the
+`fullsend jira poll` schedule, and the managed poll job runs the poller with
+`--target-forge gitlab`. The poller does
 not write a matrix for a downstream step. It starts each matched agent
 directly, through the same protected pipeline route the GitLab poller uses
 for issues and merge requests.
@@ -470,15 +675,35 @@ for issues and merge requests.
   available to it. The poller refuses to dispatch without
   `FULLSEND_DISPATCH_SECRET`, because the agent pipeline rejects unsigned
   dispatches.
+- The effective config sets `tracker.jira.base_url`, `tracker.jira.project`,
+  and `tracker.jira.poll.enabled: true` (see [Custom JQL](#custom-jql)).
+- The poll job receives `FULLSEND_JIRA_TOKEN` and, for a bot user,
+  `FULLSEND_JIRA_EMAIL`. A service account can use
+  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` instead (see
+  [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)).
+  Only the Jira poll mode keeps these variables. The events poller and the
+  dispatcher unset them.
+- `FULLSEND_JIRA_TOKEN` and, for a bot user, `FULLSEND_JIRA_EMAIL` (or the
+  client ID and the masked client secret) are set as protected CI/CD
+  variables for poller and run-status calls.
 - `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and `JIRA_BASE_URL` are set as protected,
-  masked CI/CD variables. The agent jobs need them as well, to post run status
-  and the triage and code results to the Jira issue.
+  masked CI/CD variables for the triage and code result-write scripts.
 
-`repos install` converges the `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`
-variables from `--jira-token` and `--jira-email` for projects whose effective
-`tracker.jira.poll.enabled` is `true`. `fullsend` does not yet create the
-schedule or the `JIRA_*` variables above for you.
-That setup is tracked in
+For projects whose effective `tracker.jira.poll.enabled` is `true`,
+`repos install` writes the `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`
+variables from `--jira-token` and `--jira-email`, or
+`FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` from
+`--jira-client-id` and `--jira-client-secret`. It also creates the
+`fullsend jira poll` pipeline schedule. The scaffolded poll job runs the
+command below for that schedule, so you do not need to write your own job. The
+schedule is created only after the scaffold that contains the Jira poll job is
+on the default branch, so after a first install or upgrade, merge the
+scaffold MR and run `repos install` again. Setting `poll.enabled: false`, or
+omitting it, removes the schedule. See
+[Jira polling](../../cli/repos.md#jira-polling).
+
+`fullsend` does not yet create the `JIRA_*` variables above for you. That
+setup is tracked in
 [#8906](https://github.com/fullsend-ai/fullsend/issues/8906).
 
 ### Running the poller
@@ -493,8 +718,6 @@ export CI_COMMIT_REF_NAME="${FULLSEND_PINNED_REF}"
 fullsend poll \
   --input-driver jira-poll \
   --target-forge gitlab \
-  --jira-url "${JIRA_BASE_URL}" \
-  --jira-project PROJ \
   --project "${FULLSEND_PINNED_PROJECT_PATH}" \
   --gitlab-url "${FULLSEND_PINNED_GITLAB_URL}" \
   --fullsend-dir .fullsend
@@ -549,7 +772,10 @@ command before any Jira call. A dispatch also fails, and creates no pipeline,
 when:
 
 - the event targets a different project
-- the Jira key or URL is malformed
+- the Jira URL is malformed. A malformed Jira work item key never gets this
+  far: the poller skips such an event before dispatch, before matching (see
+  the `WARNING: skipping event …` row in the troubleshooting table); the
+  GitLab dispatch driver's own key check remains as defence in depth
 - the project has no fullsend pipeline wrapper, or its scaffold predates Jira
   dispatch
 - GitLab rejects the pipeline, for example because the Poller credential
@@ -571,13 +797,20 @@ You can run `fullsend poll` locally to verify your Jira connection and inspect d
 
 ### Required environment variables
 
-Set the same credentials you would configure as GitHub Actions secrets:
+Set the same poller credentials you would configure as GitHub Actions
+secrets. Omit `FULLSEND_JIRA_EMAIL` for a service-account token:
 
 ```bash
-export JIRA_TOKEN="your-jira-api-token"
-export JIRA_USER_EMAIL="you@example.com"
-export JIRA_BASE_URL="https://myteam.atlassian.net"
+export FULLSEND_JIRA_TOKEN="your-scoped-jira-api-token"
+export FULLSEND_JIRA_EMAIL="bot@example.com"
 ```
+
+For a service account's OAuth 2.0 credential, set
+`FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` instead of both.
+
+The Jira site and project come from `tracker.jira` in
+`.fullsend/config.yaml` (see [Custom JQL](#custom-jql)), with
+`poll.enabled: true`.
 
 ### Running the poller
 
@@ -586,16 +819,12 @@ From the repo root, use `go run` (per [AGENTS.md](../../../AGENTS.md) convention
 ```bash
 go run ./cmd/fullsend poll \
   --input-driver jira-poll \
-  --jira-url "${JIRA_BASE_URL}" \
-  --jira-project PROJ \
   --target-repo owner/repo \
   --output dispatches.json \
   --fullsend-dir .fullsend
 ```
 
-Replace `PROJ` with your Jira project key and `owner/repo` with the GitHub repository slug where agent workflows run.
-
-> **Note:** `--jira-project` is effectively required when your project uses slash commands (`/fs-triage`, `/fs-code`, etc.) and roles come from Jira project roles. Without it, the poller cannot resolve Jira project roles and all actors default to `external`, which silently fails the role gate for write-gated commands. It is not needed for role resolution when the `jira` authorization entry sets `write` or `triage` lists, because the lists decide the role. See [#6089](https://github.com/fullsend-ai/fullsend/issues/6089) for details.
+Replace `owner/repo` with the GitHub repository slug where agent workflows run.
 
 ### Inspecting output
 
@@ -627,7 +856,7 @@ Key fields in each dispatch record:
 
 To inspect what the poller *would* dispatch without triggering any agent workflows, run the `fullsend poll` command above and stop there — do not run the "Dispatch agent workflows" step from the [scheduled workflow](#scheduled-workflow). The poll step writes `dispatches.json` and advances Jira checkpoints, but no workflows are dispatched until the separate dispatch script reads that file and calls `gh workflow run`.
 
-If you want to avoid advancing Jira checkpoints during testing, poll against a dedicated test project or use a narrowly scoped `--jql` that selects only test issues.
+If you want to avoid advancing Jira checkpoints during testing, poll against a dedicated test project or use a narrowly scoped `tracker.jira.poll.query` that selects only test issues.
 
 ## Dispatch record format
 
@@ -671,7 +900,8 @@ The `event_payload` field is a JSON-encoded [NormalizedEvent](../../normative/no
     "id": "5f7c012e0b2a4c001f3d9876",
     "kind": "human",
     "role": "write",
-    "is_entity_author": false
+    "is_entity_author": false,
+    "is_entity_assignee": false
   },
   "state": {
     "labels": ["bug", "fullsend"]
@@ -848,16 +1078,19 @@ Two more scaling limits:
 
 ## Multi-repo polling
 
-Multiple GitHub repos can poll the same Jira project. Each repo runs its own poll workflow and gets an isolated view of coordination state — no cross-repo configuration is needed. Before adding pollers, use Jira Components or labels to segment your project so each repo's `--jql` filter only matches issues relevant to it — this avoids redundant API calls and keeps each poller's candidate window focused.
+Multiple GitHub repos can poll the same Jira project. Each repo runs its own poll workflow and gets an isolated view of coordination state — no cross-repo configuration is needed. Before adding pollers, use Jira Components or labels to segment your project so each repo's `tracker.jira.poll.query` filter only matches issues relevant to it — this avoids redundant API calls and keeps each poller's candidate window focused.
 
 ### Should each repo have its own poll workflow?
 
-Yes. Each repo should contain its own `.github/workflows/fullsend-poll-jira.yml`. The `--target-repo` flag passed to `fullsend poll` (defaulting to `${{ github.repository }}`) controls two things:
+Yes. Each repo should contain its own `.github/workflows/fullsend-poll-jira.yml`.
+The `--target-repo` flag passed to `fullsend poll` (defaulting to
+`${{ github.repository }}`; an `owner/repo` slug, and one that contains `..`
+is refused) controls two things:
 
 1. **Entity property namespace.** Lock and checkpoint properties are keyed as `fullsend.poll.{owner}.{repo}.*`, so repos `acme/frontend` and `acme/backend` polling the same Jira project write to separate property keys on each issue and never interfere with each other.
 2. **GHA concurrency group.** The workflow's `concurrency.group` is scoped to the workflow file, which lives in the repo — so each repo's poll cycles queue independently.
 
-This means each repo discovers and dispatches changes on its own schedule, with its own credentials and its own `--jql` filter. There is no shared state between repos.
+This means each repo discovers and dispatches changes on its own schedule, with its own credentials and its own `tracker.jira.poll.query` filter. There is no shared state between repos.
 
 ### How entity property locks namespace across repos
 
@@ -881,7 +1114,7 @@ Each repo's poller runs its own JQL query and gets its own top-M (default 50) ca
 
 However, more pollers against the same Jira project means more API calls per cycle. Each poller independently reads entity properties for lock filtering, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
 
-- **Narrowing `--jql` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so it skips issues that belong to other repos.
+- **Narrowing `tracker.jira.poll.query` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so it skips issues that belong to other repos.
 - **Staggering cron schedules** so pollers from different repos don't hit the Jira API simultaneously. For example, offset each repo's schedule by one or two minutes.
 - **Monitoring Jira rate limits.** Jira Cloud uses points-based quotas, and multiple pollers multiply the cost. Watch for `429` responses in workflow logs — the poller retries with backoff, but sustained rate limiting slows all repos' cycles.
 
@@ -889,24 +1122,32 @@ However, more pollers against the same Jira project means more API calls per cyc
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| 401 on all Jira API calls | Invalid token | Regenerate the API token and update the `JIRA_TOKEN` secret |
+| 401 on Jira API calls | Invalid Jira credential | Regenerate the API token and update `FULLSEND_JIRA_TOKEN`, or create a new OAuth credential and update `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`. The Jira API calls use `tracker.jira.api_url`; set `FULLSEND_JIRA_EMAIL` only for a bot user's token |
+| `jira: OAuth token request to "https://auth.atlassian.com/oauth/token" with FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET: unexpected status 401 (invalid_client)` | The service account's OAuth 2.0 client ID or secret is wrong, expired, or revoked | Create a new OAuth 2.0 credential for the service account and update `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` with `repos install --jira-client-id --jira-client-secret` |
+| `jira: set either FULLSEND_JIRA_TOKEN or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, not both` | Both credential types are set | Keep one. `repos install` removes the other set when you supply new credentials |
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
-| Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm `JIRA_USER_EMAIL` / `JIRA_TOKEN` are the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
-| Your own comments or label changes never dispatch | `JIRA_USER_EMAIL` / `JIRA_TOKEN` belong to your own Jira account | The poller classifies its own `/myself` account as `actor.kind: bot`, so that account's comments (including `/fs-triage`) and label changes are filtered with no error. Give the poller a dedicated account; see [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller) |
+| Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm the poller's `FULLSEND_JIRA_TOKEN` and the agents' `JIRA_USER_EMAIL` / `JIRA_TOKEN` belong to the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
+| Your own comments or label changes never dispatch | The poller's `FULLSEND_JIRA_TOKEN` belongs to your own Jira account | The poller classifies its own `/myself` account as `actor.kind: bot`, so that account's comments (including `/fs-triage`) and label changes are filtered with no error. Give the poller a dedicated account; see [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller) |
 | `load project roles for PROJ: ... 401 You cannot edit the configuration of this project` | The poller read Jira project roles without Administer Projects. That happens with no `jira` entry in `.fullsend/config.yaml`, with `labels: project_roles`, or on a slash command when the entry sets no lists | Add a `jira` entry with `write`/`triage` lists so project roles are not read, or grant the poller account the **Administrators** project role. See [Minimum Jira permissions](#minimum-jira-permissions) |
 | `resolve jira list groups: ... get user groups` errors | The `jira` lists name groups, or project-role resolution found a role granted to a group, but the poller account lacks the Browse users and groups global permission | Grant Browse users and groups, or list account IDs instead of groups |
 | Slash command ignored (with `jira` lists) | Actor is not in the `write` list (or the `triage` list for triage-level agents) | Add the actor's account ID or one of their groups to the right list — see [Actor role resolution](#actor-role-resolution) |
 | Slash command ignored (without `jira` lists) | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Project role mapping](#project-role-mapping) if you use custom role names |
 | Issue opened or edited on Jira never dispatches triage | A `jira` entry is present but sets no `write` or `triage` list and not `labels: project_roles`, so opened and edited events are unresolved (with no `jira` entry, or with `labels: project_roles` and no lists, they resolve through project roles) | Add `write`/`triage` lists to the entry, or set `labels: project_roles`. See [Actor role resolution](#actor-role-resolution) |
 | Label added but nothing dispatched | There is no `jira` entry, or it sets `labels: allowlist` or `labels: project_roles`, and the label author is not authorized by it | Add the author to the lists, or add a `jira` entry with the default `labels: jira_editors` |
-| Slash commands silently ignored when using `--jql` | `--jira-project` not provided and no `jira` lists — all actors resolve to `external` and fail the role gate | Add `--jira-project PROJ` alongside `--jql` in your workflow file, or configure the `jira` lists |
+| `--jira-url, --jira-project no longer supported` | The workflow still passes the removed poller flags | Remove them and set `tracker.jira.base_url`, `tracker.jira.project`, and `tracker.jira.poll.query` in `.fullsend/config.yaml` — see [Custom JQL](#custom-jql) |
+| `the jira-poll driver requires tracker.jira in config.yaml` | The effective config has no `tracker.jira` site and project | Set `tracker.jira.base_url` and `tracker.jira.project` — see [Custom JQL](#custom-jql) |
+| `Jira polling is disabled` and no dispatches | `tracker.jira.poll.enabled` is not `true` | Set `tracker.jira.poll.enabled: true` |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
-| Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `--jql` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |
+| Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `tracker.jira.poll.query` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |
 | Activity during a long outage or disabled workflow is missing after resume | Poller gap exceeded the 24-hour backfill window | The same 24-hour window that bounds a first poll also bounds resumption — any `lastCheck` older than 24 hours is clamped forward. Check the run log for `predates the backfill window` — if present, events in the gap are permanently lost. Have affected users re-trigger by commenting again. See [Poll coordination](#poll-coordination) |
 | GitLab Jira dispatch fails with `does not accept Jira work items` | The project's scaffold predates Jira dispatch | Rerun `fullsend repos install` for the project and merge the scaffold update. See [GitLab runtime](#gitlab-runtime) |
+| `WARNING: skipping event … for issue …: normalized event: …` in the poll log | The poller could not map the Jira event to a valid normalized event (for example a non-numeric issue id, or an author with neither an `accountId` nor a `name`) | The event is never dispatched: the checkpoint advances past it (for a GitLab target, once the issue's other dispatches succeed; until then each retry logs the warning again, see [Failures](#failures)) — unless *every* event of the cycle was dropped (failed validation or failed matching), in which case the poll fails and no checkpoint advances (see the next two rows). For an author with neither `accountId` nor `name`, a comment from another account maps cleanly and re-triggers. A non-numeric issue id belongs to the issue, so no new activity on it maps; report it to fullsend with the log line, which names the raw id Jira sent (an id the Jira UI does not show). An issue served without a `labels` field is treated as unlabeled, not skipped |
+| The poll fails with `all N events this cycle failed normalized-event validation` | Every event of the cycle was dropped for failing normalized-event validation — either a systemic cause (a Jira response-shape change, or an adapter gap) or the cycle's one event being bad: the guard counts events, not issues, so a single bad event in a one-event cycle is "every event" | No checkpoint was advanced, so the events are retried next cycle — and, while the dropped events are the cycle's only activity, every cycle: the red runs repeat until the events age past the first-poll backfill floor (24h by default) or another selected issue produces a valid event. Read the per-event `WARNING: skipping event …` lines above the error for the cause; if they name one cause for every issue, the Jira response shape may have changed — report it to fullsend with the log lines |
+| The poll fails with `all N events this cycle were dropped before dispatch (… failed matching)` | Every event of the cycle was dropped before dispatch and at least one failed trigger matching — either the matcher errored on each event, or a mixed cycle where the remaining events failed validation; the error's counts say how many of each | No checkpoint was advanced, so the events are retried next cycle — with the same bound as failed validation: the red runs repeat until the events age past the first-poll backfill floor (24h by default) or another selected issue produces a valid event. Read the per-event `WARNING: skipping event …` and `WARNING: matching event …` lines above the error for the cause — when the error lists both counts, inspect both kinds of warning. A matcher that errors on every event is a harness trigger or execution-ref problem, not a Jira problem |
+| The poll fails with `all N events this cycle failed normalized-event validation` and the per-event warnings name `entity.key "P-1" is not a Jira work item key` (every cycle) | The Jira project's key is a single character, which exists only on legacy Server/Data Center deployments: the config gate accepts it (`jiraProjectKeyRe`), but a Jira work item key requires a two-or-more-character project part, so every event of the project fails validation | Such a project cannot be polled by this driver. No checkpoint advances, so the failure repeats every cycle; report it to fullsend with the log lines |
 | Triage or code results do not appear on the Jira issue | The built-in agents are pinned to a release that predates Jira result writes | Use built-in agents from the agents release that follows v0.52.0, or later. Re-pin a harness registered with `source:` or composed with `base:` with `fullsend agent update <name>`. See [Where built-in agent results appear](#where-built-in-agent-results-appear) |
-| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm `JIRA_USER_EMAIL`, `JIRA_TOKEN`, and `JIRA_BASE_URL` reach the agent job and the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
+| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm the Jira credentials reach the agent job, that `tracker.jira.base_url` is set (a missing or invalid setting stops a Jira-sourced run before the sandbox, with a `jira-sourced run:` error in the run log), and that the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
 
 ## See also
 

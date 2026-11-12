@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "success": false,
   "summary": {
     "errors": 1,
@@ -7,6 +7,7 @@
   },
   "diagnostics": [
     {
+      "code": "runner-env-deprecated",
       "agent": "my-agent",
       "severity": "info",
       "field": "role",

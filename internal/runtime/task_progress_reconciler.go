@@ -71,7 +71,7 @@ func (r *progressReconciler) task(e TaskProgressEvent, redact func(string) strin
 	}
 	if isAgent {
 		if _, exists := r.taskProgressSeen[key]; !exists {
-			if current.agents >= maxTaskProgressAgentsPerTask || len(r.taskProgressSeen) >= maxTaskProgressRows {
+			if current.agents >= r.maxAgentsPerTask() || len(r.taskProgressSeen) >= r.maxRows() {
 				return "", false
 			}
 			current.agents++
@@ -167,7 +167,7 @@ func (r *progressReconciler) taskProgressIdentity(e *TaskProgressEvent, redact f
 		r.taskProgressRuns = make(map[[sha256.Size]byte]taskProgressRun)
 	}
 	task := sha256.Sum256([]byte(e.TaskID))
-	if _, exists := r.taskProgressRuns[task]; !exists && len(r.taskProgressRuns) >= maxTaskProgressEntries {
+	if _, exists := r.taskProgressRuns[task]; !exists && len(r.taskProgressRuns) >= r.maxTaskEntries() {
 		return taskProgressKey{}, false
 	}
 	current := r.taskProgressRuns[task]

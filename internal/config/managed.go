@@ -140,6 +140,14 @@ func (o ManagedConfig) WithIssueTracking(t *TrackingConfig) ManagedConfig {
 	return ManagedConfig{cfg: cp}
 }
 
+// WithTraceContext returns a copy of o whose trace_context block is a deep
+// copy of tc; nil removes the block. The receiver is not modified.
+func (o ManagedConfig) WithTraceContext(tc *TraceContextConfig) ManagedConfig {
+	cp := o.clone()
+	cp.TraceContextBlock = cloneTraceContext(tc)
+	return ManagedConfig{cfg: cp}
+}
+
 // ExplicitRoles returns the roles declared by this layer and whether the
 // layer declares roles at all. Unlike the layered ConfigRoles accessor it
 // does not fall back to code defaults, so an explicit value that equals a
@@ -431,6 +439,8 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 		}
 		out.Models = m
 	}
+	out.Artifacts = cloneArtifacts(src.Artifacts)
+	out.TraceContextBlock = cloneTraceContext(src.TraceContextBlock)
 	return out
 }
 
@@ -537,6 +547,14 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		for k, v := range child.Models.Aliases {
 			out.Models.Aliases[k] = v
 		}
+	}
+	if !child.Artifacts.IsZero() {
+		out.Artifacts = mergeArtifacts(out.Artifacts, child.Artifacts)
+	}
+	// A child block replaces the parent's whole block: the keys and the
+	// installation ID belong together.
+	if child.TraceContextBlock != nil {
+		out.TraceContextBlock = cloneTraceContext(child.TraceContextBlock)
 	}
 }
 

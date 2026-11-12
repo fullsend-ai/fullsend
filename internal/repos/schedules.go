@@ -33,6 +33,27 @@ var pipelineScheduleSpecs = []ScheduleSpec{
 	},
 }
 
+// jiraPollScheduleSpec is the Fullsend-owned GitLab Jira poll schedule
+// (#9108). It is deliberately not in pipelineScheduleSpecs: it exists only
+// while the repository's effective tracker.jira.poll.enabled is true, and it
+// is converged by gitlabJiraPollReconciler alone. The poll template selects
+// the Jira poll mode from this description, and the schedule carries no
+// pipeline variables: every Jira setting comes from .fullsend/config.yaml.
+// It is offset by one minute from the slash poll.
+var jiraPollScheduleSpec = ScheduleSpec{
+	ComponentName: "schedule:jira-poll",
+	Description:   "fullsend jira poll",
+	Cron:          "1-59/5 * * * *",
+}
+
+// JiraPollScheduleDescription returns the description of the Fullsend-owned
+// GitLab Jira poll schedule. Callers that recreate the managed polling
+// schedules (PipelineScheduleSpecs) must leave it alone: repos install
+// converges it from tracker.jira.poll.enabled.
+func JiraPollScheduleDescription() string {
+	return jiraPollScheduleSpec.Description
+}
+
 // PipelineScheduleSpecs returns the canonical list of fullsend pipeline
 // schedules for GitLab repos.
 func PipelineScheduleSpecs() []ScheduleSpec {

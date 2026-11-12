@@ -2910,3 +2910,16 @@ func TestMarshalWithHeader(t *testing.T) {
 	assert.Contains(t, s, "version: 1")
 	assert.Contains(t, s, "acme/api")
 }
+
+// LoadedBytes is the content LoadManifest parsed, which install compares
+// with the file before it writes repos.yaml, and nil for a manifest built in
+// memory.
+func TestManifest_LoadedBytes(t *testing.T) {
+	input := "version: 1\ngithub:\n  repos:\n    - name: acme/repo\n"
+	p := filepath.Join(t.TempDir(), "repos.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(input), 0o644))
+	m, err := LoadManifest(context.Background(), p)
+	require.NoError(t, err)
+	assert.Equal(t, input, string(m.LoadedBytes()))
+	assert.Nil(t, (&Manifest{}).LoadedBytes())
+}

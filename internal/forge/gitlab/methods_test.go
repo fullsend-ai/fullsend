@@ -606,6 +606,45 @@ func TestAddIssueLabels_MultipleLabels(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestEnsureLabel(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		assert.Equal(t, map[string]string{"name": "do-it", "color": "#ededed"}, body)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1, "name": "do-it"})
+	})
+
+	require.NoError(t, client.EnsureLabel(ctx, "myorg", "myrepo", "do-it"))
+}
+
+func TestEnsureLabel_AlreadyExists(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]string{"message": "Label already exists"})
+	})
+
+	require.NoError(t, client.EnsureLabel(ctx, "myorg", "myrepo", "do-it"))
+}
+
+func TestEnsureLabel_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+	})
+
+	err := client.EnsureLabel(ctx, "myorg", "myrepo", "do-it")
+	require.ErrorContains(t, err, `create label "do-it"`)
+	require.ErrorIs(t, err, forge.ErrForbidden)
+}
+
 func TestListIssueComments(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -3617,6 +3656,26 @@ func TestErrNotSupported_WorkflowMethods(t *testing.T) {
 	})
 }
 
+func TestErrNotSupported_E2EGateMethods(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx := context.Background()
+
+	t.Run("GetPullRequestAuthorizationContext", func(t *testing.T) {
+		_, err := client.GetPullRequestAuthorizationContext(ctx, "o", "r", 1)
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+
+	t.Run("ListIssueLabelEvents", func(t *testing.T) {
+		_, err := client.ListIssueLabelEvents(ctx, "o", "r", 1)
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+
+	t.Run("RemoveIssueLabel", func(t *testing.T) {
+		err := client.RemoveIssueLabel(ctx, "o", "r", 1, "ok-to-test")
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+}
+
 func TestGetLatestWorkflowRun(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
@@ -4006,6 +4065,47 @@ func TestListWorkflowRunJobs_Error(t *testing.T) {
 	})
 	_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
 	require.Error(t, err)
+	assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
+}
+
+// TestListWorkflowRunJobs_FirstPageNotFoundCarriesSentinel covers the
+// not-found classification adapters attach to a first-page 404, and the
+// later-page 404 that must not carry it: page 1 was already readable and
+// may hold a completed job.
+func TestListWorkflowRunJobs_FirstPageNotFoundCarriesSentinel(t *testing.T) {
+	t.Run("first page 404 carries the sentinel", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		})
+		_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, forge.ErrNotFound)
+		assert.ErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
+	})
+	t.Run("later page 404 does not carry it", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Query().Get("page") {
+			case "1":
+				jobs := make([]string, 100)
+				for i := range jobs {
+					jobs[i] = fmt.Sprintf(`{"id":%d,"name":"job-%d","status":"success"}`, i+1, i+1)
+				}
+				w.Header().Set("X-Next-Page", "2")
+				fmt.Fprint(w, "["+strings.Join(jobs, ",")+"]")
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		})
+		jobs, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+		require.Error(t, err)
+		assert.Nil(t, jobs)
+		assert.ErrorIs(t, err, forge.ErrNotFound, "the 404 stays classified as not found")
+		assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage, "a partially readable listing never carries the sentinel")
+		assert.Contains(t, err.Error(), "page 2")
+	})
 }
 
 func TestListWorkflowRunArtifacts_Error(t *testing.T) {
@@ -5171,6 +5271,8 @@ func TestCreateRepoSecret_MaskingRequiredGenericValueInvalid(t *testing.T) {
 func TestMaskingRequired_JiraSecrets(t *testing.T) {
 	assert.True(t, maskingRequired(forge.SecretJiraToken), "the Jira token is a bearer credential")
 	assert.False(t, maskingRequired(forge.SecretJiraEmail), "the Jira account email is not a bearer credential")
+	assert.True(t, maskingRequired(forge.SecretJiraClientSecret), "the Jira OAuth client secret mints bearer credentials")
+	assert.False(t, maskingRequired(forge.SecretJiraClientID), "the Jira OAuth client ID is not a bearer credential")
 }
 
 func TestIsMaskingError(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/security"
 )
@@ -26,7 +27,7 @@ const runnerSecretsFileEnv = "FULLSEND_GITHUB_RUNNER_SECRETS_FILE"
 // local runs only: in CI the value would stay readable in
 // /proc/<pid>/environ even after fullsend run unsets it. fullsend run
 // removes it from its environment before any child process starts.
-const runnerSecretsEnv = "FULLSEND_GITHUB_RUNNER_SECRETS"
+const runnerSecretsEnv = forge.SecretGitHubRunnerSecrets
 
 // runnerSecretRefusedPrefixes are variable families owned by the runner
 // or the CI platform. A runner secret may not shadow any of them.
@@ -53,8 +54,8 @@ var runnerSecretRefusedPrefixes = []string{
 // one, so each name has a single source.
 // TestRunnerSecretNameRefused_CoversWorkflowSetNames keeps the step env:
 // part of the list in step with the workflows. GIT_BOT_EMAIL and the
-// OPENSHELL_* names arrive through GITHUB_ENV, and TARGET_REPO_DIR is set
-// by fullsend run itself, so the test cannot see them.
+// OPENSHELL_* names arrive through GITHUB_ENV, and TARGET_REPO_DIR and
+// JIRA_API_URL are set by fullsend run itself, so the test cannot see them.
 var workflowSetEnvNames = []string{
 	"AGENT", "CODE_ALLOWED_TARGET_BRANCHES", "COMMENT_BODY", "FIX_ITERATION",
 	"HUMAN_INSTRUCTION", "ISSUE_NUMBER", "JIRA_BASE_URL", "JIRA_TOKEN",
@@ -65,19 +66,24 @@ var workflowSetEnvNames = []string{
 	"STATUS_REPO", "STATUS_RUN_URL", "TARGET_BRANCH", "TARGET_REPO",
 	"TRIGGER_SOURCE",
 	"GIT_BOT_EMAIL", "OPENSHELL_VERSION", "OPENSHELL_SHA", "TARGET_REPO_DIR",
+	"JIRA_API_URL",
 }
 
 // runnerSecretRefusedNames are minted role tokens and other runner-owned
-// names outside the refused families: GH_TOKEN, every role token in
-// roleTokenVars, GITLAB_TOKEN, PATH and workflowSetEnvNames. oidcDenyKeys,
-// providerOnlyKeys and reservedSandboxKeys are refused as well
+// names outside the refused families: every agentTokenEnvVars name (GH_TOKEN,
+// GITHUB_TOKEN, GH_ENTERPRISE_TOKEN, GITHUB_ENTERPRISE_TOKEN), every role
+// token in roleTokenVars, GITLAB_TOKEN, PATH and workflowSetEnvNames.
+// oidcDenyKeys, providerOnlyKeys and reservedSandboxKeys are refused as well
 // (runnerSecretNameRefused), which keeps GH_WORKFLOW_TOKEN (ADR 0114)
-// unforgeable.
+// unforgeable. Deriving the agent token names from agentTokenEnvVars keeps
+// this set from drifting when the mint takes over another name (#8952).
 var runnerSecretRefusedNames = func() map[string]bool {
 	names := map[string]bool{
-		"GH_TOKEN":     true,
 		"GITLAB_TOKEN": true,
 		"PATH":         true,
+	}
+	for _, n := range agentTokenEnvVars {
+		names[n] = true
 	}
 	for _, n := range workflowSetEnvNames {
 		names[n] = true

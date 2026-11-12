@@ -3,6 +3,7 @@ package scaffold
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -63,8 +64,40 @@ func TestVendoredInfraFileMode(t *testing.T) {
 
 func TestIsVendoredReusableWorkflow(t *testing.T) {
 	assert.True(t, isVendoredReusableWorkflow(".github/workflows/reusable-prioritize.yml"))
+	assert.True(t, isVendoredReusableWorkflow(".github/workflows/reusable-poll-jira.yml"))
 	assert.False(t, isVendoredReusableWorkflow(".github/workflows/triage.yml"))
 	assert.False(t, isVendoredReusableWorkflow("action.yml"))
+}
+
+// Vendored installers source sibling helpers from their own directory; a
+// helper missing from the allowlist would fail at runtime in consumer repos
+// ("No such file or directory" under set -e).
+func TestVendoredInstallersShipSourcedHelpers(t *testing.T) {
+	root, err := moduleRootFromScaffold()
+	if err != nil {
+		t.Skip("not in fullsend checkout")
+	}
+
+	sourceRe := regexp.MustCompile(`(?m)^\s*(?:source|\.)\s+"\$\{SCRIPT_DIR\}/([^"]+)"`)
+	for _, installer := range []string{"install-podman.sh", "install-openshell.sh"} {
+		installerPath := ".github/scripts/" + installer
+		require.True(t, isVendoredDefaultsInfra(installerPath), installer)
+
+		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(installerPath)))
+		require.NoError(t, err)
+
+		matches := sourceRe.FindAllStringSubmatch(string(data), -1)
+		require.NotEmpty(t, matches, "%s should source retry-with-backoff.sh", installer)
+		var sourcesRetry bool
+		for _, m := range matches {
+			helper := ".github/scripts/" + m[1]
+			assert.True(t, isVendoredDefaultsInfra(helper), "%s sources %s, which must be vendored", installer, helper)
+			if m[1] == "retry-with-backoff.sh" {
+				sourcesRetry = true
+			}
+		}
+		assert.True(t, sourcesRetry, "%s should source retry-with-backoff.sh", installer)
+	}
 }
 
 func TestIsVendoredDefaultsInfra(t *testing.T) {
@@ -81,6 +114,10 @@ func TestIsVendoredDefaultsInfra(t *testing.T) {
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/count-fix-commits.jq"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/install-podman.sh"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/pre-fetch-review-body.sh"))
+	// The installers source retry-with-backoff.sh, so it must ship with them.
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/install-openshell.sh"))
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/retry-with-backoff.sh"))
+	assert.False(t, isVendoredDefaultsInfra(".github/scripts/retry-with-backoff-test.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/run.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility-test.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/scripts/count-fix-commits-test.sh"))

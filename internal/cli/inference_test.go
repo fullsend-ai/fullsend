@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -10,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 func TestInferenceCommand_HasSubcommands(t *testing.T) {
@@ -857,4 +859,121 @@ func TestConditionMatchesOrg_Mismatch(t *testing.T) {
 		"assertion.repository_owner == 'acme'",
 		"other-org",
 	))
+}
+
+// --- provision --forge gitlab tests ---
+
+func TestInferenceProvisionCmd_GitLabFlags(t *testing.T) {
+	cmd := newInferenceProvisionCmd()
+
+	forgeFlag := cmd.Flags().Lookup("forge")
+	require.NotNil(t, forgeFlag, "expected --forge flag")
+	assert.Equal(t, "github", forgeFlag.DefValue)
+
+	require.NotNil(t, cmd.Flags().Lookup("gitlab-project-id"), "expected --gitlab-project-id flag")
+
+	urlFlag := cmd.Flags().Lookup("gitlab-url")
+	require.NotNil(t, urlFlag, "expected --gitlab-url flag")
+	assert.Equal(t, "https://gitlab.com", urlFlag.DefValue)
+}
+
+func TestInferenceProvisionCmd_GitLabDryRun(t *testing.T) {
+	t.Setenv("GITLAB_TOKEN", "")
+
+	var buf bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&buf)
+	cmd.SetArgs([]string{"inference", "provision", "acme/team/app",
+		"--forge", "gitlab",
+		"--gitlab-project-id", "12345",
+		"--gitlab-url", "https://gitlab.example.com",
+		"--project", "my-project",
+		"--dry-run"})
+	require.NoError(t, cmd.Execute())
+
+	out := buf.String()
+	assert.Contains(t, out, "gl-acme-team-app")
+	assert.Contains(t, out, "https://gitlab.example.com")
+	assert.Contains(t, out, "assertion.project_id == '12345' && assertion.project_path == 'acme/team/app'")
+	assert.Contains(t, out, "attribute.project_path/acme/team/app")
+}
+
+func TestInferenceProvisionCmd_GitLabValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "missing project id",
+			args:    []string{"acme/app", "--forge", "gitlab"},
+			wantErr: "--gitlab-project-id is required",
+		},
+		{
+			name:    "invalid project id",
+			args:    []string{"acme/app", "--forge", "gitlab", "--gitlab-project-id", "abc"},
+			wantErr: "invalid GitLab project ID",
+		},
+		{
+			name:    "invalid project path",
+			args:    []string{"app", "--forge", "gitlab", "--gitlab-project-id", "1"},
+			wantErr: "invalid GitLab project path",
+		},
+		{
+			name:    "invalid gitlab url",
+			args:    []string{"acme/app", "--forge", "gitlab", "--gitlab-project-id", "1", "--gitlab-url", "http://gitlab.example.com"},
+			wantErr: "invalid GitLab URL",
+		},
+		{
+			name:    "provider rejected",
+			args:    []string{"acme/app", "--forge", "gitlab", "--gitlab-project-id", "1", "--provider", "x"},
+			wantErr: "--provider is not supported with --forge gitlab",
+		},
+		{
+			name:    "gitlab flags need gitlab forge",
+			args:    []string{"acme/app", "--gitlab-project-id", "1"},
+			wantErr: "require --forge gitlab",
+		},
+		{
+			name:    "unknown forge",
+			args:    []string{"acme/app", "--forge", "forgejo"},
+			wantErr: "--forge must be one of",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newRootCmd()
+			args := append([]string{"inference", "provision"}, tc.args...)
+			args = append(args, "--project", "my-project", "--dry-run")
+			cmd.SetArgs(args)
+			err := cmd.Execute()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+func TestRunInferenceProvisionGitLab(t *testing.T) {
+	gl := gcf.GitLabProject{Path: "acme/team/app", ID: "12345"}
+
+	t.Run("success prints handoff", func(t *testing.T) {
+		client := gcf.NewFakeGCFClient()
+		cmd, buf := newStatusCmd(client)
+		err := runInferenceProvisionGitLab(cmd, ui.New(buf), gl, "my-project", "fullsend-inference", client)
+		require.NoError(t, err)
+		out := buf.String()
+		assert.Contains(t, out, "providers/gl-acme-team-app")
+		assert.Contains(t, out, "fullsend repos install acme/team/app")
+		assert.Contains(t, out, "--vertex-wif-provider=projects/")
+	})
+
+	t.Run("failure", func(t *testing.T) {
+		client := gcf.NewFakeGCFClient(gcf.WithFakeErrors(map[string]error{
+			"SetProjectIAMBinding": errors.New("denied"),
+		}))
+		cmd, buf := newStatusCmd(client)
+		err := runInferenceProvisionGitLab(cmd, ui.New(buf), gl, "my-project", "fullsend-inference", client)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "provisioning WIF for inference")
+	})
 }

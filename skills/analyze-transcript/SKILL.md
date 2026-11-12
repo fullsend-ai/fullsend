@@ -95,10 +95,14 @@ permission prompts for `/tmp` writes.
 
 ### 4. Find artifacts
 
-Downloaded artifacts have this structure:
+Downloaded artifacts have this structure. A unique agent's artifact is named
+`fullsend-<agent>`. In a repeated-agent matrix, the first row keeps that name
+and later rows use `fullsend-<agent>.matrix-<job-index>`. Callers of the
+composite action can set another exact name with the optional `artifact-name`
+input.
 
 ```
-.transcripts/run-<run-id>/fullsend-<agent>/
+.transcripts/run-<run-id>/<artifact-name>/
   agent-<type>-<id>/
     logs/
       openshell-sandbox.log    # OCSF network/process/sandbox events

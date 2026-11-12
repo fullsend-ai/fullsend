@@ -158,7 +158,7 @@ Every binary downloaded during the build is **version-pinned** and
 | Claude Code | `CLAUDE_CODE_VERSION` ARG + npm version pin | npm registry integrity check |
 | pi (opt-in runtime, #6464) | `PI_VERSION` ARG + npm version pin (`--ignore-scripts`; package ships `npm-shrinkwrap.json`) | npm registry integrity check |
 | Codex (opt-in runtime, #6920) | `CODEX_VERSION` ARG + npm version pin; replaces the `@openai/codex` the OpenShell base image installs under the same npm prefix | npm registry integrity check + `codex --version` assertion against the pin |
-| pi-anthropic-vertex extension (#6464; fullsend-owned since #7019) | `PI_ANTHROPIC_VERTEX_VERSION` (git tag) + `PI_ANTHROPIC_VERTEX_SHA256` of the tag tarball; deps via `npm ci --omit=dev --omit=peer --ignore-scripts` from the vendored lockfile (27 packages: `google-auth-library` and its tree, plus `typebox`). The lockfile is not Renovate-managed here — run `npm audit --omit=dev --omit=peer` in the extension dir when reviewing a bump | `sha256sum -c` + npm registry integrity check |
+| pi-anthropic-vertex extension (#6464; fullsend-owned since #7019) | `PI_ANTHROPIC_VERTEX_VERSION` (git tag) + `PI_ANTHROPIC_VERTEX_SHA256` of the tag tarball; deps via `npm ci --omit=dev --omit=peer --ignore-scripts` from the vendored lockfile (25 packages: `google-auth-library` and its tree). The lockfile is not Renovate-managed here — run `npm audit --omit=dev --omit=peer` in the extension dir when reviewing a bump | `sha256sum -c` + npm registry integrity check |
 | acli | `ACLI_VERSION` + `ACLI_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | pre-commit, gitlint, pyyaml | pip version pins | pip integrity check |
 | UBI 10 base + go-toolset builder (runner) | Manifest list digest (`@sha256:...`) | Immutable OCI content hash (anonymous pull, no subscription) |
@@ -194,6 +194,12 @@ The Go toolchain is automated the same way: Renovate bumps `GO_VERSION` in
 `scripts/renovate/update-go-checksums.sh` (run via `postUpgradeTasks`)
 refreshes `GO_SHA256_{AMD64,ARM64}` in both files from
 <https://go.dev/dl/?mode=json&include=all>.
+
+The fd pin in `images/sandbox/Containerfile` is automated too: Renovate bumps
+`FD_VERSION`, and `scripts/renovate/update-fd-checksums.sh` (run via
+`postUpgradeTasks`) downloads both linux-musl release tarballs and refreshes
+`FD_SHA256_{AMD64,ARM64}` with their `sha256sum` (fd publishes no checksum
+files).
 
 ## Local builds
 

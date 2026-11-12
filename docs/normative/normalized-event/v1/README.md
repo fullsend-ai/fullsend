@@ -13,7 +13,8 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
   `event` bound to a `NormalizedEvent` object. This describes the currently
   shipped event-backed path. [ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md)
   adopts a future entity-first context with required `entity` and nullable
-  `event`; its field-level contract remains follow-up versioned work.
+  `event`; its field-level contract is
+  [Normalized entity v1](../../normalized-entity/v1/README.md).
 - **Authorization:** `fullsend dispatch` enforces the
   [Authorization Contract v1](../../authorization/v1/) as a platform-level gate
   after normalization and **before** CEL evaluation. Harness `trigger`
@@ -41,6 +42,12 @@ and native-webhook input, and **Jira poll** input:
 - `repo` is the target fullsend repository (`owner/repo` for GitHub,
   `group/subgroup/project` for GitLab) for all systems — including Jira poll
   events (see [jira-poll-adapter.md](jira-poll-adapter.md)).
+- For `source.system: jira`, `entity.key` MUST be a Jira work item key
+  (`^[A-Z][A-Z0-9_]+-[1-9][0-9]*$`): the Go `normevent.Validate()` enforces
+  this jira-scoped rule, so a Jira poll event with any other key is skipped
+  before dispatch instead of dispatching and failing downstream
+  (see [jira-poll-adapter.md](jira-poll-adapter.md)). Other source systems
+  keep the schema's looser cross-system `entity.key` shape.
 - The `gha-event` input driver is the production GitHub adapter; `gitlab-poll`
   is the production GitLab poll adapter ([ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md));
   `gitlab-webhook` is the shipped GitLab native-webhook fast-path adapter,
@@ -77,20 +84,41 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 | **Breaking** (requires v2): remove or rename fields, change field types, remove enum values, add new required top-level fields, tighten patterns that reject previously valid documents | Consumers must migrate |
 | **Non-breaking** (allowed in v1.x schema/README): add optional fields, add new enum values, relax validation, clarify documentation | Existing fixtures and triggers keep working |
 
+One jira-scoped pattern tightening has been accepted in v1: `entity.key` for
+`source.system: jira` must be a Jira work item key (see
+[Scope (v1)](#scope-v1)). Both work-item dispatch routes already refused such
+keys after dispatch (`internal/cli/run_workitem.go`,
+`internal/poll/jira_dispatch.go`), so no previously valid Jira-sourced v1
+document is affected on a shipped workflow. One further consumer reads
+Jira-sourced v1 documents with no downstream key check: `fullsend dispatch
+--input-driver json` (and `--route <agent>` with a JSON event) parses them
+through `input.LoadJSONEvent` → `normevent.ParseJSON` → `Validate`
+(`internal/cli/dispatch.go`, `internal/harnessdispatch/input/json.go`), so a
+key that matched the schema's cross-system pattern but not the work-item
+pattern (e.g. `proj-1`, `PROJ-01`) now fails that command at parse time —
+non-zero where it previously printed a matrix/route decision. That fail-earlier
+is intended: the matrix output could only ever lead to a `fullsend run` that
+refuses the key anyway. The general rule that pattern tightening requires v2
+still holds for shapes consumers accept.
+
 The new optional actor fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
-adapter emits `bot_role` or `role_verified`; otherwise their local validator
-may reject an otherwise valid v1 event. Fullsend controls the supported
+adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise
+their local validator may reject an otherwise valid v1 event. Fullsend controls the supported
 NormalizedEvent producers and consumers, so the bundled validator and other
 supported consumers MUST be updated to this v1 schema before any adapter emits
 the new fields. Older strict schema copies are not a supported
 producer/consumer combination after that rollout. v1 compatibility means that
 existing events without these fields remain valid; it does not require a
 stale `additionalProperties: false` schema to accept newly emitted fields.
-The JSON Schema's cross-field rules are currently stricter than the Go
-`normevent.Validate()` implementation. The adapter migration MUST bring the Go
-validator to parity before emitting the new fields; until then the schema
-remains the normative stricter check.
+The JSON Schema's cross-field rules for the ADR 0107 actor fields are
+currently stricter than the Go `normevent.Validate()` implementation. The
+adapter migration MUST bring the Go validator to parity before emitting the
+new fields; until then the schema remains the normative stricter check for
+those fields. The relationship is per rule, not uniform: for one rule the Go
+validator is stricter — the jira-scoped `entity.key` work-item-key pattern
+(see [Scope (v1)](#scope-v1)) accepts fewer keys than the schema's
+cross-system `entity.key` pattern.
 
 Adding a new `transition.kind` is **non-breaking** — CEL triggers use boolean
 expressions, not exhaustive enum matching.
@@ -251,13 +279,46 @@ non-label paths. Only the GitHub `gha-event` path of `fullsend dispatch`
 sets the fields today, and only for bot actors on non-label events, so
 triggers that read them must guard with `has()`.
 
+### Entity author and assignee (`actor.is_entity_author`, `actor.is_entity_assignee`)
+
+`actor.is_entity_author` is `true` when the actor authored the work item,
+change proposal or conversation. `actor.is_entity_assignee` is an optional
+additive field with the same semantics on every source system: `true` when
+the actor is one of the entity's current assignees at the time the adapter
+builds the event (with several assignees, any match counts), and `false` when
+the entity has no assignee, the actor is not one, or the assignees cannot be
+determined. Reviewers and requested reviewers are not assignees. An event
+without the field means `false`; the Go `normevent.Actor` type always emits
+it, so a trigger that reads it on an event built by a current adapter needs
+no `has()` guard. The value is a snapshot taken when the event is built. For
+a poll source such as Jira, that is poll time, and the assignee can change
+before the run starts.
+
+| Source | Where assignees come from | Comparison |
+|--------|---------------------------|------------|
+| GitHub (`gha-event`) | `issue.assignees[].login` or `pull_request.assignees[].login` in the webhook payload (the legacy single `assignee` only when the payload has no `assignees` array); no extra API call | Case-insensitive against the actor login (the reviewer for `pull_request_review`) |
+| GitLab (`gitlab-poll`, `gitlab-webhook`) | Issues: `assignees[].id` from the same issue fetch the author check uses. Merge requests: `assignees[].id` from the MR object that supplies the MR author | Numeric user ID against the resolved actor ID |
+| Jira (`jira-poll`) | `fields.assignee`, requested alongside `reporter` in the search fields | The same identifier as `actor.id`: `accountId`, or `name` when `accountId` is unavailable (Data Center/Server), matching the `is_entity_author` fallback |
+
+Both fields are best-effort **routing** facts, not authorization. They can
+only narrow which actor a trigger accepts; the platform role gate
+([Authorization Contract v1](../../authorization/v1/README.md#excluded-fields))
+still runs first and is unchanged. Anyone who can assign issues can assign
+themselves, so a trigger must never treat `is_entity_assignee` as a reason to
+admit an actor the role gate would deny.
+
 ### Fork security (`state.change_proposal.is_fork`)
 
 `is_fork` is `true` when `head_repo` differs from `base_repo` (fork-based
-change proposal). Write-capable agents (code, fix) that push commits or open
-follow-up PRs **must** gate on `!state.change_proposal.is_fork` in harness
-`trigger` expressions or rely on dispatch-level authorization per ADR 0054.
-Read-only agents (triage, review, retro) may run on fork PRs when policy allows.
+change proposal). Agents that push commits or open follow-up PRs **must** gate
+on `!state.change_proposal.is_fork` in harness `trigger` expressions or rely on
+dispatch-level authorization per ADR 0054. Triage and review are observation
+agents. Retro can create issues and comments, so its dispatch authorization
+must be considered separately; GitHub PR-close retro requires the closing or
+merging actor to have write access, including for a completed merge-queue
+merge. GitHub App and bot senders have `role: none`, so their close or merge
+events, including bot automerges through a merge queue, do not start retro. A
+write-authorized user can run `/fs-retro` afterward.
 
 ### Change facts (`state.change_proposal.diff`, `state.change_proposal.linked_work_items`)
 
@@ -295,7 +356,9 @@ until it is listed here. For example `transition.comment` (its `body`,
 `command` and `instruction` all come from the comment text), the action fields
 (`transition.kind`, `source.raw_type`, `source.raw_action`, `entity.kind`),
 `actor.kind` (some adapters infer it from a display name),
-`actor.is_entity_author` (the author makes it true by acting), `state.labels`,
+`actor.is_entity_author` (the author makes it true by acting),
+`actor.is_entity_assignee` (anyone who can assign issues can make it true),
+`state.labels`,
 `base_ref` (the author picks the target branch), `head_*` and the change facts
 are untrusted. A guarded overlay may test `has()` only on objects the schema
 always requires, such as `source`; reading `is_fork` when there is no change
@@ -332,6 +395,14 @@ event.transition.kind == "comment_added"
   && event.transition.comment.command == "/fs-fix"
   && !event.state.change_proposal.is_fork
 
+// Code on /fs-code only from the issue's author or an assignee
+// (narrows the role gate; does not replace it)
+event.entity.kind == "work_item"
+  && event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
+  && event.transition.comment.command == "/fs-code"
+  && (event.actor.is_entity_author || event.actor.is_entity_assignee)
+
 // Conversation-native agent on Discussion slash command (ADR 0086)
 event.entity.kind == "conversation"
   && event.transition.kind == "comment_added"
@@ -342,6 +413,9 @@ event.entity.kind == "conversation"
 ```
 
 See [`examples/`](examples/) for matching `NormalizedEvent` fixtures. The
+`fs-code-assignee-comment.json`, `gitlab-fs-code-assignee-note.json` and
+`jira-fs-code-assignee-comment.json` fixtures show `actor.is_entity_assignee`
+for each source system; fixtures without the field remain valid. The
 existing top-level fixtures retain the legacy v1 representation; target
 fixtures for ADR 0107 are under
 [`examples/adr-0107/`](examples/adr-0107/).

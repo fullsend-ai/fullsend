@@ -4,9 +4,10 @@ Maintainers have merge and approval rights on this repository. They are
 members of the [@fullsend-ai/maintainers](https://github.com/orgs/fullsend-ai/teams/maintainers)
 team referenced in [CODEOWNERS](CODEOWNERS).
 
-Maintainer is the final role on the [contributor ladder](LADDER.md).
-See that document for the full path from first-time contributor to
-Maintainer, including the intermediate roles (Vouched, Triage, Write).
+Maintainer is a role on the [contributor ladder](LADDER.md), above
+Write and below Admin. See that document for the full path from
+first-time contributor to admin, including the other roles (Vouched,
+Triage, Write, and Admin).
 
 ## What maintainers do that contributors do not
 
@@ -122,8 +123,9 @@ Removal uses the same GitHub team structure as onboarding:
    in [fullsend-ai/org](https://github.com/fullsend-ai/org) that removes
    the username from the maintainer team. The pull request links the
    notification issue.
-2. A different maintainer approves and merges it. The notification
-   issue is then closed.
+2. An admin approves and merges it. Team membership changes in
+   fullsend-ai/org need an admin's approval, so a maintainer cannot
+   complete a removal alone. The notification issue is then closed.
 
 Code ownership follows team membership. [CODEOWNERS](CODEOWNERS) names
 the maintainer team, not individual users, so removing someone from the

@@ -126,7 +126,7 @@ These inputs are never written to `repos.yaml`:
 
 | Purpose | Flags |
 |---|---|
-| Secrets and sensitive provisioning | `--openai-api-key`, `--jira-token`, `--jira-email`, `--vertex-project`, `--vertex-wif-provider`, `--gitlab-role-token role=token` (repeatable), `--gitlab-role-registry`, `--gitlab-token` (or `GITLAB_TOKEN`) |
+| Secrets and sensitive provisioning | `--openai-api-key`, `--jira-token`, `--jira-email`, `--jira-client-id`, `--jira-client-secret`, `--vertex-project`, `--vertex-wif-provider`, `--gitlab-role-token role=token` (repeatable), `--gitlab-role-registry`, `--gitlab-token` (or `GITLAB_TOKEN`) |
 | Local vendoring artifacts | `--fullsend-binary`, `--fullsend-source`. Valid only when a selected repository resolves `vendor: true`; otherwise install fails and points at `fullsend repos set defaults.vendor true` |
 | One-run controls | `-f` / `--manifest`, `--dry-run`, `--direct`, `--concurrency`, `--force`, `--reactivate-schedules`, `--rotate-gitlab-roles`, `--rotate-gitlab-role`, `--rotate-gitlab-trigger-token`, `--rotate-gitlab-trigger-account` |
 
@@ -403,8 +403,9 @@ Install rejects a rewrite that makes the effective configuration less
 restrictive than the current one unless `repos.yaml` declares that
 relaxation. The compared keys are `kill_switch`, `roles`,
 `allowed_remote_resources`, agent `enabled: false` suppressions,
-`tracker.<provider>.allowed_targets`, `inference.gateway.url`, and
-`inference.gateway.audience`. The output names the affected keys.
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`,
+`inference.gateway.audience`, `artifacts.content`, and
+`artifacts.by_source.<source>`. The output names the affected keys.
 
 After the repository is in `repos.yaml`, stop running `github setup` on it.
 A setup run that rewrites `.fullsend/config.yaml` removes the ownership

@@ -107,10 +107,11 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	// 2 required secrets plus the opt-in FULLSEND_OPENAI_API_KEY, which
 	// uninstall always attempts to delete (idempotent: a 404 for a repo
 	// that never set it is not an error) so a repo that did set it
-	// doesn't keep a long-lived key around after teardown, plus the two
-	// Jira polling credentials, deleted the same way.
-	if r.SecretsDeleted != 5 {
-		t.Errorf("SecretsDeleted = %d, want 5", r.SecretsDeleted)
+	// doesn't keep a long-lived key around after teardown, plus the four
+	// Jira polling credentials (token, email, OAuth client ID and
+	// secret), deleted the same way.
+	if r.SecretsDeleted != 7 {
+		t.Errorf("SecretsDeleted = %d, want 7", r.SecretsDeleted)
 	}
 
 	deleted := collectDeletedPaths(client)
@@ -132,8 +133,8 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 	if len(client.DeletedVariables) != 5 {
 		t.Errorf("deleted %d variables, want 5", len(client.DeletedVariables))
 	}
-	if len(client.DeletedSecrets) != 5 {
-		t.Errorf("deleted %d secrets, want 5", len(client.DeletedSecrets))
+	if len(client.DeletedSecrets) != 7 {
+		t.Errorf("deleted %d secrets, want 7", len(client.DeletedSecrets))
 	}
 	for _, ref := range client.DeletedRefs {
 		if strings.Contains(ref, poll.PollStateBranchSlash) || strings.Contains(ref, poll.PollStateBranchEvents) {
@@ -1181,7 +1182,7 @@ func TestUninstallSecretsForForge_GitLab_DeletesPrefixedOpenAIKeyOnly(t *testing
 	// and must be deleted with the webhook and trigger token.
 	// The Jira polling credentials (#9076) are provisioned by install for
 	// Jira-enabled repos and must not outlive teardown.
-	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretJiraToken, forge.SecretJiraEmail}
+	want := []string{forge.SecretGCPProjectID, forge.SecretGCPWIFProvider, forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretJiraToken, forge.SecretJiraEmail, forge.SecretJiraClientID, forge.SecretJiraClientSecret}
 	if !slices.Equal(got, want) {
 		t.Errorf("UninstallSecretsForForge(GitLab) = %v, want %v", got, want)
 	}
