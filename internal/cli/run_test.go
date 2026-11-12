@@ -2538,6 +2538,33 @@ func TestSandboxDeniedKeys_JiraSecrets(t *testing.T) {
 	assert.Equal(t, "kept", expandSandboxEnvValue("${OTHER_VAR}", harnessEnvExpand))
 }
 
+// TestSandboxDeniedKeys_VaultEligibleStandaloneSecrets verifies that the
+// standalone runner secrets a Vault connection can supply (ADR 0155) stay
+// declarable in env.runner but expand empty at every sandbox-bound site
+// (provider definitions are covered by the sandboxDeniedKeys loop in init).
+func TestSandboxDeniedKeys_VaultEligibleStandaloneSecrets(t *testing.T) {
+	for _, key := range []string{"JIRA_TOKEN", "OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"} {
+		t.Run(key, func(t *testing.T) {
+			const value = "vault-fetched-secret-value"
+			t.Setenv(key, value)
+			assert.True(t, sandboxDeniedKeys[key])
+
+			// env.runner may still declare it.
+			assert.Equal(t, value, harnessEnvExpand(key))
+			got, ok := harnessEnvLookup(key)
+			assert.True(t, ok)
+			assert.Equal(t, value, got)
+			assert.Equal(t, value, expandRunnerEntry("SOME_SCRIPT_VAR", "${"+key+"}", harnessEnvExpand))
+
+			// env.sandbox, sandbox-bound runner_env, expanded host files and
+			// validation fields refuse it.
+			assert.Equal(t, "x--y", expandSandboxEnvValue("x-${"+key+"}-y", harnessEnvExpand))
+			assert.Equal(t, "x--y", expandRunnerEntry("FULLSEND_OUTPUT_FILE", "x-${"+key+"}-y", harnessEnvExpand))
+			assert.NotContains(t, shellSafeExpandEnv("export V=\"${"+key+"}\""), value)
+		})
+	}
+}
+
 // TestExpandRunnerEntry_OutputFileRefusesJiraSecrets verifies that
 // FULLSEND_OUTPUT_FILE, the runner entry exported verbatim into the sandbox,
 // cannot carry the Jira repository secrets from runner_env or env.runner,
@@ -2763,6 +2790,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"FULLSEND_GITHUB_RUNNER_SECRETS",
 		// Nor may a harness or script learn where the bundle file was staged.
 		"FULLSEND_GITHUB_RUNNER_SECRETS_FILE",
+		// The GitLab job ID token for Vault login stays runner-only (ADR 0155).
+		"FULLSEND_VAULT_ID_TOKEN",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)

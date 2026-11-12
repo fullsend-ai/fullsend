@@ -156,6 +156,8 @@ the overlay → base → code defaults chain.
 | `inference.gateway.messages_auth_header` | `string` (nested) | Scalar override | `""` (empty; means `authorization`) |
 | `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
+| `connections` | `map[string]SecretConnection` | Per-name merge; a layer replaces a whole entry | `nil` (none) |
+| `secrets` | `map[string]SecretSource` | Per-name merge; a layer replaces a whole entry, including `vault_secrets` | `nil` (native sources) |
 | `artifacts.content` | `string` (nested) | Scalar override | `"all"` |
 | `artifacts.by_source` | `map[string]string` (nested) | Per-key merge | `nil` (no per-source levels) |
 | `tracker` | `*TrackingConfig` | Replace whole object if set | `nil` |

@@ -441,6 +441,34 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 	}
 	out.Artifacts = cloneArtifacts(src.Artifacts)
 	out.TraceContextBlock = cloneTraceContext(src.TraceContextBlock)
+	out.Connections = cloneSecretConnections(src.Connections)
+	out.Secrets = cloneSecretSources(src.Secrets)
+	return out
+}
+
+// cloneSecretConnections copies a connections mapping, preserving nil.
+func cloneSecretConnections(in map[string]SecretConnection) map[string]SecretConnection {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]SecretConnection, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+// cloneSecretSources copies a secrets mapping, including each entry's
+// vault_secrets list, preserving nil.
+func cloneSecretSources(in map[string]SecretSource) map[string]SecretSource {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]SecretSource, len(in))
+	for k, v := range in {
+		v.VaultSecrets = cloneStringSlice(v.VaultSecrets)
+		out[k] = v
+	}
 	return out
 }
 
@@ -555,6 +583,24 @@ func applyManagedLayer(out, child *perRepoConfig) {
 	// installation ID belong together.
 	if child.TraceContextBlock != nil {
 		out.TraceContextBlock = cloneTraceContext(child.TraceContextBlock)
+	}
+	// Connections and secrets merge by name; a more-specific layer replaces
+	// a whole entry, matching ConfigConnections and ConfigSecrets.
+	if len(child.Connections) > 0 {
+		if out.Connections == nil {
+			out.Connections = make(map[string]SecretConnection, len(child.Connections))
+		}
+		for k, v := range child.Connections {
+			out.Connections[k] = v
+		}
+	}
+	if len(child.Secrets) > 0 {
+		if out.Secrets == nil {
+			out.Secrets = make(map[string]SecretSource, len(child.Secrets))
+		}
+		for k, v := range cloneSecretSources(child.Secrets) {
+			out.Secrets[k] = v
+		}
 	}
 }
 

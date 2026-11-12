@@ -504,13 +504,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// Unpack the runner secrets bundle (ADR 0136) before any child process
-	// starts: loadRunnerSecrets deletes the bundle file and removes both
-	// bundle variables from the environment.
-	runnerSecrets, err := loadRunnerSecrets()
-	if err != nil {
-		printer.StepFail("Invalid runner secrets bundle")
-		return err
+	// Take the runner secrets bundle (ADR 0136) out of the environment
+	// before any child process starts: takeRunnerSecretsBundle deletes the
+	// bundle file and removes both bundle variables from the environment.
+	// The native contents are read and validated only once the source is
+	// known, because a Vault connection (ADR 0155) may supply the bundle.
+	nativeBundle := takeRunnerSecretsBundle()
+	// A bundle that could not be removed from the environment or deleted
+	// from disk stays readable by child processes, so fail closed whether
+	// or not Vault supplies the bundle.
+	if nativeBundle.cleanupErr != nil {
+		printer.StepFail("Could not remove the runner secrets bundle")
+		return nativeBundle.cleanupErr
 	}
 
 	absFullsendDir, err := filepath.Abs(fullsendDir)
@@ -546,7 +551,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	orgCfg, err := loadLockConfig(orgConfigPath)
 	if err != nil {
 		printer.StepFail("Failed to load fullsend config")
-		reportConfigLoadFailure(ctx, agentName, absFullsendDir, forgeFlag, eventFile, sOpts, runnerSecrets, err, printer)
+		// Best effort: the native bundle only feeds redaction here.
+		failureSecrets, _ := nativeBundle.parse()
+		reportConfigLoadFailure(ctx, agentName, absFullsendDir, forgeFlag, eventFile, sOpts, failureSecrets, err, printer)
 		return err
 	}
 
@@ -555,6 +562,37 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err != nil {
 		printer.StepFail("Invalid --forge flag")
 		return err
+	}
+
+	// Resolve runner secrets the trusted config selects from Vault
+	// (ADR 0155) before any consumer reads them. With no Vault selection
+	// this makes no network request and native delivery is unchanged.
+	var secretCfg config.ConfigReader
+	if orgCfg != nil {
+		secretCfg = orgCfg
+	}
+	vaultValues, err := resolveVaultRunnerSecrets(ctx, secretCfg, forgePlatform)
+	if err != nil {
+		printer.StepFail("Failed to resolve Vault-backed runner secrets")
+		return err
+	}
+	// A Vault-supplied bundle replaces the native one, so the native
+	// contents are neither parsed nor required to be valid then.
+	var runnerSecrets map[string]string
+	if _, vaultBundle := vaultValues[forge.SecretGitHubRunnerSecrets]; !vaultBundle {
+		runnerSecrets, err = nativeBundle.parse()
+		if err != nil {
+			printer.StepFail("Invalid runner secrets bundle")
+			return err
+		}
+	}
+	if len(vaultValues) > 0 {
+		runnerSecrets, err = applyVaultRunnerSecrets(vaultValues, runnerSecrets)
+		if err != nil {
+			printer.StepFail("Invalid Vault-backed runner secret")
+			return err
+		}
+		printer.StepDone("Resolved runner secrets from Vault: " + strings.Join(sortedStringKeys(vaultValues), ", "))
 	}
 	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
 	// handles the omitted-field case when a config is present.
@@ -3452,6 +3490,10 @@ var oidcDenyKeys = map[string]bool{
 	// same way: no harness expansion may copy it, and pre/post scripts
 	// never see it.
 	gatewayAPIKeyEnv: true,
+	// The GitLab job ID token a Vault connection authenticates with
+	// (ADR 0155). It is a bearer credential for Vault login; only the
+	// runner's Vault resolution reads it.
+	vaultIDTokenEnv: true,
 	// The GitLab webhook fast-path credentials `fullsend repos install`
 	// provisions as protected, wildcard-scoped CI/CD variables. The trigger
 	// tokens are bearer credentials that start protected-branch pipelines;
@@ -3598,11 +3640,18 @@ func harnessEnvExpand(key string) string {
 // composite action passes to the fullsend run step (#9079). They stay out of
 // harnessExpansionDenied because that map also gates env.runner, where a
 // harness declares them on purpose.
+//
+// The standalone runner secrets that ADR 0155 lets a Vault connection
+// supply (JIRA_TOKEN and the OTLP header variables) are listed too, so a
+// fetched value never reaches the sandbox through a ${VAR} reference.
 var sandboxDeniedKeys = map[string]bool{
-	jira.TokenEnvVar:        true,
-	jira.EmailEnvVar:        true,
-	jira.ClientIDEnvVar:     true,
-	jira.ClientSecretEnvVar: true,
+	jira.TokenEnvVar:                    true,
+	jira.EmailEnvVar:                    true,
+	jira.ClientIDEnvVar:                 true,
+	jira.ClientSecretEnvVar:             true,
+	"JIRA_TOKEN":                        true,
+	"OTEL_EXPORTER_OTLP_HEADERS":        true,
+	"OTEL_EXPORTER_OTLP_TRACES_HEADERS": true,
 }
 
 // expandSandboxEnvValue expands ${VAR} references in an env.sandbox value

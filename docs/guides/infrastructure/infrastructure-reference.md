@@ -353,6 +353,11 @@ Secrets and variables are deployed on the target repository.
   `env.runner`
   ([setup](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github))
 
+`JIRA_TOKEN`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_EXPORTER_OTLP_TRACES_HEADERS`,
+and `FULLSEND_GITHUB_RUNNER_SECRETS` can come from HashiCorp Vault instead of a
+forge secret. Fullsend authenticates to Vault with the job's OIDC identity. See
+[`connections` and `secrets`](../../reference/config-reference.md#connections).
+
 Repos whose `inference.auth` is `openai-wif` need no fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
 **Target repo variables:**

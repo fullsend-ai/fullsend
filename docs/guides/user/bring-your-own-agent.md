@@ -959,10 +959,12 @@ section).
 ### Pass secrets to host-side scripts (GitHub)
 
 A pre-script that calls Jira, CodeRabbit or another service needs a token. This
-channel is an interim one for your own tools on GitHub: external secret manager
-support, read with the job's OIDC token, is the expected successor (long-term
-design in [#6359](https://github.com/fullsend-ai/fullsend/issues/6359)), and
-this secret stays as the fallback when your workflow cannot use GitHub OIDC or a
+channel is the native source for your own tools on GitHub. To keep the bundle in
+Vault instead, select a Vault connection for `FULLSEND_GITHUB_RUNNER_SECRETS`
+through `connections` and `secrets`; Fullsend reads it with the job's OIDC token
+([config reference](../../reference/config-reference.md#connections); broader
+design in [#6359](https://github.com/fullsend-ai/fullsend/issues/6359)). This
+secret stays as the native source when your workflow cannot use GitHub OIDC or a
 WIF provider with your secret manager. Integrations fullsend owns, such as the
 inference gateway, keep their own named secrets. If your Jira poller workflow
 already passes `JIRA_TOKEN` and `JIRA_USER_EMAIL` to the reusable workflow

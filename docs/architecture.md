@@ -145,8 +145,9 @@ repo baseline and overrides)
   published as generated, tag-pinned JSON Schemas enforced by an always-on
   golden test ([ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md);
   [contract](normative/sandbox-env/v1/README.md)).
-- Runner secrets on GitHub: the user-managed bundle is an interim native source
-  for custom host-side scripts until Vault-backed resolution is implemented.
+- Runner secrets on GitHub: the user-managed bundle is the native source
+  for custom host-side scripts; Vault-backed resolution under ADR 0155 is
+  implemented and can supply the bundle instead.
   Native remains the default when no Vault connection is selected, including
   workflows without GitHub OIDC/WIF. Fullsend-owned integrations keep their own
   named secrets, and the broader BYOA custom-secret question remains tracked in
@@ -164,16 +165,16 @@ repo baseline and overrides)
   refusal does not consult the credential deny-list that the `env.sandbox`
   gate also checks
   ([ADR 0145](ADRs/0145-keep-credential-deny-list-out-of-runner-secret-refusal.md)).
-- External source selection for user-managed runner secrets (target state; not
-  yet implemented): named connections under `connections` define service kinds
+- External source selection for user-managed runner secrets (implemented under
+  ADR 0155): named connections under `connections` define service kinds
   and settings, while `secrets` entries select a connection (native when
   omitted). A Vault connection has an address and JWT role/audience, defaulting
   to `fullsend-runner` and `https://fullsend.sh/vault`; secret paths are ordered
   and templated from trusted repository context. Connection definitions and
-  secret entries, including source selection and path order, must come from
-  trusted configuration revisions; PR-head and event-provided config cannot
-  define or override these entries, including removing a trusted Vault
-  selection or omitting its `connection` to restore native. Fullsend validates
+  secret entries, including source selection and path order, are not
+  restricted client-side by event or workflow type; the Vault role's WIF
+  bound claims and policy admit only trusted Fullsend workflows, as the mint
+  does. Fullsend validates
   and encodes every path component and validates the completed relative KV API
   path before access. Vault access uses job OIDC/WIF. Native remains the
   default only when no Vault connection is selected;
