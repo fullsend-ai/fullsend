@@ -40,11 +40,14 @@ func loadRootActionSteps(t *testing.T) map[string]actionStep {
 }
 
 // runDetectSandboxHost runs the "Detect sandbox host" step script with only
-// pathDir on PATH and returns the outputs it wrote to GITHUB_OUTPUT. When
-// endpoint is nil, OPENSHELL_GATEWAY_ENDPOINT is left unset; when
-// workflowEndpoint is non-nil, FULLSEND_OPENSHELL_GATEWAY_ENDPOINT is set to
-// it (the channel the dispatch workflow passes from repository variables).
-func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir string, workflowEndpoint *string) (map[string]string, map[string]string, error) {
+// pathDir on PATH and returns its combined output, the values it wrote to
+// GITHUB_OUTPUT and GITHUB_ENV, and the command error. The maps are returned
+// on failure too, so rejection cases can assert what the step did and did
+// not write. When endpoint is nil, OPENSHELL_GATEWAY_ENDPOINT is left unset;
+// when workflowEndpoint is non-nil, FULLSEND_OPENSHELL_GATEWAY_ENDPOINT is
+// set to it (the channel the dispatch workflow passes from repository
+// variables).
+func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir string, workflowEndpoint *string) (string, map[string]string, map[string]string, error) {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
 	require.NoError(t, err)
@@ -67,13 +70,10 @@ func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir
 	cmd := exec.Command(bash, scriptPath)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %s", err, out)
-	}
 
 	parse := func(path string) map[string]string {
-		raw, err := os.ReadFile(path)
-		require.NoError(t, err)
+		raw, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
 		parsed := map[string]string{}
 		for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
 			if k, v, ok := strings.Cut(line, "="); ok {
@@ -82,7 +82,11 @@ func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir
 		}
 		return parsed
 	}
-	return parse(outputPath), parse(envPath), nil
+	outputs, envWrites := parse(outputPath), parse(envPath)
+	if err != nil {
+		return string(out), outputs, envWrites, fmt.Errorf("%w: %s", err, out)
+	}
+	return string(out), outputs, envWrites, nil
 }
 
 func TestActionDetectSandboxHostStep(t *testing.T) {
@@ -121,15 +125,26 @@ func TestActionDetectSandboxHostStep(t *testing.T) {
 		{name: "empty workflow channel falls back to the runner environment", endpoint: &remote, workflowEndpoint: &empty, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
 		{name: "workflow channel alone skips local setup", workflowEndpoint: &remote, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
 		{name: "empty workflow channel and no runner endpoint sets up locally", workflowEndpoint: &empty, pathDir: withCLI, wantLocal: "true", wantInstallShell: "true"},
-		{name: "whitespace-only endpoint is rejected", workflowEndpoint: &whitespace, pathDir: withCLI, wantErr: true},
-		{name: "newline-injected endpoint is rejected", workflowEndpoint: &injected, pathDir: withCLI, wantErr: true},
-		{name: "non-https endpoint is rejected", workflowEndpoint: &httpEndpoint, pathDir: withCLI, wantErr: true},
+		{name: "whitespace-only workflow endpoint is rejected", workflowEndpoint: &whitespace, pathDir: withCLI, wantErr: true},
+		{name: "newline-injected workflow endpoint is rejected", workflowEndpoint: &injected, pathDir: withCLI, wantErr: true},
+		{name: "non-https workflow endpoint is rejected", workflowEndpoint: &httpEndpoint, pathDir: withCLI, wantErr: true},
+		{name: "whitespace-only runner endpoint is rejected", endpoint: &whitespace, pathDir: withCLI, wantErr: true},
+		{name: "newline-injected runner endpoint is rejected", endpoint: &injected, pathDir: withCLI, wantErr: true},
+		{name: "non-https runner endpoint is rejected", endpoint: &httpEndpoint, pathDir: withCLI, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			outputs, envWrites, err := runDetectSandboxHost(t, detect.Run, tc.endpoint, tc.pathDir, tc.workflowEndpoint)
+			out, outputs, envWrites, err := runDetectSandboxHost(t, detect.Run, tc.endpoint, tc.pathDir, tc.workflowEndpoint)
 			if tc.wantErr {
+				// A rejection must be the step's own validation failing, not
+				// any non-zero exit: the error annotation is printed, and
+				// nothing is published to GITHUB_ENV or GITHUB_OUTPUT.
 				require.Error(t, err)
+				assert.Contains(t, out, "::error::OPENSHELL_GATEWAY_ENDPOINT must be a single https:// URL")
+				_, wrote := envWrites["OPENSHELL_GATEWAY_ENDPOINT"]
+				assert.False(t, wrote, "a rejected endpoint must not be published to GITHUB_ENV")
+				_, decided := outputs["local"]
+				assert.False(t, decided, "a rejected endpoint must not produce a sandbox-host decision")
 				return
 			}
 			require.NoError(t, err)
