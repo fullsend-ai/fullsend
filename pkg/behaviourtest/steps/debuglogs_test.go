@@ -1310,54 +1310,38 @@ var sharedLogNotes = map[string]string{
 // definition. The GitHub and GitLab clients embed these notes in band, and
 // without an error, when a job's log (or the whole aggregate) could not be
 // fetched in full, and partialLogMarker matches them to tell a failed fetch
-// from a complete snapshot. The text used to be repeated as literals in both
-// places, so a client-side rename silently made a failed fetch read as
-// complete logs: the markers must live as constants in internal/forge — the
-// one package both the writers and this reader import — with every side
-// referencing them by name, so a rename is a compile error instead. The
-// pattern follows TestUpstreamRefOverride_MatchesE2EBuildStamp, which keeps
-// two code sites in sync the same way.
+// from a complete snapshot. The markers live as constants in internal/forge,
+// the one package both the writers and this reader import, so a rename is a
+// compile error. This test pins their values and checks that the reader
+// matches exactly the shared set, by comparing values, not source text.
 func TestLogNoteMarkersAreSharedWithForge(t *testing.T) {
-	read := func(path string) string {
-		src, err := os.ReadFile(path)
-		require.NoError(t, err, "reading "+path)
-		return string(src)
+	constants := map[string]string{
+		"LogNoteFailedToFetchLogs":   forge.LogNoteFailedToFetchLogs,
+		"LogNoteLogsUnavailable":     forge.LogNoteLogsUnavailable,
+		"LogNoteFailedToReadLogs":    forge.LogNoteFailedToReadLogs,
+		"LogNoteJobListTruncated":    forge.LogNoteJobListTruncated,
+		"LogNoteLogTruncated":        forge.LogNoteLogTruncated,
+		"LogNoteErrorFetchingTrace":  forge.LogNoteErrorFetchingTrace,
+		"LogNoteErrorReadingTrace":   forge.LogNoteErrorReadingTrace,
+		"LogNoteAggregateTraceLimit": forge.LogNoteAggregateTraceLimit,
+		"LogNoteTraceTruncated":      forge.LogNoteTraceTruncated,
 	}
-	forgeSrc := read("../../../internal/forge/forge.go")
-	readerSrc := read("debuglogs.go")
-	githubSrc := read("../../../internal/forge/github/github.go")
-	gitlabSrc := read("../../../internal/forge/gitlab/ci.go")
+	require.Len(t, constants, len(sharedLogNotes))
 
-	// sayf asserts without embedding the sources in the failure message:
-	// a Contains on a whole file would print the file.
-	sayf := func(ok bool, format string, args ...any) {
-		assert.True(t, ok, fmt.Sprintf(format, args...))
-	}
-
+	// Each constant keeps the text the clients have always written.
 	for name, text := range sharedLogNotes {
-		// The constant is declared in internal/forge with the text the
-		// clients have always written.
-		declared := false
-		for _, line := range strings.Split(forgeSrc, "\n") {
-			if strings.Contains(line, name) && strings.Contains(line, strconv.Quote(text)) {
-				declared = true
-				break
-			}
-		}
-		sayf(declared, "internal/forge/forge.go declares %s = %s", name, strconv.Quote(text))
-
-		// The reader matches the constant by name, not a repeated literal.
-		sayf(strings.Contains(readerSrc, "forge."+name), "the log reader matches the shared %s", name)
-		sayf(!strings.Contains(readerSrc, "marker: "+strconv.Quote(text)), "the reader no longer repeats %s as a literal", strconv.Quote(text))
+		assert.Equal(t, text, constants[name], "forge.%s", name)
 	}
 
-	// Each client writes the shared constants instead of repeating the
-	// text: the GitLab client its trace notes, the GitHub client its
-	// job-log notes.
-	for _, name := range []string{"LogNoteErrorFetchingTrace", "LogNoteErrorReadingTrace", "LogNoteTraceTruncated", "LogNoteAggregateTraceLimit"} {
-		sayf(strings.Contains(gitlabSrc, "forge."+name), "the GitLab client writes the shared %s", name)
+	// The reader looks for exactly the shared notes, no more and no fewer.
+	want := map[string]bool{}
+	for _, text := range sharedLogNotes {
+		want[text] = true
 	}
-	for _, name := range []string{"LogNoteFailedToFetchLogs", "LogNoteLogsUnavailable", "LogNoteFailedToReadLogs", "LogNoteJobListTruncated", "LogNoteLogTruncated"} {
-		sayf(strings.Contains(githubSrc, "forge."+name), "the GitHub client writes the shared %s", name)
+	got := map[string]bool{}
+	for _, note := range partialLogNotes {
+		got[note.marker] = true
 	}
+	assert.Equal(t, want, got, "partialLogNotes matches the shared log notes")
+	assert.Len(t, partialLogNotes, len(sharedLogNotes), "partialLogNotes lists each shared note once")
 }
