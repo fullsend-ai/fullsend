@@ -1179,15 +1179,16 @@ func (c *perRepoConfig) Validate() error {
 	if err := c.validateLocalFields(); err != nil {
 		return err
 	}
-	// Agents are validated against the resolved allowlist (including
-	// parent resources) as-is, without fullsend's default prefixes
-	// ensured. The command families that run or edit agents validate
-	// through EffectiveAllowedResources instead (ValidateAgentEntries
-	// plus ValidateGlobal), so a URL agent covered only by a default
-	// prefix passes there.
+	// Agents are validated against the effective allowlist — the
+	// resolved chain with fullsend's default prefixes ensured on a
+	// non-empty result — the same list every command family that runs
+	// or edits agents resolves through EffectiveAllowedResources, so a
+	// config one of those commands accepts validates here too. An
+	// explicit [] as the resolved value still denies all remote
+	// resources.
 	// The merged set is validated so an overlay entry that only tunes an
 	// agent registered in the base layer sees that agent's source.
-	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true)
+	return validateAgentEntries(c.AgentEntries(), EffectiveAllowedResources(c), true, true)
 }
 
 // ValidateGlobal runs Validate's checks except the agents[] entry

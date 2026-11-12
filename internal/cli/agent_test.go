@@ -2505,3 +2505,68 @@ func TestRunAgentSet_AllowlistOverBaseEmptyList(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not covered by allowed_remote_resources")
 }
+
+// Removing the last locally-listed prefix must not write an explicit []
+// (deny-all): over a base [] the default prefixes are kept, so the
+// remaining default-prefix agent stays admitted and the config stays
+// editable — the base-[] remove shape `agent add` now writes.
+func TestRunAgentRemove_AllowlistOverBaseEmptyList(t *testing.T) {
+	defaultPrefix := config.DefaultAllowedRemoteResources()[0]
+	integrity := "#sha256=" + strings.Repeat("a", 64)
+	probeSource := defaultPrefix + "harness/probe.yaml" + integrity
+	otherPrefix := "https://raw.githubusercontent.com/other-org/repo/"
+	otherSource := otherPrefix + testCommitSHA + "/harness/other.yaml" + integrity
+
+	dir := t.TempDir()
+	overlay := fmt.Sprintf("allowed_remote_resources:\n  - %q\nagents:\n  - name: probe\n    source: %q\n  - name: other\n    source: %q\n", otherPrefix, probeSource, otherSource)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, config.OverlayConfigFile), []byte(overlay), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, config.BaseConfigFile), []byte("allowed_remote_resources: []\n"), 0o644))
+
+	var out bytes.Buffer
+	require.NoError(t, runAgentRemove(dir, "other", ui.New(&out)))
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	agents := cfg.AgentEntries()
+	require.Len(t, agents, 1)
+	assert.Equal(t, "probe", agents[0].DerivedName())
+	// The remaining default-prefix agent is still admitted.
+	require.NoError(t, validateAgentConfig(cfg))
+	// The removed agent's prefix is gone and the overlay no longer
+	// resolves deny-all: it carries the default prefixes instead.
+	resources := cfg.AllowedResources()
+	assert.NotContains(t, resources, otherPrefix)
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), resources)
+}
+
+// `agent add` checks the prefix against the effective allowlist, so a
+// default prefix the running commands already admit leaves the overlay
+// list unchanged (the end-to-end branch needs a
+// raw.githubusercontent.com source, which the offline test server cannot
+// serve, so the decision is pinned directly).
+func TestAgentAddWritesPrefix_AllowlistOverBaseEmptyList(t *testing.T) {
+	defaultPrefix := config.DefaultAllowedRemoteResources()[0]
+
+	writeShape := func(t *testing.T, base, overlayAllowlist string) config.ConfigWriter {
+		t.Helper()
+		dir := t.TempDir()
+		overlay := overlayAllowlist + "agents: []\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.OverlayConfigFile), []byte(overlay), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.BaseConfigFile), []byte(base), 0o644))
+		cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+		require.NoError(t, err)
+		return cfg
+	}
+
+	// A non-empty overlay list over a base [] carries the default
+	// prefixes, so a default-prefix source leaves the list unchanged.
+	cfg := writeShape(t, "allowed_remote_resources: []\n", "allowed_remote_resources:\n  - https://overlay.example.com/\n")
+	assert.False(t, agentAddWritesPrefix(cfg, defaultPrefix))
+	// An unlisted prefix is still written.
+	assert.True(t, agentAddWritesPrefix(cfg, "https://unlisted.example.com/foo/"))
+
+	// An explicit [] as the resolved effective value stays deny-all, so
+	// even a default prefix must be written to admit the agent.
+	cfg = writeShape(t, "", "allowed_remote_resources: []\n")
+	assert.True(t, agentAddWritesPrefix(cfg, defaultPrefix))
+}

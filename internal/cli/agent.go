@@ -29,15 +29,12 @@ func loadAgentConfig(configPath string) (config.ConfigWriter, error) {
 
 // validateAgentConfig validates a config the agent-editing commands are
 // about to write, resolving the allowlist the way the commands that run
-// agents do: fullsend's default prefixes are ensured on top of a
-// non-empty layered result (config.EffectiveAllowedResources), so an
-// agent covered only by a default prefix passes here too, and an
-// explicit [] as the resolved value stays deny-all.
+// agents do: perRepoConfig.Validate ensures fullsend's default prefixes
+// on top of a non-empty layered result, so an agent covered only by a
+// default prefix passes here too, and an explicit [] as the resolved
+// value stays deny-all.
 func validateAgentConfig(cfg config.ConfigWriter) error {
-	if err := cfg.ValidateGlobal(); err != nil {
-		return err
-	}
-	return config.ValidateAgentEntries(cfg.AgentEntries(), config.EffectiveAllowedResources(cfg))
+	return cfg.Validate()
 }
 
 func newAgentCmd() *cobra.Command {
@@ -66,7 +63,8 @@ func newAgentAddCmd() *cobra.Command {
 
 URL sources are automatically pinned to a specific commit SHA and annotated
 with an integrity hash. The URL prefix is added to allowed_remote_resources
-if not already present.
+only when the effective allowlist — the layered list plus fullsend's default
+prefixes — does not already cover it.
 
 Examples:
   fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml
@@ -388,15 +386,10 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 		entry.Ref = originalRef
 
 		prefix := allowlistPrefixForURL(pinnedSource)
-		if prefix != "" {
-			// Checked against the effective list (defaults ensured on a
-			// non-empty result) so a default prefix the running commands
-			// already cover is not written into config.yaml.
-			if !hasAllowlistPrefix(config.EffectiveAllowedResources(cfg), prefix) {
-				resources := cfg.AllowedResources()
-				printer.StepInfo("Adding " + prefix + " to allowed_remote_resources")
-				cfg.SetAllowedRemoteResources(append(resources, prefix))
-			}
+		if prefix != "" && agentAddWritesPrefix(cfg, prefix) {
+			resources := cfg.AllowedResources()
+			printer.StepInfo("Adding " + prefix + " to allowed_remote_resources")
+			cfg.SetAllowedRemoteResources(append(resources, prefix))
 		}
 	} else {
 		if err := validateLocalPath(absDir, source); err != nil {
@@ -736,7 +729,20 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 			}
 			if len(cleaned) < len(resources) {
 				printer.StepInfo("Removed unused prefix from allowed_remote_resources: " + prefix)
-				cfg.SetAllowedRemoteResources(cleaned)
+				if len(cleaned) > 0 {
+					cfg.SetAllowedRemoteResources(cleaned)
+				} else {
+					// Removing the last local prefix must not write an
+					// explicit [] (deny-all): drop the key so the parent
+					// chain resolves again, and when that chain is itself
+					// deny-all (a base []) keep fullsend's default
+					// prefixes so agents under them stay admitted and
+					// the config stays editable.
+					cfg.SetAllowedRemoteResources(nil)
+					if len(config.EffectiveAllowedResources(cfg)) == 0 {
+						cfg.SetAllowedRemoteResources(config.DefaultAllowedRemoteResources())
+					}
+				}
 			}
 		}
 	}
@@ -924,6 +930,18 @@ func findAgentByName(agents []config.AgentEntry, name string) (int, bool) {
 		}
 	}
 	return -1, false
+}
+
+// agentAddWritesPrefix reports whether `agent add` must write the URL's
+// prefix into config.yaml: the effective allowlist (the layered chain
+// with fullsend's default prefixes ensured on a non-empty result) does
+// not already cover it, so a default prefix the running commands admit
+// is never written. The end-to-end branch needs a
+// raw.githubusercontent.com source, which the offline test server cannot
+// serve, so the decision is pinned directly by
+// TestAgentAddWritesPrefix_AllowlistOverBaseEmptyList.
+func agentAddWritesPrefix(cfg config.ConfigReader, prefix string) bool {
+	return !hasAllowlistPrefix(config.EffectiveAllowedResources(cfg), prefix)
 }
 
 func allowlistPrefixForURL(rawURL string) string {
