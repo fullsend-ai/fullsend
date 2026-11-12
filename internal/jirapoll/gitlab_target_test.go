@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
-	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
 // recordingDispatcher is a RecordDispatcher that records every dispatched
 // record, fails records for the issue keys in failFor, and refuses records
-// for the issue keys in refuseFor with poll.ErrTransportBudget — the way the
+// for the issue keys in refuseFor with dispatch.ErrTransportBudget — the way the
 // Jira dispatch door (poll.Poller.DispatchJiraEvent) refuses a record whose
 // payload cannot fit the transport budget.
 type recordingDispatcher struct {
@@ -31,7 +31,7 @@ func (d *recordingDispatcher) Dispatch(_ context.Context, record DispatchRecord)
 		return errDispatchRejected
 	}
 	if d.refuseFor[record.StatusNumber] {
-		return fmt.Errorf("dispatch %s for %s: %w", record.Agent, record.StatusNumber, poll.ErrTransportBudget)
+		return fmt.Errorf("dispatch %s for %s: %w", record.Agent, record.StatusNumber, dispatch.ErrTransportBudget)
 	}
 	return nil
 }

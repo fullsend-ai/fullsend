@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -919,8 +920,8 @@ func TestRunWebhook_TransportBudgetRefusalFailsClosed(t *testing.T) {
 	mc.setSlashState(persistedPollState{LastPollAtFast: beforeRecent})
 
 	err := newWebhookPoller(mc).RunWebhook(context.Background(), notePayload(t, "MergeRequest", alice.ID, 21, 3))
-	if !errors.Is(err, ErrTransportBudget) {
-		t.Fatalf("err = %v, want ErrTransportBudget", err)
+	if !errors.Is(err, dispatch.ErrTransportBudget) {
+		t.Fatalf("err = %v, want dispatch.ErrTransportBudget", err)
 	}
 	if len(mc.pipelineCalls) != 0 {
 		t.Errorf("pipeline calls = %+v, want none", mc.pipelineCalls)

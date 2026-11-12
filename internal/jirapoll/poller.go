@@ -13,9 +13,9 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
-	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/randutil"
 
 	"github.com/google/uuid"
@@ -216,7 +216,7 @@ func (p *Poller) Run(ctx context.Context) error {
 		for i := range pending {
 			for _, record := range pending[i].records {
 				if err := p.opts.Dispatcher.Dispatch(ctx, record); err != nil {
-					if errors.Is(err, poll.ErrTransportBudget) {
+					if errors.Is(err, dispatch.ErrTransportBudget) {
 						// The refusal is deterministic — the same
 						// record re-marshals to the same oversized
 						// payload — so a retry can never succeed: the
@@ -592,7 +592,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 
 		// On the GitLab target, bound state.labels before trigger
 		// matching with the same bound the dispatch door applies when
-		// encoding (poll.LogBoundTransportLabels): a trigger keyed on a
+		// encoding (dispatch.LogBoundTransportLabels): a trigger keyed on a
 		// label past the bound must not launch an agent whose
 		// transported event lacks that label — the silent
 		// trigger/payload mismatch the transport bounds exist to
@@ -601,7 +601,7 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		// set stays correct there.
 		if p.opts.TargetForge == TargetForgeGitLab {
 			where := fmt.Sprintf("%s event on %s", event.Type, event.IssueKey)
-			ne.State.Labels = poll.LogBoundTransportLabels(where, ne.State.Labels)
+			ne.State.Labels = dispatch.LogBoundTransportLabels(where, ne.State.Labels)
 		}
 
 		if p.matcher != nil {

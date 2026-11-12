@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -12,8 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/jiradispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
-	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
@@ -161,39 +159,7 @@ func runJiraPollGitLab(cmd *cobra.Command, f jiraPollGitLabFlags) error {
 	opts := jiraPollOptions(args, matcher)
 	opts.TargetForge = jirapoll.TargetForgeGitLab
 	opts.GitLabURL = gitlabURL
-	opts.Dispatcher = gitlabJiraDispatcher{poller: glPoller}
+	opts.Dispatcher = jiradispatch.GitLabDispatcher{Poller: glPoller}
 	poller := jirapoll.New(jiraClient, matcher, opts)
 	return wrapGitLabAuthFailure(sel, poller.Run(cmd.Context()))
-}
-
-// jiraEventPipelineDispatcher is the GitLab dispatch surface
-// gitlabJiraDispatcher needs; poll.Poller implements it.
-type jiraEventPipelineDispatcher interface {
-	DispatchJiraEvent(ctx context.Context, stage string, event *normevent.Event) error
-}
-
-// gitlabJiraDispatcher is the jirapoll output driver for GitLab targets.
-// It recovers the normalized event the CEL matcher embedded in the record's
-// event_payload, validates it, and starts the agent pipeline for the
-// record's agent.
-type gitlabJiraDispatcher struct {
-	poller jiraEventPipelineDispatcher
-}
-
-// Dispatch implements jirapoll.RecordDispatcher.
-func (d gitlabJiraDispatcher) Dispatch(ctx context.Context, record jirapoll.DispatchRecord) error {
-	var payload struct {
-		NormalizedEvent json.RawMessage `json:"_normalized_event"`
-	}
-	if err := json.Unmarshal([]byte(record.EventPayload), &payload); err != nil {
-		return fmt.Errorf("parse event payload for %s: %w", record.Agent, err)
-	}
-	if len(payload.NormalizedEvent) == 0 {
-		return fmt.Errorf("event payload for %s has no _normalized_event", record.Agent)
-	}
-	event, err := normevent.ParseJSON(payload.NormalizedEvent)
-	if err != nil {
-		return fmt.Errorf("event payload for %s: %w", record.Agent, err)
-	}
-	return d.poller.DispatchJiraEvent(ctx, record.Agent, event)
 }

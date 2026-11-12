@@ -16,6 +16,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
+	"github.com/fullsend-ai/fullsend/internal/jiradispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -205,7 +206,7 @@ func jiraDispatchRecord(t *testing.T, projectPath string) jirapoll.DispatchRecor
 
 func TestGitLabJiraDispatcher_ForwardsNormalizedEvent(t *testing.T) {
 	fake := &fakeJiraPipelineDispatcher{}
-	d := gitlabJiraDispatcher{poller: fake}
+	d := jiradispatch.GitLabDispatcher{Poller: fake}
 	require.NoError(t, d.Dispatch(context.Background(), jiraDispatchRecord(t, "group/sub/project")))
 	assert.Equal(t, "triage", fake.stage)
 	require.NotNil(t, fake.event)
@@ -234,7 +235,7 @@ func TestGitLabJiraDispatcher_RejectsBadPayloads(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeJiraPipelineDispatcher{}
-			err := gitlabJiraDispatcher{poller: fake}.Dispatch(context.Background(), jirapoll.DispatchRecord{Agent: "triage", EventPayload: tc.payload})
+			err := jiradispatch.GitLabDispatcher{Poller: fake}.Dispatch(context.Background(), jirapoll.DispatchRecord{Agent: "triage", EventPayload: tc.payload})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
 			assert.Nil(t, fake.event, "no pipeline dispatch for an invalid payload")

@@ -184,7 +184,7 @@ func TestBuildEventPayload_FallsBackToCommentOnlyEvent(t *testing.T) {
 		// non-command body; an oversized /fs-* command body fails closed
 		// instead (TestBuildEventPayload_CommandBodyOverBudgetFailsClosed).
 		// With the body, labels and every attacker-shaped single string
-		// bounded (noteBodyTransportLimit, transportLabelsLimit,
+		// bounded (noteBodyTransportLimit, dispatch.TransportLabelsLimit,
 		// transportStringRefLimit) only the whole-travelling config-derived
 		// fields can push a non-command complete form past the budget —
 		// TestBuildEventPayload_SchemaMaxConfigFailsClosed pins that
@@ -307,8 +307,8 @@ func TestBuildEventPayload_BoundsStateLabels(t *testing.T) {
 	if len(got) == 0 || len(got) == len(labels) {
 		t.Fatalf("transported %d labels as %d, want a strict non-empty prefix", len(labels), len(got))
 	}
-	if enc, err := json.Marshal(got); err != nil || len(enc) > transportLabelsLimit {
-		t.Errorf("transported labels are %d bytes (err %v), want at most %d", len(enc), err, transportLabelsLimit)
+	if enc, err := json.Marshal(got); err != nil || len(enc) > dispatch.TransportLabelsLimit {
+		t.Errorf("transported labels are %d bytes (err %v), want at most %d", len(enc), err, dispatch.TransportLabelsLimit)
 	}
 	if !slices.Equal(got, labels[:len(got)]) {
 		t.Errorf("transported labels are not a prefix of the event's labels")
@@ -327,12 +327,12 @@ func TestBuildEventPayload_BoundsStateLabels(t *testing.T) {
 // field's bound. Every maximal string is escape-heavy because Go's JSON
 // encoder expands <, > and & to six bytes per rune; transportStringRefLimit
 // bounds each one's JSON form. If a limit drifts so this stops holding,
-// lower noteBodyTransportLimit, transportLabelsLimit or
+// lower noteBodyTransportLimit, dispatch.TransportLabelsLimit or
 // transportStringRefLimit until it does.
 func TestBuildEventPayload_WorstCaseFitsTransportBudget(t *testing.T) {
 	event, ne := mrNote(strings.Repeat("<", noteBodyTransportLimit))
 	// One label sized to (nearly) the whole labels bound.
-	ne.State.Labels = []string{"l" + strings.Repeat("x", transportLabelsLimit-6)}
+	ne.State.Labels = []string{"l" + strings.Repeat("x", dispatch.TransportLabelsLimit-6)}
 	// The event's own label list is bounded like state.labels.
 	event.Labels = ne.State.Labels
 	// Maximal escape-heavy branch refs and logins (Git refnames and the
@@ -512,7 +512,7 @@ func TestBuildEventPayload_CommandBodyOverBudgetFailsClosed(t *testing.T) {
 	event, ne := mrNote("/fs-fix " + strings.Repeat("<", 6000))
 	event.SourceBranch = strings.Repeat("<", 255)
 	event.TargetBranch = strings.Repeat("<", 255)
-	ne.State.Labels = []string{"l" + strings.Repeat("x", transportLabelsLimit-6)}
+	ne.State.Labels = []string{"l" + strings.Repeat("x", dispatch.TransportLabelsLimit-6)}
 	_, err := buildEventPayload(event, &ne)
 	if err == nil {
 		t.Fatal("buildEventPayload: want an error for an over-budget command body, got a payload")
@@ -554,23 +554,23 @@ func TestBoundTransportString(t *testing.T) {
 }
 
 func TestBoundTransportLabels(t *testing.T) {
-	if got := boundTransportLabels(nil); got != nil {
-		t.Errorf("boundTransportLabels(nil) = %v, want nil", got)
+	if got := dispatch.BoundTransportLabels(nil); got != nil {
+		t.Errorf("dispatch.BoundTransportLabels(nil) = %v, want nil", got)
 	}
 	small := []string{"ready-for-review"}
-	if got := boundTransportLabels(small); !slices.Equal(got, small) {
-		t.Errorf("boundTransportLabels(small) = %v, want it unchanged", got)
+	if got := dispatch.BoundTransportLabels(small); !slices.Equal(got, small) {
+		t.Errorf("dispatch.BoundTransportLabels(small) = %v, want it unchanged", got)
 	}
 	big := make([]string, 2000)
 	for i := range big {
 		big[i] = "label-" + strings.Repeat("y", 20)
 	}
-	got := boundTransportLabels(big)
+	got := dispatch.BoundTransportLabels(big)
 	if len(got) == 0 || len(got) == len(big) {
 		t.Fatalf("bound %d labels to %d, want a strict non-empty prefix", len(big), len(got))
 	}
-	if enc, err := json.Marshal(got); err != nil || len(enc) > transportLabelsLimit {
-		t.Errorf("bounded labels are %d bytes (err %v), want at most %d", len(enc), err, transportLabelsLimit)
+	if enc, err := json.Marshal(got); err != nil || len(enc) > dispatch.TransportLabelsLimit {
+		t.Errorf("bounded labels are %d bytes (err %v), want at most %d", len(enc), err, dispatch.TransportLabelsLimit)
 	}
 	if !slices.Equal(got, big[:len(got)]) {
 		t.Errorf("bounded labels are not a prefix of the input")
@@ -659,7 +659,7 @@ func TestBoundTransportEventStrings_CoversEveryStringField(t *testing.T) {
 	// boundedElsewhere: strings another transport bound owns.
 	boundedElsewhere := map[string]bool{
 		"transition.comment.body": true, // truncateNoteBody / noteBodyTransportLimit
-		"state.labels":            true, // boundTransportLabels
+		"state.labels":            true, // dispatch.BoundTransportLabels
 		// command and instruction are derived from the note body the event
 		// author writes (extractCommand), but transportNormalizedEvent
 		// re-derives them from the already-bounded body, and an untruncated

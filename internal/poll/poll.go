@@ -343,7 +343,7 @@ func (p *Poller) Run(ctx context.Context) error {
 		if p.router != nil {
 			// Bound state.labels and the attacker-shaped single strings
 			// before trigger matching with the same bounds the dispatch
-			// door applies when encoding (LogBoundTransportLabels,
+			// door applies when encoding (dispatch.LogBoundTransportLabels,
 			// logBoundTransportEventStrings): a trigger keyed on a label
 			// or string tail past the bound must not launch an agent
 			// whose transported event lacks it — the silent
@@ -364,7 +364,7 @@ func (p *Poller) Run(ctx context.Context) error {
 			// single strings as-is, failing closed on budget
 			// (jira_dispatch.go).
 			where := fmt.Sprintf("%s event on IID %d", event.Type, event.IID)
-			normalizedEvent.State.Labels = LogBoundTransportLabels(where, normalizedEvent.State.Labels)
+			normalizedEvent.State.Labels = dispatch.LogBoundTransportLabels(where, normalizedEvent.State.Labels)
 			logBoundTransportEventStrings(where, &normalizedEvent)
 			stages, err = p.router.Route(&normalizedEvent)
 			if err != nil {
@@ -426,7 +426,7 @@ func (p *Poller) Run(ctx context.Context) error {
 			}
 			allSkipped = false
 			if err := p.dispatch(ctx, p.owner, p.repo, stage, event, &normalizedEvent); err != nil {
-				if errors.Is(err, ErrTransportBudget) {
+				if errors.Is(err, dispatch.ErrTransportBudget) {
 					// The refusal is deterministic — the same
 					// event re-marshals to the same oversized
 					// payload, for every stage — so a retry can

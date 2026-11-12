@@ -9,6 +9,7 @@ import (
 	"log"
 	"regexp"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
@@ -186,7 +187,7 @@ func gitlabWrapperAcceptsResourceKey(content []byte, rk string) bool {
 // hands to fullsend run as its --event-file. The comment body and
 // instruction are shortened, with noteBodyTruncationNotice appended, until
 // the payload fits the maxEventPayloadChunks transport budget, and
-// state.labels are bounded to transportLabelsLimit like on the GitLab
+// state.labels are bounded to dispatch.TransportLabelsLimit like on the GitLab
 // transport, so both doors treat the work item's labels alike. A /fs-*
 // command body is exempt from the shortening, like on the GitLab transport
 // (buildEventPayload): the dispatcher never runs an agent on a shortened
@@ -206,7 +207,7 @@ func encodeJiraEventPayload(eventType string, event *normevent.Event) (string, e
 	// comment limit, and hoisting it keeps the cut WARNING to one line
 	// per dispatch instead of one per ladder step.
 	where := fmt.Sprintf("%s event on %s", eventType, event.Entity.Key)
-	labels := LogBoundTransportLabels(where, event.State.Labels)
+	labels := dispatch.LogBoundTransportLabels(where, event.State.Labels)
 	for _, limit := range jiraCommentLimits {
 		ev := *event
 		ev.State.Labels = labels
@@ -249,5 +250,5 @@ func encodeJiraEventPayload(eventType string, event *normevent.Event) (string, e
 			break
 		}
 	}
-	return "", fmt.Errorf("event payload exceeds the %d-character dispatch budget: %w", budget, ErrTransportBudget)
+	return "", fmt.Errorf("event payload exceeds the %d-character dispatch budget: %w", budget, dispatch.ErrTransportBudget)
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/jiradispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -218,7 +219,7 @@ func TestJiraTransport_FakeGitLabAPISurface(t *testing.T) {
 func TestJiraTransport_DispatcherRejectsBadPayloads(t *testing.T) {
 	t.Parallel()
 	var reached recordingJiraDoor
-	d := gitlabTransportDispatcher{poller: &reached}
+	d := jiradispatch.GitLabDispatcher{Poller: &reached}
 	ctx := context.Background()
 
 	require.Error(t, d.Dispatch(ctx, jirapoll.DispatchRecord{Agent: "triage", EventPayload: "not json"}))

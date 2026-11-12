@@ -8,11 +8,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"maps"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -65,7 +63,7 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		// Only a /fs-* command body is carried untruncated, so this
 		// rejects a command that cannot be transported intact rather
 		// than letting the agent run on a shortened instruction.
-		return fmt.Errorf("event payload for %s/%s needs %d base64 characters, exceeding the %d-character dispatch budget; refusing to dispatch a truncated note body: %w", stage, resourceKey(event), len(encoded), budget, ErrTransportBudget)
+		return fmt.Errorf("event payload for %s/%s needs %d base64 characters, exceeding the %d-character dispatch budget; refusing to dispatch a truncated note body: %w", stage, resourceKey(event), len(encoded), budget, dispatch.ErrTransportBudget)
 	}
 	// Fork detection applies only to MR events. Issue events never
 	// populate MRSource/MRTarget — they are "not applicable", not
@@ -329,23 +327,6 @@ const (
 	maxEventPayloadChunks = 9
 )
 
-// ErrTransportBudget marks a dispatch refused because its payload cannot
-// fit the transport budget (maxEventPayloadChunks*dispatchPayloadChunkSize
-// base64 characters). The refusal is deterministic — the same event
-// re-marshals to the same oversized payload — so it is permanent for that
-// event: the GitLab poller (poll.go's dispatch loop) drops the event
-// without spending its retry budget, and the Jira poller
-// (jirapoll/poller.go's checkpoint commit) advances the issue's checkpoint
-// past the refused record, instead of either wedging the entity behind an
-// endless retry of a refusal that cannot succeed. The webhook dispatcher
-// (webhook_dispatch.go's dispatch step) is the third consumer: it fails
-// its job with the error — a re-run or payload replay re-refuses the
-// event — instead of dropping or advancing. Both refusal sites in
-// this package (dispatch()'s outer budget check and buildEventPayload's
-// command-note fail-closed) and encodeJiraEventPayload's budget error wrap
-// it, so pollers match it with errors.Is.
-var ErrTransportBudget = errors.New("dispatch transport budget exceeded")
-
 // eventPayloadChunks splits a base64 event payload into fixed,
 // individually-declared pipeline-input-sized pieces of plain data — not
 // executable code (#7850's injection-vuln fix). Earlier, the chunks were
@@ -460,26 +441,11 @@ const noteBodyTransportLimit = 270
 // escape-heavy or oversized string; those are cut. Forge-assigned ids
 // (comment id/parent_id, head SHA, entity key) are not bounded — the
 // forge, not the event author, chooses them. Together with
-// noteBodyTransportLimit and transportLabelsLimit this keeps the worst
+// noteBodyTransportLimit and dispatch.TransportLabelsLimit this keeps the worst
 // attacker-shaped payload — at a plausible operator config for the
 // whole-travelling config-derived fields — inside the transport budget,
 // which TestBuildEventPayload_WorstCaseFitsTransportBudget pins.
 const transportStringRefLimit = 258
-
-// transportLabelsLimit is the byte bound transportNormalizedEvent applies to
-// the JSON serialization of state.labels before marshaling the complete
-// normalized event. Labels are the only unbounded list a normalized event
-// carries, and anyone who can label the work item controls their count, so
-// without such a bound an author could push the complete event past
-// maxEventPayloadChunks*dispatchPayloadChunkSize and force buildEventPayload's
-// comment-only fallback — the same attacker-chosen "no event" channel
-// transportStringRefLimit's rationale closes. The bound is unconditional
-// (an event whose labels exceed it arrives truncated even when the
-// complete payload would have fit without it — a documented behavior
-// change), and together with the body and single-string bounds it keeps
-// the worst attacker-shaped payload inside the transport budget, which
-// TestBuildEventPayload_WorstCaseFitsTransportBudget pins.
-const transportLabelsLimit = 1024
 
 // isFullsendCommandBody reports whether body is a /fs-* slash command,
 // matching the poller's slash-command detection (isSlashCommandEvent).
@@ -543,7 +509,7 @@ func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byt
 	}
 	// where names the event for the transport-bound cut WARNINGs below
 	// and inside transportNormalizedEvent (logBoundTransportString /
-	// LogBoundTransportLabels).
+	// dispatch.LogBoundTransportLabels).
 	where := fmt.Sprintf("%s event on IID %d", event.Type, event.IID)
 	if body != "" {
 		m["_normalized_event"] = map[string]any{
@@ -566,7 +532,7 @@ func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byt
 		// front would be discarded work there. In the comment-only
 		// fallback this outer copy is the payload's only labels, and an
 		// unbounded one would reopen the very size channel into "no
-		// event" that transportLabelsLimit closes.
+		// event" that dispatch.TransportLabelsLimit closes.
 		m["labels"] = event.Labels
 	}
 	if event.MRSource != 0 {
@@ -621,7 +587,7 @@ func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byt
 			// --event-file), so event-keyed overlays stop matching
 			// and eventless ones such as !has(event.source) match —
 			// an attacker-chosen routing fact (ADR 0112 Decision 2).
-			return nil, fmt.Errorf("event payload on IID %d needs %d base64 characters, exceeding the %d-character dispatch budget; refusing to dispatch a command note without its complete event: %w", event.IID, n, budget, ErrTransportBudget)
+			return nil, fmt.Errorf("event payload on IID %d needs %d base64 characters, exceeding the %d-character dispatch budget; refusing to dispatch a command note without its complete event: %w", event.IID, n, budget, dispatch.ErrTransportBudget)
 		}
 		log.Printf("WARNING: %s event on IID %d: sending the comment-only normalized event; the complete event needs %d base64 characters, over the %d-character budget", event.Type, event.IID, n, budget)
 	}
@@ -634,9 +600,9 @@ func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byt
 		// the same slice, so a second line would describe a copy that
 		// never ships.
 		if ne == nil {
-			m["labels"] = LogBoundTransportLabels(where, event.Labels)
+			m["labels"] = dispatch.LogBoundTransportLabels(where, event.Labels)
 		} else {
-			m["labels"] = boundTransportLabels(event.Labels)
+			m["labels"] = dispatch.BoundTransportLabels(event.Labels)
 		}
 	}
 	return json.Marshal(m)
@@ -742,49 +708,6 @@ func boundEventStrings(ev *dispatch.NormalizedEvent, cut func(field, s string) s
 	}
 }
 
-// boundTransportLabels returns labels unchanged when their JSON serialization
-// fits transportLabelsLimit, and otherwise the longest prefix that does —
-// plus every control label the prefix dropped (dispatch.IsControlLabel):
-// the router's no-fix gate and the shipped agent triggers evaluate the
-// bounded list, so a stop label pushed past the byte cap by padding labels
-// would fail that gate open, and a kill switch must survive its own
-// transport bound. The kept control labels (~32 JSON bytes for both) ride
-// inside the worst-case budget margin
-// (TestBoundTransportLabels_KeepsControlLabels pins both the keep and the
-// budget fit), and keeping one can only suppress or enable what the gates
-// already decided — anyone who can label the work item can add or remove
-// the label itself.
-func boundTransportLabels(labels []string) []string {
-	if labels == nil {
-		return nil
-	}
-	size := 2 // the brackets
-	kept := 0
-	for i, label := range labels {
-		// json.Marshal of a string cannot fail; it quotes and escapes.
-		enc, _ := json.Marshal(label)
-		if kept > 0 {
-			size++ // the comma
-		}
-		if size+len(enc) > transportLabelsLimit {
-			break
-		}
-		size += len(enc)
-		kept = i + 1
-	}
-	bounded := labels[:kept]
-	var control []string
-	for _, label := range labels[kept:] {
-		if dispatch.IsControlLabel(label) && !slices.Contains(bounded, label) && !slices.Contains(control, label) {
-			control = append(control, label)
-		}
-	}
-	if len(control) == 0 {
-		return bounded
-	}
-	return append(slices.Clone(bounded), control...)
-}
-
 // logBoundTransportString bounds s like boundTransportString and logs a
 // one-line WARNING when the bound actually cut it: the cut is a documented
 // behavior change, and the WARNING is the operator signal that a value's
@@ -798,25 +721,11 @@ func logBoundTransportString(where, field, s string) string {
 	return bounded
 }
 
-// LogBoundTransportLabels bounds labels like boundTransportLabels and logs a
-// one-line WARNING when entries were dropped past the bound. Exported for
-// the Jira poller's GitLab-target door, which applies the same bound before
-// CEL trigger matching so the matcher and the transported payload agree on
-// state.labels: a trigger keyed on a label past the bound does not match
-// there, exactly as the transported event lacks it.
-func LogBoundTransportLabels(where string, labels []string) []string {
-	bounded := boundTransportLabels(labels)
-	if len(bounded) != len(labels) {
-		log.Printf("WARNING: %s: labels cut to the transport bound (%d of %d entries)", where, len(bounded), len(labels))
-	}
-	return bounded
-}
-
 // transportNormalizedEvent returns ne as a payload's _normalized_event map,
 // with its comment body replaced by the transport-bounded body and the
 // command and instruction re-derived from that body, so they always agree
 // with what run-agent-job.sh reads, its state.labels bounded by
-// LogBoundTransportLabels and its attacker-shaped single strings bounded by
+// dispatch.LogBoundTransportLabels and its attacker-shaped single strings bounded by
 // logBoundTransportEventStrings, so every cut leaves the operator WARNING
 // the flat payload fields do. It returns nil and no error when ne is nil,
 // and an error when ne would fail normevent.ParseJSON — the check fullsend
@@ -827,7 +736,7 @@ func transportNormalizedEvent(where string, ne *dispatch.NormalizedEvent, body s
 		return nil, nil
 	}
 	ev := *ne
-	ev.State.Labels = LogBoundTransportLabels(where, ev.State.Labels)
+	ev.State.Labels = dispatch.LogBoundTransportLabels(where, ev.State.Labels)
 	logBoundTransportEventStrings(where, &ev)
 	if ev.Transition.Comment != nil {
 		c := *ev.Transition.Comment

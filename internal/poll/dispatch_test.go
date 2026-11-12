@@ -1712,7 +1712,7 @@ func TestBuildEventPayload_OverBudgetNonCommandFallsBackBounded(t *testing.T) {
 	}
 	// The fallback's flat labels copy is bounded like state.labels: a
 	// strict prefix of the event's labels whose JSON fits
-	// transportLabelsLimit, so the fallback itself always fits the budget.
+	// dispatch.TransportLabelsLimit, so the fallback itself always fits the budget.
 	var m map[string]any
 	if err := json.Unmarshal(data, &m); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -1731,8 +1731,8 @@ func TestBuildEventPayload_OverBudgetNonCommandFallsBackBounded(t *testing.T) {
 	if !slices.Equal(got, event.Labels[:len(got)]) {
 		t.Errorf("flat labels are not a prefix of the event's labels")
 	}
-	if enc, err := json.Marshal(got); err != nil || len(enc) > transportLabelsLimit {
-		t.Errorf("flat labels are %d JSON bytes (err %v), want at most %d", len(enc), err, transportLabelsLimit)
+	if enc, err := json.Marshal(got); err != nil || len(enc) > dispatch.TransportLabelsLimit {
+		t.Errorf("flat labels are %d JSON bytes (err %v), want at most %d", len(enc), err, dispatch.TransportLabelsLimit)
 	}
 	if n := base64.StdEncoding.EncodedLen(len(data)); n > maxEventPayloadChunks*dispatchPayloadChunkSize {
 		t.Errorf("fallback payload is %d base64 characters, over the %d budget", n, maxEventPayloadChunks*dispatchPayloadChunkSize)
@@ -1740,7 +1740,7 @@ func TestBuildEventPayload_OverBudgetNonCommandFallsBackBounded(t *testing.T) {
 }
 
 // jiraBoundedFields are the string paths encodeJiraEventPayload bounds on
-// the Jira door: state.labels through boundTransportLabels (exactly like the
+// the Jira door: state.labels through dispatch.BoundTransportLabels (exactly like the
 // GitLab door), and the comment body and instruction through the
 // jiraCommentLimits shortening ladder (a /fs-* command body is exempt and
 // fails the dispatch closed when it does not fit).
@@ -1846,16 +1846,16 @@ func TestBoundTransportStringQuoteAndControlRunesFitRefLimit(t *testing.T) {
 }
 
 // TestBoundTransportLabelsSingleOverBoundLabelDropsAll covers
-// boundTransportLabels' kept==0 arm: when the first label alone exceeds
-// transportLabelsLimit, nothing fits and the bound returns an empty,
+// dispatch.BoundTransportLabels' kept==0 arm: when the first label alone exceeds
+// dispatch.TransportLabelsLimit, nothing fits and the bound returns an empty,
 // non-nil slice — the payload travels with state.labels: [] rather than a
 // nil list or a cut single label. TestBoundTransportLabels (in
 // dispatch_normalized_test.go) covers the fitting, nil and many-labels
 // cases but never this one.
 func TestBoundTransportLabelsSingleOverBoundLabelDropsAll(t *testing.T) {
-	got := boundTransportLabels([]string{strings.Repeat("x", 1500)})
+	got := dispatch.BoundTransportLabels([]string{strings.Repeat("x", 1500)})
 	if got == nil || len(got) != 0 {
-		t.Errorf("boundTransportLabels(single over-bound label) = %v (len %d), want an empty non-nil slice", got, len(got))
+		t.Errorf("dispatch.BoundTransportLabels(single over-bound label) = %v (len %d), want an empty non-nil slice", got, len(got))
 	}
 }
 
@@ -1875,11 +1875,11 @@ func TestBoundTransportLabels_KeepsControlLabels(t *testing.T) {
 		labels = append(labels, pad)
 	}
 	labels = append(labels, "fullsend-fix", "fullsend-no-fix")
-	bounded := LogBoundTransportLabels("test control labels", labels)
+	bounded := dispatch.LogBoundTransportLabels("test control labels", labels)
 	if !slices.Contains(bounded, "fullsend-no-fix") || !slices.Contains(bounded, "fullsend-fix") {
 		t.Fatalf("bounded labels = %v, want both control labels kept past the byte cap", bounded)
 	}
-	if enc, err := json.Marshal(bounded); err != nil || len(enc) > transportLabelsLimit+40 {
+	if enc, err := json.Marshal(bounded); err != nil || len(enc) > dispatch.TransportLabelsLimit+40 {
 		t.Errorf("bounded labels with the control labels kept are %d JSON bytes (err %v), want at most the bound plus the control labels' ~32 bytes", len(enc), err)
 	}
 
@@ -2021,8 +2021,8 @@ func TestEncodeJiraEventPayload_OversizedCommandBodyFailsClosed(t *testing.T) {
 	ev.Transition.Comment.Instruction = "review the acceptance criteria"
 
 	_, err := encodeJiraEventPayload("jira_comment", ev)
-	if !errors.Is(err, ErrTransportBudget) {
-		t.Fatalf("encodeJiraEventPayload(oversized command body) error = %v, want ErrTransportBudget", err)
+	if !errors.Is(err, dispatch.ErrTransportBudget) {
+		t.Fatalf("encodeJiraEventPayload(oversized command body) error = %v, want dispatch.ErrTransportBudget", err)
 	}
 
 	// Control: the 4096-rune prefix the adapter used to cut command bodies
@@ -2035,5 +2035,96 @@ func TestEncodeJiraEventPayload_OversizedCommandBodyFailsClosed(t *testing.T) {
 	cut.Transition.Comment = &c
 	if _, err := encodeJiraEventPayload("jira_comment", &cut); err != nil {
 		t.Fatalf("encodeJiraEventPayload(4096-rune command prefix) error = %v, want none: the prefix fits the budget", err)
+	}
+}
+
+// TestEncodeJiraEventPayload_CommandBudgetBoundary pins the largest
+// /fs-* command the Jira dispatch door can carry: the complete event
+// holds the command text twice (comment.body and the re-derived
+// comment.instruction), so with plain ASCII text the boundary sits near
+// 3,000 characters — far under both the 4096-rune adapter cap and the
+// roughly 6,550-character comment-only-fallback ceiling that carried
+// command bodies whole before the carried-whole fix — and one character
+// past the boundary is refused with dispatch.ErrTransportBudget, never
+// dispatched shortened. jira-integration.md documents this boundary
+// ("about 3,000 ASCII characters, fewer when escape-heavy"), so the
+// ballpark assertion below also fails when that doc drifts from the
+// code; the GitLab door has its own pin,
+// TestBuildEventPayload_CommandBudgetBoundary.
+func TestEncodeJiraEventPayload_CommandBudgetBoundary(t *testing.T) {
+	commandBody := func(total int) *normevent.Event {
+		ev := jiraTestEvent("group/sub/project")
+		body := "/fs-triage " + strings.Repeat("a", total)
+		ev.Transition.Comment.Body = body
+		ev.Transition.Comment.Command = "/fs-triage"
+		ev.Transition.Comment.Instruction = strings.TrimPrefix(body, "/fs-triage ")
+		return ev
+	}
+	fits := func(total int) bool {
+		_, err := encodeJiraEventPayload("jira_comment", commandBody(total))
+		return err == nil
+	}
+
+	// Binary search for the largest body the nine-chunk budget carries:
+	// the payload grows monotonically with the body length, so the
+	// boundary is a single length, found deterministically.
+	lo, hi := 0, 4096
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if fits(mid) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if !fits(lo) {
+		t.Fatalf("binary search found no fitting command body")
+	}
+	if lo < 2800 || lo > 3400 {
+		t.Errorf("largest dispatchable /fs-* command body is %d ASCII characters, want the documented ~3,000 (2800-3400): update jira-integration.md with the real boundary", lo)
+	}
+	if _, err := encodeJiraEventPayload("jira_comment", commandBody(lo+1)); !errors.Is(err, dispatch.ErrTransportBudget) {
+		t.Fatalf("encodeJiraEventPayload(command body one character past the boundary) error = %v, want dispatch.ErrTransportBudget", err)
+	}
+}
+
+// TestBuildEventPayload_CommandBudgetBoundary pins the largest /fs-*
+// command the GitLab dispatch door can carry — the door thread 4551012532
+// measured (2,975 ASCII characters at head 8c21e5b8) and
+// configuring-gitlab.md documents ("about 3,000 ASCII characters, fewer
+// when escape-heavy"). Like the Jira door, the complete event carries the
+// command text twice (comment.body and the re-derived
+// comment.instruction), but this door's payload also carries the flat
+// event fields, so its boundary drifts independently of the Jira door's;
+// one character past the boundary is refused with
+// dispatch.ErrTransportBudget, never dispatched shortened.
+func TestBuildEventPayload_CommandBudgetBoundary(t *testing.T) {
+	fits := func(total int) bool {
+		event, ne := mrNote("/fs-code " + strings.Repeat("a", total))
+		_, err := buildEventPayload(event, &ne)
+		return err == nil
+	}
+
+	// Binary search for the largest body the nine-chunk budget carries:
+	// the payload grows monotonically with the body length, so the
+	// boundary is a single length, found deterministically.
+	lo, hi := 0, 4096
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if fits(mid) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	if !fits(lo) {
+		t.Fatalf("binary search found no fitting command body")
+	}
+	if lo < 2800 || lo > 3400 {
+		t.Errorf("largest dispatchable /fs-* command body is %d ASCII characters, want the documented ~3,000 (2800-3400): update configuring-gitlab.md with the real boundary", lo)
+	}
+	event, ne := mrNote("/fs-code " + strings.Repeat("a", lo+1))
+	if _, err := buildEventPayload(event, &ne); !errors.Is(err, dispatch.ErrTransportBudget) {
+		t.Fatalf("buildEventPayload(command body one character past the boundary) error = %v, want dispatch.ErrTransportBudget", err)
 	}
 }

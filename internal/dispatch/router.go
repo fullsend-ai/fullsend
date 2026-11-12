@@ -27,7 +27,7 @@ const fixOptInLabel = "fullsend-fix"
 // labels — the labels the router's gates and the shipped agent triggers
 // evaluate as control flow rather than data (the fix gate's stop and
 // opt-in labels; docs/agents/fix.md's Control labels section). The
-// transport labels bound (internal/poll) keeps them even past its byte
+// transport labels bound (transport.go in this package) keeps them even past its byte
 // cap: the router matches on the bounded list, and dropping a stop label
 // under padding labels would fail that gate open — a kill switch must
 // survive its own transport bound. Keeping a control label can only

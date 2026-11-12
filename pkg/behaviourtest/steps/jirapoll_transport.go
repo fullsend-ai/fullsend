@@ -15,8 +15,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
+	"github.com/fullsend-ai/fullsend/internal/jiradispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
-	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -26,8 +26,9 @@ import (
 // dispatch (R-005 behaviour coverage for the bounded transported event
 // fields and the permanent refusal of oversized /fs-* commands). The
 // scenarios run the real jirapoll.Poller against the mock Jira server with
-// the production CEL trigger matching (the same harnessdispatch calls
-// newCELMatcher in internal/cli composes), and dispatch through the real
+// the production CEL trigger matching and record dispatch (the shared
+// internal/jiradispatch matcher and GitLab dispatcher newCELMatcher and
+// runJiraPollGitLab in internal/cli compose), and dispatch through the real
 // GitLab dispatch door — poll.Poller.DispatchJiraEvent, including
 // encodeJiraEventPayload's transport budget — onto a fake GitLab API that
 // records the pipelines it is asked to create, mirroring the boundary the
@@ -153,78 +154,6 @@ func pipelineInputString(inputs map[string]forge.PipelineInputValue, name string
 
 func (f *fakeGitLabAPI) CreateChildPipelineWithInputs(ctx context.Context, owner, repo, ref, jobToken string, inputs map[string]forge.PipelineInputValue) (int64, string, error) {
 	return f.CreatePipelineWithInputs(ctx, owner, repo, ref, inputs)
-}
-
-// transportCELMatcher evaluates events against the scenario's local
-// harness CEL triggers, composing the same harnessdispatch calls the
-// production matcher (newCELMatcher in internal/cli) uses, so the
-// scenarios exercise the real trigger surface — including the
-// state.labels view the GitLab target bounds before matching.
-type transportCELMatcher struct {
-	candidates []harnessdispatch.TriggeredHarness
-}
-
-func (m *transportCELMatcher) Match(_ context.Context, event *normevent.Event) ([]jirapoll.DispatchRecord, error) {
-	opts := harnessdispatch.AuthOptions{}
-	if !harnessdispatch.IsEventAuthorizedWith(event, opts) {
-		return nil, nil
-	}
-	candidates := harnessdispatch.FilterAuthorizedHarnessesWith(m.candidates, event, opts)
-	matched, err := harnessdispatch.MatchHarnesses(candidates, event)
-	if err != nil {
-		return nil, err
-	}
-	var records []jirapoll.DispatchRecord
-	for _, h := range matched {
-		ref, err := harnessdispatch.ProjectExecutionRef(h.Name, h.Harness.Role, event)
-		if err != nil {
-			return nil, fmt.Errorf("build execution ref for %s: %w", h.Name, err)
-		}
-		records = append(records, jirapoll.DispatchRecord{
-			Agent:         ref.Agent,
-			Role:          ref.Role,
-			SourceRepo:    ref.SourceRepo,
-			EventType:     ref.EventType,
-			EventPayload:  ref.EventPayload,
-			TriggerSource: ref.TriggerSource,
-			StatusRepo:    ref.StatusRepo,
-			StatusNumber:  ref.StatusNumber,
-		})
-	}
-	return records, nil
-}
-
-// gitlabTransportDispatcher is the jirapoll output driver for the
-// transport scenarios, mirroring gitlabJiraDispatcher in internal/cli: it
-// recovers the normalized event the CEL matcher embedded in the record's
-// event_payload and starts the agent pipeline through the real GitLab
-// dispatch door.
-type gitlabTransportDispatcher struct {
-	poller jiraEventPipelineDispatcher
-}
-
-// Dispatch implements jirapoll.RecordDispatcher.
-func (d gitlabTransportDispatcher) Dispatch(ctx context.Context, record jirapoll.DispatchRecord) error {
-	var payload struct {
-		NormalizedEvent json.RawMessage `json:"_normalized_event"`
-	}
-	if err := json.Unmarshal([]byte(record.EventPayload), &payload); err != nil {
-		return fmt.Errorf("parse event payload for %s: %w", record.Agent, err)
-	}
-	if len(payload.NormalizedEvent) == 0 {
-		return fmt.Errorf("event payload for %s has no _normalized_event", record.Agent)
-	}
-	event, err := normevent.ParseJSON(payload.NormalizedEvent)
-	if err != nil {
-		return fmt.Errorf("event payload for %s: %w", record.Agent, err)
-	}
-	return d.poller.DispatchJiraEvent(ctx, record.Agent, event)
-}
-
-// jiraEventPipelineDispatcher is the GitLab dispatch surface the
-// transport dispatcher needs; poll.Poller implements it.
-type jiraEventPipelineDispatcher interface {
-	DispatchJiraEvent(ctx context.Context, stage string, event *normevent.Event) error
 }
 
 func registerJiraTransportSteps(sc *godog.ScenarioContext) {
@@ -384,7 +313,7 @@ func whenJiraGitLabPollerRuns(ctx context.Context, w *world.World) error {
 	if err != nil {
 		return fmt.Errorf("list triggered harnesses: %w", err)
 	}
-	matcher := &transportCELMatcher{candidates: candidates}
+	matcher := &jiradispatch.Matcher{Candidates: candidates}
 
 	glPoller := poll.New(&fakeGitLabAPI{w: w}, nil, w.JiraTransport.Project, poll.Options{
 		GitLabURL:      "https://gitlab.example.com",
@@ -404,7 +333,7 @@ func whenJiraGitLabPollerRuns(ctx context.Context, w *world.World) error {
 		N:           50, // process all candidates
 		TargetForge: jirapoll.TargetForgeGitLab,
 		GitLabURL:   "https://gitlab.example.com",
-		Dispatcher:  gitlabTransportDispatcher{poller: glPoller},
+		Dispatcher:  jiradispatch.GitLabDispatcher{Poller: glPoller},
 	}
 	poller := jirapoll.New(jiraClient, matcher, opts)
 	if err := poller.Run(ctx); err != nil {

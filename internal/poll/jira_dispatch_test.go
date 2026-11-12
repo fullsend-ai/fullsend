@@ -336,7 +336,7 @@ func TestDispatchJiraEvent_CommandBodyOverBudgetFailsClosed(t *testing.T) {
 }
 
 // A work item's labels are bounded on the Jira door exactly as on the
-// GitLab transport (transportLabelsLimit), so a many-label work item still
+// GitLab transport (dispatch.TransportLabelsLimit), so a many-label work item still
 // dispatches — with the bounded prefix — instead of failing every dispatch
 // for it with a budget error. Before the bound, this test pinned that
 // failure; anyone who can label the work item could block its pipelines.
