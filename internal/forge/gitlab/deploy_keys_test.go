@@ -273,8 +273,11 @@ func TestGrantProtectedBranchPushDeployKey_ClassifiesUnsupportedCapability(t *te
 		unsupported bool
 	}{
 		{"payment required", http.StatusPaymentRequired, "plan", true},
-		{"forbidden", http.StatusForbidden, "403 Forbidden", true},
-		{"missing endpoint", http.StatusNotFound, "404 Not Found", true},
+		{"method not allowed", http.StatusMethodNotAllowed, "405 Method Not Allowed", true},
+		{"tier gated forbidden", http.StatusForbidden, "Deploy key push access requires a Premium license", true},
+		{"plain permission denied", http.StatusForbidden, "403 Forbidden", false},
+		{"tier gated not found", http.StatusNotFound, "feature not available on this tier", true},
+		{"branch vanished after read", http.StatusNotFound, "404 Branch Not Found", false},
 		{"tier gated bad request", http.StatusBadRequest, "Deploy key push access is a Premium feature", true},
 		{"tier gated unprocessable", http.StatusUnprocessableEntity, "not available on your license", true},
 		{"invalid input", http.StatusUnprocessableEntity, "deploy key is not enabled for this project", false},

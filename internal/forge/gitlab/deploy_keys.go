@@ -166,18 +166,20 @@ func (e *deployKeyPushUnsupportedError) Is(target error) bool {
 }
 
 // markDeployKeyPushUnsupported classifies a failed deploy-key push grant.
-// Statuses that mean the endpoint or feature is absent (402, 403, 404, 405) are
-// capability gaps; 400 and 422 are only when GitLab's message says the feature
-// is gated by tier, license or version, since they also report invalid input.
+// 402 and 405 mean the feature or endpoint is absent and are always capability
+// gaps. 400, 403, 404 and 422 are only when GitLab's message says the feature
+// is gated by tier, license or version, because they also report invalid
+// input, a plain permission denial, or a project or branch that disappeared
+// after it was read.
 func markDeployKeyPushUnsupported(err error) error {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		return err
 	}
 	switch apiErr.StatusCode {
-	case http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed:
+	case http.StatusPaymentRequired, http.StatusMethodNotAllowed:
 		return &deployKeyPushUnsupportedError{err: err}
-	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+	case http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound, http.StatusUnprocessableEntity:
 		msg := strings.ToLower(apiErr.Message)
 		for _, hint := range []string{"premium", "ultimate", "license", "tier", "plan", "not available", "not supported"} {
 			if strings.Contains(msg, hint) {
