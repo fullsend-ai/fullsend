@@ -1309,6 +1309,10 @@ type Client interface {
 	// Issue operations
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*Issue, error)
 	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error
+	// EnsureLabel creates a repository label with the given name. It
+	// returns nil when a label with that name already exists. Unlike
+	// creating an issue that carries the label, it fires no issue event.
+	EnsureLabel(ctx context.Context, owner, repo, name string) error
 	GetIssue(ctx context.Context, owner, repo string, number int) (*Issue, error)
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)

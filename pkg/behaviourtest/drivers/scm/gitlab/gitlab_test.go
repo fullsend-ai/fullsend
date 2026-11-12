@@ -8,6 +8,18 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
+func TestEnsureLabel(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+
+	if err := d.EnsureLabel(context.Background(), "owner", "repo", "do-it"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := fc.RepoLabels["owner/repo"]; len(got) != 1 || got[0] != "do-it" {
+		t.Fatalf("RepoLabels = %v, want [do-it]", got)
+	}
+}
+
 func TestDeleteBranch(t *testing.T) {
 	fc := forge.NewFakeClient()
 	d := New(fc)

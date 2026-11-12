@@ -1155,9 +1155,10 @@ cannot submit a review and has no row in the review scenario.
 
 Two more steps cover the unregistered e2e bot's loss of the bot-review
 exception. `the label "<label>" exists` makes the e2e identity create the label
-with a throwaway issue (closed again), because the triage actor cannot create
-labels; run it before `an issue`, so the throwaway issue's workflow runs predate
-`ScenarioStart`. `the <actor> submits a review comment on the pull request`
+through the forge's label API, because the triage actor cannot create labels.
+Creating a label fires no issue event, so no workflow run starts that a later
+step could count; a label already present in a reused repository is fine.
+`the <actor> submits a review comment on the pull request`
 submits a COMMENT review as a human test actor, where `a review comment is
 submitted on the pull request` makes the e2e bot do so, and the bot-role lookup
 now denies that bot's review before CEL.
@@ -1293,6 +1294,8 @@ suiteRunner := godog.TestSuite{
 **`scm.Driver.CreateUserFork` addition (breaking change):** The `scm.Driver` interface now includes `CreateUserFork(ctx, owner, repo string) (forkOwner, forkRepo string, err error)`, which forks a repository into the authenticated user's own account, the way an outside contributor does. The forge picks the fork's name. The `owned by the <actor>` fork step uses it. The GitHub and GitLab reference implementations pass through to the existing `forge.Client.CreateFork` method. This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
 
 **`scm.Driver.ListOpenIssues` addition (breaking change):** The `scm.Driver` interface now includes `ListOpenIssues(ctx, owner, repo string, labels ...string) ([]forge.Issue, error)`, returning the repository's open issues (pull requests excluded) that carry every given label. The `an issue with label ... and title containing ... exists` step uses it. The GitHub and GitLab reference implementations pass through to the existing `forge.Client` method of the same name. This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
+
+**`scm.Driver.EnsureLabel` addition (breaking change):** The `scm.Driver` interface now includes `EnsureLabel(ctx, owner, repo, name string) error`, which creates a repository label and returns nil when the label already exists. The `the label "<label>" exists` step uses it instead of opening a throwaway issue that carries the label, because that issue's `issues.labeled` event started a real harness run that a later step counted ([#9350](https://github.com/fullsend-ai/fullsend/issues/9350)). The GitHub and GitLab reference implementations pass through to the new `forge.Client.EnsureLabel` method. This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
 
 **`ci.RunLister` optional interface:** `ListRecentRuns(ctx, owner, repo string, limit int) ([]forge.WorkflowRun, error)` lists a repository's most recent workflow runs across all workflows. Failure log collection uses it to find runs that no step resolved. It is a separate interface, not a `ci.Driver` method, so external `ci.Driver` implementations keep compiling. Without it, failed scenarios still get a failure summary but only the run a step resolved has its logs collected. The GitHub Actions and GitLab CI reference drivers implement it.
 

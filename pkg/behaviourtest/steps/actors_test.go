@@ -12,6 +12,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
+	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -385,79 +386,50 @@ func TestWhenIssueOpenedForOwnersAuth_SelectsDriver(t *testing.T) {
 	require.ErrorContains(t, err, "TEST_ACTOR_TRIAGE_PAT not set")
 }
 
-// reviewLabelSCM records the label-carrying issue, the closed issue and
-// the submitted reviews.
-type reviewLabelSCM struct {
+// reviewSCM records the submitted reviews.
+type reviewSCM struct {
 	fakeActorSCM
 
-	issueLabels []string
-	closed      []int
-	reviews     []string
-	createErr   error
-	closeErr    error
-	// dropLabels makes CreateIssue succeed without the requested labels,
-	// as the GitHub client does after a label validation error.
-	dropLabels bool
+	reviews []string
 }
 
-func (f *reviewLabelSCM) CreateIssue(_ context.Context, _, _, _, _ string, labels ...string) (*forge.Issue, error) {
-	if f.createErr != nil {
-		return nil, f.createErr
-	}
-	f.issueLabels = append(f.issueLabels, labels...)
-	if f.dropLabels {
-		return &forge.Issue{Number: 77}, nil
-	}
-	return &forge.Issue{Number: 77, Labels: labels}, nil
-}
-
-func (f *reviewLabelSCM) CloseIssue(_ context.Context, _, _ string, number int) error {
-	f.closed = append(f.closed, number)
-	return f.closeErr
-}
-
-func (f *reviewLabelSCM) SubmitPullRequestReview(_ context.Context, _, _ string, _ int, event string) error {
+func (f *reviewSCM) SubmitPullRequestReview(_ context.Context, _, _ string, _ int, event string) error {
 	f.reviews = append(f.reviews, event)
 	return nil
 }
 
+// TestGivenLabelExists runs the label step against the fake forge: the
+// label is created through the label API and no issue is opened, so no
+// issues.labeled event can start a workflow run (#9350).
 func TestGivenLabelExists(t *testing.T) {
 	t.Parallel()
 
-	d := &reviewLabelSCM{}
-	w := &world.World{SCM: d, RepoOwner: "org", RepoName: "repo"}
+	fc := forge.NewFakeClient()
+	w := &world.World{SCM: scmgh.New(fc), RepoOwner: "org", RepoName: "repo"}
 	require.NoError(t, givenLabelExists(w, "do-it"))
-	assert.Equal(t, []string{"do-it"}, d.issueLabels)
-	assert.Equal(t, []int{77}, d.closed, "the throwaway issue is closed")
+	assert.Equal(t, []string{"do-it"}, fc.RepoLabels["org/repo"])
+	assert.Empty(t, fc.CreatedIssues, "no issue is opened")
 	assert.Zero(t, w.IssueNumber, "the scenario's issue is left alone")
 
-	require.ErrorContains(t, givenLabelExists(&world.World{SCM: d}, "do-it"), "no repo configured")
+	// A label already present, as in a reused pool repository, is fine.
+	require.NoError(t, givenLabelExists(w, "do-it"))
+	assert.Equal(t, []string{"do-it"}, fc.RepoLabels["org/repo"])
+	assert.Empty(t, fc.CreatedIssues, "no issue is opened")
 
-	failing := &reviewLabelSCM{createErr: errors.New("boom")}
-	err := givenLabelExists(&world.World{SCM: failing, RepoOwner: "org", RepoName: "repo"}, "do-it")
-	require.ErrorContains(t, err, `creating label "do-it"`)
+	require.ErrorContains(t, givenLabelExists(&world.World{SCM: scmgh.New(fc)}, "do-it"), "no repo configured")
 
-	closeFails := &reviewLabelSCM{closeErr: errors.New("nope")}
-	require.ErrorContains(t, givenLabelExists(&world.World{SCM: closeFails, RepoOwner: "org", RepoName: "repo"}, "do-it"), "nope")
-
-	// An issue created without the label fails setup and is still closed.
-	dropped := &reviewLabelSCM{dropLabels: true}
-	err = givenLabelExists(&world.World{SCM: dropped, RepoOwner: "org", RepoName: "repo"}, "do-it")
-	require.ErrorContains(t, err, `creating label "do-it": issue #77 was created without it`)
-	assert.Equal(t, []int{77}, dropped.closed, "the throwaway issue is closed")
-
-	droppedCloseFails := &reviewLabelSCM{dropLabels: true, closeErr: errors.New("nope")}
-	err = givenLabelExists(&world.World{SCM: droppedCloseFails, RepoOwner: "org", RepoName: "repo"}, "do-it")
-	require.ErrorContains(t, err, "was created without it")
-	require.ErrorContains(t, err, "nope")
+	failing := forge.NewFakeClient()
+	failing.Errors["EnsureLabel"] = errors.New("boom")
+	err := givenLabelExists(&world.World{SCM: scmgh.New(failing), RepoOwner: "org", RepoName: "repo"}, "do-it")
+	require.ErrorContains(t, err, `creating label "do-it": boom`)
 }
 
 func TestWhenActorSubmitsReviewComment(t *testing.T) {
 	t.Parallel()
 
-	write := &reviewLabelSCM{}
+	write := &reviewSCM{}
 	w := &world.World{
-		SCM:        &reviewLabelSCM{},
+		SCM:        &reviewSCM{},
 		WriteSCM:   write,
 		WriteLogin: "fstest-write",
 		RepoOwner:  "org",

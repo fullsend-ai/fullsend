@@ -3458,6 +3458,40 @@ func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, num
 	return nil
 }
 
+// newLabelColor is the color EnsureLabel gives a label it creates, the
+// same default GitHub uses for labels created by applying them to an issue.
+const newLabelColor = "ededed"
+
+// EnsureLabel creates a repository label. GitHub answers 422 with an
+// already_exists validation error when the label exists; that is success.
+func (c *LiveClient) EnsureLabel(ctx context.Context, owner, repo, name string) error {
+	path := fmt.Sprintf("/repos/%s/%s/labels", url.PathEscape(owner), url.PathEscape(repo))
+	resp, err := c.post(ctx, path, map[string]string{"name": name, "color": newLabelColor})
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && isAlreadyExistsValidationError(apiErr) {
+			return nil
+		}
+		return fmt.Errorf("create label %q: %w", name, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// isAlreadyExistsValidationError reports whether err is a 422 whose
+// validation errors include an already_exists entry.
+func isAlreadyExistsValidationError(err *APIError) bool {
+	if err.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	for _, detail := range err.Errors {
+		if detail.Code == "already_exists" {
+			return true
+		}
+	}
+	return false
+}
+
 // CloseIssue closes an issue by number.
 func (c *LiveClient) CloseIssue(ctx context.Context, owner, repo string, number int) error {
 	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number), map[string]string{"state": "closed"})
