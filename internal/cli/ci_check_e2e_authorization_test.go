@@ -139,6 +139,9 @@ func TestResolveCheckE2EAuthOpts_PositionalAndEnv(t *testing.T) {
 		t.Setenv("PR_AUTHOR_LOGIN", "alice")
 		t.Setenv("LABEL_ACTOR_LOGIN", "bob")
 		t.Setenv("EVENT_LABEL", e2eauth.OkToTestLabel)
+		t.Setenv("EVENT_NAME", "issue_comment")
+		t.Setenv("COMMENT_ID", "900")
+		t.Setenv("COMMENTER_LOGIN", "maint")
 		t.Setenv("CHECK_E2E_AUTH_DRY_RUN", "true")
 		opts := checkE2EAuthOpts{}
 		err := resolveCheckE2EAuthOpts(&opts, nil, false)
@@ -150,6 +153,9 @@ func TestResolveCheckE2EAuthOpts_PositionalAndEnv(t *testing.T) {
 		assert.Equal(t, "alice", opts.prAuthorLogin)
 		assert.Equal(t, "bob", opts.labelActorLogin)
 		assert.Equal(t, e2eauth.OkToTestLabel, opts.eventLabel)
+		assert.Equal(t, "issue_comment", opts.eventName)
+		assert.Equal(t, 900, opts.commentID)
+		assert.Equal(t, "maint", opts.commenterLogin)
 		assert.True(t, opts.dryRun)
 	})
 
@@ -229,7 +235,7 @@ func TestRunCheckE2EAuthorization_LabeledOtherLabel(t *testing.T) {
 	stdout, stderr, err := runE2EAuth(t, e2eAuthGate(t, fc), opts, "")
 	require.NoError(t, err)
 	assert.Empty(t, stderr)
-	assert.Equal(t, "authorized=false reason=unauthorized label_removed=false head_sha=\n", stdout)
+	assert.Equal(t, "authorized=false reason=other_label label_removed=false head_sha=\n", stdout)
 }
 
 func TestRunCheckE2EAuthorization_StaleRemovesLabel(t *testing.T) {
@@ -374,6 +380,49 @@ func TestCiWriteE2EAuthOutput_Errors(t *testing.T) {
 	err = writeE2EAuthOutput(&stdout, dir, res)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "GITHUB_OUTPUT")
+}
+
+func TestCiCheckE2EAuthorizationCmd_ExecuteIssueCommentEnv(t *testing.T) {
+	clearE2EAuthEnv(t)
+	const head = "2222222222222222222222222222222222222222"
+	fc := newE2EAuthFake()
+	fc.PullRequestHeadSHA = head
+	key := e2eAuthOwner + "/" + e2eAuthRepo + "/42"
+	fc.IssueComments = map[string][]forge.IssueComment{key: {{
+		ID:          901,
+		Body:        "/ok-to-test " + head,
+		Author:      "maint",
+		IssueNumber: 42,
+	}}}
+	fc.CollaboratorPermissions[e2eAuthCollabKey("maint")] = "write"
+
+	orig := newE2EAuthGateFn
+	t.Cleanup(func() { newE2EAuthGateFn = orig })
+	newE2EAuthGateFn = func(string) (e2eauth.GitHubGate, error) {
+		return e2eAuthGate(t, fc), nil
+	}
+
+	outPath := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_OUTPUT", outPath)
+	t.Setenv("GITHUB_REPOSITORY", e2eAuthOwner+"/"+e2eAuthRepo)
+	t.Setenv("EVENT_NAME", "issue_comment")
+	t.Setenv("COMMENT_ID", "901")
+	t.Setenv("COMMENTER_LOGIN", "maint")
+
+	cmd := newCICheckE2EAuthorizationCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"42"})
+	require.NoError(t, cmd.Execute())
+	assert.Empty(t, stderr.String())
+	wantStdout := "authorized=true reason=ok_to_test label_removed=false head_sha=" + head + "\n"
+	assert.Equal(t, wantStdout, stdout.String())
+
+	got, err := os.ReadFile(outPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(got), "reason=ok_to_test\n")
+	assert.Contains(t, string(got), "head_sha="+head+"\n")
 }
 
 func TestRunCheckE2EAuthorization_IssueComment(t *testing.T) {

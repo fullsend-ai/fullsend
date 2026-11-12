@@ -87,9 +87,10 @@ runs:
       run: bash "${GITHUB_WORKSPACE}/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
 
     # fresh_ok_to_test: a newer label belongs to the labeled workflow.
+    # other_label: this labeled run is for a label other than ok-to-test.
     # Stay quiet so this run does not overwrite that run's comment.
     - name: Post gate comment
-      if: steps.check.outputs.authorized != 'true' && steps.check.outputs.reason != 'fresh_ok_to_test'
+      if: steps.check.outputs.authorized != 'true' && steps.check.outputs.reason != 'fresh_ok_to_test' && steps.check.outputs.reason != 'other_label'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}

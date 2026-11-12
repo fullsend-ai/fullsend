@@ -199,7 +199,7 @@ func TestCheck_PolicyTable(t *testing.T) {
 				in.LabelActorLogin = "labeler"
 				return in
 			},
-			wantAuth: false, wantReason: "unauthorized", wantLabelRemoved: false,
+			wantAuth: false, wantReason: "other_label", wantLabelRemoved: false,
 		},
 		{
 			name: "PR context fetch failure",

@@ -108,5 +108,10 @@ missing token), `reason` is `error`, the cause is written to stderr, and
 the command still exits 0.
 
 `reason` values match the bash script: `trusted_bot`, `trusted_author`,
-`ok_to_test`, `fresh_ok_to_test`, `stale_ok_to_test`, `untrusted_labeler`,
-`untrusted_commenter`, `missing_sha`, `unauthorized`, `error`.
+`ok_to_test`, `fresh_ok_to_test`, `stale_ok_to_test`, `other_label`,
+`untrusted_labeler`, `untrusted_commenter`, `missing_sha`, `unauthorized`,
+`error`.
+
+`other_label` is returned on a `labeled` event when `EVENT_LABEL` names a
+label other than `ok-to-test`. Callers should skip gate comments for this
+reason (same as `fresh_ok_to_test`).

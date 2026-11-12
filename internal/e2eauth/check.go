@@ -28,7 +28,8 @@ type Input struct {
 	PRAuthorLogin   string
 	LabelActorLogin string
 	// EventLabel is github.event.label.name on labeled events. A labeled
-	// event authorizes only when this equals OkToTestLabel.
+	// event authorizes only when this equals OkToTestLabel; otherwise
+	// reason is other_label (when set) or unauthorized (when missing).
 	EventLabel string
 	// EventName is github.event_name. issue_comment selects /ok-to-test mode.
 	EventName string
@@ -133,7 +134,11 @@ func Check(ctx context.Context, gh GitHubGate, in Input) Result {
 		return res
 	}
 
-	if strings.TrimSpace(in.EventLabel) != OkToTestLabel {
+	eventLabel := strings.TrimSpace(in.EventLabel)
+	if eventLabel != OkToTestLabel {
+		if eventLabel != "" {
+			res.Reason = "other_label"
+		}
 		return res
 	}
 

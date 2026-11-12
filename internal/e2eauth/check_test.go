@@ -207,7 +207,7 @@ func TestCheck_LabeledRequiresOkToTestEventLabel(t *testing.T) {
 	h.runCase(t, "missing event label", in, false, "unauthorized", false)
 
 	in.EventLabel = "component/cli"
-	h.runCase(t, "other label", in, false, "unauthorized", false)
+	h.runCase(t, "other label", in, false, "other_label", false)
 
 	in.EventLabel = OkToTestLabel
 	h.runCase(t, "ok-to-test label", in, true, "ok_to_test", false)
