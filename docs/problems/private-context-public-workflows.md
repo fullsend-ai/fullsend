@@ -27,10 +27,10 @@ an agent to repeat or summarize protected material.
 [ADR 0021](../ADRs/0021-jsonl-reasoning-trace-exposure.md) chooses access control
 for full-fidelity transcripts rather than relying on heuristic sanitization.
 ADR 0021's owner-scoped storage has not been implemented for any repository.
-The [GitHub action](https://github.com/fullsend-ai/fullsend/blob/ef7c61ec1e703f5032ccac96201f107f6b1ec3f6/action.yml#L684-L689)
-and [GitLab CI template](https://github.com/fullsend-ai/fullsend/blob/ef7c61ec1e703f5032ccac96201f107f6b1ec3f6/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml#L203-L207)
-upload run output, including transcripts, as forge-native artifacts. On GitHub,
-any signed-in user can download artifacts from a public repository;
+By default, the [GitHub action](https://github.com/fullsend-ai/fullsend/blob/7338abefc1c8f618b8149053ee80a7a75e45fb99/action.yml#L725-L730)
+and [GitLab CI template](https://github.com/fullsend-ai/fullsend/blob/7338abefc1c8f618b8149053ee80a7a75e45fb99/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml#L211-L215)
+upload the whole run output, including transcripts, as forge-native artifacts.
+On GitHub, any signed-in user can download artifacts from a public repository;
 private-repository artifacts are available to repository readers, not just
 owners. The GitLab template sets no `artifacts:access` restriction. GitLab's
 [`artifacts:access`](https://docs.gitlab.com/ci/yaml/#artifactsaccess) defaults
@@ -39,12 +39,27 @@ including anonymous users.
 [#6734](https://github.com/fullsend-ai/fullsend/issues/6734) tracks alternative
 artifact storage, including disabling forge-native uploads.
 
-ADR 0021 also specifies opt-in suppression of the JSONL transcript artifact,
-declared in agent configuration for protected external sources. This control
-is not implemented: there is no configuration field or transcript extraction
-path that implements the opt-in suppression. Operators cannot currently rely
-on this decision to suppress transcripts. The decision does not cover console
-output, reviews, traces or other forge writes.
+ADR 0021 also specified opt-in suppression of the JSONL transcript artifact,
+declared in agent configuration for protected external sources. That opt-out
+was never built.
+[ADR 0161](../ADRs/0161-repo-config-limits-run-artifact-content.md) replaces
+it with a repository-level `artifacts` setting in `config.yaml`, implemented
+in the GitHub action and the GitLab CI template. The setting picks one level
+for each run: `all` uploads the whole run output, `metadata` uploads only
+run-level metrics and telemetry with conversation content removed, and `none`
+uploads nothing. A `by_source` entry can set a stricter level for runs
+started from one source, such as a Jira issue. The
+[run artifacts guide](../guides/user/run-artifacts-and-private-data.md)
+describes how to use it.
+
+The setting narrows one publication path, and it has limits. The default is
+`all`, so the artifact holds the whole run output until the repository owner
+sets a stricter level. `by_source` looks only at where the run started, not
+at every private system the agent can read on that run. `metadata` still
+publishes identifiers such as the work item id and the branch name. The
+withheld files exist only on the runner; there is no private store for them.
+Neither decision covers console output, reviews or other forge writes, and
+remote trace export is unchanged at every level.
 
 The harness schema does declare a
 [`security.trace.enabled`](https://github.com/fullsend-ai/fullsend/blob/ef7c61ec1e703f5032ccac96201f107f6b1ec3f6/internal/harness/harness.go#L233-L236)
@@ -95,14 +110,20 @@ private endpoint does not change the audience of the local span file, console
 output or public reviews. With content capture enabled, captured content is
 also
 [written to the local span file](../guides/infrastructure/distributed-tracing.md#content-capture-level-3),
-so it reaches the same forge artifact.
+so it reaches the same forge artifact at the default `all` level. The
+`metadata` level removes captured content from the uploaded copy of that
+file, and `none` uploads no artifact.
 
 [#2513](https://github.com/fullsend-ai/fullsend/issues/2513) records the
 direction to use private GitHub repositories as the standard for private Jira
 refinement. It chooses documentation warnings as the immediate step and a
 harness-level runtime check that warns or blocks Jira integration in a public
 repository as the follow-up. This records the intended guard, rather than
-establishing that runtime enforcement is available.
+establishing that runtime enforcement is available. One narrower warning now
+exists: a run started from an external tracker warns when it uploads its full
+transcript, the configuration makes no `artifacts` choice for that source and
+the repository is not known to be private. It covers the artifact only and
+does not block the run.
 
 [#1189](https://github.com/fullsend-ai/fullsend/issues/1189) identifies that
 retro issues about a private source repository can expose private content in
@@ -223,12 +244,15 @@ including custom scripts and failures. Public fallback when private storage
 fails would defeat the boundary. Trusted policy must apply before private
 reads and cannot be weakened by the untrusted PR or agent.
 
-Another option is to suppress selected artifacts or disable their publication
-for protected runs. Suppressing collection and disabling public upload are
-different choices: the former removes retained evidence needed for debugging,
-retro analysis and resumption; the latter can preserve an authorized private
-copy. Neither prevents disclosure through logs, public comments or generated
-code. An artifact switch is a partial mitigation, not a confidential mode.
+A narrower control limits what the artifact publishes for protected runs.
+[ADR 0161](../ADRs/0161-repo-config-limits-run-artifact-content.md) decides
+this form: the runner keeps the full output for its own steps and uploads a
+filtered copy, or none. It adds no private store, so retro analysis,
+resumption and follow-up workflows lose the withheld evidence. Keeping an
+authorized private copy is a separate choice, which
+[#6734](https://github.com/fullsend-ai/fullsend/issues/6734) tracks. An
+artifact level does not prevent disclosure through logs, public comments or
+generated code. It is a partial mitigation, not a confidential mode.
 
 GitLab's `artifacts:access` setting can restrict artifact downloads through the
 UI and API. This is a partial, forge-specific mitigation: it does not prevent
