@@ -108,6 +108,10 @@ type workflowExprParser struct {
 	// unknownVars lists, in order of first use, the variables referenced
 	// as operands that are absent from env.
 	unknownVars []string
+	// invalidOperand records an operand that parsed but cannot be used, such
+	// as a regex literal that does not compile. It is tracked apart from err
+	// so evaluation is unchanged; it only classifies diagnostics.
+	invalidOperand bool
 }
 
 // evalWorkflowIf evaluates a GitLab rules:if expression against env. A
@@ -288,6 +292,7 @@ func (p *workflowExprParser) parseOperand() workflowValue {
 		}
 		re, err := regexp.Compile(pattern)
 		if err != nil {
+			p.invalidOperand = true
 			return workflowValue{unknown: true}
 		}
 		return workflowValue{re: re}
@@ -468,9 +473,9 @@ func unevaluableIfReason(expr string, env map[string]*string) (reason string, st
 	p.parseOr()
 	p.skipSpace()
 	// Only a well-formed expression whose sole obstacle is an unknown
-	// variable is project-state-dependent; a malformed one cannot be fixed
-	// by an earlier admitting rule.
-	if p.err == nil && p.pos == len(p.src) && len(p.unknownVars) > 0 {
+	// variable is project-state-dependent; a malformed one, including one
+	// with an invalid regex, cannot be fixed by an earlier admitting rule.
+	if p.err == nil && !p.invalidOperand && p.pos == len(p.src) && len(p.unknownVars) > 0 {
 		verb := "is"
 		if len(p.unknownVars) > 1 {
 			verb = "are"

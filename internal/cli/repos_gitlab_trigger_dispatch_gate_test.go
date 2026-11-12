@@ -71,6 +71,26 @@ func TestPrintGitLabTriggerDispatchGate_SanitizesReasons(t *testing.T) {
 	assert.Contains(t, lines[1], "[acme/widgets]   - the committed .gitlab-ci.yml defines its own fullsend ?[2J?fake agent job")
 }
 
+// The repository name and inherited scope names are sanitized too, on both the
+// deferred and the ready paths.
+func TestPrintGitLabTriggerDispatchGate_SanitizesNames(t *testing.T) {
+	var buf bytes.Buffer
+	printGitLabTriggerDispatchGate(ui.New(&buf), "acme/wid\x1b[2Jgets", repos.GitLabTriggerDispatchGate{
+		Deferred: []string{"a reason"},
+	})
+	printGitLabTriggerDispatchGate(ui.New(&buf), "acme/wid\x1b[2Jgets", repos.GitLabTriggerDispatchGate{
+		Ready:                     true,
+		UnverifiedInheritedScopes: []string{"ins\x1b[2Jtance", "ac\nme"},
+	})
+
+	out := buf.String()
+	assert.NotContains(t, out, "\x1b")
+	assert.Contains(t, out, "[acme/wid?[2Jgets]   - a reason")
+	assert.Contains(t, out, "ins?[2Jtance, ac?me")
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	require.Len(t, lines, 4)
+}
+
 func TestReportGitLabTriggerDispatchGate_PrerequisitesVerified(t *testing.T) {
 	// The live verification itself is covered in internal/repos; this checks
 	// the report for a gate whose prerequisites all passed.

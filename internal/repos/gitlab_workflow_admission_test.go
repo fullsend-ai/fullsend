@@ -89,6 +89,10 @@ func TestRulesProblem_UnevaluableReasons(t *testing.T) {
 			rules: "- if: $FREEZE == \"1\" garbage\n",
 			want:  "uses syntax this check cannot evaluate",
 		},
+		"unknown variable with an invalid regex": {
+			rules: "- if: $FREEZE =~ /[/\n",
+			want:  "its condition `$FREEZE =~ /[/` uses syntax this check cannot evaluate",
+		},
 		"changes clause": {
 			rules:   "- changes: [Makefile]\n",
 			want:    "its changes: clause depends on repository state that is not known at install time",
