@@ -44,5 +44,5 @@ Feature: A dispatch run with skipped jobs reads as complete logs
     When the issue is labeled "ready-for-skip-listed"
     Then the harness "skip-listed" workflow completes successfully
     And the harness "skip-listed" workflow logs contain "[completed/skipped] ==="
-    And the harness "skip-listed" workflow logs do not contain "error fetching trace:"
+    And the harness "skip-listed" workflow logs do not contain "[logs unavailable:"
     And the agent will succeed to Prove execution
