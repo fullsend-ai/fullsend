@@ -114,8 +114,12 @@ Forgejo event handling are unchanged; ADR 0107 governs their bot events.
 - Labels Fullsend itself adds, such as the `fs-code-agent` run marker, become
   label-added events that harness triggers can match, so harness authors must
   keep triggers off them.
-- A cyclic hand-off runs until a human removes the label or the trigger;
-  no platform cap stops it.
+- A cyclic hand-off runs until a human removes the harness trigger or
+  routing, and cancels any active or queued runs; no platform cap stops it.
+  Removing the label is at most best-effort: a running agent can add it back,
+  and the poller rebuilds label additions from changelog history without
+  checking that the label is still present, so an addition already recorded
+  can still dispatch after removal.
 - Under `allowlist` and `project_roles`, bot hand-off needs the bot account
   listed or given a project role, so those repositories opt in explicitly.
 - The display-name test no longer affects whether a label-added event is
