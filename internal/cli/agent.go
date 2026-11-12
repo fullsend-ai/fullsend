@@ -737,10 +737,22 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 					// chain resolves again, and when that chain is itself
 					// deny-all (a base []) keep fullsend's default
 					// prefixes so agents under them stay admitted and
-					// the config stays editable.
+					// the config stays editable — but only the prefixes
+					// a remaining agent still sits under: a base that
+					// asked for deny-all keeps it once no remaining
+					// agent needs a default prefix, and the
+					// GITHUB_SERVER_URL-derived entries are baked in
+					// only when a remaining agent itself sits under one.
 					cfg.SetAllowedRemoteResources(nil)
 					if len(config.EffectiveAllowedResources(cfg)) == 0 {
-						cfg.SetAllowedRemoteResources(config.DefaultAllowedRemoteResources())
+						var needed []string
+						for _, p := range config.DefaultAllowedRemoteResources() {
+							if anyAgentUsesPrefix(agents, p) {
+								needed = append(needed, p)
+							}
+						}
+						// A nil needed keeps the key dropped (deny-all).
+						cfg.SetAllowedRemoteResources(needed)
 					}
 				}
 			}
@@ -968,7 +980,7 @@ func hasAllowlistPrefix(resources []string, prefix string) bool {
 
 func anyAgentUsesPrefix(agents []config.AgentEntry, prefix string) bool {
 	for _, a := range agents {
-		if urlutil.IsURL(a.Source) && strings.HasPrefix(a.Source, prefix) {
+		if urlutil.IsURL(a.Source) && urlutil.MatchingAllowedPrefixInList(a.Source, []string{prefix}) != "" {
 			return true
 		}
 	}
