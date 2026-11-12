@@ -148,7 +148,10 @@ func composeRunHarness(ctx context.Context, in runHarnessInput, printer *ui.Prin
 	case lockState.loadErr != nil:
 		printer.StepWarn("Could not load lock file: " + lockState.loadErr.Error())
 	case lockState.stale:
-		printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run fullsend lock %s%s to update.", shellQuoteArg(agentName), fullsendDirArg(in.fullsendDir)))
+		// The shared lock-update hint (LockUpdateCommand, built once the
+		// harness path is known), so the stale advice carries --forge and
+		// --fullsend-dir exactly like run's other lock advice (#8988).
+		printer.StepWarn("Harness has changed since lock file was generated. Run " + composeOpts.LockUpdateCommand + ".")
 	case len(lockState.pins) > 0:
 		noun := "dependency"
 		if len(lockState.pins) > 1 {
