@@ -170,6 +170,30 @@ fullsend repos install acme/api acme/web
 fullsend repos install "acme/*" --direct --concurrency 8
 ```
 
+### Configuration schema of a pinned ref
+
+The managed `.fullsend/config.yaml` is read by the Fullsend runtime at the
+repository's effective `fullsend_ref`, which can be older than the CLI that
+renders it. For an explicitly pinned `fullsend_ref` (one that differs from the
+running release), install, converge and `repos status` use the configuration
+schema that ref declares in `internal/config/managed-config-schema` in
+fullsend-ai/fullsend. A ref without that file uses the legacy schema unless it
+contains the commit that introduced the `tracker` mapping. In the legacy schema
+the managed `tracker` mapping is rendered as the scalar `tracker: <provider>`
+key plus `create_issues.allow_targets`. A setting that schema cannot express
+(GitLab `allowed_targets.groups`, or any `tracker.jira` setting) fails that
+repository with an error that names the setting. The ownership marker is the
+same in every schema.
+
+The pinned ref is looked up only when the managed configuration or the
+installed file declares `tracker` or `create_issues`, the only keys whose shape
+differs between known schemas. Looking it up needs the upstream GitHub client.
+When the ref or its schema cannot be determined (the ref does not resolve, no
+upstream client is available, or the ref declares a schema version this CLI
+does not know), install leaves `.fullsend/config.yaml` unchanged and fails that
+repository with the ref and the reason, and `repos status` reports
+compatibility as `unknown`.
+
 ### Selecting repositories
 
 With no positional arguments, install converges every repository declared in the manifest. Positional arguments filter that set. Each one can be:
@@ -1471,6 +1495,17 @@ each of those identities must be listed individually in `allowed_to_merge` /
 is reported when any active Poller identity is missing.
 For the service-account diagnostics, see
 [GitLab project service-account lifecycle § Service-account status](#service-account-status).
+
+Managed `.fullsend/config.yaml` is checked against the configuration schema of
+the repo's pinned `fullsend_ref` (see
+[Configuration schema of a pinned ref](#configuration-schema-of-a-pinned-ref)).
+A repo whose installed file that ref cannot read is listed with
+`config compatibility (fullsend_ref <ref>): incompatible` and the reason. A
+repo whose schema cannot be determined is listed as `unknown` with the ref and
+reason, and its `.fullsend/config.yaml` is reported as drift rather than
+current. JSON output carries the same result in `config_compatibility`
+(`compatible`, `incompatible`, or `unknown`), `config_compatibility_reason`,
+and `config_schema_ref`.
 
 **JSON output** (`--json`) returns the full `StatusResult` object with per-repo details and aggregate summary counts.
 

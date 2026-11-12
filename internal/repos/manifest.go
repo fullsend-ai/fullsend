@@ -379,6 +379,11 @@ type ResolvedConfig struct {
 	// order. Nil when ConfigManaged is false. It does not bake in code
 	// defaults or config.base.yaml.
 	Managed config.PerRepoConfigWriter
+	// ConfigSchema is the per-repo configuration schema the repository's
+	// effective fullsend_ref reads (#9292). Install, convergence and status
+	// set it from resolveManagedConfigSchema before rendering Managed; the
+	// zero value renders the running binary's schema.
+	ConfigSchema managedConfigSchema
 	// ManifestSource is the sanitized HTTPS URL of the repos.yaml manifest
 	// this configuration was resolved from, written after the ownership
 	// marker in the managed .fullsend/config.yaml. Empty when the manifest
