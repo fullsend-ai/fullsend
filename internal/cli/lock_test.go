@@ -322,7 +322,7 @@ func TestRunLock_FetchOnlyHarnessRemoteResourcesNotSubset(t *testing.T) {
 	// A harness with no URL references that opts into runtime fetching
 	// (allow_runtime_fetch + allowed_remote_resources) still starts the
 	// fetch service at run time, so lock must check its allowlist against
-	// config.yaml's — not only when HasURLReferences() is true (#7395801).
+	// config.yaml's — not only when HasURLReferences() is true (#9291).
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 

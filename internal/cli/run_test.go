@@ -368,7 +368,7 @@ func TestRunAgent_FetchOnlyHarnessRemoteResourcesNotSubset(t *testing.T) {
 	// (allow_runtime_fetch + allowed_remote_resources) still starts the
 	// fetch service, so its allowlist must be checked against
 	// config.yaml's — the subset check must not be gated on
-	// HasURLReferences (#7395801).
+	// HasURLReferences (#9291).
 	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
