@@ -35,7 +35,8 @@ const PerRepoGuardVar = "FULLSEND_PER_REPO_INSTALL"
 const ChangesRequestedMarker = "<!-- fullsend:changes-requested -->"
 
 // Log-note markers the forge clients embed in the text returned by
-// GetRunLogs, in band and without an error, when a single job's log (or
+// GetWorkflowRunLogs (the behaviour-test ci.Driver exposes the same
+// call as GetRunLogs), in band and without an error, when a single job's log (or
 // the whole aggregate) could not be fetched in full. The GitHub and
 // GitLab clients write these prefixes and pkg/behaviourtest/steps
 // matches them (partialLogNotes) to tell a fetch failure or size cap
