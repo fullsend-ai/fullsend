@@ -435,26 +435,25 @@ func (d *composedDriver) AllocateLease(ctx context.Context) (RepoLease, error) {
 	d.envMu.Unlock()
 	defer d.allocs.Done()
 
-	// Only the wait for capacity is cancelled when Finalize begins;
-	// an allocation already provisioning keeps ctx alone.
-	acquireCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	stopWatch := context.AfterFunc(acquireStop, cancel)
-	slot, _, err := d.alloc.Acquire(acquireCtx)
-	stopWatch()
-	if err != nil {
-		return RepoLease{}, fmt.Errorf("allocating repo: %w", err)
-	}
-
-	lease, env, err := d.provision(ctx, slot)
-	if err != nil {
-		// The claim created the slot repo, so it is ours to delete:
-		// release the slot rather than leaving it occupied until GC. The
-		// release runs even if ctx was cancelled.
-		if relErr := d.alloc.Release(context.WithoutCancel(ctx), slot); relErr != nil {
-			d.logf("[driver] releasing %s after failed provisioning: %v", slot, relErr)
+	// A slot whose workflow Actions never indexes (errWorkflowNotReady)
+	// is released and a fresh repo claimed, up to settleRecreateAttempts
+	// claims in total (#8654). The ensurer never recreates a slot repo
+	// itself. Any other provisioning error fails straight away.
+	var (
+		slot  Slot
+		lease RepoLease
+		env   *orgEnv
+	)
+	for attempt := 1; ; attempt++ {
+		var err error
+		slot, lease, env, err = d.claimAndProvision(ctx, acquireStop)
+		if err == nil {
+			break
 		}
-		return RepoLease{}, fmt.Errorf("allocating repo %s: %w", slot, err)
+		if !errors.Is(err, errWorkflowNotReady) || attempt >= settleRecreateAttempts || ctx.Err() != nil {
+			return RepoLease{}, err
+		}
+		d.logf("[driver] %v: claiming a fresh repo, attempt %d/%d", err, attempt+1, settleRecreateAttempts)
 	}
 
 	d.mu.Lock()
@@ -472,6 +471,33 @@ func (d *composedDriver) AllocateLease(ctx context.Context) (RepoLease, error) {
 
 	d.logf("[driver] allocated %s (mint %s; %s)", slot, env.mintURL, d.alloc.quotaSummary(slot.Org))
 	return lease, nil
+}
+
+// claimAndProvision claims one slot and provisions it. On a provisioning
+// failure the slot is released, since the claim created its repo.
+func (d *composedDriver) claimAndProvision(ctx, acquireStop context.Context) (Slot, RepoLease, *orgEnv, error) {
+	// Only the wait for capacity is cancelled when Finalize begins;
+	// an allocation already provisioning keeps ctx alone.
+	acquireCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopWatch := context.AfterFunc(acquireStop, cancel)
+	slot, _, err := d.alloc.Acquire(acquireCtx)
+	stopWatch()
+	if err != nil {
+		return Slot{}, RepoLease{}, nil, fmt.Errorf("allocating repo: %w", err)
+	}
+
+	lease, env, err := d.provision(ctx, slot)
+	if err != nil {
+		// The claim created the slot repo, so it is ours to delete:
+		// release the slot rather than leaving it occupied until GC. The
+		// release runs even if ctx was cancelled.
+		if relErr := d.alloc.Release(context.WithoutCancel(ctx), slot); relErr != nil {
+			d.logf("[driver] releasing %s after failed provisioning: %v", slot, relErr)
+		}
+		return Slot{}, RepoLease{}, nil, fmt.Errorf("allocating repo %s: %w", slot, err)
+	}
+	return slot, lease, env, nil
 }
 
 // provision makes a freshly claimed slot ready: the org's credential and

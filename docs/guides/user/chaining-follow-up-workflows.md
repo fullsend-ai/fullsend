@@ -49,6 +49,15 @@ default name and the matching `.matrix-<job-index>` names. Artifacts are
 uploaded even when a run fails, so check the run's conclusion before trusting
 their contents.
 
+The tree below is the default, `all`. A repository that sets the
+[`artifacts`](../../reference/config-reference.md#artifacts) level to
+`metadata` for a run gets only `metrics.json`, `eval-measurements.jsonl` and
+`run-telemetry.jsonl` (without conversation content) in each run directory: no
+`iteration-N/` result, transcripts or security findings. At `none`, the run
+uploads no artifact at all. A follow-up that reads the result needs `all` for
+the runs it consumes. See
+[Run artifacts and private data](run-artifacts-and-private-data.md).
+
 ```text
 fullsend-<agent>[.matrix-<job-index>]/ # suffix on later rows for repeated agents
 └── <run-dir>/                         # generated per run, e.g. fs-rev-09c9f0671390

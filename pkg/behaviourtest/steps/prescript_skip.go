@@ -91,8 +91,10 @@ func extractedArtifactRoots(dest string) ([]string, error) {
 
 // hostRunDirBases are where the run directories sit inside an extracted
 // harness artifact: at its root on GitHub (upload-artifact strips the
-// output/ prefix), under output/ on GitLab (artifacts:paths keeps it).
-var hostRunDirBases = []string{".", "output"}
+// artifact directory prefix), under fullsend-artifact/ on GitLab
+// (artifacts:paths keeps it; ADR 0161), or under output/ for GitLab
+// scaffolds that predate the artifact directory.
+var hostRunDirBases = []string{".", "fullsend-artifact", "output"}
 
 // checkPreScriptSkipped inspects a downloaded harness artifact. It reads
 // the host-written run-telemetry.jsonl (never an agent-writable nested

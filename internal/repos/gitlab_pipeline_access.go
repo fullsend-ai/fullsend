@@ -346,16 +346,27 @@ func VerifyGitLabPollerProtectedPipelineAccess(ctx context.Context, client forge
 		return err
 	}
 	if !PollerCanCreatePipeline(rule, []int{userID}) {
-		return &PollerPipelineAccessDeniedError{Reason: fmt.Sprintf("user ID %d cannot start pipelines on protected branch %q (%s)", userID, branch, describePipelineAccess(rule))}
+		return &PollerPipelineAccessDeniedError{
+			Reason:   fmt.Sprintf("user ID %d cannot start pipelines on protected branch %q (%s)", userID, branch, describePipelineAccess(rule)),
+			UserID:   userID,
+			Branch:   branch,
+			RuleName: rule.Name,
+		}
 	}
 	return nil
 }
 
 // PollerPipelineAccessDeniedError reports that the existing protected-branch
 // policy does not let the account start pipelines. Reason is authored by
-// fullsend and carries no credential material.
+// fullsend and carries no credential material. UserID, Branch and RuleName
+// identify the account, the default branch, and the protection rule that
+// covers it (a wildcard rule's name differs from Branch), so a caller can
+// build operator remediation.
 type PollerPipelineAccessDeniedError struct {
-	Reason string
+	Reason   string
+	UserID   int
+	Branch   string
+	RuleName string
 }
 
 func (e *PollerPipelineAccessDeniedError) Error() string { return e.Reason }

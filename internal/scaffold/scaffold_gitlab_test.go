@@ -2,6 +2,9 @@ package scaffold
 
 import (
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -96,6 +99,143 @@ func TestGitLabGitignoreExcludesOutput(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 	assert.Contains(t, s, "output/")
+	assert.Contains(t, s, "fullsend-artifact/")
+}
+
+// The GitLab job uploads only the prepared copy (ADR 0161): the artifact
+// path is fullsend-artifact/, never output/, and the job script builds it
+// after eval-measure from the event file fullsend run received, before
+// that file is removed.
+func TestGitLabAgentArtifactIsPreparedCopy(t *testing.T) {
+	tmpl := gitlabPerRepoText(t, ".gitlab/ci/fullsend-agent.yml")
+	assert.Contains(t, tmpl, "    paths:\n      - fullsend-artifact/\n")
+	assert.NotContains(t, tmpl, "      - output/\n")
+
+	s := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+	measureIdx := strings.Index(s, `fullsend eval-measure "${MEASURE_ARGS[@]}"`)
+	prepareIdx := strings.Index(s, "fullsend prepare-artifacts")
+	exitIdx := strings.LastIndex(s, `exit "${RUN_STATUS}"`)
+	require.Greater(t, measureIdx, 0)
+	require.Greater(t, prepareIdx, measureIdx, "prepare runs after eval-measure")
+	require.Greater(t, exitIdx, prepareIdx)
+	prepare := s[prepareIdx:exitIdx]
+	assert.Contains(t, prepare, `--output-dir "${CI_PROJECT_DIR}/output"`)
+	assert.Contains(t, prepare, `--artifact-dir "${_FS_ARTIFACT_DIR}"`)
+	assert.Contains(t, prepare, "--fullsend-dir .fullsend")
+	assert.NotContains(t, prepare, "--forge", "the source never falls back to the forge platform")
+	assert.Contains(t, prepare, `${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}`)
+	assert.Contains(t, prepare, `rm -rf -- "${_FS_ARTIFACT_DIR}"`, "a failed resolution leaves no artifact directory")
+	// The EXIT trap removes the event file after prepare; no manual rm.
+	assert.NotContains(t, prepare, `rm -f "${GITLAB_EVENT_FILE}"`)
+	missingIdx := strings.Index(prepare, "if ! command -v fullsend >/dev/null 2>&1; then")
+	probeIdx := strings.Index(prepare, "elif ! fullsend prepare-artifacts --help >/dev/null 2>&1; then")
+	require.Greater(t, missingIdx, 0)
+	require.Greater(t, probeIdx, missingIdx, "a missing binary is told apart before the version probe")
+	assert.Contains(t, prepare, "WARNING: the fullsend CLI is not installed")
+	assert.Contains(t, prepare, "WARNING: the installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded")
+	assert.Contains(t, s, `_FS_ARTIFACT_DIR="${CI_PROJECT_DIR}/fullsend-artifact"`)
+
+	// The stale artifact directory is cleared at the very top, before the
+	// CI_DEBUG_TRACE guard and every other early exit, only for an
+	// absolute CI_PROJECT_DIR, and again before the sandbox is built.
+	guardIdx := strings.Index(s, `case "${CI_DEBUG_TRACE:-}" in`)
+	firstExit := strings.Index(s, "exit 1")
+	topClear := strings.Index(s, `rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"`)
+	require.Greater(t, guardIdx, 0)
+	require.Greater(t, topClear, 0)
+	assert.Less(t, topClear, guardIdx, "the clear runs before the CI_DEBUG_TRACE guard")
+	assert.Less(t, topClear, firstExit, "the clear runs before any early exit")
+	assert.Contains(t, s[:topClear], `case "${CI_PROJECT_DIR:-}" in`+"\n  /*)")
+	// The directory is removed, not recreated: GitLab archives an empty
+	// directory that matches artifacts: paths.
+	assert.NotContains(t, s, `mkdir -p -- "${CI_PROJECT_DIR}/fullsend-artifact"`)
+	assert.NotContains(t, s, `mkdir -p -- "${_FS_ARTIFACT_DIR}"`)
+	assert.Contains(t, s, `if [ "${_FS_ARTIFACT_LEVEL}" = "none" ]; then`+"\n    rm -rf -- \"${_FS_ARTIFACT_DIR}\"")
+
+	// The job template clears it too, before the installer can fail.
+	tmpl = gitlabPerRepoText(t, ".gitlab/ci/fullsend-agent.yml")
+	clearIdx := strings.Index(tmpl, `- rm -rf -- "${CI_PROJECT_DIR:-.}/fullsend-artifact"`)
+	installIdx := strings.Index(tmpl, "install-fullsend-cli.sh\"")
+	require.Greater(t, clearIdx, 0)
+	assert.Less(t, clearIdx, installIdx, "before_script clears the artifact directory before the installer runs")
+
+	runIdx := strings.Index(s, `fullsend run "${STAGE}"`)
+	laterClear := strings.LastIndex(s[:runIdx], `rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"`)
+	assert.Greater(t, laterClear, topClear, "the artifact directory is cleared again before the sandbox is built")
+
+	// Event files and credential temp files go through one EXIT trap.
+	trapIdx := strings.Index(s, "trap '_fs_exit_cleanup' EXIT")
+	assert.Less(t, trapIdx, firstExit, "the cleanup trap is installed before any early exit")
+	assert.Equal(t, 1, strings.Count(s, "' EXIT"), "no second EXIT trap replaces the cleanup trap")
+	for _, file := range []string{"JIRA_EVENT_FILE", "GITLAB_EVENT_FILE"} {
+		assert.Contains(t, s, `_FS_EXIT_CLEANUP+=("${`+file+`}"`, file)
+	}
+}
+
+// A job that exits early still runs the cleanup trap: the event file is
+// removed and the previous job's artifact directory does not survive for upload.
+func TestRunAgentJobScript_EarlyExitClearsArtifactDirAndEventFile(t *testing.T) {
+	root := t.TempDir()
+	stale := filepath.Join(root, "fullsend-artifact", "fs-cod-old", "iteration-1", "output.jsonl")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, []byte("previous job"), 0o644))
+	runnerTemp := t.TempDir()
+	eventFile := filepath.Join(runnerTemp, "fullsend-jira-event.test")
+	require.NoError(t, os.WriteFile(eventFile, []byte("{}"), 0o600))
+
+	// Run the top of the script (through the trap and the clear), register
+	// a file the way the event-file code does, then fail under set -e.
+	s := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+	cut := strings.Index(s, "# Clear the webhook")
+	require.Greater(t, cut, 0)
+	script := filepath.Join(t.TempDir(), "top.sh")
+	require.NoError(t, os.WriteFile(script, []byte(s[:cut]+"_FS_EXIT_CLEANUP+=(\"${EVENT}\")\nfalse\necho unreachable\n"), 0o644))
+
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"`)
+	cmd.Env = []string{
+		"SCRIPT=" + script,
+		"EVENT=" + eventFile,
+		"PATH=" + os.Getenv("PATH"),
+		"CI_PROJECT_DIR=" + root,
+		"RUNNER_TEMP=" + runnerTemp,
+	}
+	out, err := cmd.CombinedOutput()
+	assert.NotContains(t, string(out), "unreachable")
+	require.Error(t, err, "the job fails under set -e: %s", out)
+
+	_, err = os.Stat(filepath.Join(root, "fullsend-artifact"))
+	assert.True(t, os.IsNotExist(err), "the previous job's artifact directory is gone")
+	_, err = os.Stat(eventFile)
+	assert.True(t, os.IsNotExist(err), "the EXIT trap removed the event file")
+}
+
+// The CI_DEBUG_TRACE abort is an early exit too: the previous job's
+// artifact directory must already be gone when it fires.
+func TestRunAgentJobScript_DebugTraceAbortClearsArtifactDir(t *testing.T) {
+	root := t.TempDir()
+	stale := filepath.Join(root, "fullsend-artifact", "old.jsonl")
+	require.NoError(t, os.MkdirAll(filepath.Dir(stale), 0o755))
+	require.NoError(t, os.WriteFile(stale, []byte("previous job"), 0o644))
+
+	s := gitlabPerRepoText(t, gitlabRunAgentJobScriptPath)
+	cut := strings.Index(s, "# Clear the webhook")
+	require.Greater(t, cut, 0)
+	script := filepath.Join(t.TempDir(), "top.sh")
+	require.NoError(t, os.WriteFile(script, []byte(s[:cut]+"echo unreachable\n"), 0o644))
+
+	cmd := exec.Command("bash", "-c", `set -euo pipefail; . "$SCRIPT"`)
+	cmd.Env = []string{
+		"SCRIPT=" + script,
+		"PATH=" + os.Getenv("PATH"),
+		"CI_PROJECT_DIR=" + root,
+		"CI_DEBUG_TRACE=true",
+	}
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "%s", out)
+	assert.Contains(t, string(out), "CI_DEBUG_TRACE enabled")
+	assert.NotContains(t, string(out), "unreachable")
+	_, err = os.Stat(filepath.Join(root, "fullsend-artifact"))
+	assert.True(t, os.IsNotExist(err), "the previous job's artifact directory is gone")
 }
 
 func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {
@@ -704,12 +844,16 @@ func TestGitLabAgentTemplateAuthorizationGate(t *testing.T) {
 	assert.Contains(t, s, "Developer access")
 	// Fail-closed on API failure
 	assert.Contains(t, s, "fail-closed")
-	// ACTOR_ID fallback to MR_AUTHOR_ID for backward compatibility
+	// MR_AUTHOR_ID fallback is limited to opened/synchronized MRs, where
+	// the MR author is also the event actor.
 	assert.Contains(t, s, "ACTOR_ID")
 	assert.Contains(t, s, "MR_AUTHOR_ID")
+	assert.Contains(t, s, "opened|synchronized)")
 	// Distinct warning when no actor identity is available
 	assert.Contains(t, s, "No actor identity available")
-	// Read-only stages exempt from Developer-access gate
+	// Prioritize is the only stage exempt from this gate; retro requires
+	// Developer access like other mutation-capable stages.
+	assert.Contains(t, s, `elif [ "${STAGE}" != "prioritize" ]; then`)
 	assert.Contains(t, s, `"retro"`)
 	assert.Contains(t, s, `"prioritize"`)
 }

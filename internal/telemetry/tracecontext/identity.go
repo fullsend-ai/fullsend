@@ -22,8 +22,9 @@ import (
 )
 
 // EntityKind distinguishes the entity kinds that can share a forge
-// container. GitLab issue and merge-request database IDs come from
-// independent spaces, so the kind is part of every identity.
+// container. GitLab issue and merge-request database IDs, and GitHub
+// issue and Discussion database IDs, come from independent spaces, so the
+// kind is part of every identity.
 type EntityKind byte
 
 const (
@@ -32,11 +33,15 @@ const (
 	// KindChangeProposal is a GitHub pull request or a GitLab merge
 	// request. Jira has no change-proposal entity in this contract.
 	KindChangeProposal EntityKind = 0x02
+	// KindConversation is a GitHub Discussion. GitLab and Jira have no
+	// conversation entity in this contract. The package cannot tell
+	// forges apart, so callers must not construct this kind for them.
+	KindConversation EntityKind = 0x03
 )
 
 // Valid reports whether k is a defined entity kind.
 func (k EntityKind) Valid() bool {
-	return k == KindWorkItem || k == KindChangeProposal
+	return k == KindWorkItem || k == KindChangeProposal || k == KindConversation
 }
 
 // Identity is the immutable binding of a forge entity (ADR 0154, D01):

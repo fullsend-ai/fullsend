@@ -809,6 +809,38 @@ allowed_remote_resources:
 	assert.Contains(t, err.Error(), `validating allowed remote resources for agent "my-agent"`)
 }
 
+func TestLintCommand_FetchOnlyHarnessRemoteResourcesNotSubset(t *testing.T) {
+	// A harness with no URL references that opts into runtime fetching
+	// (allow_runtime_fetch + allowed_remote_resources) still starts the
+	// fetch service at run time, so lint must check its allowlist against
+	// config.yaml's — not only when HasURLReferences() is true (#7395801).
+	dir := t.TempDir()
+	cfg := `version: "1"
+allowed_remote_resources:
+  - "https://allowed.example.com/"
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	writeLintAgentFixture(t, dir, "my-agent")
+	harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+allow_runtime_fetch: true
+allowed_remote_resources:
+  - "https://disallowed.example.com/"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+	cmd := newLintCmd()
+	_, err := executeCmd(cmd, []string{"--fullsend-dir", dir, "--offline"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `validating allowed remote resources for agent "my-agent"`)
+	assert.Contains(t, err.Error(), `"https://disallowed.example.com/" is not covered by the org allowlist`)
+}
+
 func TestLintCommand_MissingLocalProviderFails(t *testing.T) {
 	dir := t.TempDir()
 	cfg := `version: "1"
@@ -1034,6 +1066,143 @@ func TestLintCommand_JSONFormat_Error(t *testing.T) {
 	assert.Equal(t, lintCodeConfigInvalid, report.Diagnostics[0].Code)
 	assert.Equal(t, "config.yaml", report.Diagnostics[0].Field)
 	assert.Contains(t, report.Diagnostics[0].Message, `unsupported version "999"`)
+}
+
+func TestLintCommand_InvalidConfigForge(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "")
+
+	t.Run("json reports config-invalid", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nforge: bitbucket\n"), 0o644))
+
+		stdout, _, err := executeLintStreams(newLintCmd(), []string{
+			"--fullsend-dir", dir, "--format", "json",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lint found 1 error-level diagnostic(s)")
+		assert.NotContains(t, err.Error(), "invalid --forge flag")
+		report := parseLintJSON(t, stdout)
+		assert.False(t, report.Success)
+		assert.Equal(t, 1, report.Summary.Errors)
+		require.Len(t, report.Diagnostics, 1)
+		assert.Equal(t, "config", report.Diagnostics[0].Agent)
+		assert.Equal(t, "error", report.Diagnostics[0].Severity)
+		assert.Equal(t, lintCodeConfigInvalid, report.Diagnostics[0].Code)
+		assert.Equal(t, "forge", report.Diagnostics[0].Field)
+		assert.Contains(t, report.Diagnostics[0].Message, `config.forge: "bitbucket"`)
+	})
+
+	t.Run("text identifies config source", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nforge: bitbucket\n"), 0o644))
+
+		out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "lint found 1 error-level diagnostic(s)")
+		assert.NotContains(t, err.Error(), "invalid --forge flag")
+		assert.Contains(t, out, "config: error: forge:")
+		assert.Contains(t, out, `config.forge: "bitbucket"`)
+	})
+
+	t.Run("invalid flag remains usage error without json", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nforge: bitbucket\n"), 0o644))
+
+		stdout, _, err := executeLintStreams(newLintCmd(), []string{
+			"--fullsend-dir", dir, "--forge", "bitbucket", "--format", "json",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid --forge flag")
+		assert.Contains(t, err.Error(), `--forge: "bitbucket"`)
+		assert.Empty(t, stdout)
+	})
+
+	t.Run("valid flag overrides invalid config forge", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := `version: "1"
+forge: bitbucket
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+		writeLintAgentFixture(t, dir, "my-agent")
+		harnessYAML := `role: triage
+agent: agents/my-agent.md
+policy: policies/base.yaml
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "my-agent.yaml"), []byte(harnessYAML), 0o644))
+
+		stdout, _, err := executeLintStreams(newLintCmd(), []string{
+			"--fullsend-dir", dir, "--forge", "github", "--format", "json",
+		})
+		require.NoError(t, err)
+		report := parseLintJSON(t, stdout)
+		assert.True(t, report.Success)
+		assert.Empty(t, report.Diagnostics)
+	})
+
+	t.Run("valid config forge still succeeds", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nforge: github\n"), 0o644))
+
+		stdout, _, err := executeLintStreams(newLintCmd(), []string{
+			"--fullsend-dir", dir, "--format", "json",
+		})
+		require.NoError(t, err)
+		report := parseLintJSON(t, stdout)
+		assert.True(t, report.Success)
+		assert.Empty(t, report.Diagnostics)
+	})
+
+	t.Run("scoped lint reports invalid config forge", func(t *testing.T) {
+		dir := writeScopedLintFixture(t, `  - name: my-agent
+    source: harness/my-agent.yaml
+`, "my-agent")
+		cfg := `version: "1"
+forge: bitbucket
+agents:
+  - name: my-agent
+    source: harness/my-agent.yaml
+`
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(cfg), 0o644))
+
+		stdout, _, err := executeLintStreams(newLintCmd(), []string{
+			"--fullsend-dir", dir, "my-agent", "--format", "json",
+		})
+		require.Error(t, err)
+		report := parseLintJSON(t, stdout)
+		assert.False(t, report.Success)
+		var forgeDiag *lintJSONDiagnostic
+		for i := range report.Diagnostics {
+			if report.Diagnostics[i].Code == lintCodeConfigInvalid && report.Diagnostics[i].Field == "forge" {
+				forgeDiag = &report.Diagnostics[i]
+				break
+			}
+		}
+		require.NotNil(t, forgeDiag)
+		assert.Contains(t, forgeDiag.Message, `config.forge: "bitbucket"`)
+	})
+
+	t.Run("inherited config.base.yaml forge", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte("version: \"1\"\nforge: bitbucket\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\n"), 0o644))
+
+		stdout, _, err := executeLintStreams(newLintCmd(), []string{
+			"--fullsend-dir", dir, "--format", "json",
+		})
+		require.Error(t, err)
+		report := parseLintJSON(t, stdout)
+		assert.False(t, report.Success)
+		require.Len(t, report.Diagnostics, 1)
+		assert.Equal(t, lintCodeConfigInvalid, report.Diagnostics[0].Code)
+		assert.Equal(t, "forge", report.Diagnostics[0].Field)
+		assert.Contains(t, report.Diagnostics[0].Message, `config.forge: "bitbucket"`)
+	})
 }
 
 func TestLintCommand_JSONFormat_ResolveError(t *testing.T) {

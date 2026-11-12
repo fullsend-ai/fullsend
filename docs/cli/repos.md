@@ -129,8 +129,9 @@ Before any write of a managed file, install and converge also compare the
 candidate and current effective configurations through the full runtime accessor
 chain (`kill_switch`, `roles`, `allowed_remote_resources`, agent `enabled:
 false` suppressions, the selected provider's
-`tracker.<provider>.allowed_targets`, `inference.gateway.url`, and
-`inference.gateway.audience`). A less-restrictive candidate is rejected unless
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`,
+`inference.gateway.audience`, `artifacts.content`, and
+`artifacts.by_source.<source>`). A less-restrictive candidate is rejected unless
 the manifest explicitly declares that relaxation; a change to either
 `inference.gateway` field, including a preset introducing a gateway where an
 established installation has none configured, must be declared in the manifest;
@@ -933,8 +934,11 @@ state may have been lost. Re-runs reuse compliant existing credentials and
 reconcile webhook configuration. Any project that is ineligible (no project
 service accounts, an unsafe or unverifiable trigger policy, or a protected
 default branch the replacement Poller cannot start pipelines on), or whose
-generation state is ambiguous, defers the fast path and keeps polling. The
-runtime role credentials stay Developer-level,
+generation state is ambiguous, defers the fast path and keeps polling. For a
+replacement Poller that cannot start pipelines, install names the account's
+username and the protected-branch setting to change; see
+[Letting the Poller start pipelines on the default branch](../guides/getting-started/configuring-gitlab.md#letting-the-poller-start-pipelines-on-the-default-branch).
+The runtime role credentials stay Developer-level,
 `ci_pipeline_variables_minimum_override_role` stays `no_one_allowed`, and
 dispatch continues to use typed inputs.
 

@@ -141,7 +141,7 @@ Your external repository needs these variables and secrets configured:
 - `FULLSEND_MINT_URL` - Token mint service URL
 - `FULLSEND_GCP_REGION` - GCP region for Vertex AI
 - `OTEL_EXPORTER_OTLP_ENDPOINT` - [OpenTelemetry](../../glossary.md#otel-primary-facts) endpoint (optional)
-- `JIRA_BASE_URL` - Jira instance URL (if using Jira agents)
+- `JIRA_BASE_URL` - Jira instance URL for non-Jira runs that reference it. Jira-sourced runs ignore it and use `tracker.jira.base_url` from config (see [Jira connection variables in agent runs](jira-integration.md#jira-connection-variables-in-agent-runs))
 
 **Secrets:**
 - `FULLSEND_GCP_WIF_PROVIDER` - GCP Workload Identity Federation (WIF) provider

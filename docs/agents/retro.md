@@ -10,7 +10,14 @@ Performs retrospectives on agent workflows — analyzes what happened, identifie
 
 ## How the agent works
 
-The retro agent is triggered after a workflow completes (PR merged or closed), or on-demand via `/fs-retro`. It reconstructs the full workflow graph — [triage](triage.md), [code](code.md), [review](review.md), [fix](fix.md), and human interactions — by fetching issue and PR timelines, agent run logs, and review threads.
+The retro agent is triggered after a workflow completes when the event actor
+has write access and closes or merges its PR. Users with write access can also
+start it
+with `/fs-retro`. It reconstructs the full workflow graph — [triage](triage.md),
+[code](code.md), [review](review.md), [fix](fix.md), and human interactions —
+by fetching issue and PR timelines, agent run logs, and review threads.
+GitLab merge requests use the same write-level requirement: the actor who
+merges or closes the MR must have Developer access.
 
 1. **Pre-script** gathers metadata about the originating PR or issue.
 2. **Sandbox** — the agent reads the full workflow history, identifies patterns (wasted cycles, missed context, repeated failures), and writes structured proposals. It uses the retro-analysis and finding-agent-runs skills. The agent cannot write files or edit code in the target repo.
@@ -41,7 +48,13 @@ to focus on:
 - `/fs-retro figure out why the review agent approved this and make sure it never happens again`
 - `/fs-retro the code agent spent 30 minutes on a 2-line fix, what went wrong`
 
-The retro agent also runs automatically when a PR is closed (merged or not).
+The retro agent also runs automatically when a PR is closed (merged or not) by
+an actor with write access. Merge-queue events follow the same rule: the event
+sender must have write access. Other automated senders without repository
+write access do not start retro; a write-authorized user can run `/fs-retro`
+afterward. On GitLab, merged or closed MRs also start retro only when the actor
+has Developer access. A custom retro harness role cannot lower the write
+threshold for a GitHub `/fs-retro` command.
 
 ## Control labels
 

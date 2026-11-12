@@ -64,8 +64,8 @@ validation_loop:
   preflight_check: 'python3 -c "import jsonschema"'  # Literal sh -c command (NOT a script path); runs before sandbox creation in the allowlisted preflight environment
   max_iterations: 2
   feedback_mode: append              # "none" (default) or "append" — append the
-                                     # previous iteration's validation failure to
-                                     # the agent prompt on retry
+                                     # previous validation feedback to the agent
+                                     # prompt on retry
 
 # ── Host files ────────────────────────────────────────────────
 host_files:
@@ -193,11 +193,11 @@ harness keeps the child's own declaration — an absent child stays absent
 (version `1`).
 See [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md).
 
-**`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
+**`validation_loop.feedback_mode`** — Controls how validation feedback reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation feedback is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
 
-**`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
+**`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). An unsuccessful iteration may be retried; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
 
-**`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory. The probe runs in a minimal allowlisted environment: the host `PATH`, `HOME`, and `TMPDIR` (when set), the runner-forced `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and non-credential variables declared under `env.runner`/`runner_env` — nothing else is inherited from the process environment. Credential names (`GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, the minted role tokens `PUSH_TOKEN` and `REVIEW_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_FETCH_TOKEN`, `FULLSEND_GITLAB_*` role tokens, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the OIDC/trigger/runner-secret names) are excluded even when declared under `env.runner`. Plain `${VAR}` references are validated and expanded before the command runs: a plain reference to a name outside the allowlisted environment fails the run before any shell executes, naming the variable (never its value) and pointing to the allowlist and the `env.runner` declaration channel. Non-plain brace forms such as `${VAR:-default}` are not validated and silently expand to empty rather than failing the run. On failure or timeout, diagnostics carry only redacted command text and output. When the command contains no `${...}` reference, bare `$VAR` references are left to the shell, where every non-allowlisted name is unset; once a brace reference is present, bare references are also resolved against the preflight environment before the shell runs, and a bare reference to a name outside it expands to empty, matching the shell's unset semantics.
+**`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory. The probe runs in a minimal allowlisted environment: the host `PATH`, `HOME`, and `TMPDIR` (when set), the runner-forced `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and non-credential variables declared under `env.runner`/`runner_env` — nothing else is inherited from the process environment. Credential names (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GITLAB_TOKEN`, the minted role tokens `PUSH_TOKEN` and `REVIEW_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_FETCH_TOKEN`, `FULLSEND_GITLAB_*` role tokens, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the OIDC/trigger/runner-secret names) are excluded even when declared under `env.runner`. Plain `${VAR}` references are validated and expanded before the command runs: a plain reference to a name outside the allowlisted environment fails the run before any shell executes, naming the variable (never its value) and pointing to the allowlist and the `env.runner` declaration channel. Non-plain brace forms such as `${VAR:-default}` are not validated and silently expand to empty rather than failing the run. On failure or timeout, diagnostics carry only redacted command text and output. When the command contains no `${...}` reference, bare `$VAR` references are left to the shell, where every non-allowlisted name is unset; once a brace reference is present, bare references are also resolved against the preflight environment before the shell runs, and a bare reference to a name outside it expands to empty, matching the shell's unset semantics.
 
 **`env.runner`** — Variables passed to host-side scripts (`pre_script`, `post_script`,
 and `validation_loop.script`), layered over the `fullsend run`
@@ -221,6 +221,17 @@ therefore declare both credential types. Scripts
 always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, so bytecode never
 breaks the hash-verified fetch cache.
 
+For a Jira-sourced run, `fullsend run` sets `JIRA_BASE_URL` to `tracker.jira.base_url` and
+`JIRA_API_URL` to the API gateway base `{tracker.jira.api_url}/ex/jira/{cloudId}` before env
+expansion, replacing any inherited `JIRA_BASE_URL`. A `${JIRA_BASE_URL}` or `${JIRA_API_URL}`
+reference in `env.runner`, `env.sandbox`, or a `host_files` entry with `expand: true` resolves to
+these values. A Jira-sourced run stops before the sandbox starts when cloud-ID discovery fails,
+when the run is `--offline`, or when the `tracker.jira` connection settings are missing or invalid,
+instead of letting agents fall back to the site URL. A runner secret cannot override either name. Runs from other sources do not get these variables from `fullsend run`, so
+reference them only in an overlay guarded on `event.source.system == "jira"`: an unset reference
+fails env validation on a GitHub or GitLab run. See
+[Jira integration § Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
+
 `env.runner` values never reach the sandbox. Each value is expanded with `${NAME}` after `base:` composition and overlays are resolved. Names come from the runner's environment and, on GitHub, from the `FULLSEND_GITHUB_RUNNER_SECRETS` object ([ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md)). A name in that object wins over a runner variable of the same name. In CI the composite action stages the object in a mode 0600 file and `fullsend run` deletes it after reading, so the object is never in the environment of `fullsend run` or of any process it starts. Keys the harness does not reference reach no script. A referenced value reaches the script as an ordinary environment variable, and scripts run as the job user. With the object unset, expansion behaves as before.
 
 These rules make a run fail before `pre_script` starts:
@@ -229,13 +240,18 @@ These rules make a run fail before `pre_script` starts:
   covers `GH_WORKFLOW_TOKEN`, the OIDC request variables, provider-only keys
   such as `OPENAI_API_KEY`, the `FULLSEND_*`, `GITHUB_*`, `ACTIONS_*`,
   `RUNNER_*`, `CI_*`, `LD_*`, `DYLD_*`, `OTEL_*`, `GOOGLE_*` and `CLOUDSDK_*`
-  families, the minted role tokens (`GH_TOKEN`, `PUSH_TOKEN`,
-  `PUSH_TOKEN_SOURCE`, `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
+  families, the minted role tokens (`GH_TOKEN`, `GH_ENTERPRISE_TOKEN`,
+  `GITHUB_ENTERPRISE_TOKEN`, `PUSH_TOKEN`, `PUSH_TOKEN_SOURCE`,
+  `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
   runner-infrastructure names (`HOME`, `SHELL`, `BASH_ENV`, `ENV`,
   `TRACEPARENT`), and every name the reusable workflow sets on the `fullsend
   run` step, such as the named `JIRA_TOKEN`, `JIRA_USER_EMAIL` and
   `JIRA_BASE_URL` on `harness-run`. An `env.runner` key with one of those names
-  may not receive a value from the object either. Credential-class names beyond
+  may not receive a value from the object either. `GH_ENTERPRISE_TOKEN` is
+  refused because the mint now owns it; a repository that stores an enterprise
+  credential under that name must store it under a different name and
+  reference it from `env.runner` under a name the runner does not own.
+  Credential-class names beyond
   the runner-infrastructure names, `PATH`, and the `LD_*`/`DYLD_*` families —
   proxy, TLS trust, Git, interpreter and shell-behavior variables such as
   `HTTPS_PROXY`, `SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `NODE_OPTIONS` and
@@ -312,7 +328,7 @@ runtimes.
 
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
 
-**`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
+**`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`. The subset check runs for URL-referencing harnesses (as before) and whenever the runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration): every `allowed_remote_resources` prefix must be covered by the config-level allowlist — `config.yaml`'s `allowed_remote_resources` plus the built-in default prefixes (the defaults are included when the list is omitted or non-empty; an explicit `allowed_remote_resources: []` stays deny-all and excludes them) — and `fullsend run`, `fullsend lint` and `fullsend lock` fail naming the uncovered entry; without a repository config (`config.yaml` or `config.base.yaml`) they fail closed rather than fall back to the built-in defaults.
 
 **`skills`** — Skill directories to upload. Each entry is a source string (a
 local path or a forge tree URL pinned with `#sha256=`), or a single-key map
@@ -553,7 +569,7 @@ More-specific entries go last so they override broader defaults.
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
 | `security` | Child replaces entirely |
-| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution |
+| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution and as the ceiling every harness-level `allowed_remote_resources` is validated against (see `allow_runtime_fetch` above) |
 
 ## Referencing resources: local vs. remote
 

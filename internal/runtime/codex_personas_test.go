@@ -46,7 +46,7 @@ func TestCodexDelegates(t *testing.T) {
 	}{
 		{name: "no tools line includes Agent", agent: codexTestDelegatingAgentDef, security: true, want: true},
 		{name: "tools naming Agent", agent: "---\nname: review\ntools: Bash,Agent\n---\nbody\n", security: true, want: true},
-		{name: "tools naming Task, the alias codex maps to spawn_agent", agent: "---\nname: review\ntools: Bash,Task\n---\nbody\n", security: true, want: true},
+		{name: "tools naming Task, the alias of Agent", agent: "---\nname: review\ntools: Bash,Task\n---\nbody\n", security: true, want: true},
 		{name: "tools without Agent", agent: codexTestAgentDef, security: true, want: false},
 		{name: "security disabled", agent: codexTestDelegatingAgentDef, security: false, want: false},
 		{name: "empty tools list", agent: "---\nname: review\ntools: []\n---\nbody\n", security: true, want: false},
@@ -339,9 +339,9 @@ func TestCodexRole_TOMLParsesWithTheThreeKeys(t *testing.T) {
 }
 
 // TestCodexCatalog reads the fixture reduced from the pinned CLI's dump and
-// pins the questions Bootstrap asks it: is a model listed, does codex
-// resolve it to collaboration V1, and which efforts a child on it may run
-// at. The reduction keeps only the four fields Bootstrap reads, so a bump
+// pins the questions Bootstrap asks it: is a model listed, which collaboration
+// version the gate takes from its entry, and which efforts a child on it may
+// run at. The reduction keeps only the four fields Bootstrap reads, so a bump
 // that changes other catalog fields (0.166.0 rewrote model_messages for
 // every entry) leaves the fixture untouched; 0.166.0's only visible change
 // is the added gpt-6.1-terra entry. On a CODEX_VERSION bump regenerate it,
@@ -360,23 +360,23 @@ func TestCodexCatalog(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.True(t, catalog.has(codexDefaultSubagentModel), "the floor must be listed; a child takes its parent's collaboration version, so the floor's own does not matter")
-	assert.True(t, catalog.resolvesV1("gpt-5.6-luna"), "a luna parent delegates on 0.166.0")
+	assert.Equal(t, "v1", catalog.collabVersion("gpt-5.6-luna"), "a luna parent delegates on 0.166.0")
 	assert.Equal(t, "medium", catalog["gpt-5.6-luna"].DefaultEffort, "children on the floor run at medium when the run sets no effort")
 	assert.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, catalog["gpt-5.6-luna"].Efforts)
 	assert.Equal(t, "low", catalog["gpt-5.6-sol"].DefaultEffort)
 	assert.NotContains(t, catalog["gpt-5.5"].Efforts, "max", "the one fullsend effort a listed model lacks at the pin")
 	assert.True(t, catalog.has("gpt-5.6-sol"))
-	assert.False(t, catalog.resolvesV1("gpt-5.6-sol"), "sol selects V2")
+	assert.Equal(t, "v2", catalog.collabVersion("gpt-5.6-sol"), "sol selects V2")
 	assert.True(t, catalog.has("gpt-5.5"))
-	assert.True(t, catalog.resolvesV1("gpt-5.5"), "an entry without a version takes V1 from the multi_agent feature")
+	assert.Equal(t, "v1", catalog.collabVersion("gpt-5.5"), "an entry without a version takes V1 from the multi_agent feature")
 	assert.False(t, catalog.has("gpt-5.6-nova"))
-	assert.False(t, catalog.resolvesV1("gpt-5.6-nova"))
+	assert.Empty(t, catalog.collabVersion("gpt-5.6-nova"))
 	// Hidden entries count: the fixture keeps no `visibility`, so the hidden
 	// V1 entry resolves to V1 like a listed one and a hidden model is listed.
 	assert.True(t, catalog.has("codex-auto-review"))
-	assert.True(t, catalog.resolvesV1("codex-auto-review"), "a hidden entry that selects V1 resolves to V1")
+	assert.Equal(t, "v1", catalog.collabVersion("codex-auto-review"), "a hidden entry that selects V1 resolves to V1")
 	assert.True(t, catalog.has("gpt-daybreak-blue-latest"), "a hidden model passes the membership check")
-	assert.False(t, catalog.resolvesV1("gpt-daybreak-blue-latest"), "hidden and V2")
+	assert.Equal(t, "v2", catalog.collabVersion("gpt-daybreak-blue-latest"), "hidden and V2")
 
 	_, err = parseCodexCatalog([]byte("not json"))
 	require.Error(t, err)
@@ -384,41 +384,47 @@ func TestCodexCatalog(t *testing.T) {
 	require.Error(t, err, "an empty catalog is a broken binary, not a catalog")
 }
 
-// TestCodexParentResolvesV1 is part two of the ADR 0126 gate: the parent model
-// Run will use (the run-level model, else the definition's) must translate to
-// an OpenAI id codex resolves to V1: its entry selects V1 or carries no
-// version (codex's multi_agent feature, on by default, supplies V1). A V2 or
-// unlisted parent keeps the multi-agent tools off and says why in one line,
-// and so does a gateway/ parent whatever its id.
-func TestCodexParentResolvesV1(t *testing.T) {
+// TestCodexParentCollabVersion is part two of the delegation gate (ADR 0126,
+// extended by ADR 0159): the parent model Run will use (the run-level model,
+// else the definition's) must translate to an OpenAI id, whose catalog entry
+// gives a version: V1 when it selects V1 or carries none (codex's multi_agent
+// feature, on by default, supplies V1), V2 when it selects V2. Only a "v1"
+// result delegates; a V2 parent gets "v2" and the ADR 0159 reason, and
+// Bootstrap declines it until its child-result delivery path is implemented
+// and verified live. A disabled, unknown-version or unlisted parent gets no
+// version from the gate and says why in one line, and so does a gateway/
+// parent whatever its id.
+func TestCodexParentCollabVersion(t *testing.T) {
 	t.Parallel()
-	catalog := codexVersionsCatalog(map[string]string{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-x": "v3"})
+	catalog := codexVersionsCatalog(map[string]string{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-x": "v3", "gpt-d": "disabled"})
 	tests := []struct {
 		name        string
 		parentModel string
 		agentModel  string
-		want        bool
+		wantVersion string
 		wantReason  string
 	}{
-		{"definition model, V1", "", "openai/gpt-5.6-luna", true, ""},
-		{"run-level model wins", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol", true, ""},
-		{"run-level V2 beats a V1 definition", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", false, `parent model "gpt-5.6-sol" selects collaboration "v2"`},
-		{"no multi-agent version (multi_agent supplies V1)", "", "gpt-5.5", true, ""},
-		{"unknown collaboration version", "", "openai/gpt-x", false, `parent model "gpt-x" selects collaboration "v3"`},
-		{"not in the catalog", "", "openai/gpt-5.6-nova", false, `parent model "gpt-5.6-nova" is not in the bundled catalog`},
-		{"gateway route declines a listed V1 id", "", "gateway/gpt-5.6-luna", false, `parent model "gateway/gpt-5.6-luna" takes the inference gateway route`},
-		{"gateway route declines before the catalog", "", "gateway/vendor/org/model", false, `parent model "gateway/vendor/org/model" takes the inference gateway route`},
-		{"run-level OpenAI model beats a gateway definition", "openai/gpt-5.6-luna", "gateway/vendor/org/model", true, ""},
-		{"run-level gateway route beats a V1 definition", "gateway/vendor/org/model", "openai/gpt-5.6-luna", false, `parent model "gateway/vendor/org/model" takes the inference gateway route`},
-		{"claude alias does not translate", "", "opus", false, "codex takes OpenAI model ids or gateway/<model> only"},
-		{"no model at all", "", "", false, "no model was named"},
+		{"definition model, V1", "", "openai/gpt-5.6-luna", "v1", ""},
+		{"run-level model wins", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol", "v1", ""},
+		{"run-level V2 beats a V1 definition", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "v2", `parent model "gpt-5.6-sol" selects collaboration "v2"; V2 delegation is off until its child-result delivery path is verified live (ADR 0159)`},
+		{"no multi-agent version (multi_agent supplies V1)", "", "gpt-5.5", "v1", ""},
+		{"catalog says disabled", "", "openai/gpt-d", "", `parent model "gpt-d" has native sub-agents disabled in the bundled catalog`},
+		{"unknown collaboration version", "", "openai/gpt-x", "", `parent model "gpt-x" selects collaboration "v3", which the runner does not support`},
+		{"not in the catalog", "", "openai/gpt-5.6-nova", "", `parent model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
+		{"gateway route declines a listed V1 id", "", "gateway/gpt-5.6-luna", "", `parent model "gateway/gpt-5.6-luna" takes the inference gateway route`},
+		{"gateway route declines before the catalog", "", "gateway/vendor/org/model", "", `parent model "gateway/vendor/org/model" takes the inference gateway route`},
+		{"run-level OpenAI model beats a gateway definition", "openai/gpt-5.6-luna", "gateway/vendor/org/model", "v1", ""},
+		{"run-level gateway route beats a V1 definition", "gateway/vendor/org/model", "openai/gpt-5.6-luna", "", `parent model "gateway/vendor/org/model" takes the inference gateway route`},
+		{"claude alias does not translate", "", "opus", "", "codex takes OpenAI model ids or gateway/<model> only"},
+		{"no model at all", "", "", "", "no model was named"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got, reason := codexParentResolvesV1(catalog, tt.parentModel, tt.agentModel)
-			assert.Equal(t, tt.want, got)
-			if tt.want {
+			got, reason := codexParentCollabVersion(catalog, tt.parentModel, tt.agentModel)
+			assert.Equal(t, tt.wantVersion, got)
+			assert.NotContains(t, reason, "need a parent", "no explanation says delegation needs a V1 parent")
+			if tt.wantReason == "" {
 				assert.Empty(t, reason)
 			} else {
 				assert.Contains(t, reason, tt.wantReason)

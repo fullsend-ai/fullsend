@@ -116,8 +116,7 @@ a run only
 on an unambiguous integrity break (a tool result with no matching call) and
 reports tool errors and unanswered calls as signals; runs whose runtime emits
 no `execute_tool` spans (codex) and runs that made no tool calls are
-skipped. A pi call cut off by a kill or timeout has no span, so it does not
-count as unanswered.
+skipped.
 
 Manifest shape (first ship — enablement only):
 
@@ -192,16 +191,26 @@ newer `agents@v0` manifest this binary does not implement yet) also writes
 ```text
 GitHub Actions job
 ├── fullsend run
-├── fullsend eval-measure   # reads output/<runDir>/run-telemetry.jsonl; never fails the job
-└── upload-artifact         # includes both JSONL files under output/
+├── fullsend eval-measure      # reads output/<runDir>/run-telemetry.jsonl; never fails the job
+├── fullsend prepare-artifacts # copy of output/ per config.yaml artifacts (ADR 0161)
+└── upload-artifact            # uploads that copy (skipped for artifacts level none)
 
 GitLab CI agent job
-├── fullsend run            # --output-dir $CI_PROJECT_DIR/output
-├── fullsend eval-measure   # always (even if run failed); || true
-└── artifacts: output/      # when: always (parity with GHA upload of output/)
+├── fullsend run               # --output-dir $CI_PROJECT_DIR/output
+├── fullsend eval-measure      # always (even if run failed); || true
+├── fullsend prepare-artifacts # --artifact-dir $CI_PROJECT_DIR/fullsend-artifact
+└── artifacts: fullsend-artifact/ # when: always (parity with the GHA upload)
 ```
 
-Add `output/` to the consuming repo's `.gitignore` so local GitLab-checkout
+Both JSONL files reach the artifact under the `all` and `metadata`
+[artifact levels](../../reference/config-reference.md#artifacts). Under
+`metadata`, the uploaded `run-telemetry.jsonl` has its content-capture
+attributes, span status messages, exception text and pre-script skip reason
+removed, and every `skip` row in the uploaded `eval-measurements.jsonl` gets a
+fixed explanation. A file that cannot be parsed is left out. The files in
+`output/` are not changed.
+
+Add `output/` and `fullsend-artifact/` to the consuming repo's `.gitignore` so local GitLab-checkout
 runs do not stage telemetry accidentally. The GitLab per-repo scaffold embeds
 a recommended `.gitignore` fragment (asserted in tests) but does **not**
 install it as a root file — that would overwrite an existing consumer ignore

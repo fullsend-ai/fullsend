@@ -132,7 +132,7 @@ Base chains support up to 5 levels. Circular references are detected and rejecte
 
 > **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes or enabling runtime fetching in the child.
 
-> **Config-level fallback:** Separately from base-harness inheritance, the config-level `allowed_remote_resources` from the repository's `.fullsend/config.yaml` (layered over `config.base.yaml`) acts as a fallback for all URL resolution. URLs trusted at the config level are accepted even when the child harness omits the field. This is a distinct trust layer from base composition — the config-level list is set by the repository's administrators, not by base harness authors.
+> **Config-level fallback:** Separately from base-harness inheritance, the config-level `allowed_remote_resources` from the repository's `.fullsend/config.yaml` (layered over `config.base.yaml`) acts as a fallback for all URL resolution. URLs trusted at the config level are accepted even when the child harness omits the field. It is also the ceiling for the harness-level list: whenever the harness's runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration), every harness-level prefix must be covered by the config-level allowlist (the config-level list plus the built-in default prefixes; an explicit `allowed_remote_resources: []` in the config stays deny-all and excludes the defaults), and `fullsend run`, `fullsend lint` and `fullsend lock` fail naming an uncovered prefix and fail closed without a repository config (`config.yaml` or `config.base.yaml`). This is a distinct trust layer from base composition — the config-level list is set by the repository's administrators, not by base harness authors.
 
 ### Remote providers and profiles
 
@@ -185,7 +185,8 @@ refuse:
   reads it, and so does the runner's own `ghcr.io` image pull (see
   [Extending the sandbox image](#extending-the-sandbox-image)).
 - `gh` and the post-script keep using the minted token (`GH_TOKEN`,
-  `GITHUB_TOKEN`, `PUSH_TOKEN`).
+  `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`,
+  `PUSH_TOKEN`).
 - Outside GitHub Actions the variable is left alone; a local PAT is never
   copied into it. Set it yourself only for a local run against GitHub Packages.
 - Any provider definition in `.fullsend` may reference it, the same way one
@@ -595,6 +596,13 @@ request. To decide it yourself, give the `retro` entry in
 `.fullsend/config.yaml` a `trigger`. The retro still runs in the same `Retro`
 job; the trigger only decides whether that job starts.
 
+Closing or merging a pull request starts retro only when the event actor has
+write access. Merge-queue events follow the same rule, and a CEL routing
+failure skips retro for that close event.
+The `/fs-retro` command also requires write access, regardless of a lower
+`role:` on the retro harness; CEL cannot promote a command the Bash route
+denied.
+
 To stop the retro on every closed pull request but keep `/fs-retro`, add this
 entry to `.fullsend/config.yaml` on your default branch:
 
@@ -682,10 +690,11 @@ without them the lookup fails and every bot actor is denied. See
 
 GitLab uses its own stage router, which applies the same triage and write
 split to slash commands. The GitLab agent job also requires the event actor
-to hold Developer access or higher for every stage except retro and
-prioritize, so automatic triage of a newly opened issue runs only when its
-author is a Developer, Maintainer, or Owner. Jira work items dispatched to a
-GitLab project skip that check, because their actor has no GitLab account; the
+to hold Developer access or higher for every stage except prioritize,
+including retro on merged or closed merge requests. Automatic triage of a
+newly opened issue runs only when its author has Developer, Maintainer, or
+Owner access. Jira work items dispatched to a GitLab project skip that check,
+because their actor has no GitLab account; the
 Jira poller authorizes them by Jira project role (see
 [Jira integration](jira-integration.md#gitlab-runtime)).
 See the
