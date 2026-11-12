@@ -96,8 +96,13 @@ review notes, are bounded to 270 Unicode characters with a truncation marker,
 the event's `state.labels` to a 1024-byte JSON prefix (fullsend's own
 control labels, `fullsend-fix` and `fullsend-no-fix`, are kept past it),
 and each other
-attacker-shaped single string (branch refs, repo paths, entity URLs, logins,
-the label name) to a 258-byte JSON prefix. A `/fs-*` command body is carried
+attacker-shaped single string (branch refs, the head_repo/base_repo paths,
+logins, the label name) to a 258-byte JSON prefix — a same-project MR
+carries the project's own path in head_repo/base_repo, and it stays cut
+there even though `repo` travels whole; the config-derived repo and
+entity URLs travel whole, and a config whose lengths push a payload past
+the budget fails closed (comment-only form for a note, a refused dispatch
+for a command). A `/fs-*` command body is carried
 untruncated, and the dispatcher fails closed before a pipeline is created
 when a command payload exceeds the nine-chunk budget; that refusal is
 permanent, so the poller drops the event with a WARNING log line and advances

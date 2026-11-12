@@ -535,10 +535,17 @@ two forms:
   (entries past the bound are dropped, except fullsend's own control
   labels, `fullsend-fix` and `fullsend-no-fix`, which the bound keeps
   so the fix kill switch survives it), and each other attacker-shaped
-  single string the event carries (branch refs, repo paths, entity URLs,
-  logins, the label name) to a 258-byte JSON prefix, both like the
+  single string the event carries (branch refs, the head_repo/base_repo
+  paths, logins,
+  the label name) to a 258-byte JSON prefix — a same-project MR carries
+  the project's own path in head_repo/base_repo, and it stays cut there
+  even though `repo` travels whole — both like the
   comment-body bound below, so a trigger or overlay keyed on a value past
-  either bound does not match on this transport. The label-name bound is
+  either bound does not match on this transport. The config-derived
+  `repo`, `entity.url` and `entity.linked_change_proposal.url` travel
+  whole: an install whose config lengths push the complete payload past
+  the chunk budget fails closed there (the comment-only fallback for a
+  note, a refused dispatch for a command) instead of being cut. The label-name bound is
   stricter than a single `state.labels` entry: `transition.label.name` is
   cut at 258 JSON bytes while the same label inside `state.labels` can
   travel whole at up to about 1020 bytes, so for a label longer than 258
@@ -573,10 +580,13 @@ Jira-sourced GitHub target keeps the 4096-code-point adapter cap for command
 bodies instead, its transport having no chunk budget. Any other body is bounded to 270
 Unicode code points, with a truncation marker appended when it is cut. The
 bound came down from the 800 of earlier releases. The chunk budget is the sum
-of every attacker-controlled field: an escape-heavy body, a full labels bound
-and maximal — separately bounded — branch refs, repo paths, entity URLs, the
-linked change proposal URL, logins and the label name must still fit it
-together. `TestBuildEventPayload_WorstCaseFitsTransportBudget` pins that
+of every attacker-controlled field plus the config: an escape-heavy body, a
+full labels bound and maximal — separately bounded — branch refs,
+head_repo/base_repo paths, logins and the label name, with the whole-travelling config-derived
+repo and URLs at a plausible config, must still fit it together; a
+schema-maximal config instead fails closed (the comment-only fallback for a
+note, a refused dispatch for a command).
+`TestBuildEventPayload_WorstCaseFitsTransportBudget` pins that
 worst case. In the complete form,
 `transition.comment.command` and `instruction` are derived from the transported
 body, so they always match what `run-agent-job.sh` reads.

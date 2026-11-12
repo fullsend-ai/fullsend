@@ -246,8 +246,14 @@ trigger: >
 > (entries past the bound are dropped, except fullsend's own control labels,
 > `fullsend-fix` and `fullsend-no-fix`, which the bound keeps), and on the
 > GitLab transport each other
-> attacker-shaped single string the event carries (branch refs, repo paths,
-> entity URLs, logins, the label name) is bounded to a 258-byte JSON prefix.
+> attacker-shaped single string the event carries (branch refs, the
+> head_repo/base_repo paths, logins, the label name) is bounded to a
+> 258-byte JSON prefix — a same-project MR carries the project's own path
+> in head_repo/base_repo, and it stays cut there even though `repo`
+> travels whole. The
+> config-derived `repo`, `entity.url` and
+> `entity.linked_change_proposal.url` travel whole, so a trigger keyed on
+> them sees the full value.
 > A trigger keyed on a label past the labels bound — or on the tail of an
 > over-bound ref or login — therefore does not match there, silently. A label
 > past the bound is invisible to the trigger, so a negative-label guard such

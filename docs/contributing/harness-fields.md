@@ -273,9 +273,16 @@ event's `state.labels` is bounded to a 1024-byte JSON prefix; entries past
 the bound are dropped, except fullsend's own control labels (`fullsend-fix`,
 `fullsend-no-fix`), which the bound keeps so the fix kill switch survives it.
 A non-command comment body is bounded to 270 runes.
-Each other attacker-shaped single string (branch refs, repo paths, entity
-URLs, logins, the label name) is bounded to a 258-byte JSON prefix. Together
-these bounds keep the worst attacker-shaped payload inside the transport
+Each other attacker-shaped single string (branch refs, the
+head_repo/base_repo paths, logins, the label name) is bounded to a 258-byte
+JSON prefix — a same-project MR carries the project's own path in
+head_repo/base_repo, and it stays cut there even though `repo` travels
+whole; the
+config-derived `repo`, `entity.url` and
+`entity.linked_change_proposal.url` travel whole, and a config whose
+lengths push the payload past the budget fails closed. Together
+these bounds keep the worst attacker-shaped payload at a plausible config
+inside the transport
 budget (`TestBuildEventPayload_WorstCaseFitsTransportBudget` pins it). Its
 unit tests
 are in `internal/poll/dispatch_test.go`,
