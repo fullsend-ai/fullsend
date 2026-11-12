@@ -389,10 +389,13 @@ provides gets `--no-builtin-tools`, and its extensions still load: `-e` is indep
 An agent without `tools:` gets pi's default set plus whatever its extensions register.
 
 MCP tool names such as `mcp__docs__search` and patterns such as
-`mcp__docs__*` pass through the pi tool mapping, as do MCP resource names
-(`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`)
-and scoped patterns such as `list_mcp_*` or `read_mcp_*` in parent and
-persona tool lists. Sub-agents load the same
+`mcp__docs__*` pass through the pi tool mapping. In parent and persona tool
+lists, Claude's `ListMcpResourcesTool` maps to `list_mcp_resources` and
+`list_mcp_resource_templates`; `ReadMcpResourceTool` maps to
+`read_mcp_resource`. Use the Claude names for definitions shared with Claude
+Code. Pi-native resource names and scoped patterns such as `list_mcp_*` or
+`read_mcp_*` also pass through, but those spellings are pi-only.
+Sub-agents load the same
 declared extensions, with their directory hashes checked before each launch.
 A persona's tools are intersected with the parent's permissions using the
 parent's callable permissions before each child launch: active names from
@@ -413,7 +416,9 @@ nonempty parent and child selections without `mcp__` entries also get
 (`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`).
 Selected resource names/patterns remain available. Pi otherwise retains these
 registrations, which can leave tools callable through codemode or deferred
-exposure even when inactive. Default and extension-only parent modes are unchanged.
+exposure even when inactive. Parents without `tools:` keep their defaults.
+Parents whose tools map to an empty list still use `--no-builtin-tools`, but
+cannot dispatch children: they have no `Agent` or `Task` tool.
 Direct-exposure MCP tools can reach the model through these tool lists.
 `codemode` and `deferred` tools need a separately reachable executor for nested
 calls. Fullsend uses `--no-extensions`, so pi's built-in MCP, codemode, and
@@ -811,7 +816,7 @@ list, no prompt templates or themes, its own session dir, and a `--tools` allowl
   Each launch starts from the parent's active tools plus registered tools with
   `codemode`/`deferred` exposure, which pi permits in nested calls even when
   inactive. Other inactive registrations stay unavailable. Omitted parent
-  `tools:` and extension-only launches retain these callable permissions;
+  `tools:` retains these callable permissions;
   explicit parent lists restrict them further. Persona patterns intersect
   concrete names; Explore remains limited to read-only built-ins.
 - **Harness pi plugins.** Children load the same host-vetted declared extensions and arguments.

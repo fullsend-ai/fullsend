@@ -1433,17 +1433,14 @@ test("MCP child dispatch intersects concrete tools and rechecks declared extensi
   await tool.shutdown();
 });
 
-test("child permissions preserve default, extension-only and explicit parent modes", () => {
+test("child permissions preserve default and explicit parent modes", () => {
   const registry = ["read", "bash", "powershell", "mcp__docs__search", "mcp__docs__write", "Agent", "Task"];
-  const agent = { tools: ["read", "bash"], personas: { docs: { tools: ["mcp__docs__search"] } } };
-  for (const toolMode of ["default", "extensions-only"]) {
-    agent.toolMode = toolMode;
-    const active = toolMode === "default" ? registry.filter((t) => t !== "powershell") : registry.filter((t) => !["read", "bash", "powershell"].includes(t));
-    assert.deepEqual(childTools(agent, "docs", active), ["mcp__docs__search"]);
-    assert.deepEqual(childTools(agent, "Explore", active), toolMode === "default" ? ["read"] : []);
-    assert.deepEqual(childTools(agent, undefined, active), toolMode === "default"
-      ? ["read", "bash", "mcp__docs__search", "mcp__docs__write"] : ["mcp__docs__search", "mcp__docs__write"]);
-  }
+  const agent = { toolMode: "default", tools: ["read", "bash"], personas: { docs: { tools: ["mcp__docs__search"] } } };
+  const active = registry.filter((t) => t !== "powershell");
+  assert.deepEqual(childTools(agent, "docs", active), ["mcp__docs__search"]);
+  assert.deepEqual(childTools(agent, "Explore", active), ["read"]);
+  assert.deepEqual(childTools(agent, undefined, active),
+    ["read", "bash", "mcp__docs__search", "mcp__docs__write"]);
   agent.toolMode = "explicit";
   assert.deepEqual(childTools(agent, "docs", registry), []);
   agent.toolMode = undefined; // Older manifests stay restrictive.
@@ -1515,7 +1512,7 @@ test("default export registers Agent and Task with one handler and a shutdown ho
 });
 
 test("production dispatch uses live active tools, never inactive registry entries", async () => {
-  for (const toolMode of ["default", "extensions-only", "explicit"]) {
+  for (const toolMode of ["default", "explicit"]) {
     const { dir, manifest } = fixture();
     const path = join(dir, "manifest.json");
     manifest.agent.toolMode = toolMode;
@@ -2236,13 +2233,11 @@ test("callable exposure union retains nested tools but never inactive direct too
     {name: "secret", exposure: "hidden"},
   ];
   const agent = {tools: [], personas: {docs: {tools: ["mcp__docs__search", "mcp__docs__hidden"]}}};
-  for (const toolMode of ["default", "extensions-only"]) {
-    agent.toolMode = toolMode;
-    assert.deepEqual(childTools(agent, undefined, ["codemode"], registry),
-      ["codemode", "mcp__docs__search", "list_mcp_resources"]);
-    assert.deepEqual(childTools(agent, "docs", ["codemode"], registry), ["mcp__docs__search"]);
-    assert.deepEqual(childTools(agent, "Explore", ["codemode"], registry), []);
-  }
+  agent.toolMode = "default";
+  assert.deepEqual(childTools(agent, undefined, ["codemode"], registry),
+    ["codemode", "mcp__docs__search", "list_mcp_resources"]);
+  assert.deepEqual(childTools(agent, "docs", ["codemode"], registry), ["mcp__docs__search"]);
+  assert.deepEqual(childTools(agent, "Explore", ["codemode"], registry), []);
   agent.toolMode = "explicit";
   agent.tools = ["list_mcp_*"];
   assert.deepEqual(childTools(agent, undefined, ["codemode"], registry), ["list_mcp_resources"]);

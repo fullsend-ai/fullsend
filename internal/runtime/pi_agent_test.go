@@ -164,7 +164,15 @@ func TestPiToolsFor(t *testing.T) {
 }
 
 func TestPiMCPResourceTools(t *testing.T) {
-	tools, unsupported := piToolsFor([]string{"read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates", "list_mcp_*", "read_mcp_*", "read_mcp_resource", "*", "list_mcp_unknown"})
+	tools, unsupported := piToolsFor([]string{"ListMcpResourcesTool", "ReadMcpResourceTool"})
+	assert.Equal(t, []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"}, tools)
+	assert.Nil(t, unsupported)
+
+	tools, unsupported = piToolsFor([]string{"read_mcp_resource", "ReadMcpResourceTool", "ListMcpResourcesTool", "list_mcp_resources", "ListMcpResourcesTool"})
+	assert.Equal(t, []string{"read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates"}, tools)
+	assert.Nil(t, unsupported)
+
+	tools, unsupported = piToolsFor([]string{"read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates", "list_mcp_*", "read_mcp_*", "read_mcp_resource", "*", "list_mcp_unknown"})
 	assert.Equal(t, []string{"read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates", "list_mcp_*", "read_mcp_*"}, tools)
 	assert.Equal(t, []string{"*", "list_mcp_unknown"}, unsupported)
 }

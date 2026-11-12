@@ -122,7 +122,7 @@ type piAgentManifest struct {
 	Thinking       string              `json:"thinking"`
 	// Tools is the built-in set a child gets (the parent's, minus
 	// Agent/Task); ExploreTools the read-only set for subagent_type Explore.
-	ToolMode       string   `json:"toolMode,omitempty"` // default, extensions-only, or explicit (empty for older manifests)
+	ToolMode       string   `json:"toolMode,omitempty"` // default or explicit (empty for older manifests)
 	Tools          []string `json:"tools"`
 	ExploreTools   []string `json:"exploreTools"`
 	MaxConcurrent  int      `json:"maxConcurrent"`
@@ -523,7 +523,9 @@ const piNoSubagentNote = "\n## Runtime note\n\n" +
 
 // piAgentManifestFor builds the manifest block for fullsend-agent.js. tools
 // is the parent's --tools list (nil for the default set); children get the
-// built-ins from it minus Agent/Task.
+// selection minus Agent/Task. Bootstrap calls this only when Agent is enabled,
+// so explicit parent lists always contain Agent/Task before removal. A parent
+// whose translated list is empty has no dispatcher or child manifest.
 //
 // personas are the pre-discovered sub-agent personas (from discoverPersonas).
 // subagentsCfg is the merged agents[].subagents map from the config, driving
@@ -545,9 +547,6 @@ func (r PiRuntime) piAgentManifestFor(sandboxName string, def *piAgentDef, tools
 				childTools = append(childTools, t)
 			}
 		}
-	}
-	if tools != nil && len(tools) == 0 {
-		toolMode = "extensions-only"
 	}
 	gw := piGatewayRunFor(sandboxName)
 	var gatewayIDs []string

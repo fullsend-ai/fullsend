@@ -91,7 +91,7 @@ export default function(pi) {
     }});
 }`);
   for (const exposure of ["codemode", "deferred"]) {
-    for (const toolMode of ["default", "extensions-only", "explicit"]) {
+    for (const toolMode of ["default", "explicit"]) {
       const agent = {toolMode, tools: toolMode === "explicit" ? ["executor", "mcp__docs__*"] : [], extensions:[ext], sessionsDir:home};
       const active = ["executor"];
       const tools = childTools(agent, undefined, active, [{name:"mcp__docs__nested", exposure}]);

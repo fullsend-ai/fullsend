@@ -462,7 +462,7 @@ export function childTools(agent, subagentType, activeTools, registeredTools = [
   ])];
   const allowed = candidates.filter((t) => {
     if (t === TOOL_NAME || t === TOOL_ALIAS) return false;
-    if (agent?.toolMode === "extensions-only" || agent?.toolMode === "default") return true;
+    if (agent?.toolMode === "default") return true;
     return parent.some((p) => toolMatches(p, t));
   });
   if (explore) return allowed.filter((t) => (agent?.exploreTools ?? DEFAULT_EXPLORE_TOOLS).includes(t));

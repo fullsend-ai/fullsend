@@ -268,6 +268,23 @@ func piToolsFor(claudeTools []string) (tools, unsupported []string) {
 			}
 			continue
 		}
+		// Claude's list operation covers both resources and templates in pi.
+		var resources []string
+		switch ct {
+		case "ListMcpResourcesTool":
+			resources = []string{"list_mcp_resources", "list_mcp_resource_templates"}
+		case "ReadMcpResourceTool":
+			resources = []string{"read_mcp_resource"}
+		}
+		if resources != nil {
+			for _, pt := range resources {
+				if !seen[pt] {
+					seen[pt] = true
+					tools = append(tools, pt)
+				}
+			}
+			continue
+		}
 		if strings.HasPrefix(ct, "mcp__") || piMCPResourcePattern(ct) {
 			// MCP tool names are canonical: hooks and the allowlist match
 			// them verbatim, and pi's --tools accepts them as patterns. A

@@ -106,15 +106,14 @@ export default function(pi) {
 `);
   const agent = { sessionsDir: home, extensions: [provider], declaredExtensions: [{path: docs}], tools: ["mcp__docs__*"], personas: {docs: {tools: ["mcp__docs__search"]}} };
   for (const exposure of ["direct", "codemode", "deferred"]) {
-  for (const [index, mode] of ["explicit", "default", "extensions-only", "empty"].entries()) {
+  for (const [index, mode] of ["explicit", "default", "empty"].entries()) {
     const empty = mode === "empty";
     agent.toolMode = empty ? "explicit" : mode;
-    agent.tools = mode === "default" ? ["read", "bash"] : mode === "extensions-only" ? [] : ["codemode", "mcp__docs__*"];
+    agent.tools = mode === "default" ? ["read", "bash"] : ["codemode", "mcp__docs__*"];
     agent.personas.docs.tools = empty ? [] : ["codemode", "mcp__docs__search"];
     // Ask a real parent for its active set; do not substitute the full registry.
     const parentArgs = ["--print", "--mode", "json", "--no-approve", "--no-extensions", "-e", provider, "-e", docs, "--model", "faux/faux-1"];
-    if (mode === "extensions-only") parentArgs.push("--no-builtin-tools");
-    else if (mode === "explicit" || empty) parentArgs.push("--tools", "codemode,mcp__docs__search,mcp__docs__write");
+    if (mode === "explicit" || empty) parentArgs.push("--tools", "codemode,mcp__docs__search,mcp__docs__write");
     const parent = spawnSync(process.env.FULLSEND_TEST_PI_BIN, parentArgs, {
       cwd: home, input: "search docs", encoding: "utf8", timeout: 45_000,
       env: {PATH: process.env.PATH, HOME: home, PI_CODING_AGENT_DIR: home, TEST_EXPOSURE: exposure},
@@ -123,7 +122,7 @@ export default function(pi) {
     assert.equal(parent.status, 0, parent.stderr);
     const {active, registered} = JSON.parse(readFileSync(snapshot, "utf8"));
     assert.equal(registered.find((t) => t.name === "mcp__docs__search").exposure, exposure);
-    if (mode === "default" || mode === "extensions-only") assert.equal(active.includes("mcp__docs__search"), exposure === "direct", `${mode}/${exposure}`);
+    if (mode === "default") assert.equal(active.includes("mcp__docs__search"), exposure === "direct", `${mode}/${exposure}`);
     assert.ok(!active.includes("mcp__docs__hidden"));
     // Even a persona explicitly requesting the inactive tool cannot get it.
     if (!empty) agent.personas.docs.tools.push("mcp__docs__hidden");

@@ -795,13 +795,16 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		return &m, store, string(storedUpload(t, store, cfg+"/APPEND_SYSTEM.md"))
 	}
 
-	t.Run("extension-only launch mode", func(t *testing.T) {
-		work := t.TempDir()
-		fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), filepath.Join(work, "store"), "/dev/null")
-		m, err := (PiRuntime{}).piAgentManifestFor("sb", &piAgentDef{Model: "opus"}, []string{}, false, nil, nil, nil, nil, "", false)
-		require.NoError(t, err)
-		assert.Equal(t, "extensions-only", m.ToolMode)
-		assert.Empty(t, m.Tools)
+	t.Run("mapped-empty parent has no child dispatcher", func(t *testing.T) {
+		m, _, _ := bootstrap(t, "---\nname: review\ntools: [Skill]\n---\nReview.", false)
+		assert.Nil(t, m.Agent)
+	})
+
+	t.Run("Agent-only parent has explicit empty child selection", func(t *testing.T) {
+		m, _, _ := bootstrap(t, "---\nname: review\ntools: [Agent]\n---\nReview.", false)
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "explicit", m.Agent.ToolMode)
+		assert.Empty(t, m.Agent.Tools)
 	})
 
 	t.Run("enabled without tools frontmatter, hooks on", func(t *testing.T) {
