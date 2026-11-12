@@ -99,9 +99,8 @@ func deleteRunnerSecretsSecret(w *world.World) error {
 // every run's logs were usable on the first fetch after completion, and
 // the completes-successfully and logs-contain steps' saved snapshots
 // were never more than 4.4s apart, so measured 5s rounded up; the window
-// keeps 12x that margin. The refused scenario first ran live in the PR
-// that declared this capability (Nov 2026). Logs that are complete, or
-// truncated at a size or page cap, are final and are not fetched again.
+// keeps 12x that margin. Logs that are complete, or truncated at a
+// size or page cap, are final and are not fetched again.
 // Variables (not constants) so unit tests can shrink the window.
 var harnessLogPollWindow = 60 * time.Second
 

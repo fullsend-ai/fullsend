@@ -272,11 +272,10 @@ ci-local:
 # runner-secret-overlay-guard
 # (features/dispatch/runner-secret-overlay-guard.feature) is declared so
 # both scenarios run in the default suite and a guard regression fails it
-# instead of passing unnoticed. The refused scenario first ran live in
-# the PR that declared this capability (Nov 2026); the eight live runs
-# behind harnessLogPollWindow's 5s measurement exercised the allowed
-# scenario only. The gate stays so BEHAVIOUR_CAPABILITIES= can still
-# skip the refused scenario on demand.
+# instead of passing unnoticed. The eight live runs behind
+# harnessLogPollWindow's 5s measurement exercised the allowed scenario
+# only. The gate stays so BEHAVIOUR_CAPABILITIES= can still skip the
+# refused scenario on demand.
 # fetch-allowlist-gate (features/dispatch/fetch-allowlist-gate.feature) is
 # not declared until its scenario has passed one live run. A dev run (an
 # authorized PR or the merge queue) installs the PR head's fullsend
