@@ -988,6 +988,10 @@ type perRepoConfig struct {
 	// overrides of fullsend's pinned alias table (#6882, #6527 item 2).
 	Models *ModelsConfig `yaml:"models,omitempty"`
 
+	// Artifacts limits what the run artifact publishes (ADR 0161).
+	// content overrides the parent layer; by_source merges per key.
+	Artifacts *ArtifactsConfig `yaml:"artifacts,omitempty"`
+
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
 	// serialization so Marshal emits only locally-set values.
@@ -1121,6 +1125,7 @@ type perRepoConfigMarshal struct {
 	MintURL                string                    `yaml:"mint_url,omitempty"`
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
 	Models                 *ModelsConfig             `yaml:"models,omitempty"`
+	Artifacts              *ArtifactsConfig          `yaml:"artifacts,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -1147,6 +1152,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	}
 	if c.Models != nil && len(c.Models.Aliases) > 0 {
 		h.Models = c.Models
+	}
+	if !c.Artifacts.IsZero() {
+		h.Artifacts = c.Artifacts
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -1278,6 +1286,9 @@ func (c *perRepoConfig) validateLocalFields() error {
 		}
 	}
 	if err := c.ValidateAuthorization(); err != nil {
+		return err
+	}
+	if err := validateArtifacts(c.Artifacts); err != nil {
 		return err
 	}
 	// Validate the merged view, as ValidateAgentEntries does above: a bad

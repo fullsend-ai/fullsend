@@ -155,6 +155,8 @@ the overlay → base → code defaults chain.
 | `inference.gateway.messages_auth_header` | `string` (nested) | Scalar override | `""` (empty; means `authorization`) |
 | `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
+| `artifacts.content` | `string` (nested) | Scalar override | `"all"` |
+| `artifacts.by_source` | `map[string]string` (nested) | Per-key merge | `nil` (no per-source levels) |
 | `tracker` | `*TrackingConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 | `authorization` | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |

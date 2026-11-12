@@ -431,6 +431,7 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 		}
 		out.Models = m
 	}
+	out.Artifacts = cloneArtifacts(src.Artifacts)
 	return out
 }
 
@@ -537,6 +538,9 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		for k, v := range child.Models.Aliases {
 			out.Models.Aliases[k] = v
 		}
+	}
+	if !child.Artifacts.IsZero() {
+		out.Artifacts = mergeArtifacts(out.Artifacts, child.Artifacts)
 	}
 }
 

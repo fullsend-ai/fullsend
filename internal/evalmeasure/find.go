@@ -107,6 +107,13 @@ func findChildPlatformTelemetry(outputDir, wantAgent string) (paths []string, sa
 	return []string{bestPath}, sawMatch, nil
 }
 
+// IsHostRunDir reports whether dirName is a host-created run directory
+// name (legacy agent-<name>-<pid>-<unix> or current fs-<slug>-<hex>),
+// for any agent.
+func IsHostRunDir(dirName string) bool {
+	return matchesRunDir(dirName, "", "")
+}
+
 // matchesRunDir reports whether dirName matches either the legacy
 // agent-<name>-<pid>-<unix> or current fs-<slug>-<hex> naming scheme,
 // optionally filtering by agent name.

@@ -543,7 +543,9 @@ func TestCreateFork(t *testing.T) {
 	})
 
 	t.Run("returns error on API failure", func(t *testing.T) {
+		requests := 0
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
 			w.WriteHeader(http.StatusForbidden)
 			json.NewEncoder(w).Encode(map[string]any{
 				"message": "Repository access blocked",
@@ -555,6 +557,83 @@ func TestCreateFork(t *testing.T) {
 		_, _, err := client.CreateFork(context.Background(), "upstream", "repo")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create fork")
+		assert.Equal(t, 1, requests, "a 403 that is not a rate limit must not be retried")
+	})
+
+	t.Run("retries submitted-too-quickly 403", func(t *testing.T) {
+		requests := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			assert.Equal(t, "POST", r.Method)
+			assert.Equal(t, "/repos/upstream/repo/forks", r.URL.Path)
+			if requests == 1 {
+				// GitHub's content-creation throttle: no Retry-After
+				// header and no "rate limit" wording.
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]any{"message": "was submitted too quickly"})
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{
+				"name":  "repo",
+				"owner": map[string]any{"login": "contributor"},
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		forkOwner, forkRepo, err := client.CreateFork(context.Background(), "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "contributor", forkOwner)
+		assert.Equal(t, "repo", forkRepo)
+		assert.Equal(t, 2, requests)
+	})
+
+	t.Run("retries submitted-too-quickly 403 with Retry-After", func(t *testing.T) {
+		requests := 0
+		var waits []time.Duration
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			if requests == 1 {
+				w.Header().Set("Retry-After", "7")
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]any{"message": "was submitted too quickly"})
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{
+				"name":  "repo",
+				"owner": map[string]any{"login": "contributor"},
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv).WithAfterFunc(func(d time.Duration) <-chan time.Time {
+			waits = append(waits, d)
+			return noWaitAfter(d)
+		})
+		_, _, err := client.CreateFork(context.Background(), "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, 2, requests)
+		assert.Equal(t, []time.Duration{7 * time.Second}, waits, "Retry-After must be honoured")
+	})
+
+	t.Run("persistent submitted-too-quickly 403 stops at attempt cap", func(t *testing.T) {
+		requests := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{"message": "was submitted too quickly"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, _, err := client.CreateFork(context.Background(), "upstream", "repo")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create fork")
+		assert.True(t, IsRateLimitError(err))
+		assert.False(t, forge.IsForbidden(err))
+		assert.Equal(t, maxRetries, requests)
 	})
 }
 
@@ -3470,6 +3549,19 @@ func TestIsRetryable_PrimaryRateLimitAs403(t *testing.T) {
 	assert.True(t, retryable, "403 with 'API rate limit exceeded' should be retryable")
 }
 
+func TestIsRetryable_SubmittedTooQuickly403(t *testing.T) {
+	// GitHub's content-creation throttle (e.g. on fork creation) is a 403
+	// with neither a Retry-After header nor "rate limit" in the body.
+	body := `{"message":"was submitted too quickly"}`
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	retryable, _ := isRetryable(resp)
+	assert.True(t, retryable, "403 with 'was submitted too quickly' should be retryable")
+}
+
 func TestIsRateLimitError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -3484,6 +3576,11 @@ func TestIsRateLimitError(t *testing.T) {
 		{
 			name:     "secondary rate limit as 403",
 			err:      &APIError{StatusCode: 403, Message: "You have exceeded a secondary rate limit"},
+			expected: true,
+		},
+		{
+			name:     "content-creation throttle as 403",
+			err:      &APIError{StatusCode: 403, Message: "was submitted too quickly"},
 			expected: true,
 		},
 		{
@@ -5491,6 +5588,59 @@ func TestAddIssueLabels_Empty(t *testing.T) {
 	require.NoError(t, client.AddIssueLabels(context.Background(), "org", "repo", 7))
 }
 
+func TestEnsureLabel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/repos/org/repo/labels", r.URL.Path)
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, map[string]string{"name": "do-it", "color": "ededed"}, body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"name":"do-it"}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	require.NoError(t, client.EnsureLabel(context.Background(), "org", "repo", "do-it"))
+}
+
+func TestEnsureLabel_AlreadyExists(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"Label","code":"already_exists","field":"name"}]}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	require.NoError(t, client.EnsureLabel(context.Background(), "org", "repo", "do-it"))
+}
+
+func TestEnsureLabel_Errors(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"other validation error", http.StatusUnprocessableEntity, `{"message":"Validation Failed","errors":[{"resource":"Label","code":"invalid","field":"color"}]}`},
+		{"not found", http.StatusNotFound, `{"message":"Not Found"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			err := client.EnsureLabel(context.Background(), "org", "repo", "do-it")
+			require.ErrorContains(t, err, `create label "do-it"`)
+		})
+	}
+}
+
 func TestDownloadWorkflowRunArtifact(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/actions/artifacts/9/zip", r.URL.Path)
@@ -6467,6 +6617,32 @@ func TestCreateForkInOrg(t *testing.T) {
 		_, err := client.CreateForkInOrg(context.Background(), "upstream", "repo", "target-org", "my-fork")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "create fork")
+	})
+
+	t.Run("retries submitted-too-quickly 403", func(t *testing.T) {
+		posts := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet {
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+				return
+			}
+			posts++
+			if posts == 1 {
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]any{"message": "was submitted too quickly"})
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			json.NewEncoder(w).Encode(map[string]any{"name": "my-fork"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		forkRepo, err := client.CreateForkInOrg(context.Background(), "upstream", "repo", "target-org", "my-fork")
+		require.NoError(t, err)
+		assert.Equal(t, "my-fork", forkRepo)
+		assert.Equal(t, 2, posts)
 	})
 }
 

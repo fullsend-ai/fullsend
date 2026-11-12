@@ -77,7 +77,8 @@ missing, YAML does not parse, or the resolved URL fails validation.
 
   > **Note:** `iamcredentials.googleapis.com` is a runtime dependency — the deployed mint Cloud Function uses it for WIF token exchange, not the CLI itself. It must be enabled before `mint deploy`.
 
-- **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases)
+- **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases),
+  or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later
 
 - **GCP IAM roles** — the user running mint commands authenticates via ADC (`gcloud auth application-default login`). The required roles depend on the command:
 

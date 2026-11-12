@@ -58,6 +58,7 @@ type statusCommentProperty struct {
 // jiraClient is the Jira API surface this adapter needs. Implemented by
 // jira.LiveClient; faked in tests.
 type jiraClient interface {
+	AddIssueLabel(ctx context.Context, issueIDOrKey, label string) error
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
 	CreateIssue(ctx context.Context, in jira.CreateIssueInput) (*jira.CreatedIssue, error)
 	ListComments(ctx context.Context, issueIDOrKey string) ([]jira.Comment, error)
@@ -533,4 +534,9 @@ func commentEdited(c jira.Comment) bool {
 		return false
 	}
 	return updated.After(created)
+}
+
+// AddIssueLabel adds a label to a Jira work item, preserving existing labels.
+func (c *JiraClient) AddIssueLabel(ctx context.Context, project string, number int, label string) error {
+	return c.jira.AddIssueLabel(ctx, issueKey(project, number), label)
 }

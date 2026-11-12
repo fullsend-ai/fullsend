@@ -145,24 +145,42 @@ repo baseline and overrides)
   published as generated, tag-pinned JSON Schemas enforced by an always-on
   golden test ([ADR 0146](ADRs/0146-sandbox-environment-contract-manifest.md);
   [contract](normative/sandbox-env/v1/README.md)).
-- Runner secrets on GitHub (interim until external secret manager support
-  or #6359 settles the long-term route, then kept as the fallback for
-  workflows without GitHub OIDC or WIF; integrations fullsend owns keep their
-  own named secrets): user secrets
-  reach host-side scripts through one
-  optional stored secret, `FULLSEND_GITHUB_RUNNER_SECRETS` (a JSON object of name →
-  value), staged by the composite action in a mode 0600 file that
-  `fullsend run` deletes after reading, and filtered by the resolved
-  `env.runner`. The bundle is never in the environment of `fullsend run` or
-  its children. `fullsend run` refuses runner-owned names, values too short
-  to redact, and references from `env.sandbox`, provider credentials,
-  expanded `host_files`, and overlays guarded by anything other than
-  `runtime.forge` or `config` (interim until ADR 0112's guarded-field check).
-  GitLab is unchanged: one masked CI/CD variable per secret, none of these
-  rules ([ADR 0136](ADRs/0136-runner-secrets-through-one-stored-secret.md)).
-  The refusal does not consult the credential deny-list that the
-  `env.sandbox` gate also checks
+- Runner secrets on GitHub: the user-managed bundle is an interim native source
+  for custom host-side scripts until Vault-backed resolution is implemented.
+  Native remains the default when no Vault connection is selected, including
+  workflows without GitHub OIDC/WIF. Fullsend-owned integrations keep their own
+  named secrets, and the broader BYOA custom-secret question remains tracked in
+  #6359. User secrets reach host-side scripts through one optional stored
+  secret, `FULLSEND_GITHUB_RUNNER_SECRETS` (a JSON object of name → value),
+  staged by the composite action in a mode 0600 file that `fullsend run`
+  deletes after reading, and filtered by the resolved `env.runner`. The bundle
+  is never in the environment of `fullsend run` or its children. `fullsend run`
+  refuses runner-owned names, values too short to redact, and references from
+  `env.sandbox`, provider credentials, expanded `host_files`, and overlays
+  guarded by anything other than `runtime.forge` or `config` (interim until
+  ADR 0112's guarded-field check). GitLab is unchanged: one masked CI/CD
+  variable per secret, none of these rules
+  ([ADR 0136](ADRs/0136-runner-secrets-through-one-stored-secret.md)). The
+  refusal does not consult the credential deny-list that the `env.sandbox`
+  gate also checks
   ([ADR 0145](ADRs/0145-keep-credential-deny-list-out-of-runner-secret-refusal.md)).
+- External source selection for user-managed runner secrets (target state; not
+  yet implemented): named connections under `connections` define service kinds
+  and settings, while `secrets` entries select a connection (native when
+  omitted). A Vault connection has an address and JWT role/audience, defaulting
+  to `fullsend-runner` and `https://fullsend.sh/vault`; secret paths are ordered
+  and templated from trusted repository context. Connection definitions and
+  secret entries, including source selection and path order, must come from
+  trusted configuration revisions; PR-head and event-provided config cannot
+  define or override these entries, including removing a trusted Vault
+  selection or omitting its `connection` to restore native. Fullsend validates
+  and encodes every path component and validates the completed relative KV API
+  path before access. Vault access uses job OIDC/WIF. Native remains the
+  default only when no Vault connection is selected;
+  an explicit Vault selection fails closed when WIF or Vault resolution is
+  unavailable. Installer-managed GitLab credentials remain native until Vault
+  write and rotation behavior is decided
+  ([ADR 0155](ADRs/0155-configure-vault-backed-runner-secrets.md)).
 - Agent configuration env vars: behavioral knobs use `{AGENT}_{SETTING_NAME}`
   naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via `env.runner` and
   `env.sandbox` in the harness YAML. Each agent documents its config vars in
@@ -700,7 +718,7 @@ Observability is a cross-cutting concern that touches every other component. Eac
 
 **Decided:**
 
-- JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)).
+- JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)). A repo-level `artifacts` setting in `config.yaml` replaces that per-agent opt-out and can leave out transcripts or the whole artifact, for every run or per run source ([ADR 0161](ADRs/0161-repo-config-limits-run-artifact-content.md)).
 - Event-driven stage dispatch remains traceable end-to-end in the GitHub Actions UI by using synchronous `workflow_call` dispatch (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Scheduled entity-discovery runs are attributable to the verified fullsend
   invocation identity, target repository, effective policy, harness revision,
@@ -736,7 +754,7 @@ Observability is a cross-cutting concern that touches every other component. Eac
 - What signals matter most — cost, latency, token usage, action logs, decision traces, or something else?
 - ~~How do we balance detailed tracing (useful for debugging) with the volume of data agents will produce?~~ Decided in [ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md): instrument all lifecycle steps comprehensively; volume is managed by backends not by suppressing data at the source.
 - ~~How do we score wild agent traces for trends without a second export stack?~~ Decided in [ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md): eval measurements write local JSONL beside telemetry when at least one new score row is produced (including `label: skip`); portable remote export uses the same OTLP config as traces (`gen_ai.evaluation.result` events). The JSONL is absent (not empty) when telemetry/manifest is missing, no traces match, or every candidate is already in the ledger.
-- What is the retention and access model for agent logs? Who can see what? (JSONL trace access model decided in [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md); retention policy and broader log access remain open.)
+- What is the retention and access model for agent logs? Who can see what? (JSONL trace access model decided in [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md); repo-level limits on what a run artifact publishes, per run source, decided in [ADR 0161](ADRs/0161-repo-config-limits-run-artifact-content.md); retention policy and broader log access remain open.)
 - How does observability interact with the security requirement that "every
   action is logged, attributable, and reviewable"? Scheduled entity-discovery
   attribution is decided in
@@ -1179,7 +1197,8 @@ GitHub event ──► SHIM WORKFLOW (.github/workflows/fullsend.yaml in the rep
                  ║ │ Extracts from destroyed sandbox:                          │ ║
                  ║ │   /sandbox/workspace/output/, JSONL transcripts,          │ ║
                  ║ │   SafeDownload repo (sanitize symlinks, strip hooks)      │ ║
-                 ║ │                                                           │ ║
+                 ║ │   replacement refs, grafts, commit graphs removed         │ ║
+                 ║ │   root shallow state restored from pre-upload snapshot    │ ║
                  ║ │ Post-agent secret scan (redact from extracted output).    │ ║
                  ║ │                                                           │ ║
                  ║ │ Post-script (scripts/post-code.sh, with PUSH_TOKEN):      │ ║

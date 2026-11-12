@@ -90,6 +90,16 @@ type PerRepoConfigReader interface {
 	// aliases are configured: every alias resolves through the runtime's
 	// compiled-in table.
 	ConfigModelAliases() map[string]string
+	// ConfigArtifactsContent returns the effective artifacts.content
+	// level (ADR 0161); the code default is "all".
+	ConfigArtifactsContent() string
+	// ConfigArtifactsContentSet reports whether any config layer sets
+	// artifacts.content explicitly (false for the code default).
+	ConfigArtifactsContentSet() bool
+	// ConfigArtifactsBySource returns the effective artifacts.by_source
+	// map, merged per key through the parent chain. nil means no
+	// per-source levels.
+	ConfigArtifactsBySource() map[string]string
 	// IsOwnersFileAuthEnabled reports whether the owners_file
 	// authorization provider is listed.
 	IsOwnersFileAuthEnabled() bool
