@@ -185,6 +185,29 @@ func neutralizeAgentsRepoFallback(t *testing.T) {
 	orig := defaultAgentsRepoURLPrefix
 	defaultAgentsRepoURLPrefix = "https://127.0.0.1:1/agents-repo-blocked-by-test/"
 	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+	// Resolving the agents ref (GetRef) runs before the raw-content fetch
+	// above and goes to api.github.com, where an exhausted rate limit makes
+	// the client sleep until the reset. A nil client makes
+	// fetchPinnedAgentsRepoFile skip the fallback before any request. See
+	// #9372.
+	origClientFn := agentsRepoFallbackForgeClientFn
+	agentsRepoFallbackForgeClientFn = func(string) forge.Client { return nil }
+	t.Cleanup(func() { agentsRepoFallbackForgeClientFn = origClientFn })
+}
+
+func TestAgentsRepoFallbackForgeClientFn_DefaultIsGitHubClient(t *testing.T) {
+	client := agentsRepoFallbackForgeClientFn("")
+	_, ok := client.(*gh.LiveClient)
+	assert.True(t, ok, "default fallback client must be a GitHub client, got %T", client)
+}
+
+func TestNeutralizeAgentsRepoFallback_DisablesFallbackClient(t *testing.T) {
+	t.Run("neutralized", func(t *testing.T) {
+		neutralizeAgentsRepoFallback(t)
+		assert.Nil(t, agentsRepoFallbackForgeClientFn("token"),
+			"neutralized runAgent tests must not build a client that calls api.github.com")
+	})
+	assert.NotNil(t, agentsRepoFallbackForgeClientFn("token"), "cleanup must restore the constructor")
 }
 
 // writePolicyFixture commits a one-field OpenShell policy so ValidateFilesExist

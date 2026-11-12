@@ -174,6 +174,14 @@ var statusNewForgeClientFn = func(token string) forge.Client {
 	return gh.New(token)
 }
 
+// agentsRepoFallbackForgeClientFn constructs the GitHub client runAgent uses
+// to resolve the fullsend-ai/agents ref for the agents-repo fallback. Tests
+// override it (see neutralizeAgentsRepoFallback) so the fallback never sends
+// a live request to api.github.com; a nil client skips the fallback.
+var agentsRepoFallbackForgeClientFn = func(token string) forge.Client {
+	return gh.New(token)
+}
+
 // agentWorkingDirExcludes lists fullsend-reserved directory patterns that
 // must stay out of commits. They are appended to .git/info/exclude before
 // the agent runs. Host run output (often named output/) is excluded only
@@ -668,7 +676,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// fallback. Always create a GitHub client for the agents-repo fallback —
 	// fullsend-ai/agents is public, so unauthenticated requests work when no
 	// GitHub token is available (e.g., on GitLab pipelines).
-	fallbackForgeClient := gh.New(composeGitToken)
+	fallbackForgeClient := agentsRepoFallbackForgeClientFn(composeGitToken)
 	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
 	if err != nil {
 		return err
