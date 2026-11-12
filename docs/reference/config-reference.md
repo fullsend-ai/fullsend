@@ -710,7 +710,8 @@ validation (file values must be HTTPS with no userinfo; the variable
 fallback may use loopback HTTP only when config is silent on `mint_url`).
 When a declared config value differs from the workflow variable snapshot
 (including an unset variable), dispatch follows config and the route job
-may emit a workflow notice naming the effective mint host. See
+may emit a workflow notice that config overrides the variable (no URL or
+host in the notice). See
 [Layered configuration reference](../guides/infrastructure/layered-config-reference.md)
 and [Mint administration — dispatch mint URL migration](../guides/infrastructure/mint-administration.md#dispatch-mint-url-migration).
 

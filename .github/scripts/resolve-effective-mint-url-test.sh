@@ -107,7 +107,7 @@ assert_eq "fallback only" "https://fallback.example" "$(run_resolve "https://fal
 setup_repo
 printf 'version: "1"\nmint_url: https://overlay.example\n' >.fullsend/config.yaml
 assert_eq "overlay wins" "https://overlay.example" "$(run_resolve "https://fallback.example")"
-assert_notice_contains "overlay override notice" "mint host: overlay.example" "$(run_resolve_stderr "https://fallback.example")"
+assert_notice_contains "overlay override notice" "mint_url from .fullsend config overrides FULLSEND_MINT_URL" "$(run_resolve_stderr "https://fallback.example")"
 
 setup_repo
 printf 'version: "1"\nmint_url: https://same.example\n' >.fullsend/config.yaml

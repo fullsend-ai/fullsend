@@ -110,33 +110,10 @@ if ! _validate_resolved_mint_url "${_effective}" "${_from_file}"; then
   exit 1
 fi
 
-# File-sourced mint_url overrides the FULLSEND_MINT_URL snapshot; log only the
-# host when the two differ so runs retain an audit trail without echoing URLs.
-_mint_host_from_url() {
-  local url="$1"
-  local rest authority host
-  if [[ -z "${url}" ]]; then
-    return 0
-  fi
-  if [[ "${url}" =~ ^[A-Za-z][A-Za-z0-9+.-]*://(.*)$ ]]; then
-    rest="${BASH_REMATCH[1]}"
-  else
-    return 1
-  fi
-  authority="${rest%%[/?#]*}"
-  host="${authority%%:*}"
-  if [[ -n "${host}" ]]; then
-    printf '%s' "${host}"
-  fi
-}
-
+# File-sourced mint_url overrides the FULLSEND_MINT_URL snapshot; say so without
+# echoing the URL or host (mint-token masks the endpoint in later steps).
 if [[ "${_from_file}" == "true" && "${_effective}" != "${FALLBACK_MINT_URL:-}" ]]; then
-  host=$(_mint_host_from_url "${_effective}") || host=""
-  if [[ -n "${host}" ]]; then
-    echo "::notice::mint_url from .fullsend config overrides FULLSEND_MINT_URL (mint host: ${host})" >&2
-  else
-    echo "::notice::mint_url from .fullsend config overrides FULLSEND_MINT_URL" >&2
-  fi
+  echo "::notice::mint_url from .fullsend config overrides FULLSEND_MINT_URL" >&2
 fi
 
 {

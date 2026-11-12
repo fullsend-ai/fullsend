@@ -50,8 +50,8 @@ dispatch uses that endpoint instead of `FULLSEND_MINT_URL`. To retarget a
 repo, change or remove the config field (removing it restores the variable
 fallback). When config declares a value that differs from the workflow
 `FULLSEND_MINT_URL` snapshot (including when that variable is unset),
-dispatch follows config and emits a workflow notice naming the effective
-mint host when it can be parsed safely.
+dispatch follows config and emits a workflow notice that config overrides
+the variable (no URL or host in the notice).
 
 Config-sourced values must be HTTPS with no userinfo. The resolved URL is
 validated on every run: declared config values must be HTTPS (no userinfo).
