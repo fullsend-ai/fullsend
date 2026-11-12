@@ -121,7 +121,7 @@ off. An unrecognized value disables capture; telemetry never fails a run.
 and `arguments`), and tool results — including any sub-agent activity,
 unattributed — as the `gen_ai.output.messages` span attribute: a JSON
 string following the
-[GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
+[GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions-genai/blob/371eb36a5258cfef7d80328755d5ef65251c2145/model/gen-ai/gen-ai-output-messages.json)
 with a `finish_reason` of `stop` or `error`. Tool arguments, tool results, and the `id` that correlates a result with its call, are captured
 only when the runtime's stream provides them: Claude and pi runs do; the
 codex parser emits none of the three yet
@@ -184,7 +184,7 @@ On a retry iteration under `validation_loop.feedback_mode: append`, the
 prompt the runner composed — its fixed framing around the previous
 iteration's validation output — is recorded as `gen_ai.input.messages`: one
 `user` message with one text part, following the
-[GenAI input-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-input-messages.json).
+[GenAI input-messages schema](https://github.com/open-telemetry/semantic-conventions-genai/blob/371eb36a5258cfef7d80328755d5ef65251c2145/model/gen-ai/gen-ai-input-messages.json).
 The attribute is absent on the first iteration and on a retry without
 feedback, which send the runtime's fixed default prompt.
 
@@ -575,13 +575,18 @@ the process dies before an `agent` span ends, the file may lack that span.
 | Output | `gen_ai.usage.output_tokens` | `output` |
 | Cache creation | `gen_ai.usage.cache_creation.input_tokens` | `cache_creation` |
 | Cache read | `gen_ai.usage.cache_read.input_tokens` | `cache_read` |
-| Reasoning | `gen_ai.usage.reasoning_tokens` | `reasoning` |
+| Reasoning | `gen_ai.usage.reasoning.output_tokens` (legacy `gen_ai.usage.reasoning_tokens`) | `reasoning` |
 
 The first four span attributes are emitted even when zero. The reasoning
-attribute is omitted when zero; `metrics.json` always serializes
+attributes are omitted when zero; `metrics.json` always serializes
 `token_usage.reasoning`, including `0`. Treat a missing reasoning attribute
 on a fullsend `agent` span as zero recorded reasoning, not proof that the
 provider consumed none.
+
+`gen_ai.usage.reasoning.output_tokens` is the GenAI semantic convention
+key. Fullsend also emits the legacy `gen_ai.usage.reasoning_tokens` key with
+the same value for one release; it will then be removed. Read the new key,
+falling back to the legacy key only for older `run-telemetry.jsonl` files.
 
 For Claude, pi, and Codex, input is uncached input: cache creation and cache
 read are separate counters. The reasoning rule depends on the runtime:
@@ -589,6 +594,9 @@ read are separate counters. The reasoning rule depends on the runtime:
 - **Codex:** Fullsend subtracts reasoning from the wire output count.
   Persisted output and reasoning are disjoint, so add a reasoning term
   whenever recorded reasoning is non-zero, including interrupted runs.
+  This departs from the GenAI convention, which says
+  `gen_ai.usage.output_tokens` SHOULD include reasoning tokens: on Codex
+  `agent` spans it does not.
 - **Claude:** Reasoning is a breakdown of output. Do not add it again.
   An interrupted iteration may lack the final reasoning count even when
   streamed output counts were captured.
@@ -625,7 +633,7 @@ jq -c '
       output: (.["gen_ai.usage.output_tokens"] | tonumber),
       cache_creation: (.["gen_ai.usage.cache_creation.input_tokens"] | tonumber),
       cache_read: (.["gen_ai.usage.cache_read.input_tokens"] | tonumber),
-      reasoning: ((.["gen_ai.usage.reasoning_tokens"] // 0) | tonumber)
+      reasoning: ((.["gen_ai.usage.reasoning.output_tokens"] // .["gen_ai.usage.reasoning_tokens"] // 0) | tonumber)
     }
 ' run-telemetry.jsonl
 ```

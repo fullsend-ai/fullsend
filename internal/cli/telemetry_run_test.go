@@ -799,9 +799,13 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	assert.Contains(t, a, attribute.Float64("fullsend.cost_usd", 0.34))
 	assert.Contains(t, a, attribute.Int("fullsend.tool_calls", 11))
 
-	// reasoning_tokens should be absent when zero.
-	assert.NotContains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 0),
-		"reasoning_tokens attribute should be omitted when zero")
+	// Both reasoning keys should be absent when zero.
+	for _, kv := range a {
+		assert.NotEqual(t, "gen_ai.usage.reasoning.output_tokens", string(kv.Key),
+			"reasoning.output_tokens attribute should be omitted when zero")
+		assert.NotEqual(t, "gen_ai.usage.reasoning_tokens", string(kv.Key),
+			"reasoning_tokens attribute should be omitted when zero")
+	}
 }
 
 func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {
@@ -813,8 +817,10 @@ func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {
 
 	a := agentSpanEndAttrs(1, 0, "anthropic", "claude", &m)
 	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic"))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.reasoning.output_tokens", 42),
+		"semconv reasoning.output_tokens attribute should be present when non-zero")
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 42),
-		"reasoning_tokens attribute should be present when non-zero")
+		"legacy reasoning_tokens attribute should be emitted alongside for one release")
 }
 
 func TestAgentSpanEndAttrs_IdentityTuple(t *testing.T) {

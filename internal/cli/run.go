@@ -4845,7 +4845,13 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 		attribute.Int("fullsend.tool_calls", int(m.ToolCalls.Load())),
 	}
 	if m.ReasoningTokens > 0 {
-		attrs = append(attrs, attribute.Int("gen_ai.usage.reasoning_tokens", m.ReasoningTokens))
+		// gen_ai.usage.reasoning.output_tokens is the semconv key (v1.41.0+);
+		// gen_ai.usage.reasoning_tokens is the legacy fullsend key, kept for
+		// one release so existing consumers can migrate (#9386).
+		attrs = append(attrs,
+			attribute.Int("gen_ai.usage.reasoning.output_tokens", m.ReasoningTokens),
+			attribute.Int("gen_ai.usage.reasoning_tokens", m.ReasoningTokens),
+		)
 	}
 	return attrs
 }
