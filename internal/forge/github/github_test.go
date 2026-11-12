@@ -2841,6 +2841,119 @@ func TestWithoutAmbiguousRetry_DoesNotRetryTimeout(t *testing.T) {
 	assert.Equal(t, int32(1), attempts.Load())
 }
 
+func TestWithoutAmbiguousRetry_RetriesReplaySafeReads(t *testing.T) {
+	// Under WithoutAmbiguousRetry a GET or HEAD keeps its retries after
+	// an ambiguous failure: a replayed read cannot change server state,
+	// so the reads inside a guarded operation keep their backoff.
+	tests := []struct {
+		name   string
+		method string
+	}{
+		{name: "GET", method: http.MethodGet},
+		{name: "HEAD", method: http.MethodHead},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name+" 5xx", func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				w.WriteHeader(http.StatusBadGateway)
+			}))
+			defer srv.Close()
+
+			client := &LiveClient{
+				token:     "test-token",
+				baseURL:   srv.URL,
+				http:      srv.Client(),
+				afterFunc: noWaitAfter,
+			}
+
+			_, err := client.do(forge.WithoutAmbiguousRetry(context.Background()), tt.method, "/repos/org/repo", nil)
+			require.Error(t, err)
+			assert.Equal(t, int32(maxRetries), attempts.Load(), "a replayed read is safe, so it keeps its retries")
+		})
+		t.Run(tt.name+" timeout", func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				time.Sleep(200 * time.Millisecond)
+			}))
+			defer srv.Close()
+
+			httpClient := srv.Client()
+			httpClient.Timeout = 50 * time.Millisecond
+			client := &LiveClient{
+				token:     "test-token",
+				baseURL:   srv.URL,
+				http:      httpClient,
+				afterFunc: noWaitAfter,
+			}
+
+			_, err := client.do(forge.WithoutAmbiguousRetry(context.Background()), tt.method, "/repos/org/repo", nil)
+			require.Error(t, err)
+			assert.Equal(t, int32(maxRetries), attempts.Load(), "a replayed read is safe, so it keeps its retries")
+		})
+	}
+}
+
+func TestWithoutAmbiguousRetry_DoesNotRetryNonIdempotentRequests(t *testing.T) {
+	tests := []struct {
+		name   string
+		method string
+	}{
+		{name: "POST", method: http.MethodPost},
+		{name: "PUT", method: http.MethodPut},
+		{name: "PATCH", method: http.MethodPatch},
+		{name: "DELETE", method: http.MethodDelete},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name+" 5xx", func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				w.WriteHeader(http.StatusBadGateway)
+			}))
+			defer srv.Close()
+
+			client := &LiveClient{
+				token:     "test-token",
+				baseURL:   srv.URL,
+				http:      srv.Client(),
+				afterFunc: noWaitAfter,
+			}
+
+			_, err := client.do(forge.WithoutAmbiguousRetry(context.Background()), tt.method, "/repos/org/repo", nil)
+			var apiErr *APIError
+			require.ErrorAs(t, err, &apiErr)
+			assert.Equal(t, http.StatusBadGateway, apiErr.StatusCode)
+			assert.Contains(t, apiErr.Message, "not retried")
+			assert.Equal(t, int32(1), attempts.Load())
+		})
+		t.Run(tt.name+" timeout", func(t *testing.T) {
+			var attempts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempts.Add(1)
+				time.Sleep(200 * time.Millisecond)
+			}))
+			defer srv.Close()
+
+			httpClient := srv.Client()
+			httpClient.Timeout = 50 * time.Millisecond
+			client := &LiveClient{
+				token:     "test-token",
+				baseURL:   srv.URL,
+				http:      httpClient,
+				afterFunc: noWaitAfter,
+			}
+
+			_, err := client.do(forge.WithoutAmbiguousRetry(context.Background()), tt.method, "/repos/org/repo", nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not retried")
+			assert.Equal(t, int32(1), attempts.Load())
+		})
+	}
+}
+
 func TestWithRetryGuard_RunsBeforeEachResend(t *testing.T) {
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
