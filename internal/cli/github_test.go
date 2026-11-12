@@ -2003,6 +2003,24 @@ func TestValidatePresetLayer(t *testing.T) {
 	err = validatePresetLayer([]byte("version: \"1\"\nmint_url: http://insecure.example.com\n"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preset mint_url")
+
+	// A preset becomes config.base.yaml, which never supplies trace_context
+	// (ADR 0154), so setup refuses a well-formed block as repos install
+	// does. The error shows no value.
+	const traceInstallation = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+	const traceVerificationKey = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+	err = validatePresetLayer([]byte("version: \"1\"\ntrace_context:\n  installation_id: \"" + traceInstallation +
+		"\"\n  signing_key:\n    secret: FULLSEND_TRACE_SIGNING_KEY\n  verification_keys:\n    active: \"" + traceVerificationKey + "\"\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trace_context belongs to one repository")
+	assert.NotContains(t, err.Error(), traceInstallation)
+	assert.NotContains(t, err.Error(), traceVerificationKey)
+
+	// The refusal comes before Validate, so it also covers a block that
+	// parses but has invalid fields.
+	err = validatePresetLayer([]byte("version: \"1\"\ntrace_context: {}\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trace_context belongs to one repository")
 }
 
 func TestValidateCLISetupValues(t *testing.T) {

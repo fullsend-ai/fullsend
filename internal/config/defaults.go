@@ -65,6 +65,9 @@ func (d *perRepoDefaults) IsOwnersFileAuthEnabled() bool { return false }
 // JiraAuthorization returns nil — no jira authorization provider by default.
 func (d *perRepoDefaults) JiraAuthorization() *AuthorizationProvider { return nil }
 
+// TraceContext returns nil — no trace_context block by default.
+func (d *perRepoDefaults) TraceContext() *TraceContextConfig { return nil }
+
 // ConfigMintURL returns the default mint URL (hosted public mint).
 func (d *perRepoDefaults) ConfigMintURL() string { return DefaultPerRepoMintURL }
 
