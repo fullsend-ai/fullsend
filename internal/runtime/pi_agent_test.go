@@ -166,8 +166,17 @@ func TestPiToolsFor(t *testing.T) {
 	assert.Nil(t, unsupported)
 
 	tools, unsupported = piToolsFor([]string{"mcp__docs", "mcp__docs__*", "mcp__docs__search", "mcp__other*", "mcp__", "mcp__docs_api"})
-	assert.Equal(t, []string{"mcp__docs__*", "mcp__docs__search", "mcp__other*", "mcp__", "mcp__docs_api__*"}, tools, "bare servers expand and deduplicate without rewriting exact names or patterns")
-	assert.Nil(t, unsupported)
+	assert.Equal(t, []string{"mcp__docs__*", "mcp__docs__search", "mcp__other*", "mcp__docs_api__*"}, tools, "bare servers expand and deduplicate without rewriting exact names or patterns")
+	assert.Equal(t, []string{"mcp__"}, unsupported)
+}
+
+func TestPiToolsFor_MCPSelectorValidation(t *testing.T) {
+	t.Parallel()
+	valid := []string{"mcp__docs-api__resolve-library-id", "mcp__Docs_2__*", "mcp__*"}
+	invalid := []string{"mcp__docs__search,bash,write", "mcp__x,*", "mcp__docs__search write", "mcp__docs__x\t", "mcp__docs__x\n", "mcp__docs__+write", "+mcp__docs__*", "-mcp__docs__*", "mcp__docs__é", "mcp__docs__x?", "mcp__"}
+	tools, unsupported := piToolsFor(append(append([]string{}, valid...), invalid...))
+	assert.Equal(t, valid, tools)
+	assert.Equal(t, invalid, unsupported)
 }
 
 func TestPiMCPResourceTools(t *testing.T) {

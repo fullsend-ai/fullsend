@@ -9,6 +9,30 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestBuildPiRunCommand_UnsafeMCPSelectors(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	for _, selector := range []string{"mcp__docs__search,bash,write", "mcp__x,*", "mcp__docs__search write", "mcp__docs__+write"} {
+		t.Run(selector, func(t *testing.T) {
+			tools, unsupported := piToolsFor([]string{"Read", selector})
+			require.Equal(t, []string{"read"}, tools)
+			require.Equal(t, []string{selector}, unsupported)
+			cmd := buildPiRunCommand(piTestParams(), &piManifest{Tools: tools}, nil, "")
+			assert.Contains(t, cmd, "--tools "+shellQuote("read"))
+			assert.Contains(t, cmd, "--exclude-tools "+shellQuote("mcp__*,list_mcp_resources,list_mcp_resource_templates,read_mcp_resource"))
+			assert.NotContains(t, cmd, selector)
+		})
+	}
+	// Frontmatter supports comma-separated specs even within YAML list items.
+	// Verify those specs are independently mapped, never a raw CLI injection.
+	def, err := parsePiAgent([]byte("---\ntools: [Read, 'mcp__docs__search,bash,write', 'mcp__x,*']\n---\nProbe."))
+	require.NoError(t, err)
+	tools, unsupported := piToolsFor(def.Tools)
+	require.Equal(t, []string{"read", "mcp__docs__search", "mcp__x__*"}, tools)
+	require.Equal(t, []string{"bash", "write", "*"}, unsupported)
+	cmd := buildPiRunCommand(piTestParams(), &piManifest{Tools: tools}, nil, "")
+	assert.Contains(t, cmd, "--tools "+shellQuote("read,mcp__docs__search,mcp__x__*"))
+}
+
 func TestBuildPiRunCommand_MCPExclusions(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	for _, tc := range []struct {

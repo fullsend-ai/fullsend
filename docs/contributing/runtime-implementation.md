@@ -1055,9 +1055,12 @@ with `-e`, after the hook adapter — when the agent definition has no `tools:` 
 
 Direct-exposure MCP tools can be selected through agent and persona frontmatter.
 The mapper expands bare `mcp__<server>` selectors to `mcp__<server>__*`,
-preserving exact tool names and existing patterns. Selectors use pi's registered
-namespace (server-name hyphens become underscores). The reverse hook map
-translates `list_mcp_resources` and `list_mcp_resource_templates` to
+preserving exact tool names and existing patterns. Selectors must match names
+registered by the declared extension; fullsend does not normalize hyphens or
+apply pi's built-in MCP naming rules under `--no-extensions`. Validation permits
+only ASCII letters, digits, underscores, hyphens and `*` in a nonempty suffix
+after `mcp__`, rejecting commas and whitespace before CLI rendering. The reverse
+hook map translates `list_mcp_resources` and `list_mcp_resource_templates` to
 `ListMcpResourcesTool`, and `read_mcp_resource` to `ReadMcpResourceTool`, so
 Claude-named hook groups and the tool allowlist see the same resource vocabulary
 as under Claude Code.

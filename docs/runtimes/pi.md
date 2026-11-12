@@ -391,9 +391,16 @@ An agent without `tools:` gets pi's default set plus whatever its extensions reg
 MCP tool names such as `mcp__docs__search` and patterns such as
 `mcp__docs__*` pass through the pi tool mapping. A bare server selector
 `mcp__docs` expands to `mcp__docs__*` in both parent and persona lists; exact
-tool names and existing patterns are unchanged. Use pi's registered server
-namespace: pi replaces hyphens in MCP server names with underscores (for
-example, server `docs-api` registers tools under `mcp__docs_api__`).
+tool names and existing patterns are unchanged. Selectors must start with
+`mcp__` and contain only ASCII letters, digits, underscores, hyphens and `*`,
+with a nonempty suffix. Invalid selectors (including commas and whitespace)
+are reported as unsupported rather than passed to pi's comma-delimited CLI.
+Names must match what the declared harness extension registers. Fullsend does
+not normalize server or tool names: Claude-style hyphenated names are preserved.
+Pi's built-in MCP naming rules do not apply automatically, because fullsend
+uses `--no-extensions`. Definitions shared with Claude Code need matching
+registered names on both runtimes; underscore-only names can avoid differences
+between extensions that normalize hyphens and those that preserve them.
 In parent and persona tool lists, Claude's `ListMcpResourcesTool` maps to
 `list_mcp_resources` and `list_mcp_resource_templates`; `ReadMcpResourceTool` maps to
 `read_mcp_resource`. Use the Claude names for definitions shared with Claude

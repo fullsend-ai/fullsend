@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -247,6 +248,10 @@ func hasTool(tools []string, name string) bool {
 	return false
 }
 
+// --tools is comma-delimited inside pi, even after shell quoting. Accept
+// only one MCP name or wildcard selector, preserving extension-owned hyphens.
+var piMCPSelectorPattern = regexp.MustCompile(`^mcp__[A-Za-z0-9_*-]+$`)
+
 // piToolsFor translates Claude tool names to pi's. The returned tools list
 // is nil when claudeTools is nil (no restriction) and non-nil otherwise,
 // preserving order and dropping duplicates.
@@ -289,7 +294,7 @@ func piToolsFor(claudeTools []string) (tools, unsupported []string) {
 			}
 			continue
 		}
-		if strings.HasPrefix(ct, "mcp__") || piMCPResourcePattern(ct) {
+		if piMCPSelectorPattern.MatchString(ct) || piMCPResourcePattern(ct) {
 			// Claude accepts a bare server selector; pi requires a wildcard
 			// for its tools. Preserve exact tool names and existing patterns.
 			if strings.HasPrefix(ct, "mcp__") {
