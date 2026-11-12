@@ -99,10 +99,10 @@ type piAgentManifest struct {
 	GatewayConfigDigest string `json:"gatewayConfigDigest,omitempty"`
 	// EditRepairExtension is the edit-repair extension's -e path (see
 	// pi_edit_repair.go), empty when the children's tool set has no edit.
-	// It is kept out of Extensions on purpose: the extension registers the
-	// edit tool, and a child launched with --no-builtin-tools (a persona
-	// declaring no tools) does not filter extension tools, so the Agent
-	// extension adds it only for a child whose --tools list names edit.
+	// Every child has an explicit --tools list that filters extension tools.
+	// Keeping edit-repair out of Extensions avoids loading an unused extension
+	// and registering edit unnecessarily: the dispatcher adds it only when
+	// the child's --tools list names edit.
 	EditRepairExtension string `json:"editRepairExtension,omitempty"`
 	// Models maps "default" (the agent's model) and the Claude aliases to
 	// pi model specs; the extension translates a child's `model` through

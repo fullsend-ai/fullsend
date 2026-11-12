@@ -40,7 +40,7 @@
 import { spawn as nodeSpawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -519,9 +519,9 @@ export function childArgs(agent, { seq, modelSpec, tools, activeTools = tools, p
   ];
   for (const ext of agent.extensions ?? []) args.push("-e", ext);
   for (const ext of agent.declaredExtensions ?? []) args.push("-e", ext.path, ...(ext.args ?? []));
-  // The edit-repair extension registers the edit tool, and pi does not
-  // filter extension tools under --no-builtin-tools, so it loads only for a
-  // child whose allowlist already names edit (see fullsend-edit-repair.js).
+  // Every child has an explicit --tools list that filters extension tools.
+  // Load edit-repair only when edit is selected to avoid an unused extension
+  // and an unnecessary edit registration (see fullsend-edit-repair.js).
   if (typeof agent.editRepairExtension === "string" && agent.editRepairExtension !== "" && tools.includes("edit")) {
     args.push("-e", agent.editRepairExtension);
   }
@@ -1352,9 +1352,24 @@ export default function (pi) {
   if (process.argv.includes("--fullsend-child-active-tools")) {
     pi.registerFlag("fullsend-child-active-tools", { type: "string", description: "Inherited child active tool loadout" });
     pi.on("session_start", () => {
-      const active = JSON.parse(pi.getFlag("fullsend-child-active-tools"));
-      if (!Array.isArray(active) || active.some((t) => typeof t !== "string")) throw new Error("invalid child active tools");
-      pi.setActiveTools(active);
+      try {
+        const active = JSON.parse(pi.getFlag("fullsend-child-active-tools"));
+        if (!Array.isArray(active) || active.some((t) => typeof t !== "string")) throw new Error("invalid child active tools");
+        pi.setActiveTools(active);
+        const actual = pi.getActiveTools();
+        const expected = new Set(active);
+        if (actual.length !== expected.size || actual.some((t) => !expected.has(t))) {
+          throw new Error("child active tools do not match inherited loadout");
+        }
+      } catch (err) {
+        // pi catches session_start throws and continues with the initial
+        // callable union active. Exit instead, before any model request.
+        try {
+          writeSync(2, sanitizeLogLine(`${LOG_PREFIX} cannot restore child active tools: ${err.message}`) + "\n");
+        } finally {
+          process.exit(1);
+        }
+      }
     });
     return;
   }

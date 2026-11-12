@@ -403,8 +403,10 @@ and other inactive registrations are not added. Explicit parent selections
 and persona patterns still restrict this union; registration alone is not a grant.
 The child registration allowlist retains the callable union, but a child-only
 loadout guard restores the inherited active subset before the first model
-request. Inactive codemode/deferred tools remain nested-call permissions rather
-than becoming directly available to the model. The guard script is digest-checked
+request. It verifies the active set after applying it and terminates the child
+nonzero on parse, validation or activation failure; a thrown extension error
+alone would let pi continue. Inactive codemode/deferred tools remain nested-call
+permissions rather than becoming directly available to the model. The guard script is digest-checked
 before dispatch. An empty child allowlist hides both built-in and extension tools. Explicit
 nonempty parent and child selections without `mcp__` entries also get
 `--exclude-tools`: `mcp__*` plus each unselected MCP resource tool

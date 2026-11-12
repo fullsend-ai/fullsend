@@ -436,9 +436,8 @@ test("childArgs loads the edit repair only for a child whose tools name edit", (
 
   assert.deepEqual(loaded(["read", "edit"]).slice(-1), [editExt], "after the shared list");
   assert.ok(!loaded(["read", "grep"]).includes(editExt), "--tools filters it anyway; not loading it keeps argv honest");
-  // A persona that declares no tools runs under --no-builtin-tools, where pi
-  // does not filter extension tools: loading the extension there would
-  // hand that child the edit tool its persona withheld.
+  // An empty child selection uses --tools '', which filters extension tools
+  // too. Keep edit-repair unloaded rather than registering an unused tool.
   assert.ok(!loaded([]).includes(editExt));
   assert.ok(!childArgs(manifest.agent, { seq: 2, modelSpec: "m", tools: ["edit"] }).includes(editExt),
     "no manifest entry (parent without edit): nothing to load");
