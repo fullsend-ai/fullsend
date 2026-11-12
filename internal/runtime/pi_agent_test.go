@@ -244,10 +244,31 @@ func TestPiMCPResourceHookEnforcement(t *testing.T) {
 	}
 	names, err := json.Marshal(claudeToolForPi)
 	require.NoError(t, err)
-	cmd := exec.Command("node", "--test", "--test-name-pattern", "MCP resources:", "pi_extension/fullsend-hooks.test.mjs")
-	cmd.Env = append(os.Environ(), "FULLSEND_TEST_HOOK_TOOL_NAMES="+string(names))
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
+	const marker = "FULLSEND_MCP_RESOURCE_HOOK_ENFORCEMENT_OK"
+	for _, tc := range []struct {
+		name, pattern, toolNames string
+		wantError, wantMarker    bool
+	}{
+		{"production map", "MCP resources:", string(names), false, true},
+		{"unmatched test name", "NO_MATCHING_MCP_HOOK_TEST", string(names), false, false},
+		{"incorrect production map", "MCP resources:", "{}", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("node", "--test", "--test-name-pattern", tc.pattern, "pi_extension/fullsend-hooks.test.mjs")
+			cmd.Env = append(os.Environ(), "FULLSEND_TEST_HOOK_TOOL_NAMES="+tc.toolNames)
+			out, err := cmd.CombinedOutput()
+			if tc.wantError {
+				require.Error(t, err, string(out))
+			} else {
+				require.NoError(t, err, string(out))
+			}
+			if tc.wantMarker {
+				require.Contains(t, string(out), marker, "JS hook assertions must complete using the production map")
+			} else {
+				require.NotContains(t, string(out), marker, "an unexecuted or failed integration test must not acknowledge success")
+			}
+		})
+	}
 }
 
 // The hook scripts only recognise canonical (or legacy) Claude names, so the

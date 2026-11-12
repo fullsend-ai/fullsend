@@ -292,13 +292,14 @@ test("MCP resources: Claude hook groups and the real allowlist see translated na
     list_mcp_resource_templates: "ListMcpResourcesTool",
     read_mcp_resource: "ReadMcpResourceTool",
   };
+  // Only acknowledge the Go integration run when its production map was used.
+  const suppliedNames = process.env.FULLSEND_TEST_HOOK_TOOL_NAMES;
+  const toolNames = suppliedNames === undefined ? names : JSON.parse(suppliedNames);
   const dir = mkdtempSync(join(tmpdir(), "fullsend-resource-hooks-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   writeFileSync(join(dir, "matched.py"), 'import json,sys\nprint(json.dumps({"decision":"block","reason":"matched: "+json.load(sys.stdin)["tool_name"]}))\nsys.exit(1)\n');
   const hookDir = fileURLToPath(new URL("../../security/hooks/", import.meta.url));
   for (const [piName, claudeName] of Object.entries(names)) {
-    // The Go integration test supplies the production reverse map.
-    const toolNames = process.env.FULLSEND_TEST_HOOK_TOOL_NAMES ? JSON.parse(process.env.FULLSEND_TEST_HOOK_TOOL_NAMES) : names;
     const base = { ...manifest, hooks: { ...manifest.hooks, toolNames } };
     const grouped = createHooks({ ...base, hooks: { ...base.hooks, dir, groups: [
       { phase: "PreToolUse", tools: [claudeName], scripts: ["matched.py"] },
@@ -316,6 +317,8 @@ test("MCP resources: Claude hook groups and the real allowlist see translated na
       }
     }
   }
+  // Emitted after every real hook/allowlist assertion, never on skip or fallback.
+  if (suppliedNames !== undefined) t.diagnostic("FULLSEND_MCP_RESOURCE_HOOK_ENFORCEMENT_OK");
 });
 
 // realPython returns the absolute path of the python3 on PATH, or null.
