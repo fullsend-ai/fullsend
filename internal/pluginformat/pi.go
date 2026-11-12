@@ -30,8 +30,8 @@ import (
 // internal/runtime read it.
 var PiReservedExtensionNames = []string{"fullsend-hooks", "fullsend-agent", "fullsend-edit-repair", "anthropic-vertex", "xai-vertex"}
 
-// piReservedOptions are pi's own command-line options (cli/args.ts, read
-// at 0.84.4; at 0.85.0 args.js adds only help text for PI_SERVER_DIR and
+// piReservedOptions are runner-owned flags plus pi's command-line options
+// (cli/args.ts, read at 0.84.4; at 0.85.0 args.js adds only help text for PI_SERVER_DIR and
 // PI_SERVER_ID, and the option-literal set is unchanged, so this list still
 // covers it). An extension's args are appended verbatim after its
 // `-e <path>` and pi matches its own options first, so an unfiltered list
@@ -39,7 +39,8 @@ var PiReservedExtensionNames = []string{"fullsend-hooks", "fullsend-agent", "ful
 // workspace, or swap the model. `--debug` is deliberately absent: pi has no
 // such option (fullsend's own CLI does), so an extension may register it.
 var piReservedOptions = map[string]bool{
-	"--extension": true, "--no-extensions": true, "--approve": true, "--no-approve": true,
+	"--fullsend-child-active-tools": true,
+	"--extension":                   true, "--no-extensions": true, "--approve": true, "--no-approve": true,
 	"--tools": true, "--no-tools": true, "--no-builtin-tools": true, "--exclude-tools": true,
 	"--model": true, "--models": true, "--provider": true, "--thinking": true, "--api-key": true,
 	"--system-prompt": true, "--append-system-prompt": true,

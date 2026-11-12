@@ -852,8 +852,8 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
   };
 
   // extensionDigests are the digests Bootstrap recorded for the child -e
-  // files it wrote into the config dir — the hook adapter and the edit
-  // repair, the same bytes their launch guards check. They
+  // files it wrote into the config dir — always the dispatcher, plus the
+  // optional hook adapter and edit repair, as their launch guards check. They
   // travel inside the manifest, so the manifest digest covers them: a
   // rewrite that drops or edits them is itself a manifest drift, caught
   // first below. The vendored provider extensions under
@@ -1351,14 +1351,16 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
 export default function (pi) {
   if (process.argv.includes("--fullsend-child-active-tools")) {
     pi.registerFlag("fullsend-child-active-tools", { type: "string", description: "Inherited child active tool loadout" });
-    pi.on("session_start", () => {
+    const restoreActiveTools = () => {
       try {
         const active = JSON.parse(pi.getFlag("fullsend-child-active-tools"));
         if (!Array.isArray(active) || active.some((t) => typeof t !== "string")) throw new Error("invalid child active tools");
         pi.setActiveTools(active);
         const actual = pi.getActiveTools();
         const expected = new Set(active);
-        if (actual.length !== expected.size || actual.some((t) => !expected.has(t))) {
+        // Unknown names are pending: MCP may register after session_start.
+        // Only an extra active tool violates inheritance.
+        if (actual.some((t) => !expected.has(t))) {
           throw new Error("child active tools do not match inherited loadout");
         }
       } catch (err) {
@@ -1370,7 +1372,13 @@ export default function (pi) {
           process.exit(1);
         }
       }
-    });
+    };
+    pi.on("session_start", restoreActiveTools);
+    // MCP can await startup in before_agent_start. Reapply after those
+    // handlers and on later turns as registrations arrive.
+    pi.on("before_agent_start", restoreActiveTools);
+    pi.on("agent_start", restoreActiveTools);
+    pi.on("turn_start", restoreActiveTools);
     return;
   }
   if (process.env[DEPTH_ENV] !== undefined) {

@@ -698,7 +698,8 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	if agentEnabled {
 		// After the adapter, so its PreToolUse hooks see Agent calls
 		// (Claude Code runs the same hooks on its Agent tool). Children
-		// get their own -e list from the manifest, never this file.
+		// get their -e list from the manifest; they load this file only
+		// in child-only mode to restore inherited active tools.
 		parts = append(parts, "-e "+shellQuote(agentExt))
 	}
 	if editRepair {

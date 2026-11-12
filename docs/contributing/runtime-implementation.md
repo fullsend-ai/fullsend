@@ -1078,12 +1078,17 @@ registration allowlist retains the callable union, while a child-only mode of
 `fullsend-agent.js` restores only the inherited active subset at `session_start`,
 before any model request. Parse, validation or activation failures terminate the
 child nonzero: throwing alone is unsafe because pi logs extension-handler errors
-and continues. The guard reads back the active set and requires it to match the
-requested subset. Inactive codemode/deferred tools stay callable through
-an executor without being declared directly to the model. The dispatcher script
-is included in `extensionDigests` because children now load this guard too.
-Bootstrap uploads this file beside the dispatcher. The pinned-pi parity test
-reads the complete upstream resource category, so additions fail the test.
+and continues. The guard reads back the active set and refuses any name outside
+the requested subset. Unregistered inherited names remain pending rather than
+killing the child. It reapplies the subset at `before_agent_start`,
+`agent_start` (after MCP startup handlers), and `turn_start`, so late
+registrations can become active without activating nested-only tools. Inactive
+codemode/deferred tools stay callable through an executor without being declared
+directly to the model. The dispatcher script is included in `extensionDigests`
+because children now load this guard too. The resource list is embedded in the
+binary and copied into the digest-covered manifest, not uploaded as a sidecar.
+The pinned-pi parity test reads the complete upstream resource category, so
+additions fail the test.
 
 | Manifest field | Meaning |
 |---|---|
