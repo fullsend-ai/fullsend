@@ -541,10 +541,11 @@ When a bound drops records, the producer emits exactly one `profile_bound` gap
 for each affected scope, with `count` equal to the number dropped. Counts from
 multiple bounds for the same scope and code are aggregated, and the gaps array
 contains at most one row for each `(scope, code)` pair, sorted by scope and
-code. Dropping labels because of `max_labels` emits a `labels`-scope
-`profile_bound` gap whose count is the number of dropped labels, sets the
-`labels` scope status to `partial`, and sets the entity-metadata filter status
-to `truncated`; it is never silent.
+code. Dropping labels because of `max_labels`, or because a label does not fit
+`max_metadata_string_bytes` (see [Canonical bytes](#canonical-bytes)), emits a
+`labels`-scope `profile_bound` gap whose count is the number of dropped labels
+for both causes together, sets the `labels` scope status to `partial`, and sets
+the entity-metadata filter status to `truncated`; it is never silent.
 After comment and review record selection, thread `record_keys`, reply edges,
 thread order files, and review views contain only retained records that have an
 emitted `content_path`. A reply edge is emitted only when both endpoints remain
@@ -561,7 +562,8 @@ for deterministic order; logs are not a second independently counted record
 source. Bounds apply after the
 full-source security pipeline described below: `max_record_bytes` bounds each
 record body, `max_log_bytes` bounds each log, and
-`max_metadata_string_bytes` bounds each source-derived display string. Labels
+`max_metadata_string_bytes` bounds each source-derived display string, except
+that a label is dropped rather than truncated when it does not fit. Labels
 first sort canonically and then retain the first `max_labels` entries.
 Structural strings cannot be truncated.
 Exceeding `max_metadata_string_bytes` makes a structural value invalid.
@@ -723,9 +725,9 @@ and content filtering rules as a human identity.
 
 Source-derived display strings in JSON metadata pass through Unicode safety,
 redaction, and complete-source injection scanning, then are bounded at a UTF-8
-code-point boundary with no trailing LF added. Bound display strings first; drop
-empty optional values, re-unique labels, then sort labels and apply
-`max_labels`. A required singleton title that becomes empty or unsafe aborts
+code-point boundary with no trailing LF added. Bound display strings first, except labels; drop
+empty optional values, drop labels that do not fit the bound, re-unique labels,
+then sort labels and apply `max_labels`. A required singleton title that becomes empty or unsafe aborts
 assembly like a rejected entity body. Required nullable entity `author.login`,
 record `actor.login`, and actor-state `login` values become JSON `null` when
 unsafe or empty. An unsafe or empty check name, agent name, or optional
@@ -737,8 +739,14 @@ findings are retained, and the producer emits a `labels`-scope `unsafe_content`
 gap with `usability: unusable` whose `count` is the number of dropped unsafe
 labels, and sets the `labels` scope status to `failed`. This holds even when no
 labels remain: an empty `labels` array with a `failed` scope is never evidence
-that the entity has no labels. A label that is merely empty after bounding is
-an empty optional value, not an unsafe one, and is dropped without a gap.
+that the entity has no labels. A label is an identifier used for exact membership checks, so
+it is never truncated: a label whose filtered value exceeds
+`max_metadata_string_bytes` (including a multibyte label whose first code point
+does not fit) is dropped, never shortened or emitted empty, and counts toward
+the `labels`-scope `profile_bound` gap and `partial` status described in
+[collection profiles](#relationships-history-and-collection-profiles). A scope with that gap never proves the
+absence of a label. A label that is already empty before bounding is an empty
+optional value and is dropped without a gap.
 A truncated display string is scanned again exactly as
 emitted before canonical serialization. This includes entity titles, labels,
 and Discussion category names and slugs; entity author, manifest-record actor,
@@ -923,8 +931,9 @@ exact UTF-8 text. A conformance check parses each JSON document from its
 string, validates it against its schema, and recomputes every manifest
 `bytes` and `sha256` value, every record key, and `collection_profile` from
 those bytes. Files named `valid-*` cover each supported Normalized entity v1
-provider/kind pair, a truncated label set, a label set emptied by an unsafe
-label (`failed` `labels` scope), and the `not_loaded` and `unsupported` scope
+provider/kind pair, a truncated label set, a label that does not fit the
+metadata string bound (`partial` `labels` scope), a label set emptied by an
+unsafe label (`failed` `labels` scope), and the `not_loaded` and `unsupported` scope
 states; files named `invalid-*` each violate one schema
 rule, such as an inapplicable scope row, an omitted applicable scope row, or an
 unsupported provider/kind pair.
