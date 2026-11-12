@@ -75,8 +75,9 @@ var verboseCredentialPatterns = []*regexp.Regexp{
 	// account, feature flag client, SCIM, and runner registration tokens.
 	regexp.MustCompile(`\b(?:glpat|gloas|gldt|glrt|glrtr|glcbt|glptt|glft|glimt|glagent|glsoat|glffct|gltst|glwt)-[A-Za-z0-9_.\-]{8,}`),
 	regexp.MustCompile(`\bGR1348941[A-Za-z0-9_\-]{8,}`),
-	// Token-bearing query parameters, e.g. a pipeline trigger URL.
-	regexp.MustCompile(`(?i)(?P<pre>[?&](?:private_)?token=)[^&\s"'<>]+`),
+	// Token-bearing query parameters, e.g. a pipeline trigger URL or
+	// private_token, access_token, job_token, or any other *token parameter.
+	regexp.MustCompile(`(?i)(?P<pre>[?&][A-Za-z0-9_.\-]*token=)[^&\s"'<>]+`),
 	// User info embedded in a URL.
 	regexp.MustCompile(`(?P<pre>://)[^/@\s"'<>]+(?P<post>@)`),
 	// Long hex strings: webhook secrets and legacy trigger tokens.

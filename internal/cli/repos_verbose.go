@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -47,14 +49,17 @@ func reposVerbose(cmd *cobra.Command) bool {
 }
 
 // newVerboseScrubber returns a scrubber that masks each known credential
-// value and then every credential shape the shared SecretRedactor knows.
+// value, in literal, query-escaped and path-escaped form, and then every credential shape the shared SecretRedactor knows.
 func newVerboseScrubber(known []string) func(string) string {
 	var values []string
 	for _, v := range known {
 		if strings.TrimSpace(v) != "" {
-			values = append(values, v)
+			values = append(values, v, url.QueryEscape(v), url.PathEscape(v))
 		}
 	}
+	// Longest first so an escaped form is never partly consumed by a
+	// shorter form of the same value.
+	sort.SliceStable(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
 	redactor := security.NewSecretRedactor()
 	return func(text string) string {
 		for _, v := range values {

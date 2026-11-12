@@ -47,7 +47,9 @@ func TestRequestLoggerReportsMethodPathAndStatus(t *testing.T) {
 
 func TestRequestLoggerOmitsQueryString(t *testing.T) {
 	client, mux := setupTest(t)
+	handlerCalled := false
 	mux.HandleFunc("GET /api/v4/projects/{id}/variables/{key}", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		assert.NotEmpty(t, r.URL.RawQuery, "the variable read is expected to carry a query string")
 		w.WriteHeader(http.StatusNotFound)
 	})
@@ -55,6 +57,7 @@ func TestRequestLoggerOmitsQueryString(t *testing.T) {
 	ctx, logged := recordRequests(context.Background())
 	_, found, err := client.GetRepoVariable(ctx, "acme", "api", "FULLSEND_TOKEN")
 	require.NoError(t, err)
+	assert.True(t, handlerCalled, "handler was not called — URL path mismatch")
 	assert.False(t, found)
 
 	got := logged()

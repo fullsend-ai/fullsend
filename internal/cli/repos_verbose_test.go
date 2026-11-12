@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 
@@ -132,5 +133,16 @@ github:
 			// Every run restores the default withheld behavior.
 			assert.Contains(t, repos.SafeAPIError("op", errors.New("server text")).Error(), "server error text withheld")
 		})
+	}
+}
+
+func TestNewVerboseScrubber_ScrubsEscapedForms(t *testing.T) {
+	const secret = "opaque+secret/value"
+	scrub := newVerboseScrubber([]string{secret, "  "})
+	for _, form := range []string{secret, url.QueryEscape(secret), url.PathEscape(secret)} {
+		out := scrub("failed with " + form + " in text")
+		assert.NotContains(t, out, form)
+		assert.NotContains(t, out, "opaque")
+		assert.Contains(t, out, "[REDACTED]")
 	}
 }

@@ -159,3 +159,13 @@ func TestProvisionGitLabRoleCredentials_VerboseFailureReason(t *testing.T) {
 	require.Len(t, result.Failed, 1)
 	assert.Equal(t, "project access token creation failed: gitlab api: 403 insufficient plan "+credentialRedacted, result.Failed[0].Reason)
 }
+
+func TestSafeAPIErrorVerboseScrubsAuthQueryParameters(t *testing.T) {
+	enableVerbose(t, nil)
+	for _, param := range []string{"access_token", "job_token", "private_token", "token"} {
+		cause := &statusError{status: 401, msg: "https://gitlab.example.com/api/v4/user?" + param + "=opaque+value&per_page=1"}
+		msg := safeAPIError("reading user", cause).Error()
+		assert.NotContains(t, msg, "opaque", param)
+		assert.Contains(t, msg, "?"+param+"="+credentialRedacted+"&per_page=1", param)
+	}
+}
