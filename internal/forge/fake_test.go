@@ -946,6 +946,7 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 		},
 		"CreateIssue":       func(fc *FakeClient) []any { return pack(fc.CreateIssue(ctx, "o", "r", "t", "b", "bug")) },
 		"AddIssueLabels":    func(fc *FakeClient) []any { return pack(fc.AddIssueLabels(ctx, "o", "r", 1, "triaged")) },
+		"EnsureLabel":       func(fc *FakeClient) []any { return pack(fc.EnsureLabel(ctx, "o", "r", "do-it")) },
 		"GetIssue":          func(fc *FakeClient) []any { return pack(fc.GetIssue(ctx, "o", "r", 1)) },
 		"CloseIssue":        func(fc *FakeClient) []any { return pack(fc.CloseIssue(ctx, "o", "r", 1)) },
 		"ListOpenIssues":    func(fc *FakeClient) []any { return pack(fc.ListOpenIssues(ctx, "o", "r")) },
@@ -1838,6 +1839,18 @@ func TestFakeClient_ListRepositoryArtifacts(t *testing.T) {
 	arts, err = fc.ListRepositoryArtifacts(context.Background(), "org", "repo", 0)
 	require.NoError(t, err)
 	assert.Len(t, arts, 2)
+}
+
+func TestFakeClient_EnsureLabel(t *testing.T) {
+	fc := NewFakeClient()
+	ctx := context.Background()
+
+	require.NoError(t, fc.EnsureLabel(ctx, "org", "repo", "do-it"))
+	require.NoError(t, fc.EnsureLabel(ctx, "org", "repo", "do-it"), "an existing label is not an error")
+	require.NoError(t, fc.EnsureLabel(ctx, "org", "other", "do-it"))
+	assert.Equal(t, []string{"do-it"}, fc.RepoLabels["org/repo"])
+	assert.Equal(t, []string{"do-it"}, fc.RepoLabels["org/other"])
+	assert.Empty(t, fc.CreatedIssues, "no issue is opened")
 }
 
 func TestFakeClient_AddIssueLabels_Idempotent(t *testing.T) {

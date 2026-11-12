@@ -257,6 +257,9 @@ type FakeClient struct {
 	IssueLabelEvents map[string][]IssueLabelEvent
 	// RemovedIssueLabels records RemoveIssueLabel calls as "owner/repo/number/label".
 	RemovedIssueLabels []string
+	// RepoLabels maps "owner/repo" → repository label names, in creation
+	// order. EnsureLabel appends to it.
+	RepoLabels map[string][]string
 	// AddedCollaborators records AddCollaborator calls as "owner/repo/username" → permission.
 	AddedCollaborators map[string]string
 	// OrgMemberships maps "org/username" → membership for GetOrgMembership.
@@ -1682,6 +1685,23 @@ func (f *FakeClient) AddIssueLabels(_ context.Context, owner, repo string, numbe
 		return nil
 	}
 	return fmt.Errorf("issue #%d not found", number)
+}
+
+func (f *FakeClient) EnsureLabel(_ context.Context, owner, repo, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("EnsureLabel"); e != nil {
+		return e
+	}
+	key := owner + "/" + repo
+	if slices.Contains(f.RepoLabels[key], name) {
+		return nil
+	}
+	if f.RepoLabels == nil {
+		f.RepoLabels = make(map[string][]string)
+	}
+	f.RepoLabels[key] = append(f.RepoLabels[key], name)
+	return nil
 }
 
 func (f *FakeClient) GetIssue(_ context.Context, owner, repo string, number int) (*Issue, error) {

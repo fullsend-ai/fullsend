@@ -3,6 +3,7 @@ package gitlab
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -166,6 +167,25 @@ func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, num
 	})
 	if err != nil {
 		return fmt.Errorf("add labels to issue #%d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// newLabelColor is the color EnsureLabel gives a label it creates. GitLab
+// requires a color on label creation.
+const newLabelColor = "#ededed"
+
+// EnsureLabel creates a project label. GitLab answers 409 Conflict when
+// the label exists; that is success.
+func (c *LiveClient) EnsureLabel(ctx context.Context, owner, repo, name string) error {
+	path := fmt.Sprintf("/projects/%s/labels", projectPath(owner, repo))
+	resp, err := c.post(ctx, path, map[string]string{"name": name, "color": newLabelColor})
+	if err != nil {
+		if errors.Is(err, forge.ErrAlreadyExists) {
+			return nil
+		}
+		return fmt.Errorf("create label %q: %w", name, err)
 	}
 	resp.Body.Close()
 	return nil
