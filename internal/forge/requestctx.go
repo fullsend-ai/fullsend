@@ -11,12 +11,14 @@ import "context"
 type noAmbiguousRetryKey struct{}
 
 // WithoutAmbiguousRetry returns a context that stops the client from
-// retrying a request after an ambiguous failure: a transport timeout or a
-// 5xx response, where the server may already have applied the request.
-// Rate-limit rejections are still retried because the server did not
-// process those. Use it for requests that must not be replayed blindly,
-// such as deleting a repository by name that another party may have
-// recreated; the caller re-checks state after the error.
+// retrying a non-idempotent request after an ambiguous failure: a
+// transport timeout or a 5xx response, where the server may already have
+// applied the request. Reads (GET, HEAD) keep their retries — a replayed
+// read cannot change server state. Rate-limit rejections are still
+// retried because the server did not process those. Use it for requests
+// that must not be replayed blindly, such as deleting a repository by
+// name that another party may have recreated; the caller re-checks state
+// after the error.
 func WithoutAmbiguousRetry(ctx context.Context) context.Context {
 	return context.WithValue(ctx, noAmbiguousRetryKey{}, true)
 }
