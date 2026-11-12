@@ -656,9 +656,12 @@ For GitLab repos, install also converges a dedicated trigger-only service
 account that owns a push-capable deploy key on the default branch's
 exact-name protected-branch rule and a pipeline trigger token. It uses only
 project-scoped authority, so it works on GitLab.com Free. Once the trigger
-dispatch activation is recorded, it also owns the managed polling schedules, so
-a scheduled poll runs as that account, and the managed webhook posts to its
-published trigger token instead of the Poller-owned one. Details are in
+dispatch activation is recorded, the managed webhook posts to its published
+trigger token instead of the Poller-owned one. The managed polling schedules
+move to that account, so a scheduled poll runs as it, only when the account
+also has merge permission on the protected default branch. Otherwise the
+schedules stay installer-owned on the Poller route while the webhook route is
+active. Details are in
 [Configuring GitLab](configuring-gitlab.md) and the
 [`repos install` reference](../../cli/repos.md).
 

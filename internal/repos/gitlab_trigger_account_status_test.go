@@ -94,7 +94,8 @@ func TestDiagnoseGitLabTriggerAccount_InstallerSchedulesWithoutMergeAccess(t *te
 	e.adminSchedule(t, spec.Description, trigBranch, spec.Cron, true)
 	rule := &forge.ProtectedBranchRule{Name: trigBranch, MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: forge.GitLabAccessLevelMaintainer}}}
 	e.state.ProtectedBranchRules[trigOwner+"/"+trigRepo+"/"+trigBranch] = rule
-	assert.Equal(t, GitLabTriggerStateReady, e.diagnose(e.f, trigBranch).State)
+	got0 := e.diagnose(e.f, trigBranch)
+	assert.Equal(t, GitLabTriggerStateReady, got0.State, "%v", got0.Reasons)
 
 	// With merge access the schedules are expected to move, so the
 	// installer-owned one is drift again.
@@ -102,6 +103,52 @@ func TestDiagnoseGitLabTriggerAccount_InstallerSchedulesWithoutMergeAccess(t *te
 	got := e.diagnose(e.f, trigBranch)
 	assert.Equal(t, GitLabTriggerStateDrifted, got.State)
 	assert.Contains(t, strings.Join(got.Reasons, "\n"), "not the trigger account")
+}
+
+// Missing merge access excuses only verified installer-owned schedules. A
+// schedule the account still owns needs hand-back, and an unverified owner keeps
+// its diagnostic (#9343).
+func TestDiagnoseGitLabTriggerAccount_NoMergeAccessKeepsOwnerDiagnostics(t *testing.T) {
+	spec := trigSpec(t, trigSlashDesc)
+	setup := func(owner func(acct int) int64) (*trigEnv, int64) {
+		e := newTrigEnv()
+		acct := e.readyActive(t)
+		id := e.adminSchedule(t, spec.Description, trigBranch, spec.Cron, true)
+		key := trigOwner + "/" + trigRepo
+		for i := range e.state.PipelineSchedules[key] {
+			if e.state.PipelineSchedules[key][i].ID == id {
+				e.state.PipelineSchedules[key][i].OwnerID = owner(acct)
+			}
+		}
+		e.state.ProtectedBranchRules[key+"/"+trigBranch] = &forge.ProtectedBranchRule{Name: trigBranch, MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: forge.GitLabAccessLevelMaintainer}}}
+		return e, id
+	}
+
+	e, id := setup(func(acct int) int64 { return int64(acct) })
+	got := e.diagnose(e.f, trigBranch)
+	assert.Equal(t, GitLabTriggerStateDrifted, got.State)
+	require.Len(t, got.Reasons, 1)
+	assert.Contains(t, got.Reasons[0], fmt.Sprintf("managed polling schedule %d", id))
+	assert.Contains(t, got.Reasons[0], "owned by the trigger account")
+	assert.Contains(t, got.Reasons[0], "hand it back to the installer")
+
+	e, _ = setup(func(int) int64 { return 77 })
+	e.f.members[77] = forge.GitLabAccessLevelDeveloper
+	got = e.diagnose(e.f, trigBranch)
+	assert.Equal(t, GitLabTriggerStateDrifted, got.State)
+	require.Len(t, got.Reasons, 1)
+	assert.Contains(t, got.Reasons[0], "owned by user 77")
+	assert.Contains(t, got.Reasons[0], "install refuses to adopt it")
+
+	e, _ = setup(func(int) int64 { return 78 })
+	e.f.members[78] = forge.GitLabAccessLevelMaintainer
+	assert.Equal(t, GitLabTriggerStateReady, e.diagnose(e.f, trigBranch).State, "a verified Maintainer owner is expected")
+
+	e, _ = setup(func(int) int64 { return 79 })
+	e.f.fail["GetAuthenticatedUserID"] = true
+	got = e.diagnose(e.f, trigBranch)
+	require.Len(t, got.Reasons, 1)
+	assert.Contains(t, got.Reasons[0], "could not verify the installer")
 }
 
 // Install refuses to adopt a managed schedule whose owner is not a verified

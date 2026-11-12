@@ -216,9 +216,11 @@ func foreignStateReason(err error) string {
 // GitLab runs a scheduled pipeline with its owner's permissions, so such a
 // schedule polls as that user (for example the installer) instead of the
 // Developer-level account until install moves it (#8602). Without a recorded
-// activation, or while the account lacks the merge permission GitLab requires
-// of a protected-branch schedule owner (#9343), the schedules are meant to
-// stay installer-owned.
+// activation the schedules are meant to stay installer-owned. While the
+// account positively lacks the merge permission GitLab requires of a
+// protected-branch schedule owner (#9343), verified installer-owned schedules
+// are expected too, but an account-owned schedule is drift that install hands
+// back, and any other owner is still diagnosed.
 func (op *gitLabTriggerAccountOp) scheduleOwnershipDrift(ctx context.Context) []string {
 	active, err := op.dispatchActivationRecorded(ctx)
 	if err != nil {
@@ -230,9 +232,8 @@ func (op *gitLabTriggerAccountOp) scheduleOwnershipDrift(ctx context.Context) []
 	// Only a rule that was read and positively lacks the account's merge
 	// permission makes installer-owned schedules expected; an unreadable rule
 	// leaves the ownership check below in force.
-	if problem, verified := gitlabTriggerScheduleMergeAccess(ctx, op.opts.State, op.opts.Owner, op.opts.Repo, op.st.Branch); problem != "" && verified {
-		return nil
-	}
+	problem, verified := gitlabTriggerScheduleMergeAccess(ctx, op.opts.State, op.opts.Owner, op.opts.Repo, op.st.Branch)
+	noMergeAccess := problem != "" && verified
 	schedules, err := op.opts.State.ListPipelineSchedules(ctx, op.opts.Owner, op.opts.Repo)
 	if err != nil {
 		return []string{"could not list pipeline schedules; the owner of the managed polling schedules is unverified"}
@@ -240,7 +241,13 @@ func (op *gitLabTriggerAccountOp) scheduleOwnershipDrift(ctx context.Context) []
 	var reasons []string
 	installerID := -1
 	for _, s := range schedules {
-		if !isManagedPipelineSchedule(s.Description) || s.OwnerID == int64(op.st.AccountID) {
+		if !isManagedPipelineSchedule(s.Description) {
+			continue
+		}
+		if s.OwnerID == int64(op.st.AccountID) {
+			if noMergeAccess {
+				reasons = append(reasons, fmt.Sprintf("managed polling schedule %d (%q) is owned by the trigger account, which lacks the merge permission GitLab requires of a protected-branch schedule owner; re-run repos install to hand it back to the installer", s.ID, s.Description))
+			}
 			continue
 		}
 		// Install adopts only a retired generation's schedules and those of a
@@ -263,7 +270,15 @@ func (op *gitLabTriggerAccountOp) scheduleOwnershipDrift(ctx context.Context) []
 			}
 			adoptable = trusted
 		}
+		if noMergeAccess && adoptable && !op.recordedGenerationOwner(s.OwnerID) {
+			// A verified installer owner is where the schedule belongs while
+			// the account cannot own it.
+			continue
+		}
 		advice := "re-run repos install to move it to the trigger account"
+		if noMergeAccess {
+			advice = "re-run repos install to hand it back to the installer"
+		}
 		if !adoptable {
 			advice = "install refuses to adopt it because its owner is not a verified installer Maintainer; an administrator must remove or reassign it, then re-run repos install"
 		}
