@@ -139,7 +139,7 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.review-skip-publish.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
@@ -517,67 +517,6 @@ jobs:
           echo "allowed=${allowed}" >> "${GITHUB_OUTPUT}"
           echo "prevalidated=${prevalidated}" >> "${GITHUB_OUTPUT}"
 
-      # Keep the route job's platform token read-only. For eligible
-      # synchronize events, mint a review-app token solely for the PR-visible
-      # skip status note.
-      - name: Checkout upstream defaults for review token
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
-          path: .defaults
-          fetch-depth: 1
-          sparse-checkout: |
-            .github/actions/
-            .github/scripts/review-diff-hash.sh
-            internal/scaffold/fullsend-repo/
-          sparse-checkout-cone-mode: false
-
-      - name: Prepare workspace for review token
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
-        id: review-token-workspace
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: ./.defaults/.github/actions/prepare-workspace
-        with:
-          source_repo: ${{ github.repository }}
-
-      - name: Prepare workspace for review token (nested vendor)
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
-        id: review-token-workspace-nested
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: ./.fullsend/.defaults/.github/actions/prepare-workspace
-        with:
-          source_repo: ${{ github.repository }}
-
-      - name: Mint review token for skip status
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
-        id: review-token
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: ./.defaults/.github/actions/mint-token
-        with:
-          role: review
-          repos: ${{ steps.review-token-workspace.outputs.repo_name }}
-          level: write
-          mint_url: ${{ inputs.mint_url }}
-
-      - name: Mint review token for skip status (nested vendor)
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
-        id: review-token-nested
-        continue-on-error: true
-        timeout-minutes: 2
-        uses: ./.fullsend/.defaults/.github/actions/mint-token
-        with:
-          role: review
-          repos: ${{ steps.review-token-workspace-nested.outputs.repo_name }}
-          level: write
-          mint_url: ${{ inputs.mint_url }}
-
       # A synchronize event can be caused by merging the base branch into a
       # PR without changing the PR's effective diff. Avoid paying for another
       # full review when the previous review recorded the same complete diff.
@@ -586,9 +525,7 @@ jobs:
         id: review-diff
         if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
         env:
-          GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
-          REVIEW_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token }}
-          REVIEW_TOKEN_OUTCOME: ${{ steps.review-token.outcome || steps.review-token-nested.outcome || 'skipped' }}
+          GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           ORG_NAME: ${{ github.repository_owner }}
@@ -599,11 +536,6 @@ jobs:
           set -euo pipefail
 
           echo "skip=false" >> "${GITHUB_OUTPUT}"
-
-          if [[ -z "${REVIEW_TOKEN}" ]]; then
-            echo "::notice::Review-App token was unavailable (outcome: ${REVIEW_TOKEN_OUTCOME}); failing open to a full review"
-            exit 0
-          fi
 
           REVIEW_BOT="${ORG_NAME}-review[bot]"
           SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
@@ -740,11 +672,10 @@ jobs:
           if ! prior_formal_review=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/reviews" \
             --paginate --jq '.[]' \
             | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
-                --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -s -c '
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" -s -c '
               [.[] | select((.user.login == $bot or .user.login == $shared_bot
                 or ($custom_bot != "" and .user.login == $custom_bot))
-                and ((.submitted_at // "") != "")
-                and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))]
+                and ((.submitted_at // "") != ""))]
               | sort_by(.submitted_at) | last // {}'); then
             echo "::warning::Could not determine the previous formal review verdict; running review"
             exit 0
@@ -1088,7 +1019,6 @@ jobs:
           BASH_STAGE: ${{ steps.bash-route.outputs.stage }}
           BASH_TRIGGER_SOURCE: ${{ steps.bash-route.outputs.trigger_source }}
           CLOSED_PULL_REQUEST: ${{ github.event_name == 'pull_request_target' && inputs.event_action == 'closed' }}
-          REVIEW_DIFF_SKIP: ${{ steps.review-diff.outputs.skip }}
           ROUTE_AGENT: ${{ steps.cel-opt-in.outputs.agent }}
           CEL_OPT_IN_OUTCOME: ${{ steps.cel-opt-in.outcome }}
           CEL_CONFIG_OUTCOME: ${{ steps.cel-config.outcome }}
@@ -1096,13 +1026,6 @@ jobs:
           CEL_ROUTE_DECISION: ${{ steps.cel-route.outputs.decision }}
           CEL_ROUTE_REASON: ${{ steps.cel-route.outputs.reason }}
           CEL_ROUTE_HARNESS: ${{ steps.cel-route.outputs.harness }}
-          GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
-          SOURCE_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          ORG_NAME: ${{ github.repository_owner }}
-          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
-          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
-          REVIEW_PRIOR_URL: ${{ steps.review-diff.outputs.prior_url }}
         run: |
           set -euo pipefail
           # gha_text makes a value safe inside a ::notice::/::warning::/::error::
@@ -1168,44 +1091,116 @@ jobs:
             fi
           fi
 
-          if [[ "${REVIEW_DIFF_SKIP:-false}" == "true" && "${STAGE}" == "review" ]]; then
-            skip_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review${REVIEW_PRIOR_URL:+ (${REVIEW_PRIOR_URL})}. No new review findings were generated."
-            REVIEW_BOT="${ORG_NAME}-review[bot]"
-            SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
-            CUSTOM_REVIEW_BOT=""
-            if [[ -n "${FULLSEND_APP_SET}" ]]; then
-              CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
-            fi
-            if ! status_comment_id="$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
-              --paginate --jq '.[]' \
-              | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
-                  --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -s -r '
-                [.[] | select((.user.login == $bot or .user.login == $shared_bot
-                  or ($custom_bot != "" and .user.login == $custom_bot))
-                  and (.body | startswith("<!-- fullsend:review-skip -->"))
-                  and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))]
-                | sort_by(.created_at) | last // {} | .id // ""' \
-              | tail -1)"; then
-              echo "::warning::Could not verify an existing review-skip status note; running review"
-            elif [[ -n "${status_comment_id}" ]]; then
-              if gh api --method PATCH "repos/${SOURCE_REPO}/issues/comments/${status_comment_id}" -f body="${skip_body}" >/dev/null; then
-                echo "::notice::Skipping review after final routing: synchronize event has the same effective diff as the previous review"
-                STAGE=""
-                TRIGGER_SOURCE=""
-              else
-                echo "::warning::Could not update the review-skip status note; running review"
-              fi
-            elif gh api --method POST "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" -f body="${skip_body}" >/dev/null; then
-              echo "::notice::Skipping review after final routing: synchronize event has the same effective diff as the previous review"
-              STAGE=""
-              TRIGGER_SOURCE=""
-            else
-              echo "::warning::Could not post the review-skip status note; running review"
-            fi
-          fi
-
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
+
+      # Only obtain a write-capable review token after final routing has
+      # authorized the review stage. The diff check above remains read-only.
+      - name: Checkout upstream defaults for review skip note
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            internal/scaffold/fullsend-repo/
+          sparse-checkout-cone-mode: false
+
+      - name: Prepare workspace for review skip note
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
+        id: review-token-workspace
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          source_repo: ${{ github.repository }}
+
+      - name: Prepare workspace for review skip note (nested vendor)
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        id: review-token-workspace-nested
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.fullsend/.defaults/.github/actions/prepare-workspace
+        with:
+          source_repo: ${{ github.repository }}
+
+      - name: Mint review token for review skip note
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
+        id: review-token
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace.outputs.repo_name }}
+          level: write
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Mint review token for review skip note (nested vendor)
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
+        id: review-token-nested
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.fullsend/.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace-nested.outputs.repo_name }}
+          level: write
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Publish review skip note
+        id: review-skip-publish
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
+          REVIEW_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+          REVIEW_PRIOR_URL: ${{ steps.review-diff.outputs.prior_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "skipped=false" >> "${GITHUB_OUTPUT}"
+          if [[ -z "${REVIEW_TOKEN}" ]]; then
+            echo "::notice::Review-App token was unavailable; running the full review"
+            exit 0
+          fi
+          skip_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review${REVIEW_PRIOR_URL:+ (${REVIEW_PRIOR_URL})}. No new review findings were generated."
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
+          if ! status_comment_id="$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -s -r '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and (.body | startswith("<!-- fullsend:review-skip -->"))
+                and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))]
+              | sort_by(.created_at) | last // {} | .id // ""' \
+            | tail -1)"; then
+            echo "::warning::Could not verify an existing review-skip status note; running review"
+            exit 0
+          fi
+          if [[ -n "${status_comment_id}" ]]; then
+            gh api --method PATCH "repos/${SOURCE_REPO}/issues/comments/${status_comment_id}" -f body="${skip_body}" >/dev/null
+          else
+            gh api --method POST "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" -f body="${skip_body}" >/dev/null
+          fi
+          echo "::notice::Skipping review after final routing: synchronize event has the same effective diff as the previous review"
+          echo "skipped=true" >> "${GITHUB_OUTPUT}"
 
       - name: Validate routed stage
         if: steps.route.outputs.stage != ''
