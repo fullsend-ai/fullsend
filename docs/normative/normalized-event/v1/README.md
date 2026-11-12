@@ -127,7 +127,9 @@ Normalized-event and entity-context-snapshot v1 carry independently versioned
 copies of the actor-role vocabulary. The entity-context-snapshot `bot` marker
 is a non-authority kind marker, not a normalized-event repository permission,
 and must not be projected into `event.actor.role`; adapters validate each
-document against its own schema.
+document against its own schema. Entity-context-snapshot v2
+([ADR 0170](../../../ADRs/0170-align-entity-context-snapshot-with-normalized-entity.md))
+replaces the v1 `bot` marker with `role: none` plus `bot_role`.
 
 ## Adapters
 
