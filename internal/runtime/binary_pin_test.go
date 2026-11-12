@@ -80,7 +80,17 @@ func newTrustedPinFixture(t *testing.T) trustedPinFixture {
 	require.NoError(t, err)
 	f.protected, err = filepath.EvalSymlinks(t.TempDir())
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(filepath.Join(f.protected, "readlink"), data, 0o755))
+	cp := filepath.Join(f.protected, "readlink")
+	require.NoError(t, os.WriteFile(cp, data, 0o755))
+	// The copy must run outside its system directory. macOS launch
+	// constraints SIGKILL a copied Apple binary, and the pin's lookups would
+	// then fail for that reason rather than the one under test.
+	link := filepath.Join(f.writable, "readlink-probe")
+	require.NoError(t, os.Symlink("target", link))
+	if out, err := exec.Command(cp, link).Output(); err != nil || string(out) != "target\n" {
+		t.Skipf("a copy of readlink outside its system directory does not run on this host (%v; macOS launch constraints kill copied system binaries)", err)
+	}
+	require.NoError(t, os.Remove(link))
 	return f
 }
 
