@@ -109,3 +109,57 @@ func TestGetWorkflowRunLogs_SkippedJobsAfterAggregateLimit(t *testing.T) {
 	assert.NotContains(t, logs, "aggregate trace limit")
 	assert.Zero(t, skippedTraceRequests, "a skipped job's trace is never requested")
 }
+
+// TestGetWorkflowRunLogs_SkippedJobWritesHeader verifies the header the
+// GetWorkflowRunLogs doc comment and the behaviour feature's preamble
+// promise: a skipped job is listed with its full
+// "=== Job N (name) [skipped] ===" line, not silently dropped (a bare
+// continue in the skip branch would leave the logs without it).
+// TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote in methods_test.go pins
+// only that the trace is never requested; this is its header counterpart
+// (that file is a locked acceptance test, so the assertion lives here).
+func TestGetWorkflowRunLogs_SkippedJobWritesHeader(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success"},{"id":2,"name":"deploy","status":"skipped"}]`)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("build output"))
+	})
+	skippedTraceRequests := 0
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, r *http.Request) {
+		skippedTraceRequests++
+		http.NotFound(w, r)
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "=== Job 2 (deploy) [skipped] ===\n")
+	assert.Contains(t, logs, "build output")
+	assert.Zero(t, skippedTraceRequests, "a skipped job's trace is never requested")
+}
+
+// TestGetWorkflowRunLogs_AllJobsSkipped_HeaderOnlyLogs verifies the
+// all-skipped pipeline the PR describes: every job skipped yields
+// header-only logs — no trace request at all — with no partial-log note,
+// so the behaviour reader treats the snapshot as complete.
+func TestGetWorkflowRunLogs_AllJobsSkipped_HeaderOnlyLogs(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"triage","status":"skipped"},{"id":2,"name":"deploy","status":"skipped"}]`)
+	})
+	traceRequests := 0
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, r *http.Request) {
+		traceRequests++
+		http.NotFound(w, r)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, r *http.Request) {
+		traceRequests++
+		http.NotFound(w, r)
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Equal(t, "=== Job 1 (triage) [skipped] ===\n=== Job 2 (deploy) [skipped] ===\n", logs)
+	assert.Zero(t, traceRequests, "no trace is requested when every job is skipped")
+}
