@@ -207,8 +207,16 @@ func TestThenHarnessWorkflowFailsWithLog(t *testing.T) {
 	assert.NotContains(t, err.Error(), "incomplete")
 	assert.Equal(t, 1, c.logCalls, "complete logs without the text are final, not fetched again")
 
-	w = newWorld(&fakeFailedRunLogsCI{waitErr: errors.New("run 7 concluded successfully; expected failure")})
-	assert.ErrorContains(t, thenHarnessWorkflowFailsWithLog(context.Background(), w, "probe", "x"), "concluded successfully")
+	// A guard regression shows up as the run concluding successfully
+	// instead of failing: the step surfaces the wait's diagnosis
+	// unchanged, so a guard that stops refusing fails the scenario (the
+	// driver rule that a passing run is an error is covered in the
+	// drivers' own tests).
+	t.Run("run concludes successfully instead of failing", func(t *testing.T) {
+		waitErr := errors.New("run 7 concluded successfully; expected failure")
+		w := newWorld(&fakeFailedRunLogsCI{waitErr: waitErr})
+		assert.ErrorIs(t, thenHarnessWorkflowFailsWithLog(context.Background(), w, "probe", "x"), waitErr)
+	})
 
 	w = &world.World{CI: &fakeFailedRunLogsCI{}}
 	assert.ErrorContains(t, thenHarnessWorkflowFailsWithLog(context.Background(), w, "probe", "x"), "no workflow trigger time")
