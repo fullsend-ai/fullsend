@@ -88,11 +88,12 @@ func TestResolveFromLock_AdviceArmsNameHarness(t *testing.T) {
 			wantErr: "no longer in allowed_remote_resources",
 			build: func(t *testing.T, root string) (*lock.HarnessLock, *harness.Harness) {
 				t.Helper()
-				return &lock.HarnessLock{
+				lockFile := &lock.HarnessLock{
 					Dependencies: []lock.DependencyEntry{
 						{Field: "agent", URL: agentURL, SHA256: missing},
 					},
-				}, &harness.Harness{
+				}
+				return lockFile, &harness.Harness{
 					Agent:                  agentURL + "#sha256=" + missing,
 					AllowedRemoteResources: []string{"https://allowed.example.com/"},
 				}
@@ -103,11 +104,12 @@ func TestResolveFromLock_AdviceArmsNameHarness(t *testing.T) {
 			wantErr: "not in cache",
 			build: func(t *testing.T, root string) (*lock.HarnessLock, *harness.Harness) {
 				t.Helper()
-				return &lock.HarnessLock{
+				lockFile := &lock.HarnessLock{
 					Dependencies: []lock.DependencyEntry{
 						{Field: "agent", URL: agentURL, SHA256: missing, Type: "directory"},
 					},
-				}, &harness.Harness{
+				}
+				return lockFile, &harness.Harness{
 					Agent:                  agentURL + "#sha256=" + missing,
 					AllowedRemoteResources: []string{"https://example.com/"},
 				}
