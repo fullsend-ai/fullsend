@@ -738,14 +738,17 @@ script changes no workflow files; the wiring is:
    call, not whether it can be read. To keep fork pull requests away from
    these secrets, add an explicit condition in the base workflow.
 
-CI declares only the gateway capabilities that reach no real model. They
-are part of the `BEHAVIOUR_CAPABILITIES` default in the `Makefile`, which
-`make behaviour-test` and the `behaviour` job use:
+Of the gateway capabilities, CI declares only the ones that reach no real
+model. They are part of the `BEHAVIOUR_CAPABILITIES` default in the
+`Makefile`, which `make behaviour-test` and the `behaviour` job use. The
+default also declares `runner-secret-overlay-guard`, which needs no gateway
+but appears in the on-demand list below:
 
 | Capability | Scenarios | Declared in CI |
 |------------|-----------|----------------|
 | `inference-gateway` | `features/runtime/inference-gateway.feature`: one dummy-runtime scenario covering the placeholder, credential custody on `echo`, egress scope and the `echo-denied` refusal | Yes |
 | `inference-gateway-api-key` | `features/runtime/inference-gateway-api-key.feature` (dummy runtime, echo-only key) | Yes |
+| `runner-secret-overlay-guard` | `features/dispatch/runner-secret-overlay-guard.feature`: the runner-secret overlay guard's allowed and refused scenarios (no gateway) | Yes |
 | `runtime-pi-gateway` | `features/runtime/pi-gateway.feature` (pi through the gateway to a real model, `claude-haiku-5-5`) | No: costs a real model run |
 | `runtime-codex-gateway` | `features/runtime/codex-gateway.feature` (codex through the gateway to a real model, `gpt-oss-120b`, on Responses) | No: costs a real model run |
 | `runtime-claude-gateway` | `features/runtime/claude-gateway.feature` (Claude Code through the gateway to a real model, `claude-haiku-5-5`, in the `oidc` mode) | No: costs a real model run |
