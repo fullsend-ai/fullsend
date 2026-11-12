@@ -7,6 +7,34 @@
 
 set -euo pipefail
 
+# Temp files removed when the job shell exits, on every path (the many
+# early fail-closed exits below and a `set -e` failure included); persistent
+# runners keep RUNNER_TEMP between jobs. Later code adds files with
+# _FS_EXIT_CLEANUP+=(...) instead of installing its own EXIT trap, which
+# would replace this one.
+_FS_EXIT_CLEANUP=()
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below
+_fs_exit_cleanup() {
+  if [ "${#_FS_EXIT_CLEANUP[@]}" -gt 0 ]; then
+    rm -f -- "${_FS_EXIT_CLEANUP[@]}"
+  fi
+  # The inference credential block below stays POSIX sh (its test runs it
+  # under /bin/sh), so its two temp files are removed by name here.
+  rm -f -- ${OIDC_TOKEN_FILE:+"${OIDC_TOKEN_FILE}"} ${GCP_CRED_CONFIG_FILE:+"${GCP_CRED_CONFIG_FILE}"}
+}
+trap '_fs_exit_cleanup' EXIT
+
+# The job uploads fullsend-artifact/ with `when: always` (ADR 0161). A
+# runner that keeps its workspace still holds the previous job's artifact
+# copy, so empty it before any early exit below (the CI_DEBUG_TRACE guard
+# included) can leave it for upload. Only an absolute CI_PROJECT_DIR is
+# trusted as the workspace root.
+case "${CI_PROJECT_DIR:-}" in
+  /*)
+    rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"
+    ;;
+esac
+
 # CI_DEBUG_TRACE guard — deny-before-admit. YAML rules also refuse to
 # start the job when debug tracing is enabled (secrets materialize at
 # job init, so a mid-script abort is too late). This script-level
@@ -74,7 +102,6 @@ FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 if [ -n "${FULLSEND_GCP_WIF_PROVIDER:-}" ]; then
   OIDC_TOKEN_FILE=$(mktemp)
   GCP_CRED_CONFIG_FILE=$(mktemp)
-  trap 'rm -f "${OIDC_TOKEN_FILE}" "${GCP_CRED_CONFIG_FILE}"' EXIT
   echo "${FULLSEND_ID_TOKEN}" > "${OIDC_TOKEN_FILE}"
   if [ -n "${FULLSEND_GCP_SERVICE_ACCOUNT:-}" ]; then
     # The installer validates the email; recheck the shape here so the
@@ -1096,6 +1123,10 @@ if [ "${STAGE}" = "fix" ]; then
   _FS_TARGET_REPO="${FIX_TARGET_REPO}"
 fi
 mkdir -p "${CI_PROJECT_DIR}/output"
+# A persistent runner may keep a previous job's artifact directory (built
+# at the end of this script); clear it so it never reaches this run's
+# sandbox or artifact.
+rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"
 
 # Jira work-item dispatch (#8919): hand fullsend run the normalized Jira
 # event from the HMAC-verified payload. fullsend run validates it, exports
@@ -1106,6 +1137,7 @@ mkdir -p "${CI_PROJECT_DIR}/output"
 _FS_RUN_EVENT_ARGS=()
 if [ "${JIRA_DISPATCH}" = "true" ]; then
   JIRA_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-jira-event.XXXXXX")
+  _FS_EXIT_CLEANUP+=("${JIRA_EVENT_FILE}")
   if ! printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
     | jq -e '._normalized_event | select(type == "object" and .source.system == "jira")' > "${JIRA_EVENT_FILE}" 2>/dev/null; then
     echo "ERROR: Jira dispatch payload has no Jira normalized event — refusing to run (fail-closed)" >&2
@@ -1120,6 +1152,7 @@ else
   # _normalized_event (an older poller, or an event that did not fit) has
   # no source.system, gets no --event-file, and runs as before.
   GITLAB_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-gitlab-event.XXXXXX")
+  _FS_EXIT_CLEANUP+=("${GITLAB_EVENT_FILE}")
   if printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
     | jq -e '._normalized_event | select(type == "object" and .source.system == "gitlab")' > "${GITLAB_EVENT_FILE}" 2>/dev/null; then
     _FS_RUN_EVENT_ARGS=(--event-file "${GITLAB_EVENT_FILE}")
@@ -1151,10 +1184,6 @@ fullsend run "${STAGE}" \
   ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}
 RUN_STATUS=$?
 set -e
-# Persistent runners keep RUNNER_TEMP between jobs.
-if [ -n "${GITLAB_EVENT_FILE:-}" ]; then
-  rm -f "${GITLAB_EVENT_FILE}"
-fi
 
 MEASURE_ARGS=(--agent "${STAGE}" --output-dir "${CI_PROJECT_DIR}/output")
 if [ -n "${DEFAULT_BRANCH_SHA}" ]; then
@@ -1166,4 +1195,40 @@ if [ -n "${DEFAULT_BRANCH_SHA}" ]; then
 fi
 fullsend eval-measure "${MEASURE_ARGS[@]}" || true
 
+# Prepare the job artifact (ADR 0161): artifacts.content and
+# artifacts.by_source in .fullsend/config.yaml pick the level (all,
+# metadata or none) for this run's source, read from the same event file
+# fullsend run received. The job's artifacts: path is the copy CI
+# uploads, not output/, which stays untouched for the steps above. Fails
+# closed: when the level cannot be resolved the artifact directory is
+# removed, and GitLab finds no artifact files (a warning, not a job
+# failure).
+_FS_ARTIFACT_DIR="${CI_PROJECT_DIR}/fullsend-artifact"
+if _FS_ARTIFACT_LEVEL=$(fullsend prepare-artifacts \
+  --output-dir "${CI_PROJECT_DIR}/output" \
+  --artifact-dir "${_FS_ARTIFACT_DIR}" \
+  --fullsend-dir .fullsend \
+  ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}); then
+  echo "Run artifact content level: ${_FS_ARTIFACT_LEVEL}"
+  # GitLab archives an empty directory that matches artifacts: paths, so
+  # remove it for none: the job then has no artifact at all.
+  if [ "${_FS_ARTIFACT_LEVEL}" = "none" ]; then
+    rm -rf -- "${_FS_ARTIFACT_DIR}"
+  fi
+else
+  rm -rf -- "${_FS_ARTIFACT_DIR}"
+  # Tell apart a missing binary (a failed install), a CLI that predates
+  # the command (cobra exits non-zero for an unknown subcommand even with
+  # --help) and a failed resolution.
+  if ! command -v fullsend >/dev/null 2>&1; then
+    echo "WARNING: the fullsend CLI is not installed (did install-fullsend-cli.sh fail?), so no run artifact is uploaded" >&2
+  elif ! fullsend prepare-artifacts --help >/dev/null 2>&1; then
+    echo "WARNING: the installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded; install-fullsend-cli.sh must pin a fullsend release at least as new as this script (re-sync the .fullsend scaffold)" >&2
+  else
+    echo "WARNING: run artifact level could not be resolved; no run artifact is uploaded" >&2
+  fi
+fi
+
+# The EXIT trap removes the event files (persistent runners keep
+# RUNNER_TEMP between jobs).
 exit "${RUN_STATUS}"

@@ -204,6 +204,11 @@ fullsend
 │   ├── --fullsend-dir <path>                #   .fullsend dir (local manifest override + fetch cache)
 │   ├── --offline                            #   Reject network fetches (local or cached manifest)
 │   └── --out-dir <path>                     #   Output dir (default: telemetry directory)
+├── prepare-artifacts                        # Build the run artifact copy CI uploads (ADR 0161)
+│   ├── --output-dir <path>                  #   Run output directory (required; never modified)
+│   ├── --artifact-dir <path>                #   Artifact directory, emptied first (required)
+│   ├── --fullsend-dir <path>                #   Directory holding config.yaml (default: .)
+│   └── --event-file <path>                  #   Normalized event (default: dispatch payload; else native GitHub event → github; else strictest level)
 ├── resolve-mr-source                        # Resolve a GitLab MR's source branch, SHA, and project path
 │   ├── --project <path>                     #   GitLab project path (default: $CI_PROJECT_PATH)
 │   ├── --mr-iid <int>                       #   Merge request IID (required)
