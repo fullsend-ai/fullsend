@@ -492,7 +492,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   default 50) from `tracker.jira.poll` within fixed bounds
   ([ADR 0160](ADRs/0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)).
 - Jira poll actor authorization does not require the poller to administer the
-  Jira project once a repository opts in with a `jira` provider under
+  Jira project once a repository adds a `jira` provider under
   `authorization:`. With no `jira` entry, every Jira event resolves through the
   admin-only project role roster. The entry lists Jira groups and account IDs
   for the `write` and `triage` roles, which are authoritative for slash
@@ -502,6 +502,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `labels: project_roles` (which, with no lists, resolves every event through
   the roster, as with no entry)
   ([ADR 0153](ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+  Running the `jira-poll` driver with no `jira` entry is deprecated: the
+  poller warns at start, and a later release requires the entry, with the
+  two-line `labels: project_roles` entry as the migration
+  ([ADR 0157](ADRs/0157-require-jira-authorization-entry-for-jira-poll.md),
+  rollout in [#9005](https://github.com/fullsend-ai/fullsend/issues/9005)
+  and [#9006](https://github.com/fullsend-ai/fullsend/issues/9006)).
 - The Jira site URL is kept for links and cloud-ID discovery, and API calls
   go through the Atlassian API gateway for the site, whose host can be
   overridden. A token with the account's email is sent with Basic auth (bot
