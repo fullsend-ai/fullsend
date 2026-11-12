@@ -154,7 +154,7 @@ func legacyTrackingFor(t *TrackingConfig) (provider string, orgs, repos []string
 		return provider, nil, cloneStringSlice(t.GitLab.AllowedTargets.Repos), nil
 	case TrackingProviderJira:
 		if !reflect.ValueOf(*t.Jira).IsZero() {
-			return "", nil, nil, fmt.Errorf(unsupported, "jira settings")
+			return "", nil, nil, fmt.Errorf(unsupported, "jira")
 		}
 		return provider, nil, nil, nil
 	}

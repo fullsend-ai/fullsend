@@ -153,6 +153,9 @@ func TestRenderManagedConfigSchemaLegacyUnsupported(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, err := RenderManagedConfigSchema([]byte(in), ManagedConfigSchemaLegacy)
 			require.Error(t, err)
+			if name == "jira settings" {
+				assert.ErrorContains(t, err, "tracker.jira cannot be expressed")
+			}
 		})
 	}
 	_, err := RenderManagedConfigSchema([]byte("- a\n"), ManagedConfigSchemaLegacy)
