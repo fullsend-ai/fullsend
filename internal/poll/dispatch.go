@@ -430,9 +430,16 @@ const noteBodyTransportLimit = 270
 // transportStringRefLimit is the JSON-byte bound transport applies to each
 // attacker-shaped single string the payload carries: the branch refs (the
 // flat source_branch/target_branch and the normalized event's
-// head_ref/base_ref), the repo paths (repo, head_repo, base_repo), the
-// entity URLs, the logins (actor.id, author_id, reviewer_id) and the label
-// name. An event author who can name a branch, a label or a login controls
+// head_ref/base_ref), the repo paths head_repo/base_repo carry (a fork's
+// path is event-author-chosen; a same-project MR carries the operator's
+// own project path there, which this bound cuts even though repo travels
+// whole), the
+// logins (actor.id, author_id, reviewer_id) and the label name. The
+// config-derived repo, entity.url and entity.linked_change_proposal.url
+// are operator-chosen, not attacker-shaped, and travel whole: a config
+// whose lengths push the complete payload past the chunk budget fails
+// closed there (comment-only fallback for a note, command refusal) rather
+// than being silently cut. An event author who can name a branch, a label or a login controls
 // that string's content, and Go's JSON encoder expands <, > and & to six
 // bytes per rune, so without a bound a single 255-rune escape-heavy ref
 // would push the complete normalized event past
@@ -454,8 +461,9 @@ const noteBodyTransportLimit = 270
 // (comment id/parent_id, head SHA, entity key) are not bounded — the
 // forge, not the event author, chooses them. Together with
 // noteBodyTransportLimit and transportLabelsLimit this keeps the worst
-// attacker-shaped payload inside the transport budget, which
-// TestBuildEventPayload_WorstCaseFitsTransportBudget pins.
+// attacker-shaped payload — at a plausible operator config for the
+// whole-travelling config-derived fields — inside the transport budget,
+// which TestBuildEventPayload_WorstCaseFitsTransportBudget pins.
 const transportStringRefLimit = 258
 
 // transportLabelsLimit is the byte bound transportNormalizedEvent applies to
@@ -675,8 +683,12 @@ func jsonRuneLen(r rune) int {
 
 // boundTransportEventStrings bounds every attacker-shaped single-string
 // field of a transported normalized event to transportStringRefLimit JSON
-// bytes (see boundTransportString): repo paths, entity URLs, branch refs,
-// logins and the label name. Forge-assigned ids (comment id/parent_id, head
+// bytes (see boundTransportString): branch refs, the head_repo/base_repo
+// paths (cut even when a same-project MR carries the operator's own
+// project path there), logins
+// and the label name. The config-derived repo, entity.url and
+// entity.linked_change_proposal.url travel whole (see
+// transportStringRefLimit). Forge-assigned ids (comment id/parent_id, head
 // SHA, entity key) are left alone — the forge, not the event author, chooses
 // them, and cutting an id would corrupt reply threading rather than trim
 // attacker padding. The cuts are silent; dispatch routes its events through
@@ -698,15 +710,16 @@ func logBoundTransportEventStrings(where string, ev *dispatch.NormalizedEvent) {
 
 // boundEventStrings is the shared core of boundTransportEventStrings and its
 // logging variant: cut bounds each attacker-shaped single-string field,
-// receiving the field's name for the WARNING the logging variant logs.
+// receiving the field's name for the WARNING the logging variant logs. The
+// config-derived repo, entity.url and entity.linked_change_proposal.url
+// stay whole — the operator's config, not the event author, picks them, and
+// a config that pushes the payload past the chunk budget fails closed there
+// (see transportStringRefLimit). head_repo/base_repo are the exception in
+// the other direction: they are cut unconditionally, so a same-project MR
+// (whose head_repo/base_repo carry the operator's own project path, the
+// same value repo carries) sees that path cut there while repo travels
+// whole.
 func boundEventStrings(ev *dispatch.NormalizedEvent, cut func(field, s string) string) {
-	ev.Repo = cut("repo", ev.Repo)
-	ev.Entity.URL = cut("entity.url", ev.Entity.URL)
-	if lcp := ev.Entity.LinkedChangeProposal; lcp != nil {
-		bounded := *lcp
-		bounded.URL = cut("entity.linked_change_proposal.url", bounded.URL)
-		ev.Entity.LinkedChangeProposal = &bounded
-	}
 	if label := ev.Transition.Label; label != nil {
 		bounded := *label
 		bounded.Name = cut("transition.label.name", bounded.Name)
