@@ -828,7 +828,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		if entry := lockState.entry; entry != nil && !lockState.stale {
 			printer.StepStart("Using pinned dependencies from lock file")
-			lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
+			lockResult, lockResolveErr := resolveFromLock(h, entry, composeOpts.LockUpdateCommand, absFullsendDir, orgAllowlist, printer)
 			if lockResolveErr != nil {
 				printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
 				printer.StepWarn("Falling back to normal resolution")
