@@ -371,6 +371,13 @@ func applyVaultRunnerSecrets(values map[string]string, native map[string]string)
 		if isOTLPHeadersSecret(name) {
 			for _, part := range otlpHeaderValueForms(v) {
 				maskRunnerSecretValue(part)
+				// Known limitation: an entry value shorter than the
+				// redactor's minimum is not registered for log
+				// redaction here (the result is ignored on purpose).
+				// It is still masked by GitHub Actions above. It is
+				// not rejected, because short entries such as
+				// "tenant=acme" are legitimate non-secret values, and
+				// the whole header string was already checked.
 				registerRunnerSecretValue(part)
 			}
 		}
