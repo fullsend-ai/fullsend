@@ -180,8 +180,8 @@ var vendoredDefaultsScripts = map[string]bool{
 	".github/scripts/install-podman.sh":               true,
 	".github/scripts/openshell-version.sh":            true,
 	".github/scripts/pre-fetch-review-body.sh":        true,
-	".github/scripts/retry-with-backoff.sh":           true,
 	".github/scripts/report-agent-startup-failure.sh": true,
+	".github/scripts/retry-with-backoff.sh":           true,
 }
 
 // vendoredDefaultsActions is the explicit allowlist of .github/actions/

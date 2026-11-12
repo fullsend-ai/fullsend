@@ -10,8 +10,20 @@
 #
 # Exits 0 if fix should proceed, 1 if it should be skipped.
 # Emits GitHub Actions annotations (::warning::) for skip reasons.
+# Emits policy_skip=true only for intentional policy skips; operational errors
+# leave policy_skip=false so the caller can report the startup failure.
 
 set -euo pipefail
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "policy_skip=false" >> "${GITHUB_OUTPUT}"
+fi
+
+mark_policy_skip() {
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "policy_skip=true" >> "${GITHUB_OUTPUT}"
+  fi
+}
 
 # Only gate bot-triggered runs; human /fs-fix always proceeds.
 if [[ ! "${TRIGGER_SOURCE}" =~ \[bot\]$ ]]; then
@@ -25,6 +37,7 @@ PR_INFO=$(gh pr view "${PR_NUM}" --repo "${SOURCE_REPO}" \
 HAS_NO_FIX=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-no-fix")')
 if [[ "${HAS_NO_FIX}" == "true" ]]; then
   echo "::warning::PR #${PR_NUM} has 'fullsend-no-fix' label — skipping bot-triggered fix"
+  mark_policy_skip
   exit 1
 fi
 
@@ -70,6 +83,7 @@ if [[ "${KNOWN_CODER}" != "true" ]]; then
   HAS_FIX_LABEL=$(echo "${PR_INFO}" | jq -r '.labels | any(. == "fullsend-fix")')
   if [[ "${HAS_FIX_LABEL}" != "true" ]]; then
     echo "::warning::PR #${PR_NUM} (author: ${PR_LOGIN_SAFE}, is_bot: ${PR_IS_BOT_SAFE}) is not the coder bot and lacks 'fullsend-fix' label — skipping bot-triggered fix"
+    mark_policy_skip
     exit 1
   fi
 fi

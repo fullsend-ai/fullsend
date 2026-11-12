@@ -14,7 +14,8 @@
 #
 # Writes the body of the latest CHANGES_REQUESTED review submitted by a
 # recognized review bot to ${GITHUB_WORKSPACE}/review-body.txt and emits
-# review_file=<path> to GITHUB_OUTPUT.
+# review_file=<path> to GITHUB_OUTPUT. Emits policy_skip=true only when a
+# bot-triggered run has no review body to act on.
 #
 # Reviews are fetched across every API page. The reviews endpoint returns
 # 30 reviews per page by default (100 at most), so on a PR with many
@@ -24,6 +25,10 @@
 # finds no review body to act on.
 
 set -euo pipefail
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  echo "policy_skip=false" >> "${GITHUB_OUTPUT}"
+fi
 
 REVIEW_FILE="${GITHUB_WORKSPACE:-.}/review-body.txt"
 REVIEW_BOT="${ORG_NAME}-review[bot]"
@@ -63,6 +68,9 @@ if [[ "${BYTE_COUNT}" -gt "${MAX_REVIEW_BYTES}" ]]; then
 fi
 if [[ "${TRIGGER_SOURCE}" =~ \[bot\]$ && "${BYTE_COUNT}" -le 1 ]]; then
   echo "::error::Bot-triggered run but review body is empty — nothing to fix"
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "policy_skip=true" >> "${GITHUB_OUTPUT}"
+  fi
   exit 1
 fi
 echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT:-/dev/null}"

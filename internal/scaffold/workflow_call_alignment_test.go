@@ -64,8 +64,11 @@ func TestStartupFailureReportingGuards(t *testing.T) {
 	}
 	assert.Contains(t, dispatchText, "id: fork_guard")
 	assert.Contains(t, dispatchText, "id: eligibility")
-	assert.Contains(t, dispatchText, "steps.fork_guard.outcome != 'failure'")
-	assert.Contains(t, dispatchText, "steps.eligibility.outcome != 'failure'")
+	assert.Contains(t, dispatchText, "steps.fork_guard.outputs.policy_skip != 'true'")
+	assert.Contains(t, dispatchText, "steps.eligibility.outputs.policy_skip != 'true'")
+	assert.Contains(t, dispatchText, "steps.review-body.outputs.policy_skip != 'true'")
+	assert.Contains(t, dispatchText, `FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"`)
+	assert.Contains(t, dispatchText, `FULLSEND_FAILURE_STABLE_MARKER="true"`)
 	assert.GreaterOrEqual(t, strings.Count(dispatchText, `export FULLSEND_FAILURE_ROLE="coder"`), 2,
 		"code and fix reporters must use the shared coder bot role")
 
@@ -74,6 +77,21 @@ func TestStartupFailureReportingGuards(t *testing.T) {
 	prioritizeText := string(prioritize)
 	assert.Contains(t, prioritizeText, "failure-repo: ${{ inputs.source_repo }}")
 	assert.NotContains(t, prioritizeText, "status-repo: ${{ inputs.source_repo }}")
+	section := extractStepSection(t, prioritizeText, "Run prioritize agent")
+	assert.Contains(t, section, "failure-repo:")
+	assert.Contains(t, section, "failure-number:")
+	assert.Contains(t, section, "source-system:")
+	assert.Contains(t, section, "github_token: ${{ github.token }}")
+	assert.Contains(t, section, "failure-token: ${{ steps.app-token.outputs.token || github.token }}")
+
+	for _, agent := range []string{"code", "fix"} {
+		t.Run(agent+" uses coder role for startup reporting", func(t *testing.T) {
+			section := extractStepSection(t, dispatchText, "Run "+agent+" agent")
+			assert.Contains(t, section, "agent: "+agent)
+			assert.Contains(t, section, "role: coder",
+				"the %s composite path must use the coder identity for startup-failure deduplication", agent)
+		})
+	}
 }
 
 type workflowInput struct {
@@ -1920,25 +1938,6 @@ func TestReusableDispatchStatusCommentPassthrough(t *testing.T) {
 			"harness-run must pass the minted token only to failure reporting")
 	})
 
-	t.Run("standalone prioritize", func(t *testing.T) {
-		content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-prioritize.yml"))
-		require.NoError(t, err)
-		section := extractStepSection(t, string(content), "Run prioritize agent")
-		assert.Contains(t, section, "failure-repo:")
-		assert.Contains(t, section, "failure-number:")
-		assert.Contains(t, section, "source-system:")
-		assert.Contains(t, section, "github_token: ${{ github.token }}")
-		assert.Contains(t, section, "failure-token: ${{ steps.app-token.outputs.token || github.token }}")
-	})
-
-	for _, agent := range []string{"code", "fix"} {
-		t.Run(agent+" uses coder role for startup reporting", func(t *testing.T) {
-			section := extractStepSection(t, s, "Run "+agent+" agent")
-			assert.Contains(t, section, "agent: "+agent)
-			assert.Contains(t, section, "role: coder",
-				"the %s composite path must use the coder identity for startup-failure deduplication", agent)
-		})
-	}
 }
 
 // TestShimPerRepoProjectNumberPassthrough validates that the per-repo shim

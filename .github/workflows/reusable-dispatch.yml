@@ -1586,10 +1586,12 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
           PR_NUM_INPUT: ''
         run: |
+          echo "policy_skip=false" >> "${GITHUB_OUTPUT}"
           HEAD_REPO="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.head.repo.full_name // empty')"
           BASE_REPO="$(echo "${EVENT_PAYLOAD}" | jq -r '.pull_request.base.repo.full_name // empty')"
           if [[ -n "${HEAD_REPO}" && -n "${BASE_REPO}" && "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
             echo "::error::Fork PRs are not allowed to trigger the fix agent"
+            echo "policy_skip=true" >> "${GITHUB_OUTPUT}"
             exit 1
           fi
           if [[ -z "${HEAD_REPO}" && -z "${BASE_REPO}" ]]; then
@@ -1604,6 +1606,7 @@ jobs:
               fi
               if [[ "${IS_FORK}" == "true" ]]; then
                 echo "::error::Fork PRs are not allowed to trigger the fix agent"
+                echo "policy_skip=true" >> "${GITHUB_OUTPUT}"
                 exit 1
               fi
             fi
@@ -1786,7 +1789,7 @@ jobs:
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
       - name: Report fix launch failure
-        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && steps.fork_guard.outcome != 'failure' && steps.eligibility.outcome != 'failure' && steps.review-body.outcome != 'failure' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
+        if: ${{ failure() && !cancelled() && steps.run-agent.outcome == 'skipped' && steps.fork_guard.outputs.policy_skip != 'true' && steps.eligibility.outputs.policy_skip != 'true' && steps.review-body.outputs.policy_skip != 'true' && (fromJSON(needs.route.outputs.event_payload)._normalized_event.source.system || 'github') == 'github' }}
         env:
           GH_TOKEN: ${{ github.token }}
           MINT_OUTCOME: ${{ steps.app-token.outcome }}
@@ -2093,6 +2096,8 @@ jobs:
           export FULLSEND_FAILURE_AGENT="prioritize"
           export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
           export FULLSEND_FAILURE_CATEGORY="workflow setup"
+          export FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"
+          export FULLSEND_FAILURE_STABLE_MARKER="true"
           bash "${script}"
 
   harness-dispatch:
@@ -2103,8 +2108,10 @@ jobs:
       actions: write
       contents: read
       id-token: write
+      # Callers must grant issues: write for startup-failure comments and
+      # pull-requests: read for harness event inspection.
       issues: write
-      pull-requests: write
+      pull-requests: read
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
     steps:
@@ -2263,13 +2270,10 @@ jobs:
         if: ${{ failure() && !cancelled() && steps.dispatch.outcome != 'success' && (github.event.issue.number != '' || github.event.pull_request.number != '') }}
         env:
           GH_TOKEN: ${{ github.token }}
-          FULLSEND_FAILURE_REPOSITORY: ${{ github.repository }}
-          FULLSEND_FAILURE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
-          FULLSEND_FAILURE_AGENT: harness
-          FULLSEND_FAILURE_ROLE: harness
-          FULLSEND_FAILURE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          FULLSEND_FAILURE_CATEGORY: workflow setup
           FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REPOSITORY: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
           script=".defaults/.github/scripts/report-agent-startup-failure.sh"
@@ -2284,9 +2288,12 @@ jobs:
               exit 0
             fi
           fi
-          export FULLSEND_FAILURE_REPOSITORY FULLSEND_FAILURE_NUMBER \
-            FULLSEND_FAILURE_AGENT FULLSEND_FAILURE_ROLE FULLSEND_FAILURE_RUN_URL \
-            FULLSEND_FAILURE_CATEGORY FULLSEND_FAILURE_TRUSTED_BOTS
+          export FULLSEND_FAILURE_REPOSITORY="${REPOSITORY}"
+          export FULLSEND_FAILURE_NUMBER="${NUMBER}"
+          export FULLSEND_FAILURE_AGENT="harness"
+          export FULLSEND_FAILURE_ROLE="harness"
+          export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
+          export FULLSEND_FAILURE_CATEGORY="workflow setup"
           bash "${script}"
 
   harness-run:
