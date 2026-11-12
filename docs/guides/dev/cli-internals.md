@@ -56,6 +56,7 @@ fullsend
 │   └── set          <owner/repo> <key> <value> # Update a config value
 ├── repos                                    # Manage per-repo installations via manifest
 │   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
+│   ├── --verbose                            #   Show scrubbed API error text; log GitLab requests to stderr
 │   ├── install      [repos...]              # Converge declared repos to repos.yaml (provision, repair drift, upgrade); positional args only filter declared entries
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml; must exist)
 │   │   ├── --dry-run                        #   Preview without making changes

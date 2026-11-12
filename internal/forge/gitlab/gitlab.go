@@ -212,6 +212,11 @@ func (c *LiveClient) doAttempts(ctx context.Context, method, path string, body a
 		}
 
 		resp, err := c.http.Do(req)
+		status := 0
+		if err == nil {
+			status = resp.StatusCode
+		}
+		logRequest(ctx, method, path, status)
 		if err != nil {
 			if isTransientError(err) && isIdempotent(method) && attempt < attempts-1 {
 				delay := retryDelay(nil, attempt)

@@ -951,6 +951,22 @@ upgrade proceeds rather than blocking — graceful degradation.
 
 ## Troubleshooting
 
+### Errors that say "server error text withheld"
+
+By default, `fullsend repos` reports a failed credential-bearing API call
+without the server's response, for example:
+
+```
+GitLab Poller membership reconciliation failed: resolving the GitLab Poller identity: request failed (server error text withheld)
+```
+
+Re-run the command with `--verbose` to see the scrubbed HTTP status and
+server message, and a stderr log line for each GitLab API request
+(method, path and status). This shows which call failed. Known credentials
+and token-shaped values are redacted; see
+[Verbose output](../../cli/repos.md#verbose-output) for what is shown and
+what is redacted.
+
 ### Unknown field errors in repos.yaml
 
 The manifest parser strictly validates field names in all sections
