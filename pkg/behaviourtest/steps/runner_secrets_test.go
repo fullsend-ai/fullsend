@@ -71,7 +71,7 @@ func TestGivenRepositoryRunnerSecret_RedactsEveryFormOfTheBundle(t *testing.T) {
 	// Only the value is registered; every form of the bundle holds it
 	// verbatim, so each is masked.
 	for _, form := range []string{value, bundle, strconv.Quote(bundle), string(encoded)} {
-		assert.NotContains(t, redactText("log: "+form), value, "form %q", form)
+		assert.NotContains(t, RedactText("log: "+form), value, "form %q", form)
 	}
 }
 
