@@ -525,8 +525,9 @@ type searchRequest struct {
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
-// searchFields lists the issue fields SearchIssues requests. Of these,
-// the poller uses "issuetype" for normalized issue-type metadata. "project"
+// searchFields lists the issue fields SearchIssues requests. The poller
+// reads "created", "labels", "reporter", "assignee", and "issuetype"
+// (for normalized state.issue_type metadata). "project"
 // carries the immutable project database ID, the Jira container identity
 // for trace binding (ADR 0154), so search results hold the same identity
 // as issue reads; GetIssue fetches it through its own request.

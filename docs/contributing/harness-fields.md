@@ -241,8 +241,7 @@ Overlay `when` expressions are evaluated with:
 
 | Variable | Type | Source |
 |---|---|---|
-| `event` | `normevent.Event` | The triggering event — fields like `source.system`, `entity.kind`, `transition.kind`. The ADR 0107 fields `actor.bot_role` and `actor.role_verified` are present only when an adapter performed a bot-role lookup; guard them with `has()` |
-| `event.state.issue_type` | object | Optional current Jira issue type with `id`, `name`, `subtask`; guard with `has(event.state.issue_type)`. Preserved in `_normalized_event` without a separate legacy payload field |
+| `event` | `normevent.Event` | The triggering event — fields like `source.system`, `entity.kind`, `transition.kind`. The ADR 0107 fields `actor.bot_role` and `actor.role_verified` are present only when an adapter performed a bot-role lookup; guard them with `has()`. Optional `state.issue_type` carries the current Jira type (`id`, `name`, `subtask`); guard with `has(event.state.issue_type)`. It is preserved in `_normalized_event` without a separate legacy payload field |
 | `runtime.forge` | `string` | Effective forge platform (precedence: CLI flag > config.forge > CI env vars) |
 | `config` | `map[string]any` | Full per-repo config from `config.yaml` |
 

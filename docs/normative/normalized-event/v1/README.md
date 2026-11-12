@@ -101,9 +101,10 @@ is intended: the matrix output could only ever lead to a `fullsend run` that
 refuses the key anyway. The general rule that pattern tightening requires v2
 still holds for shapes consumers accept.
 
-The new optional actor fields are additive, but consumers that vendor this
+The new optional fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
-adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise
+adapter emits `actor.bot_role`, `actor.role_verified`,
+`actor.is_entity_assignee` or `state.issue_type`; otherwise
 their local validator may reject an otherwise valid v1 event. Fullsend controls the supported
 NormalizedEvent producers and consumers, so the bundled validator and other
 supported consumers MUST be updated to this v1 schema before any adapter emits

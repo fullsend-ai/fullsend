@@ -396,8 +396,8 @@
           "required": ["id", "name", "subtask"],
           "description": "Current work-item type from the tracker snapshot; omitted when unavailable.",
           "properties": {
-            "id": { "type": "string" },
-            "name": { "type": "string" },
+            "id": { "type": "string", "minLength": 1, "maxLength": 255 },
+            "name": { "type": "string", "minLength": 1, "maxLength": 255 },
             "subtask": { "type": "boolean" }
           }
         },
