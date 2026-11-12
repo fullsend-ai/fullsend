@@ -161,6 +161,36 @@ func TestLiveGCFClient_CreateWIFProvider(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("conflict with provider bound to a different project is not overwritten", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			switch callCount {
+			case 1:
+				assert.Equal(t, http.MethodPost, r.Method)
+				w.WriteHeader(http.StatusConflict)
+			case 2:
+				// Re-read of the provider created concurrently by another run.
+				assert.Equal(t, http.MethodGet, r.Method)
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"state":"ACTIVE","attributeCondition":"assertion.project_id == '2' && assertion.project_path == 'other/app'"}`)
+			default:
+				t.Errorf("unexpected %s request %s after refusing to overwrite", r.Method, r.URL.Path)
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateWIFProvider(context.Background(), "123", "pool", "gl-acme-app", OIDCProviderConfig{
+			AttributeCondition:      "assertion.project_id == '1' && assertion.project_path == 'acme/app'",
+			AllowedAudiences:        []string{"fullsend"},
+			RequiredConditionClause: "assertion.project_path == 'acme/app'",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "refusing to overwrite")
+		assert.Equal(t, 2, callCount)
+	})
+
 	t.Run("already exists updates condition and audiences", func(t *testing.T) {
 		callCount := 0
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

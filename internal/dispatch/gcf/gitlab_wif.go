@@ -119,7 +119,13 @@ func gitlabAttributeMapping() map[string]string {
 // the readable project path, so a deleted path reused by a different
 // project cannot satisfy the condition.
 func gitlabAttributeCondition(projectID, projectPath string) string {
-	return fmt.Sprintf("assertion.project_id == '%s' && assertion.project_path == '%s'", projectID, projectPath)
+	return fmt.Sprintf("assertion.project_id == '%s' && %s", projectID, gitlabProjectPathClause(projectPath))
+}
+
+// gitlabProjectPathClause is the part of the attribute condition that
+// identifies the project path; provider-collision checks look for it.
+func gitlabProjectPathClause(projectPath string) string {
+	return fmt.Sprintf("assertion.project_path == '%s'", projectPath)
 }
 
 // GitLabProviderPlan describes the WIF provider and IAM binding that
@@ -153,6 +159,8 @@ func PlanGitLabWIF(gl GitLabProject) (*GitLabProviderPlan, error) {
 			AttributeCondition: gitlabAttributeCondition(gl.ID, gl.Path),
 			AllowedAudiences:   []string{GitLabIDTokenAudience},
 			AttributeMapping:   gitlabAttributeMapping(),
+
+			RequiredConditionClause: gitlabProjectPathClause(gl.Path),
 		},
 		PrincipalSetSuffix: "attribute.project_path/" + gl.Path,
 	}, nil
@@ -191,7 +199,7 @@ func (p *Provisioner) ProvisionGitLabWIF(ctx context.Context, gl GitLabProject) 
 		return "", fmt.Errorf("reading WIF provider %s: %w", plan.ProviderID, err)
 	}
 	if existing != nil && strings.TrimSpace(existing.AttributeCondition) != "" &&
-		!strings.Contains(existing.AttributeCondition, fmt.Sprintf("assertion.project_path == '%s'", gl.Path)) {
+		!strings.Contains(existing.AttributeCondition, plan.Config.RequiredConditionClause) {
 		return "", fmt.Errorf("WIF provider %s already exists with a condition for a different project (%q); refusing to overwrite it", plan.ProviderID, existing.AttributeCondition)
 	}
 

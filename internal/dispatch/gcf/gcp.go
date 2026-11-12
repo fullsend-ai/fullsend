@@ -44,6 +44,12 @@ type OIDCProviderConfig struct {
 	// IssuerURI is non-empty, the issuer, so a re-run converges a
 	// drifted non-GitHub provider.
 	AttributeMapping map[string]string
+	// RequiredConditionClause, when set, makes CreateWIFProvider's
+	// create-conflict recovery re-read the provider and refuse to overwrite
+	// it when its non-empty attribute condition does not contain this
+	// clause. It closes the check-then-act window of callers that verified
+	// provider ownership before creating.
+	RequiredConditionClause string
 }
 
 // defaultGitHubAttributeMapping is the attribute mapping applied to WIF
@@ -394,6 +400,16 @@ func (c *LiveGCFClient) CreateWIFProvider(ctx context.Context, projectNumber, po
 
 	if resp.StatusCode == http.StatusConflict {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		if cfg.RequiredConditionClause != "" {
+			existing, err := c.GetWIFProvider(ctx, projectNumber, poolID, providerID)
+			if err != nil {
+				return fmt.Errorf("re-reading WIF provider %s after create conflict: %w", providerID, err)
+			}
+			if existing != nil && strings.TrimSpace(existing.AttributeCondition) != "" &&
+				!strings.Contains(existing.AttributeCondition, cfg.RequiredConditionClause) {
+				return fmt.Errorf("WIF provider %s was created concurrently with a condition for a different project (%q); refusing to overwrite it", providerID, existing.AttributeCondition)
+			}
+		}
 		if err := c.undeleteWIFProvider(ctx, projectNumber, poolID, providerID); err != nil {
 			log.Printf("undelete attempt during conflict recovery: %v", err)
 		}
