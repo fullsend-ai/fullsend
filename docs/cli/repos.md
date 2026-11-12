@@ -188,7 +188,16 @@ Install writes to `repos.yaml` itself in only three cases: the first-install
 `tracker` writeback described above; the conversion of legacy issue-tracking
 configuration described below; and, after a first install, the CLI's release
 written to `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is
-unset. `--dry-run` writes none of them.
+unset. `--dry-run` writes none of them. Install writes the first two together,
+after its configuration preflights. It stops before that write when the file
+changed after the run loaded it, as when another install that uses the same
+file runs at the same time. Run install again once that install has finished.
+Install still overwrites a change that lands in the short window between that
+check and the write. When the rewritten file would exceed the 1 MB limit that
+loading a manifest enforces, install also stops before that write. `--dry-run`
+reports the same refusal. To install a larger fleet, split it across several
+manifests. Declare each repository in only one of them, including a repository
+that a glob covers.
 
 Legacy issue-tracking configuration in managed `config:` blocks (the scalar
 `tracker: github|gitlab|jira` form and the removed `create_issues` block) is
@@ -1477,6 +1486,25 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (opening a PR to remove workflow files, then deleting variables and secrets via the API), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
 
+A manifest loaded from an HTTPS URL, read from a pipe or FIFO (as `-f <(cmd)`
+gives), or a local file without write permission, is read-only, so uninstall
+cannot remove entries from it. Uninstall refuses such a manifest before it
+tears anything down, `--manifest-only` refuses it too, and `--dry-run` reports
+the same refusal. To uninstall from one, run with `--uninstall-only`, which
+tears down without editing the manifest, then remove each torn-down entry from
+its source.
+
+Uninstall rewrites the whole `repos.yaml` with its own formatting. When the
+rewritten file would exceed the 1 MB limit that loading a manifest enforces,
+uninstall fails after teardown and leaves the file unchanged. `--dry-run`
+reports the same refusal. A retry or `--manifest-only` fails the same way.
+Remove each torn-down entry with `repos set` instead, which changes only that
+entry's lines, for example:
+
+```bash
+fullsend repos set --unset 'github.repos["acme/api"]'
+```
+
 File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. Variable and secret deletions are API-only operations and always happen immediately. For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches (a missing branch is ignored so older installs still uninstall cleanly) after deleting the fullsend-owned webhook fast-path project webhook (hooks fullsend does not own are left untouched) and revoking its managed Poller-owned pipeline trigger token before any scaffold file is removed, and deleting the wildcard-scoped `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables (a failure there fails uninstall and leaves the manifest entry in place for retry). On the trigger-account route, `FULLSEND_TRIGGER_TOKEN` was already deleted during install and the webhook's trigger is revoked during the trigger-account removal described below. Uninstall also deletes the retired poll-state CI/CD variables, registry/rotation-state variables (`FULLSEND_GITLAB_POLLER_GENERATIONS` is deleted last, only after every Poller account it records was verified and deleted; uninstall retains it when cleanup is incomplete or ambiguous, so the quarantine and retirement obligations it records survive until an administrator has reconciled them), built-in and custom `FULLSEND_GITLAB_*_TOKEN` secrets, and the corresponding `fullsend-poller` / `fullsend-analyst` / `fullsend-coder` / `fullsend-role-*` project access tokens. Uninstall does **not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a matching `fullsend-bot` project access token — a repository installed before the role-only rollout requires manual cleanup of those. Token revocation is part of uninstall success: if listing or revoking the role project access tokens fails, uninstall fails and the manifest entry is left in place for retry. Reinstall and converge do not revoke credentials that are already distributed. Before deleting anything, uninstall reads the rotation-state variable and fails closed, leaving every variable, secret, and token in place, if it is unreadable or malformed. The rotation-state variable is deleted last, after every other cleanup step succeeds; when it records administrator-supplied service-account exclusions, an exclusions-only document is retained so a later install or uninstall does not treat those accounts as fullsend-managed. When the rotation state records an administrator-supplied credential whose owner was never recorded and the CLI's token client cannot attribute it, uninstall does not guess: it leaves the supplied role's project access token and the whole rotation-state variable in place (reporting this in the cleanup diagnostics) and still removes everything else.
 
 GitLab uninstall holds the `FULLSEND_GITLAB_INSTALL_LEASE` project lease for the whole teardown, from webhook removal through the final variable, secret, branch, and token deletions, so no concurrent installer can publish a replacement hook, trigger token, or role credential mid-teardown. It fails closed: if another installer holds the lease or the client cannot take it, uninstall stops before removing anything and the manifest entry is left in place for retry. See [Upgrade compatibility](#upgrade-compatibility) for stranded-lease recovery.
@@ -1558,7 +1586,7 @@ fullsend repos set --unset <path>
 
 Paths are resolved against the manifest schema, so every field the manifest accepts can be set and there is no separate list of keys. After each edit the whole resulting manifest is validated with the same checks `repos install` uses. A rejected edit leaves the file byte-identical. A successful edit changes only the edited lines and keeps unrelated values, comments, blank lines, and ordering. If the manifest does not exist, `repos set` creates it with `version: 1`. Missing optional parent mappings (for example `defaults.config`) are created as needed.
 
-A manifest loaded from an HTTPS URL, or a local file without write permission, is read-only: `repos set` reports `manifest <path> is read-only; apply the equivalent edit to its source, then re-run` and writes nothing.
+A manifest loaded from an HTTPS URL, read from a pipe or FIFO (as `-f <(cmd)` gives), or a local file without write permission, is read-only: `repos set` reports `manifest <path> is read-only; apply the equivalent edit to its source, then re-run` and writes nothing.
 
 ### Path syntax
 

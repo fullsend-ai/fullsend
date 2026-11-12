@@ -489,10 +489,10 @@ non-per-repo file, or a read error, fails with a clear error and is never
 replaced. `.fullsend/config.base.yaml` is managed as described under
 [Configuration presets](#configuration-presets).
 
-When the manifest is read-only (an HTTPS URL, or a local file without write
-permission), install fails before attempting any manifest write and prints
-the exact entry to add to its source, including for a glob-covered
-repository whose first-install `tracker` default needs an explicit
+When the manifest is read-only (an HTTPS URL, a pipe or FIFO such as `<(cmd)`,
+or a local file without write permission), install fails before attempting any
+manifest write and prints the exact entry to add to its source, including for a
+glob-covered repository whose first-install `tracker` default needs an explicit
 entry. `--dry-run`, live install and `repos status` agree.
 
 ```bash
@@ -531,10 +531,10 @@ types, and migration from the removed `repos set-default`.
 
 ### Manifest paths and URLs
 
-The `-f`/`--manifest` flag accepts either a local file path or an HTTPS
-URL. Remote manifests are fetched with a 30-second timeout and a 1 MB
-size limit. Most `repos` subcommands support this — see the
-[CLI reference](../../cli/repos.md) for details.
+The `-f`/`--manifest` flag accepts either a local file path or an HTTPS URL.
+Most `repos` subcommands support this — see the
+[CLI reference](../../cli/repos.md) for details. Remote manifests are fetched
+with a 30-second timeout. A manifest, local or remote, can be at most 1 MB.
 
 ```bash
 fullsend repos status -f https://example.com/manifests/repos.yaml

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -808,7 +809,29 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
 		return fmt.Errorf("effective infrastructure preflight: %w", err)
 	}
+	// A dry run reports the size refusal that the write below gives.
+	if manifestChanged && opts.dryRun && opts.manifest != "" {
+		if err := repos.CheckManifestSize(opts.manifest, manifest); err != nil {
+			return fmt.Errorf("checking the manifest size: %w", err)
+		}
+	}
 	if manifestChanged && !opts.dryRun && opts.manifest != "" {
+		// Another install that uses the same file may have rewritten it since
+		// this run loaded it; writing now would drop its edits, such as a
+		// first-install tracker default it recorded. manifestChanged is set
+		// only for a writable manifest (each edit above refuses a read-only one
+		// or, like the legacy conversion, leaves it unwritten), so the file
+		// here is a local regular file. The comparison and the write are not
+		// atomic: a write that lands between them is overwritten. Lock the
+		// file if that window matters.
+		current, readErr := os.ReadFile(opts.manifest)
+		if readErr != nil {
+			return fmt.Errorf("writing manifest: reading %s again before writing it: %w", opts.manifest, readErr)
+		}
+		if !bytes.Equal(current, manifest.LoadedBytes()) {
+			return fmt.Errorf("writing manifest: %s changed after this run loaded it, as when another repos install that uses the same file runs at the same time; "+
+				"this run stopped before writing it: run install again once the other install has finished", opts.manifest)
+		}
 		if err := repos.WriteManifest(opts.manifest, manifest); err != nil {
 			return fmt.Errorf("writing manifest: %w", err)
 		}
@@ -1523,6 +1546,13 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if len(concreteRepos) == 0 {
 		printer.StepInfo("All matched entries are glob patterns — no concrete repos to uninstall")
 		return nil
+	}
+	// The manifest edit follows the teardown, so a read-only manifest is
+	// refused before anything is torn down, as install refuses one.
+	if !opts.manifestOnly && !opts.uninstallOnly && repos.ManifestReadOnly(manifest, opts.manifest) {
+		return fmt.Errorf("manifest %s is read-only and the uninstall must remove %s from it; no changes were made. "+
+			"Run with --uninstall-only to tear down without editing the manifest, then remove each torn-down entry from its source",
+			opts.manifest, strings.Join(concreteRepos, ", "))
 	}
 
 	action := "uninstall and remove from manifest"
