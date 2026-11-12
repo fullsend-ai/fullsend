@@ -623,12 +623,16 @@ excluded, and GC results. `Finalize` logs every org's last observed rate limit
 The After hook runs `CleanupScenario` (issues, PRs, ephemeral forks, hosting
 repos) and then `LeaseDriver.DeallocateLease(org, repo)`. Cleanup changes the
 slot repo and deletes repos by name, and the name may have been taken over by
-another holder (a lessee that outlived the slot GC deadline, for example). So
-the hook first sets `World.LeaseOwned` from the driver's `install.LeaseVerifier`
-(`StillOwnsLease`, the same ownership check the release uses). `CleanupScenario`
+another holder (a lessee that outlived the slot GC deadline, for example). The
+ownership check `World.LeaseOwned` (the driver's `install.LeaseVerifier`
+`StillOwnsLease`, the same ownership check the release uses) is installed when
+the scenario acquires its leased repository (`givenEnrolledTestRepository`), so
+step-time name-based mutations run guarded while the scenario runs, and the
+hook reinstalls it for cleanup. `CleanupScenario`
 checks it before every mutation and every cleanup retry, and the forge client
 checks it again before resending a request after a rate-limit wait. A lost
-lease, or one that cannot be verified, skips the mutation and logs why. A
+lease, or one that cannot be verified, fails a guarded step-time write, and
+skips a cleanup mutation, logging why. A
 `LeaseDriver` that does not implement `LeaseVerifier` is treated as
 unverifiable. Local cleanup (mock servers, artifact directories) still runs,
 and the lease is still released. `DeallocateLease` runs after
