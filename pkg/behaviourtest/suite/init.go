@@ -110,7 +110,7 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 	}
 	if driver != nil && w.LeasedRepoName != "" {
 		name, org := w.LeasedRepoName, w.LeasedRepoOrg
-		w.LeaseOwned = leaseOwnership(driver, org, name)
+		w.LeaseOwned = steps.LeaseOwnership(driver, org, name)
 		defer func() {
 			var deallocErr error
 			if ld, ok := driver.(install.LeaseDriver); ok && org != "" {
@@ -173,28 +173,6 @@ func recordScenarioFailure(w *world.World, err error) {
 	if w.Logf != nil {
 		w.Logf("[failure-class] scenario %q: %s", scenario, class)
 	}
-}
-
-// leaseOwnership returns the check scenario cleanup uses to confirm the
-// slot (org, name) is still this scenario's lease, or nil when the
-// driver leases by repo name alone (no shared slot to lose). A driver
-// that leases across orgs but cannot verify yields a check that always
-// fails, so cleanup fails closed rather than mutating by name.
-func leaseOwnership(driver install.Driver, org, name string) func(context.Context) (bool, error) {
-	if org == "" {
-		return nil
-	}
-	if lv, ok := driver.(install.LeaseVerifier); ok {
-		return func(ctx context.Context) (bool, error) {
-			return lv.StillOwnsLease(ctx, org, name)
-		}
-	}
-	if _, ok := driver.(install.LeaseDriver); ok {
-		return func(context.Context) (bool, error) {
-			return false, fmt.Errorf("%T cannot verify lease ownership of %s/%s", driver, org, name)
-		}
-	}
-	return nil
 }
 
 // featureFile strips the ":line" suffix godog adds to a scenario's URI

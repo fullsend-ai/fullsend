@@ -12,6 +12,7 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
+	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -137,4 +138,76 @@ func TestBindLease_WithoutOrgDriversKeepsDrivers(t *testing.T) {
 	assert.Equal(t, "halfsend", w.Org)
 	assert.Equal(t, "tok", w.Token, "an empty lease token keeps the World's")
 	assert.Same(t, scmDriver, w.SCM)
+}
+
+// stillOwnsLeaseDriver is a fakeLeaseDriver that also verifies lease
+// ownership with a fixed answer.
+type stillOwnsLeaseDriver struct {
+	*fakeLeaseDriver
+	owns bool
+}
+
+func (d *stillOwnsLeaseDriver) StillOwnsLease(context.Context, string, string) (bool, error) {
+	return d.owns, nil
+}
+
+func orgLease(client forge.Client) install.RepoLease {
+	return install.RepoLease{Org: "halfsend-07", Repo: "test-repo-03", Token: "tok-07", Client: client}
+}
+
+// The ownership check is installed when the scenario acquires its
+// leased repository, so step-time mutations (mutationCtx) are guarded
+// during the scenario, not only for cleanup in the After hook.
+func TestGivenEnrolledTestRepository_InstallsLeaseOwnership(t *testing.T) {
+	for _, owns := range []bool{true, false} {
+		ld := &stillOwnsLeaseDriver{fakeLeaseDriver: &fakeLeaseDriver{lease: orgLease(forge.NewFakeClient())}, owns: owns}
+		w := &world.World{Driver: ld, OrgDrivers: (&recordingOrgDrivers{}).build}
+
+		require.NoError(t, givenEnrolledTestRepository(context.Background(), w))
+		require.NotNil(t, w.LeaseOwned, "the check is installed at acquisition")
+		got, err := w.LeaseOwned(context.Background())
+		require.NoError(t, err)
+		assert.Equal(t, owns, got, "the check delegates to the driver's verifier")
+	}
+}
+
+// A driver that leases across orgs but cannot verify fails closed: the
+// installed check errors, so a guarded mutation refuses to write.
+func TestGivenEnrolledTestRepository_UnverifiableLeaseFailsClosed(t *testing.T) {
+	ld := &fakeLeaseDriver{lease: orgLease(forge.NewFakeClient())}
+	w := &world.World{Driver: ld, OrgDrivers: (&recordingOrgDrivers{}).build}
+
+	require.NoError(t, givenEnrolledTestRepository(context.Background(), w))
+	require.NotNil(t, w.LeaseOwned)
+	owns, err := w.LeaseOwned(context.Background())
+	assert.False(t, owns)
+	assert.ErrorContains(t, err, "cannot verify lease ownership of halfsend-07/test-repo-03")
+}
+
+// A name-only lease has no shared slot to lose: no check is installed.
+func TestGivenEnrolledTestRepository_NameOnlyLeaseHasNoCheck(t *testing.T) {
+	ld := &fakeLeaseDriver{lease: install.RepoLease{Repo: "test-repo-03", Client: forge.NewFakeClient()}}
+	w := &world.World{Driver: ld, OrgDrivers: (&recordingOrgDrivers{}).build}
+
+	require.NoError(t, givenEnrolledTestRepository(context.Background(), w))
+	assert.Nil(t, w.LeaseOwned)
+}
+
+// The normal scenario path guards the gateway api-key write: a lease
+// lost after allocation stops the secret write without any manual
+// LeaseOwned assignment (the After hook installs nothing during steps).
+func TestGivenEnrolledTestRepository_LostLeaseStopsGatewaySecretWrite(t *testing.T) {
+	client := &guardProbingSecretClient{FakeClient: forge.NewFakeClient()}
+	ld := &stillOwnsLeaseDriver{fakeLeaseDriver: &fakeLeaseDriver{lease: orgLease(client)}, owns: false}
+	w := &world.World{Driver: ld, OrgDrivers: func(c forge.Client, token string) (scm.Driver, ci.Driver, error) {
+		return scmgh.New(c), &fakeBranchCI{}, nil
+	}}
+
+	require.NoError(t, givenEnrolledTestRepository(context.Background(), w))
+	t.Setenv(envInferenceGatewayURL, "https://gw.example")
+	t.Setenv(envInferenceGatewayTestKey, "test-gateway-key-value")
+
+	err := givenTestInferenceGatewayAPIKey(w, "")
+	require.ErrorIs(t, err, errLeaseLost)
+	assert.Zero(t, client.writes, "no secret is written through the normal allocation path on a lost lease")
 }

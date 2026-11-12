@@ -24,6 +24,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -963,21 +964,21 @@ func TestAfterScenario_NameOnlyLease_CleansUpUnguarded(t *testing.T) {
 
 func TestLeaseOwnership(t *testing.T) {
 	ctx := context.Background()
-	assert.Nil(t, leaseOwnership(&verifyingLeaseDriver{fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)}}, "", "test-repo-01"))
+	assert.Nil(t, steps.LeaseOwnership(&verifyingLeaseDriver{fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)}}, "", "test-repo-01"))
 
 	v := &verifyingLeaseDriver{
 		fakeLeaseDriver: &fakeLeaseDriver{fakeDriver: newFakeDriver(1)},
 		holder:          "o/r#scenario",
 	}
-	owns, err := leaseOwnership(v, "o", "r")(ctx)
+	owns, err := steps.LeaseOwnership(v, "o", "r")(ctx)
 	require.NoError(t, err)
 	assert.True(t, owns)
 	v.holder = "o/r#other"
-	owns, err = leaseOwnership(v, "o", "r")(ctx)
+	owns, err = steps.LeaseOwnership(v, "o", "r")(ctx)
 	require.NoError(t, err)
 	assert.False(t, owns)
 
-	owns, err = leaseOwnership(&fakeLeaseDriver{fakeDriver: newFakeDriver(1)}, "o", "r")(ctx)
+	owns, err = steps.LeaseOwnership(&fakeLeaseDriver{fakeDriver: newFakeDriver(1)}, "o", "r")(ctx)
 	require.ErrorContains(t, err, "cannot verify lease ownership of o/r")
 	assert.False(t, owns)
 }

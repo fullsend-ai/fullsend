@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -13,6 +14,33 @@ import (
 // scenario's leased slot name is no longer this scenario's lease, so a
 // name-based mutation could land on another holder's resources.
 var errLeaseLost = errors.New("leased slot is no longer this scenario's; refusing to mutate by name")
+
+// LeaseOwnership returns the check a scenario uses to confirm the slot
+// (org, name) is still this scenario's lease, or nil when the driver
+// leases by repo name alone (no shared slot to lose). A driver that
+// leases across orgs but cannot verify yields a check that always
+// fails, so callers fail closed rather than mutating by name.
+//
+// It is installed when the scenario acquires its leased repository
+// (givenEnrolledTestRepository), so step-time mutations through
+// mutationCtx are guarded while the scenario runs, and re-installed by
+// the suite's After hook for cleanup; both use this one implementation.
+func LeaseOwnership(driver install.Driver, org, name string) func(context.Context) (bool, error) {
+	if org == "" {
+		return nil
+	}
+	if lv, ok := driver.(install.LeaseVerifier); ok {
+		return func(ctx context.Context) (bool, error) {
+			return lv.StillOwnsLease(ctx, org, name)
+		}
+	}
+	if _, ok := driver.(install.LeaseDriver); ok {
+		return func(context.Context) (bool, error) {
+			return false, fmt.Errorf("%T cannot verify lease ownership of %s/%s", driver, org, name)
+		}
+	}
+	return nil
+}
 
 // verifyLease fails closed unless the scenario still owns its leased
 // slot. It returns nil when ownership is not tracked (World.LeaseOwned
