@@ -94,6 +94,10 @@ const (
 	// lint/type-check diagnostics without overwhelming the model's context.
 	maxFeedbackBytes = 10 * 1024
 
+	// Fixed feedback keeps sandbox errors and paths out of the prompt.
+	repoRejectedFeedback            = "Repository output was rejected because one or more repository requirements were not met. A plain directory is supported. For a checkout, keep a real root .git directory, avoid shared or redirected Git metadata such as commondir or alternate object stores, and do not introduce new shallow boundaries; if the needed history is missing, fetch full history when possible instead of editing shallow state directly. Downloaded .git/packed-refs must be at most 32 MiB and .git/shallow at most 4 MiB. Inspect the checkout, correct any requirement violation while preserving existing work, then retry."
+	repoValidationUncertainFeedback = "Repository output could not be validated. The checkout may be invalid, or Git, the runner, or the filesystem may have failed. Check the checkout and retry."
+
 	// Run-scoped inference providers resolved from the selected agent.
 	runProviderVertex = "vertex"
 	runProviderOpenAI = "openai"
@@ -779,10 +783,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// later for profile import and provider resolution.
 	var result resolve.ResolveResult
 
-	if h.HasURLReferences() {
+	// The config-level subset check runs for URL-referencing harnesses (as
+	// before) and for every harness whose runtime fetch service can start
+	// (shouldStartFetchService: an explicit allow_runtime_fetch, URL-dir
+	// resources, or a bare allowed_remote_resources declaration): a harness
+	// whose fetch service starts would otherwise grant its agent fetch
+	// prefixes the organization never allowed (#9291). The service start
+	// below uses the same shouldStartFetchService, so the gate cannot drift
+	// from it.
+	if h.HasURLReferences() || shouldStartFetchService(h) {
 		if orgCfg == nil {
 			var err error
-			orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+			if h.HasURLReferences() {
+				orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+			} else {
+				// A fetch-capable harness without URL references names its
+				// own requirement when the config is missing; an unreadable
+				// or unparsable config keeps its own error instead of being
+				// reported as missing.
+				orgCfg, err = requireOrgConfigFor(orgConfigPath, printer, "runtime fetch requires")
+			}
 			if err != nil {
 				return err
 			}
@@ -792,7 +812,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Remote resource allowlist validation failed")
 			return fmt.Errorf("validating allowed remote resources: %w", err)
 		}
+	}
 
+	if h.HasURLReferences() {
 		// Use a current lock entry for this harness; a stale entry or an
 		// unreadable lock file was reported before composition.
 		usedLock := false
@@ -1452,6 +1474,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var aggMetrics aggregateMetrics
 	var statusFinalizer func()
 	var statusFinalizerOnce sync.Once
+
+	// Label independently of comment settings or status-notifier failures.
+	addJiraRunLabel(ctx, issueTracking, sOpts, printer)
 
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
@@ -2468,6 +2493,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		uploadExcludes = append(uploadExcludes, rel)
 		gitExtraExcludes = append(gitExtraExcludes, rel+"/")
 	}
+	// Freeze the trusted host repository state once, after the pre-script
+	// (which may unshallow the checkout) and immediately before the only
+	// upload. Every later download and validation iteration is reconciled
+	// to it.
+	hostRepositorySnapshot, err := captureRepositorySnapshot(hostRepositoryDir)
+	if err != nil {
+		printer.StepFail("Failed to copy project code")
+		return fmt.Errorf("validating target repository before upload: %w", err)
+	}
 	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir, uploadExcludes...); err != nil {
 		printer.StepFail("Failed to copy project code")
 		return fmt.Errorf("copying project code: %w", err)
@@ -2658,7 +2692,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// no iteration passed inline. This is the #5393 fix: it catches the
 	// case where an iteration produced valid output but its inline
 	// validation was skipped because SafeDownload failed on that same
-	// iteration (extraction failure triggers `continue`, bypassing 9e).
+	// iteration (an extraction failure skips 9e with `continue`; a rejected
+	// repository can also `break`).
 	// The sweep re-validates all completed iteration directories, latest
 	// first, using only the output files (TARGET_REPO_DIR is empty because
 	// hostRepositoryDownloadDir may not correspond to the validated
@@ -2995,6 +3030,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// always treated as fatal for the current iteration's repo state —
 		// we clean up the directory and skip to the next iteration.
 		//
+		// Repository-validation failures instead get feedback-driven retries or
+		// stop the loop; the post-loop sweep still validates this iteration's
+		// output.
+		//
 		// The forceRemoveAll pre-clear guards against a stale destination:
 		// whether "openshell sandbox download" fully replaces a non-empty
 		// destination directory or merges onto it is not verified anywhere
@@ -3018,7 +3057,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
-		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir); err != nil {
+		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir, hostRepositorySnapshot); err != nil {
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				tx.EmitTranscriptErrors(os.Stderr, es)
 			}
@@ -3027,13 +3066,36 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// unsanitized content (sanitizeDownload aborts on first
 				// error, leaving subsequent dangerous symlinks intact).
 				// Clean up to prevent unsanitized content from reaching
-				// validation or the post-script, then continue the retry
-				// loop. Output files (extracted in 9b) are unaffected.
+				// validation or the post-script. Output files (extracted in
+				// 9b) are unaffected.
 				printer.StepWarn(fmt.Sprintf("Failed to extract target repo (cleaning up): %v", err))
 				if rmErr := forceRemoveAll(hostRepositoryDownloadDir); rmErr != nil {
 					printer.StepWarn(fmt.Sprintf("Failed to clean up repo dir after extraction failure: %v", rmErr))
 				}
 				repoExtractedOK = false
+				validationFailed := errors.Is(err, sandbox.ErrRepositoryValidation)
+				rejected := errors.Is(err, sandbox.ErrRepositoryRejected)
+				if validationFailed && !lastIterTimedOut {
+					if feedbackEnabled && iteration < maxIterations {
+						feedback := repoValidationUncertainFeedback
+						if rejected {
+							feedback = repoRejectedFeedback
+						}
+						validationFeedback = writeValidationFeedback(iterDir, []byte(feedback), nil, h.RunnerEnv, printer)
+						printer.StepWarn("Repository validation failed; retrying with validation feedback")
+						printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
+						continue
+					}
+					if feedbackEnabled {
+						printer.StepWarn("Repository validation failed; no iterations remain (the post-loop sweep still validates this iteration's output)")
+						continue
+					}
+					if rejected {
+						printer.StepWarn("Repository output rejected; stopping agent retries (feedback_mode is not append)")
+						break
+					}
+					continue
+				}
 				if lastIterTimedOut {
 					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
 					break
@@ -3055,9 +3117,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
 		// At this point repoExtractedOK is always true: SafeDownload
-		// failure sets it to false and continues (skipping step 9e),
-		// while success sets it to true immediately above. Pass the
-		// repo dir directly.
+		// failure sets it to false and skips step 9e (with `continue`, or
+		// with `break` when the repository is rejected), while success sets
+		// it to true immediately above. Pass the repo dir directly.
 		// Strip OIDC credential vars from the full composed env so keys
 		// injected via h.RunnerEnv are also removed (#5832), and drop
 		// inherited named workflow secrets (#8154).
@@ -7162,7 +7224,13 @@ type tokenVar struct {
 // the minted token for every role. GITHUB_TOKEN is included so a caller
 // workflow that exports it does not leave the job token in place for tools
 // that read it instead of GH_TOKEN, or for pre/post scripts (#8530).
-var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN"}
+// GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN are included because gh
+// reads those instead of GH_TOKEN/GITHUB_TOKEN for any host other than
+// github.com and *.ghe.com (GitHub Enterprise Server); without them gh on
+// such a host keeps the caller's credential after the mint (#8952). They
+// are set unconditionally, so no host detection is needed; gh ignores them
+// for github.com.
+var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
 
 // roleTokenVars maps canonical role names to the additional env vars they
 // require beyond agentTokenEnvVars. These match the vars declared in
@@ -7364,9 +7432,10 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 // The caller should defer cleanup() to clear tokens from the process env.
 // forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
 // set to "github-app" for GitHub and "pat" for GitLab.
-// The minted token replaces every agentTokenEnvVars name (GH_TOKEN and
-// GITHUB_TOKEN); cleanup restores each to its value before this call, or
-// unsets it if it was unset (#8530).
+// The minted token replaces every agentTokenEnvVars name (GH_TOKEN,
+// GITHUB_TOKEN, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN); cleanup
+// restores each to its value before this call, or unsets it if it was
+// unset (#8530, #8952).
 // On GitHub Actions the pre-mint GH_TOKEN (or, when that is unset or empty,
 // the pre-mint GITHUB_TOKEN) is copied to GH_WORKFLOW_TOKEN for provider
 // credential expansion (#6649) and the runner's ghcr.io image pull (#9019);
@@ -7467,8 +7536,9 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 			}
 		}
 	}
-	// GITHUB_TOKEN is set even when the caller did not export it, so no
-	// tool that reads it instead of GH_TOKEN keeps the job token (#8530).
+	// GITHUB_TOKEN and the enterprise names are set even when the caller
+	// did not export them, so no tool that reads one instead of GH_TOKEN
+	// keeps the job token (#8530), whichever host gh targets (#8952).
 	for _, name := range agentTokenEnvVars {
 		os.Setenv(name, result.Token)
 	}
@@ -8309,6 +8379,45 @@ func forceRemoveAll(path string) error {
 		return nil
 	})
 	return os.RemoveAll(path)
+}
+
+// captureRepositorySnapshot validates and captures the trusted shallow state
+// after the pre-script and before the only upload, so every later download is
+// reconciled to it. A plain input returns a zero snapshot without Git
+// discovery, so a parent checkout is never captured. A materialized checkout
+// records IsCheckout so the downloaded root must remain a checkout.
+func captureRepositorySnapshot(repoDir string) (sandbox.RepositorySnapshot, error) {
+	plain, err := sandbox.ValidateRepositoryRoot(repoDir)
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("validating target repository: %w", err)
+	}
+	if plain {
+		return sandbox.RepositorySnapshot{}, nil
+	}
+	snapshot := sandbox.RepositorySnapshot{IsCheckout: true}
+
+	// Validation proved .git is a real directory that resolves as itself, so
+	// the boundary lives directly there. Resolving it with a Git query would
+	// honor inherited selectors such as GIT_DIR or GIT_COMMON_DIR and could
+	// capture another repository's boundary.
+	shallowPath := filepath.Join(repoDir, ".git", "shallow")
+
+	info, err := os.Stat(shallowPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return snapshot, nil
+	}
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("inspecting git shallow metadata: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("git shallow metadata %s is not a regular file", shallowPath)
+	}
+	data, err := os.ReadFile(shallowPath)
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("reading git shallow metadata %s: %w", shallowPath, err)
+	}
+	snapshot.Shallow = sandbox.ShallowState{Present: true, Data: data}
+	return snapshot, nil
 }
 
 // checkProviderProfileIntegrity validates that every provider references a

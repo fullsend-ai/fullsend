@@ -133,6 +133,12 @@ models:
     haiku: claude-haiku-3-5
     fable: claude-fable-5-1
 
+# ── Run artifacts ────────────────────────────────────────────
+artifacts:
+  content: all                       # Every run: all (default) | metadata | none
+  by_source:                         # Per run source (event.source.system); stricter level wins
+    jira: metadata                   # e.g. runs started from a Jira issue
+
 # ── Trace context ────────────────────────────────────────────
 trace_context:                       # Trace-context keys of this repository (ADR 0154)
   installation_id: 0f1e2d3c4b5a69788796a5b4c3d2e1f0  # 32 lowercase hex characters, not all zero
@@ -268,6 +274,23 @@ URL prefixes allowed for remote resources in harness files — agent sources
 and `base:` composition. The config-level list acts as a fallback for all URL
 resolution: a URL is accepted if it matches either the harness-level or the
 config-level list. Default prefixes cover the fullsend and agents repositories.
+The same config-level list is also the ceiling for harness-level
+`allowed_remote_resources`: whenever a harness's runtime fetch service can
+start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories,
+or a bare, deprecated `allowed_remote_resources` declaration), every
+harness-level prefix must be covered by the config-level list (the built-in
+default prefixes are included when the list is omitted or non-empty; an
+explicit `allowed_remote_resources: []` stays deny-all and cannot cover a
+harness prefix), and `fullsend run`, `fullsend lint` and `fullsend lock` fail
+naming the uncovered entry, and fail closed when no repository config
+(`config.yaml` or `config.base.yaml`) exists.
+
+When the `GITHUB_SERVER_URL` environment variable names a GitHub host other
+than `github.com` (for example a GitHub Enterprise Server), the defaults also
+include the raw-content prefixes for the same two repositories on that host:
+`https://<host>/fullsend-ai/fullsend/raw/` and
+`https://<host>/fullsend-ai/agents/raw/`. GitHub Actions sets this variable on
+every runner. No other path on that host is added.
 
 In the layered config system, this field uses union-with-deny-all semantics:
 omitted inherits from parent; explicit empty (`[]`) denies all remote
@@ -337,6 +360,17 @@ tracker:
   [Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
 - **`tracker.jira.project`** — The key of the single Jira project for this
   repository. It is not a fallback project, and it has no default.
+- **`tracker.jira.run_label`** — Optional label added to the source Jira issue
+  when any Jira-sourced agent run starts, before sandbox setup. Default: empty
+  (disabled, with a skip log). Use a nonempty name without whitespace or control
+  characters, for example `fs-code-agent`; no product-branded label is supplied.
+  Configuration validation rejects invalid names. At runtime, an invalid name
+  produces a warning and skips labeling without blocking Jira runs or polling.
+  Existing labels are preserved, and an issue that already has the label is not
+  updated. This runs independently of status-comment settings. API failures
+  warn without failing the run. The label remains after cancellation or failure.
+  Choose a name that does not collide with your poll query's trigger/exclusion
+  labels. See [Tracking runs in Jira](../guides/user/jira-integration.md#tracking-runs-with-an-optional-label).
 - **`tracker.jira.poll.enabled`** — Controls the managed poll workflow. `true`
   installs or enables it, `false` removes or disables it. When `poll` or
   `poll.enabled` is omitted, the workflow is not installed. `fullsend poll
@@ -360,7 +394,7 @@ tracker:
   `project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
 
 `base_url` and `project` are required once `base_url`, `api_url`, `project`,
-or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets
+a nonempty `run_label`, or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets
 `allowed_targets` stays valid. This includes a mapping migrated from the
 legacy scalar `tracker: jira`.
 
@@ -877,6 +911,110 @@ Model configuration, currently containing only `aliases`.
   opus` would reach the provider as the literal id "opus". In the layered
   config system, aliases merge per key across layers. See
   [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+
+### `artifacts`
+
+Limits what the CI run artifact publishes: the `fullsend-<agent>` artifact on
+GitHub Actions and the job artifact on GitLab CI. For a walkthrough, see
+[Run artifacts and private data](../guides/user/run-artifacts-and-private-data.md).
+
+```yaml
+artifacts:
+  content: all            # every run: all (default) | metadata | none
+  by_source:              # per run source; the stricter level wins
+    jira: metadata        # runs started from a Jira issue
+```
+
+The runner leaves `output/` untouched, so `fullsend eval-measure` and
+post-scripts read the full run. `fullsend prepare-artifacts` then builds a
+filtered copy, and CI uploads only that copy
+([ADR 0161](../ADRs/0161-repo-config-limits-run-artifact-content.md)).
+
+| Level | Artifact holds |
+|---|---|
+| `all` | Everything in `output/`. This is the default, so an unset block keeps the artifact as before. |
+| `metadata` | Only `metrics.json`, `eval-measurements.jsonl` and `run-telemetry.jsonl` of each run directory, with content removed as listed below. |
+| `none` | No artifact is uploaded. The job still succeeds. |
+
+Under `metadata`:
+
+- `metrics.json` is copied as written. It holds counts, costs, model fallback
+  reasons and runner paths.
+- The telemetry copy loses every attribute and event that content capture
+  adds (`gen_ai.input.messages`, `gen_ai.output.messages`,
+  `fullsend.content.*` and the other GenAI content attributes).
+- The telemetry copy also loses span status messages, exception messages and
+  stack traces, and the pre-script skip reason
+  (`fullsend.prescript.skip_reason`; `fullsend.prescript.skipped` stays).
+- In the measurements copy, every row labelled `skip` gets a fixed
+  explanation, because skip explanations can quote pre-script output.
+- If a record of the telemetry or measurements file can't be parsed, that
+  file is left out.
+- Every `iteration-<N>/` directory, `security/findings.jsonl` and any other
+  file is left out.
+
+- **`content`** — The level for every run. Unset means `all`.
+- **`by_source`** — Levels for runs started from one source. Keys are the
+  normalized event's `source.system`, the same value CEL triggers see as
+  `event.source.system`. Today's adapters emit `github`, `gitlab` and `jira`.
+  `manual` and `schedule` are reserved source names that no adapter emits
+  yet; an entry for them is accepted but matches no run. A later adapter's
+  source name works as a key with no schema change: validation rejects
+  unknown levels, not unknown keys. Keys must be lowercase with no
+  surrounding spaces; `Jira: none` is rejected with a hint to use `jira`,
+  both by config validation and by `fullsend prepare-artifacts`, which then
+  prepares nothing.
+
+**Resolution.** The runner picks one level per run: the stricter of
+`content` and the `by_source` entry for the run's source. A source with no
+entry gets `content`. `none` is stricter than `metadata`, which is stricter
+than `all`, so a `by_source` entry can tighten a run's level but never loosen
+`content`. With `content: none` and `by_source: {jira: metadata}`, a Jira run
+uploads nothing.
+
+**Run source.** `fullsend prepare-artifacts` finds the source in this order
+and prints the rule it applied on stderr:
+
+1. A run with a valid normalized event uses its `source.system`, trimmed and
+   lowercased before the lookup.
+2. A run with no normalized event in any payload, on GitHub Actions, started
+   by a native GitHub event (`issues`, `issue_comment`, `pull_request`,
+   `pull_request_target`, `pull_request_review` or
+   `pull_request_review_comment`) is `github`. This covers the standard
+   GitHub stage jobs, which receive no normalized event.
+3. Everything else is unknown: manual and scheduled runs, a dispatch without
+   a valid normalized event, a dispatch payload that names a source in
+   `_normalized_event.source.system` whose event is invalid or names a
+   different source, and a GitLab event too large for the dispatch payload.
+   There is no other forge fallback. A run with an unknown source gets the
+   strictest of `content` and every `by_source` entry; when that is stricter
+   than `content`, the rule line is a warning (and a GitHub Actions warning
+   annotation).
+
+**Warning.** A run from an external tracker (a source other than `github`,
+`gitlab`, `forgejo`, `manual` or `schedule`) that uploads at `all` logs a
+warning, and a GitHub Actions warning annotation, unless the repository set
+`content` explicitly in any layer, has a `by_source` entry for that source,
+or is known to be private.
+
+**Fails closed.** If the level cannot be resolved — an invalid level, a
+config file that cannot be loaded, an unreadable event, or a CLI too old to
+know `fullsend prepare-artifacts` — the artifact directory is empty and no
+artifact is uploaded. The raw `output/` is never uploaded in its place.
+
+**Layers.** Across `config.base.yaml` and `config.yaml`, an explicit
+`content` overrides and `by_source` merges per key. When `fullsend repos`
+writes managed configuration from the `repos.yaml` manifest, its safety gate
+([ADR 0122](../ADRs/0122-declarative-repo-configuration.md)) treats lowering
+an effective level toward `all` (for example by dropping a `by_source` entry
+or a base's `content`) as a relaxation, so the proposed `config.yaml` must
+declare that key explicitly. The gate does not check a direct commit to
+`config.yaml` or `config.base.yaml`; that change goes through the
+repository's normal review and CODEOWNERS.
+
+`by_source` looks only at where the run started. For when to choose each
+level, what `metadata` still publishes and what follow-up workflows lose, see
+[Run artifacts and private data](../guides/user/run-artifacts-and-private-data.md).
 
 ### `trace_context`
 

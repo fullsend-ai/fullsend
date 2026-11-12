@@ -46,6 +46,17 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 	if aliases := r.ConfigModelAliases(); len(aliases) > 0 {
 		out["models"] = map[string]any{"aliases": aliases}
 	}
+	// Rendered only when it differs from the default (content: all, no
+	// per-source levels), so an unset block leaves the view unchanged.
+	artifactsContent := StricterArtifactContent(r.ConfigArtifactsContent(), "")
+	artifactsBySource := r.ConfigArtifactsBySource()
+	if artifactsContent != ArtifactContentAll || len(artifactsBySource) > 0 {
+		artifacts := map[string]any{"content": artifactsContent}
+		if len(artifactsBySource) > 0 {
+			artifacts["by_source"] = artifactsBySource
+		}
+		out["artifacts"] = artifacts
+	}
 	if tc := r.TraceContext(); tc != nil {
 		out["trace_context"] = tc
 	}

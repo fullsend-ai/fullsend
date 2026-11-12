@@ -131,8 +131,9 @@ Before any write of a managed file, install and converge also compare the
 candidate and current effective configurations through the full runtime accessor
 chain (`kill_switch`, `roles`, `allowed_remote_resources`, agent `enabled:
 false` suppressions, the selected provider's
-`tracker.<provider>.allowed_targets`, `inference.gateway.url`, and
-`inference.gateway.audience`). A less-restrictive candidate is rejected unless
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`,
+`inference.gateway.audience`, `artifacts.content`, and
+`artifacts.by_source.<source>`). A less-restrictive candidate is rejected unless
 the manifest explicitly declares that relaxation; a change to either
 `inference.gateway` field, including a preset introducing a gateway where an
 established installation has none configured, must be declared in the manifest;

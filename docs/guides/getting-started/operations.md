@@ -104,6 +104,10 @@ For repositories managed through `repos.yaml` (every GitLab install, and GitHub 
 
 ## Syncing workflow templates
 
+To upgrade the fullsend CLI, download the latest release from
+[GitHub Releases](https://github.com/fullsend-ai/fullsend/releases), or run
+[`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
+
 After upgrading the fullsend CLI, re-run `github setup` to update the workflow file for a single repo:
 
 ```bash

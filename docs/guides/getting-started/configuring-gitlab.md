@@ -26,7 +26,8 @@ GitHub repositories use a different command (`fullsend github setup`). See
   Manager API, so the machine running `repos install` needs
   Application Default Credentials with `cloudresourcemanager.googleapis.com`
   `projects.get` access on that project.
-* Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
+* Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI,
+  or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later.
 * A GitLab personal or group access token with `api` scope and
   Maintainer (or Owner) role on the target project. The CLI does **not**
   fall back to `glab auth token`. Set `GITLAB_TOKEN` in the environment

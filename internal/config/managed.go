@@ -439,6 +439,7 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 		}
 		out.Models = m
 	}
+	out.Artifacts = cloneArtifacts(src.Artifacts)
 	out.TraceContextBlock = cloneTraceContext(src.TraceContextBlock)
 	return out
 }
@@ -546,6 +547,9 @@ func applyManagedLayer(out, child *perRepoConfig) {
 		for k, v := range child.Models.Aliases {
 			out.Models.Aliases[k] = v
 		}
+	}
+	if !child.Artifacts.IsZero() {
+		out.Artifacts = mergeArtifacts(out.Artifacts, child.Artifacts)
 	}
 	// A child block replaces the parent's whole block: the keys and the
 	// installation ID belong together.

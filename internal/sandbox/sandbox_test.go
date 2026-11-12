@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -444,6 +445,1028 @@ func TestSanitizeDownload_EmptyDir(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+const (
+	testOID    = "0123456789abcdef0123456789abcdef01234567"
+	testOID256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+)
+
+// TestSanitizeDownload_RemovesAncestryMetadata removes replacement refs,
+// grafts, and commit-graph caches while keeping the rest of .git intact.
+func TestSanitizeDownload_RemovesAncestryMetadata(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".git/HEAD", "ref: refs/heads/main\n")
+	writeFile(t, root, ".git/config", "[core]\n")
+	writeFile(t, root, ".git/index", "index bytes\n")
+	writeFile(t, root, ".git/objects/ab/object", "object\n")
+	writeFile(t, root, ".git/objects/pack/pack-abc.idx", "pack\n")
+	writeFile(t, root, ".git/refs/heads/main", testOID+"\n")
+	writeFile(t, root, ".git/refs/remotes/origin/main", testOID+"\n")
+	writeFile(t, root, ".git/refs/tags/v1", testOID+"\n")
+	writeFile(t, root, ".git/refs/stash", testOID+"\n")
+	writeFile(t, root, ".git/refs/notes/commits", testOID+"\n")
+	writeFile(t, root, ".git/refs/bisect/good", testOID+"\n")
+	writeFile(t, root, ".git/refs/custom/x", testOID+"\n")
+	writeFile(t, root, ".git/refs/replace/"+testOID, testOID+"\n")
+	writeFile(t, root, ".git/info/exclude", "# exclude\n")
+	writeFile(t, root, ".git/info/refs", "cache\n")
+	writeFile(t, root, ".git/info/grafts", testOID+" "+testOID+"\n")
+	writeFile(t, root, ".git/objects/info/packs", "cache\n")
+	writeFile(t, root, ".git/objects/info/commit-graph", "graph\n")
+	writeFile(t, root, ".git/objects/info/commit-graphs/chain", "graph chain\n")
+	writeFile(t, root, ".git/modules/dep/config", "[core]\n")
+	writeFile(t, root, ".git/worktrees/wt/HEAD", "ref: refs/heads/wt\n")
+
+	require.NoError(t, sanitizeDownload(root))
+
+	for _, rel := range []string{
+		".git/HEAD", ".git/config", ".git/index",
+		".git/objects/ab/object", ".git/objects/pack/pack-abc.idx",
+		".git/refs/heads/main", ".git/refs/remotes/origin/main",
+		".git/refs/tags/v1", ".git/refs/stash", ".git/refs/notes/commits",
+		".git/refs/bisect/good", ".git/refs/custom/x",
+		".git/info/exclude", ".git/info/refs", ".git/objects/info/packs",
+		".git/modules/dep/config", ".git/worktrees/wt/HEAD",
+	} {
+		_, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
+		assert.NoError(t, err, "%s must be retained", rel)
+	}
+	for _, rel := range []string{
+		".git/refs/replace", ".git/info/grafts",
+		".git/objects/info/commit-graph", ".git/objects/info/commit-graphs",
+	} {
+		_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel)))
+		assert.True(t, os.IsNotExist(err), "%s must be removed", rel)
+	}
+}
+
+// TestSanitizeDownload_PreservesLiteralBackslashNames checks that a Unix file
+// whose name contains backslashes is not treated as a slash-separated metadata
+// path.
+func TestSanitizeDownload_PreservesLiteralBackslashNames(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("backslash is a path separator on Windows")
+	}
+	root := t.TempDir()
+	name := `.git/objects\info\commit-graph`
+	writeFile(t, root, name, "graph\n")
+
+	require.NoError(t, sanitizeDownload(root))
+
+	_, err := os.Lstat(filepath.Join(root, filepath.FromSlash(name)))
+	require.NoError(t, err, "literal backslash name must survive sanitization")
+}
+
+// TestSanitizeDownload_RejectsSymlinkedGitMetadata fails closed when the root
+// .git or a container holding filtered metadata is a symlink.
+func TestSanitizeDownload_RejectsSymlinkedGitMetadata(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, root string)
+	}{
+		{
+			name: "root git",
+			setup: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "real-git"), 0o755))
+				require.NoError(t, os.Symlink("real-git", filepath.Join(root, ".git")))
+			},
+		},
+		{
+			name: "refs",
+			setup: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "real-refs"), 0o755))
+				require.NoError(t, os.Symlink("../real-refs", filepath.Join(root, ".git", "refs")))
+			},
+		},
+		{
+			name: "info",
+			setup: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "real-info"), 0o755))
+				require.NoError(t, os.Symlink("../real-info", filepath.Join(root, ".git", "info")))
+			},
+		},
+		{
+			name: "objects",
+			setup: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "real-objects"), 0o755))
+				require.NoError(t, os.Symlink("../real-objects", filepath.Join(root, ".git", "objects")))
+			},
+		},
+		{
+			name: "objects info",
+			setup: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "objects"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "real-oinfo"), 0o755))
+				require.NoError(t, os.Symlink("../../real-oinfo", filepath.Join(root, ".git", "objects", "info")))
+			},
+		},
+		{
+			name: "nested git",
+			setup: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "vendor", "dep", "real-git"), 0o755))
+				require.NoError(t, os.Symlink("real-git", filepath.Join(root, "vendor", "dep", ".git")))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			tc.setup(t, root)
+
+			err := sanitizeDownload(root)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "git metadata")
+		})
+	}
+}
+
+func TestSanitizeDownload_RejectsRedirectedRootGitMetadata(t *testing.T) {
+	requireGit(t)
+	for _, layout := range []string{"gitfile", "commondir"} {
+		t.Run(layout, func(t *testing.T) {
+			r := newGitRepo(t)
+			head := r.commitFile("file.txt", "original")
+			gitDir := filepath.Join(r.dir, ".git")
+			headFile, err := os.ReadFile(filepath.Join(gitDir, "HEAD"))
+			require.NoError(t, err)
+			require.NoError(t, os.Rename(gitDir, filepath.Join(r.dir, "git-metadata")))
+			if layout == "gitfile" {
+				writeFile(t, r.dir, ".git", "gitdir: git-metadata\n")
+			} else {
+				writeFile(t, r.dir, ".git/HEAD", string(headFile))
+				writeFile(t, r.dir, ".git/commondir", "../git-metadata\n")
+			}
+
+			assert.Equal(t, head, r.git("rev-parse", "HEAD"), "Git must recognize the redirected layout")
+			require.Error(t, sanitizeDownload(r.dir), "redirected Git metadata must be rejected")
+		})
+	}
+}
+
+// TestSanitizeDownload_AcceptsReftableGitStorage accepts a real reftable
+// repository and preserves its refs, HEAD, and config bytes.
+func TestSanitizeDownload_AcceptsReftableGitStorage(t *testing.T) {
+	requireReftableSanitization(t)
+	r := newReftableRepo(t)
+	head := r.commitFile("file.txt", "original")
+	configPath := filepath.Join(r.dir, ".git", "config")
+	configBefore, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+
+	require.NoError(t, sanitizeDownload(r.dir))
+
+	assert.Equal(t, head, r.git("rev-parse", "HEAD"))
+	assert.Equal(t, "main", r.git("symbolic-ref", "--short", "HEAD"))
+	assert.Equal(t, head, r.git("rev-parse", "main"))
+	_, err = os.Stat(filepath.Join(r.dir, ".git", "reftable", "tables.list"))
+	require.NoError(t, err, "reftable tables must survive sanitization")
+	configAfter, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, configBefore, configAfter, "repository config bytes must be preserved")
+}
+
+// TestSanitizeDownload_RemovesReftableReplacementRefs removes a forged
+// ancestry bridge stored as a reftable replacement ref.
+func TestSanitizeDownload_RemovesReftableReplacementRefs(t *testing.T) {
+	requireReftableSanitization(t)
+	r := newReftableRepo(t)
+	human := r.commitFile("human.txt", "human work")
+	tree := r.git("rev-parse", human+"^{tree}")
+	orphan := r.git("commit-tree", tree, "-m", "agent orphan")
+	bridge := r.git("commit-tree", tree, "-p", human, "-m", "bridge")
+	r.git("replace", orphan, bridge)
+
+	require.True(t, r.isAncestor(human, orphan))
+	require.NoError(t, sanitizeDownload(r.dir))
+
+	assert.False(t, r.isAncestor(human, orphan), "forged ancestry must not survive")
+	assert.Empty(t, r.git("replace", "--list"))
+	assert.Equal(t, human, r.git("rev-parse", "main"))
+}
+
+// TestSanitizeDownload_ReftableSymbolicReplacementRemovesLinkOnly deletes a
+// symbolic replacement ref without dereferencing its target branch.
+func TestSanitizeDownload_ReftableSymbolicReplacementRemovesLinkOnly(t *testing.T) {
+	requireReftableSanitization(t)
+	r := newReftableRepo(t)
+	head := r.commitFile("human.txt", "human work")
+	link := "refs/replace/" + head
+	r.git("symbolic-ref", link, "refs/heads/main")
+	require.Equal(t, "refs/heads/main", r.git("symbolic-ref", link))
+
+	require.NoError(t, sanitizeDownload(r.dir))
+
+	_, err := r.tryGit("show-ref", "--verify", link)
+	require.Error(t, err, "symbolic replacement ref must be removed")
+	assert.Equal(t, head, r.git("rev-parse", "refs/heads/main"), "target branch must be unchanged")
+}
+
+// TestSanitizeDownload_ReftableUnbornChecksOut accepts an unborn reftable
+// repository with no refs yet.
+func TestSanitizeDownload_ReftableUnbornChecksOut(t *testing.T) {
+	requireReftableSanitization(t)
+	r := newReftableRepo(t)
+
+	require.NoError(t, sanitizeDownload(r.dir))
+
+	assert.Equal(t, "refs/heads/main", r.git("symbolic-ref", "HEAD"))
+	assert.Empty(t, r.git("for-each-ref", "refs/heads/"))
+}
+
+// TestSanitizeDownload_ReftableShallowBoundary accepts a shallow reftable
+// repository and preserves its shallow boundary.
+func TestSanitizeDownload_ReftableShallowBoundary(t *testing.T) {
+	requireReftableSanitization(t)
+	src := newGitRepo(t)
+	src.commitFile("file.txt", "one")
+	src.commitFile("file.txt", "two")
+
+	r := newReftableRepo(t)
+	r.git("remote", "add", "origin", src.dir)
+	r.git("fetch", "--quiet", "--depth=1", "origin", "main")
+	r.git("reset", "--quiet", "--hard", "FETCH_HEAD")
+	shallowBefore, err := os.ReadFile(filepath.Join(r.dir, ".git", "shallow"))
+	require.NoError(t, err, "fixture must be shallow")
+
+	require.NoError(t, sanitizeDownload(r.dir))
+
+	shallowAfter, err := os.ReadFile(filepath.Join(r.dir, ".git", "shallow"))
+	require.NoError(t, err)
+	assert.Equal(t, shallowBefore, shallowAfter, "shallow boundary must survive sanitization")
+	assert.Equal(t, "1", r.git("rev-list", "--count", "HEAD"))
+}
+
+// TestSanitizeDownload_ReftableIgnoresEvilConfig proves repository fsck and
+// hook settings cannot weaken replacement cleanup or execute code.
+func TestSanitizeDownload_ReftableIgnoresEvilConfig(t *testing.T) {
+	requireReftableSanitization(t)
+	r := newReftableRepo(t)
+	human := r.commitFile("human.txt", "human work")
+	tree := r.git("rev-parse", human+"^{tree}")
+	orphan := r.git("commit-tree", tree, "-m", "agent orphan")
+	bridge := r.git("commit-tree", tree, "-p", human, "-m", "bridge")
+	r.git("replace", orphan, bridge)
+
+	hookDir := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	hook := filepath.Join(hookDir, "reference-transaction")
+	script := "#!/bin/sh\nprintf ran > " + marker + "\n"
+	require.NoError(t, os.WriteFile(hook, []byte(script), 0o755))
+	skipList := writeFile(t, t.TempDir(), "skiplist", "")
+
+	for key, value := range map[string]string{
+		"core.hooksPath":             hookDir,
+		"fsck.badReftableTableName":  "ignore",
+		"fsck.badRefOid":             "ignore",
+		"fsck.badHeadTarget":         "ignore",
+		"fsck.badReferentName":       "ignore",
+		"fsck.symrefTargetIsNotARef": "ignore",
+		"fsck.skipList":              skipList,
+	} {
+		r.git("config", key, value)
+	}
+	configPath := filepath.Join(r.dir, ".git", "config")
+	configBefore, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.NoFileExists(t, marker, "hook must not run during setup")
+
+	require.NoError(t, sanitizeDownload(r.dir))
+
+	assert.NoFileExists(t, marker, "repository hook must never execute")
+	assert.Empty(t, r.git("replace", "--list"), "repository fsck config must not weaken cleanup")
+	configAfter, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, configBefore, configAfter, "repository config bytes must be preserved")
+}
+
+// TestSafeDownload_ReftableIgnoresConfigHooks proves repository config cannot
+// define a reference-transaction hook that runs while replacement refs are
+// deleted, for both object formats, and that ordinary refs survive.
+func TestSafeDownload_ReftableIgnoresConfigHooks(t *testing.T) {
+	for _, format := range []string{"sha1", "sha256"} {
+		t.Run(format, func(t *testing.T) {
+			requireReftableSanitization(t)
+			r := newReftableRepoFormat(t, format)
+			human := r.commitFile("human.txt", "human work")
+			tree := r.git("rev-parse", human+"^{tree}")
+			orphan := r.git("commit-tree", tree, "-m", "agent orphan")
+			bridge := r.git("commit-tree", tree, "-p", human, "-m", "bridge")
+			r.git("replace", orphan, bridge)
+			r.git("symbolic-ref", "refs/heads/alias", "refs/heads/main")
+			r.git("tag", "-a", "v1", "-m", "v1")
+			head := r.git("rev-parse", "HEAD")
+			tag := r.git("rev-parse", "v1")
+
+			marker := filepath.Join(t.TempDir(), "hook-ran")
+			r.git("config", "hook.probe.command", "printf ran > '"+marker+"'")
+			r.git("config", "hook.probe.event", "reference-transaction")
+			r.git("config", "hook.probe.enabled", "true")
+			require.NoFileExists(t, marker, "hook must not run while refs are created")
+
+			serveDownloadFrom(t, r.dir)
+			localDir := filepath.Join(t.TempDir(), "repo")
+			require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+				RepositorySnapshot{}))
+
+			assert.NoFileExists(t, marker, "repository config hook must never execute")
+			out, err := runGit(t, localDir, r.env, "replace", "--list")
+			require.NoError(t, err)
+			assert.Empty(t, out, "replacement refs must not be published")
+			assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "HEAD"))
+			assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "main"))
+			assert.Equal(t, "refs/heads/main", r.gitAt(localDir, "symbolic-ref", "refs/heads/alias"))
+			assert.Equal(t, tag, r.gitAt(localDir, "rev-parse", "v1"))
+		})
+	}
+}
+
+// TestSanitizeDownload_ReftableCorruptTableFailsClosed rejects a corrupt
+// reftable record and never publishes it through SafeDownload.
+func TestSanitizeDownload_ReftableCorruptTableFailsClosed(t *testing.T) {
+	r := newReftableRepo(t)
+	r.commitFile("file.txt", "original")
+	tables, err := filepath.Glob(filepath.Join(r.dir, ".git", "reftable", "*.ref"))
+	require.NoError(t, err)
+	require.NotEmpty(t, tables)
+	data, err := os.ReadFile(tables[0])
+	require.NoError(t, err)
+	data[4] ^= 0xff // corrupt the table format version
+	require.NoError(t, os.WriteFile(tables[0], data, 0o644))
+
+	require.Error(t, sanitizeDownload(r.dir), "corrupt reftable bytes must fail closed")
+
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+	assert.NoDirExists(t, localDir, "corrupt reftable storage must not be published")
+}
+
+// TestSafeDownload_RemovesReplacementRefsByExactName removes every replacement
+// ref by its exact byte suffix, including suffixes that are not object ids or
+// contain non-breaking spaces, and leaves HEAD and branches unchanged.
+func TestSafeDownload_RemovesReplacementRefsByExactName(t *testing.T) {
+	cases := []struct {
+		name     string
+		suffix   string
+		ordinary bool
+	}{
+		{name: "object id suffix", ordinary: true},
+		{name: "non-hex suffix", suffix: "not-an-object-id"},
+		{name: "non-breaking space suffix", suffix: "\u00a0"},
+		{name: "surrounded non-breaking space suffix", suffix: "\u00a0name\u00a0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			requireReftableSanitization(t)
+			r := newReftableRepo(t)
+			human := r.commitFile("file.txt", "original")
+			suffix, target := tc.suffix, human
+			if tc.ordinary {
+				target = r.commitFile("agent.txt", "agent work")
+				suffix = human
+			}
+			ref := "refs/replace/" + suffix
+			out, err := runGit(t, r.dir, r.env, "update-ref", "--no-deref", ref, target)
+			require.NoError(t, err, out)
+			_, err = runGit(t, r.dir, r.env, "show-ref", "--verify", ref)
+			require.NoError(t, err, "fixture must contain the replacement ref")
+			head := r.git("rev-parse", "HEAD")
+
+			serveDownloadFrom(t, r.dir)
+			localDir := filepath.Join(t.TempDir(), "repo")
+			require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+				RepositorySnapshot{}))
+
+			_, err = runGit(t, localDir, r.env, "show-ref", "--verify", ref)
+			require.Error(t, err, "replacement ref %q must be removed", ref)
+			out, err = runGit(t, localDir, r.env, "for-each-ref", "refs/replace/")
+			require.NoError(t, err)
+			assert.Empty(t, out, "no replacement refs may be published")
+			assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "HEAD"))
+			assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "main"))
+		})
+	}
+}
+
+// TestSanitizeDownload_ReftableVersionAndQueryFailures fails closed when the
+// native version is too old, unparseable, the storage or object-format query
+// fails, the object format is unsupported, or the trusted store cannot be
+// initialized.
+func TestSanitizeDownload_ReftableVersionAndQueryFailures(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "git 2.52",
+			body: "if [ \"$1\" = \"--version\" ]; then\n  echo 'git version 2.52.0'\n  exit 0\nfi",
+		},
+		{
+			name: "unparseable version",
+			body: "if [ \"$1\" = \"--version\" ]; then\n  echo 'git version bogus'\n  exit 0\nfi",
+		},
+		{
+			name: "version query failure",
+			body: "if [ \"$1\" = \"--version\" ]; then exit 3; fi",
+		},
+		{
+			name: "storage query failure",
+			body: "for a in \"$@\"; do\n  if [ \"$a\" = config ]; then exit 2; fi\ndone",
+		},
+		{
+			name: "object format query failure",
+			body: "for a in \"$@\"; do\n  if [ \"$a\" = extensions.objectFormat ]; then exit 2; fi\ndone",
+		},
+		{
+			name: "unsupported object format",
+			body: "for a in \"$@\"; do\n  if [ \"$a\" = extensions.objectFormat ]; then echo sha3; exit 0; fi\ndone",
+		},
+		{
+			name: "trusted store init failure",
+			body: "for a in \"$@\"; do\n  if [ \"$a\" = init ]; then exit 2; fi\ndone",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReftableRepo(t)
+			r.commitFile("file.txt", "original")
+			installGitShim(t, tc.body)
+
+			require.Error(t, sanitizeDownload(r.dir))
+		})
+	}
+}
+
+// TestSanitizeDownload_ReftableListingFailureFailsClosed rejects a repository
+// whose replacement refs cannot be listed, before any ref is modified.
+func TestSanitizeDownload_ReftableListingFailureFailsClosed(t *testing.T) {
+	r := newReftableRepo(t)
+	r.commitFile("file.txt", "original")
+	installGitShim(t, "for a in \"$@\"; do\n  if [ \"$a\" = replace ]; then exit 2; fi\ndone")
+
+	require.Error(t, sanitizeDownload(r.dir))
+}
+
+// TestSanitizeDownload_ReftableDeleteFailureFailsClosed rejects the download
+// when replacement refs cannot be deleted.
+func TestSanitizeDownload_ReftableDeleteFailureFailsClosed(t *testing.T) {
+	r := newReftableRepo(t)
+	human := r.commitFile("file.txt", "original")
+	tree := r.git("rev-parse", human+"^{tree}")
+	orphan := r.git("commit-tree", tree, "-m", "agent orphan")
+	bridge := r.git("commit-tree", tree, "-p", human, "-m", "bridge")
+	r.git("replace", orphan, bridge)
+	installGitShim(t, "for a in \"$@\"; do\n  if [ \"$a\" = update-ref ]; then exit 2; fi\ndone")
+
+	require.Error(t, sanitizeDownload(r.dir))
+	assert.NotEmpty(t, r.git("replace", "--list"), "failed deletion must not drop the replacement refs")
+}
+
+// TestSanitizeDownload_ReftableLayoutMatrix rejects malformed reftable
+// layouts before native Git runs.
+func TestSanitizeDownload_ReftableLayoutMatrix(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, root string)
+	}{
+		{
+			name: "reftable symlink",
+			setup: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+				require.NoError(t, os.MkdirAll(filepath.Join(root, "outside"), 0o755))
+				require.NoError(t, os.Symlink("../outside", filepath.Join(root, ".git", "reftable")))
+			},
+		},
+		{
+			name: "reftable file",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, root, ".git/reftable", "not a directory\n")
+			},
+		},
+		{
+			name: "tables list symlink",
+			setup: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "reftable"), 0o755))
+				writeFile(t, root, "outside", "x\n")
+				require.NoError(t, os.Symlink("../../outside", filepath.Join(root, ".git", "reftable", "tables.list")))
+			},
+		},
+		{
+			name: "tables list fifo",
+			setup: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "reftable"), 0o755))
+				requireFIFO(t, filepath.Join(root, ".git", "reftable"), "tables.list")
+			},
+		},
+		{
+			name: "table symlink",
+			setup: func(t *testing.T, root string) {
+				require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "reftable"), 0o755))
+				writeFile(t, root, "outside", "x\n")
+				require.NoError(t, os.Symlink("../../outside", filepath.Join(root, ".git", "reftable", "table.ref")))
+			},
+		},
+		{
+			name: "nested directory",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, root, ".git/reftable/sub/table.ref", "x\n")
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			tc.setup(t, root)
+
+			err := sanitizeDownload(root)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "reftable")
+		})
+	}
+}
+
+// TestSanitizeDownload_ReftableRejectsNonRegularHEAD fails closed when the
+// reftable checkout's HEAD is missing or not a regular file.
+func TestSanitizeDownload_ReftableRejectsNonRegularHEAD(t *testing.T) {
+	requireReftableSanitization(t)
+	cases := []struct {
+		name         string
+		setup        func(t *testing.T, path string)
+		wantRejected bool
+		wantNotExist bool
+	}{
+		{
+			name:         "missing",
+			setup:        func(t *testing.T, path string) { require.NoError(t, os.Remove(path)) },
+			wantRejected: true,
+			wantNotExist: true,
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T, path string) {
+				require.NoError(t, os.Remove(path))
+				require.NoError(t, os.Mkdir(path, 0o755))
+			},
+			wantRejected: true,
+		},
+		{
+			name: "symlink",
+			setup: func(t *testing.T, path string) {
+				require.NoError(t, os.Remove(path))
+				require.NoError(t, os.Symlink("config", path))
+			},
+			wantRejected: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReftableRepo(t)
+			r.commitFile("file.txt", "original")
+			tc.setup(t, filepath.Join(r.dir, ".git", "HEAD"))
+
+			err := sanitizeDownload(r.dir)
+			require.Error(t, err)
+			assert.Equal(t, tc.wantRejected, errors.Is(err, ErrRepositoryRejected), "got %v", err)
+			if tc.wantNotExist {
+				assert.True(t, errors.Is(err, os.ErrNotExist), "a missing HEAD keeps its cause: %v", err)
+			}
+		})
+	}
+}
+
+// TestRemoveReplacementRefs_MissingStoreFailsClosed surfaces native verification
+// failures instead of deleting anything.
+func TestRemoveReplacementRefs_MissingStoreFailsClosed(t *testing.T) {
+	requireGit(t)
+	require.Error(t, removeReplacementRefs(t.TempDir(), filepath.Join(t.TempDir(), "missing")))
+}
+
+// TestSanitizeDownload_RejectsReftableWorktreeMetadata rejects registered
+// worktree metadata for reftable, where extra ref stores could live.
+func TestSanitizeDownload_RejectsReftableWorktreeMetadata(t *testing.T) {
+	r := newReftableRepo(t)
+	r.commitFile("file.txt", "original")
+	writeFile(t, r.dir, ".git/worktrees/wt/gitdir", "../outside\n")
+	sentinel := filepath.Join(t.TempDir(), "outside")
+	require.NoFileExists(t, sentinel)
+
+	err := sanitizeDownload(r.dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "worktree")
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	assert.NoFileExists(t, sentinel, "worktree manifest must not be followed")
+}
+
+// TestSanitizeDownload_ReftableNestedStoresCleaned cleans replacement refs in
+// both the root and an ordinary nested checkout's own reftable store.
+func TestSanitizeDownload_ReftableNestedStoresCleaned(t *testing.T) {
+	requireReftableSanitization(t)
+	root := newReftableRepo(t)
+	rootHuman := root.commitFile("root.txt", "root work")
+	rootTree := root.git("rev-parse", rootHuman+"^{tree}")
+	rootOrphan := root.git("commit-tree", rootTree, "-m", "root orphan")
+	rootBridge := root.git("commit-tree", rootTree, "-p", rootHuman, "-m", "root bridge")
+	root.git("replace", rootOrphan, rootBridge)
+
+	nested := initReftableRepo(t, filepath.Join(root.dir, "vendor", "dep"))
+	nestedHuman := nested.commitFile("dep.txt", "dep work")
+	nestedTree := nested.git("rev-parse", nestedHuman+"^{tree}")
+	nestedOrphan := nested.git("commit-tree", nestedTree, "-m", "dep orphan")
+	nestedBridge := nested.git("commit-tree", nestedTree, "-p", nestedHuman, "-m", "dep bridge")
+	nested.git("replace", nestedOrphan, nestedBridge)
+
+	require.NoError(t, sanitizeDownload(root.dir))
+
+	assert.Empty(t, root.git("replace", "--list"), "root replacement refs must be removed")
+	assert.Empty(t, nested.git("replace", "--list"), "nested replacement refs must be removed")
+	assert.Equal(t, rootHuman, root.git("rev-parse", "main"))
+	assert.Equal(t, nestedHuman, nested.git("rev-parse", "main"))
+}
+
+// TestSanitizeDownload_PackedRefsDropsReplacements drops refs/replace records
+// and their peeled lines while preserving every other record byte-for-byte.
+func TestSanitizeDownload_PackedRefsDropsReplacements(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "drops replacement record and peeled line",
+			in:   testOID + " refs/replace/" + testOID + "\n^" + testOID + "\n" + testOID + " refs/heads/main\n^" + testOID256 + "\n",
+			want: testOID + " refs/heads/main\n^" + testOID256 + "\n",
+		},
+		{
+			name: "keeps other namespaces with header, order, and peeled lines",
+			in:   "# pack-refs with: peeled fully-peeled sorted \n" + testOID + " refs/heads/main\n" + testOID + " refs/tags/v1\n^" + testOID256 + "\n" + testOID + " refs/remotes/origin/main\n" + testOID + " refs/notes/x\n" + testOID + " refs/stash\n" + testOID + " refs/bisect/good\n" + testOID + " refs/custom/x\n",
+			want: "# pack-refs with: peeled fully-peeled sorted \n" + testOID + " refs/heads/main\n" + testOID + " refs/tags/v1\n^" + testOID256 + "\n" + testOID + " refs/remotes/origin/main\n" + testOID + " refs/notes/x\n" + testOID + " refs/stash\n" + testOID + " refs/bisect/good\n" + testOID + " refs/custom/x\n",
+		},
+		{
+			name: "namespace match is case-sensitive and exact",
+			in:   testOID + " REFS/replace/x\n" + testOID + " refs/Replace/x\n" + testOID + " refs/replaces/x\n" + testOID + " refs/replace\n" + testOID + " refs/heads/replace\n",
+			want: testOID + " REFS/replace/x\n" + testOID + " refs/Replace/x\n" + testOID + " refs/replaces/x\n" + testOID + " refs/replace\n" + testOID + " refs/heads/replace\n",
+		},
+		{
+			name: "preserves unicode ref names and tab separators",
+			in:   testOID + " refs/heads/feat\u00a0ure\n" + testOID + "\trefs/tags/v\u20031\n",
+			want: testOID + " refs/heads/feat\u00a0ure\n" + testOID + "\trefs/tags/v\u20031\n",
+		},
+		{
+			name: "sha256 record",
+			in:   testOID256 + " refs/heads/main\n",
+			want: testOID256 + " refs/heads/main\n",
+		},
+		{
+			name: "keeps malformed, unicode, near-miss, and interrupted peeled lines",
+			in: "# pack-refs with: peeled fully-peeled sorted \n" +
+				"scratch\n" +
+				testOID + " refs/replaces/x\r\n" +
+				testOID + " refs/heads/feat\u00a0ure\n" +
+				testOID + " refs/replace/" + testOID + "\n" +
+				"# refs/replace/comment between record and peeled line\n" +
+				"^" + testOID + "\n" +
+				testOID + " refs/replace/x\n" +
+				"^" + testOID + "\n" +
+				"^" + testOID256 + "\n",
+			want: "# pack-refs with: peeled fully-peeled sorted \n" +
+				"scratch\n" +
+				testOID + " refs/replaces/x\r\n" +
+				testOID + " refs/heads/feat\u00a0ure\n" +
+				"# refs/replace/comment between record and peeled line\n" +
+				"^" + testOID + "\n" +
+				"^" + testOID256 + "\n",
+		},
+		{
+			name: "blank line interrupts peeled association",
+			in:   testOID + " refs/replace/x\n\n^" + testOID + "\n",
+			want: "\n^" + testOID + "\n",
+		},
+		{
+			name: "final line without newline is preserved",
+			in:   testOID + " refs/heads/main\n# tail",
+			want: testOID + " refs/heads/main\n# tail",
+		},
+		{
+			name: "final replacement line without newline is dropped",
+			in:   testOID + " refs/heads/main\n" + testOID + " refs/replace/x",
+			want: testOID + " refs/heads/main\n",
+		},
+		{
+			name: "crlf replacement record and peeled line are dropped",
+			in:   testOID + " refs/replace/x\r\n^" + testOID + "\r\n" + testOID + " refs/heads/main\r\n",
+			want: testOID + " refs/heads/main\r\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, root, ".git/packed-refs", tc.in)
+			require.NoError(t, sanitizeDownload(root))
+			got, err := os.ReadFile(filepath.Join(root, ".git", "packed-refs"))
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, string(got))
+		})
+	}
+
+	t.Run("orphan peeled line is preserved", func(t *testing.T) {
+		root := t.TempDir()
+		content := "^" + testOID + "\n"
+		writeFile(t, root, ".git/packed-refs", content)
+		require.NoError(t, sanitizeDownload(root))
+		got, err := os.ReadFile(filepath.Join(root, ".git", "packed-refs"))
+		require.NoError(t, err)
+		assert.Equal(t, content, string(got))
+	})
+
+	t.Run("non-regular packed refs is dropped", func(t *testing.T) {
+		root := t.TempDir()
+		external := filepath.Join(t.TempDir(), "packed-refs")
+		require.NoError(t, os.WriteFile(external, []byte(testOID+" refs/heads/main\n"), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+		require.NoError(t, os.Symlink(external, filepath.Join(root, ".git", "packed-refs")))
+
+		require.NoError(t, sanitizeDownload(root))
+		_, err := os.Lstat(filepath.Join(root, ".git", "packed-refs"))
+		assert.True(t, os.IsNotExist(err), "symlinked packed-refs must be dropped")
+		_, err = os.Stat(external)
+		assert.NoError(t, err, "symlink target must not be touched")
+	})
+
+	t.Run("hardlink target is not truncated", func(t *testing.T) {
+		root := t.TempDir()
+		external := filepath.Join(t.TempDir(), "shared-packed-refs")
+		content := testOID + " refs/replace/x\n" + testOID + " refs/heads/main\n"
+		require.NoError(t, os.WriteFile(external, []byte(content), 0o644))
+		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git"), 0o755))
+		packed := filepath.Join(root, ".git", "packed-refs")
+		if err := os.Link(external, packed); err != nil {
+			t.Skipf("hardlinks unavailable: %v", err)
+		}
+
+		require.NoError(t, sanitizeDownload(root))
+		shared, err := os.ReadFile(external)
+		require.NoError(t, err)
+		assert.Equal(t, content, string(shared), "hardlink target must not be truncated")
+		got, err := os.ReadFile(packed)
+		require.NoError(t, err)
+		assert.Equal(t, testOID+" refs/heads/main\n", string(got))
+	})
+
+	t.Run("read error propagates", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root bypasses permission checks")
+		}
+		root := t.TempDir()
+		packed := writeFile(t, root, ".git/packed-refs", testOID+" refs/heads/main\n")
+		require.NoError(t, os.Chmod(packed, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(packed, 0o644) })
+
+		err := sanitizeDownload(root)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "packed-refs")
+	})
+
+	t.Run("directory is rejected", func(t *testing.T) {
+		root := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(root, ".git", "packed-refs"), 0o755))
+		err := sanitizeDownload(root)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "packed-refs")
+	})
+}
+
+// TestReadBoundedFile checks the exact bound: limit bytes are accepted and one
+// more is reported as oversized.
+func TestReadBoundedFile(t *testing.T) {
+	cases := []struct {
+		name      string
+		content   string
+		limit     int64
+		oversized bool
+	}{
+		{name: "empty file", limit: 8},
+		{name: "exactly the limit", content: "12345678", limit: 8},
+		{name: "one over the limit", content: "123456789", limit: 8, oversized: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "file")
+			require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o644))
+
+			data, oversized, err := readBoundedFile(path, tc.limit)
+			require.NoError(t, err)
+			assert.Equal(t, tc.oversized, oversized)
+			assert.Equal(t, tc.content, string(data))
+		})
+	}
+}
+
+// TestFilterPackedRefs_Limits rejects an oversized packed-refs file without
+// touching it and skips the rewrite when nothing is removed.
+func TestFilterPackedRefs_Limits(t *testing.T) {
+	t.Run("oversized file fails closed", func(t *testing.T) {
+		root := t.TempDir()
+		packed := writeFile(t, root, "packed-refs", "")
+		require.NoError(t, os.Truncate(packed, maxPackedRefsBytes+1))
+
+		err := filterPackedRefs(packed)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+		assert.Contains(t, err.Error(), fmt.Sprintf("larger than %d bytes", maxPackedRefsBytes))
+		info, statErr := os.Stat(packed)
+		require.NoError(t, statErr)
+		assert.Equal(t, int64(maxPackedRefsBytes+1), info.Size(), "a rejected file must be left untouched")
+		entries, readErr := os.ReadDir(root)
+		require.NoError(t, readErr)
+		require.Len(t, entries, 1, "no temporary file is created")
+	})
+
+	t.Run("unchanged file is not replaced", func(t *testing.T) {
+		root := t.TempDir()
+		packed := writeFile(t, root, "packed-refs", testOID+" refs/heads/main\n")
+		alias := filepath.Join(t.TempDir(), "alias")
+		if err := os.Link(packed, alias); err != nil {
+			t.Skipf("hardlinks unavailable: %v", err)
+		}
+
+		require.NoError(t, filterPackedRefs(packed))
+		packedInfo, err := os.Stat(packed)
+		require.NoError(t, err)
+		aliasInfo, err := os.Stat(alias)
+		require.NoError(t, err)
+		assert.True(t, os.SameFile(packedInfo, aliasInfo), "an unchanged file must keep its inode")
+	})
+}
+
+// TestRestoreTrustedShallow_RejectsOversizedMarker rejects a marker above the
+// whole-file limit and leaves it untouched.
+func TestRestoreTrustedShallow_RejectsOversizedMarker(t *testing.T) {
+	localDir := t.TempDir()
+	gitDir := filepath.Join(localDir, ".git")
+	require.NoError(t, os.Mkdir(gitDir, 0o755))
+	shallowPath := writeFile(t, gitDir, "shallow", "")
+	require.NoError(t, os.Truncate(shallowPath, maxShallowBytes+1))
+
+	err := restoreTrustedShallow(localDir, ShallowState{})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("larger than %d bytes", maxShallowBytes))
+	info, statErr := os.Stat(shallowPath)
+	require.NoError(t, statErr)
+	assert.Equal(t, int64(maxShallowBytes+1), info.Size(), "a rejected marker must be left untouched")
+}
+
+// TestSanitizeDownload_RejectsAlternateObjectStores rejects repositories that
+// delegate object lookup to an alternate store, including a real shared clone.
+func TestSanitizeDownload_RejectsAlternateObjectStores(t *testing.T) {
+	for _, name := range []string{"alternates", "http-alternates"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, root, ".git/objects/info/"+name, "/elsewhere/objects\n")
+			err := sanitizeDownload(root)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "git metadata")
+		})
+	}
+
+	t.Run("shared clone", func(t *testing.T) {
+		requireGit(t)
+		r := newGitRepo(t)
+		head := r.commitFile("file.txt", "original")
+		parent := t.TempDir()
+		cloneDir := filepath.Join(parent, "clone")
+		r.gitAt(parent, "clone", "--quiet", "--shared", r.dir, "clone")
+		_, err := runGit(t, cloneDir, r.env, "cat-file", "-e", head)
+		require.NoError(t, err, "Git must read objects through the alternate store")
+		require.Error(t, sanitizeDownload(cloneDir), "alternate object stores must be rejected")
+	})
+}
+
+func TestSanitizeDownload_NestedGitCompatibility(t *testing.T) {
+	root := t.TempDir()
+
+	// Ordinary directory-form nested repo is filtered.
+	writeFile(t, root, "vendor/dep/.git/refs/replace/"+testOID, testOID+"\n")
+	writeFile(t, root, "vendor/dep/.git/config", "[core]\n")
+	writeFile(t, root, "vendor/dep/.git/refs/heads/main", testOID+"\n")
+
+	// Unlike a root gitfile, a nested gitfile does not redirect Git operations
+	// run at the download root. Preserve it for compatibility; this does not
+	// establish safety for Git operations inside submodules or linked worktrees.
+	gitfile := writeFile(t, root, "vendor/other/.git", "gitdir: ../../.git/modules/other\n")
+	writeFile(t, root, ".git/modules/other/config", "[core]\n")
+	writeFile(t, root, ".git/worktrees/wt/HEAD", "ref: refs/heads/wt\n")
+
+	require.NoError(t, sanitizeDownload(root))
+
+	_, err := os.Lstat(filepath.Join(root, "vendor", "dep", ".git", "refs", "replace"))
+	assert.True(t, os.IsNotExist(err), "nested replace refs must be filtered")
+	data, err := os.ReadFile(filepath.Join(root, "vendor", "dep", ".git", "config"))
+	require.NoError(t, err)
+	assert.Equal(t, "[core]\n", string(data))
+
+	data, err = os.ReadFile(gitfile)
+	require.NoError(t, err)
+	assert.Equal(t, "gitdir: ../../.git/modules/other\n", string(data), "nested gitfile must survive")
+}
+
+// TestSanitizeDownload_PreservesNormalRepo checks that an ordinary repository's
+// status, index, and history survive sanitization.
+func TestSanitizeDownload_PreservesNormalRepo(t *testing.T) {
+	requireGit(t)
+
+	r := newGitRepo(t)
+	r.commitFile("a.txt", "one")
+	r.commitFile("b.txt", "two")
+	require.NoError(t, os.WriteFile(filepath.Join(r.dir, "a.txt"), []byte("one\nstaged\n"), 0o644))
+	r.git("add", "a.txt")
+	require.NoError(t, os.WriteFile(filepath.Join(r.dir, "b.txt"), []byte("two\nunstaged\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(r.dir, "untracked.txt"), []byte("new\n"), 0o644))
+
+	before := r.snapshot()
+	require.NoError(t, sanitizeDownload(r.dir))
+	assert.Equal(t, before, r.snapshot())
+
+	r.git("commit", "--quiet", "-m", "after sanitize")
+	assert.Equal(t, "after sanitize", r.git("log", "-1", "--format=%s"))
+}
+
+func TestSanitizeDownload_BlocksInventedGitAncestry(t *testing.T) {
+	requireGit(t)
+
+	cases := []struct {
+		name   string
+		inject func(t *testing.T, r *gitRepo, orphan, bridge string)
+	}{
+		{
+			name: "loose replacement ref",
+			inject: func(t *testing.T, r *gitRepo, orphan, bridge string) {
+				r.git("replace", orphan, bridge)
+			},
+		},
+		{
+			name: "packed replacement ref",
+			inject: func(t *testing.T, r *gitRepo, orphan, bridge string) {
+				r.git("replace", orphan, bridge)
+				r.git("pack-refs", "--all", "--prune")
+				packed, err := os.ReadFile(filepath.Join(r.dir, ".git", "packed-refs"))
+				require.NoError(t, err)
+				require.Contains(t, string(packed), "refs/replace/"+orphan)
+			},
+		},
+		{
+			name: "graft",
+			inject: func(t *testing.T, r *gitRepo, orphan, bridge string) {
+				writeFile(t, r.dir, ".git/info/grafts", orphan+" "+bridge+"\n")
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newGitRepo(t)
+			human := r.commitFile("human.txt", "human work")
+			tree := r.git("rev-parse", human+"^{tree}")
+			orphan := r.git("commit-tree", tree, "-m", "agent orphan")
+			bridge := r.git("commit-tree", tree, "-p", human, "-m", "bridge")
+			tc.inject(t, r, orphan, bridge)
+
+			assert.True(t, r.isAncestor(human, orphan))
+			require.NoError(t, sanitizeDownload(r.dir))
+			assert.False(t, r.isAncestor(human, orphan))
+			assert.Equal(t, human, r.git("rev-parse", "main"))
+		})
+	}
+}
+
+func TestSanitizeDownload_LocalPlainPushRejectsInventedAncestry(t *testing.T) {
+	requireGit(t)
+
+	r := newGitRepo(t)
+	human := r.commitFile("human.txt", "human work")
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	r.git("init", "--bare", "--quiet", remote)
+	r.git("push", "--quiet", remote, "main")
+
+	tree := r.git("rev-parse", human+"^{tree}")
+	orphan := r.git("commit-tree", tree, "-m", "agent orphan")
+	bridge := r.git("commit-tree", tree, "-p", human, "-m", "bridge")
+	r.git("replace", orphan, bridge)
+	require.True(t, r.isAncestor(human, orphan))
+
+	require.NoError(t, sanitizeDownload(r.dir))
+	require.False(t, r.isAncestor(human, orphan))
+
+	_, err := r.tryGit("push", "--quiet", remote, orphan+":main")
+	require.Error(t, err, "plain push of divergent history must be rejected")
+	assert.Equal(t, human, r.gitAt(remote, "rev-parse", "main"))
+}
+
 func TestErrSymlink_ErrorMethod(t *testing.T) {
 	// Verify that errSymlink implements error and that fmt.Sprintf does not panic.
 	underlying := fmt.Errorf("permission denied")
@@ -513,6 +1536,9 @@ func TestSanitizeDownload_RemoveFailureReturnsErrSymlink(t *testing.T) {
 }
 
 func TestSafeDownload_RetriesIntoFreshDirectoryAfterPartialExtraction(t *testing.T) {
+	requireGit(t)
+	src := newGitRepo(t)
+
 	binDir := t.TempDir()
 	logPath := filepath.Join(binDir, "download-paths.log")
 	counterPath := filepath.Join(binDir, "attempt-count")
@@ -536,16 +1562,17 @@ if [ "$attempt" -eq 1 ]; then
   /bin/ln "$dest/node_modules/@esbuild/linux-x64/bin/esbuild" "$dest/node_modules/esbuild/bin/esbuild"
   exit 1
 fi
+/bin/cp -R "%s/.git" "$dest/.git"
 printf 'safe\n' > "$dest/safe.txt"
 /bin/ln -s /etc/passwd "$dest/dangerous-link"
 exit 0
-`, logPath, counterPath, counterPath, counterPath)
+`, logPath, counterPath, counterPath, counterPath, src.dir)
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
-	t.Setenv("PATH", binDir)
+	t.Setenv("PATH", binDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
 
 	parent := t.TempDir()
 	localDir := filepath.Join(parent, "repo")
-	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir))
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{}))
 
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)
@@ -571,20 +1598,15 @@ exit 0
 }
 
 func TestSafeDownload_CleansTrailingSeparator(t *testing.T) {
-	binDir := t.TempDir()
-	script := `#!/bin/sh
-if [ "$2" = "download" ]; then
-  printf 'safe\n' > "$5/safe.txt"
-  exit 0
-fi
-exit 0
-`
-	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
-	t.Setenv("PATH", binDir)
+	requireGit(t)
+
+	r := newGitRepo(t)
+	writeFile(t, r.dir, "safe.txt", "safe\n")
+	serveDownloadFrom(t, r.dir)
 
 	parent := t.TempDir()
 	localDir := filepath.Join(parent, "repo") + string(os.PathSeparator)
-	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir))
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{}))
 
 	content, err := os.ReadFile(filepath.Join(parent, "repo", "safe.txt"))
 	require.NoError(t, err)
@@ -609,7 +1631,7 @@ exit 0
 
 	parent := t.TempDir()
 	localDir := filepath.Join(parent, "repo")
-	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir)
+	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "safe download from sandbox failed after 2 attempts")
 	assert.Contains(t, err.Error(), "attempt 1/2")
@@ -630,17 +1652,11 @@ func TestSafeDownload_ReturnsErrorWhenReplacingExistingDownloadFails(t *testing.
 	if os.Getuid() == 0 {
 		t.Skip("root bypasses permission checks")
 	}
+	requireGit(t)
 
-	binDir := t.TempDir()
-	script := `#!/bin/sh
-if [ "$2" = "download" ]; then
-  printf 'safe\n' > "$5/safe.txt"
-  exit 0
-fi
-exit 0
-`
-	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
-	t.Setenv("PATH", binDir)
+	r := newGitRepo(t)
+	writeFile(t, r.dir, "safe.txt", "safe\n")
+	serveDownloadFrom(t, r.dir)
 
 	parent := t.TempDir()
 	localDir := filepath.Join(parent, "repo")
@@ -652,9 +1668,10 @@ exit 0
 		require.NoError(t, os.Chmod(readonlyDir, 0o755))
 	})
 
-	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir)
+	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "replacing existing download directory")
+	assert.False(t, errors.Is(err, ErrRepositoryValidation), "a publication failure is not a validation failure: %v", err)
 }
 
 func TestSafeDownload_ReturnsErrorWhenSanitizationFails(t *testing.T) {
@@ -695,9 +1712,12 @@ exit 0
 		}
 	})
 
-	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir)
+	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sanitizing downloaded directory")
+	assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+	var symErr *errSymlink
+	assert.True(t, errors.As(err, &symErr), "the sanitization cause must stay reachable: %v", err)
 
 	_, statErr := os.Lstat(localDir)
 	assert.True(t, os.IsNotExist(statErr), "unsafe download must not be published")
@@ -708,6 +1728,961 @@ exit 0
 		assert.False(t, strings.HasPrefix(entry.Name(), ".fullsend-safe-download-"),
 			"staging directory must be removed after sanitization failure: %s", entry.Name())
 	}
+}
+
+func TestSafeDownload_DoesNotPublishUnsupportedGitMetadata(t *testing.T) {
+	cases := map[string]string{
+		"root git":                       `/bin/mkdir -p "$5/real-git" && /bin/ln -s real-git "$5/.git"`,
+		"objects":                        `/bin/mkdir -p "$5/.git" && /bin/ln -s ../real-objects "$5/.git/objects"`,
+		"gitfile":                        `/bin/mkdir -p "$5/real-git" && printf 'gitdir: real-git\n' > "$5/.git"`,
+		"commondir":                      `/bin/mkdir -p "$5/.git" "$5/real-git" && printf '../real-git\n' > "$5/.git/commondir"`,
+		"reftable symlink":               `/bin/mkdir -p "$5/.git" && /bin/ln -s ../outside "$5/.git/reftable"`,
+		"nested git symlink":             `/bin/mkdir -p "$5/vendor/dep/real-git" && /bin/ln -s real-git "$5/vendor/dep/.git"`,
+		"alternates":                     `/bin/mkdir -p "$5/.git/objects/info" && printf '/elsewhere/objects\n' > "$5/.git/objects/info/alternates"`,
+		"http-alternates":                `/bin/mkdir -p "$5/.git/objects/info" && printf 'https://example.invalid/objects\n' > "$5/.git/objects/info/http-alternates"`,
+		"shallow symlink":                `/bin/mkdir -p "$5/.git" && /bin/ln -s ../../outside "$5/.git/shallow"`,
+		"shallow directory":              `/bin/mkdir -p "$5/.git/shallow"`,
+		"shallow symlink case variant":   `/bin/mkdir -p "$5/.git" && /bin/ln -s ../../outside "$5/.git/SHALLOW"`,
+		"shallow directory case variant": `/bin/mkdir -p "$5/.git/Shallow"`,
+		"packed-refs directory":          `/bin/mkdir -p "$5/.git/packed-refs"`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			binDir := t.TempDir()
+			script := "#!/bin/sh\nif [ \"$2\" = \"download\" ]; then\n" + body + "\nexit 0\nfi\nexit 0\n"
+			require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+			t.Setenv("PATH", binDir)
+
+			parent := t.TempDir()
+			localDir := filepath.Join(parent, "repo")
+			err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "sanitizing downloaded directory")
+			assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+			assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+			_, statErr := os.Lstat(localDir)
+			assert.True(t, os.IsNotExist(statErr), "unsafe download must not be published")
+		})
+	}
+}
+
+// serveDownloadFrom makes the fake openshell download copy src's contents
+// into the destination directory, so SafeDownload processes a real repository.
+func serveDownloadFrom(t *testing.T, src string) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = \"download\" ]; then\n  /bin/cp -R \"%s/.\" \"$5/\"\nfi\nexit 0\n", src)
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	// Keep git on PATH for assertions after the download.
+	t.Setenv("PATH", binDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+}
+
+// TestValidateGitCheckout checks the shared read-only preflight used for
+// trusted host inputs: real directories only, native resolution, no mutation.
+func TestValidateGitCheckout(t *testing.T) {
+	requireGit(t)
+
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "content")
+
+	t.Run("normal checkout", func(t *testing.T) {
+		require.NoError(t, validateGitCheckout(r.dir))
+	})
+
+	t.Run("missing .git", func(t *testing.T) {
+		tree := t.TempDir()
+		writeFile(t, tree, "file.txt", "content\n")
+		err := validateGitCheckout(tree)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "checking git checkout")
+	})
+
+	t.Run("empty .git", func(t *testing.T) {
+		tree := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(tree, ".git"), 0o755))
+		require.Error(t, validateGitCheckout(tree))
+	})
+
+	t.Run("gitfile", func(t *testing.T) {
+		tree := t.TempDir()
+		writeFile(t, tree, ".git", "gitdir: "+filepath.Join(r.dir, ".git")+"\n")
+		err := validateGitCheckout(tree)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not a real directory")
+	})
+
+	t.Run("symlink .git rejected before query", func(t *testing.T) {
+		tree := t.TempDir()
+		require.NoError(t, os.Symlink(filepath.Join(r.dir, ".git"), filepath.Join(tree, ".git")))
+		t.Setenv("PATH", t.TempDir()) // no Git: the layout guard must run first
+		err := validateGitCheckout(tree)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not a real directory")
+	})
+
+	t.Run("trusted source metadata is not modified", func(t *testing.T) {
+		src := newGitRepo(t)
+		src.commitFile("file.txt", "content")
+		hook := writeFile(t, src.dir, ".git/hooks/pre-commit", "#!/bin/sh\nmalicious\n")
+		grafts := writeFile(t, src.dir, ".git/info/grafts", "graft data\n")
+		replace := writeFile(t, src.dir, ".git/refs/replace/"+strings.Repeat("a", 40), "replace data\n")
+
+		require.NoError(t, validateGitCheckout(src.dir))
+
+		for path, want := range map[string]string{
+			hook:    "#!/bin/sh\nmalicious\n",
+			grafts:  "graft data\n",
+			replace: "replace data\n",
+		} {
+			got, err := os.ReadFile(path)
+			require.NoError(t, err, "%s must survive validation", path)
+			assert.Equal(t, want, string(got))
+		}
+	})
+
+	t.Run("reftable checkout is read-only", func(t *testing.T) {
+		requireReftableSanitization(t)
+		src := newReftableRepo(t)
+		src.commitFile("file.txt", "content")
+		configPath := filepath.Join(src.dir, ".git", "config")
+		configBefore, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		hook := writeFile(t, src.dir, ".git/hooks/pre-commit", "#!/bin/sh\nmalicious\n")
+		grafts := writeFile(t, src.dir, ".git/info/grafts", "graft data\n")
+
+		require.NoError(t, validateGitCheckout(src.dir))
+
+		configAfter, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		assert.Equal(t, configBefore, configAfter, "reftable config bytes must be preserved")
+		for path, want := range map[string]string{
+			hook:   "#!/bin/sh\nmalicious\n",
+			grafts: "graft data\n",
+		} {
+			got, err := os.ReadFile(path)
+			require.NoError(t, err, "%s must survive validation", path)
+			assert.Equal(t, want, string(got))
+		}
+	})
+
+	t.Run("reftable rejected on git 2.52", func(t *testing.T) {
+		src := newReftableRepo(t)
+		src.commitFile("file.txt", "content")
+
+		installGitShim(t, "if [ \"$1\" = \"--version\" ]; then\n  echo 'git version 2.52.0'\n  exit 0\nfi")
+
+		err := validateGitCheckout(src.dir)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "2.53")
+	})
+
+	t.Run("files backend is not version gated", func(t *testing.T) {
+		src := newGitRepo(t)
+		src.commitFile("file.txt", "content")
+
+		installGitShim(t, "if [ \"$1\" = \"--version\" ]; then\n  echo 'git version 2.52.0'\n  exit 0\nfi")
+
+		require.NoError(t, validateGitCheckout(src.dir))
+	})
+}
+
+func TestValidateRepositoryRoot(t *testing.T) {
+	t.Run("checkout is not plain", func(t *testing.T) {
+		requireGit(t)
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "content")
+		plain, err := ValidateRepositoryRoot(r.dir)
+		require.NoError(t, err)
+		assert.False(t, plain)
+	})
+
+	t.Run("unborn checkout is not plain", func(t *testing.T) {
+		requireGit(t)
+		plain, err := ValidateRepositoryRoot(newGitRepo(t).dir)
+		require.NoError(t, err)
+		assert.False(t, plain)
+	})
+
+	t.Run("gitfile is never plain", func(t *testing.T) {
+		tree := t.TempDir()
+		writeFile(t, tree, ".git", "gitdir: elsewhere\n")
+		plain, err := ValidateRepositoryRoot(tree)
+		require.Error(t, err)
+		assert.False(t, plain)
+		assert.Contains(t, err.Error(), "not a real directory")
+	})
+
+	cases := []struct {
+		name    string
+		entries []string
+		wantErr bool
+	}{
+		{name: "empty directory", entries: nil},
+		{name: "head only", entries: []string{"HEAD"}},
+		{name: "objects only", entries: []string{"objects"}},
+		{name: "refs only", entries: []string{"refs"}},
+		{name: "commondir only", entries: []string{"commondir"}},
+		{name: "head and objects", entries: []string{"HEAD", "objects"}},
+		{name: "head and refs", entries: []string{"HEAD", "refs"}},
+		{name: "objects and refs", entries: []string{"objects", "refs"}},
+		{name: "head and commondir", entries: []string{"HEAD", "commondir"}, wantErr: true},
+		{name: "bare root", entries: []string{"HEAD", "objects", "refs"}, wantErr: true},
+		{name: "bare root with commondir", entries: []string{"HEAD", "commondir", "objects", "refs"}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tree := t.TempDir()
+			for _, name := range tc.entries {
+				writeFile(t, tree, name, "x\n")
+			}
+			plain, err := ValidateRepositoryRoot(tree)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.False(t, plain)
+				assert.Contains(t, err.Error(), "checking git checkout")
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, plain, "a root without .git or Git directory metadata is plain")
+		})
+	}
+
+	t.Run("dangling symlink marker still counts", func(t *testing.T) {
+		tree := t.TempDir()
+		writeFile(t, tree, "HEAD", "ref: refs/heads/main\n")
+		require.NoError(t, os.Symlink("missing", filepath.Join(tree, "commondir")))
+		plain, err := ValidateRepositoryRoot(tree)
+		require.Error(t, err)
+		assert.False(t, plain)
+	})
+
+	t.Run("dangling symlink bare root still counts", func(t *testing.T) {
+		tree := t.TempDir()
+		require.NoError(t, os.Symlink("missing", filepath.Join(tree, "HEAD")))
+		writeFile(t, tree, "objects", "x\n")
+		writeFile(t, tree, "refs", "x\n")
+		plain, err := ValidateRepositoryRoot(tree)
+		require.Error(t, err)
+		assert.False(t, plain)
+	})
+
+	t.Run("non-directory root fails closed", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "root")
+		require.NoError(t, os.WriteFile(path, []byte("x\n"), 0o644))
+		plain, err := ValidateRepositoryRoot(path)
+		require.Error(t, err)
+		assert.False(t, plain)
+	})
+}
+
+// requireFIFO creates a FIFO so a test can prove the timed checkout query
+// cannot be blocked by a special entry.
+func requireFIFO(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	require.NoError(t, syscall.Mkfifo(path, 0o600))
+	return path
+}
+
+// TestSafeDownload_AcceptsReftableCheckout publishes a sanitized reftable
+// checkout with its HEAD and refs intact and replacement refs removed.
+func TestSafeDownload_AcceptsReftableCheckout(t *testing.T) {
+	requireReftableSanitization(t)
+	r := newReftableRepo(t)
+	human := r.commitFile("file.txt", "original")
+	tree := r.git("rev-parse", human+"^{tree}")
+	orphan := r.git("commit-tree", tree, "-m", "agent orphan")
+	bridge := r.git("commit-tree", tree, "-p", human, "-m", "bridge")
+	r.git("replace", orphan, bridge)
+	require.True(t, r.isAncestor(human, orphan))
+
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+		RepositorySnapshot{}))
+
+	assert.Equal(t, human, r.gitAt(localDir, "rev-parse", "HEAD"))
+	assert.Equal(t, human, r.gitAt(localDir, "rev-parse", "main"))
+	out, err := runGit(t, localDir, r.env, "replace", "--list")
+	require.NoError(t, err)
+	assert.Empty(t, out, "replacement refs must not be published")
+}
+
+// TestSafeDownload_RequiresGitCheckout accepts a real host checkout and
+// preserves its HEAD and worktree.
+func TestSafeDownload_RequiresGitCheckout(t *testing.T) {
+	requireGit(t)
+
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "content")
+	head := r.git("rev-parse", "HEAD")
+
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+		RepositorySnapshot{}))
+
+	got, err := runGit(t, localDir, r.env, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, head, got)
+	status, err := runGit(t, localDir, r.env, "status", "--porcelain=v1")
+	require.NoError(t, err)
+	assert.Empty(t, status)
+	data, err := os.ReadFile(filepath.Join(localDir, "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "content\n", string(data))
+}
+
+// TestSafeDownload_RejectsPlainOutputForCheckoutInput covers the regression
+// where a checkout input returned a plain tree: the sandbox can remove .git,
+// and publishing that tree would let later host Git discovery resolve metadata
+// through a parent repository. The download must fail before publication.
+func TestSafeDownload_RejectsPlainOutputForCheckoutInput(t *testing.T) {
+	requireGit(t)
+
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "content")
+
+	// A real, non-shallow checkout as the remote tree, with the sandbox-side
+	// .git removed.
+	downloaded := filepath.Join(t.TempDir(), "downloaded")
+	require.NoError(t, os.CopyFS(downloaded, os.DirFS(r.dir)))
+	require.NoError(t, os.RemoveAll(filepath.Join(downloaded, ".git")))
+
+	reject := func(t *testing.T, localDir string) {
+		t.Helper()
+		serveDownloadFrom(t, downloaded)
+		err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+			RepositorySnapshot{IsCheckout: true})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "must remain a git checkout")
+		assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	}
+
+	t.Run("absent destination remains absent", func(t *testing.T) {
+		localDir := filepath.Join(t.TempDir(), "repo")
+		reject(t, localDir)
+		_, statErr := os.Lstat(localDir)
+		assert.True(t, os.IsNotExist(statErr), "a rejected checkout must not be published")
+	})
+
+	t.Run("existing destination is preserved", func(t *testing.T) {
+		localDir := filepath.Join(t.TempDir(), "repo")
+		sentinel := writeFile(t, localDir, "sentinel.txt", "keep\n")
+		reject(t, localDir)
+		data, readErr := os.ReadFile(sentinel)
+		require.NoError(t, readErr)
+		assert.Equal(t, "keep\n", string(data), "a rejected download must not replace the existing destination")
+	})
+}
+
+// TestSafeDownload_AcceptsCheckoutForCheckoutInput keeps the positive
+// checkout-to-checkout path: a required-checkout snapshot accepts a real
+// checkout output.
+func TestSafeDownload_AcceptsCheckoutForCheckoutInput(t *testing.T) {
+	requireGit(t)
+
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "content")
+	head := r.git("rev-parse", "HEAD")
+
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+		RepositorySnapshot{IsCheckout: true}))
+
+	got, err := runGit(t, localDir, r.env, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, head, got)
+}
+
+// TestSafeDownload_PlainInputMayPublishCheckout keeps the plain-to-checkout
+// path: without IsCheckout, a plain host input may come back as a valid
+// checkout that keeps the normal sanitization and validation.
+func TestSafeDownload_PlainInputMayPublishCheckout(t *testing.T) {
+	requireGit(t)
+
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "content")
+	head := r.git("rev-parse", "HEAD")
+
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+		RepositorySnapshot{}))
+
+	got, err := runGit(t, localDir, r.env, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, head, got)
+}
+
+func TestSafeDownload_PublishesPlainDirectory(t *testing.T) {
+	tree := t.TempDir()
+	writeFile(t, tree, "file.txt", "content\n")
+
+	serveDownloadFrom(t, tree)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+		RepositorySnapshot{}))
+
+	data, err := os.ReadFile(filepath.Join(localDir, "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "content\n", string(data))
+	_, err = os.Lstat(filepath.Join(localDir, ".git"))
+	assert.True(t, os.IsNotExist(err), "a plain download must not gain git metadata")
+}
+
+// TestSafeDownload_RejectsMissingOrInvalidRootCheckout rejects, without
+// publishing, roots that look like a repository but are neither a checkout nor
+// a plain directory; there is no discovery fallback to the bare root.
+func TestSafeDownload_RejectsMissingOrInvalidRootCheckout(t *testing.T) {
+	requireGit(t)
+
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "content")
+
+	reject := func(t *testing.T, src string) error {
+		t.Helper()
+		serveDownloadFrom(t, src)
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+			RepositorySnapshot{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "checking git checkout")
+		assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+		_, statErr := os.Lstat(localDir)
+		assert.True(t, os.IsNotExist(statErr), "a rejected checkout must not be published")
+		return err
+	}
+
+	t.Run("root git directory metadata", func(t *testing.T) {
+		tree := t.TempDir()
+		writeFile(t, tree, "HEAD", "ref: refs/heads/main\n")
+		writeFile(t, tree, "commondir", "../.git\n")
+		err := reject(t, tree)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "a bare-shaped root is detected directly: %v", err)
+	})
+
+	t.Run("bare root", func(t *testing.T) {
+		bare := filepath.Join(t.TempDir(), "bare.git")
+		r.git("clone", "--bare", "--quiet", r.dir, bare)
+		assert.Equal(t, "true", r.gitAt(bare, "rev-parse", "--is-bare-repository"),
+			"native Git must recognize the bare root")
+		err := reject(t, bare)
+		assert.True(t, errors.Is(err, ErrRepositoryRejected), "a bare root is detected directly: %v", err)
+	})
+
+	t.Run("empty .git beside bare root", func(t *testing.T) {
+		tree := t.TempDir()
+		writeFile(t, tree, "HEAD", r.git("rev-parse", "HEAD")+"\n")
+		writeFile(t, tree, "objects/pack/source.idx", "source\n")
+		writeFile(t, tree, "refs/heads/main", r.git("rev-parse", "HEAD")+"\n")
+		require.NoError(t, os.Mkdir(filepath.Join(tree, ".git"), 0o755))
+		err := reject(t, tree)
+		assert.False(t, errors.Is(err, ErrRepositoryRejected), "a Git query failure is not a rejection: %v", err)
+	})
+
+	t.Run("invalid .git layout", func(t *testing.T) {
+		tree := t.TempDir()
+		writeFile(t, tree, ".git/HEAD", "ref: refs/heads/main\n")
+		err := reject(t, tree)
+		assert.False(t, errors.Is(err, ErrRepositoryRejected), "a Git layout query failure is not a rejection: %v", err)
+	})
+}
+
+// TestSafeDownload_RejectsSpecialHEAD times out a checkout whose .git/HEAD is a
+// FIFO instead of publishing it.
+func TestSafeDownload_RejectsSpecialHEAD(t *testing.T) {
+	requireGit(t)
+
+	tree := t.TempDir()
+	writeFile(t, tree, ".git/objects/pack/source.idx", "source\n")
+	writeFile(t, tree, ".git/refs/heads/main", strings.Repeat("0", 40)+"\n")
+	requireFIFO(t, filepath.Join(tree, ".git"), "HEAD")
+
+	serveDownloadFrom(t, tree)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+		RepositorySnapshot{})
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+	assert.True(t, errors.Is(err, context.DeadlineExceeded), "want a deadline error, got %v", err)
+	assert.False(t, errors.Is(err, ErrRepositoryRejected), "a timeout is not a rejection: %v", err)
+	_, statErr := os.Lstat(localDir)
+	assert.True(t, os.IsNotExist(statErr), "a special HEAD must not be published")
+}
+
+// TestSafeDownload_CheckoutQueryFailures makes the native layout query fail or
+// print the wrong path; every result must be a checkout error, and an
+// unqueryable Git must fail closed.
+func TestSafeDownload_CheckoutQueryFailures(t *testing.T) {
+	requireGit(t)
+
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "content")
+
+	installDownloadAndGit := func(t *testing.T, gitBody string) {
+		t.Helper()
+		binDir := t.TempDir()
+		script := fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = \"download\" ]; then\n  /bin/cp -R \"%s/.\" \"$5/\"\nfi\nexit 0\n", r.dir)
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+		if gitBody != "" {
+			require.NoError(t, os.WriteFile(filepath.Join(binDir, "git"), []byte("#!/bin/sh\n"+gitBody+"\n"), 0o755))
+		}
+		t.Setenv("PATH", binDir)
+	}
+
+	cases := []struct {
+		name    string
+		gitBody string
+		want    string
+	}{
+		{"status failure", "exit 129", "checking git checkout"},
+		{"malformed output", "printf 'junk\\n'", "git directory resolved to"},
+		{"git unavailable", "", "checking git checkout"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installDownloadAndGit(t, tc.gitBody)
+			localDir := filepath.Join(t.TempDir(), "repo")
+			err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+				RepositorySnapshot{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+			_, statErr := os.Lstat(localDir)
+			assert.True(t, os.IsNotExist(statErr), "a failed query must not publish")
+		})
+	}
+}
+
+// TestSafeDownload_CheckoutQueryIgnoresEnvironment proves inherited Git
+// variables and repository config cannot redirect or trace the layout query.
+func TestSafeDownload_CheckoutQueryIgnoresEnvironment(t *testing.T) {
+	requireGit(t)
+
+	decoy := newGitRepo(t)
+	decoy.commitFile("decoy.txt", "decoy")
+
+	r := newGitRepo(t)
+	r.commitFile("file.txt", "content")
+	tracePath := filepath.Join(t.TempDir(), "trace2.log")
+	t.Setenv("GIT_DIR", filepath.Join(decoy.dir, ".git"))
+	t.Setenv("GIT_COMMON_DIR", filepath.Join(decoy.dir, ".git"))
+	t.Setenv("GIT_OBJECT_DIRECTORY", filepath.Join(decoy.dir, ".git", "objects"))
+	t.Setenv("GIT_TRACE2", tracePath)
+
+	serveDownloadFrom(t, r.dir)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+		RepositorySnapshot{}))
+	assert.NoFileExists(t, tracePath)
+}
+
+// shallowCommitCount returns Git's commit count for HEAD in dir, which reflects
+// the root shallow boundary Git is using.
+func shallowCommitCount(t *testing.T, dir string, env []string) string {
+	t.Helper()
+	out, err := runGit(t, dir, env, "rev-list", "--count", "HEAD")
+	require.NoError(t, err)
+	return out
+}
+
+func TestSafeDownload_PreservesTrustedShallowBoundary(t *testing.T) {
+	requireGit(t)
+
+	cases := []struct {
+		name            string
+		trusted         string // "", "head", or "middle"
+		downloaded      string // "", "head", or "middle"
+		wantCount       string // published count when the change is allowed
+		downloadedCount string // baseline count with the untrusted marker
+	}{
+		{"deeper sandbox boundary is rejected", "head", "middle", "", "2"},
+		{"sandbox cutoff in a full repository is rejected", "", "middle", "", "2"},
+		{"trusted boundary is recreated when the sandbox removed it", "head", "", "1", ""},
+		{"full history stays full when the sandbox removed the marker", "", "", "3", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := gitTestEnv(t.TempDir())
+			r := newGitRepo(t)
+			r.commitFile("one.txt", "one")
+			middle := r.commitFile("two.txt", "two")
+			head := r.commitFile("three.txt", "three")
+			oid := func(which string) string {
+				switch which {
+				case "head":
+					return head
+				case "middle":
+					return middle
+				}
+				t.Fatalf("unknown boundary %q", which)
+				return ""
+			}
+			shallowPath := filepath.Join(r.dir, ".git", "shallow")
+			if tc.downloaded != "" {
+				require.NoError(t, os.WriteFile(shallowPath, []byte(oid(tc.downloaded)+"\n"), 0o644))
+				assert.Equal(t, tc.downloadedCount, shallowCommitCount(t, r.dir, env),
+					"fixture must use the untrusted boundary")
+			}
+			trusted := RepositorySnapshot{}
+			if tc.trusted != "" {
+				trusted = RepositorySnapshot{Shallow: ShallowState{Present: true, Data: []byte(oid(tc.trusted) + "\n")}}
+			}
+			serveDownloadFrom(t, r.dir)
+			localDir := filepath.Join(t.TempDir(), "repo")
+
+			if tc.wantCount == "" {
+				err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, trusted)
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "unsupported sandbox shallow boundary change")
+				assert.Contains(t, err.Error(), "fetch --depth")
+				assert.NoDirExists(t, localDir, "a rejected boundary change must not be published")
+				return
+			}
+
+			require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, trusted))
+			assert.Equal(t, tc.wantCount, shallowCommitCount(t, localDir, env))
+			got, err := os.ReadFile(filepath.Join(localDir, ".git", "shallow"))
+			if !trusted.Shallow.Present {
+				assert.True(t, os.IsNotExist(err), "untrusted shallow metadata must not be published")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, trusted.Shallow.Data, got)
+		})
+	}
+}
+
+// TestSafeDownload_RejectsShallowCloneAddedCutoff uses a real local file
+// transport clone at depth 1, whose boundary commit is missing its parent, to
+// show that a valid Git shallow fetch can add a cutoff absent from the trusted
+// snapshot and is rejected before publication.
+func TestSafeDownload_RejectsShallowCloneAddedCutoff(t *testing.T) {
+	requireGit(t)
+	env := gitTestEnv(t.TempDir())
+
+	src := newGitRepo(t)
+	src.commitFile("one.txt", "one")
+	middle := src.commitFile("two.txt", "two")
+	head := src.commitFile("three.txt", "three")
+
+	downloaded := t.TempDir()
+	out, err := runGit(t, downloaded, env, "clone", "--quiet", "--depth=1", "file://"+src.dir, ".")
+	require.NoError(t, err, out)
+	marker, err := os.ReadFile(filepath.Join(downloaded, ".git", "shallow"))
+	require.NoError(t, err, "the depth-1 clone must carry a shallow marker")
+	require.Equal(t, head+"\n", string(marker), "the clone boundary must be the new tip")
+	require.NotEqual(t, middle, strings.TrimSpace(string(marker)), "the trusted boundary must differ")
+	r := &gitRepo{t: t, dir: downloaded, env: env}
+	assert.Equal(t, "1", r.git("rev-list", "--count", "HEAD"),
+		"Git must read the downloaded repository with its own marker")
+
+	trusted := RepositorySnapshot{Shallow: ShallowState{Present: true, Data: []byte(middle + "\n")}}
+	serveDownloadFrom(t, downloaded)
+	localDir := filepath.Join(t.TempDir(), "repo")
+	require.NoError(t, os.MkdirAll(localDir, 0o755))
+	prior := filepath.Join(localDir, "prior.txt")
+	require.NoError(t, os.WriteFile(prior, []byte("prior\n"), 0o644))
+
+	err = SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, trusted)
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, ErrRepositoryValidation), "want ErrRepositoryValidation, got %v", err)
+	assert.True(t, errors.Is(err, ErrRepositoryRejected), "want ErrRepositoryRejected, got %v", err)
+	assert.Contains(t, err.Error(), "unsupported sandbox shallow boundary change")
+	assert.Contains(t, err.Error(), "fetch --depth")
+	got, err := os.ReadFile(prior)
+	require.NoError(t, err)
+	assert.Equal(t, "prior\n", string(got), "an earlier output must remain untouched")
+	_, err = os.Lstat(filepath.Join(localDir, ".git"))
+	assert.True(t, os.IsNotExist(err), "the rejected download must not be published")
+}
+
+// TestSafeDownload_FailurePhaseMarkers tags failures inside post-download
+// validation with the phase marker, leaves transport failures untagged, and
+// preserves every original cause.
+func TestSafeDownload_FailurePhaseMarkers(t *testing.T) {
+	t.Run("download failure", func(t *testing.T) {
+		binDir := t.TempDir()
+		script := "#!/bin/sh\nif [ \"$2\" = \"download\" ]; then\n  exit 1\nfi\nexit 0\n"
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+		t.Setenv("PATH", binDir)
+
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, ErrRepositoryValidation), "a failed transfer is not a validation failure: %v", err)
+		var exitErr *exec.ExitError
+		assert.True(t, errors.As(err, &exitErr), "the transfer cause must stay reachable: %v", err)
+	})
+
+	t.Run("git query failure", func(t *testing.T) {
+		r := newGitRepo(t)
+		r.commitFile("file.txt", "content")
+
+		binDir := t.TempDir()
+		download := fmt.Sprintf("#!/bin/sh\nif [ \"$2\" = \"download\" ]; then\n  /bin/cp -R \"%s/.\" \"$5/\"\nfi\nexit 0\n", r.dir)
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(download), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "git"), []byte("#!/bin/sh\nexit 129\n"), 0o755))
+		t.Setenv("PATH", binDir)
+
+		localDir := filepath.Join(t.TempDir(), "repo")
+		err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "checking git checkout")
+		assert.True(t, errors.Is(err, ErrRepositoryValidation), "a Git query failure happens in root validation: %v", err)
+		assert.False(t, errors.Is(err, ErrRepositoryRejected), "a Git query failure is not a rejection: %v", err)
+	})
+
+	t.Run("filesystem failure during sanitization", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root bypasses permission checks")
+		}
+		binDir := t.TempDir()
+		script := `#!/bin/sh
+if [ "$2" = "download" ]; then
+  printf 'safe\n' > "$5/safe.txt"
+  /bin/ln -s /etc/passwd "$5/dangerous-link"
+  /bin/chmod 0555 "$5"
+  exit 0
+fi
+exit 0
+`
+		require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+		t.Setenv("PATH", binDir)
+
+		parent := t.TempDir()
+		t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+		localDir := filepath.Join(parent, "repo")
+		err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "sanitizing downloaded directory")
+		assert.True(t, errors.Is(err, ErrRepositoryValidation), "a sanitization failure happens in the validation phase: %v", err)
+		assert.False(t, errors.Is(err, ErrRepositoryRejected), "a filesystem failure is not a rejection: %v", err)
+		var symErr *errSymlink
+		assert.True(t, errors.As(err, &symErr), "the filesystem cause must stay reachable: %v", err)
+	})
+}
+
+// TestRestoreTrustedShallow_EntrySets checks the boundary-entry contract:
+// returned entries must be a subset of the trusted set, while order,
+// duplicates, removals, and an empty marker are tolerated.
+func TestRestoreTrustedShallow_EntrySets(t *testing.T) {
+	first := strings.Repeat("1", 40)
+	second := strings.Repeat("2", 40)
+	root := newGitRepo(t).commitFile("root.txt", "root")
+	present := func(entries ...string) ShallowState {
+		return ShallowState{Present: true, Data: []byte(strings.Join(entries, "\n") + "\n")}
+	}
+	cases := []struct {
+		name     string
+		trusted  ShallowState
+		returned string
+		absent   bool
+		wantErr  bool
+	}{
+		{name: "unchanged marker restores the trusted bytes", trusted: present(first), returned: first + "\n"},
+		{name: "reordered and duplicated entries are allowed", trusted: present(first, second), returned: second + "\n" + first + "\n" + second + "\n"},
+		{name: "removal is allowed", trusted: present(first, second), returned: first + "\n"},
+		{name: "empty returned file is allowed when trusted is absent", returned: ""},
+		{name: "absent returned marker is allowed when trusted is absent", absent: true},
+		{name: "added cutoff is rejected", trusted: present(first), returned: first + "\n" + second + "\n", wantErr: true},
+		{name: "malformed added entry is rejected", trusted: present(first), returned: first + "\njunk\n", wantErr: true},
+		{name: "new zero-parent root cutoff is rejected", returned: root + "\n", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			localDir := t.TempDir()
+			gitDir := filepath.Join(localDir, ".git")
+			require.NoError(t, os.Mkdir(gitDir, 0o755))
+			shallowPath := filepath.Join(gitDir, "shallow")
+			if !tc.absent {
+				require.NoError(t, os.WriteFile(shallowPath, []byte(tc.returned), 0o644))
+			}
+
+			err := restoreTrustedShallow(localDir, tc.trusted)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "unsupported sandbox shallow boundary change")
+				assert.Contains(t, err.Error(), "fetch --depth")
+				got, readErr := os.ReadFile(shallowPath)
+				require.NoError(t, readErr)
+				assert.Equal(t, tc.returned, string(got), "a rejected boundary must be left untouched")
+				return
+			}
+			require.NoError(t, err)
+			got, readErr := os.ReadFile(shallowPath)
+			if !tc.trusted.Present {
+				assert.True(t, os.IsNotExist(readErr), "trusted absence must remove the marker")
+				return
+			}
+			require.NoError(t, readErr)
+			assert.Equal(t, tc.trusted.Data, got, "trusted bytes must be restored exactly")
+		})
+	}
+}
+
+// TestSafeDownload_RestoresTrustedShallowWhenBoundaryCommitIsRewritten covers a
+// sandbox that rewrote history so the trusted boundary commit is no longer on
+// the downloaded branch. Restoration stays byte-exact, so the published
+// repository carries a shallow entry for a commit the new history does not
+// reach; these cases establish that Git still reads the repository, that the
+// rewritten candidate history and worktree survive, and that the stale entry
+// neither errors nor re-introduces the dropped commit.
+func TestSafeDownload_RestoresTrustedShallowWhenBoundaryCommitIsRewritten(t *testing.T) {
+	requireGit(t)
+
+	cases := []struct {
+		name string
+		// rewrite mutates the fixture after the trusted boundary is captured and
+		// returns the subjects the rewritten branch should expose, newest first.
+		rewrite func(t *testing.T, r *gitRepo, one, middle string) []string
+	}{
+		{
+			name: "squash rewrite leaves the boundary commit unreachable but stored",
+			rewrite: func(t *testing.T, r *gitRepo, one, middle string) []string {
+				r.git("reset", "--quiet", "--soft", one)
+				r.git("commit", "--quiet", "-s", "-m", "squashed")
+				_, err := runGit(t, r.dir, r.env, "merge-base", "--is-ancestor", middle, "HEAD")
+				require.Error(t, err, "rewritten history must not contain the trusted boundary commit")
+				_, err = runGit(t, r.dir, r.env, "cat-file", "-e", middle)
+				require.NoError(t, err, "an unpruned squash keeps the old boundary object")
+				return []string{"squashed", "one"}
+			},
+		},
+		{
+			name: "rebase rewrite prunes the boundary object",
+			rewrite: func(t *testing.T, r *gitRepo, one, middle string) []string {
+				r.git("checkout", "--quiet", "-b", "upstream", one)
+				require.NoError(t, os.WriteFile(filepath.Join(r.dir, "upstream.txt"), []byte("upstream\n"), 0o644))
+				r.git("add", "upstream.txt")
+				r.git("commit", "--quiet", "-s", "-m", "upstream")
+				r.git("checkout", "--quiet", "main")
+				r.git("rebase", "--quiet", "upstream")
+				r.git("reflog", "expire", "--expire=now", "--all")
+				r.git("gc", "--quiet", "--prune=now")
+				_, err := runGit(t, r.dir, r.env, "merge-base", "--is-ancestor", middle, "HEAD")
+				require.Error(t, err, "rewritten history must not contain the trusted boundary commit")
+				_, err = runGit(t, r.dir, r.env, "cat-file", "-e", middle)
+				require.Error(t, err, "pruning must drop the trusted boundary object")
+				return []string{"three", "two", "upstream", "one"}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newGitRepo(t)
+			one := r.commitFile("one.txt", "one")
+			middle := r.commitFile("two.txt", "two")
+			r.commitFile("three.txt", "three")
+			wantSubjects := tc.rewrite(t, r, one, middle)
+			head := r.git("rev-parse", "HEAD")
+
+			trusted := RepositorySnapshot{Shallow: ShallowState{Present: true, Data: []byte(middle + "\n")}}
+			serveDownloadFrom(t, r.dir)
+			localDir := filepath.Join(t.TempDir(), "repo")
+			require.NoError(t, SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, trusted))
+
+			got, err := os.ReadFile(filepath.Join(localDir, ".git", "shallow"))
+			require.NoError(t, err)
+			assert.Equal(t, trusted.Shallow.Data, got)
+
+			assert.Equal(t, head, r.gitAt(localDir, "rev-parse", "HEAD"),
+				"rewritten candidate commit must survive the download")
+			assert.Equal(t, strings.Join(wantSubjects, "\n"), r.gitAt(localDir, "log", "--format=%s"))
+			assert.Equal(t, fmt.Sprintf("%d", len(wantSubjects)), shallowCommitCount(t, localDir, r.env))
+
+			status, err := runGit(t, localDir, r.env, "status", "--porcelain")
+			require.NoError(t, err, "Git must read the published repository")
+			assert.Empty(t, status, "the restored branch boundary must not alter the worktree")
+			_, err = runGit(t, localDir, r.env, "merge-base", "--is-ancestor", one, "HEAD")
+			require.NoError(t, err, "history traversal must work after the stale boundary is restored")
+		})
+	}
+}
+
+func TestSafeDownload_RejectsTrustedShallowWithoutGitMetadata(t *testing.T) {
+	binDir := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$2\" = \"download\" ]; then\n  printf 'work\\n' > \"$5/file.txt\"\nfi\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir)
+
+	localDir := filepath.Join(t.TempDir(), "repo")
+	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir,
+		RepositorySnapshot{Shallow: ShallowState{Present: true, Data: []byte("0123456789012345678901234567890123456789\n")}})
+	require.Error(t, err)
+	// A plain output is a supported root, but a trusted shallow boundary needs
+	// git metadata, so restoration fails closed rather than creating it.
+	assert.Contains(t, err.Error(), "restoring trusted git shallow metadata")
+	_, statErr := os.Lstat(localDir)
+	assert.True(t, os.IsNotExist(statErr), "unsafe download must not be published")
+}
+
+func TestRestoreTrustedShallow_ErrorPaths(t *testing.T) {
+	t.Run("shallow path cannot be inspected", func(t *testing.T) {
+		localDir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(localDir, ".git"), []byte("gitdir: elsewhere\n"), 0o644))
+
+		err := restoreTrustedShallow(localDir, ShallowState{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "inspecting git shallow metadata")
+	})
+
+	t.Run("git entry is not a directory", func(t *testing.T) {
+		localDir := t.TempDir()
+		require.NoError(t, os.Symlink("missing", filepath.Join(localDir, ".git")))
+
+		err := restoreTrustedShallow(localDir, ShallowState{Present: true, Data: []byte("0123456789012345678901234567890123456789\n")})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "is not a directory")
+	})
+}
+
+func TestRestoreTrustedShallow_PermissionFailures(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+
+	t.Run("removing untrusted shallow fails", func(t *testing.T) {
+		localDir := t.TempDir()
+		gitDir := filepath.Join(localDir, ".git")
+		require.NoError(t, os.Mkdir(gitDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(gitDir, "shallow"), nil, 0o644))
+		require.NoError(t, os.Chmod(gitDir, 0o555))
+		t.Cleanup(func() { _ = os.Chmod(gitDir, 0o755) })
+
+		err := restoreTrustedShallow(localDir, ShallowState{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "removing untrusted git shallow metadata")
+	})
+
+	t.Run("reading downloaded shallow fails", func(t *testing.T) {
+		localDir := t.TempDir()
+		gitDir := filepath.Join(localDir, ".git")
+		require.NoError(t, os.Mkdir(gitDir, 0o755))
+		shallowPath := filepath.Join(gitDir, "shallow")
+		require.NoError(t, os.WriteFile(shallowPath, []byte("0123456789012345678901234567890123456789\n"), 0o644))
+		require.NoError(t, os.Chmod(shallowPath, 0))
+		t.Cleanup(func() { _ = os.Chmod(shallowPath, 0o644) })
+
+		err := restoreTrustedShallow(localDir, ShallowState{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reading downloaded git shallow metadata")
+	})
+
+	t.Run("writing trusted shallow fails", func(t *testing.T) {
+		localDir := t.TempDir()
+		gitDir := filepath.Join(localDir, ".git")
+		require.NoError(t, os.Mkdir(gitDir, 0o555))
+		t.Cleanup(func() { _ = os.Chmod(gitDir, 0o755) })
+
+		err := restoreTrustedShallow(localDir, ShallowState{Present: true, Data: []byte("0123456789012345678901234567890123456789\n")})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "writing trusted git shallow metadata")
+	})
 }
 
 func TestSafeDownload_ReturnsErrorWhenSanitizationCleanupFails(t *testing.T) {
@@ -736,7 +2711,7 @@ exit 0
 	})
 	localDir := filepath.Join(parent, "repo")
 
-	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir)
+	err := SafeDownload("test-sandbox", "/sandbox/workspace/repo", localDir, RepositorySnapshot{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sanitizing downloaded directory")
 	assert.Contains(t, err.Error(), "cleaning staging directory after sanitization failure")
@@ -1939,18 +3914,24 @@ func TestSanitizeDownload_RemovesAppleDoubleInGitDir(t *testing.T) {
 func TestInGitDir(t *testing.T) {
 	root := "/repo"
 	tests := []struct {
-		path string
-		want bool
+		path    string
+		wantRel string
+		want    bool
 	}{
-		{"/repo/.git/objects/pack/file.idx", true},
-		{"/repo/.git/config", true},
-		{"/repo/sub/.git/hooks/pre-commit", true},
-		{"/repo/src/main.go", false},
-		{"/repo/._file.txt", false},
+		{"/repo/.git/objects/pack/file.idx", "objects/pack/file.idx", true},
+		{"/repo/.git/config", "config", true},
+		{"/repo/sub/.git/hooks/pre-commit", "hooks/pre-commit", true},
+		{"/repo/.git", "", true},
+		{"/repo", "", false},
+		{"/repo/src/main.go", "", false},
+		{"/repo/._file.txt", "", false},
+		{"/repo/.GIT/refs/replace", "refs/replace", true},
+		{"/repo/.git/modules/dep/.git/refs/x", "modules/dep/.git/refs/x", true},
 	}
 	for _, tt := range tests {
-		got := inGitDir(tt.path, root)
-		assert.Equal(t, tt.want, got, "inGitDir(%q, %q)", tt.path, root)
+		got, gotRel := inGitDir(tt.path, root)
+		assert.Equal(t, tt.want, got, "inGitDir(%q, %q) matched", tt.path, root)
+		assert.Equal(t, tt.wantRel, filepath.ToSlash(gotRel), "inGitDir(%q, %q) rel", tt.path, root)
 	}
 }
 
@@ -3290,4 +5271,231 @@ func TestExtractOutputFiles_CopiesListedFiles(t *testing.T) {
 	data, readErr := os.ReadFile(want)
 	require.NoError(t, readErr)
 	assert.Equal(t, "{}", string(data))
+}
+
+func writeFile(t *testing.T, root, rel, content string) string {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	return path
+}
+
+func requireGit(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+}
+
+type gitRepo struct {
+	t   *testing.T
+	dir string
+	env []string
+}
+
+func newGitRepo(t *testing.T) *gitRepo {
+	t.Helper()
+	home := t.TempDir()
+	r := &gitRepo{t: t, dir: t.TempDir(), env: gitTestEnv(home)}
+	_, err := runGit(t, r.dir, r.env, "init", "--quiet", "--initial-branch=main", ".")
+	require.NoError(t, err)
+	r.git("config", "user.name", "Test")
+	r.git("config", "user.email", "test@example.invalid")
+	r.git("config", "advice.graftFileDeprecated", "false")
+	return r
+}
+
+// initReftableRepo initializes a reftable repository at dir, skipping when the
+// native Git predates --ref-format=reftable. It is used by tests that exercise
+// the reftable path; files-backend tests keep using newGitRepo.
+func initReftableRepo(t *testing.T, dir string) *gitRepo {
+	t.Helper()
+	return initReftableRepoFormat(t, dir, "")
+}
+
+// initReftableRepoFormat initializes a reftable repository with an explicit
+// object format; an empty format uses the native default.
+func initReftableRepoFormat(t *testing.T, dir, objectFormat string) *gitRepo {
+	t.Helper()
+	requireGit(t)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	r := &gitRepo{t: t, dir: dir, env: gitTestEnv(t.TempDir())}
+	args := []string{"init", "--quiet", "--initial-branch=main", "--ref-format=reftable"}
+	if objectFormat != "" {
+		args = append(args, "--object-format="+objectFormat)
+	}
+	out, err := runGit(t, r.dir, r.env, append(args, ".")...)
+	if err != nil {
+		if strings.Contains(out, "unknown option") || strings.Contains(out, "unknown ref storage format") {
+			t.Skipf("git does not support --ref-format=reftable: %s", out)
+		}
+		require.NoError(t, err, out)
+	}
+	r.git("config", "user.name", "Test")
+	r.git("config", "user.email", "test@example.invalid")
+	return r
+}
+
+func newReftableRepo(t *testing.T) *gitRepo {
+	t.Helper()
+	return initReftableRepo(t, t.TempDir())
+}
+
+func newReftableRepoFormat(t *testing.T, objectFormat string) *gitRepo {
+	t.Helper()
+	return initReftableRepoFormat(t, t.TempDir(), objectFormat)
+}
+
+// requireReftableSanitization skips positive reftable sanitation tests on a
+// native Git older than 2.53, whose strict ref verification cannot reject
+// malformed reftable tables. Fixtures stay creatable on older Git so version
+// rejection tests can still run there.
+func requireReftableSanitization(t *testing.T) {
+	t.Helper()
+	requireGit(t)
+	supported, err := nativeGitSupportsReftable(t.TempDir())
+	require.NoError(t, err)
+	if !supported {
+		t.Skip("git predates 2.53 reftable verification")
+	}
+}
+
+// installGitShim puts a wrapper first on PATH that runs body, then forwards to
+// the real git. It lets a test alter one subcommand's behavior without
+// replacing Git itself.
+func installGitShim(t *testing.T, body string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" + body + "\nexec \"" + realGit + "\" \"$@\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+}
+
+func gitTestEnv(home string) []string {
+	env := make([]string, 0, len(os.Environ())+12)
+	for _, kv := range os.Environ() {
+		key, _, _ := strings.Cut(kv, "=")
+		// Inherited Git variables (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE,
+		// GIT_CONFIG_COUNT, ...) would redirect fixture commands outside the
+		// fixture. Only the explicit settings appended below may apply.
+		if key == "HOME" || strings.HasPrefix(key, "GIT_") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env,
+		"HOME="+home,
+		"GIT_CONFIG_GLOBAL="+filepath.Join(home, ".gitconfig"),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_AUTHOR_NAME=Test",
+		"GIT_AUTHOR_EMAIL=test@example.invalid",
+		"GIT_COMMITTER_NAME=Test",
+		"GIT_COMMITTER_EMAIL=test@example.invalid",
+	)
+}
+
+// TestGitTestEnv_IgnoresInheritedGitVariables checks that inherited Git
+// variables pointing at a decoy repository cannot redirect fixture commands or
+// contaminate the fixture's identity.
+func TestGitTestEnv_IgnoresInheritedGitVariables(t *testing.T) {
+	decoy := newGitRepo(t)
+	writeFile(t, decoy.dir, "decoy.txt", "decoy\n")
+	decoy.git("add", "decoy.txt")
+	decoy.git("commit", "--quiet", "-s", "-m", "decoy")
+	decoyHead := decoy.git("rev-parse", "HEAD")
+	decoyIndex := decoy.git("ls-files", "-s")
+	decoyConfigPath := filepath.Join(decoy.dir, ".git", "config")
+	decoyConfig, err := os.ReadFile(decoyConfigPath)
+	require.NoError(t, err)
+
+	t.Setenv("GIT_DIR", filepath.Join(decoy.dir, ".git"))
+	t.Setenv("GIT_WORK_TREE", decoy.dir)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(decoy.dir, ".git", "index"))
+	t.Setenv("GIT_CONFIG_GLOBAL", decoyConfigPath)
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "user.email")
+	t.Setenv("GIT_CONFIG_VALUE_0", "decoy@example.invalid")
+	t.Setenv("GIT_AUTHOR_NAME", "Decoy")
+	t.Setenv("GIT_AUTHOR_EMAIL", "decoy@example.invalid")
+	t.Setenv("GIT_COMMITTER_NAME", "Decoy")
+	t.Setenv("GIT_COMMITTER_EMAIL", "decoy@example.invalid")
+
+	fixture := newGitRepo(t)
+	writeFile(t, fixture.dir, "fixture.txt", "fixture\n")
+	fixture.git("add", "fixture.txt")
+	fixture.git("commit", "--quiet", "-s", "-m", "fixture")
+
+	assert.Equal(t, "fixture", fixture.git("log", "-1", "--format=%s"), "fixture commands must act on the fixture")
+	assert.Equal(t, "1", fixture.git("rev-list", "--count", "HEAD"))
+	assert.Equal(t, "fixture.txt", fixture.git("ls-files"), "fixture index must list only fixture files")
+	assert.Equal(t, "main", fixture.git("symbolic-ref", "--short", "HEAD"))
+	assert.Equal(t, "test@example.invalid", fixture.git("config", "user.email"), "fixture identity must ignore inherited config injection")
+	assert.Equal(t, "Test", fixture.git("config", "user.name"))
+
+	assert.Equal(t, decoyHead, decoy.git("rev-parse", "HEAD"), "decoy HEAD must be unchanged")
+	assert.Equal(t, decoyIndex, decoy.git("ls-files", "-s"), "decoy index must be unchanged")
+	gotConfig, err := os.ReadFile(decoyConfigPath)
+	require.NoError(t, err)
+	assert.Equal(t, decoyConfig, gotConfig, "decoy config must be unchanged")
+	_, err = os.Lstat(filepath.Join(decoy.dir, "fixture.txt"))
+	assert.True(t, os.IsNotExist(err), "fixture commit must not land in the decoy")
+}
+
+func (r *gitRepo) commitFile(name, content string) string {
+	r.t.Helper()
+	require.NoError(r.t, os.WriteFile(filepath.Join(r.dir, name), []byte(content+"\n"), 0o644))
+	r.git("add", name)
+	r.git("commit", "--quiet", "-m", content)
+	return r.git("rev-parse", "HEAD")
+}
+
+func (r *gitRepo) snapshot() string {
+	r.t.Helper()
+	return strings.Join([]string{
+		r.git("status", "--porcelain=v1"),
+		r.git("diff", "--cached", "--name-status"),
+		r.git("diff", "--name-status"),
+		r.git("log", "--format=%H %s"),
+	}, "\n")
+}
+
+func (r *gitRepo) gitAt(dir string, args ...string) string {
+	r.t.Helper()
+	out, err := runGit(r.t, dir, r.env, args...)
+	require.NoErrorf(r.t, err, "git %v: %s", args, out)
+	return out
+}
+
+func (r *gitRepo) git(args ...string) string {
+	r.t.Helper()
+	return r.gitAt(r.dir, args...)
+}
+
+func (r *gitRepo) tryGit(args ...string) (string, error) {
+	return runGit(r.t, r.dir, r.env, args...)
+}
+
+func (r *gitRepo) isAncestor(ancestor, descendant string) bool {
+	r.t.Helper()
+	_, err := runGit(r.t, r.dir, r.env, "merge-base", "--is-ancestor", ancestor, descendant)
+	if err == nil {
+		return true
+	}
+	var exitErr *exec.ExitError
+	require.ErrorAs(r.t, err, &exitErr)
+	require.Equal(r.t, 1, exitErr.ExitCode())
+	return false
+}
+
+func runGit(t *testing.T, dir string, env []string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
 }

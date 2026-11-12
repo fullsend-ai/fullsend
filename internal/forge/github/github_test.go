@@ -5491,6 +5491,59 @@ func TestAddIssueLabels_Empty(t *testing.T) {
 	require.NoError(t, client.AddIssueLabels(context.Background(), "org", "repo", 7))
 }
 
+func TestEnsureLabel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/repos/org/repo/labels", r.URL.Path)
+		var body map[string]string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, map[string]string{"name": "do-it", "color": "ededed"}, body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"name":"do-it"}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	require.NoError(t, client.EnsureLabel(context.Background(), "org", "repo", "do-it"))
+}
+
+func TestEnsureLabel_AlreadyExists(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"Label","code":"already_exists","field":"name"}]}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	require.NoError(t, client.EnsureLabel(context.Background(), "org", "repo", "do-it"))
+}
+
+func TestEnsureLabel_Errors(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"other validation error", http.StatusUnprocessableEntity, `{"message":"Validation Failed","errors":[{"resource":"Label","code":"invalid","field":"color"}]}`},
+		{"not found", http.StatusNotFound, `{"message":"Not Found"}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			err := client.EnsureLabel(context.Background(), "org", "repo", "do-it")
+			require.ErrorContains(t, err, `create label "do-it"`)
+		})
+	}
+}
+
 func TestDownloadWorkflowRunArtifact(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/actions/artifacts/9/zip", r.URL.Path)
