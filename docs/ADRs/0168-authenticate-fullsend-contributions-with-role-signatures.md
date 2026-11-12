@@ -68,6 +68,10 @@ configure their own Sigstore services and trusted roots. See the
 [Fulcio OIDC claim mapping][fulcio-oidc] and
 [`sigstore-go` documentation][sigstore-go-docs].
 
+This ADR aims to provide a verifiable repository-scoped role identity for
+Fullsend contributions using workflow OIDC and Sigstore without long-lived
+per-role secrets.
+
 ## Options
 
 ### Resolve every role from a platform actor
