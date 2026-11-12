@@ -283,6 +283,9 @@ once `the pull request head branch matches` has found it.
 | `the pull request has been closed` | The pull request is closed, merged or not |
 | `a comment on the issue contains "<text>"` | Some issue comment contains the text, such as a sticky marker like `<!-- fullsend:agent-status:` |
 | `a comment on the pull request contains "<text>"` | Some pull request comment contains the text |
+| `the issue has <n> comments containing "<text>"` | Exactly <n> comments on the issue contain the text |
+| `the last comment on the issue contains "<text>"` | The last (newest) comment on the issue contains the text |
+| `a comment on the issue other than the last contains "<text>"` | Some comment before the last on the issue contains the text |
 | `the pull request body contains "<text>"` | The PR body contains the text. `<issue>` expands, so `"Closes #<issue>"` checks the closing reference |
 | `an issue with label "<label>" and title containing "<text>" exists` | An open issue other than the scenario's own carries the label and has a matching title, such as an issue an agent filed. `<issue>` expands; use it in the title so a leftover from an earlier run cannot match. The matched issue is closed at cleanup |
 

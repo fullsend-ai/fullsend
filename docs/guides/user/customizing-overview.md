@@ -98,7 +98,7 @@ walkthrough.
   harness/my-agent.yaml         # Execution config, including the trigger
   agents/my-agent.md            # Agent prompt — the file you edit
   schemas/my-agent-result.schema.json  # What the agent must produce
-  scripts/post-my-agent.sh      # Turns the result into one comment
+  scripts/post-my-agent.sh      # Posts the result as a comment
   policies/base.yaml            # Sandbox policy (written when absent)
 ```
 

@@ -167,13 +167,13 @@ fullsend
 │   │   ├── --type <id-or-name>              #     Jira issue type ID or name (required for Jira; Jira only)
 │   │   ├── --parent <key>                   #     Jira parent issue key for sub-tasks (Jira only)
 │   │   └── --fullsend-dir <path>            #     .fullsend config directory (default --tracker from config.yaml)
-│   ├── post-comment                         #   Post or update a sticky comment on an issue
+│   ├── post-comment                         #   Post a marked comment on an issue
 │   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
 │   │   ├── --project <project>              #     Project: owner/repo (GitHub/GitLab) or key (Jira)
 │   │   ├── --number <int>                   #     Issue number
-│   │   ├── --marker <string>                #     Sticky marker for idempotent updates (HTML comment or Jira property)
-│   │   ├── --keep-history                   #     Append previous content as collapsed history (default true)
-│   │   ├── --only-if-exists                 #     Update an existing marked comment, never create one
+│   │   ├── --marker <string>                #     Marker identifying this agent's comments (HTML comment or Jira property)
+│   │   ├── --keep-history                   #     Deprecated: no effect (every result is a new comment)
+│   │   ├── --only-if-exists                 #     Post only when an earlier marked comment exists
 │   │   └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
 │   ├── link                                 #   Create a typed link between two issues (Jira only)
 │   │   ├── --tracker <tracker>              #     Tracker backend; github/gitlab return "not supported"
@@ -192,7 +192,7 @@ fullsend
 │       ├── --comment <text>                 #     Optional Markdown explanation
 │       ├── --token <token>                  #     GitHub/GitLab token; Jira uses runner credentials
 │       └── --fullsend-dir <path>            #     Config directory (Jira connection and allowed targets)
-├── post-review                              # Post sticky PR/MR review comments (formal review is best-effort)
+├── post-review                              # Post PR/MR review comments (formal review is best-effort)
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
 │   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)
 │   ├── --repo <owner/repo>                  #   Repository in owner/repo format
@@ -201,7 +201,7 @@ fullsend
 │   ├── --token <string>                     #   Forge token (default: $GH_TOKEN / $GITHUB_TOKEN / gh auth token, or $GITLAB_TOKEN)
 │   ├── --head-sha <sha>                     #   Expected PR HEAD SHA (skips review if HEAD moved)
 │   ├── --dry-run                            #   Print what would be posted without API calls
-│   ├── --keep-history                       #   Append previous content as collapsed history (default true)
+│   ├── --keep-history                       #   Deprecated: no effect (every result is a new comment)
 │   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR; resolves keep_history default)
 ├── fetch-review-threads                      # Fetch PR/MR review threads as JSON
 │   ├── --repo <owner/repo>                   #   Repository in owner/repo format (required)
