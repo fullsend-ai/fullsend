@@ -126,7 +126,7 @@ func TestResolveFromLock_InheritedBaseSkillKeepsChildOverrides(t *testing.T) {
 		}},
 		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
 	}
-	_, err = resolveFromLock(h, entry, dotfs, nil, ui.New(io.Discard))
+	_, err = resolveFromLock(h, entry, "fullsend lock --update", dotfs, nil, ui.New(io.Discard))
 	require.NoError(t, err)
 	require.Len(t, h.Skills, 1)
 	assert.Equal(t, baseSkill, h.Skills[0].Source)
