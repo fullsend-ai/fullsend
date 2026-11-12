@@ -299,7 +299,9 @@ See [`status_notifications`](../../reference/config-reference.md#status_notifica
 
 If an agent cannot start because workflow setup fails, the GitHub fallback posts or
 updates a separate startup-failure comment with the failure category and workflow
-run link. This fallback applies only to GitHub-originated events; pre-agent
+run link. Retries of the same workflow run update that comment, while a later
+workflow run posts a new historical comment. A later successful run does not
+remove the historical failure comment. This fallback applies only to GitHub-originated events; pre-agent
 failures from Jira- and GitLab-originated events are currently not reported by
 this path. It is independent of `status_notifications`; after it posts
 successfully, orphaned status reconciliation is skipped to avoid a duplicate

@@ -601,8 +601,10 @@ and workflow-run link. This startup-failure comment is emitted only for
 GitHub-originated events. Pre-agent failures from Jira- and GitLab-originated
 events are currently not reported by this fallback; tracker-specific
 startup-failure reporting is tracked in [#9256](https://github.com/fullsend-ai/fullsend/issues/9256).
-Repeated failures update the existing startup-failure comment instead of
-creating duplicates.
+Retries of the same workflow run update the existing startup-failure comment
+instead of creating duplicates. A later workflow run posts a new comment so
+the historical failure and its workflow-run link are preserved; a later
+successful run does not remove that historical comment.
 
 The standalone prioritize workflow also supplies the status target and a
 prioritize-scoped GitHub token only to the startup-failure reporter when one

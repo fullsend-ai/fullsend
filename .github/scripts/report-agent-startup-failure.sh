@@ -52,7 +52,7 @@ BODY_FILE="${RUNNER_TEMP:-/tmp}/fullsend-agent-startup-failure.md"
   printf '[View the workflow run](%s)\n\n' "${FULLSEND_FAILURE_RUN_URL}"
 } > "${BODY_FILE}"
 
-BOT_LOGIN="$(gh api graphql -f query='{ viewer { login } }' --jq '.data.viewer.login')"
+BOT_LOGIN="$(gh api graphql -f query='{ viewer { login } }' --jq '.data.viewer.login' 2>/dev/null || true)"
 COMMENTS_JSON="$(gh api --paginate --slurp \
   "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/${FULLSEND_FAILURE_NUMBER}/comments")"
 TRUSTED_BOT_LOGINS="github-actions,fullsend-ai-${FULLSEND_FAILURE_ROLE}"
@@ -72,11 +72,12 @@ TRUSTED_BOTS_JSON="$(jq -Rn \
    | map(sub("\\[bot\\]$"; ""))
    | unique')"
 COMMENT_ID="$(printf '%s' "${COMMENTS_JSON}" | jq -r \
-  --arg marker "${MARKER}" --argjson trusted "${TRUSTED_BOTS_JSON}" \
+  --arg marker "${MARKER}" --arg run_url "${FULLSEND_FAILURE_RUN_URL}" \
+  --argjson trusted "${TRUSTED_BOTS_JSON}" \
   'add | map(select((.user.type == "Bot")
     and ((.user.login | sub("\\[bot\\]$"; "")) as $login
       | (($trusted | index($login)) != null))
-    and (.body | startswith($marker)))) | last | .id // empty')"
+    and (.body | startswith($marker) and contains($run_url)))) | last | .id // empty')"
 
 if [[ -n "${COMMENT_ID}" ]]; then
   gh api --method PATCH "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/comments/${COMMENT_ID}" \
