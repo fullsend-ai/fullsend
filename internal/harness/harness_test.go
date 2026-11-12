@@ -2234,7 +2234,7 @@ role: review
 
 	h, err := Load(path)
 	require.NoError(t, err)
-	assert.True(t, h.ReadonlyRepo)
+	assert.True(t, h.RepoReadonly())
 }
 
 func TestLoad_ReadonlyRepoFieldOmitted(t *testing.T) {
@@ -2248,7 +2248,7 @@ role: code
 
 	h, err := Load(path)
 	require.NoError(t, err)
-	assert.False(t, h.ReadonlyRepo)
+	assert.False(t, h.RepoReadonly())
 }
 
 // --- ValidForgePlatform tests ---

@@ -2573,7 +2573,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 8c. Make the target repo read-only if the harness opts in.
 	// Runs after all repo-directory writes (8a, 8a-2) are complete.
 	// Excludes .git/ so git operations (index.lock, etc.) still work.
-	if h.ReadonlyRepo {
+	if h.RepoReadonly() {
 		// -prune skips .git traversal entirely; -not -type l prevents symlink traversal.
 		// chown ensures the sandbox user (run_as_user) owns .git/ after root-owned extraction.
 		chmodCmd := fmt.Sprintf(
