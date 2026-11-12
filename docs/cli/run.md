@@ -33,6 +33,17 @@ A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, UR
 | `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run stops, because its Jira API gateway address needs a network lookup |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
 
+`--target-repo` accepts a plain directory or a valid checkout with a real root
+`.git` directory. `.git` files (linked worktrees and submodules), symlinked
+`.git` entries, and bare repositories are unsupported. Fullsend validates the
+target after the pre-script and before upload, and sanitizes and validates the
+returned tree before publication; a plain directory may come back as a plain
+directory or a valid checkout, while a checkout must come back as a checkout.
+Reftable ref storage requires Git 2.53 or newer on the host running Fullsend.
+Fullsend rejects a downloaded `.git/packed-refs` larger than 32 MiB and a
+downloaded `.git/shallow` larger than 4 MiB.
+See [SafeDownload](../guides/dev/cli-internals.md#security-sanitizedownload).
+
 ## Plan block
 
 At startup, `fullsend run` prints a plan block summarizing the resolved configuration:

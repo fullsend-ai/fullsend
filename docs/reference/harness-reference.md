@@ -64,8 +64,8 @@ validation_loop:
   preflight_check: 'python3 -c "import jsonschema"'  # Literal sh -c command (NOT a script path); runs before sandbox creation in the allowlisted preflight environment
   max_iterations: 2
   feedback_mode: append              # "none" (default) or "append" — append the
-                                     # previous iteration's validation failure to
-                                     # the agent prompt on retry
+                                     # previous validation feedback to the agent
+                                     # prompt on retry
 
 # ── Host files ────────────────────────────────────────────────
 host_files:
@@ -193,9 +193,9 @@ harness keeps the child's own declaration — an absent child stays absent
 (version `1`).
 See [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md).
 
-**`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
+**`validation_loop.feedback_mode`** — Controls how validation feedback reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation feedback is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
 
-**`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
+**`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). An unsuccessful iteration may be retried; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
 
 **`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory. The probe runs in a minimal allowlisted environment: the host `PATH`, `HOME`, and `TMPDIR` (when set), the runner-forced `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and non-credential variables declared under `env.runner`/`runner_env` — nothing else is inherited from the process environment. Credential names (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GITLAB_TOKEN`, the minted role tokens `PUSH_TOKEN` and `REVIEW_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_FETCH_TOKEN`, `FULLSEND_GITLAB_*` role tokens, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the OIDC/trigger/runner-secret names) are excluded even when declared under `env.runner`. Plain `${VAR}` references are validated and expanded before the command runs: a plain reference to a name outside the allowlisted environment fails the run before any shell executes, naming the variable (never its value) and pointing to the allowlist and the `env.runner` declaration channel. Non-plain brace forms such as `${VAR:-default}` are not validated and silently expand to empty rather than failing the run. On failure or timeout, diagnostics carry only redacted command text and output. When the command contains no `${...}` reference, bare `$VAR` references are left to the shell, where every non-allowlisted name is unset; once a brace reference is present, bare references are also resolved against the preflight environment before the shell runs, and a bare reference to a name outside it expands to empty, matching the shell's unset semantics.
 
