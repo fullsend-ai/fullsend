@@ -35,6 +35,8 @@ func TestDiagnoseGitLabTriggerAccount_NotInstalledAndDeferred(t *testing.T) {
 	got = e.diagnose(e.f, trigBranch)
 	assert.Equal(t, GitLabTriggerStateDeferred, got.State)
 	assert.Contains(t, got.Reasons[0], "service accounts are unavailable")
+	assert.Contains(t, got.Reasons[0], "needs GitLab 18.11 or later", "the deferral names the minimum version instead of broadening permissions")
+	assert.Contains(t, got.Reasons[0], "does not promote an account or widen branch access")
 
 	e.f.saDisabled = false
 	e.f.fail["HasExactProtectedBranchRule"] = true
@@ -79,6 +81,27 @@ func TestDiagnoseGitLabTriggerAccount_ScheduleOwnershipAfterActivation(t *testin
 	e2.adminSchedule(t, spec.Description, trigBranch, spec.Cron, true)
 	require.NoError(t, SetGitLabTriggerDispatchActive(ctx, e2.opts(), false))
 	assert.Equal(t, GitLabTriggerStateReady, e2.diagnose(e2.f, trigBranch).State)
+}
+
+// The webhook route can be active while the schedules stay installer-owned
+// because the account lacks the merge permission GitLab requires of a
+// protected-branch schedule owner (#9343). Status must not call that drift or
+// advise an install that would not move them.
+func TestDiagnoseGitLabTriggerAccount_InstallerSchedulesWithoutMergeAccess(t *testing.T) {
+	e := newTrigEnv()
+	acct := e.readyActive(t)
+	spec := trigSpec(t, trigSlashDesc)
+	e.adminSchedule(t, spec.Description, trigBranch, spec.Cron, true)
+	rule := &forge.ProtectedBranchRule{Name: trigBranch, MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: forge.GitLabAccessLevelMaintainer}}}
+	e.state.ProtectedBranchRules[trigOwner+"/"+trigRepo+"/"+trigBranch] = rule
+	assert.Equal(t, GitLabTriggerStateReady, e.diagnose(e.f, trigBranch).State)
+
+	// With merge access the schedules are expected to move, so the
+	// installer-owned one is drift again.
+	rule.MergeAccessLevels = append(rule.MergeAccessLevels, forge.ProtectedBranchAccess{UserID: acct})
+	got := e.diagnose(e.f, trigBranch)
+	assert.Equal(t, GitLabTriggerStateDrifted, got.State)
+	assert.Contains(t, strings.Join(got.Reasons, "\n"), "not the trigger account")
 }
 
 // Install refuses to adopt a managed schedule whose owner is not a verified

@@ -216,13 +216,21 @@ func foreignStateReason(err error) string {
 // GitLab runs a scheduled pipeline with its owner's permissions, so such a
 // schedule polls as that user (for example the installer) instead of the
 // Developer-level account until install moves it (#8602). Without a recorded
-// activation the schedules are meant to stay installer-owned.
+// activation, or while the account lacks the merge permission GitLab requires
+// of a protected-branch schedule owner (#9343), the schedules are meant to
+// stay installer-owned.
 func (op *gitLabTriggerAccountOp) scheduleOwnershipDrift(ctx context.Context) []string {
 	active, err := op.dispatchActivationRecorded(ctx)
 	if err != nil {
 		return []string{"could not read the dispatch activation; the owner of the managed polling schedules is unverified"}
 	}
 	if !active {
+		return nil
+	}
+	// Only a rule that was read and positively lacks the account's merge
+	// permission makes installer-owned schedules expected; an unreadable rule
+	// leaves the ownership check below in force.
+	if problem, verified := gitlabTriggerScheduleMergeAccess(ctx, op.opts.State, op.opts.Owner, op.opts.Repo, op.st.Branch); problem != "" && verified {
 		return nil
 	}
 	schedules, err := op.opts.State.ListPipelineSchedules(ctx, op.opts.Owner, op.opts.Repo)

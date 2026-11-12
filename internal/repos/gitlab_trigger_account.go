@@ -694,6 +694,14 @@ func (op *gitLabTriggerAccountOp) overrideRoleDeferral(ctx context.Context) (str
 	return "", nil
 }
 
+// gitlabTriggerAccountMinVersionAdvice names the oldest GitLab release on
+// which every tier, including Free, offers both mechanisms the trigger
+// account relies on: project service accounts (generally available on Free in
+// 18.11) and deploy-key entries in a protected branch's push-access list (on
+// Free since 18.10). Older instances defer instead of broadening permissions
+// (#9343).
+const gitlabTriggerAccountMinVersionAdvice = "The trigger-account webhook route needs GitLab 18.11 or later, where project service accounts and protected-branch deploy-key push access are available on every tier; upgrade an older instance to enable it; fullsend does not promote an account or widen branch access in its place"
+
 // deferral returns a reason when the project cannot host the trigger account.
 func (op *gitLabTriggerAccountOp) deferral(ctx context.Context) (string, error) {
 	o, r, b := op.opts.Owner, op.opts.Repo, op.opts.Branch
@@ -709,7 +717,7 @@ func (op *gitLabTriggerAccountOp) deferral(ctx context.Context) (string, error) 
 	}
 	if _, err := op.opts.API.ListProjectServiceAccounts(ctx, o, r); err != nil {
 		if serviceAccountsUnavailable(err) {
-			return "project service accounts are unavailable to the installer on this GitLab instance or tier", nil
+			return "project service accounts are unavailable to the installer on this GitLab instance or tier. " + gitlabTriggerAccountMinVersionAdvice, nil
 		}
 		return "", safeAPIError("listing project service accounts", err)
 	}

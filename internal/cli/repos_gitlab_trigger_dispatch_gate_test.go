@@ -51,6 +51,28 @@ func TestReportGitLabTriggerDispatchGate_PrerequisitesVerified(t *testing.T) {
 	assert.NotContains(t, out, "Unverified inherited")
 }
 
+// A ready gate names the trigger account's deploy-key push grant and its
+// direct-push capability, and reports separately when the schedules stay
+// installer-owned without deferring the webhook route (#9343).
+func TestReportGitLabTriggerDispatchGate_ReportsPushGrantAndScheduleOwner(t *testing.T) {
+	var buf bytes.Buffer
+	printGitLabTriggerDispatchGate(ui.New(&buf), "acme/widgets", repos.GitLabTriggerDispatchGate{
+		Ready:                 true,
+		ScheduleOwnerDeferred: "the trigger account lacks merge permission on the protected default branch",
+		PushGrant:             &repos.GitLabTriggerPushGrant{AccountID: 77, AccountName: "fullsend-trigger-abc", DeployKeyID: 9, Branch: "main"},
+	})
+
+	out := buf.String()
+	assert.Contains(t, out, "the dispatch activation is recorded")
+	assert.Contains(t, out, "fullsend-trigger-abc (user 77) stays at Developer access")
+	assert.Contains(t, out, "protected branch main through deploy key 9")
+	assert.Contains(t, out, "permits direct pushes to main through the key")
+	assert.Contains(t, out, "grants no merge permission")
+	assert.Contains(t, out, "GitLab polling schedules stay installer-owned on the Poller route: the trigger account lacks merge permission")
+	assert.Contains(t, out, "does not defer the webhook route")
+	assert.NotContains(t, out, "activation deferred")
+}
+
 func TestReportGitLabTriggerDispatchGate_ReportsUnverifiedInheritedScopes(t *testing.T) {
 	var buf bytes.Buffer
 	printGitLabTriggerDispatchGate(ui.New(&buf), "acme/widgets", repos.GitLabTriggerDispatchGate{
