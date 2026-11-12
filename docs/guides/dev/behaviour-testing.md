@@ -627,8 +627,8 @@ another holder (a lessee that outlived the slot GC deadline, for example). The
 ownership check `World.LeaseOwned` (the driver's `install.LeaseVerifier`
 `StillOwnsLease`, the same ownership check the release uses) is installed when
 the scenario acquires its leased repository (`givenEnrolledTestRepository`), so
-step-time name-based mutations run guarded while the scenario runs, and the
-hook reinstalls it for cleanup. `CleanupScenario`
+guarded step-time mutations run with the check in place while the scenario
+runs, and the hook reinstalls it for cleanup. `CleanupScenario`
 checks it before every mutation and every cleanup retry, and the forge client
 checks it again before resending a request after a rate-limit wait. A lost
 lease, or one that cannot be verified, fails a guarded step-time write, and
