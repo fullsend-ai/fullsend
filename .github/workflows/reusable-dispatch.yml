@@ -1139,6 +1139,14 @@ jobs:
         with:
           source_repo: ${{ github.repository }}
 
+      # Older vendored prepare-workspace actions use the historical
+      # .defaults path internally. Provide that compatibility path while
+      # the action's defaults_root input is adopted by existing callers.
+      - name: Stage nested defaults compatibility path
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        shell: bash
+        run: ln -s .fullsend/.defaults .defaults
+
       - name: Prepare workspace for review skip note (nested vendor)
         if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
         id: review-token-workspace-nested
@@ -1146,6 +1154,7 @@ jobs:
         timeout-minutes: 2
         uses: ./.fullsend/.defaults/.github/actions/prepare-workspace
         with:
+          defaults_root: .fullsend/.defaults
           source_repo: ${{ github.repository }}
 
       - name: Mint review token for review skip note
@@ -1750,6 +1759,49 @@ jobs:
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
           FULLSEND_DIR: .fullsend
         run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fetch-prior-review.sh"
+
+      # A previous unchanged-diff run leaves a PR-visible status note. Once
+      # this full review is actually dispatched, that note must not continue
+      # to look like the current verdict. Keep the marker for provenance, but
+      # replace the stale message with an explicit superseded notice.
+      - name: Supersede prior review skip note
+        if: steps.app-token.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+          REVIEW_HEAD_SHA: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
+          if [[ ! "${REVIEW_HEAD_SHA}" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+            REVIEW_HEAD_SHA="unknown head"
+          fi
+          superseded_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend's earlier unchanged-diff skip note was superseded by a full review for commit ${REVIEW_HEAD_SHA}."
+          comment_ids=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -r -s '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and (.body | startswith("<!-- fullsend:review-skip -->"))
+                and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))
+              | .id] | .[]' )
+          while IFS= read -r comment_id; do
+            [[ -z "${comment_id}" ]] && continue
+            gh api --method PATCH "repos/${SOURCE_REPO}/issues/comments/${comment_id}" \
+              -f body="${superseded_body}" >/dev/null
+          done <<<"${comment_ids}"
 
       - name: Setup agent environment
         env:
