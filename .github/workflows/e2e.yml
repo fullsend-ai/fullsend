@@ -30,6 +30,8 @@ on:
       - 'internal/config/**'
       - 'internal/cli/github.go'
       - 'internal/cli/run.go'
+      - 'internal/cli/repos.go'
+      - 'internal/repos/**'
       - 'internal/layers/**'
       - 'internal/forge/**'
       - 'internal/harness/**'
@@ -75,6 +77,9 @@ on:
       playback_result:
         description: playback job status (success, failure or cancelled)
         value: ${{ jobs.playback.outputs.result }}
+      repos_result:
+        description: repos job status (success, failure or cancelled)
+        value: ${{ jobs.repos.outputs.result }}
 
 concurrency:
   group: >-
@@ -533,6 +538,119 @@ jobs:
           path: ${{ runner.temp }}/playback-artifacts/
           if-no-files-found: ignore
           retention-days: 5
+
+      - name: Record job result
+        id: result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: echo "result=${JOB_STATUS}" >> "$GITHUB_OUTPUT"
+
+  repos:
+    # Repos lifecycle CLI test (fullsend repos set/status/install --dry-run/
+    # uninstall) against ephemeral repos in the dedicated external forges
+    # fullsend-repos-e2e-gh / fullsend-repos-e2e-gl. A separate job with its own
+    # timeout so it never draws down the behaviour/playback suites' budget.
+    # Unique per-run repo names (UUID suffix) make concurrent runs safe, and
+    # cancel-in-progress is off so t.Cleanup can delete the repos it created
+    # rather than leaking them on a superseded run. It does not need GCP: the
+    # install step is dry-run only. Runs on same-repo authorized PRs,
+    # merge_group, push to main, and fork PRs via /ok-to-test (issue_comment,
+    # like behaviour/playback) — the dedicated-org secrets reach fork code only
+    # after a maintainer authorizes the exact head sha.
+    concurrency:
+      group: ${{ github.workflow }}-repos-${{ github.run_id }}
+      cancel-in-progress: false
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'merge_group') ||
+        (github.event_name == 'pull_request' && needs.gate.outputs.authorized == 'true') ||
+        (github.event_name == 'issue_comment' && inputs.head_sha != '')
+      )
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      # Read by e2e-ok-to-test.yml to complete the repos check run on the PR head.
+      result: ${{ steps.result.outputs.result }}
+    steps:
+      - name: Check for repos-relevant changes
+        id: changes
+        if: >-
+          github.event_name == 'pull_request' || github.event_name == 'issue_comment' ||
+          github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+          # /ok-to-test runs: diff the authorized sha, not whatever the PR head is now.
+          HEAD_SHA: ${{ inputs.head_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        # SYNC-WITH: push.paths above (repos test depends on these paths)
+        run: |
+          if [ "$EVENT_NAME" = "merge_group" ] || [ "$EVENT_NAME" = "issue_comment" ]; then
+            if [ "$EVENT_NAME" = "merge_group" ]; then
+              RANGE="${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}"
+            else
+              RANGE="${DEFAULT_BRANCH}...${HEAD_SHA}"
+            fi
+            FILES=$(gh api "repos/${REPO}/compare/${RANGE}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch compare files — running repos test as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+            FILE_COUNT=$(echo "$FILES" | wc -l)
+            if [ "$FILE_COUNT" -ge 300 ]; then
+              echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running repos test as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
+              echo "::warning::Failed to fetch PR files — running repos test as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+          fi
+          if echo "$FILES" | grep -qE '^internal/repos/|^internal/cli/repos\.go$|^internal/forge/|^e2e/repos/|^internal/e2etest/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No repos-relevant files changed — skipping repos test"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          ref: >-
+            ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha
+                || github.event_name == 'issue_comment' && inputs.head_sha
+                || github.sha }}
+          persist-credentials: false
+          # Fork code only after a maintainer's /ok-to-test for this exact sha.
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'issue_comment' }}
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          go-version-file: go.mod
+
+      - name: Run repos lifecycle test
+        if: steps.changes.outputs.relevant != 'false'
+        run: make repos-e2e-test
+        env:
+          # Fail loudly if a required secret is missing in CI rather than
+          # letting the suite skip to a silent green.
+          REPOS_E2E_REQUIRE: "1"
+          REPOS_E2E_GITHUB_TOKEN: ${{ secrets.REPOS_E2E_GITHUB_TOKEN }}
+          GITLAB_TOKEN: ${{ secrets.REPOS_E2E_GITLAB_TOKEN }}
 
       - name: Record job result
         id: result

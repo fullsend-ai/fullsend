@@ -64,6 +64,14 @@ gh workflow run e2e.yml --repo fullsend-ai/fullsend \
 Manual runs use the dev org pool and run playback only. Normal CI runs both
 suites, concurrently in dev and serialized against the single stage org.
 
+The repos lifecycle test is a separate opt-in suite that exercises the
+`fullsend repos` CLI against ephemeral GitHub and GitLab repos. It skips
+unless both `REPOS_E2E_GITHUB_TOKEN` and `GITLAB_TOKEN` are set:
+
+```bash
+make repos-e2e-test
+```
+
 Optional environment variables:
 
 | Variable | Purpose |
@@ -72,6 +80,10 @@ Optional environment variables:
 | `FULLSEND_MINT_URL` | Override mint endpoint (default: hosted public mint, same as `fullsend github setup --mint-url`) |
 | `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m). Applies to suites that still take the exclusive org lock; the behaviour and playback suites lease slots and ignore it |
 | `E2E_GCP_PROJECT_ID` | GCP project for inference setup (`github setup --inference-project`) |
+| `REPOS_E2E_GITHUB_TOKEN` | GitHub PAT for repos lifecycle e2e tests, scoped to the repos e2e org (test skips if unset) |
+| `REPOS_E2E_GITHUB_ORG` | Override GitHub org for repos e2e tests (default: `fullsend-repos-e2e-gh`) |
+| `REPOS_E2E_GITLAB_GROUP` | Override GitLab group for repos e2e tests (default: `fullsend-repos-e2e-gl`) |
+| `GITLAB_TOKEN` | GitLab personal access token for repos lifecycle e2e tests (test skips if unset) |
 
 Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
@@ -104,6 +116,8 @@ Required repository secrets:
 | `TEST_ACTOR_WRITE_PAT` | Classic PAT for the write-level human-like test actor (`fstest-write`); exposed to the behaviour job under the same env name |
 | `TEST_ACTOR_TRIAGE_PAT` | Classic PAT for the triage-level human-like test actor (`fstest-triage`); exposed to the behaviour job under the same env name |
 | `TEST_ACTOR_OUTSIDER_PAT` | Classic PAT for the outsider (no org write) human-like test actor (`fstest-outsider`); exposed to the behaviour job under the same env name |
+| `REPOS_E2E_GITHUB_TOKEN` | GitHub PAT with `repo` + `delete_repo` scope and admin access to the repos e2e org `fullsend-repos-e2e-gh` (mapped to env `REPOS_E2E_GITHUB_TOKEN` in the repos job) |
+| `REPOS_E2E_GITLAB_TOKEN` | GitLab personal access token (`api` scope) with admin access to the repos e2e group `fullsend-repos-e2e-gl` (mapped to env `GITLAB_TOKEN` in the repos job) |
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend github setup --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
