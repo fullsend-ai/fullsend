@@ -94,7 +94,7 @@ forge:
 	require.Equal(t, policyURL+"#sha256="+otherPin, h.Policy, "the gitlab forge policy must be composed with its own pin")
 	require.True(t, h.HasURLReferences(), "the composed harness must hold the gitlab policy URL")
 
-	_, err = resolveFromLock(h, entry, dir, []string{srv.URL + "/"}, ui.New(io.Discard))
+	_, err = resolveFromLock(h, entry, "fullsend lock --update", dir, []string{srv.URL + "/"}, ui.New(io.Discard))
 	require.Error(t, err, "replay must refuse a forge policy URL pinned to another revision than the lock records")
 	assert.Contains(t, err.Error(), "pinned to another revision than the lock file records")
 	assert.Contains(t, err.Error(), "the lock records sha256="+lockedPin,

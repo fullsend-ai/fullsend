@@ -137,7 +137,7 @@ func TestResolveFromLock_PolicyPinMismatchFailsReplay(t *testing.T) {
 	h := loadLockedOverlayPolicyHarness(t, fx, map[string]any{"source": map[string]any{"system": "github"}})
 	require.Equal(t, fx.policyURL+"#sha256="+otherPin, h.Policy, "the run-time overlay must pin the other revision")
 
-	_, err := resolveFromLock(h, fx.entry, fx.dir, fx.allowlist, ui.New(io.Discard))
+	_, err := resolveFromLock(h, fx.entry, "fullsend lock --update", fx.dir, fx.allowlist, ui.New(io.Discard))
 	require.Error(t, err, "replay must refuse a policy URL pinned to another revision than the lock file records")
 	assert.Contains(t, err.Error(), "pinned to another revision than the lock file records")
 	assert.Equal(t, fx.policyURL+"#sha256="+otherPin, h.Policy,
@@ -153,7 +153,7 @@ func TestResolveFromLock_PolicyPinMatchReplaysLockedContent(t *testing.T) {
 	h := loadLockedOverlayPolicyHarness(t, fx, map[string]any{"source": map[string]any{"system": "github"}})
 	require.Equal(t, fx.policyURL+"#sha256="+fx.lockedPin, h.Policy, "the run-time overlay must pin the locked revision")
 
-	result, err := resolveFromLock(h, fx.entry, fx.dir, fx.allowlist, ui.New(io.Discard))
+	result, err := resolveFromLock(h, fx.entry, "fullsend lock --update", fx.dir, fx.allowlist, ui.New(io.Discard))
 	require.NoError(t, err, "the same URL and pin must replay unchanged")
 	assert.False(t, harness.IsURL(h.Policy), "the matching pin must still resolve to the cached path")
 	got, err := os.ReadFile(h.Policy)
