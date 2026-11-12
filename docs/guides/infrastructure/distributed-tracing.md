@@ -342,7 +342,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `gen_ai.tool.call.id` | `toolu_01…` | `execute_tool` (absent when the id carried a security finding — a tainted id is dropped, never substituted, so it cannot collide with another call's) |
 | `gen_ai.system` / `gen_ai.provider.name` | `anthropic` / `anthropic-vertex` | `agent` (serving endpoint of the model used on this span — varies by runtime; `system` is the pre-v1.37 name — both keys are emitted with the same value so EM-001 and modern backends agree. Not the runtime name: `fullsend.runtime` is the harness.) |
 | `gen_ai.request.model` | `claude-opus-4-6` | `agent` (resolved model) |
-| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_creation.input_tokens` / `cache_read.input_tokens` | `109938` | `agent` |
 
 Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
 
@@ -482,9 +482,9 @@ tokens, output tokens, cache-creation tokens, cache-read tokens, and
 reasoning tokens. Fullsend has no visibility into the provider's pricing
 breakdown; it accepts the reported total.
 
-Token counts (including `cache_creation_input_tokens` and
-`cache_read_input_tokens`) are recorded as separate telemetry attributes.
-They are not inputs to any fullsend-side cost calculation.
+Token counts (including `gen_ai.usage.cache_creation.input_tokens` and
+`gen_ai.usage.cache_read.input_tokens`) are recorded as separate telemetry
+attributes. They are not inputs to any fullsend-side cost calculation.
 
 ### Cross-iteration aggregation
 
@@ -812,8 +812,9 @@ Today's scorers (starting with EM-001) read the Level 1/2 **metadata**
 contract of `run-telemetry.jsonl` — span tree and attributes, not prompt or
 completion bodies. That foundation is intentional: fitness scores must trust
 the trace before quality scores can. **Planned:** content-aware scorers that
-consume Level 3 prompt/completion capture once Level 3 is implemented —
-that is where the real quality signal lives. See
+consume the Level 3 prompt/completion capture described in
+[Content capture (Level 3)](#content-capture-level-3) — that is where the
+real quality signal lives. See
 [Eval Measurements](./eval-measurements.md).
 
 ## Mint tracing
