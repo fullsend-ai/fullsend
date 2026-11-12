@@ -18,6 +18,10 @@ Date: 2026-10-28
 
 Accepted
 
+[ADR 0172](0172-let-bot-added-labels-start-agents-on-jira.md) stops the
+poller from dropping bot-authored label-added events, including its own
+account's. They take the `labels:` rule below; other bot events stay dropped.
+
 ## Context
 
 The `jira-poll` input driver
