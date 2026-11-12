@@ -292,10 +292,9 @@ BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 # Runs through scripts/run-with-infra-retry.sh: a failed attempt whose
 # failure-class report classifies the run as infrastructure is re-run
 # exactly once; scenario-classified failures and missing reports fail
-# immediately without a retry. Each go test attempt keeps its own
-# -timeout 45m, so one infra-classified retry can double the wall time —
-# see the timeout budgeting discussion in
-# docs/guides/dev/behaviour-testing.md.
+# immediately without a retry. The retry reruns only the scenarios that
+# failed, and each go test attempt keeps its own -timeout 45m — see the
+# timeout budgeting discussion in docs/guides/dev/behaviour-testing.md.
 behaviour-test:
 	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" ./scripts/run-with-infra-retry.sh go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/
 
@@ -310,8 +309,8 @@ behaviour-test:
 # The timeout matches behaviour-test; a CI job running this target must use
 # the same timeout-minutes. Like behaviour-test, this target routes through
 # scripts/run-with-infra-retry.sh: an infrastructure-classified failed run
-# is re-run exactly once, each go test attempt keeps its own -timeout 45m,
-# and one retry can double the wall time — see the timeout budgeting
+# is re-run exactly once, for its failed scenarios only, and each go test
+# attempt keeps its own -timeout 45m — see the timeout budgeting
 # discussion in docs/guides/dev/behaviour-testing.md.
 playback-test:
 	./scripts/run-with-infra-retry.sh go test -tags playback -race -v -count=1 -timeout 45m ./e2e/behaviour/

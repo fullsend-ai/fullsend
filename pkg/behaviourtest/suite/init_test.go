@@ -294,7 +294,7 @@ func TestBeforeScenario_ClonesAndResetsWorld(t *testing.T) {
 		IssueNumber: 42, // scenario field — should be zeroed by reset
 	}
 
-	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario")
+	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario", "features/a.feature")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -306,13 +306,14 @@ func TestBeforeScenario_ClonesAndResetsWorld(t *testing.T) {
 	assert.False(t, w.ScenarioStart.IsZero(), "ScenarioStart should be set")
 	assert.Equal(t, w.ScenarioStart, w.ScenarioBegin, "ScenarioBegin should be set")
 	assert.Equal(t, "a scenario", w.ScenarioName)
+	assert.Equal(t, "features/a.feature", w.ScenarioURI)
 }
 
 func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
 	driver := newFakeDriver(3)
 	template := &world.World{Org: "test-org", Driver: driver}
 
-	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario")
+	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario", "features/a.feature")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -326,7 +327,7 @@ func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
 func TestBeforeScenario_NilDriver(t *testing.T) {
 	template := &world.World{Org: "test-org"}
 
-	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario")
+	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario", "features/a.feature")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -342,7 +343,7 @@ func TestBeforeScenario_PlaybackDriverGetsRepoHint(t *testing.T) {
 	// SetRepoHint on PlaybackDriver is a no-op (pool repos have stable
 	// names), so this only verifies that beforeScenario's type assertion
 	// finds the PlaybackDriver and calls it without error.
-	ctx, err := beforeScenario(context.Background(), nil, template, "A Playback Scenario")
+	ctx, err := beforeScenario(context.Background(), nil, template, "A Playback Scenario", "features/a.feature")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
@@ -764,7 +765,7 @@ func TestBeforeToAfter_MalformedCapabilityTagWritesFailureSummary(t *testing.T) 
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
 
 	template := &world.World{Config: env.RunnerConfig{InstallMode: "per-repo", SCM: "github"}}
-	ctx, beforeErr := beforeScenario(context.Background(), []string{"@requires:capability:"}, template, "malformed tag scenario")
+	ctx, beforeErr := beforeScenario(context.Background(), []string{"@requires:capability:"}, template, "malformed tag scenario", "features/a.feature")
 	require.Error(t, beforeErr)
 	require.NotErrorIs(t, beforeErr, godog.ErrSkip)
 	require.NotNil(t, world.FromContext(ctx), "the failed Before hook must still attach a World")
@@ -785,7 +786,7 @@ func TestBeforeToAfter_MalformedCapabilityTagWritesFailureSummary(t *testing.T) 
 // returning ErrSkip without a World, so the After hook does nothing for it.
 func TestBeforeScenario_SkipDoesNotAttachWorld(t *testing.T) {
 	template := &world.World{Config: env.RunnerConfig{InstallMode: "per-repo", SCM: "github"}}
-	ctx, err := beforeScenario(context.Background(), []string{"@skip:per-repo"}, template, "skipped")
+	ctx, err := beforeScenario(context.Background(), []string{"@skip:per-repo"}, template, "skipped", "features/a.feature")
 	require.ErrorIs(t, err, godog.ErrSkip)
 	assert.Nil(t, world.FromContext(ctx))
 }
@@ -1022,4 +1023,28 @@ func TestRecordScenarioFailure_RedactsScenarioName(t *testing.T) {
 	require.Len(t, snapshot, 1)
 	assert.NotContains(t, snapshot[0].Scenario, token)
 	assert.Contains(t, snapshot[0].Scenario, "scenario using")
+}
+
+// TestRecordScenarioFailure_RecordsFeatureFile pins that a scenario
+// failure carries its feature file, which a retried run uses to rerun
+// only the failed scenarios.
+func TestRecordScenarioFailure_RecordsFeatureFile(t *testing.T) {
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{
+		ScenarioName: "labels the issue",
+		ScenarioURI:  "features/triage/labels.feature",
+		Failures:     rec,
+	}
+
+	recordScenarioFailure(w, errors.New("step failed"))
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "labels the issue")
+	assert.Equal(t, "features/triage/labels.feature", record.Feature)
+}
+
+func TestFeatureFile(t *testing.T) {
+	assert.Equal(t, "features/a.feature", featureFile("features/a.feature"))
+	assert.Equal(t, "features/a.feature", featureFile("features/a.feature:12"))
+	assert.Equal(t, "features/a.feature:", featureFile("features/a.feature:"))
+	assert.Equal(t, "c:features/a.feature", featureFile("c:features/a.feature"))
 }

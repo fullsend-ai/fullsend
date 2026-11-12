@@ -98,6 +98,12 @@ type FailureRecord struct {
 	// failures that occur before any scenario runs.
 	Scenario string `json:"scenario"`
 
+	// Feature is the failing scenario's feature file as godog names it
+	// (e.g. "features/triage/labels.feature"), empty for bootstrap
+	// failures. A retried run reads it to rerun only the failed
+	// scenarios.
+	Feature string `json:"feature,omitempty"`
+
 	// Class is the failure's classification.
 	Class Class `json:"class"`
 
@@ -120,17 +126,23 @@ type Recorder struct {
 // RecordFailure appends one classified failure. msg must already be
 // redacted; the recorder stores it verbatim.
 func (r *Recorder) RecordFailure(source, scenario string, class Class, msg string) {
+	r.record(FailureRecord{Source: source, Scenario: scenario, Class: class, Message: msg})
+}
+
+// RecordScenarioFailure appends one classified failure of a scenario
+// (source "scenario") together with its feature file, so a retried run
+// can rerun just that scenario. msg must already be redacted.
+func (r *Recorder) RecordScenarioFailure(feature, scenario string, class Class, msg string) {
+	r.record(FailureRecord{Source: "scenario", Scenario: scenario, Feature: feature, Class: class, Message: msg})
+}
+
+func (r *Recorder) record(f FailureRecord) {
 	if r == nil {
 		return
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.failures = append(r.failures, FailureRecord{
-		Source:   source,
-		Scenario: scenario,
-		Class:    class,
-		Message:  msg,
-	})
+	r.failures = append(r.failures, f)
 }
 
 // Snapshot returns a copy of the recorded failures in recording order,

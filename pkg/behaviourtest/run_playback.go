@@ -53,8 +53,9 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 		t.Skip("skipping playback tests in short mode")
 	}
 	if err := opts.validate(); err != nil {
-		t.Fatalf("invalid suite options: %v", err)
+		failRun(t, nil, playbackSuiteName, fmt.Errorf("invalid suite options: %w", err))
 	}
+	featurePaths := suiteFeaturePaths(t, playbackSuiteName, opts.FeaturePaths)
 
 	// Causes the install factories (NewRepoPoolCFMintPreviews /
 	// NewRepoPoolCFMintStage) to install pool repos with the
@@ -95,7 +96,7 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 
 	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), pool.Layout.SlotsPerOrg, driver.Capacity())
 	if err != nil {
-		t.Fatal(err)
+		failRun(t, nil, playbackSuiteName, err)
 	}
 	if overCapacity {
 		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block while allocating", concurrency, driver.Capacity())
@@ -109,7 +110,7 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template) },
 		Options: &godog.Options{
 			Format:      "pretty",
-			Paths:       opts.FeaturePaths,
+			Paths:       featurePaths,
 			TestingT:    t,
 			Tags:        "@playback",
 			Concurrency: concurrency,

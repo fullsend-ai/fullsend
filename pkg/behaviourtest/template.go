@@ -59,7 +59,7 @@ func newTemplateWorld(
 	orgDrivers := orgDriversFor(cfg.SCM, cfg.CI)
 	scmDriver, ciDriver, err := orgDrivers(pool.NewClient(token), token)
 	if err != nil {
-		t.Fatal(err)
+		failRun(t, nil, suiteName, fmt.Errorf("creating SCM and CI drivers: %w", err))
 	}
 	return &world.World{
 		Config:       cfg,

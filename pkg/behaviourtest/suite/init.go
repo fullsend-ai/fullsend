@@ -23,7 +23,7 @@ import (
 // enrolled test repository"), and the After hook deallocates on cleanup.
 func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
-		return beforeScenario(ctx, tagNames(scenario.Tags), template, scenario.Name)
+		return beforeScenario(ctx, tagNames(scenario.Tags), template, scenario.Name, scenario.Uri)
 	})
 	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
 		return afterScenario(ctx, template.Driver, err)
@@ -39,7 +39,10 @@ func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 // the PlaybackDriver via SetRepoHint so the driver can correlate its
 // per-repo bookkeeping back to the scenario that is running; for the
 // standard pool-based Driver, SetRepoHint is a no-op.
-func beforeScenario(ctx context.Context, tags []string, template *world.World, name string) (context.Context, error) {
+//
+// uri is the scenario's feature file as godog names it; failure records
+// carry it so a retried run can rerun only the failed scenarios.
+func beforeScenario(ctx context.Context, tags []string, template *world.World, name, uri string) (context.Context, error) {
 	tagErr := SkipErrorForTagNames(tags, template)
 	if errors.Is(tagErr, godog.ErrSkip) {
 		return ctx, tagErr
@@ -50,6 +53,7 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 	w := template.Clone()
 	resetScenarioWorld(w)
 	w.ScenarioName = name
+	w.ScenarioURI = featureFile(uri)
 
 	if pd, ok := w.Driver.(*install.PlaybackDriver); ok {
 		pd.SetRepoHint(name)
@@ -165,7 +169,7 @@ func recordScenarioFailure(w *world.World, err error) {
 	steps.RegisterRedactionLiterals(w)
 	class := failclass.Classify(err)
 	scenario := steps.RedactText(w.ScenarioName)
-	w.Failures.RecordFailure("scenario", scenario, class, steps.RedactText(err.Error()))
+	w.Failures.RecordScenarioFailure(w.ScenarioURI, scenario, class, steps.RedactText(err.Error()))
 	if w.Logf != nil {
 		w.Logf("[failure-class] scenario %q: %s", scenario, class)
 	}
@@ -193,10 +197,27 @@ func leaseOwnership(driver install.Driver, org, name string) func(context.Contex
 	return nil
 }
 
+// featureFile strips the ":line" suffix godog adds to a scenario's URI
+// when the run selected it by "path:line" (as an infra retry does), so
+// failure records always name the plain feature file.
+func featureFile(uri string) string {
+	i := strings.LastIndexByte(uri, ':')
+	if i < 0 || i == len(uri)-1 {
+		return uri
+	}
+	for _, r := range uri[i+1:] {
+		if r < '0' || r > '9' {
+			return uri
+		}
+	}
+	return uri[:i]
+}
+
 func resetScenarioWorld(w *world.World) {
 	w.ScenarioStart = time.Now()
 	w.ScenarioBegin = w.ScenarioStart
 	w.ScenarioName = ""
+	w.ScenarioURI = ""
 	w.SavedLogRunIDs = nil
 	w.DummyOps = nil
 	w.IssueNumber = 0

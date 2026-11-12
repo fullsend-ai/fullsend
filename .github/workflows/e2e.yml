@@ -149,7 +149,8 @@ jobs:
     runs-on: ubuntu-24.04
     # 90m: one infra-classified retry via scripts/run-with-infra-retry.sh
     # (each go test attempt keeps its own 45m -timeout) plus redaction and
-    # upload overhead.
+    # upload overhead. The retry reruns only the failed scenarios, and
+    # INFRA_RETRY_MAX_ATTEMPT1_SECONDS refuses it after a 40m attempt 1.
     timeout-minutes: 90
     permissions:
       contents: read
@@ -245,6 +246,9 @@ jobs:
           BEHAVIOUR_CI: githubactions
           BEHAVIOUR_INSTALL_MODE: per-repo
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
+          # Refuse the infra retry after a 40m attempt 1, so attempt 2 (up to
+          # its own 45m -timeout) still finishes inside timeout-minutes.
+          INFRA_RETRY_MAX_ATTEMPT1_SECONDS: "2400"
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           # Inference gateway BTs (#8280): the E2E test gateway URL (embeds
@@ -361,7 +365,8 @@ jobs:
     runs-on: ubuntu-24.04
     # 90m: one infra-classified retry via scripts/run-with-infra-retry.sh
     # (each go test attempt keeps its own 45m -timeout) plus redaction and
-    # upload overhead.
+    # upload overhead. The retry reruns only the failed scenarios, and
+    # INFRA_RETRY_MAX_ATTEMPT1_SECONDS refuses it after a 40m attempt 1.
     timeout-minutes: 90
     permissions:
       contents: read
@@ -459,6 +464,9 @@ jobs:
           BEHAVIOUR_CI: githubactions
           BEHAVIOUR_INSTALL_MODE: per-repo
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/playback-artifacts
+          # Refuse the infra retry after a 40m attempt 1, so attempt 2 (up to
+          # its own 45m -timeout) still finishes inside timeout-minutes.
+          INFRA_RETRY_MAX_ATTEMPT1_SECONDS: "2400"
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           # CF mint BT path: temp Worker deploy needs role PEMs + Cloudflare creds

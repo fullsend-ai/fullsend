@@ -438,3 +438,25 @@ func TestBootstrapFailureMessageNeutralizesWorkflowCommands(t *testing.T) {
 	assert.NotContains(t, msg, "::error::")
 	assert.Contains(t, msg, "mint refused")
 }
+
+func TestSuiteFeaturePathsNotARetry(t *testing.T) {
+	t.Setenv("BEHAVIOUR_RETRY_FROM", "")
+	assert.Equal(t, []string{"features"}, suiteFeaturePaths(t, "behaviour", []string{"features"}))
+}
+
+func TestSuiteFeaturePathsRetryAfterBootstrapRunsWholeSuite(t *testing.T) {
+	report := behaviourfail.Report{
+		Class:                  behaviourfail.Infrastructure,
+		InfrastructureFailures: 1,
+		Failures: []behaviourfail.FailureRecord{
+			{Source: "bootstrap", Class: behaviourfail.Infrastructure, Message: "mint download"},
+		},
+	}
+	data, err := json.Marshal(report)
+	require.NoError(t, err)
+	p := filepath.Join(t.TempDir(), "failure-class.json.attempt-1")
+	require.NoError(t, os.WriteFile(p, data, 0o600))
+	t.Setenv("BEHAVIOUR_RETRY_FROM", p)
+
+	assert.Equal(t, []string{"features"}, suiteFeaturePaths(t, "behaviour", []string{"features"}))
+}

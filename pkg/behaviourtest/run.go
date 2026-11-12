@@ -44,8 +44,9 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		t.Skip("skipping behaviour tests in short mode")
 	}
 	if err := opts.validate(); err != nil {
-		t.Fatalf("invalid suite options: %v", err)
+		failRun(t, nil, behaviourSuiteName, fmt.Errorf("invalid suite options: %w", err))
 	}
+	featurePaths := suiteFeaturePaths(t, behaviourSuiteName, opts.FeaturePaths)
 
 	cfg := env.LoadRunnerConfig()
 	if err := cfg.Validate(); err != nil {
@@ -79,7 +80,7 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 
 	concurrency, overCapacity, err := resolveConcurrency(os.Getenv("GODOG_CONCURRENCY"), pool.Layout.SlotsPerOrg, driver.Capacity())
 	if err != nil {
-		t.Fatal(err)
+		failRun(t, nil, behaviourSuiteName, err)
 	}
 	if overCapacity {
 		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block while allocating", concurrency, driver.Capacity())
@@ -136,7 +137,7 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template) },
 		Options: &godog.Options{
 			Format:      "pretty",
-			Paths:       opts.FeaturePaths,
+			Paths:       featurePaths,
 			TestingT:    t,
 			Tags:        os.Getenv("GODOG_TAGS"),
 			Concurrency: concurrency,

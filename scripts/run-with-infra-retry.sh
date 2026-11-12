@@ -14,6 +14,17 @@
 # when the report says infrastructure, because a green second attempt must
 # never mask a product defect.
 #
+# The retry reruns only the scenarios attempt 1 recorded as failed: attempt
+# 2 gets BEHAVIOUR_RETRY_FROM pointing at attempt 1's report, and the suite
+# selects those scenarios from it (pkg/behaviourtest/retryselect). A full
+# rerun takes as long as attempt 1 and does not fit the merge queue's check
+# window.
+#
+# INFRA_RETRY_MAX_ATTEMPT1_SECONDS, when set, refuses the retry if attempt 1
+# ran longer than that many seconds, so a retry cannot start too late to
+# finish, write its report, and release its repos before the job's
+# timeout-minutes.
+#
 # Usage: run-with-infra-retry.sh <command> [args...]
 # Example: ./scripts/run-with-infra-retry.sh go test -tags behaviour ./e2e/behaviour/
 
@@ -23,6 +34,16 @@ if [[ $# -eq 0 ]]; then
   echo "usage: ${0} <command> [args...]" >&2
   exit 2
 fi
+
+max_attempt1_seconds="${INFRA_RETRY_MAX_ATTEMPT1_SECONDS:-}"
+if [[ -n "${max_attempt1_seconds}" && ! "${max_attempt1_seconds}" =~ ^[0-9]+$ ]]; then
+  echo "${0}: INFRA_RETRY_MAX_ATTEMPT1_SECONDS must be a whole number of seconds, got '${max_attempt1_seconds}'" >&2
+  exit 2
+fi
+
+# Attempt 1 always runs the whole suite: a selection left in the caller's
+# environment must not narrow it.
+unset BEHAVIOUR_RETRY_FROM
 
 # Marker resolution mirrors the report writer's destinations: CI sets
 # BEHAVIOUR_ARTIFACT_DIR so the report lands with the uploaded artifacts;
@@ -77,12 +98,14 @@ output_matches_fatal_pattern() {
 # status and tee's apart: under pipefail a failing tee would replace the
 # command's status in the pipeline's. errexit is off for the pipeline so the
 # command's failure reaches the checks below.
+attempt1_start="${SECONDS}"
 set +e
 "$@" 2>&1 | tee "${OUTPUT_FILE}"
 pipe_status=("${PIPESTATUS[@]}")
 set -e
 status="${pipe_status[0]}"
 tee_status="${pipe_status[1]}"
+attempt1_seconds=$((SECONDS - attempt1_start))
 
 if [[ "${status}" -eq 0 ]]; then
   exit 0
@@ -120,21 +143,32 @@ if [[ "${class}" != "infrastructure" ]]; then
   exit "${status}"
 fi
 
-echo "[infra-retry] attempt 1 classified as infrastructure (report: ${marker}); retrying once" >&2
+if [[ -n "${max_attempt1_seconds}" && "${attempt1_seconds}" -gt "${max_attempt1_seconds}" ]]; then
+  echo "[infra-retry] attempt 1 classified as infrastructure but took ${attempt1_seconds}s, over INFRA_RETRY_MAX_ATTEMPT1_SECONDS=${max_attempt1_seconds}; not retrying" >&2
+  exit "${status}"
+fi
+
+echo "[infra-retry] attempt 1 classified as infrastructure (report: ${marker}); retrying once, failed scenarios only" >&2
 
 # Attempt 1's report moves aside so the active report only ever describes the
 # final attempt: a retry that dies before writing its own leaves an empty
 # report, which reads as unclassified. Truncating rather than deleting keeps
-# the mktemp'd local marker's mode 600.
-if ! cp -p -- "${marker}" "${marker}.attempt-1"; then
-  echo "[infra-retry] could not keep attempt 1's report at ${marker}.attempt-1" >&2
+# the mktemp'd local marker's mode 600. If the copy fails, the report stays
+# in place, since truncating it would lose attempt 1's classification and
+# the failed scenarios attempt 2 needs. Attempt 2 reads it at startup and
+# overwrites it on completion.
+retry_from="${marker}.attempt-1"
+if cp -p -- "${marker}" "${retry_from}"; then
+  : >"${marker}"
+else
+  echo "[infra-retry] could not keep attempt 1's report at ${retry_from}; attempt 2 reads it from ${marker}" >&2
+  retry_from="${marker}"
 fi
-: >"${marker}"
 
 # Attempt 2 — the only retry. The final exit status is attempt 2's. The
 # mktemp'd local marker is deliberately left in place after exit: the suite's
 # failure message references the report path, so it stays resolvable for
 # post-mortem inspection.
 status=0
-"$@" || status=$?
+BEHAVIOUR_RETRY_FROM="${retry_from}" "$@" || status=$?
 exit "${status}"

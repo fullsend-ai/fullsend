@@ -177,3 +177,29 @@ func TestReportSuccessRunClass(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &back))
 	assert.Equal(t, report, back)
 }
+
+func TestRecordScenarioFailureCarriesFeature(t *testing.T) {
+	t.Parallel()
+
+	r := &Recorder{}
+	r.RecordScenarioFailure("features/triage/labels.feature", "adding label", Infrastructure, "rate limited")
+
+	snap := r.Snapshot()
+	require.Len(t, snap, 1)
+	assert.Equal(t, FailureRecord{
+		Source:   "scenario",
+		Scenario: "adding label",
+		Feature:  "features/triage/labels.feature",
+		Class:    Infrastructure,
+		Message:  "rate limited",
+	}, snap[0])
+
+	data, err := json.Marshal(r.Report(Infrastructure))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"feature":"features/triage/labels.feature"`)
+
+	var nilRecorder *Recorder
+	assert.NotPanics(t, func() {
+		nilRecorder.RecordScenarioFailure("features/a.feature", "x", Scenario, "boom")
+	})
+}

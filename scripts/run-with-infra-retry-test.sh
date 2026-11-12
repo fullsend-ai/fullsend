@@ -15,9 +15,10 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 COUNT_FILE="${TMPDIR}/invocations"
 MODES_FILE="${TMPDIR}/marker-modes"
+RETRY_FROM_FILE="${TMPDIR}/retry-from"
 STUB="${TMPDIR}/stub-cmd"
 
-export COUNT_FILE MODES_FILE
+export COUNT_FILE MODES_FILE RETRY_FROM_FILE
 
 # Stub suite command. Counts invocations, writes (or omits) a failure-class
 # marker the way the real suite's report writer does, and exits with a
@@ -36,6 +37,9 @@ export COUNT_FILE MODES_FILE
 #   STUB_EMIT_FD      stdout | stderr — where STUB_EMIT goes (default stdout)
 #   STUB_EMIT_NOISE   count of filler stdout lines printed after STUB_EMIT
 #                     (competing-traffic coverage for the capture race)
+#   STUB_SLEEP        seconds to sleep before exiting (attempt-duration guard)
+# Every invocation appends "<n> <BEHAVIOUR_RETRY_FROM or unset> <class read
+# from that file, or ->" to RETRY_FROM_FILE.
 cat >"${STUB}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -47,6 +51,12 @@ n="$(cat "${COUNT_FILE}" 2>/dev/null || echo 0)"
 n=$((n + 1))
 echo "${n}" >"${COUNT_FILE}"
 
+retry_class="-"
+if [[ -n "${BEHAVIOUR_RETRY_FROM:-}" ]]; then
+  retry_class="$(jq -r '.class // "-"' "${BEHAVIOUR_RETRY_FROM}" 2>/dev/null || echo unreadable)"
+fi
+echo "${n} ${BEHAVIOUR_RETRY_FROM:-unset} ${retry_class}" >>"${RETRY_FROM_FILE:?}"
+
 # Mirror the wrapper's marker resolution to find where the report goes.
 if [[ -n "${BEHAVIOUR_ARTIFACT_DIR:-}" ]]; then
   marker="${BEHAVIOUR_ARTIFACT_DIR}/failure-class.json"
@@ -56,6 +66,10 @@ else
   # (chmod 600 contract). stat flags differ between GNU and BSD coreutils.
   mode="$(stat -c '%a' "${marker}" 2>/dev/null || stat -f '%Lp' "${marker}")"
   echo "${mode}" >>"${MODES_FILE}"
+fi
+
+if [[ -n "${STUB_SLEEP:-}" ]]; then
+  sleep "${STUB_SLEEP}"
 fi
 
 if [[ -n "${STUB_PASS_ON:-}" && "${n}" -ge "${STUB_PASS_ON}" ]]; then
@@ -114,7 +128,7 @@ chmod +x "${STUB}"
 # Runs the wrapper against the stub and records its combined output and exit
 # status. Always succeeds so set -e never aborts the test script.
 run_wrapper() {
-  rm -f "${COUNT_FILE}"
+  rm -f "${COUNT_FILE}" "${RETRY_FROM_FILE}"
   WRAPPER_STATUS=0
   WRAPPER_OUTPUT="$("${RETRY_SCRIPT}" "${STUB}" 2>&1)" || WRAPPER_STATUS=$?
 }
@@ -305,6 +319,71 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 unset STUB_MODE_2
+
+# Attempt 2 is pointed at attempt 1's kept report so the suite reruns only
+# the failed scenarios; attempt 1 never gets a selection, even one left in
+# the caller's environment.
+export STUB_MODE=write STUB_CLASS=infrastructure STUB_PASS_ON=2
+BEHAVIOUR_RETRY_FROM="${TMPDIR}/leftover.json" run_wrapper
+check "retry passes attempt 1's report to attempt 2" 0 2 "yes"
+expected_retry_from="1 unset -
+2 ${ART_DIR}/failure-class.json.attempt-1 infrastructure"
+if [[ "$(cat "${RETRY_FROM_FILE}")" == "${expected_retry_from}" ]]; then
+  echo "PASS: only attempt 2 gets BEHAVIOUR_RETRY_FROM, naming attempt 1's report"
+else
+  echo "FAIL: BEHAVIOUR_RETRY_FROM per attempt"
+  echo "  expected:"
+  sed 's/^/    /' <<<"${expected_retry_from}"
+  echo "  got:"
+  sed 's/^/    /' "${RETRY_FROM_FILE}"
+  FAILURES=$((FAILURES + 1))
+fi
+unset STUB_PASS_ON
+
+# If attempt 1's report cannot be copied aside, it is not truncated: attempt
+# 2 reads it in place, so neither the classification nor the failed
+# scenarios are lost (PR #8801 review).
+mkdir -p "${TMPDIR}/failing-cp"
+printf '#!/usr/bin/env bash\nexit 1\n' >"${TMPDIR}/failing-cp/cp"
+chmod +x "${TMPDIR}/failing-cp/cp"
+saved_path="${PATH}"
+PATH="${TMPDIR}/failing-cp:${PATH}"
+export STUB_MODE=write STUB_CLASS=infrastructure STUB_MODE_2=missing
+run_wrapper
+PATH="${saved_path}"
+check "failed report copy still retries" 8 2 "yes"
+if [[ "$(sed -n 2p "${RETRY_FROM_FILE}")" == "2 ${ART_DIR}/failure-class.json infrastructure" ]]; then
+  echo "PASS: failed report copy leaves attempt 1's report in place for attempt 2"
+else
+  echo "FAIL: failed report copy leaves attempt 1's report in place for attempt 2"
+  sed 's/^/    /' "${RETRY_FROM_FILE}"
+  FAILURES=$((FAILURES + 1))
+fi
+unset STUB_MODE_2
+
+# An attempt 1 that ran past INFRA_RETRY_MAX_ATTEMPT1_SECONDS is not retried:
+# the retry could not finish inside the job's timeout.
+export STUB_MODE=write STUB_CLASS=infrastructure STUB_SLEEP=2
+INFRA_RETRY_MAX_ATTEMPT1_SECONDS=0 run_wrapper
+check "attempt 1 over the duration limit does not retry" 7 1 "no"
+if grep -q 'INFRA_RETRY_MAX_ATTEMPT1_SECONDS=0; not retrying' <<<"${WRAPPER_OUTPUT}"; then
+  echo "PASS: duration-limit refusal surfaces a notice"
+else
+  echo "FAIL: duration-limit refusal surfaces a notice"
+  sed 's/^/    /' <<<"${WRAPPER_OUTPUT}"
+  FAILURES=$((FAILURES + 1))
+fi
+unset STUB_SLEEP
+
+# Within the limit, the retry still happens.
+export STUB_PASS_ON=2
+INFRA_RETRY_MAX_ATTEMPT1_SECONDS=600 run_wrapper
+check "attempt 1 within the duration limit retries" 0 2 "yes"
+unset STUB_PASS_ON
+
+# A malformed limit is a usage error, before anything runs.
+INFRA_RETRY_MAX_ATTEMPT1_SECONDS=40m run_wrapper
+check "malformed duration limit is a usage error" 2 0 "no"
 
 # A failed output capture can't rule out fatal patterns, so it refuses the
 # retry and the command's own status is reported, not tee's.

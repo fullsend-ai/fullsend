@@ -43,6 +43,11 @@ type World struct {
 	ScenarioName  string
 	ScenarioBegin time.Time
 
+	// ScenarioURI is the scenario's feature file as godog names it,
+	// set by the Before hook. Failure records carry it so a retried
+	// run can rerun only the failed scenarios.
+	ScenarioURI string
+
 	// SavedLogRunIDs records the workflow runs whose logs have already
 	// been written under BEHAVIOUR_ARTIFACT_DIR during the scenario, so
 	// failure log collection in the After hook does not fetch them again.

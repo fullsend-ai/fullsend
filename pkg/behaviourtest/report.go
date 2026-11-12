@@ -14,6 +14,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/failclass"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/retryselect"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -49,6 +50,28 @@ const failureClassFileEnv = "BEHAVIOUR_FAILURE_CLASS_FILE"
 // appends its labelled section when Actions makes the variable available
 // to the `make behaviour-test` step's child processes (design D5).
 const stepSummaryEnv = "GITHUB_STEP_SUMMARY"
+
+// suiteFeaturePaths returns the feature paths this run executes. On an
+// infra retry, scripts/run-with-infra-retry.sh points
+// retryselect.EnvVar at attempt 1's report, and the run executes only
+// the scenarios that failed there (or the whole suite when the report
+// cannot narrow it). A report that cannot be read or does not match
+// this suite fails the run during bootstrap.
+func suiteFeaturePaths(t *testing.T, suite string, featurePaths []string) []string {
+	t.Helper()
+	reportPath := os.Getenv(retryselect.EnvVar)
+	sel, err := retryselect.Select(os.DirFS("."), featurePaths, reportPath)
+	if err != nil {
+		failRun(t, nil, suite, fmt.Errorf("selecting scenarios to retry: %w", err))
+	}
+	switch {
+	case sel.Targeted:
+		t.Logf("[infra-retry] rerunning only the scenarios that failed in attempt 1: %s", strings.Join(sel.Paths, " "))
+	case reportPath != "":
+		t.Logf("[infra-retry] rerunning the whole suite: %s", sel.Reason)
+	}
+	return sel.Paths
+}
 
 // failRun handles a bootstrap-phase suite failure for both runners: it
 // classifies err, records it on the run's shared failure recorder

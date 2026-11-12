@@ -25,6 +25,7 @@ pkg/behaviourtest/   # RunSuite public entry (build tag: behaviour);
   drivers/           # SCM, CI, env, install interfaces + v1 impls
   suite/             # InitScenario (tags, hooks, step registration)
   failclass/         # Failure classification: infrastructure vs scenario
+  retryselect/       # Feature paths for an infra retry: the failed scenarios
 ```
 
 In-repo live-test infrastructure (not a public API):
@@ -400,7 +401,7 @@ The `playback` job mirrors the `behaviour` job in [`.github/workflows/e2e.yml`](
 - **Change detection.** Reuse the behaviour job's file filter (its `grep -qE` path list and the `push.paths` entries under the same `SYNC-WITH` comment). It already covers `e2e/behaviour/` (playback features, fixtures and results), `pkg/behaviourtest/`, `internal/runtime/` (the `dummy-playback` runtime), and `Makefile`. Keep the two filters in sync, and keep the behaviour job's fallback of running the tests when the file list cannot be fetched or may be truncated.
 - **Cancellation.** The job inherits the workflow-level `concurrency` group and `cancel-in-progress` expression. A cancelled or killed run cannot run `t.Cleanup`, so its slot repos stay occupied until the [repo-slot GC](#repo-slot-gc) reclaims them, exactly as for the behaviour job. Gate post-test steps on `always()` rather than `success()` so that redaction still runs after a failure.
 - **Artifacts.** Before uploading, redact the playback artifact directory with the base-branch `scripts/redact-behaviour-artifacts.sh`, run through `env -i` with the full secret list, as described in [Behaviour debug artifact redaction](../../contributing/ci-workflows.md#behaviour-debug-artifact-redaction). Upload only when `steps.redact.outcome == 'success'` and the suite step failed, with `if-no-files-found: ignore`. Use an artifact name distinct from `behaviour-artifacts-*`, for example `playback-artifacts-<pr-or-run-id>`.
-- **Timeout.** Set `timeout-minutes: 90` so one infrastructure-classified retry fits: the target's second `go test` attempt keeps its own 45-minute `-timeout` (see [Failure classification and infrastructure retry](#failure-classification-and-infrastructure-retry) and [CI timeout budgeting](#ci-timeout-budgeting-for-lazy-provisioning)).
+- **Timeout.** Set `timeout-minutes: 90` and `INFRA_RETRY_MAX_ATTEMPT1_SECONDS: "2400"` so one infrastructure-classified retry fits: the target's second `go test` attempt keeps its own 45-minute `-timeout` (see [Failure classification and infrastructure retry](#failure-classification-and-infrastructure-retry) and [CI timeout budgeting](#ci-timeout-budgeting-for-lazy-provisioning)).
 
 To run playback from a trusted PR branch before merging, dispatch the existing E2E workflow with that branch as the ref:
 
@@ -437,7 +438,14 @@ everything else stays `scenario` — never retried, never masked.
 | Collaborator invitation pending (access requested, not yet granted) | the `gh.ErrInvitationPending` sentinel |
 | Terminal setup-poll exhaustion — repo never visible after creation, or dispatch workflow never settles | `behaviourfail.Mark` in the install ensure path |
 | GCP WIF quota or rate limit during inference provisioning (provision and status wait) | `behaviourfail.Mark` on matched CLI stderr signatures |
-| e2e auth-token mint or download failure at bootstrap | `behaviourfail.Mark` at the e2etest token source |
+| e2e auth-token mint or download failure at bootstrap: a transport error, or a 429 or 5xx response | `behaviourfail.Mark` at the e2etest token source |
+
+The bootstrap token mint is first-party, so a mint regression that answers
+5xx is also classified `infrastructure`. That trade-off is deliberate: the
+suite needs the token before any scenario runs, and a regression fails the
+retry the same way. A mint that answers the
+[GitHub mint scope scenarios](#github-mint-scope-scenarios) wrongly fails
+them as `scenario`.
 
 `Acquire` keeps waiting while the pool is full, so a slot wait normally ends
 with a slot or at the `go test` timeout. A wait ended by cancellation joins the
@@ -479,9 +487,10 @@ output and the report agree on the same per-failure record:
 [failure-class] scenario "issue triage is dispatched": infrastructure
 ```
 
-Suite-bootstrap failures (config validation, driver creation, actor
-resolution, pool token minting) are classified at their `t.Fatalf` sites
-with source `bootstrap`. When the suite fails, the final test-output
+Suite-bootstrap failures (suite options, config validation, retry
+selection, driver creation, concurrency, actor resolution, pool token
+minting) go through `failRun`, which classifies them with source
+`bootstrap` and writes the report. When the suite fails, the final test-output
 message names the class and the per-class counts, so a red check states
 its failure mode instead of a generic suite failure:
 
@@ -494,7 +503,8 @@ as `failure-class.json` under `BEHAVIOUR_ARTIFACT_DIR` (mode `0600`, like
 the other artifacts; CI uploads it with them) and, when
 `BEHAVIOUR_FAILURE_CLASS_FILE` is set, to that path as well. The report
 records the run class, the per-class counts, and each failure's source
-(`scenario` or `bootstrap`), scenario name, class, and redacted message:
+(`scenario` or `bootstrap`), scenario name, feature file (scenario failures
+only), class, and redacted message:
 
 ```json
 {
@@ -505,6 +515,7 @@ records the run class, the per-class counts, and each failure's source
     {
       "source": "scenario",
       "scenario": "issue triage is dispatched",
+      "feature": "features/triage/triage.feature",
       "class": "infrastructure",
       "message": "…redacted failure message…"
     }
@@ -540,9 +551,10 @@ skip debug artifacts" behavior — deletes any stale marker, and runs the
 command. On failure it reads the marker's `class`:
 
 - `infrastructure` on attempt 1 → log the labelled retry notice and re-run
-  the command exactly once. A passing retry ends the run green (the
-  infrastructure failure masked nothing); a failing retry ends it red with
-  the label. The final exit status is attempt 2's.
+  the command exactly once, for the failed scenarios only (see below). A
+  passing retry ends the run green (the infrastructure failure masked
+  nothing); a failing retry ends it red with the label. The final exit
+  status is attempt 2's.
 - `scenario`, a missing report (a crash, cancellation, or hard timeout that
   killed the binary before the report write), or an unparseable report →
   fail immediately, no retry.
@@ -552,11 +564,38 @@ and there is no configuration knob: the count is exactly one, per #8036.
 
 The retry is a process restart, not an in-process re-run: a fresh process
 re-leases slots, re-mints tokens, and exercises the real cold-start path
-the flakes live in. The cost is that a retried run re-runs every scenario,
-so the worst-case wall time doubles — the CI jobs' `timeout-minutes: 90`
-budgets for it, while each `go test` attempt keeps its own 45-minute
-`-timeout` (see [CI timeout
-budgeting](#ci-timeout-budgeting-for-lazy-provisioning)).
+the flakes live in.
+
+The retry reruns only the scenarios that failed. A full rerun takes as long
+as attempt 1, about 30 minutes, which does not fit the merge queue's
+60-minute check window after attempt 1. The wrapper keeps attempt 1's
+report as `failure-class.json.attempt-1` and passes its path to attempt 2
+as `BEHAVIOUR_RETRY_FROM`. The suite then runs (`pkg/behaviourtest/retryselect`):
+
+- each failed scenario, as a godog `path:line` entry found by the feature
+  file and scenario name in the report. A failed example row of a
+  `Scenario Outline` reruns the whole outline.
+- the whole feature file, when a recorded name is not in it (for example,
+  redaction changed the name).
+- the whole suite, when attempt 1 failed during bootstrap, or a failed
+  scenario has no feature file.
+
+A report that cannot be read, is not `infrastructure`, or names a feature
+file outside the suite's paths fails the retry during bootstrap. You can
+set `BEHAVIOUR_RETRY_FROM` yourself to rerun the failed scenarios of an
+earlier run's report; the wrapper clears it for attempt 1.
+
+If attempt 1's report cannot be copied aside, the wrapper leaves it in
+place and attempt 2 reads it from there, so the classification and the
+failed scenarios are not lost.
+
+When `INFRA_RETRY_MAX_ATTEMPT1_SECONDS` is set, the wrapper refuses the
+retry if attempt 1 ran longer than that. CI sets it to 2400 (40 minutes),
+so attempt 2, with its own 45-minute `-timeout`, still finishes, writes
+its report, and releases its repos inside the job's `timeout-minutes: 90`
+(see [CI timeout budgeting](#ci-timeout-budgeting-for-lazy-provisioning)).
+The merge queue window is shorter than the job: a retry fits it only when
+attempt 1 plus the failed scenarios finish within 60 minutes.
 
 ### Repo allocation via the shared slot driver
 
@@ -1193,9 +1232,8 @@ for the whole suite. The behaviour job's `timeout-minutes` in `e2e.yml` and the
 `go test -timeout` in the Makefile must account for this overhead across all
 leases in the suite.
 
-Current budget: **45 minutes per `go test` attempt** and **90 minutes for the CI job**. The job budget carries one [infrastructure-classified retry](#failure-classification-and-infrastructure-retry): both Make targets run through `scripts/run-with-infra-retry.sh`, and a retried run executes a second `go test` with its own 45-minute `-timeout`, so a retried run's worst-case wall time doubles. Keep `go test -timeout` at or below 45 minutes — it is the per-attempt bound the [repo-slot GC](#repo-slot-gc) age guarantee rests on — and never above the job's `timeout-minutes`, or the Go process is killed mid-test with no artifact collection. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within one attempt's budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) and the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios) lease one repo per Examples row. The same rule applies to the `playback-test` target and to any CI job that runs it.
+Current budget: **45 minutes per `go test` attempt** and **90 minutes for the CI job**. The job budget carries one [infrastructure-classified retry](#failure-classification-and-infrastructure-retry): both Make targets run through `scripts/run-with-infra-retry.sh`, and a retried run executes a second `go test`, for the failed scenarios only, with its own 45-minute `-timeout`. The wrapper refuses the retry when attempt 1 ran longer than `INFRA_RETRY_MAX_ATTEMPT1_SECONDS` (2400 in CI), so attempt 2 always has 45 minutes left in the job. Keep `go test -timeout` at or below 45 minutes — it is the per-attempt bound the [repo-slot GC](#repo-slot-gc) age guarantee rests on — and never above the job's `timeout-minutes`, or the Go process is killed mid-test with no artifact collection. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within one attempt's budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) and the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios) lease one repo per Examples row. The same rule applies to the `playback-test` target and to any CI job that runs it.
 
-Because `pull_request_target` runs `e2e.yml` from `main`, the 90-minute job timeout lags the retry: the Makefile and wrapper script come from the PR head and take effect immediately, but until the workflow change reaches `main` — possibly via a human PR, as [#8036](https://github.com/fullsend-ai/fullsend/issues/8036) anticipates — a retried PR run can still be killed by the old 45-minute job timeout. The transitional risk is accepted because infrastructure failures overwhelmingly occur in the early setup minutes.
 
 Reference: [`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) behaviour job `timeout-minutes` and `Makefile` `behaviour-test` target.
 

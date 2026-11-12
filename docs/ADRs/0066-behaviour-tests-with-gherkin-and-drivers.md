@@ -42,7 +42,8 @@ Runtime selection is shared with production via `defaults.runtime` in org `confi
 - Behaviour tests depend on live external infrastructure: GitHub API, GitHub Actions runners, GCP WIF/mint, and the shared halfsend org pool. Transient outages, API rate limits, or pool org state corruption can fail the suite; CI distinguishes infrastructure failures from regressions via workflow logs and artifact inspection, but there is no offline fallback.
 - **Note (2026-10, #8036):** The suite now classifies setup and rate-limit
   failures as infrastructure, labels them in test output and the CI summary,
-  and retries an infrastructure-classified run once; see
+  and retries the failed scenarios of an infrastructure-classified run
+  once; see
   [behaviour-testing.md](../guides/dev/behaviour-testing.md) for the
   classification and retry contract.
 - Behaviour tests share the halfsend org pool and lock mechanism with admin e2e tests (`e2e.yml` runs both jobs). Lock hold time scales with scenario count; pool size was doubled to absorb the additional load and can be increased again if contention appears.
