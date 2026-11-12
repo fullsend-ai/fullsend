@@ -975,7 +975,8 @@ reason and resource IDs.
 - **Dispatch activation gate:** whenever install leaves the trigger account
   ready, including after the Poller grant is refused, it rechecks the
   prerequisites for the child-pipeline route that uses the account's job token and
-  reports either `GitLab trigger dispatch activation deferred: <reasons>` or
+  reports either `GitLab trigger dispatch activation deferred`, followed by
+  one line per unmet prerequisite, or
   `GitLab trigger dispatch prerequisites verified`. The check only reads:
   every managed polling schedule (`fullsend slash poll`, `fullsend event poll`)
   must carry no pipeline variables (legacy schedules still set

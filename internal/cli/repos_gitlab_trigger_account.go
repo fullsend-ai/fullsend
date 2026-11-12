@@ -12,6 +12,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/gitlablifecycle"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -391,10 +392,18 @@ func reportGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, a
 	return gate
 }
 
-// printGitLabTriggerDispatchGate prints a dispatch-gate result.
+// printGitLabTriggerDispatchGate prints a dispatch-gate result. Each deferred
+// reason gets its own line, because a reason can itself contain semicolons
+// and a single joined line cannot be split back into reasons (#9248). Reasons
+// can embed repository text (such as a CI job key), so each one is sanitized
+// here, at the output boundary, so it cannot inject terminal control
+// sequences or fake output lines.
 func printGitLabTriggerDispatchGate(printer *ui.Printer, repoFullName string, gate repos.GitLabTriggerDispatchGate) {
 	if !gate.Ready {
-		printer.StepInfo(fmt.Sprintf("[%s] GitLab trigger dispatch activation deferred: %s. Polling stays the dispatch path", repoFullName, strings.Join(gate.Deferred, "; ")))
+		printer.StepInfo(fmt.Sprintf("[%s] GitLab trigger dispatch activation deferred. Polling stays the dispatch path. Reasons:", repoFullName))
+		for _, reason := range gate.Deferred {
+			printer.StepInfo(fmt.Sprintf("[%s]   - %s", repoFullName, scaffold.SanitizeDisplayText(reason)))
+		}
 		return
 	}
 	printer.StepInfo(fmt.Sprintf("[%s] GitLab trigger dispatch prerequisites verified (schedules migrated off pipeline variables, override role no_one_allowed, job-token repository push disabled, trigger account ready); the dispatch activation is recorded for pipelines the trigger account creates", repoFullName))
