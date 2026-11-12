@@ -128,7 +128,8 @@ than depending on either.
 ## State
 
 - `state.issue_type` — optional current Jira issue type: `id` and `name` are
-  strings; `subtask` is a boolean. The ID is stable within the Jira instance;
+  strings of 1–255 characters; `subtask` is a boolean. The adapter omits the
+  object if either string is empty or exceeds that limit. The ID is stable within the Jira instance;
   the name may be customized or renamed. This is the search snapshot, not the
   historical type at the transition timestamp. Type-only changes do not emit
   events. CEL rules SHOULD guard access with `has(event.state.issue_type)`.
