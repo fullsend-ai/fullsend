@@ -157,6 +157,56 @@ func TestDeriveFallback_IIDsAreNotIdentity(t *testing.T) {
 	assert.NotEqual(t, fa, fb, "the same IID in another project is a different entity")
 }
 
+// conversationIdentity is a resolved GitHub Discussion binding: the
+// repository database ID and the Discussion database ID.
+func conversationIdentity() Identity {
+	return Identity{Instance: "https://github.com", Container: 274390431, Kind: KindConversation, Entity: 7340001}
+}
+
+// TestDeriveFallback_ConversationIdentity covers GitHub conversation
+// identity: repeated launches on one Discussion converge, distinct
+// Discussions (including the same ID under another repository) do not,
+// and the kind keeps a conversation apart from a work item or change
+// proposal that shares its numeric IDs.
+func TestDeriveFallback_ConversationIdentity(t *testing.T) {
+	t.Parallel()
+	require.True(t, KindConversation.Valid())
+	require.True(t, conversationIdentity().Resolved())
+
+	first, ok := DeriveFallback(conversationIdentity())
+	require.True(t, ok)
+	again, ok := DeriveFallback(conversationIdentity())
+	require.True(t, ok)
+	assert.Equal(t, first, again, "repeated launches on one Discussion must share a trace")
+	assert.True(t, first.TraceID.IsValid())
+	assert.True(t, first.AnchorSpanID.IsValid())
+
+	other := conversationIdentity()
+	other.Entity++
+	got, ok := DeriveFallback(other)
+	require.True(t, ok)
+	assert.NotEqual(t, first, got, "distinct Discussions must not share a trace")
+
+	other = conversationIdentity()
+	other.Container++
+	got, ok = DeriveFallback(other)
+	require.True(t, ok)
+	assert.NotEqual(t, first, got, "the same Discussion ID under another repository is a different entity")
+
+	for _, kind := range []EntityKind{KindWorkItem, KindChangeProposal} {
+		other = conversationIdentity()
+		other.Kind = kind
+		got, ok = DeriveFallback(other)
+		require.True(t, ok)
+		assert.NotEqual(t, first, got, "kind %#02x must not alias a conversation", byte(kind))
+	}
+
+	unresolved := conversationIdentity()
+	unresolved.Entity = 0
+	_, ok = DeriveFallback(unresolved)
+	assert.False(t, ok, "an unresolved Discussion ID must not derive a fallback")
+}
+
 // TestDeriveFallback_ConcurrentFirstEvents is V01: concurrent first events
 // converge on the same fallback. Run with -race.
 func TestDeriveFallback_ConcurrentFirstEvents(t *testing.T) {
@@ -383,8 +433,10 @@ func TestDeriveFallback_FixedVectors(t *testing.T) {
 		{Identity{Instance: "https://gitlab.com", Container: 101, Kind: KindChangeProposal, Entity: 555}, "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631001268747470733a2f2f6769746c61622e636f6d000000000000006502000000000000022b", "407b66d9453075850f3ee7ef31d6ff1e", "a39491edef0440ae"},
 		{Identity{Instance: "https://acme.atlassian.net", Container: 10000, Kind: KindWorkItem, Entity: 10100}, "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631001a68747470733a2f2f61636d652e61746c61737369616e2e6e65740000000000002710010000000000002774", "535e9f2c6d8bd8a814edd68dceb60e9a", "7e00bd92068701ac"},
 		{Identity{Instance: "https://gitlab.example.com/gitlab", Container: 101, Kind: KindChangeProposal, Entity: 555}, "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631002168747470733a2f2f6769746c61622e6578616d706c652e636f6d2f6769746c6162000000000000006502000000000000022b", "71c6f9ad9a13f7244356f839e29687fa", "8f2d2a176bde1f88"},
+		// GitHub conversation: the V01 binding with kind 0x03.
+		{Identity{Instance: "https://github.com", Container: 274390431, Kind: KindConversation, Entity: 2468913570}, "002166756c6c73656e642e7472616365636f6e746578742e6964656e746974792e7631001268747470733a2f2f6769746875622e636f6d00000000105add9f03000000009328a1a2", "bf80a0459b29786a2dfd3f544de477af", "f9428a9e85988c3e"},
 	} {
-		t.Run(tc.id.Instance, func(t *testing.T) {
+		t.Run(fmt.Sprintf("%s/kind-%d", tc.id.Instance, tc.id.Kind), func(t *testing.T) {
 			digest := sha256.Sum256(mustHex(t, tc.preimage))
 			assert.Equal(t, tc.traceID, fmt.Sprintf("%x", digest[:16]))
 			assert.Equal(t, tc.anchor, fmt.Sprintf("%x", digest[16:24]))

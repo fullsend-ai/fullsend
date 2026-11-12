@@ -106,6 +106,10 @@ type PerRepoConfigReader interface {
 	// JiraAuthorization returns the jira authorization provider entry,
 	// or nil when none is listed.
 	JiraAuthorization() *AuthorizationProvider
+	// TraceContext returns a copy of this layer's trace_context block, or
+	// nil when it has none. There is no parent fallback: config.base.yaml
+	// never supplies it (ADR 0154).
+	TraceContext() *TraceContextConfig
 }
 
 // --- Write superset interfaces ---
@@ -385,6 +389,13 @@ func (c *perRepoConfig) JiraAuthorization() *AuthorizationProvider {
 		}
 	}
 	return nil
+}
+
+// TraceContext returns a deep copy of the trace_context block, or nil when
+// none is set. Like JiraAuthorization it has no parent fallback: the block
+// belongs to one repository and is never inherited from config.base.yaml.
+func (c *perRepoConfig) TraceContext() *TraceContextConfig {
+	return cloneTraceContext(c.TraceContextBlock)
 }
 
 // ConfigRoles returns the configured agent roles. nil (key omitted)

@@ -127,6 +127,8 @@ type Manifest struct {
 	// legacyTrackingMigrations lists the config layers whose legacy
 	// tracker/create_issues keys were converted on parse (#9075).
 	legacyTrackingMigrations []LegacyTrackingMigration
+	// sourceData is the content LoadManifest parsed.
+	sourceData []byte
 }
 
 // PlatformConfig holds per-platform infrastructure settings and the
@@ -229,7 +231,8 @@ type RepoEntry struct {
 	// Config is a sparse managed .fullsend/config.yaml for this
 	// repository (ADR 0122). It accepts every per-repo config field,
 	// including runtime and allowed_remote_resources, and overrides the
-	// forge section's config and defaults.config.
+	// forge section's config and defaults.config. A glob entry refuses
+	// trace_context, which only a concrete entry may declare.
 	Config config.ManagedConfig `yaml:"config,omitempty"`
 }
 
@@ -254,9 +257,10 @@ type DefaultsConfig struct {
 	// SHA256 is an optional digest verified against the fetched preset.
 	ConfigBase ConfigBase `yaml:"config_base,omitempty"`
 	// Config is a fleet-wide sparse managed .fullsend/config.yaml layer
-	// (ADR 0122). It accepts every per-repo config field, including
-	// runtime and allowed_remote_resources, and is overridden by the forge
-	// section's config and each repository entry's config.
+	// (ADR 0122). It accepts every per-repo config field except
+	// trace_context, including runtime and allowed_remote_resources, and is
+	// overridden by the forge section's config and each repository entry's
+	// config.
 	Config config.ManagedConfig `yaml:"config,omitempty"`
 }
 
@@ -545,11 +549,19 @@ func LoadManifest(ctx context.Context, pathOrURL string) (*Manifest, error) {
 	}
 	m.sourceRemote = sourceRemote
 	m.sourceDir = sourceDir
+	m.sourceData = data
 	if sourceRemote {
 		m.sourceURL = sanitizeManifestSource(pathOrURL)
 	}
 
 	return &m, nil
+}
+
+// LoadedBytes returns the content LoadManifest parsed, so a caller that
+// rewrites the file can refuse one that changed since. It is nil for a
+// manifest built in memory.
+func (m *Manifest) LoadedBytes() []byte {
+	return m.sourceData
 }
 
 // SafeDialContext wraps a net.Dialer to reject connections to
