@@ -55,3 +55,38 @@ func TestRunAgent_PinMismatchAdviceNamesForge(t *testing.T) {
 	require.NoError(t, s.runLockForge(t, "github", true))
 	require.NoError(t, s.runAgentForge(t, "github"))
 }
+
+// TestRunAgent_StaleLockAdviceNamesForge checks that the stale-lock warning
+// advises the shared lock-update command, which names the forge platform for
+// a child harness with no forge: block — without --forge, re-locking composes
+// with platform "" and drops the forge-specific base files (#8988) — so all
+// of run's lock advice comes from the one lockUpdateHint helper.
+func TestRunAgent_StaleLockAdviceNamesForge(t *testing.T) {
+	usePreScriptStub(t)
+	s := newLockAdviceSetup(t, []byte("agent v1"))
+	require.NoError(t, s.runLockForge(t, "github", false))
+
+	// The harness file changes (a comment), so the hash the lock records no
+	// longer matches and the entry is stale; the pinned content is unchanged,
+	// so the run itself still composes.
+	harnessBytes, err := os.ReadFile(s.harnessPath)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(s.harnessPath, append(harnessBytes, []byte("# touched upstream\n")...), 0o644))
+
+	var out bytes.Buffer
+	err = runAgent(context.Background(), "code", s.dir, "", t.TempDir(), "", nil, false, "", "github", "",
+		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Harness has changed since lock file was generated")
+	assert.Contains(t, out.String(), "fullsend lock code --update")
+	assert.Contains(t, out.String(), "--fullsend-dir")
+	assert.Contains(t, out.String(), "--forge github")
+
+	// The advised command, run as written, re-locks and clears the warning.
+	require.NoError(t, s.runLockForge(t, "github", true))
+	var out2 bytes.Buffer
+	err = runAgent(context.Background(), "code", s.dir, "", t.TempDir(), "", nil, false, "", "github", "",
+		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out2), false, runOverrideFlags{})
+	require.NoError(t, err)
+	assert.NotContains(t, out2.String(), "Harness has changed since lock file was generated")
+}
