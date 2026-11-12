@@ -69,45 +69,72 @@ func TestGetWorkflowRunLogs_TraceReadErrorIsMarked(t *testing.T) {
 	assert.Contains(t, logs, "error reading trace:")
 }
 
-// TestGetWorkflowRunLogs_SkippedJobsAfterAggregateLimit verifies that a
-// skipped job's header is written even after earlier traces reach the
-// aggregate byte cap: the cap limits fetched bytes, not the job listing, so
-// a snapshot whose remaining jobs are all skipped stays complete (no
-// aggregate-limit note marks it truncated) and the skipped jobs' traces are
-// still never requested.
+// TestGetWorkflowRunLogs_SkippedJobsAfterAggregateLimit verifies both sides
+// of the aggregate byte cap: the cap limits fetched bytes, not the job
+// listing, so a snapshot whose remaining jobs are all skipped stays complete
+// (a skipped job's header is written, no aggregate-limit note marks it
+// truncated, and the skipped jobs' traces are still never requested), while
+// a job that ran after the cap is never listed or fetched and the
+// aggregate-limit note is emitted so the behaviour reader sees the snapshot
+// as truncated.
 func TestGetWorkflowRunLogs_SkippedJobsAfterAggregateLimit(t *testing.T) {
-	client, mux := setupTest(t)
-	// Ten traces of exactly the per-job cap (10 MiB each) bring totalRead
-	// to the 100 MiB aggregate limit; every job after them is skipped.
-	jobs := make([]string, 0, 11)
-	for i := 1; i <= 10; i++ {
-		jobs = append(jobs, fmt.Sprintf(`{"id":%d,"name":"job%d","status":"success"}`, i, i))
-	}
-	jobs = append(jobs, `{"id":11,"name":"deploy","status":"skipped"}`)
-	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, "[%s]", strings.Join(jobs, ","))
-	})
-	trace := strings.Repeat("a", 10<<20)
-	for i := 1; i <= 10; i++ {
-		mux.HandleFunc(fmt.Sprintf("/api/v4/projects/o%%2Fr/jobs/%d/trace", i), func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte(trace))
+	for _, tc := range []struct {
+		name      string
+		job11     string
+		wantLimit bool
+	}{
+		{
+			name:      "skipped job after the cap",
+			job11:     `{"id":11,"name":"deploy","status":"skipped"}`,
+			wantLimit: false,
+		},
+		{
+			name:      "running job after the cap",
+			job11:     `{"id":11,"name":"deploy","status":"success"}`,
+			wantLimit: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			// Ten traces of exactly the per-job cap (10 MiB each) bring
+			// totalRead to the 100 MiB aggregate limit; the job after them
+			// is the case's eleventh job.
+			jobs := make([]string, 0, 11)
+			for i := 1; i <= 10; i++ {
+				jobs = append(jobs, fmt.Sprintf(`{"id":%d,"name":"job%d","status":"success"}`, i, i))
+			}
+			jobs = append(jobs, tc.job11)
+			mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, "[%s]", strings.Join(jobs, ","))
+			})
+			trace := strings.Repeat("a", 10<<20)
+			for i := 1; i <= 10; i++ {
+				mux.HandleFunc(fmt.Sprintf("/api/v4/projects/o%%2Fr/jobs/%d/trace", i), func(w http.ResponseWriter, _ *http.Request) {
+					_, _ = w.Write([]byte(trace))
+				})
+			}
+			job11TraceRequests := 0
+			mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/11/trace", func(w http.ResponseWriter, r *http.Request) {
+				job11TraceRequests++
+				http.NotFound(w, r)
+			})
+			logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+			require.NoError(t, err)
+			// The literal is the shared forge log-note constant's text
+			// (forge.LogNoteAggregateTraceLimit); the note spelling itself is
+			// pinned by TestLogNoteMarkersAreSharedWithForge in
+			// pkg/behaviourtest/steps.
+			if tc.wantLimit {
+				assert.Contains(t, logs, "aggregate trace limit")
+				assert.NotContains(t, logs, "Job 11 (deploy)", "the loop stops at the cap before the remaining job is listed")
+			} else {
+				assert.Contains(t, logs, "Job 11 (deploy) [skipped]")
+				assert.NotContains(t, logs, "aggregate trace limit")
+			}
+			assert.Zero(t, job11TraceRequests, "the job after the cap never has its trace requested")
 		})
 	}
-	skippedTraceRequests := 0
-	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/11/trace", func(w http.ResponseWriter, r *http.Request) {
-		skippedTraceRequests++
-		http.NotFound(w, r)
-	})
-	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
-	require.NoError(t, err)
-	assert.Contains(t, logs, "Job 11 (deploy) [skipped]")
-	// The literal is the shared forge log-note constant's text
-	// (forge.LogNoteAggregateTraceLimit); the note spelling itself is
-	// pinned by TestLogNoteMarkersAreSharedWithForge in
-	// pkg/behaviourtest/steps.
-	assert.NotContains(t, logs, "aggregate trace limit")
-	assert.Zero(t, skippedTraceRequests, "a skipped job's trace is never requested")
 }
 
 // TestGetWorkflowRunLogs_SkippedJobWritesHeader verifies the header the
