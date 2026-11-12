@@ -72,12 +72,13 @@ TRUSTED_BOTS_JSON="$(jq -Rn \
    | map(sub("\\[bot\\]$"; ""))
    | unique')"
 COMMENT_ID="$(printf '%s' "${COMMENTS_JSON}" | jq -r \
-  --arg marker "${MARKER}" --arg run_url "${FULLSEND_FAILURE_RUN_URL}" \
+  --arg marker "${MARKER}" \
+  --arg run_link "[View the workflow run](${FULLSEND_FAILURE_RUN_URL})" \
   --argjson trusted "${TRUSTED_BOTS_JSON}" \
   'add | map(select((.user.type == "Bot")
     and ((.user.login | sub("\\[bot\\]$"; "")) as $login
       | (($trusted | index($login)) != null))
-    and (.body | startswith($marker) and contains($run_url)))) | last | .id // empty')"
+    and (.body | startswith($marker) and contains($run_link)))) | last | .id // empty')"
 
 if [[ -n "${COMMENT_ID}" ]]; then
   gh api --method PATCH "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/comments/${COMMENT_ID}" \

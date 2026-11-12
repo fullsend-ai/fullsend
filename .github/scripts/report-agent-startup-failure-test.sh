@@ -43,6 +43,8 @@ run_case() {
     body="old comment\n\n${marker}"
   elif [[ "${body_prefix}" == "old-run" ]]; then
     body="${marker}\n\nold comment\n\n[View the workflow run](https://github.com/org/repo/actions/runs/99)"
+  elif [[ "${body_prefix}" == "prefix-run" ]]; then
+    body="${marker}\n\nold comment\n\n[View the workflow run](https://github.com/org/repo/actions/runs/1234)"
   fi
   export MOCK_VIEWER_LOGIN="${viewer}"
   export MOCK_COMMENTS_JSON="[[{\"id\":42,\"user\":{\"type\":\"Bot\",\"login\":\"${comment_login}\"},\"body\":\"${body}\"}]]"
@@ -79,6 +81,7 @@ run_case "custom app-set whitespace is trimmed" "github-actions" "acme-scribe[bo
 run_case "lookalike app is not trusted" "github-actions" "acme-reviewer[bot]" "acme" "review" "marker" "post"
 run_case "marker must start the comment" "github-actions" "fullsend-ai-review[bot]" "" "review" "embedded" "post"
 run_case "different run posts a new historical comment" "github-actions" "fullsend-ai-review[bot]" "" "review" "old-run" "post"
+run_case "prefix-matching run posts a new historical comment" "github-actions" "fullsend-ai-review[bot]" "" "review" "prefix-run" "post"
 
 export MOCK_VIEWER_LOGIN="github-actions"
 export MOCK_GRAPHQL_FAIL=true
