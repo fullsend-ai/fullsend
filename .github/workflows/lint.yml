@@ -48,8 +48,10 @@ jobs:
         env:
           SKIP: check-gateway-doc-configs,semgrep
 
+      # internal/runtime takes 6-10 minutes under -race on ubuntu-24.04, so
+      # Go's default 10m per-package timeout fails green runs (#9210).
       - name: Run Go tests with coverage
-        run: go test -race -coverprofile=coverage.out ./...
+        run: go test -race -timeout 20m -coverprofile=coverage.out ./...
         env:
           GH_TOKEN: ""
           GITHUB_TOKEN: ""

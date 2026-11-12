@@ -15,6 +15,12 @@ func sanitizeOutput(s string) string {
 	return sanitize(s, false)
 }
 
+// SanitizeOutput is sanitizeOutput for callers outside this package that
+// print untrusted strings (such as event fields) to a CI log.
+func SanitizeOutput(s string) string {
+	return sanitizeOutput(s)
+}
+
 // sanitizeStreamText is like sanitizeOutput but preserves newlines for
 // streaming text/thinking deltas. Within a single input, "::" is broken
 // into ": :"; a caller concatenating separately sanitized chunks owns the

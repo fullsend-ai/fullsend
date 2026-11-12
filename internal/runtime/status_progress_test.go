@@ -73,17 +73,19 @@ func TestStatusProgressAttributionRedactedBeforeRetention(t *testing.T) {
 func TestStatusProgressCapacityUpdateKeepsExistingEntries(t *testing.T) {
 	var out bytes.Buffer
 	r := newTestRenderer(&out)
+	r.progress.statusEntryLimit = 8
+	limit := r.progress.maxStatusEntries()
 	// Fill the status cache to capacity with distinct keys carrying subjects.
-	for i := range maxStatusProgressEntries {
+	for i := range limit {
 		r.Handle(StatusProgressEvent{Kind: "row", ID: fmt.Sprint(i), Label: "row " + fmt.Sprint(i), Subject: "subject " + fmt.Sprint(i), SubjectSet: true})
 	}
-	if len(r.progress.statusProgressSeen) != maxStatusProgressEntries {
-		t.Fatalf("setup: want %d entries, got %d", maxStatusProgressEntries, len(r.progress.statusProgressSeen))
+	if len(r.progress.statusProgressSeen) != limit {
+		t.Fatalf("setup: want %d entries, got %d", limit, len(r.progress.statusProgressSeen))
 	}
 	out.Reset()
 	// Updating an existing key at capacity must not wipe the cache.
 	r.Handle(StatusProgressEvent{Kind: "row", ID: "0", Label: "row 0 updated"})
-	if len(r.progress.statusProgressSeen) != maxStatusProgressEntries {
+	if len(r.progress.statusProgressSeen) != limit {
 		t.Fatalf("existing-key update at capacity wiped the cache: %d entries remain", len(r.progress.statusProgressSeen))
 	}
 	// Retained state of other keys must survive: a changed label on another

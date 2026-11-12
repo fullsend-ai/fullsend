@@ -12,6 +12,8 @@ Execute an agent locally in a sandbox. `fullsend run` resolves the agent harness
 fullsend run <agent-name> [flags]
 ```
 
+A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration) must have every harness-level `allowed_remote_resources` prefix covered by the config-level allowlist — `config.yaml`'s `allowed_remote_resources` plus the built-in default prefixes (the defaults are included when the list is omitted or non-empty; an explicit `allowed_remote_resources: []` stays deny-all and excludes them); `fullsend run` fails naming an uncovered prefix, and fails closed when no repository config (`config.yaml` or `config.base.yaml`) exists. See the [`allow_runtime_fetch` entry](../reference/harness-reference.md) in the harness reference.
+
 ## Flags
 
 | Flag | Description |
@@ -30,6 +32,17 @@ fullsend run <agent-name> [flags]
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run stops, because its Jira API gateway address needs a network lookup |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
+
+`--target-repo` accepts a plain directory or a valid checkout with a real root
+`.git` directory. `.git` files (linked worktrees and submodules), symlinked
+`.git` entries, and bare repositories are unsupported. Fullsend validates the
+target after the pre-script and before upload, and sanitizes and validates the
+returned tree before publication; a plain directory may come back as a plain
+directory or a valid checkout, while a checkout must come back as a checkout.
+Reftable ref storage requires Git 2.53 or newer on the host running Fullsend.
+Fullsend rejects a downloaded `.git/packed-refs` larger than 32 MiB and a
+downloaded `.git/shallow` larger than 4 MiB.
+See [SafeDownload](../guides/dev/cli-internals.md#security-sanitizedownload).
 
 ## Plan block
 

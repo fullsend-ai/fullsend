@@ -970,13 +970,34 @@ Reference: [`createFork`](../../../pkg/behaviourtest/steps/fork.go) — retries 
 
 After creating a repo and committing workflow files via `fullsend github setup`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
 
-The install driver's internal ensurer handles this by polling `GetWorkflow` until the workflow file is visible (up to 30 attempts with 5-second intervals). The function returns success as soon as the API returns a non-nil workflow object — it logs the workflow state but does not gate on it. When writing new provisioning code or modifying the install flow, always poll for workflow readiness before dispatching events that depend on the workflow.
+The install driver's internal ensurer handles this by polling `GetWorkflow`
+until the workflow is visible and its state is `active`. Polls back off
+exponentially from 5 seconds to a 30-second cap, for up to 5 minutes. Indexing
+on a freshly created repo sometimes never finishes in that window, so a timeout
+does not fail the allocation straight away: the driver releases the slot
+(deleting its repo), claims a fresh repo, installs, and waits again, up to 2
+claimed repos in total
+([#8654](https://github.com/fullsend-ai/fullsend/issues/8654)). The ensurer
+itself never recreates a slot repo. Context cancellation and API errors other
+than "not found" do not claim a fresh repo. When writing new provisioning code
+or modifying the install flow, always poll for workflow readiness before
+dispatching events that depend on the workflow.
 
-Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is visible to the API.
+Reference: [`awaitWorkflowReady`](../../../pkg/behaviourtest/drivers/install/ensure.go) — polls `GetWorkflow` until the workflow is active; [`AllocateLease`](../../../pkg/behaviourtest/drivers/install/composed.go) claims a fresh repo when it times out.
 
 ### CI timeout budgeting for lazy provisioning
 
-Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete leftover state + create + `github setup` + Actions settle; the first lease of each name also resolves inference WIF), including when a later scenario reuses the same `test-repo-NN` name. The behaviour job's `timeout-minutes` in `e2e.yml` and the `go test -timeout` in the Makefile must account for this overhead across all leases in the suite.
+Each lease of a pool repo adds approximately 3–5 minutes of overhead (delete
+leftover state + create + `github setup` + Actions settle; the first lease of
+each name also resolves inference WIF), including when a later scenario reuses
+the same `test-repo-NN` name. A lease whose workflow Actions does not index in
+time can take about 10 minutes longer: up to two 5-minute settle waits plus one
+more claim and `github setup`
+([Actions workflow readiness](#actions-workflow-readiness-after-repo-creation)).
+This happens rarely, so it is not budgeted per lease, but it reduces the slack
+for the whole suite. The behaviour job's `timeout-minutes` in `e2e.yml` and the
+`go test -timeout` in the Makefile must account for this overhead across all
+leases in the suite.
 
 Current budget: **45 minutes** for both the CI job timeout and `go test -timeout`. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within this budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) and the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios) lease one repo per Examples row. Adjust both values together — a `go test -timeout` higher than the CI `timeout-minutes` means the Go process is killed mid-test with no artifact collection. The same rule applies to the `playback-test` target (also 45 minutes) and to any CI job that runs it.
 
@@ -1155,9 +1176,10 @@ cannot submit a review and has no row in the review scenario.
 
 Two more steps cover the unregistered e2e bot's loss of the bot-review
 exception. `the label "<label>" exists` makes the e2e identity create the label
-with a throwaway issue (closed again), because the triage actor cannot create
-labels; run it before `an issue`, so the throwaway issue's workflow runs predate
-`ScenarioStart`. `the <actor> submits a review comment on the pull request`
+through the forge's label API, because the triage actor cannot create labels.
+Creating a label fires no issue event, so no workflow run starts that a later
+step could count; a label already present in a reused repository is fine.
+`the <actor> submits a review comment on the pull request`
 submits a COMMENT review as a human test actor, where `a review comment is
 submitted on the pull request` makes the e2e bot do so, and the bot-role lookup
 now denies that bot's review before CEL.
@@ -1293,6 +1315,8 @@ suiteRunner := godog.TestSuite{
 **`scm.Driver.CreateUserFork` addition (breaking change):** The `scm.Driver` interface now includes `CreateUserFork(ctx, owner, repo string) (forkOwner, forkRepo string, err error)`, which forks a repository into the authenticated user's own account, the way an outside contributor does. The forge picks the fork's name. The `owned by the <actor>` fork step uses it. The GitHub and GitLab reference implementations pass through to the existing `forge.Client.CreateFork` method. This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
 
 **`scm.Driver.ListOpenIssues` addition (breaking change):** The `scm.Driver` interface now includes `ListOpenIssues(ctx, owner, repo string, labels ...string) ([]forge.Issue, error)`, returning the repository's open issues (pull requests excluded) that carry every given label. The `an issue with label ... and title containing ... exists` step uses it. The GitHub and GitLab reference implementations pass through to the existing `forge.Client` method of the same name. This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
+
+**`scm.Driver.EnsureLabel` addition (breaking change):** The `scm.Driver` interface now includes `EnsureLabel(ctx, owner, repo, name string) error`, which creates a repository label and returns nil when the label already exists. The `the label "<label>" exists` step uses it instead of opening a throwaway issue that carries the label, because that issue's `issues.labeled` event started a real harness run that a later step counted ([#9350](https://github.com/fullsend-ai/fullsend/issues/9350)). The GitHub and GitLab reference implementations pass through to the new `forge.Client.EnsureLabel` method. This widens the required method set, so external `scm.Driver` implementations must add this method when upgrading past this release or they will no longer satisfy the interface.
 
 **`ci.RunLister` optional interface:** `ListRecentRuns(ctx, owner, repo string, limit int) ([]forge.WorkflowRun, error)` lists a repository's most recent workflow runs across all workflows. Failure log collection uses it to find runs that no step resolved. It is a separate interface, not a `ci.Driver` method, so external `ci.Driver` implementations keep compiling. Without it, failed scenarios still get a failure summary but only the run a step resolved has its logs collected. The GitHub Actions and GitLab CI reference drivers implement it.
 

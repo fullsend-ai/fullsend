@@ -862,6 +862,9 @@ func (f *fakeForkSCM) AddIssueLabels(_ context.Context, owner, repo string, numb
 	}
 	return nil
 }
+func (f *fakeForkSCM) EnsureLabel(context.Context, string, string, string) error {
+	return nil
+}
 
 func (f *fakeForkSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
 	return nil, nil

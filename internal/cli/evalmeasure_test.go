@@ -406,7 +406,7 @@ func TestActionYML_EvalMeasureNoFloatingV0Curl(t *testing.T) {
 	idx := strings.Index(s, "name: Eval measurements")
 	require.Greater(t, idx, 0)
 	step := s[idx:]
-	if end := strings.Index(step, "name: Upload fullsend artifacts"); end > 0 {
+	if end := strings.Index(step, "name: Prepare fullsend artifacts"); end > 0 {
 		step = step[:end]
 	}
 	assert.Contains(t, step, "eval-measure")

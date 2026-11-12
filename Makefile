@@ -102,11 +102,11 @@ go-build:
 go-test:
 	GH_TOKEN= GITHUB_TOKEN= \
 	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
-	go test -race -coverprofile=cover-default.out ./...
+	go test -race -timeout 20m -coverprofile=cover-default.out ./...
 	cd internal/mintcore && \
 	GH_TOKEN= GITHUB_TOKEN= \
 	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
-	go test -race -tags github -coverprofile=../../cover-github.out ./...
+	go test -race -timeout 20m -tags github -coverprofile=../../cover-github.out ./...
 	@# Merge coverage profiles from both test runs into coverage.out.
 	@head -1 cover-default.out > coverage.out
 	@tail -n +2 cover-default.out >> coverage.out
@@ -278,6 +278,13 @@ ci-local:
 # BEHAVIOUR_CAPABILITIES, on dev against the fix or on stage once it is on
 # main; when that passes, declare it here. Jira AISDLC-654 tracks that
 # step and the harnessLogPollWindow confirmation.
+# fetch-allowlist-gate (features/dispatch/fetch-allowlist-gate.feature) is
+# not declared until its scenario has passed one live run. A dev run (an
+# authorized PR or the merge queue) installs the PR head's fullsend
+# binary; a stage run (push to main) takes main's. Run make behaviour-test
+# on demand with fetch-allowlist-gate added to BEHAVIOUR_CAPABILITIES, on
+# dev against the fix or on stage once it is on main; when that passes,
+# declare it here (#9291).
 BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
 
 behaviour-test:

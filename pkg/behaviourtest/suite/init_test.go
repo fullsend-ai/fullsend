@@ -34,6 +34,9 @@ func (p *panickingSCM) CreateIssue(context.Context, string, string, string, stri
 func (p *panickingSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
 	return nil
 }
+func (p *panickingSCM) EnsureLabel(context.Context, string, string, string) error {
+	return nil
+}
 func (p *panickingSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
 	return nil, nil
 }
