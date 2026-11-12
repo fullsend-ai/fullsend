@@ -225,10 +225,10 @@ func TestNewRepoPoolCFMintStage_UnsuffixedOrgPool(t *testing.T) {
 	assert.Equal(t, []string{StageOrg}, d.(*composedDriver).alloc.layout.Orgs())
 }
 
-func TestStageSetupOpts(t *testing.T) {
+func TestStageInstallOpts(t *testing.T) {
 	t.Setenv("PLAYBACK_RUNTIME", "dummy-playback")
 	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "preset.yaml")
-	opts := stageSetupOpts()
+	opts := stageInstallOpts()
 	assert.False(t, opts.Vendor)
 	assert.Equal(t, stageFullsendRef, opts.FullsendRef)
 	assert.Equal(t, "dummy-playback", opts.Runtime)

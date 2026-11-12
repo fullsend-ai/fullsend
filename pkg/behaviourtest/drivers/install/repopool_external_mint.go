@@ -29,7 +29,7 @@ func NewRepoPoolExternalMint(pool PoolConfig) (Driver, error) {
 	newMint := func(mintGroup, orgCredential) (mintDriver, func(), error) {
 		return &externalMintDriver{mintURL: mintURL}, func() {}, nil
 	}
-	opts := common.DefaultGitHubSetupOpts()
+	opts := common.DefaultInstallOpts()
 	opts.ConfigPreset = envConfigPreset()
 	return buildPoolDriver(pool, nil, newMint, opts, traceStart{})
 }
@@ -46,7 +46,7 @@ type externalMintDriver struct {
 var _ mintDriver = (*externalMintDriver)(nil)
 
 func (d *externalMintDriver) Install(_ context.Context) (string, error) {
-	// The driver only provides the mint URL. Per-repo github setup and
+	// The driver only provides the mint URL. Per-repo repos install and
 	// post-install validation are handled by the ensurer for each
 	// leased pool repo.
 	return d.mintURL, nil

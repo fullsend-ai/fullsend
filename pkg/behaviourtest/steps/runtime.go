@@ -21,7 +21,8 @@ import (
 )
 
 // suiteInstallRuntime is the runtime every pool repo is installed with
-// (`github setup … --runtime dummy`, asserted post-install).
+// (`config.runtime: dummy` in the repos.yaml entry the install driver
+// generates for `repos install`, asserted post-install).
 const suiteInstallRuntime = "dummy"
 
 // Runtime steps cover the runtime layer that every other scenario takes

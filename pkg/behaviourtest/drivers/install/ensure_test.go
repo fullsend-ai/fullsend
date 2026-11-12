@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -286,7 +287,7 @@ func TestNewRepoEnsurer_ConfigPresetFromEnv(t *testing.T) {
 	require.NoError(t, err)
 	re, ok := e.(*repoEnsurer)
 	require.True(t, ok)
-	assert.Equal(t, "https://example.com/preset.yaml", re.setupOpts.ConfigPreset)
+	assert.Equal(t, "https://example.com/preset.yaml", re.installOpts.ConfigPreset)
 }
 
 func TestNewRepoEnsurer_ConfigPresetUnset(t *testing.T) {
@@ -296,18 +297,18 @@ func TestNewRepoEnsurer_ConfigPresetUnset(t *testing.T) {
 	require.NoError(t, err)
 	re, ok := e.(*repoEnsurer)
 	require.True(t, ok)
-	assert.Empty(t, re.setupOpts.ConfigPreset)
+	assert.Empty(t, re.installOpts.ConfigPreset)
 }
 
 func TestEnsurer_CachesSuccessfulEnsure(t *testing.T) {
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{},
-		client:    sc,
-		runCLI:    noopCLI,
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		e2eCfg:      e2etest.EnvConfig{},
+		client:      sc,
+		runCLI:      noopCLI,
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	ctx := context.Background()
@@ -321,12 +322,12 @@ func TestEnsurer_CachesSuccessfulEnsure(t *testing.T) {
 func TestEnsurer_CacheKeyIncludesOrg(t *testing.T) {
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{},
-		client:    sc,
-		runCLI:    noopCLI,
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		e2eCfg:      e2etest.EnvConfig{},
+		client:      sc,
+		runCLI:      noopCLI,
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	ctx := context.Background()
@@ -349,12 +350,12 @@ func TestEnsurer_MissingSlotRepoIsNeverCreated(t *testing.T) {
 		installed:  true,
 	}
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{},
-		client:    sc,
-		runCLI:    noopCLI,
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		e2eCfg:      e2etest.EnvConfig{},
+		client:      sc,
+		runCLI:      noopCLI,
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-05")
@@ -368,15 +369,15 @@ func TestEnsurer_ExistingSlotRepoIsNeverDeletedOrReset(t *testing.T) {
 	speedUpValidateRetries(t)
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
-		client:    sc,
-		binary:    "/usr/bin/fullsend",
-		token:     "tok",
-		runCLI:    noopCLI,
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      sc,
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		runCLI:      noopCLI,
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-03")
@@ -396,13 +397,13 @@ func TestEnsurer_ExistingSlotRepoBlockedForCreate_NeverDeleted(t *testing.T) {
 	// must neither create nor delete-to-recreate it.
 	sc := &stubClient{installed: true, blockedByExistingRepo: true}
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
-		client:    sc,
-		runCLI:    noopCLI,
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      sc,
+		runCLI:      noopCLI,
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-04"))
@@ -416,13 +417,13 @@ func TestEnsurer_DeletesLeftoverForkBeforeInstall(t *testing.T) {
 	speedUpResetRetries(t)
 	sc := &stubClient{installed: true, forkExists: true}
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
-		client:    sc,
-		runCLI:    noopCLI,
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      sc,
+		runCLI:      noopCLI,
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-02"))
@@ -441,25 +442,28 @@ func TestEnsurer_InstallsWhenValidationFails(t *testing.T) {
 		token:  "tok",
 		runCLI: func(binary, token string, args ...string) (string, error) {
 			cliCalls = append(cliCalls, args)
-			if len(args) > 0 && args[0] == "github" && args[1] == "setup" {
+			if isReposInstallCall(args) {
 				sc.installed = true
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-10")
 	require.NoError(t, err)
 
-	// CLI should have been called for "github setup".
-	require.Len(t, cliCalls, 1, "expected exactly one CLI call (github setup)")
-	assert.Equal(t, "github", cliCalls[0][0])
-	assert.Equal(t, "setup", cliCalls[0][1])
-	assert.Contains(t, cliCalls[0], "--mint-url")
+	// CLI should have been called for "repos install" with a manifest and
+	// no removed persistent-setting flags.
+	require.Len(t, cliCalls, 1, "expected exactly one CLI call (repos install)")
+	assert.Equal(t, []string{"repos", "install", "org/test-repo-10"}, cliCalls[0][:3])
+	assert.Contains(t, cliCalls[0], "--manifest")
+	assert.Contains(t, cliCalls[0], "--direct")
+	assert.NotContains(t, cliCalls[0], "--mint-url")
+	assert.NotContains(t, cliCalls[0], "--vendor")
 }
 
 func TestEnsurer_DoEnsure_InstallsThenCaches(t *testing.T) {
@@ -473,15 +477,15 @@ func TestEnsurer_DoEnsure_InstallsThenCaches(t *testing.T) {
 		token:  "tok",
 		runCLI: func(binary, token string, args ...string) (string, error) {
 			cliCalls = append(cliCalls, args)
-			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+			if isReposInstallCall(args) {
 				sc.installed = true
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	ctx := context.Background()
@@ -489,7 +493,7 @@ func TestEnsurer_DoEnsure_InstallsThenCaches(t *testing.T) {
 	require.NoError(t, err)
 	assert.Zero(t, sc.createRepoCalled.Load(), "the claim created the repo")
 	require.Len(t, cliCalls, 1)
-	assert.Equal(t, "github", cliCalls[0][0])
+	assert.Equal(t, "repos", cliCalls[0][0])
 
 	// Second call should hit cache — no additional CLI calls.
 	err = e.EnsureRepo(ctx, "org", "test-repo-new")
@@ -511,7 +515,7 @@ func TestEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 		token:  "tok",
 		runCLI: func(binary, token string, args ...string) (string, error) {
 			cliCalls = append(cliCalls, args)
-			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+			if isReposInstallCall(args) {
 				sc.installed = true
 			}
 			if len(args) >= 2 && args[0] == "inference" && args[1] == "status" {
@@ -519,23 +523,23 @@ func TestEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-gcp")
 	require.NoError(t, err)
 
-	// A healthy provider skips provision: inference status, github setup.
-	require.Len(t, cliCalls, 2, "expected 2 CLI calls (status, setup)")
+	// A healthy provider skips provision: inference status, repos install.
+	require.Len(t, cliCalls, 2, "expected 2 CLI calls (status, install)")
 	assert.Equal(t, "inference", cliCalls[0][0])
 	assert.Equal(t, "status", cliCalls[0][1])
-	assert.Equal(t, "github", cliCalls[1][0])
-	assert.Equal(t, "setup", cliCalls[1][1])
-	assert.Contains(t, cliCalls[1], "--inference-project")
-	assert.Contains(t, cliCalls[1], "--inference-wif-provider")
+	assert.Equal(t, "repos", cliCalls[1][0])
+	assert.Equal(t, "install", cliCalls[1][1])
+	assert.Contains(t, strings.Join(cliCalls[1], " "), "--vertex-project test-project")
+	assert.Contains(t, strings.Join(cliCalls[1], " "), "--vertex-wif-provider projects/p/locations/l/providers/wif")
 }
 
 const (
@@ -548,14 +552,30 @@ func isInferenceCall(args []string, sub string) bool {
 	return len(args) >= 2 && args[0] == "inference" && args[1] == sub
 }
 
-func isGitHubSetupCall(args []string) bool {
-	return len(args) >= 2 && args[0] == "github" && args[1] == "setup"
+func isReposInstallCall(args []string) bool {
+	return len(args) >= 2 && args[0] == "repos" && args[1] == "install"
 }
 
-// githubSetupRepoInfo404Err matches the CLI error from applyPerRepoScaffold
-// when GetRepo 404s on a just-created repo.
-func githubSetupRepoInfo404Err(target string) error {
-	return fmt.Errorf("[cli] fullsend github setup %s failed: exit 1\nError: getting repo info: get repo %s: github api: 404 Not Found", target, target)
+// reposInstallRepoInfo404Err matches the CLI error from repos install
+// when the scaffold commit's GetRepo 404s on a just-created repo.
+func reposInstallRepoInfo404Err(target string) error {
+	return fmt.Errorf("[cli] fullsend repos install %s failed: exit status 1\n  FAILED: %s — committing scaffold: getting repo info: get repo %s: github api: 404 Not Found\nError: 1 repos failed", target, target, target)
+}
+
+// readInstallManifest returns the repos.yaml content passed to a repos
+// install call via --manifest. It must be called while the fake CLI runs:
+// the manifest directory is removed once the install returns.
+func readInstallManifest(t *testing.T, args []string) string {
+	t.Helper()
+	for i, a := range args {
+		if a == "--manifest" && i+1 < len(args) {
+			data, err := os.ReadFile(args[i+1])
+			require.NoError(t, err, "the manifest must exist when repos install runs")
+			return string(data)
+		}
+	}
+	t.Fatalf("repos install call has no --manifest: %v", args)
+	return ""
 }
 
 func TestEnsurer_WIFProvider_NotHealthy_ProvisionsOnce(t *testing.T) {
@@ -579,19 +599,19 @@ func TestEnsurer_WIFProvider_NotHealthy_ProvisionsOnce(t *testing.T) {
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-cold"))
 
-	require.Len(t, cliCalls, 4, "expected status, provision, status, setup")
+	require.Len(t, cliCalls, 4, "expected status, provision, status, install")
 	assert.True(t, isInferenceCall(cliCalls[0], "status"))
 	assert.True(t, isInferenceCall(cliCalls[1], "provision"))
 	assert.True(t, isInferenceCall(cliCalls[2], "status"))
-	assert.Equal(t, []string{"github", "setup"}, cliCalls[3][:2])
+	assert.Equal(t, []string{"repos", "install"}, cliCalls[3][:2])
 	assert.Contains(t, cliCalls[3], testWIFProvider)
 }
 
@@ -615,28 +635,28 @@ func TestEnsurer_WIFProvider_SurvivesReleaseRepo(t *testing.T) {
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	ctx := context.Background()
 	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
-	require.Len(t, cliCalls, 2, "first ensure: status, setup")
+	require.Len(t, cliCalls, 2, "first ensure: status, install")
 
 	require.NoError(t, e.ReleaseRepo(ctx, "org", "test-repo-01", stillOwnsSlot))
 	cliCalls = nil
 
 	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
-	require.Len(t, cliCalls, 1, "second ensure: setup only, provider reused from cache")
-	assert.Equal(t, []string{"github", "setup"}, cliCalls[0][:2])
+	require.Len(t, cliCalls, 1, "second ensure: install only, provider reused from cache")
+	assert.Equal(t, []string{"repos", "install"}, cliCalls[0][:2])
 	assert.Contains(t, cliCalls[0], testWIFProvider)
 
 	// A different name is not served from another name's cache entry.
 	cliCalls = nil
 	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-02"))
-	require.Len(t, cliCalls, 2, "new name: status, setup")
+	require.Len(t, cliCalls, 2, "new name: status, install")
 	assert.True(t, isInferenceCall(cliCalls[0], "status"))
 }
 
@@ -664,10 +684,10 @@ func TestEnsurer_WIFProvider_ProvisionErrorNotCached(t *testing.T) {
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	ctx := context.Background()
@@ -905,10 +925,10 @@ func TestEnsurer_WIFProvider_ConcurrentColdProvisionsSerialised(t *testing.T) {
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	const slots = 6
@@ -946,18 +966,18 @@ func TestEnsurer_InstallCLIError_Propagated(t *testing.T) {
 		runCLI: func(binary, token string, args ...string) (string, error) {
 			return "", fmt.Errorf("cli exploded")
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-err")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "github setup")
+	assert.Contains(t, err.Error(), "repos install")
 	assert.Contains(t, err.Error(), "cli exploded")
 }
 
-func TestEnsurer_GitHubSetup_RepoInfo404_RetriesThenSucceeds(t *testing.T) {
+func TestEnsurer_ReposInstall_RepoInfo404_RetriesThenSucceeds(t *testing.T) {
 	speedUpValidateRetries(t)
 	speedUpResetRetries(t)
 	sc := &stubClient{installed: false}
@@ -969,27 +989,27 @@ func TestEnsurer_GitHubSetup_RepoInfo404_RetriesThenSucceeds(t *testing.T) {
 		binary: "/usr/bin/fullsend",
 		token:  "tok",
 		runCLI: func(_, _ string, args ...string) (string, error) {
-			if isGitHubSetupCall(args) {
+			if isReposInstallCall(args) {
 				n := setupCalls.Add(1)
 				if n == 1 {
-					return "", githubSetupRepoInfo404Err(target)
+					return "", reposInstallRepoInfo404Err(target)
 				}
 				sc.installed = true
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-setup-404")
 	require.NoError(t, err)
-	assert.Equal(t, int32(2), setupCalls.Load(), "github setup should retry once after a repo-info 404")
+	assert.Equal(t, int32(2), setupCalls.Load(), "repos install should retry once after a repo-info 404")
 }
 
-func TestEnsurer_GitHubSetup_OtherError_NoRetry(t *testing.T) {
+func TestEnsurer_ReposInstall_OtherError_NoRetry(t *testing.T) {
 	speedUpValidateRetries(t)
 	speedUpResetRetries(t)
 	sc := &stubClient{installed: false}
@@ -1000,25 +1020,25 @@ func TestEnsurer_GitHubSetup_OtherError_NoRetry(t *testing.T) {
 		binary: "/usr/bin/fullsend",
 		token:  "tok",
 		runCLI: func(_, _ string, args ...string) (string, error) {
-			if isGitHubSetupCall(args) {
+			if isReposInstallCall(args) {
 				setupCalls.Add(1)
 				return "", fmt.Errorf("cli exploded")
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-setup-err")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "github setup")
+	assert.Contains(t, err.Error(), "repos install")
 	assert.Contains(t, err.Error(), "cli exploded")
-	assert.Equal(t, int32(1), setupCalls.Load(), "non-404 github setup errors must not be retried")
+	assert.Equal(t, int32(1), setupCalls.Load(), "non-404 repos install errors must not be retried")
 }
 
-func TestEnsurer_GitHubSetup_RepoInfo404_ContextCancelledDuringBackoff(t *testing.T) {
+func TestEnsurer_ReposInstall_RepoInfo404_ContextCancelledDuringBackoff(t *testing.T) {
 	speedUpValidateRetries(t)
 	orig := resetRetryDelay
 	resetRetryDelay = 5 * time.Second
@@ -1037,20 +1057,20 @@ func TestEnsurer_GitHubSetup_RepoInfo404_ContextCancelledDuringBackoff(t *testin
 		binary: "/usr/bin/fullsend",
 		token:  "tok",
 		runCLI: func(_, _ string, args ...string) (string, error) {
-			if isGitHubSetupCall(args) {
+			if isReposInstallCall(args) {
 				n := setupCalls.Add(1)
 				if n == 1 {
 					close(firstSetup)
-					return "", githubSetupRepoInfo404Err(target)
+					return "", reposInstallRepoInfo404Err(target)
 				}
-				return "", fmt.Errorf("unexpected extra github setup call")
+				return "", fmt.Errorf("unexpected extra repos install call")
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	errCh := make(chan error, 1)
@@ -1061,7 +1081,7 @@ func TestEnsurer_GitHubSetup_RepoInfo404_ContextCancelledDuringBackoff(t *testin
 	select {
 	case <-firstSetup:
 	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for the first github setup call")
+		t.Fatal("timed out waiting for the first repos install call")
 	}
 	cancel()
 
@@ -1069,14 +1089,14 @@ func TestEnsurer_GitHubSetup_RepoInfo404_ContextCancelledDuringBackoff(t *testin
 	case err := <-errCh:
 		require.Error(t, err)
 		require.ErrorIs(t, err, context.Canceled)
-		assert.Contains(t, err.Error(), "github setup")
-		assert.Equal(t, int32(1), setupCalls.Load(), "cancellation during backoff must not start another github setup")
+		assert.Contains(t, err.Error(), "repos install")
+		assert.Equal(t, int32(1), setupCalls.Load(), "cancellation during backoff must not start another repos install")
 	case <-time.After(2 * time.Second):
-		t.Fatal("EnsureRepo did not return after context cancellation during github setup backoff")
+		t.Fatal("EnsureRepo did not return after context cancellation during repos install backoff")
 	}
 }
 
-func TestEnsurer_GitHubSetup_RepoInfo404_GivesUpAfterMaxAttempts(t *testing.T) {
+func TestEnsurer_ReposInstall_RepoInfo404_GivesUpAfterMaxAttempts(t *testing.T) {
 	speedUpValidateRetries(t)
 	speedUpResetRetries(t)
 	sc := &stubClient{installed: false}
@@ -1088,15 +1108,15 @@ func TestEnsurer_GitHubSetup_RepoInfo404_GivesUpAfterMaxAttempts(t *testing.T) {
 		binary: "/usr/bin/fullsend",
 		token:  "tok",
 		runCLI: func(_, _ string, args ...string) (string, error) {
-			if isGitHubSetupCall(args) {
+			if isReposInstallCall(args) {
 				setupCalls.Add(1)
-				return "", githubSetupRepoInfo404Err(target)
+				return "", reposInstallRepoInfo404Err(target)
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-setup-404-max")
@@ -1107,7 +1127,7 @@ func TestEnsurer_GitHubSetup_RepoInfo404_GivesUpAfterMaxAttempts(t *testing.T) {
 	assert.Contains(t, err.Error(), fmt.Sprintf("after %d attempts", resetMaxAttempts))
 }
 
-func TestIsGitHubSetupRepoInfo404(t *testing.T) {
+func TestIsRepoInfo404(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -1117,12 +1137,12 @@ func TestIsGitHubSetupRepoInfo404(t *testing.T) {
 		{name: "nil", err: nil, want: false},
 		{
 			name: "cli 404",
-			err:  githubSetupRepoInfo404Err("org/repo"),
+			err:  reposInstallRepoInfo404Err("org/repo"),
 			want: true,
 		},
 		{
 			name: "wrapped 404",
-			err:  fmt.Errorf("github setup org/repo: %w", githubSetupRepoInfo404Err("org/repo")),
+			err:  fmt.Errorf("repos install org/repo: %w", reposInstallRepoInfo404Err("org/repo")),
 			want: true,
 		},
 		{
@@ -1132,7 +1152,7 @@ func TestIsGitHubSetupRepoInfo404(t *testing.T) {
 		},
 		{
 			name: "404 without getting repo info",
-			err:  fmt.Errorf("github setup org/repo: workflow not found: 404 Not Found"),
+			err:  fmt.Errorf("repos install org/repo: workflow not found: 404 Not Found"),
 			want: false,
 		},
 		{
@@ -1149,15 +1169,15 @@ func TestIsGitHubSetupRepoInfo404(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, isGitHubSetupRepoInfo404(tt.err))
+			assert.Equal(t, tt.want, isRepoInfo404(tt.err))
 		})
 	}
 }
 
-// TestEnsurer_GitHubSetup_RepoInfo404_DoesNotReprovisionWIF checks that a
+// TestEnsurer_ReposInstall_RepoInfo404_DoesNotReprovisionWIF checks that a
 // setup retry reuses the cached inference WIF provider: one status read,
 // no provision, and the same provider on both setup attempts.
-func TestEnsurer_GitHubSetup_RepoInfo404_DoesNotReprovisionWIF(t *testing.T) {
+func TestEnsurer_ReposInstall_RepoInfo404_DoesNotReprovisionWIF(t *testing.T) {
 	speedUpValidateRetries(t)
 	speedUpResetRetries(t)
 	sc := &stubClient{installed: false}
@@ -1176,19 +1196,19 @@ func TestEnsurer_GitHubSetup_RepoInfo404_DoesNotReprovisionWIF(t *testing.T) {
 				return healthyStatusJSON, nil
 			case isInferenceCall(args, "provision"):
 				provisionCalls.Add(1)
-			case isGitHubSetupCall(args):
+			case isReposInstallCall(args):
 				setupArgs = append(setupArgs, append([]string(nil), args...))
 				if setupCalls.Add(1) == 1 {
-					return "", githubSetupRepoInfo404Err(target)
+					return "", reposInstallRepoInfo404Err(target)
 				}
 				sc.installed = true
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-setup-404-wif"))
@@ -1217,9 +1237,9 @@ func TestEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-prov-err")
@@ -1238,14 +1258,14 @@ func TestEnsurer_ConcurrentEnsureSameRepo(t *testing.T) {
 		e2eCfg: e2etest.EnvConfig{},
 		client: sc,
 		runCLI: func(_, _ string, args ...string) (string, error) {
-			if isGitHubSetupCall(args) {
+			if isReposInstallCall(args) {
 				setups.Add(1)
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	const goroutines = 5
@@ -1282,9 +1302,9 @@ func TestDoEnsure_PostInstallStillFailsAfterInstall(t *testing.T) {
 		runCLI: func(binary, token string, args ...string) (string, error) {
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-broken")
@@ -1319,9 +1339,9 @@ func TestProvisionInference_StatusCLIError(t *testing.T) {
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-status-err")
@@ -1348,9 +1368,9 @@ func TestProvisionInference_ParseWIFProviderError(t *testing.T) {
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-parse-err")
@@ -1388,10 +1408,10 @@ func TestDoEnsure_AlwaysInstallsIntoFreshSlotRepo(t *testing.T) {
 			cliCalled = true
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-revendor")
@@ -1579,12 +1599,12 @@ func TestDoEnsure_SettleTimeout_ReturnedWithoutRecreate(t *testing.T) {
 		binary: "/usr/bin/fullsend",
 		token:  "tok",
 		runCLI: func(binary, token string, args ...string) (string, error) {
-			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+			if isReposInstallCall(args) {
 				sc.installed = true
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
+		installOpts: common.DefaultInstallOpts(),
 		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
 			settleCalls.Add(1)
 			return fmt.Errorf("%w: never indexed", errWorkflowNotReady)
@@ -1612,12 +1632,12 @@ func TestDoEnsure_SettleCalledAfterInstall(t *testing.T) {
 		binary: "/usr/bin/fullsend",
 		token:  "tok",
 		runCLI: func(binary, token string, args ...string) (string, error) {
-			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+			if isReposInstallCall(args) {
 				sc.installed = true
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
+		installOpts: common.DefaultInstallOpts(),
 		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
 			settleCalled = true
 			return nil
@@ -1643,7 +1663,7 @@ func TestDoEnsure_SettleAlwaysCalledAfterReset(t *testing.T) {
 		runCLI: func(binary, token string, args ...string) (string, error) {
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
+		installOpts: common.DefaultInstallOpts(),
 		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
 			settleCalled = true
 			return nil
@@ -1668,6 +1688,7 @@ func TestEnsurer_NonVendoredMode_UsesNonVendoredValidation(t *testing.T) {
 	}
 
 	var cliCalls [][]string
+	var manifest string
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
 		client: &stubClientWithCustomFiles{
@@ -1676,12 +1697,13 @@ func TestEnsurer_NonVendoredMode_UsesNonVendoredValidation(t *testing.T) {
 		},
 		binary: "/usr/bin/fullsend",
 		token:  "tok",
-		setupOpts: common.GitHubSetupOpts{
+		installOpts: common.InstallOpts{
 			Vendor:      false,
 			FullsendRef: "main",
 		},
 		runCLI: func(binary, token string, args ...string) (string, error) {
 			cliCalls = append(cliCalls, args)
+			manifest = readInstallManifest(t, args)
 			return "", nil
 		},
 		settle:  noopSettle,
@@ -1692,30 +1714,33 @@ func TestEnsurer_NonVendoredMode_UsesNonVendoredValidation(t *testing.T) {
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-nonvendored")
 	require.NoError(t, err)
 
-	// CLI should have been called for "github setup" with --fullsend-ref.
+	// CLI should have been called for "repos install"; the ref is pinned
+	// in the manifest entry, not passed as the removed --fullsend-ref.
 	require.Len(t, cliCalls, 1)
-	assert.Equal(t, "github", cliCalls[0][0])
-	assert.Equal(t, "setup", cliCalls[0][1])
-	assert.Contains(t, cliCalls[0], "--fullsend-ref")
-	assert.Contains(t, cliCalls[0], "main")
-	assert.NotContains(t, cliCalls[0], "--vendor")
+	assert.Equal(t, []string{"repos", "install"}, cliCalls[0][:2])
+	assert.NotContains(t, cliCalls[0], "--fullsend-ref")
+	assert.NotContains(t, cliCalls[0], "--fullsend-binary")
+	assert.Contains(t, manifest, "fullsend_ref: main")
+	assert.Contains(t, manifest, "vendor: false")
 }
 
-func TestEnsurer_ConfigPreset_ForwardsConfigFlag(t *testing.T) {
+func TestEnsurer_ConfigPreset_DeclaredInManifest(t *testing.T) {
 	speedUpValidateRetries(t)
 
 	var cliCalls [][]string
+	var manifest string
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
 		client: &stubClient{installed: true},
 		binary: "/usr/bin/fullsend",
 		token:  "tok",
-		setupOpts: common.GitHubSetupOpts{
+		installOpts: common.InstallOpts{
 			Vendor:       true,
 			ConfigPreset: "https://example.com/preset.yaml",
 		},
 		runCLI: func(_ string, _ string, args ...string) (string, error) {
 			cliCalls = append(cliCalls, args)
+			manifest = readInstallManifest(t, args)
 			return "", nil
 		},
 		settle:  noopSettle,
@@ -1727,10 +1752,73 @@ func TestEnsurer_ConfigPreset_ForwardsConfigFlag(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, cliCalls, 1)
-	assert.Contains(t, cliCalls[0], "--config")
-	assert.Contains(t, cliCalls[0], "https://example.com/preset.yaml")
+	assert.NotContains(t, cliCalls[0], "--config")
 	assert.NotContains(t, cliCalls[0], "--runtime")
-	assert.Contains(t, cliCalls[0], "--vendor")
+	assert.NotContains(t, cliCalls[0], "--vendor")
+	assert.Contains(t, manifest, "source: https://example.com/preset.yaml")
+	assert.NotContains(t, manifest, "runtime:", "the preset's runtime is inherited")
+	assert.Contains(t, manifest, "vendor: true")
+}
+
+// TestEnsurer_MissingManifest_NotRetried checks that repos install's
+// missing-manifest error (it never creates one) fails the ensure on the
+// first attempt rather than being treated as a read-after-create 404.
+func TestEnsurer_MissingManifest_NotRetried(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	var installCalls atomic.Int32
+	e := &repoEnsurer{
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      &stubClient{installed: false},
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		installOpts: common.DefaultInstallOpts(),
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if isReposInstallCall(args) {
+				installCalls.Add(1)
+				return "", fmt.Errorf("[cli] fullsend repos install org/test-repo-nomanifest failed: exit status 1\nError: loading manifest: open repos.yaml: no such file or directory; repos install does not create a manifest")
+			}
+			return "", nil
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-nomanifest")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "repos install does not create a manifest")
+	assert.Equal(t, int32(1), installCalls.Load())
+}
+
+// TestEnsurer_ManifestDirUnwritable_SkipsInstall checks that a manifest
+// that cannot be written is reported as an error before repos install
+// runs, so install is never asked to proceed without one.
+func TestEnsurer_ManifestDirUnwritable_SkipsInstall(t *testing.T) {
+	speedUpValidateRetries(t)
+	speedUpResetRetries(t)
+	opts := common.DefaultInstallOpts()
+	opts.ManifestDir = t.TempDir() + "/does-not-exist"
+	e := &repoEnsurer{
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      &stubClient{installed: false},
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		installOpts: opts,
+		runCLI: func(_, _ string, args ...string) (string, error) {
+			if isReposInstallCall(args) {
+				t.Fatal("repos install must not run without a manifest")
+			}
+			return "", nil
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-nomanifest")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating manifest directory")
 }
 
 // --- InstallHooks tests ---
@@ -1740,11 +1828,11 @@ func TestDoEnsure_RunsBeforeAndAfterInstallHooksInOrder(t *testing.T) {
 
 	var order []string
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
-		client:    &stubClient{installed: true},
-		binary:    "/usr/bin/fullsend",
-		token:     "tok",
-		setupOpts: common.DefaultGitHubSetupOpts(),
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      &stubClient{installed: true},
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		installOpts: common.DefaultInstallOpts(),
 		runCLI: func(_, _ string, _ ...string) (string, error) {
 			order = append(order, "install")
 			return "", nil
@@ -1768,7 +1856,7 @@ func TestDoEnsure_RunsBeforeAndAfterInstallHooksInOrder(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"before", "install", "after:hook-state"}, order,
-		"BeforeInstall must run before github setup, AfterInstall after validation, threading hook state through")
+		"BeforeInstall must run before repos install, AfterInstall after validation, threading hook state through")
 }
 
 func TestDoEnsure_BeforeInstallHookError_SkipsInstall(t *testing.T) {
@@ -1776,11 +1864,11 @@ func TestDoEnsure_BeforeInstallHookError_SkipsInstall(t *testing.T) {
 
 	installCalled := false
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
-		client:    &stubClient{installed: true},
-		binary:    "/usr/bin/fullsend",
-		token:     "tok",
-		setupOpts: common.DefaultGitHubSetupOpts(),
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      &stubClient{installed: true},
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		installOpts: common.DefaultInstallOpts(),
 		runCLI: func(_, _ string, _ ...string) (string, error) {
 			installCalled = true
 			return "", nil
@@ -1798,19 +1886,19 @@ func TestDoEnsure_BeforeInstallHookError_SkipsInstall(t *testing.T) {
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-hooks")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pre-install check failed")
-	assert.False(t, installCalled, "github setup must not run when BeforeInstall fails")
+	assert.False(t, installCalled, "repos install must not run when BeforeInstall fails")
 }
 
 func TestDoEnsure_AfterInstallHookError_Propagated(t *testing.T) {
 	speedUpValidateRetries(t)
 
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
-		client:    &stubClient{installed: true},
-		binary:    "/usr/bin/fullsend",
-		token:     "tok",
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		runCLI:    noopCLI,
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      &stubClient{installed: true},
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		installOpts: common.DefaultInstallOpts(),
+		runCLI:      noopCLI,
 		hooks: InstallHooks{
 			AfterInstall: func(context.Context, forge.Client, string, string, any) error {
 				return fmt.Errorf("tracking issue setup failed")
@@ -1832,13 +1920,13 @@ func TestDoEnsure_AfterInstallHook_SkippedWhenOwnershipLostDuringInstall(t *test
 	var lost atomic.Bool
 	hookCalled := false
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
-		client:    &stubClient{installed: true},
-		binary:    "/usr/bin/fullsend",
-		token:     "tok",
-		setupOpts: common.DefaultGitHubSetupOpts(),
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      &stubClient{installed: true},
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		installOpts: common.DefaultInstallOpts(),
 		runCLI: func(_, _ string, _ ...string) (string, error) {
-			lost.Store(true) // the slot changes hands while github setup runs
+			lost.Store(true) // the slot changes hands while repos install runs
 			return "", nil
 		},
 		hooks: InstallHooks{
@@ -1864,12 +1952,12 @@ func TestDoEnsure_AfterInstallHook_ContextCarriesRetryGuard(t *testing.T) {
 	var guard func(context.Context) error
 	var ambiguousDisabled bool
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
-		client:    &stubClient{installed: true},
-		binary:    "/usr/bin/fullsend",
-		token:     "tok",
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		runCLI:    noopCLI,
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      &stubClient{installed: true},
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		installOpts: common.DefaultInstallOpts(),
+		runCLI:      noopCLI,
 		hooks: InstallHooks{
 			AfterInstall: func(ctx context.Context, _ forge.Client, _, _ string, _ any) error {
 				guard = forge.RetryGuard(ctx)
@@ -1892,7 +1980,7 @@ func TestDoEnsure_AfterInstallHook_ContextCarriesRetryGuard(t *testing.T) {
 	require.ErrorIs(t, guard(context.Background()), errLeaseLost)
 }
 
-func TestInstallFullsend_OwnershipLostDuringWIFResolution_SkipsSetup(t *testing.T) {
+func TestInstallFullsend_OwnershipLostDuringWIFResolution_SkipsInstall(t *testing.T) {
 	speedUpValidateRetries(t)
 
 	var lost atomic.Bool
@@ -1910,17 +1998,17 @@ func TestInstallFullsend_OwnershipLostDuringWIFResolution_SkipsSetup(t *testing.
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-wif",
 		func(context.Context) (bool, error) { return !lost.Load(), nil })
 	require.ErrorIs(t, err, errLeaseLost)
 	for _, args := range cliCalls {
-		assert.NotEqual(t, []string{"github", "setup"}, args[:2], "github setup must not start after ownership is lost")
+		assert.NotEqual(t, []string{"repos", "install"}, args[:2], "repos install must not start after ownership is lost")
 	}
 }
 
@@ -1939,13 +2027,13 @@ func TestDoEnsure_PlaybackRuntime_ValidatesAgainstInstalledRuntime(t *testing.T)
 			stubClient: stubClient{},
 			files:      playbackFiles,
 		},
-		binary:    "/usr/bin/fullsend",
-		token:     "tok",
-		setupOpts: common.GitHubSetupOpts{Vendor: true, Runtime: "dummy-playback"},
-		runCLI:    noopCLI,
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		installOpts: common.InstallOpts{Vendor: true, Runtime: "dummy-playback"},
+		runCLI:      noopCLI,
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-playback")
@@ -1959,15 +2047,15 @@ func TestDoEnsure_PlaybackRuntime_DummyInstallFailsPlaybackValidation(t *testing
 	// playback install), but the ensurer expects "dummy-playback" —
 	// validation must catch the mismatch rather than silently pass.
 	e := &repoEnsurer{
-		e2eCfg:    e2etest.EnvConfig{MintURL: "https://mint.test"},
-		client:    &stubClient{installed: true},
-		binary:    "/usr/bin/fullsend",
-		token:     "tok",
-		setupOpts: common.GitHubSetupOpts{Vendor: true, Runtime: "dummy-playback"},
-		runCLI:    noopCLI,
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		e2eCfg:      e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client:      &stubClient{installed: true},
+		binary:      "/usr/bin/fullsend",
+		token:       "tok",
+		installOpts: common.InstallOpts{Vendor: true, Runtime: "dummy-playback"},
+		runCLI:      noopCLI,
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-playback-mismatch")
@@ -1999,12 +2087,12 @@ func TestDoEnsure_SettleError_Propagated(t *testing.T) {
 		binary: "/usr/bin/fullsend",
 		token:  "tok",
 		runCLI: func(binary, token string, args ...string) (string, error) {
-			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+			if isReposInstallCall(args) {
 				sc.installed = true
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
+		installOpts: common.DefaultInstallOpts(),
 		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
 			return fmt.Errorf("Actions not ready")
 		},
@@ -2269,15 +2357,15 @@ func TestEnsurer_ReleaseThenEnsure_ReinstallsWithoutCreating(t *testing.T) {
 		e2eCfg: e2etest.EnvConfig{},
 		client: sc,
 		runCLI: func(_, _ string, args ...string) (string, error) {
-			if isGitHubSetupCall(args) {
+			if isReposInstallCall(args) {
 				setups++
 			}
 			return "", nil
 		},
-		setupOpts: common.DefaultGitHubSetupOpts(),
-		settle:    noopSettle,
-		logf:      t.Logf,
-		ensured:   make(map[string]struct{}),
+		installOpts: common.DefaultInstallOpts(),
+		settle:      noopSettle,
+		logf:        t.Logf,
+		ensured:     make(map[string]struct{}),
 	}
 
 	ctx := context.Background()

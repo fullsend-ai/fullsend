@@ -164,13 +164,13 @@ func TestInfraClassSetup404Exhaustion(t *testing.T) {
 	})
 }
 
-// TestInfraClassSetupGitHubTransient pins #9497: a `github setup`
+// TestInfraClassSetupGitHubTransient pins #9497: a `repos install`
 // subprocess that fails on a GitHub 5xx the client gave up on, or on an
 // HTTP/2 CANCEL stream reset, is infrastructure, in a single attempt.
 // Any other setup failure stays scenario, and the same texts outside
 // setup — or beside a scenario cause in a join — stay scenario too.
 func TestInfraClassSetupGitHubTransient(t *testing.T) {
-	const cliPrefix = "[cli] fullsend github setup org/repo --direct --mint-url https://mint.test --runtime dummy --vendor failed: exit status 1\n"
+	const cliPrefix = "[cli] fullsend repos install org/repo --manifest /tmp/repos.yaml --direct failed: exit status 1\n"
 	const streamReset = "Error: committing scaffold files: create blob for .fullsend/bin/fullsend: decode blob: stream error: stream ID 23; CANCEL; received from peer"
 	const refs500 = "Error: committing scaffold files: update ref: github api: 500 retryable error after 5 attempts on PATCH /repos/halfsend-07/test-repo-05/git/refs/heads/main (last delay: 16s)"
 
@@ -218,7 +218,7 @@ func TestInfraClassSetupGitHubTransient(t *testing.T) {
 			var infra *behaviourfail.InfraError
 			require.ErrorAs(t, err, &infra)
 			assert.Equal(t, tc.wantReason, infra.Reason)
-			assert.Contains(t, err.Error(), "github setup org/repo", "the setup call stays named for diagnosis")
+			assert.Contains(t, err.Error(), "repos install org/repo", "the install call stays named for diagnosis")
 		})
 	}
 
