@@ -992,6 +992,11 @@ type perRepoConfig struct {
 	// content overrides the parent layer; by_source merges per key.
 	Artifacts *ArtifactsConfig `yaml:"artifacts,omitempty"`
 
+	// TraceContextBlock is the trace_context block (ADR 0154). It backs
+	// the TraceContext() accessor and is named distinctly from it because
+	// Go forbids a field and method sharing a name on the same type.
+	TraceContextBlock *TraceContextConfig `yaml:"trace_context,omitempty"`
+
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
 	// serialization so Marshal emits only locally-set values.
@@ -1126,6 +1131,7 @@ type perRepoConfigMarshal struct {
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
 	Models                 *ModelsConfig             `yaml:"models,omitempty"`
 	Artifacts              *ArtifactsConfig          `yaml:"artifacts,omitempty"`
+	TraceContext           *TraceContextConfig       `yaml:"trace_context,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -1145,6 +1151,7 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Agents:              c.Agents,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
+		TraceContext:        c.TraceContextBlock,
 	}
 	// Only emit inference block when at least one field is set locally.
 	if c.Inference != nil && *c.Inference != (PerRepoInferenceConfig{}) {
@@ -1231,7 +1238,7 @@ func ValidateRuntimeAuthorization(r ConfigReader) error {
 }
 
 // validateLocalFields checks the fields that do not need a resolved
-// parent chain: version, roles, tracker, runtime,
+// parent chain: version, roles, tracker, runtime, trace_context,
 // status_notifications, inference provider, authorization providers,
 // and model aliases. It is split out of Validate so a repos.yaml config
 // managed-configuration layer (ADR 0122) can be checked without pulling in
@@ -1289,6 +1296,9 @@ func (c *perRepoConfig) validateLocalFields() error {
 		return err
 	}
 	if err := validateArtifacts(c.Artifacts); err != nil {
+		return err
+	}
+	if err := ValidateTraceContext(c.TraceContextBlock); err != nil {
 		return err
 	}
 	// Validate the merged view, as ValidateAgentEntries does above: a bad

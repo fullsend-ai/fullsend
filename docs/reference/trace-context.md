@@ -12,8 +12,11 @@ The v1 implementation lives in
 [`identity.go`](https://github.com/fullsend-ai/fullsend/blob/main/internal/telemetry/tracecontext/identity.go)
 implements identity resolution and fallback derivation;
 [`envelope.go`](https://github.com/fullsend-ai/fullsend/blob/main/internal/telemetry/tracecontext/envelope.go)
-implements signing, strict parsing, and admission. The package performs no
-network I/O or configuration reads and never grants dispatch permission.
+implements signing, strict parsing, and admission;
+[`keys.go`](https://github.com/fullsend-ai/fullsend/blob/main/internal/telemetry/tracecontext/keys.go)
+parses and generates installation IDs and keys and builds the admission key
+map. The package performs no network I/O or configuration reads and never
+grants dispatch permission.
 Carrier publication, key provisioning, production creation activation,
 runtime admission wiring, and scenario collection remain later delivery
 slices.
@@ -71,6 +74,13 @@ never construct `KindConversation` for GitLab or Jira entities.
 | `KeyID` | The 8-byte key selector for a public key |
 | `Admit` | The pure admission decision |
 | `Result`, `Outcome` | Admission outcome and admitted IDs; the zero value selects fallback |
+| `ParseInstallationID`, `FormatInstallationID`, `NewInstallationID` | The installation ID as exactly 32 lowercase hex characters, not all zero; a new ID is 16 random bytes |
+| `ParseVerificationKey`, `FormatVerificationKey` | A verification key as strict standard base64 of a 32-byte Ed25519 public key |
+| `ParseKeyID`, `FormatKeyID` | A key ID as exactly 16 lowercase hex characters |
+| `SigningKey` | A private signing key expanded from a 32-byte seed; `SigningKey.SignEnvelope` signs with it, and `String`, `GoString`, `Format` (every verb), `MarshalJSON`, `MarshalText` and `LogValue` return `[redacted]` |
+| `ParseSigningSeed`, `NewSigningKey` | A signing key from a standard base64 seed, or a new random one |
+| `SigningKey.EncodeSeed` | The seed as standard base64, the only way to read it out |
+| `KeySet` | The admission key map of the active and retained keys, keyed by `KeyID`; rejects keys that are not 32 bytes and duplicate key IDs |
 
 ## Conformance evidence
 

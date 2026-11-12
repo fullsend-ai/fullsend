@@ -292,6 +292,9 @@ func (m *Manifest) LayeredConfig(forgeName string, entry RepoEntry, baseYAML []b
 }
 
 func validateManifestManaged(m *Manifest) error {
+	if err := rejectSharedTraceContext("defaults.config", m.Defaults.Config); err != nil {
+		return err
+	}
 	if err := validateManagedBlock("defaults.config", m.Defaults.Config); err != nil {
 		return err
 	}
@@ -301,6 +304,9 @@ func validateManifestManaged(m *Manifest) error {
 	}{{ForgeGitHub, m.GitHub}, {ForgeGitLab, m.GitLab}} {
 		if p.cfg == nil {
 			continue
+		}
+		if err := rejectSharedTraceContext(p.name+".config", p.cfg.Config); err != nil {
+			return err
 		}
 		if err := validateManagedBlock(p.name+".config", p.cfg.Config); err != nil {
 			return err
@@ -314,6 +320,11 @@ func validateManifestManaged(m *Manifest) error {
 			field := fmt.Sprintf("%s.repos[%d].config", p.name, i)
 			if entry.Name != "" {
 				field = fmt.Sprintf("%s.repos[%s].config", p.name, entry.Name)
+			}
+			if isGlob(entry.Name) {
+				if err := rejectSharedTraceContext(field, entry.Config); err != nil {
+					return err
+				}
 			}
 			if err := validateManagedBlock(field, entry.Config); err != nil {
 				return err
@@ -338,6 +349,18 @@ func validateManifestManaged(m *Manifest) error {
 				return fmt.Errorf("%s: merged managed configuration: %w", field, err)
 			}
 		}
+	}
+	return nil
+}
+
+// rejectSharedTraceContext refuses a trace_context block in a
+// managed-configuration layer that several repositories share
+// (defaults.config, a forge section's config, or a glob entry): its
+// installation ID and keys belong to one repository (ADR 0154). The error
+// names the layer, never the values.
+func rejectSharedTraceContext(field string, o config.ManagedConfig) error {
+	if o.IsSet() && o.Writer().TraceContext() != nil {
+		return fmt.Errorf("%s: trace_context belongs to one repository; set it only in a concrete repository entry's config", field)
 	}
 	return nil
 }

@@ -231,7 +231,8 @@ type RepoEntry struct {
 	// Config is a sparse managed .fullsend/config.yaml for this
 	// repository (ADR 0122). It accepts every per-repo config field,
 	// including runtime and allowed_remote_resources, and overrides the
-	// forge section's config and defaults.config.
+	// forge section's config and defaults.config. A glob entry refuses
+	// trace_context, which only a concrete entry may declare.
 	Config config.ManagedConfig `yaml:"config,omitempty"`
 }
 
@@ -256,9 +257,10 @@ type DefaultsConfig struct {
 	// SHA256 is an optional digest verified against the fetched preset.
 	ConfigBase ConfigBase `yaml:"config_base,omitempty"`
 	// Config is a fleet-wide sparse managed .fullsend/config.yaml layer
-	// (ADR 0122). It accepts every per-repo config field, including
-	// runtime and allowed_remote_resources, and is overridden by the forge
-	// section's config and each repository entry's config.
+	// (ADR 0122). It accepts every per-repo config field except
+	// trace_context, including runtime and allowed_remote_resources, and is
+	// overridden by the forge section's config and each repository entry's
+	// config.
 	Config config.ManagedConfig `yaml:"config,omitempty"`
 }
 

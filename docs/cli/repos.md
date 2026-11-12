@@ -60,8 +60,10 @@ Runs in two phases:
 `defaults.config`, `github.config`, `gitlab.config`, and per-repository `config`
 declare a sparse typed managed configuration for `.fullsend/config.yaml` ([ADR
 0122](../ADRs/0122-declarative-repo-configuration.md)). Each accepts every
-per-repo config field, including `runtime` and `allowed_remote_resources`. Each
-field resolves through code defaults, the selected `config_base` preset,
+per-repo config field, including `runtime` and `allowed_remote_resources`,
+except `trace_context`, which only a concrete repository entry accepts (see
+[Config Reference — `trace_context`](../reference/config-reference.md#trace_context)).
+Each field resolves through code defaults, the selected `config_base` preset,
 `defaults.config`, the repository's forge section `config` (`github.config` for
 GitHub repositories, `gitlab.config` for GitLab ones), and then the repository
 entry's `config` (glob entries included), using that field's normal layered

@@ -315,8 +315,10 @@ repositories it can also supply `inference.wif_audience` and
 `repos.yaml` can also declare a sparse managed `.fullsend/config.yaml` in
 `defaults.config`, `github.config`, `gitlab.config`, and each repository
 entry's `config`. Every section uses the same schema as per-repo
-`config.yaml`, including `runtime` and `allowed_remote_resources`, and
-each is sparse: declare only the values you want to set.
+`config.yaml`, including `runtime` and `allowed_remote_resources`, except
+`trace_context`, which only a concrete repository entry accepts (see
+[Config Reference — `trace_context`](../../reference/config-reference.md#trace_context)).
+Each section is sparse: declare only the values you want to set.
 
 ```yaml
 version: 1
