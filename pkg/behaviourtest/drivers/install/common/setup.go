@@ -3,6 +3,7 @@ package common
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -182,9 +183,14 @@ func isGCPWIFQuotaError(err error) bool {
 // already carries a behaviourfail mark passes through unwrapped so marking
 // is never doubled: RunInferenceProvision's and WaitInferenceHealthy's
 // marked errors reach ResolveInferenceWIFProvider again through
-// ProvisionInference.
+// ProvisionInference. A cancelled or expired context also passes through
+// unmarked: the caller stopped the wait, and an earlier status error
+// quoted in its message is not the cause.
 func markGCPWIFQuota(err error) error {
 	if err == nil || behaviourfail.Is(err) || !isGCPWIFQuotaError(err) {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 	return behaviourfail.Mark(err, "setup: gcp wif quota")

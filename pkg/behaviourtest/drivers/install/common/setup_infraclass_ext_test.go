@@ -156,3 +156,30 @@ func TestInfraClassUnrelatedProvisionCLIFailureStaysScenario(t *testing.T) {
 		"an unrelated CLI failure carries no quota signature and stays scenario")
 	assert.False(t, behaviourfail.Is(err))
 }
+
+func TestInfraClassCancelledWaitAfterQuotaStatusStaysUnmarked(t *testing.T) {
+	// Provision succeeds and the first post-provision status read is
+	// quota-rejected; the context is then cancelled during the backoff.
+	// The wait error quotes that status error, but the cause is the
+	// cancellation, so it must not be marked as a quota failure (PR #8801
+	// review).
+	ctx, cancel := context.WithCancel(context.Background())
+	orig := common.PostProvisionSleep
+	common.PostProvisionSleep = func(context.Context, time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+	t.Cleanup(func() { common.PostProvisionSleep = orig })
+	runner := func(_, _ string, args ...string) (string, error) {
+		if isInference(args, "status") {
+			return "", fmt.Errorf("[cli] fullsend inference status org/repo --project proj --format json failed: exit status 1\nError: getting WIF provider returned 429: Quota exceeded for quota project '123456789'")
+		}
+		return "", nil
+	}
+
+	_, err := common.WaitInferenceHealthy(ctx, "/bin/fullsend", "tok", "org/repo", "proj", runner, t.Logf)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Contains(t, err.Error(), "Quota exceeded", "the last status error stays in the message for diagnosis")
+	assert.False(t, behaviourfail.Is(err), "a cancelled wait is not a quota failure")
+	assert.Equal(t, behaviourfail.Scenario, failclass.Classify(err))
+}
