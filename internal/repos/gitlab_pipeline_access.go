@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -217,6 +218,44 @@ func (e *PollerMergeGrantError) Error() string {
 }
 
 func (e *PollerMergeGrantError) Unwrap() error { return e.Err }
+
+// pollerPipelineAccessFailureReason returns the role provisioning failure
+// reason for a Poller credential that was minted and then revoked because its
+// protected-default-branch merge grant failed, or "" when err is not such a
+// failure. Token creation itself succeeded in that case, so the reason names
+// the protected branch and the remediation instead of reporting a token
+// creation failure. The text is authored by fullsend: it carries a coarse
+// classification of the grant failure, never the server's error text.
+func pollerPipelineAccessFailureReason(err error) string {
+	var grantErr *PollerMergeGrantError
+	if !errors.As(err, &grantErr) {
+		return ""
+	}
+	prefix := fmt.Sprintf("poller pipeline access on protected branch %q could not be granted", grantErr.Branch)
+	const revoked = "; the new credential was revoked"
+	switch {
+	case errors.Is(grantErr.Err, context.Canceled), errors.Is(grantErr.Err, context.DeadlineExceeded):
+		return prefix + " (request canceled or timed out)" + revoked + "; re-run install"
+	case forge.IsTransient(grantErr.Err):
+		return prefix + " (transient server error)" + revoked + "; re-run install"
+	}
+	cause := "the per-user merge grant was refused"
+	if forge.IsForbidden(grantErr.Err) {
+		cause += " (forbidden)"
+	}
+	return fmt.Sprintf("%s: %s%s. GitLab.com Free does not support per-user protected-branch grants; on that tier, allow Developers to merge on %q (this lets every project Developer merge to it), then re-run install",
+		prefix, cause, revoked, grantErr.Branch)
+}
+
+// roleTokenCreationFailureReason returns the provisioning failure reason for
+// an error from CreateProjectAccessToken: a Poller pipeline-access failure is
+// reported as such, and anything else keeps the token-creation reason.
+func roleTokenCreationFailureReason(err error) string {
+	if reason := pollerPipelineAccessFailureReason(err); reason != "" {
+		return reason
+	}
+	return "project access token creation failed"
+}
 
 // EnsureGitLabPollerPipelineAccess makes a Developer-level poller able
 // to CreatePipeline on the repo's default branch. When the branch is

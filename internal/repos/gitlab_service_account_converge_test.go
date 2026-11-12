@@ -2094,3 +2094,57 @@ func TestServiceAccountStatusDeletedManagedAccountDoesNotBlockEnrolledSupplied(t
 		})
 	}
 }
+
+// pollerGrantRefusedClient returns a fake project whose default branch lets
+// only Maintainers merge and whose per-user merge grant is refused, as on
+// GitLab.com Free, with a service-account token client whose verifier
+// requires the replacement Poller's protected-ref pipeline access.
+func pollerGrantRefusedClient(fc *forge.FakeClient) (ServiceAccountTokenClient, *fakeSAAPI) {
+	seedRepo(fc, "group", "project", "main")
+	fc.ProtectedBranchRules["group/project/main"] = maintainerOnlyRule("main")
+	fc.Errors["GrantProtectedBranchMergeUser"] = fmt.Errorf("gitlab api: 403 server-body-text: %w", forge.ErrForbidden)
+	sa := newFakeSAAPI()
+	return ServiceAccountTokenClient{SA: sa, VerifyToken: func(ctx context.Context, owner, repo string, tok *ProjectAccessToken) error {
+		if tok.Name != gitlabroles.PollerTokenName {
+			return nil
+		}
+		return VerifyGitLabReplacementPipelineAccess(ctx, fc, owner, repo, tok.UserID)
+	}}, sa
+}
+
+func TestProvisionReportsRefusedPollerMergeGrant(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	c, sa := pollerGrantRefusedClient(fc)
+	result, err := ProvisionGitLabRoleCredentials(ctx, RoleProvisionConfig{Owner: "group", Repo: "project", Client: fc, Tokens: c, Registry: gitlabroles.BuiltinRegistry()})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []gitlabroles.Role{gitlabroles.RoleAnalyst, gitlabroles.RoleCoder}, result.Created)
+	require.Len(t, result.Failed, 1)
+	failure := result.Failed[0]
+	assert.Equal(t, gitlabroles.RolePoller, failure.Role)
+	assert.Contains(t, failure.Reason, `poller pipeline access on protected branch "main" could not be granted`)
+	assert.Contains(t, failure.Reason, `allow Developers to merge on "main"`)
+	assert.NotContains(t, failure.Reason, "project access token creation failed")
+	assert.NotContains(t, failure.Reason, "server-body-text")
+	assertNoLeak(t, failure.Reason)
+	assert.Len(t, sa.revoked, 1, "the freshly minted Poller token is revoked")
+	exists, err := fc.RepoSecretExists(ctx, "group", "project", forge.SecretGitLabPollerToken)
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestRotationReportsRefusedPollerMergeGrant(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now()
+	fc := seededRoleClient(t, gitlabroles.RolePoller)
+	c, sa := pollerGrantRefusedClient(fc)
+	result, err := RotateGitLabRoleCredentials(ctx, RoleRotateConfig{Owner: "group", Repo: "project", Client: fc, Tokens: c, Roles: []gitlabroles.Role{gitlabroles.RolePoller}, Force: true, Now: now})
+	require.NoError(t, err)
+	require.Len(t, result.Failed, 1)
+	assert.Contains(t, result.Failed[0].Reason, `protected branch "main"`)
+	assert.NotContains(t, result.Failed[0].Reason, "server-body-text")
+	assert.Len(t, sa.revoked, 1)
+	state, _, err := loadRotationState(ctx, fc, "group", "project")
+	require.NoError(t, err)
+	assert.Equal(t, result.Failed[0].Reason, state.Roles["poller"].Error)
+}

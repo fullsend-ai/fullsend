@@ -630,7 +630,7 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 			result.Failed = append(result.Failed, RoleProvisionFailure{
 				Role:   rec.Name,
 				Secret: secret,
-				Reason: failureReason("project access token creation failed", err),
+				Reason: failureReason(roleTokenCreationFailureReason(err), err),
 			})
 			continue
 		}

@@ -853,7 +853,7 @@ func rotateOneRole(ctx context.Context, cfg RoleRotateConfig, rec gitlabroles.Re
 			return
 		}
 		rs.Phase = rotationPhaseFailed
-		rs.Error = "project access token creation failed"
+		rs.Error = roleTokenCreationFailureReason(err)
 		_ = mergeRoleState(ctx, cfg.Client, cfg.Owner, cfg.Repo, rec.Name, holder, now, rs, &state)
 		// rs.Error is persisted in rotation state, so the verbose detail is
 		// added only to the reported reason.

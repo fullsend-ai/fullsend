@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -497,4 +498,42 @@ func TestProtectedRuleAdmitsUserIgnoresDeployKeyGrants(t *testing.T) {
 		PushAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
 	}
 	assert.True(t, protectedRuleAdmitsUser(maintainerRole, 99, 40))
+}
+
+func TestPollerPipelineAccessFailureReason(t *testing.T) {
+	grant := func(err error) error {
+		return fmt.Errorf("validating: %w", &PollerMergeGrantError{UserID: 501, Branch: "main", Err: err})
+	}
+	t.Run("not a grant failure", func(t *testing.T) {
+		assert.Empty(t, pollerPipelineAccessFailureReason(errors.New("gitlab api: 500 boom")))
+		assert.Empty(t, pollerPipelineAccessFailureReason(nil))
+		assert.Equal(t, "project access token creation failed", roleTokenCreationFailureReason(errors.New("gitlab api: 403 boom")))
+	})
+	t.Run("forbidden refusal names branch and workaround", func(t *testing.T) {
+		reason := pollerPipelineAccessFailureReason(grant(fmt.Errorf("gitlab api: 403 server-body-text: %w", forge.ErrForbidden)))
+		assert.Contains(t, reason, `protected branch "main"`)
+		assert.Contains(t, reason, "per-user merge grant was refused (forbidden)")
+		assert.Contains(t, reason, "the new credential was revoked")
+		assert.Contains(t, reason, `allow Developers to merge on "main"`)
+		assert.NotContains(t, reason, "server-body-text")
+		assert.NotContains(t, reason, "project access token creation failed")
+		assert.Equal(t, reason, roleTokenCreationFailureReason(grant(fmt.Errorf("x: %w", forge.ErrForbidden))))
+	})
+	t.Run("other refusal", func(t *testing.T) {
+		reason := pollerPipelineAccessFailureReason(grant(errors.New("gitlab api: 422 server-body-text")))
+		assert.Contains(t, reason, "per-user merge grant was refused; the new credential was revoked.")
+		assert.Contains(t, reason, "GitLab.com Free")
+		assert.NotContains(t, reason, "server-body-text")
+	})
+	t.Run("transient", func(t *testing.T) {
+		reason := pollerPipelineAccessFailureReason(grant(&net.DNSError{IsTimeout: true, Err: "server-body-text"}))
+		assert.Contains(t, reason, "(transient server error)")
+		assert.NotContains(t, reason, "GitLab.com Free")
+		assert.NotContains(t, reason, "server-body-text")
+	})
+	t.Run("canceled", func(t *testing.T) {
+		reason := pollerPipelineAccessFailureReason(grant(context.DeadlineExceeded))
+		assert.Contains(t, reason, "(request canceled or timed out)")
+		assert.NotContains(t, reason, "GitLab.com Free")
+	})
 }
