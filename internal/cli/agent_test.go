@@ -2533,10 +2533,75 @@ func TestRunAgentRemove_AllowlistOverBaseEmptyList(t *testing.T) {
 	// The remaining default-prefix agent is still admitted.
 	require.NoError(t, validateAgentConfig(cfg))
 	// The removed agent's prefix is gone and the overlay no longer
-	// resolves deny-all: it carries the default prefixes instead.
+	// resolves deny-all: it carries the default prefix the remaining
+	// agent uses, not the whole default list.
 	resources := cfg.AllowedResources()
 	assert.NotContains(t, resources, otherPrefix)
-	assert.Equal(t, config.DefaultAllowedRemoteResources(), resources)
+	assert.Equal(t, []string{defaultPrefix}, resources)
+}
+
+// `agent remove` writes default prefixes over a deny-all chain only while
+// a remaining agent still sits under one, and only the prefixes those
+// agents use: with no remaining remote agent a base [] keeps deny-all,
+// and the GITHUB_SERVER_URL-derived entries are baked into the committed
+// config.yaml only when a remaining agent sits under one.
+func TestRunAgentRemove_DefaultsOnlyWhenNeeded(t *testing.T) {
+	defaultPrefix := config.DefaultAllowedRemoteResources()[0]
+	integrity := "#sha256=" + strings.Repeat("a", 64)
+	// Case-variant host: the validator admits it (MatchingAllowedPrefixInList
+	// lowercases both sides), so the needed filter must match it the same
+	// way or the removal would fail closed over a base [].
+	probeSource := "https://RAW.githubusercontent.com/fullsend-ai/fullsend/harness/probe.yaml" + integrity
+	otherPrefix := "https://raw.githubusercontent.com/other-org/repo/"
+	otherSource := otherPrefix + testCommitSHA + "/harness/other.yaml" + integrity
+
+	writeShape := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		overlay := fmt.Sprintf("allowed_remote_resources:\n  - %q\nagents:\n  - name: probe\n    source: %q\n  - name: other\n    source: %q\n", otherPrefix, probeSource, otherSource)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.OverlayConfigFile), []byte(overlay), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.BaseConfigFile), []byte("allowed_remote_resources: []\n"), 0o644))
+		return dir
+	}
+
+	t.Run("no remaining remote agent keeps deny-all", func(t *testing.T) {
+		dir := t.TempDir()
+		overlay := fmt.Sprintf("allowed_remote_resources:\n  - %q\nagents:\n  - name: other\n    source: %q\n", otherPrefix, otherSource)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.OverlayConfigFile), []byte(overlay), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.BaseConfigFile), []byte("allowed_remote_resources: []\n"), 0o644))
+
+		var out bytes.Buffer
+		require.NoError(t, runAgentRemove(dir, "other", ui.New(&out)))
+
+		cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+		require.NoError(t, err)
+		assert.Empty(t, cfg.AgentEntries())
+		// The local key stays dropped: the base [] keeps deny-all.
+		assert.Empty(t, cfg.AllowedResources())
+		require.NoError(t, validateAgentConfig(cfg))
+	})
+
+	t.Run("a remaining default-prefix agent writes only its prefix", func(t *testing.T) {
+		// A GHES GITHUB_SERVER_URL adds host-specific default prefixes;
+		// none is written while no remaining agent sits under one.
+		t.Setenv("GITHUB_SERVER_URL", "https://ghes.example.com")
+		dir := writeShape(t)
+
+		var out bytes.Buffer
+		require.NoError(t, runAgentRemove(dir, "other", ui.New(&out)))
+
+		cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+		require.NoError(t, err)
+		agents := cfg.AgentEntries()
+		require.Len(t, agents, 1)
+		assert.Equal(t, "probe", agents[0].DerivedName())
+		resources := cfg.AllowedResources()
+		assert.Equal(t, []string{defaultPrefix}, resources)
+		for _, r := range resources {
+			assert.NotContains(t, r, "ghes.example.com")
+		}
+		require.NoError(t, validateAgentConfig(cfg))
+	})
 }
 
 // `agent add` checks the prefix against the effective allowlist, so a
