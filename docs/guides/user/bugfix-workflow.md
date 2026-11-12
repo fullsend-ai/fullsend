@@ -109,7 +109,7 @@ The review stage runs N independent review agents in parallel. One is randomly s
 - **Unanimous rework:** All reviewers agree changes are needed. The [fix agent](../../agents/fix.md) triggers automatically, reads the consolidated review body, and pushes fixes to the existing PR. After the fix, a new review round begins.
 - **Split or conflicting:** Reviewers disagree, or there are conflicting security assessments. Label `requires-manual-review` is applied. A human must decide.
 
-Every push that changes the effective diff of a GitHub PR in the review stage triggers a new review round. A GitHub synchronize event whose complete effective diff is unchanged from the previous approved review is skipped; use `/fs-review` to force a review. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
+Every push that changes the effective diff of a GitHub PR in the review stage triggers a new review round. A GitHub synchronize event whose complete effective diff is unchanged from the previous approved review is skipped; use `/fs-review` to force a review. Reviews run normally when the prior hash or review cannot be verified, the file listing or tree metadata is incomplete/truncated, or a file has no representable patch. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
 
 ## The stages in detail
 

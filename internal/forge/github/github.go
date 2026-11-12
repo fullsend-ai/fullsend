@@ -4002,6 +4002,8 @@ func (c *LiveClient) ListPullRequestFiles(ctx context.Context, owner, repo strin
 	return files, nil
 }
 
+// pullRequestFileModesResult holds blob modes keyed by path for the old and
+// new trees used in the review-deduplication identity.
 type pullRequestFileModesResult struct {
 	old map[string]string
 	new map[string]string

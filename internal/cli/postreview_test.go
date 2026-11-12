@@ -452,7 +452,11 @@ func TestPullRequestDiffHash_MatchesWorkflowCanonicalizer(t *testing.T) {
 			headModes, err := json.Marshal(modeFixture(tt.modes, "new:"))
 			require.NoError(t, err)
 
-			cmd := exec.Command("bash", script, string(baseModes), string(headModes))
+			baseModesFile := filepath.Join(t.TempDir(), "base-modes.json")
+			headModesFile := filepath.Join(t.TempDir(), "head-modes.json")
+			require.NoError(t, os.WriteFile(baseModesFile, baseModes, 0o600))
+			require.NoError(t, os.WriteFile(headModesFile, headModes, 0o600))
+			cmd := exec.Command("bash", script, baseModesFile, headModesFile)
 			cmd.Stdin = bytes.NewReader(append(fileJSON, '\n'))
 			workflowHash, err := cmd.Output()
 			require.NoError(t, err)
@@ -532,7 +536,45 @@ func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, fc.IssueComments["o/r/1"], 1)
 	assert.Regexp(t, reviewDiffHashMarkerRe, strings.SplitN(fc.IssueComments["o/r/1"][0].Body, "\n", 3)[1])
-	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "<summary>Previous run</summary>")
+	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "<summary>Previous run</summary>")
+}
+
+func TestPostReviewContent_PreservesHistoryWhenPublishingDiffHash(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.PullRequestHeadSHA = "abc123def456"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "README.md", Patch: "@@ -1 +1 @@\n-old\n+new"}},
+	}
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {{
+			ID:      7,
+			HTMLURL: "https://example.test/comment/7",
+			Author:  "bot",
+			Body: reviewMarker + `
+Prior review
+
+<details>
+<summary>Previous run</summary>
+
+<!-- sticky:history-start -->
+Earlier review
+<!-- sticky:history-end -->
+
+</details>`,
+		}},
+	}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1,
+		ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"},
+		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+	require.NoError(t, err)
+
+	body := fc.IssueComments["o/r/1"][0].Body
+	assert.Contains(t, body, "Earlier review")
+	assert.Contains(t, body, "Prior review")
+	assert.Contains(t, body, "Looks good")
+	assert.Contains(t, body, "fullsend:review-diff-hash:")
 }
 
 func TestPostReviewContent_PublishesDiffHashOnlyAfterApproval(t *testing.T) {

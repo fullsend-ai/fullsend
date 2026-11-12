@@ -653,11 +653,25 @@ jobs:
             exit 0
           fi
 
+          base_modes_file=$(mktemp) || {
+            echo "::warning::Could not create a temporary base-mode file; running review"
+            exit 0
+          }
+          head_modes_file=$(mktemp) || {
+            rm -f "${base_modes_file}"
+            echo "::warning::Could not create a temporary head-mode file; running review"
+            exit 0
+          }
+          trap 'rm -f "${base_modes_file}" "${head_modes_file}"' EXIT
+          if ! printf '%s' "${base_modes}" >"${base_modes_file}" || ! printf '%s' "${head_modes}" >"${head_modes_file}"; then
+            echo "::warning::Could not persist file modes for canonicalization; running review"
+            exit 0
+          fi
           defaults_dir=".defaults"
           if [[ -f .fullsend/.defaults/action.yml ]]; then
             defaults_dir=".fullsend/.defaults"
           fi
-          if ! current_hash=$(printf '%s\n' "${file_json}" | "${defaults_dir}/.github/scripts/review-diff-hash.sh" "${base_modes}" "${head_modes}"); then
+          if ! current_hash=$(printf '%s\n' "${file_json}" | "${defaults_dir}/.github/scripts/review-diff-hash.sh" "${base_modes_file}" "${head_modes_file}"); then
             echo "::warning::Could not canonicalize PR file diffs; running review"
             exit 0
           fi

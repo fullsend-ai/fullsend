@@ -44,14 +44,15 @@ var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 // cannot inject markup. The resolved-thread fetch matches this form (#7907).
 var findingIDRe = regexp.MustCompile(`^f_[a-zA-Z0-9]+$`)
 
-// reviewProjectionMarkerRe matches the review-findings-v2 projection marker
-// line (base64 payload) that the agents post-review script puts at the start
-// of the review body. The script strips agent-written copies of this marker
-// before prepending its own, so a match on the first line is trusted
-// metadata. It is left unescaped there, so it stays hidden and the next
-// review run can read it (#8544).
+// reviewProjectionMarkerPattern is the review-findings-v2 projection marker
+// pattern, including its base64 payload.
 const reviewProjectionMarkerPattern = `<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->`
 
+// reviewProjectionMarkerRe matches the review-findings-v2 projection marker
+// line that the agent post-review script puts at the start of the review
+// body. The script strips agent-written copies before prepending its own, so
+// a match on the first line is trusted metadata. It is left unescaped there,
+// so it stays hidden and the next review run can read it (#8544).
 var reviewProjectionMarkerRe = regexp.MustCompile(`^` + reviewProjectionMarkerPattern + `$`)
 
 // reviewDiffHashMarkerRe is trusted metadata emitted by this CLI, not by the
@@ -401,7 +402,6 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 		// formal submission must never leave an approved-looking hash behind.
 		hashBody := fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n<!-- fullsend:review-head:%s -->\n%s", diffHash, parsed.HeadSHA, parsed.Body)
 		hashCfg := cfg
-		hashCfg.KeepHistory = false
 		hashCfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash, parsed.HeadSHA)
 		hashCfg.MaxTrustedLeadingLines = 3
 		if _, hashErr := sticky.Post(ctx, client, owner, repo, pr, hashBody, hashCfg, printer); hashErr != nil {
