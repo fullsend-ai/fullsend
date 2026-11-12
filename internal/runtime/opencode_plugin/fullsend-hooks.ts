@@ -197,10 +197,12 @@ function checkPermission(cfg, tool, args, cwd, worktree, targets) {
     if (tool === "bash") values = bashCommands(args.command);
     else if (["read", "write", "edit", "multiedit", "apply_patch"].includes(tool)) {
       const paths = tool === "read" ? [args.filePath ?? args.file_path] : targets;
-      values = paths.map((target) => {
+      values = paths.flatMap((target) => {
         if (typeof target !== "string" || !target) deny("missing permission path");
-        const relative = path.relative(worktree, resolved(target, cwd));
-        return tool === "apply_patch" ? relative.replaceAll("\\", "/") : relative;
+        return checkedPaths(target, cwd).map((dest) => {
+          const relative = path.relative(worktree, dest);
+          return tool === "apply_patch" ? relative.replaceAll("\\", "/") : relative;
+        });
       });
     }
     for (const value of values) {
@@ -213,6 +215,14 @@ function checkPermission(cfg, tool, args, cwd, worktree, targets) {
 }
 
 const absolutePath = (target, cwd) => path.isAbsolute(target) ? target : cwd + path.sep + target;
+// Native read/write/edit normalize relative arguments before opening the file.
+const nativePath = (target, cwd) => path.isAbsolute(target) ? target : path.resolve(cwd, target);
+
+function checkedPaths(target, cwd) {
+  // apply_patch also normalizes absolute arguments. Check that destination and
+  // the physical walk so neither normalization nor symlink traversal hides it.
+  return [...new Set([resolved(path.resolve(cwd, target)), resolved(target, cwd)])];
+}
 
 function resolved(target, cwd = process.cwd()) {
   const absolute = absolutePath(target, cwd);
@@ -255,11 +265,12 @@ function checkWrites(cfg, targets, cwd) {
   const workspace = resolved(cfg.workspace);
   for (const target of targets) {
     if (typeof target !== "string" || !target) deny("missing write path");
-    const dest = resolved(target, cwd);
-    const relative = path.relative(workspace, dest);
-    if (!relative || relative === ".." || relative.startsWith("../") || path.isAbsolute(relative) ||
-        [".env", ".env.d", ".fullsend", ".security", "runner-state", "bin"].some((p) => relative === p || relative.startsWith(p + "/"))) {
-      deny("write path is outside the writable workspace");
+    for (const dest of checkedPaths(target, cwd)) {
+      const relative = path.relative(workspace, dest);
+      if (!relative || relative === ".." || relative.startsWith("../") || path.isAbsolute(relative) ||
+          [".env", ".env.d", ".fullsend", ".security", "runner-state", "bin"].some((p) => relative === p || relative.startsWith(p + "/"))) {
+        deny("write path is outside the writable workspace");
+      }
     }
   }
 }
@@ -310,7 +321,7 @@ export default async ({ directory, worktree }) => {
         const target = args.filePath ?? args.file_path;
         if (typeof target !== "string" || !target) deny("missing read target");
         let info;
-        try { info = statSync(absolutePath(target, cwd)); } catch (error) {
+        try { info = statSync(nativePath(target, cwd)); } catch (error) {
           if (error.code === "ENOENT" || error.code === "ENOTDIR") deny("read target does not exist");
           deny("read target could not be inspected");
         }

@@ -37,6 +37,8 @@ const (
 	openCodeConfigFile = "opencode.json"
 )
 
+var openCodeBashProgram = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
 // openCodeAgentPath is the sandbox path of the translated agent definition.
 func (r OpenCodeRuntime) openCodeAgentPath(agentName string) string {
 	return r.ConfigDir() + "/" + openCodeAgentDir + "/" + agentName + ".md"
@@ -78,6 +80,11 @@ func (r OpenCodeRuntime) Bootstrap(input BootstrapInput) error {
 	def, err := parsePiAgent(data)
 	if err != nil {
 		return err
+	}
+	for _, program := range def.BashAllowlist {
+		if !openCodeBashProgram.MatchString(program) {
+			return fmt.Errorf("unsupported OpenCode Bash allowlist entry %q: use bare program names containing only letters, digits, '.', '_' or '-', for example Bash(gh,jq); command arguments, paths and Claude-style patterns are not supported", program)
+		}
 	}
 	agentName := input.AgentName()
 	if agentName == "" {

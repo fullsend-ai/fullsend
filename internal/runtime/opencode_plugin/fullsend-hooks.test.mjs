@@ -242,6 +242,55 @@ test("native write paths resolve symlinks and protect runner state", async (t) =
   await assert.rejects(h.before("apply_patch", { patchText: "unrecognized" }), /unrecognized/);
 });
 
+test("relative tool paths cannot hide protected native destinations behind symlinks", async (t) => {
+  const h = await setup(t);
+  const repo = path.join(h.workspace, "repo");
+  mkdirSync(path.join(repo, "a/b"), { recursive: true });
+  symlinkSync("a/b", path.join(repo, "link"));
+  const hooks = await plugin({ directory: repo, worktree: repo });
+  const before = (tool, args) => hooks["tool.execute.before"]({ tool }, { args });
+  for (const existing of [false, true]) {
+    if (existing) writeFileSync(path.join(h.workspace, ".env"), "protected fixture");
+    for (const protectedPath of [".env", ".env.d/new.env", ".fullsend/file", ".security/file", "runner-state/file", "bin/gh"]) {
+      const filePath = `link/../../${protectedPath}`;
+      assert.equal(path.resolve(repo, filePath), path.join(h.workspace, protectedPath));
+      for (const tool of ["write", "edit", "multiedit"]) {
+        await assert.rejects(before(tool, { filePath }), /write path/, `${tool}: ${filePath}`);
+      }
+      for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
+        for (const target of [filePath, `${repo}/${filePath}`]) {
+          await assert.rejects(before("apply_patch", { patchText: `*** Add File: safe.txt\n+safe\n*** ${header}: ${target}` }), /write path/);
+        }
+      }
+    }
+  }
+  await before("write", { filePath: "link/../safe.txt" });
+});
+
+test("trusted file policies check the normalized native destination too", async (t) => {
+  const scoped = { "*": "deny", "src/*": "allow" };
+  const h = await setup(t, { permission: { "*": "deny", read: scoped, edit: scoped } });
+  mkdirSync(path.join(h.workspace, "src/a/b"), { recursive: true });
+  symlinkSync("src/a/b", path.join(h.workspace, "link"));
+  // Physically this names src/private.txt; native normalization names ../private.txt.
+  const filePath = "link/../../private.txt";
+  for (const tool of ["read", "write", "edit", "multiedit"]) {
+    await assert.rejects(h.before(tool, { filePath }), /trusted permission/, tool);
+  }
+  await assert.rejects(h.before("apply_patch", { patchText: `*** Add File: ${filePath}\n+private` }), /trusted permission/);
+  await h.before("write", { filePath: "src/a/../safe.txt" });
+});
+
+test("LS-only checks inspect the file selected by native relative normalization", async (t) => {
+  const h = await setup(t, { tools: ["LS"] });
+  mkdirSync(path.join(h.workspace, "a/b"), { recursive: true });
+  mkdirSync(path.join(h.workspace, "private.txt"));
+  symlinkSync("a/b", path.join(h.workspace, "link"));
+  writeFileSync(path.join(h.root, "private.txt"), "not available through LS");
+  await assert.rejects(h.before("read", { filePath: "link/../../private.txt" }), /not a directory/);
+  await h.before("read", { filePath: "link/../a" });
+});
+
 test("symlink targets resolve parent traversal before checking protected writes", async (t) => {
   const h = await setup(t);
   mkdirSync(path.join(h.workspace, "src"));

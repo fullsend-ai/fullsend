@@ -393,8 +393,9 @@ three interception cases inside a Task child, checking that the parent Task and 
 events have distinct session IDs. Original output markers must be absent from every captured
 model request; replacement and denial markers must appear in the continuations.
 
-On Linux arm64 with the checksum-verified sandbox binary, OpenCode **1.19.1** passed all fourteen
-scenarios on 2026-10-21. A pre-tool exception prevented execution. A post-tool exception
+The [sandbox image CI run on 2026-11-12](https://github.com/fullsend-ai/fullsend/actions/runs/43204480951)
+records a successful OpenCode **1.19.1** native-probe suite at commit `c7ae4d81`.
+A pre-tool exception prevented execution. A post-tool exception
 withheld the result and surfaced the denial reason as a tool error; mutating the post-tool
 output replaced what the model received. All three behaviors also held in a Task child session.
 
@@ -404,6 +405,13 @@ tests cover bare commands, arguments, allowed composition, denied commands, deni
 and a trusted pattern map whose later deny must win. Each Bash policy runs with the production
 adapter and with only the observation plugin, so native permission evaluation is verified
 independently of hook enforcement.
+
+The relative-path regression uses a repository symlink followed by `..` in a tool
+argument. It verifies that native write/edit calls preserve the protected workspace
+`.env` and that LS-only reads cannot expose a file hidden by the path mismatch.
+Adapter tests also cover patch targets and trusted path permissions. Write and
+permission checks inspect both the text-normalized destination and the physical
+symlink destination. LS-only checks inspect the path OpenCode's native read uses.
 
 The nested trusted-Bash scenario gives the child broader native permissions than
 the parent. Single commands, sequences, pipelines and quoted arguments must still
