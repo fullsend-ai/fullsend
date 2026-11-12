@@ -106,7 +106,14 @@ for a command). A `/fs-*` command body is carried
 untruncated, and the dispatcher fails closed before a pipeline is created
 when a command payload exceeds the nine-chunk budget; that refusal is
 permanent, so the poller drops the event with a WARNING log line and advances
-past it — the command is never retried and never runs. The webhook dispatcher
+past it — the command is never retried and never runs. The largest `/fs-*`
+command that still dispatches is about 3,000 ASCII characters — fewer when
+the text is escape-heavy, since JSON encoding expands `<`, `>`, and `&`
+sixfold — because the complete event carries the command text twice (as
+`comment.body` and as the re-derived `comment.instruction`); commands
+between that boundary and the roughly 6,550 ASCII characters the
+comment-only fallback used to carry whole are now refused instead of
+dispatched. The webhook dispatcher
 job takes the same refusal differently: its dispatch step fails, and a re-run
 or payload replay re-refuses the event; the refusal is permanent there too.
 A non-command event that would not fit is not refused: it is sent in the
