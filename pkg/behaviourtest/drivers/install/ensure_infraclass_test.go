@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
@@ -19,13 +20,11 @@ import (
 // are visible only inside the test build; they never reach a non-test
 // compilation.
 
-// speedUpSettlePoll shortens awaitWorkflowReady's poll delay for fast tests
-// and restores it on cleanup, mirroring speedUpResetRetries.
+// speedUpSettlePoll shrinks awaitWorkflowReady's settle window for fast
+// tests (speedUpSettle restores it on cleanup).
 func speedUpSettlePoll(t *testing.T) {
 	t.Helper()
-	orig := settlePoll
-	settlePoll = 0
-	t.Cleanup(func() { settlePoll = orig })
+	speedUpSettle(t, 20*time.Millisecond)
 }
 
 // AwaitCreationNeverVisibleForTest runs the real awaitCreation poll against

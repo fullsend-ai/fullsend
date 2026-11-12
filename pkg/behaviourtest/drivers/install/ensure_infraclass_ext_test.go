@@ -45,7 +45,7 @@ func TestInfraClassWorkflowNeverSettled(t *testing.T) {
 	var infra *behaviourfail.InfraError
 	require.ErrorAs(t, err, &infra)
 	assert.Equal(t, "setup: workflow never settled", infra.Reason)
-	assert.Contains(t, err.Error(), "not visible on", "the terminal message survives wrapping for diagnosis")
+	assert.Contains(t, err.Error(), "workflow not active", "the terminal message survives wrapping for diagnosis")
 }
 
 // TestInfraClassProvisionQuotaErrorThroughEnsurePath covers task 2.2's
@@ -102,25 +102,25 @@ func TestInfraClassWorkflowGetErrorSurfaced(t *testing.T) {
 			err:        &gh.APIError{StatusCode: http.StatusNotFound, Message: "Not Found"},
 			wantClass:  behaviourfail.Infrastructure,
 			wantMarked: true,
-			wantMsg:    "not visible on",
+			wantMsg:    "workflow not active",
 		},
 		"rate limit 429 stays unmarked and classifies infra": {
 			err:        &gh.APIError{StatusCode: http.StatusTooManyRequests, Message: "too many requests"},
 			wantClass:  behaviourfail.Infrastructure,
 			wantMarked: false,
-			wantMsg:    "not visible on",
+			wantMsg:    "polling fullsend.yaml on org/repo failed",
 		},
 		"permission 403 stays unmarked and classifies scenario": {
 			err:        &gh.APIError{StatusCode: http.StatusForbidden, Message: "resource not accessible by integration"},
 			wantClass:  behaviourfail.Scenario,
 			wantMarked: false,
-			wantMsg:    "not visible on",
+			wantMsg:    "polling fullsend.yaml on org/repo failed",
 		},
 		"server 500 stays unmarked and classifies scenario": {
 			err:        &gh.APIError{StatusCode: http.StatusInternalServerError, Message: "boom"},
 			wantClass:  behaviourfail.Scenario,
 			wantMarked: false,
-			wantMsg:    "not visible on",
+			wantMsg:    "polling fullsend.yaml on org/repo failed",
 		},
 	}
 	for name, tc := range tests {
