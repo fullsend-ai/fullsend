@@ -572,14 +572,16 @@ The existing design principle is that [the repo is the coordinator](problems/age
   the bot-role lookup; unknown or unresolved bots fail closed on non-label
   paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)).
   **Decided:** For Fullsend-authored non-label contributions, repository-scoped
-  Ed25519 attestations take precedence over provider lookup. The provider lookup
-  remains a migration fallback for legacy objects and sources without a
-  carrier; an invalid attestation fails closed. A create event whose stable
-  object identity is not yet attested does not dispatch under ADR 0107; the
-  writer must attach the finalized signature and cause a follow-up dispatch.
-  This covers comments, reviews, and issue or pull-request content across
-  forges and Jira. Signatures bind role and run context to exact source content,
-  but do not make that content trustworthy or grant platform permissions.
+  Sigstore keyless attestations based on workflow OIDC take precedence over
+  provider lookup. The provider lookup remains a migration fallback for legacy
+  objects and sources without a carrier; an invalid attestation fails closed.
+  A create event whose stable object identity is not yet attested does not
+  dispatch under ADR 0107; the writer must attach the finalized signature and
+  cause a follow-up dispatch. Initial carriers cover comments, reviews, and
+  issue or pull-request content across forges and Jira where the platform OIDC
+  issuer and metadata carrier are supported. Signatures bind role and run
+  context to source content, but do not make that content trustworthy or grant
+  platform permissions.
   Cross-repo verification remains open ([ADR 0168](ADRs/0168-authenticate-fullsend-contributions-with-role-signatures.md)).
   A verified human label addition separately grants `triage`-equivalent
   authority for its exact accepted transition and proven projection without

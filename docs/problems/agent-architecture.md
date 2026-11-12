@@ -236,8 +236,8 @@ The multi-agent framework space is expanding rapidly, with new entries appearing
   bot account with role indicated in the comment? GitHub App installations?~~
   Per-role GitHub Apps for forge actions are decided in
   [ADR 0007](../ADRs/0007-per-role-github-apps.md). Repository-scoped role
-  attestations provide cross-agent identity for non-label events across forges
-  and Jira under
+  attestations use Sigstore keyless signing with workflow OIDC to provide
+  cross-agent identity for non-label events across forges and Jira under
   [ADR 0168](../ADRs/0168-authenticate-fullsend-contributions-with-role-signatures.md).
 - How do we test the interaction model? Can we simulate adversarial scenarios (injection attempts, unauthorized changes, agent disagreements) in a sandbox repo?
 - How does the two-phase review model work in practice? Does the code agent run all six sub-agents locally, or a subset? Is the pre-PR review a lighter version? (Depends on [agent-infrastructure.md](agent-infrastructure.md) — what compute is available where.)

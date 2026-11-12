@@ -160,8 +160,8 @@ Agents amplify authority. If a compromised account can trigger agent actions, th
   (The actor-admission gate uses verified roles and each harness's minimum under
   [ADR 0151](../ADRs/0151-harness-human-role-minimums.md); that decision does
   not grant agent capabilities or settle identity-specific policy. Fullsend-authored
-  non-label contributions use repository-scoped role
-  attestations across forge and Jira sources under
+  non-label contributions use repository-scoped Sigstore keyless role
+  attestations based on workflow OIDC across forge and Jira sources under
   [ADR 0168](../ADRs/0168-authenticate-fullsend-contributions-with-role-signatures.md);
   broader authority policy remains open.)
 - How do we handle the bootstrap problem — who sets up the initial agent configuration, and how is that secured?
