@@ -15,10 +15,11 @@ GitHub repositories use a different command (`fullsend github setup`). See
 
 * For Vertex agents, a GCP project with Vertex AI enabled, from
   [Getting Inference](getting-inference.md). OpenAI-only installation does not
-  need a GCP project. GitLab does **not** use
-  `fullsend inference provision` — inference credentials are written by
-  `repos install` from `--vertex-project` or a declared `inference.project`
-  (see [Inference Setup](#inference-setup) below). Unless you also supply a
+  need a GCP project. `repos install` writes the inference credentials
+  from `--vertex-project` or a declared `inference.project`
+  (see [Inference Setup](#inference-setup) below). Optionally,
+  `fullsend inference provision --forge gitlab` creates a per-project WIF
+  provider first. Unless you also supply a
   WIF provider (`--vertex-wif-provider` or a declared
   `inference.wif_provider`; a declared provider also requires a declared
   `inference.project`), `repos install` derives the
@@ -1179,13 +1180,14 @@ Pick the route that matches what you can change in GCP:
 
 | You can | Route |
 |---------|-------|
-| Create a Workload Identity provider and grant roles in your GCP project | Your own `gitlab-oidc` provider: the steps directly below. If Google cannot reach your GitLab instance, add [Private OIDC issuers (uploaded JWKS)](#private-oidc-issuers-uploaded-jwks) |
+| Create a Workload Identity provider and grant roles in your GCP project | Your own provider: a per-project provider from [the CLI](#provisioning-a-per-project-provider-with-the-cli), or the shared `gitlab-oidc` provider from [the manual steps](#creating-the-shared-provider-manually). If Google cannot reach your GitLab instance, add [Private OIDC issuers (uploaded JWKS)](#private-oidc-issuers-uploaded-jwks) |
 | Only manage a service account, while a platform team runs a provider that trusts your GitLab instance | [Using an existing WIF provider](#using-an-existing-wif-provider); skip the own-provider steps below |
 | Skip GCP entirely | OpenAI with an API key; see [Installing Fullsend](#installing-fullsend) |
 
 **Own-provider route.** From here up to
 [Using an existing WIF provider](#using-an-existing-wif-provider), this
-section applies only when you run the `gitlab-oidc` provider yourself.
+section applies only when you run your own provider: a per-project
+`gl-<project-path>` provider or the shared `gitlab-oidc` provider.
 
 Pass `--vertex-project`, or declare `inference.project` in the managed
 configuration (for example
@@ -1196,19 +1198,64 @@ CI/CD variables from it, and a `--vertex-project` value that disagrees with
 it fails before any write. **This only writes CI/CD variables
 that reference the shared `gitlab-oidc` provider's resource name — it
 does not create the Workload Identity Pool, the `gitlab-oidc`
-provider, or its IAM bindings.** GitLab has no equivalent of
-`fullsend inference provision` (which auto-provisions that
-infrastructure for GitHub); a platform operator must create the
+provider, or its IAM bindings.** A platform operator must create the
 shared `gitlab-oidc` provider once per GCP project before agent jobs
 can exchange tokens through it, or the CI/CD variables above will
 point at a provider that doesn't exist and token exchange will fail
-at runtime even though install succeeds. Creating the provider once
+at runtime even though install succeeds. To skip the manual recipe,
+see [Provisioning a per-project provider with the CLI](#provisioning-a-per-project-provider-with-the-cli).
+Creating the provider once
 per project does not by itself trust every repo on that project — the
 default recipe below scopes trust to a single repo; see
 [Authorizing multiple specific projects](#authorizing-multiple-specific-projects-alternative)
 if you're installing more than one repo against the same GCP project.
 
-To create it, add a GitLab-specific provider to the same
+### Provisioning a per-project provider with the CLI
+
+`fullsend inference provision --forge gitlab` creates a dedicated
+provider for one GitLab project. It applies the same mapping,
+audience, condition, and IAM binding as the manual recipe below. Run
+it once per project:
+
+```bash
+fullsend inference provision "<group/project>" \
+  --forge gitlab \
+  --gitlab-project-id "<numeric-id>" \
+  --gitlab-url "https://gitlab.com" \
+  --project "<gcp-project>"
+```
+
+The command creates or updates these resources in the
+`fullsend-inference` pool:
+
+- a provider named `gl-<project-path>`, with `/` replaced by `-`,
+  lowercased, and truncated to 32 characters;
+- a `roles/aiplatform.user` binding on
+  `attribute.project_path/<group/project>`.
+
+The command needs the numeric project ID (**Settings → General**)
+but no GitLab token. Set `--gitlab-url` to the instance that signs
+the project's `id_tokens`. Add `--dry-run` to preview the provider
+without calling GCP. A re-run rewrites the provider only when its
+configuration differs.
+
+The provider is not the shared `gitlab-oidc` provider that install
+derives by default. Pass the printed resource name to install with
+`--vertex-wif-provider`, or declare it as `inference.wif_provider`:
+
+```bash
+fullsend repos install "<group/project>" \
+  --vertex-project "<gcp-project>" \
+  --vertex-wif-provider "projects/<number>/locations/global/workloadIdentityPools/fullsend-inference/providers/gl-<project-path>"
+```
+
+See [`fullsend inference provision`](../../cli/inference.md#inference-provision)
+for the full flag reference. To configure the shared `gitlab-oidc`
+provider by hand instead, follow the steps below.
+
+### Creating the shared provider manually
+
+To create the shared `gitlab-oidc` provider, add a GitLab-specific provider to the same
 `fullsend-inference` pool described in
 [Advanced setup → Custom inference WIF configuration](../infrastructure/advanced-setup.md#custom-inference-wif-configuration).
 The GitHub recipe there does not carry over as-is: it points the issuer
@@ -2048,7 +2095,7 @@ external scheduler instead — see [Off-system polling](#off-system-polling)
 | Bot identity | Per-role GitHub Apps | Role-specific project service accounts (`fullsend-poller`, `fullsend-analyst`, `fullsend-coder`), with project access tokens as the fallback; Free tier must enroll these via `--gitlab-role-token` since runtime authentication never falls back to the shared PAT or `fullsend-bot` |
 | Token mint | Required for App installation tokens | Not used — GitLab uses the stored PAT |
 | Event dispatch | Native Actions webhooks | Cron polling (`fullsend slash poll` / `fullsend event poll`) |
-| Inference WIF | Per-repo provider from `inference provision` | Operator-created shared `gitlab-oidc` provider, referenced via `--vertex-project` or a declared `inference.project` |
+| Inference WIF | Per-repo provider from `inference provision` | Per-project provider from `inference provision --forge gitlab`, referenced via `--vertex-wif-provider` or a declared `inference.wif_provider`; or an operator-created shared `gitlab-oidc` provider, referenced via `--vertex-project` or a declared `inference.project` |
 | CI entrypoint | `.github/workflows/fullsend.yaml` | `.gitlab/ci/fullsend-*.yml` included from `.gitlab-ci.yml` |
 
 ### `workflow:` block and `auto_cancel`
