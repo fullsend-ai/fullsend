@@ -689,7 +689,7 @@ func (op *gitLabTriggerAccountOp) overrideRoleDeferral(ctx context.Context) (str
 		return "", safeAPIError("reading the pipeline-variable override role", err)
 	}
 	if role != forge.PipelineVarOverrideNoOneAllowed {
-		return fmt.Sprintf("ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; fullsend does not publish a trigger credential while pipeline variable overrides are allowed. Stop legacy polling, migrate schedule variables, and apply the restriction to enable the trigger account", displayPipelineVarRole(role)), nil
+		return fmt.Sprintf("ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; fullsend does not publish a trigger credential while pipeline variable overrides are allowed. Stop legacy polling, migrate schedule variables, and apply the restriction to enable the trigger account (to apply it, %s)", displayPipelineVarRole(role), gitlabPipelineVarRestrictionHint), nil
 	}
 	return "", nil
 }
