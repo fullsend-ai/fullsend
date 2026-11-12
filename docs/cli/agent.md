@@ -347,7 +347,7 @@ stale provider profiles, schema validation, triggers that never fire), see
 
 ## `agent add`
 
-Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. When a URL references a branch or tag (rather than a commit SHA), the original ref is stored in the config entry's `ref` field so that subsequent `agent update` calls re-resolve against the same branch. The URL prefix is added to `allowed_remote_resources` if not already present.
+Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. When a URL references a branch or tag (rather than a commit SHA), the original ref is stored in the config entry's `ref` field so that subsequent `agent update` calls re-resolve against the same branch. The URL prefix is added to `allowed_remote_resources` only when the effective allowlist — the layered list plus fullsend's default prefixes — does not already cover it.
 
 ```bash
 fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml
