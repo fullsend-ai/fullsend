@@ -1608,8 +1608,10 @@ func withoutKey(vars map[string]string, key string) map[string]string {
 // worstCaseAttackerEvent builds the worst attacker-shaped event the
 // transport bounds have to contain: an escape-heavy note body at
 // noteBodyTransportLimit, state.labels at the labels bound, maximal
-// escape-heavy branch refs and logins, schema-maximal repo paths and entity
-// URLs, the linked change proposal, a review — and the maximal
+// escape-heavy branch refs and logins, the config-derived repo and URLs at
+// the documented plausible config (they travel whole; a schema-max config
+// fails closed instead — TestBuildEventPayload_SchemaMaxConfigFailsClosed),
+// the linked change proposal, a review — and the maximal
 // transition.label.name a work item can carry beside its comment
 // (TestBuildEventPayload_WorstCaseFitsTransportBudget, the frozen pin of
 // this shape, predates the label name; this helper includes it so the
@@ -1631,13 +1633,13 @@ func worstCaseAttackerEvent() (RoutableEvent, dispatch.NormalizedEvent) {
 		cp.HeadRepo = strings.Repeat("<", 512)
 		cp.BaseRepo = strings.Repeat("<", 512)
 	}
-	ne.Repo = strings.Repeat("<", 512)
+	ne.Repo = strings.Repeat("p", 120)
 	ne.Actor.ID = strings.Repeat("<", 255)
 	ne.Entity.Kind = "work_item"
-	ne.Entity.URL = strings.Repeat("<", 2048)
+	ne.Entity.URL = strings.Repeat("u", 160)
 	ne.Entity.LinkedChangeProposal = &dispatch.LinkedChangeProposal{
 		ID:  12,
-		URL: strings.Repeat("<", 2048),
+		URL: strings.Repeat("l", 160),
 	}
 	ne.Transition.Review = &dispatch.TransitionReview{
 		State:      "approved",

@@ -183,11 +183,13 @@ func TestBuildEventPayload_FallsBackToCommentOnlyEvent(t *testing.T) {
 		// A complete form that does not fit falls back only for a
 		// non-command body; an oversized /fs-* command body fails closed
 		// instead (TestBuildEventPayload_CommandBodyOverBudgetFailsClosed).
-		// With the body, labels and every single string bounded
-		// (noteBodyTransportLimit, transportLabelsLimit,
-		// transportStringRefLimit) a non-command complete form always
-		// fits, so size can no longer force this fallback at all —
-		// TestBuildEventPayload_WorstCaseFitsTransportBudget pins that.
+		// With the body, labels and every attacker-shaped single string
+		// bounded (noteBodyTransportLimit, transportLabelsLimit,
+		// transportStringRefLimit) only the whole-travelling config-derived
+		// fields can push a non-command complete form past the budget —
+		// TestBuildEventPayload_SchemaMaxConfigFailsClosed pins that
+		// outcome, and TestBuildEventPayload_WorstCaseFitsTransportBudget
+		// pins that a plausible config still fits.
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -334,8 +336,8 @@ func TestBuildEventPayload_WorstCaseFitsTransportBudget(t *testing.T) {
 	// The event's own label list is bounded like state.labels.
 	event.Labels = ne.State.Labels
 	// Maximal escape-heavy branch refs and logins (Git refnames and the
-	// normalized event spec allow 255), and schema-maximal repo paths
-	// (512) and entity URL (2048).
+	// normalized event spec allow 255) and schema-maximal fork repo
+	// paths (512).
 	event.SourceBranch = strings.Repeat("<", 255)
 	event.TargetBranch = strings.Repeat("<", 255)
 	if cp := ne.State.ChangeProposal; cp != nil {
@@ -345,18 +347,27 @@ func TestBuildEventPayload_WorstCaseFitsTransportBudget(t *testing.T) {
 		cp.HeadRepo = strings.Repeat("<", 512)
 		cp.BaseRepo = strings.Repeat("<", 512)
 	}
-	ne.Repo = strings.Repeat("<", 512)
 	ne.Actor.ID = strings.Repeat("<", 255)
+	// The config-derived repo, entity.url and
+	// entity.linked_change_proposal.url travel whole, so they sit at a
+	// documented plausible config rather than the schema maxima an
+	// operator would have to go out of their way to configure: a
+	// 120-rune nested-group project path and 160-rune URLs (host, path
+	// and /-/merge_requests/N), each well under the schema's 512/2048
+	// ceilings. A schema-max config instead forces the documented
+	// fail-closed outcome
+	// (TestBuildEventPayload_SchemaMaxConfigFailsClosed).
+	ne.Repo = strings.Repeat("p", 120)
 	// A work item linked to its change proposal (validation forbids
 	// linked_change_proposal on a change_proposal entity) carries the
-	// proposal's schema-maximal URL beside the entity URL, and a review
-	// carried beside the comment adds the maximal reviewer login: both
-	// are attacker-shaped single strings the budget has to bound too.
+	// proposal's URL beside the entity URL, and a review carried beside
+	// the comment adds the maximal reviewer login: an attacker-shaped
+	// single string the budget has to bound too.
 	ne.Entity.Kind = "work_item"
-	ne.Entity.URL = strings.Repeat("<", 2048)
+	ne.Entity.URL = strings.Repeat("u", 160)
 	ne.Entity.LinkedChangeProposal = &dispatch.LinkedChangeProposal{
 		ID:  12,
-		URL: strings.Repeat("<", 2048),
+		URL: strings.Repeat("l", 160),
 	}
 	ne.Transition.Review = &dispatch.TransitionReview{
 		State:      "approved",
@@ -383,11 +394,14 @@ func TestBuildEventPayload_WorstCaseFitsTransportBudget(t *testing.T) {
 	if cp := ev.State.ChangeProposal; cp == nil || len(cp.HeadRef) != boundedRunes || len(cp.BaseRef) != boundedRunes {
 		t.Errorf("transported change_proposal = %+v, want %d-rune bounded refs carried", cp, boundedRunes)
 	}
-	if len(ev.Repo) != boundedRunes || len(ev.Entity.URL) != boundedRunes {
-		t.Errorf("transported repo/url = %d/%d runes, want the %d-rune bound", len(ev.Repo), len(ev.Entity.URL), boundedRunes)
+	// The config-derived fields travel whole: the plausible config's
+	// repo and URLs are carried uncut, past nothing — they are not
+	// bounded at all.
+	if len(ev.Repo) != 120 || len(ev.Entity.URL) != 160 {
+		t.Errorf("transported repo/url = %d/%d runes, want the whole 120/160-rune config values", len(ev.Repo), len(ev.Entity.URL))
 	}
-	if lcp := ev.Entity.LinkedChangeProposal; lcp == nil || lcp.ID != 12 || len(lcp.URL) != boundedRunes {
-		t.Errorf("transported linked_change_proposal = %+v, want the %d-rune bounded URL carried", ev.Entity.LinkedChangeProposal, boundedRunes)
+	if lcp := ev.Entity.LinkedChangeProposal; lcp == nil || lcp.ID != 12 || len(lcp.URL) != 160 {
+		t.Errorf("transported linked_change_proposal = %+v, want the whole 160-rune URL carried", ev.Entity.LinkedChangeProposal)
 	}
 	if review := ev.Transition.Review; review == nil || len(review.ReviewerID) != boundedRunes {
 		t.Errorf("transported review = %+v, want the %d-rune bounded reviewer id carried", ev.Transition.Review, boundedRunes)
@@ -402,14 +416,88 @@ func TestBuildEventPayload_WorstCaseFitsTransportBudget(t *testing.T) {
 	if ne.Transition.Review == nil {
 		t.Fatalf("caller's transition.review was cleared")
 	}
-	if len(ne.Entity.LinkedChangeProposal.URL) != 2048 || len(ne.Transition.Review.ReviewerID) != 255 ||
-		len(ne.Entity.URL) != 2048 || len(ne.Actor.ID) != 255 || len(ne.State.ChangeProposal.HeadRef) != 255 {
+	if len(ne.Entity.LinkedChangeProposal.URL) != 160 || len(ne.Transition.Review.ReviewerID) != 255 ||
+		len(ne.Entity.URL) != 160 || len(ne.Actor.ID) != 255 || len(ne.State.ChangeProposal.HeadRef) != 255 {
 		t.Errorf("bounding mutated the caller's event: lcp url %d, reviewer id %d, entity url %d, actor %d, head ref %d runes",
 			len(ne.Entity.LinkedChangeProposal.URL), len(ne.Transition.Review.ReviewerID),
 			len(ne.Entity.URL), len(ne.Actor.ID), len(ne.State.ChangeProposal.HeadRef))
 	}
 	if n := base64.StdEncoding.EncodedLen(len(data)); n > maxEventPayloadChunks*dispatchPayloadChunkSize {
 		t.Errorf("worst-case payload is %d base64 characters, over the %d budget", n, maxEventPayloadChunks*dispatchPayloadChunkSize)
+	}
+}
+
+// The config-derived repo, entity.url and entity.linked_change_proposal.url
+// leave the 258-byte single-string bound and travel whole, so a GitLab
+// project whose path plus host plus /-/merge_requests/N runs past the bound
+// still gets its repo and URLs intact — including the bot-role lookup's
+// event.Repo. The dispatch still fails closed on the chunk budget: a config
+// whose lengths push the complete payload past it falls back to the
+// comment-only event for a note and refuses the dispatch for a command
+// (TestBuildEventPayload_SchemaMaxConfigFailsClosed).
+func TestBuildEventPayload_ConfigFieldsTravelWhole(t *testing.T) {
+	event, ne := mrNote(strings.Repeat("<", 100))
+	// Each config-derived field past the 258-byte single-string bound
+	// (300 plain runes cost 302 JSON bytes), the payload still fitting
+	// the chunk budget.
+	ne.Repo = strings.Repeat("p", 300)
+	ne.Entity.Kind = "work_item"
+	ne.Entity.URL = strings.Repeat("u", 300)
+	ne.Entity.LinkedChangeProposal = &dispatch.LinkedChangeProposal{
+		ID:  12,
+		URL: strings.Repeat("l", 300),
+	}
+	// An attacker-shaped field beside them is still bounded.
+	ne.Actor.ID = strings.Repeat("<", 255)
+	data, err := buildEventPayload(event, &ne)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	ev := payloadEvent(t, data)
+	if len(ev.Repo) != 300 || len(ev.Entity.URL) != 300 {
+		t.Errorf("transported repo/url = %d/%d runes, want the whole 300-rune values", len(ev.Repo), len(ev.Entity.URL))
+	}
+	if lcp := ev.Entity.LinkedChangeProposal; lcp == nil || len(lcp.URL) != 300 {
+		t.Errorf("transported linked_change_proposal = %+v, want the whole 300-rune URL carried", ev.Entity.LinkedChangeProposal)
+	}
+	if boundedRunes := (transportStringRefLimit - 2) / 6; len(ev.Actor.ID) != boundedRunes {
+		t.Errorf("transported actor.id = %d runes, want the %d-rune bound to still apply", len(ev.Actor.ID), boundedRunes)
+	}
+}
+
+// A schema-maximal config URL pushes the complete payload past the chunk
+// budget, so the dispatch fails closed the documented way: a note falls
+// back to the comment-only event (never a partial _normalized_event) and a
+// command body is refused outright.
+func TestBuildEventPayload_SchemaMaxConfigFailsClosed(t *testing.T) {
+	oversize := func() (RoutableEvent, dispatch.NormalizedEvent) {
+		event, ne := worstCaseAttackerEvent()
+		ne.Entity.URL = strings.Repeat("u", 2048)
+		return event, ne
+	}
+
+	event, ne := oversize()
+	data, err := buildEventPayload(event, &ne)
+	if err != nil {
+		t.Fatalf("buildEventPayload: %v", err)
+	}
+	want, err := buildEventPayload(event, nil)
+	if err != nil {
+		t.Fatalf("buildEventPayload without event: %v", err)
+	}
+	if !bytes.Equal(data, want) {
+		t.Errorf("payload = %s\nwant the comment-only payload %s", data, want)
+	}
+
+	event, ne = oversize()
+	// The command body itself fits; the schema-max config URL is what
+	// pushes the complete form past the budget, and a command note is
+	// still refused rather than sent without its complete event.
+	event.NoteBody = "/fs-fix " + strings.Repeat("<", 100)
+	if _, err := buildEventPayload(event, &ne); err == nil {
+		t.Fatal("buildEventPayload: want an error for an over-budget command body, got a payload")
+	} else if !strings.Contains(err.Error(), "refusing to dispatch a command note") {
+		t.Errorf("error does not name the command-note refusal: %v", err)
 	}
 }
 
@@ -496,11 +584,6 @@ var boundedTransportFields = []struct {
 	path string
 	get  func(*dispatch.NormalizedEvent) string
 }{
-	{"repo", func(e *dispatch.NormalizedEvent) string { return e.Repo }},
-	{"entity.url", func(e *dispatch.NormalizedEvent) string { return e.Entity.URL }},
-	{"entity.linked_change_proposal.url", func(e *dispatch.NormalizedEvent) string {
-		return e.Entity.LinkedChangeProposal.URL
-	}},
 	{"transition.label.name", func(e *dispatch.NormalizedEvent) string {
 		return e.Transition.Label.Name
 	}},
@@ -561,7 +644,8 @@ func collectStringFieldPaths(t reflect.Type, prefix string, seen map[string]bool
 // for the hand-list in boundTransportEventStrings. A string field added to
 // dispatch.NormalizedEvent or one of its nested structs must be bounded there
 // (and mirrored in boundedTransportFields above) or classified here as
-// bounded elsewhere or forge-assigned/enum, else this test fails — so a new
+// bounded elsewhere, config-derived or forge-assigned/enum, else this test
+// fails — so a new
 // attacker-shaped field cannot ship unbounded and push the complete payload
 // past maxEventPayloadChunks*dispatchPayloadChunkSize into
 // buildEventPayload's comment-only fallback, the "no event" channel ADR 0112
@@ -598,6 +682,18 @@ func TestBoundTransportEventStrings_CoversEveryStringField(t *testing.T) {
 		"source.raw_action":              true,
 		"state.change_proposal.head_sha": true,
 	}
+	// configDerived: the operator's config, not the event author, picks the
+	// value, so these travel whole past transportStringRefLimit; a config
+	// whose lengths push the complete payload past the chunk budget fails
+	// closed there (comment-only fallback for a note, command refusal)
+	// instead of being silently cut — the recorded direction for thread
+	// 4538900260. head_repo/base_repo stay bounded: a fork's path is
+	// event-author-chosen.
+	configDerived := map[string]bool{
+		"repo":                              true,
+		"entity.url":                        true,
+		"entity.linked_change_proposal.url": true,
+	}
 	seen := map[string]bool{}
 	collectStringFieldPaths(reflect.TypeOf(dispatch.NormalizedEvent{}), "", seen)
 
@@ -607,12 +703,12 @@ func TestBoundTransportEventStrings_CoversEveryStringField(t *testing.T) {
 	}
 	slices.Sort(paths)
 	for _, path := range paths {
-		if bounded[path] || boundedElsewhere[path] || forgeOrEnum[path] {
+		if bounded[path] || boundedElsewhere[path] || forgeOrEnum[path] || configDerived[path] {
 			continue
 		}
-		t.Errorf("unclassified string field %q: bound it in boundTransportEventStrings (and mirror it in boundedTransportFields) or classify it in this test as bounded elsewhere or forge-assigned/enum", path)
+		t.Errorf("unclassified string field %q: bound it in boundTransportEventStrings (and mirror it in boundedTransportFields) or classify it in this test as bounded elsewhere, config-derived or forge-assigned/enum", path)
 	}
-	for _, classified := range []map[string]bool{bounded, boundedElsewhere, forgeOrEnum} {
+	for _, classified := range []map[string]bool{bounded, boundedElsewhere, forgeOrEnum, configDerived} {
 		for path := range classified {
 			if !seen[path] {
 				t.Errorf("classified string field %q no longer exists on dispatch.NormalizedEvent", path)
@@ -621,7 +717,8 @@ func TestBoundTransportEventStrings_CoversEveryStringField(t *testing.T) {
 	}
 
 	// The mirror must be real: with every bounded field oversized,
-	// boundTransportEventStrings cuts each of them.
+	// boundTransportEventStrings cuts each of them — and leaves every
+	// config-derived field whole.
 	oversized := strings.Repeat("<", 255)
 	ev := dispatch.NormalizedEvent{
 		Repo: oversized,
@@ -648,6 +745,15 @@ func TestBoundTransportEventStrings_CoversEveryStringField(t *testing.T) {
 	for _, f := range boundedTransportFields {
 		if got := f.get(&ev); len(got) == 0 || len(got) >= len(oversized) {
 			t.Errorf("bounded field %q was not cut by boundTransportEventStrings (got %d of %d runes)", f.path, len(got), len(oversized))
+		}
+	}
+	for path, got := range map[string]string{
+		"repo":                              ev.Repo,
+		"entity.url":                        ev.Entity.URL,
+		"entity.linked_change_proposal.url": ev.Entity.LinkedChangeProposal.URL,
+	} {
+		if len(got) != len(oversized) {
+			t.Errorf("config-derived field %q was cut by boundTransportEventStrings (got %d of %d runes), want it whole", path, len(got), len(oversized))
 		}
 	}
 }
