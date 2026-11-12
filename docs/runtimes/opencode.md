@@ -121,7 +121,11 @@ example above.
 ## Behaviour differences worth knowing
 
 - **Bash allowlists are enforced.** `Bash(gh,jq)` permits only those program names in each
-  simple command. Native patterns deny other commands where compatible with the trusted policy;
+  simple command. Entries accept only letters, digits, `.`, `_` and `-`.
+  Bootstrap rejects paths, arguments and Claude-style patterns such as `Bash(gh pr:*)`
+  or `Bash(gh *)` with an error. Use plain `Bash` for unrestricted commands, subject
+  to the trusted permission policy.
+  Native patterns deny other commands where compatible with the trusted policy;
   the plugin independently enforces the allowlist and rejects ambiguous shell syntax, environment
   assignments, command substitutions, shell wrappers and control flow, `&&`
   chains, redirections, and backgrounding.
@@ -158,6 +162,8 @@ example above.
   Each intercepted tool call rechecks the script directory. Native
   write/edit/patch tools cannot write outside the workspace or into `.env`,
   `.security` or `runner-state`, including via symlinks.
+  Write and trusted path-permission checks inspect both OpenCode's normalized
+  destination and the physical symlink destination when a path contains `..`.
 - **Hook configuration is not a same-user secret boundary.** The activation challenge and hook
   settings are cleared from ordinary tool-process environments, but same-UID processes can inspect
   the OpenCode process through `/proc`. This residual is documented with the adapter's writable
