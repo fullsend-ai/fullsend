@@ -114,12 +114,16 @@ type World struct {
 	LeasedRepoOrg string
 
 	// LeaseOwned reports whether the repository under the leased slot's
-	// name is still this scenario's lease (install.LeaseVerifier). The
-	// After hook sets it before scenario cleanup, which consults it before
-	// every name-based mutation (and before every retry of one) and skips
-	// the mutation when the lease is lost or ownership cannot be verified,
-	// because the name may by then belong to another holder. Nil means
-	// ownership is not tracked (no lease, or tests with bare worlds).
+	// name is still this scenario's lease (install.LeaseVerifier). It is
+	// installed when the scenario acquires its leased repository
+	// (givenEnrolledTestRepository) and reinstalled by the After hook for
+	// cleanup, so every guarded step-time and cleanup name-based mutation
+	// consults it (and every retry of one): a guarded step-time mutation
+	// fails, and cleanup skips the mutation, when the lease is lost or
+	// ownership cannot be verified, because the name may by then belong to
+	// another holder.
+	// Nil means ownership is not tracked (no lease, or tests with bare
+	// worlds).
 	LeaseOwned func(ctx context.Context) (bool, error)
 
 	// MintURL is the URL of the mint serving the leased repository's org
