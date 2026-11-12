@@ -737,8 +737,8 @@ For GitLab repos, status also reports the trigger-only service account as
 `cleanup-pending`, or `unreadable`, with the reason and resource IDs and never
 a token value. Every state except `not-installed`, `deferred`, and `ready` is
 drift. The managed `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET`
-variables are not reported as orphans; any other unrecognised `FULLSEND_`
-variable still is.
+variables and the reserved `FULLSEND_TRACE_SIGNING_KEY` are not reported as
+orphans; any other unrecognised `FULLSEND_` variable still is.
 
 For GitLab repos, status also reports the webhook fast path as a
 `gitlab_webhook` object with a `state`, the booleans `webhook_present`,
