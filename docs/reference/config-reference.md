@@ -606,9 +606,11 @@ instead of creating duplicates. A later workflow run posts a new comment so
 the historical failure and its workflow-run link are preserved; a later
 successful run does not remove that historical comment.
 
-The standalone prioritize workflow also supplies the status target and a
-prioritize-scoped GitHub token only to the startup-failure reporter when one
-can be minted. The normal `github_token` input remains the workflow token for
+The standalone prioritize workflow also supplies the status target and, for
+GitHub-originated calls targeting a different repository, mints a
+prioritize-scoped GitHub token only for the startup-failure reporter. Same-
+repository calls use the workflow token and non-GitHub calls do not mint this
+reporting token. The normal `github_token` input remains the workflow token for
 installation, cloning, provider credentials, and `fullsend run`. This enables
 the same startup-failure reporting for cross-repository prioritize calls; if
 minting fails and the target is a different repository, the workflow emits an

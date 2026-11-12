@@ -150,6 +150,7 @@ jobs:
       - name: Mint prioritize status token
         id: app-token
         continue-on-error: true
+        if: ${{ (fromJSON(inputs.event_payload)._normalized_event.source.system || 'github') == 'github' && inputs.source_repo != github.repository }}
         uses: ./.defaults/.github/actions/mint-token
         with:
           role: prioritize
