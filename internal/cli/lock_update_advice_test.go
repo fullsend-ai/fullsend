@@ -140,31 +140,27 @@ func TestRunLock_UpdateWarmCacheRecordsUpstreamChange(t *testing.T) {
 
 	s.files["/agents/triage.md"] = agentV2
 
-	err := s.runLock(t, true)
-	if err == nil {
-		lf, loadErr := lock.Load(filepath.Join(s.dir, "lock.yaml"))
-		require.NoError(t, loadErr)
-		entry := lf.Lookup("code")
-		require.NotNil(t, entry)
-		dep := entry.LookupDep(s.agentURL)
-		require.NotNil(t, dep)
-		assert.Equal(t, fetch.ComputeSHA256(agentV2), dep.SHA256,
-			"warm-cache --update must record the upstream change, not the URL index's old copy")
+	// --update bypasses the URL index, so it succeeds and records the upstream change.
+	require.NoError(t, s.runLock(t, true))
+	lf, err := lock.Load(filepath.Join(s.dir, "lock.yaml"))
+	require.NoError(t, err)
+	entry := lf.Lookup("code")
+	require.NotNil(t, entry)
+	dep := entry.LookupDep(s.agentURL)
+	require.NotNil(t, dep)
+	assert.Equal(t, fetch.ComputeSHA256(agentV2), dep.SHA256,
+		"warm-cache --update must record the upstream change, not the URL index's old copy")
 
-		// The re-pinned lock composes offline with the new content.
-		pins := runLockPins(t, s.dir, "code", s.harnessPath)
-		h, _, composeErr := harness.LoadWithBase(context.Background(), s.harnessPath, harness.ComposeOpts{
-			WorkspaceRoot: s.dir,
-			FetchPolicy:   fetch.FetchPolicy{Offline: true},
-			OrgAllowlist:  []string{s.srv.URL + "/"},
-			LockedPins:    pins,
-		})
-		require.NoError(t, composeErr)
-		agentData, readErr := os.ReadFile(h.Agent)
-		require.NoError(t, readErr)
-		assert.Equal(t, string(agentV2), string(agentData))
-		return
-	}
-	// The criterion's other arm: the message says to delete the index first.
-	assert.Contains(t, err.Error(), "index")
+	// The re-pinned lock composes offline with the new content.
+	pins := runLockPins(t, s.dir, "code", s.harnessPath)
+	h, _, err := harness.LoadWithBase(context.Background(), s.harnessPath, harness.ComposeOpts{
+		WorkspaceRoot: s.dir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:  []string{s.srv.URL + "/"},
+		LockedPins:    pins,
+	})
+	require.NoError(t, err)
+	agentData, err := os.ReadFile(h.Agent)
+	require.NoError(t, err)
+	assert.Equal(t, string(agentV2), string(agentData))
 }
