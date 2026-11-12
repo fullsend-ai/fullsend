@@ -44,11 +44,12 @@ setup can omit the GCP project and WIF provider pair. If you cannot enrol an Ope
 provider, that guide's Route C uses a `FULLSEND_OPENAI_API_KEY` repository secret; on GitHub we
 recommend keeping that key behind an [inference gateway](#inference-gateway) instead.
 
-For **GitLab repos**, create the GCP project as described below, but skip
-`fullsend inference provision`, which is GitHub-only. A platform operator creates a shared
-`gitlab-oidc` provider and its IAM bindings. Declare `inference.project` in
-`repos.yaml` or pass `repos install --vertex-project` to write the CI/CD variables
-that reference it. See [Configuring GitLab](configuring-gitlab.md#inference-setup).
+For **GitLab repos**, create the GCP project as described below. Then either run
+`fullsend inference provision <group/project> --forge gitlab --gitlab-project-id <id>`
+to create a per-project provider, or have a platform operator create a shared
+`gitlab-oidc` provider and its IAM bindings. Pass the provider to `repos install`
+(`--vertex-project`, plus `--vertex-wif-provider` for a per-project provider) to write
+the CI/CD variables that reference it. See [Configuring GitLab](configuring-gitlab.md#inference-setup).
 If GCP cannot reach your GitLab instance over the public internet, see
 [Private OIDC issuers (uploaded JWKS)](configuring-gitlab.md#private-oidc-issuers-uploaded-jwks).
 
@@ -132,9 +133,9 @@ the [operator guide](../infrastructure/inference-gateway-operator.md) for runnin
 
 Head over to [Configuring GitHub](configuring-github.md) to use your WIF provider URL.
 
-For GitLab repositories, skip this provision output and follow
-[Configuring GitLab](configuring-gitlab.md#inference-setup) instead — a platform operator
-creates the GitLab provider, and `repos install --vertex-project` writes the CI/CD variables
-that reference it. This command does not apply.
+For GitLab repositories, follow
+[Configuring GitLab](configuring-gitlab.md#inference-setup) instead. Use
+`fullsend inference provision --forge gitlab` or a platform operator's shared provider, and
+`repos install` writes the CI/CD variables that reference it.
 
 To use an inference gateway instead, see [Using an inference gateway](../user/inference-gateway.md).

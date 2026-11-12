@@ -38,6 +38,29 @@ type OIDCProviderConfig struct {
 	IssuerURI          string
 	AttributeCondition string
 	AllowedAudiences   []string
+	// AttributeMapping overrides the provider's attribute mapping. Nil
+	// selects the GitHub Actions mapping (defaultGitHubAttributeMapping).
+	// When set, UpdateWIFProvider also patches the mapping and, if
+	// IssuerURI is non-empty, the issuer, so a re-run converges a
+	// drifted non-GitHub provider.
+	AttributeMapping map[string]string
+	// RequiredConditionClause, when set, makes CreateWIFProvider's
+	// create-conflict recovery re-read the provider and refuse to overwrite
+	// it when its non-empty attribute condition does not contain this
+	// clause. It closes the check-then-act window of callers that verified
+	// provider ownership before creating.
+	RequiredConditionClause string
+}
+
+// defaultGitHubAttributeMapping is the attribute mapping applied to WIF
+// providers that trust GitHub Actions OIDC tokens.
+func defaultGitHubAttributeMapping() map[string]string {
+	return map[string]string{
+		"google.subject":             "assertion.sub",
+		"attribute.repository_owner": "assertion.repository_owner",
+		"attribute.repository":       "assertion.repository",
+		"attribute.actor":            "assertion.actor",
+	}
 }
 
 // WIFProviderInfo holds metadata about a WIF OIDC provider.
@@ -45,6 +68,9 @@ type WIFProviderInfo struct {
 	AttributeCondition string
 	AllowedAudiences   []string
 	IssuerURI          string
+	// AttributeMapping is the provider's attribute mapping as returned by
+	// providers.get.
+	AttributeMapping map[string]string
 	// State is the provider's lifecycle state ("ACTIVE" or "DELETED").
 	// providers.get returns soft-deleted providers with HTTP 200 and
 	// State "DELETED" rather than 404, so a non-nil WIFProviderInfo does
@@ -350,15 +376,15 @@ func (c *LiveGCFClient) CreateWIFProvider(ctx context.Context, projectNumber, po
 		oidcConfig["allowedAudiences"] = cfg.AllowedAudiences
 	}
 
+	mapping := cfg.AttributeMapping
+	if mapping == nil {
+		mapping = defaultGitHubAttributeMapping()
+	}
+
 	payloadObj := map[string]interface{}{
 		"oidc":               oidcConfig,
 		"attributeCondition": cfg.AttributeCondition,
-		"attributeMapping": map[string]string{
-			"google.subject":             "assertion.sub",
-			"attribute.repository_owner": "assertion.repository_owner",
-			"attribute.repository":       "assertion.repository",
-			"attribute.actor":            "assertion.actor",
-		},
+		"attributeMapping":   mapping,
 	}
 
 	payloadBytes, err := json.Marshal(payloadObj)
@@ -374,6 +400,16 @@ func (c *LiveGCFClient) CreateWIFProvider(ctx context.Context, projectNumber, po
 
 	if resp.StatusCode == http.StatusConflict {
 		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+		if cfg.RequiredConditionClause != "" {
+			existing, err := c.GetWIFProvider(ctx, projectNumber, poolID, providerID)
+			if err != nil {
+				return fmt.Errorf("re-reading WIF provider %s after create conflict: %w", providerID, err)
+			}
+			if existing != nil && strings.TrimSpace(existing.AttributeCondition) != "" &&
+				!strings.Contains(existing.AttributeCondition, cfg.RequiredConditionClause) {
+				return fmt.Errorf("WIF provider %s was created concurrently with a condition for a different project (%q); refusing to overwrite it", providerID, existing.AttributeCondition)
+			}
+		}
 		if err := c.undeleteWIFProvider(ctx, projectNumber, poolID, providerID); err != nil {
 			log.Printf("undelete attempt during conflict recovery: %v", err)
 		}
@@ -413,9 +449,10 @@ func (c *LiveGCFClient) GetWIFProvider(ctx context.Context, projectNumber, poolI
 	}
 
 	var provider struct {
-		AttributeCondition string `json:"attributeCondition"`
-		State              string `json:"state"`
-		Disabled           bool   `json:"disabled"`
+		AttributeCondition string            `json:"attributeCondition"`
+		AttributeMapping   map[string]string `json:"attributeMapping"`
+		State              string            `json:"state"`
+		Disabled           bool              `json:"disabled"`
 		OIDC               struct {
 			IssuerURI        string   `json:"issuerUri"`
 			AllowedAudiences []string `json:"allowedAudiences"`
@@ -429,25 +466,38 @@ func (c *LiveGCFClient) GetWIFProvider(ctx context.Context, projectNumber, poolI
 		AttributeCondition: provider.AttributeCondition,
 		AllowedAudiences:   provider.OIDC.AllowedAudiences,
 		IssuerURI:          provider.OIDC.IssuerURI,
+		AttributeMapping:   provider.AttributeMapping,
 		State:              provider.State,
 		Disabled:           provider.Disabled,
 	}, nil
 }
 
 // UpdateWIFProvider patches an existing WIF OIDC provider's attribute condition
-// and allowed audiences.
+// and allowed audiences. When cfg.AttributeMapping is set it also patches the
+// attribute mapping and (if cfg.IssuerURI is non-empty) the issuer URI.
 func (c *LiveGCFClient) UpdateWIFProvider(ctx context.Context, projectNumber, poolID, providerID string, cfg OIDCProviderConfig) error {
-	patchURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s?updateMask=attributeCondition,oidc.allowedAudiences",
-		url.PathEscape(projectNumber), url.PathEscape(poolID), url.PathEscape(providerID))
-
+	updateMask := "attributeCondition,oidc.allowedAudiences"
 	payloadObj := map[string]interface{}{
 		"attributeCondition": cfg.AttributeCondition,
 	}
+	oidcConfig := map[string]interface{}{}
 	if len(cfg.AllowedAudiences) > 0 {
-		payloadObj["oidc"] = map[string]interface{}{
-			"allowedAudiences": cfg.AllowedAudiences,
+		oidcConfig["allowedAudiences"] = cfg.AllowedAudiences
+	}
+	if cfg.AttributeMapping != nil {
+		updateMask += ",attributeMapping"
+		payloadObj["attributeMapping"] = cfg.AttributeMapping
+		if cfg.IssuerURI != "" {
+			updateMask += ",oidc.issuerUri"
+			oidcConfig["issuerUri"] = cfg.IssuerURI
 		}
 	}
+	if len(oidcConfig) > 0 {
+		payloadObj["oidc"] = oidcConfig
+	}
+
+	patchURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s?updateMask=%s",
+		url.PathEscape(projectNumber), url.PathEscape(poolID), url.PathEscape(providerID), updateMask)
 	payloadBytes, err := json.Marshal(payloadObj)
 	if err != nil {
 		return fmt.Errorf("marshaling WIF provider update: %w", err)

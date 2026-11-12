@@ -30,7 +30,10 @@ fullsend
 │       ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
 │       └── --audience <string>              #   OIDC audience (default: fullsend-mint)
 ├── inference                                # Inference credentials (GCP Vertex, OpenAI)
-│   ├── provision    <org|owner/repo>        # Create WIF pool/provider for Agent Platform
+│   ├── provision    <org|owner/repo|group/project> # Create WIF pool/provider for Agent Platform
+│   │   ├── --forge <github|gitlab>          #   Forge whose CI identities the provider trusts (default: github)
+│   │   ├── --gitlab-project-id <id>         #   Numeric GitLab project ID (required with --forge gitlab)
+│   │   └── --gitlab-url <url>               #   GitLab instance URL used as OIDC issuer (--forge gitlab only)
 │   ├── deprovision  <org|owner/repo>        # Remove WIF access for org or repo
 │   ├── status       <org|owner/repo>        # Check WIF health, print config
 │   ├── gateway                              # Inference gateway route (ADR 0137)

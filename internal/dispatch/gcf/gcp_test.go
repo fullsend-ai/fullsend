@@ -161,6 +161,36 @@ func TestLiveGCFClient_CreateWIFProvider(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("conflict with provider bound to a different project is not overwritten", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			switch callCount {
+			case 1:
+				assert.Equal(t, http.MethodPost, r.Method)
+				w.WriteHeader(http.StatusConflict)
+			case 2:
+				// Re-read of the provider created concurrently by another run.
+				assert.Equal(t, http.MethodGet, r.Method)
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"state":"ACTIVE","attributeCondition":"assertion.project_id == '2' && assertion.project_path == 'other/app'"}`)
+			default:
+				t.Errorf("unexpected %s request %s after refusing to overwrite", r.Method, r.URL.Path)
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateWIFProvider(context.Background(), "123", "pool", "gl-acme-app", OIDCProviderConfig{
+			AttributeCondition:      "assertion.project_id == '1' && assertion.project_path == 'acme/app'",
+			AllowedAudiences:        []string{"fullsend"},
+			RequiredConditionClause: "assertion.project_path == 'acme/app'",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "refusing to overwrite")
+		assert.Equal(t, 2, callCount)
+	})
+
 	t.Run("already exists updates condition and audiences", func(t *testing.T) {
 		callCount := 0
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -395,6 +425,102 @@ func TestLiveGCFClient_GetWIFProvider(t *testing.T) {
 		assert.Equal(t, "DELETED", info.State)
 		assert.True(t, info.Disabled)
 		assert.Equal(t, "https://token.actions.githubusercontent.com", info.IssuerURI)
+	})
+
+	t.Run("decodes attribute mapping", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"attributeCondition":"x","attributeMapping":{"google.subject":"assertion.project_id"}}`)
+		}))
+		defer srv.Close()
+
+		info, err := newTestClient(srv).GetWIFProvider(context.Background(), "123", "pool", "prov")
+		require.NoError(t, err)
+		require.NotNil(t, info)
+		assert.Equal(t, map[string]string{"google.subject": "assertion.project_id"}, info.AttributeMapping)
+	})
+}
+
+func TestLiveGCFClient_WIFProviderAttributeMapping(t *testing.T) {
+	gitlabMapping := map[string]string{"google.subject": "assertion.project_id", "attribute.project_path": "assertion.project_path"}
+
+	t.Run("create uses GitHub mapping by default", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				AttributeMapping map[string]string `json:"attributeMapping"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, defaultGitHubAttributeMapping(), body.AttributeMapping)
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"name":"operations/prov-op","done":true}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateWIFProvider(context.Background(), "123", "pool", "gh-oidc", OIDCProviderConfig{
+			IssuerURI: "https://token.actions.githubusercontent.com", AttributeCondition: "c",
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("create uses custom mapping", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var body struct {
+				AttributeMapping map[string]string `json:"attributeMapping"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, gitlabMapping, body.AttributeMapping)
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"name":"operations/prov-op","done":true}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateWIFProvider(context.Background(), "123", "pool", "gl-acme-app", OIDCProviderConfig{
+			IssuerURI: "https://gitlab.com", AttributeCondition: "c", AllowedAudiences: []string{"fullsend"}, AttributeMapping: gitlabMapping,
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("update patches mapping and issuer when mapping set", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "attributeCondition,oidc.allowedAudiences,attributeMapping,oidc.issuerUri", r.URL.Query().Get("updateMask"))
+			var body struct {
+				AttributeMapping map[string]string `json:"attributeMapping"`
+				OIDC             struct {
+					IssuerURI        string   `json:"issuerUri"`
+					AllowedAudiences []string `json:"allowedAudiences"`
+				} `json:"oidc"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, gitlabMapping, body.AttributeMapping)
+			assert.Equal(t, "https://gitlab.com", body.OIDC.IssuerURI)
+			assert.Equal(t, []string{"fullsend"}, body.OIDC.AllowedAudiences)
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"name":"operations/update-op","done":true}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).UpdateWIFProvider(context.Background(), "123", "pool", "gl-acme-app", OIDCProviderConfig{
+			IssuerURI: "https://gitlab.com", AttributeCondition: "c", AllowedAudiences: []string{"fullsend"}, AttributeMapping: gitlabMapping,
+		})
+		require.NoError(t, err)
+	})
+
+	t.Run("update leaves mapping and issuer alone by default", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "attributeCondition,oidc.allowedAudiences", r.URL.Query().Get("updateMask"))
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.NotContains(t, body, "attributeMapping")
+			assert.NotContains(t, body, "oidc")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"name":"operations/update-op","done":true}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).UpdateWIFProvider(context.Background(), "123", "pool", "gh-oidc", OIDCProviderConfig{
+			IssuerURI: "https://token.actions.githubusercontent.com", AttributeCondition: "c",
+		})
+		require.NoError(t, err)
 	})
 }
 

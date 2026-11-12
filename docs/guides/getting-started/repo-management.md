@@ -37,8 +37,9 @@ agent's provider is selected when it runs; see
 
 **GitLab:**
 
-GitLab does not use `gh`, `fullsend inference provision`, or mint
-enrollment. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
+GitLab does not use `gh` or mint enrollment.
+`fullsend inference provision --forge gitlab` is optional; it creates a
+per-project Vertex WIF provider. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
 for the GitLab token and runner requirements. A GCP inference project is
 needed only for Vertex agents.
 
