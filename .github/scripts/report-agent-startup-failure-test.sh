@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Tests the startup-failure reporter with REST-shaped bot identities.
+# report-agent-startup-failure-test.sh — Tests for report-agent-startup-failure.sh
+#
+# Run from the repo root:
+#   bash .github/scripts/report-agent-startup-failure-test.sh
 
 set -euo pipefail
+FAILURES=0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT="${SCRIPT_DIR}/report-agent-startup-failure.sh"
@@ -36,8 +40,12 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
 run_case() {
-  local name="$1" viewer="$2" comment_login="$3" trusted_bots="${4:-}" role="${5:-review}" body_prefix="${6:-marker}" expected="${7:-patch}"
-  local marker='<!-- fullsend:agent-startup-failure:review:123 -->'
+  local name="$1" viewer="$2" comment_login="$3" trusted_bots="${4:-}" role="${5:-review}" body_prefix="${6:-marker}" expected="${7:-patch}" graphql_fail="${8:-false}" stable_marker="${9:-false}" agent="${10:-review}"
+  local marker="<!-- fullsend:agent-startup-failure:${agent}:123"
+  if [[ "${stable_marker}" == "true" ]]; then
+    marker+=":stable"
+  fi
+  marker+=' -->'
   local body="${marker}\n\nold comment\n\n[View the workflow run](https://github.com/org/repo/actions/runs/123)"
   if [[ "${body_prefix}" == "embedded" ]]; then
     body="old comment\n\n${marker}"
@@ -47,6 +55,7 @@ run_case() {
     body="${marker}\n\nold comment\n\n[View the workflow run](https://github.com/org/repo/actions/runs/1234)"
   fi
   export MOCK_VIEWER_LOGIN="${viewer}"
+  export MOCK_GRAPHQL_FAIL="${graphql_fail}"
   export MOCK_COMMENTS_JSON="[[{\"id\":42,\"user\":{\"type\":\"Bot\",\"login\":\"${comment_login}\"},\"body\":\"${body}\"}]]"
   : > "${TMPDIR}/calls"
 
@@ -55,8 +64,9 @@ run_case() {
     RUNNER_TEMP="${TMPDIR}" \
     FULLSEND_FAILURE_REPOSITORY=org/repo \
     FULLSEND_FAILURE_NUMBER=123 \
-    FULLSEND_FAILURE_AGENT=review \
+    FULLSEND_FAILURE_AGENT="${agent}" \
     FULLSEND_FAILURE_ROLE="${role}" \
+    FULLSEND_FAILURE_STABLE_MARKER="${stable_marker}" \
     FULLSEND_FAILURE_TRUSTED_BOTS="${trusted_bots}" \
     FULLSEND_FAILURE_RUN_URL=https://github.com/org/repo/actions/runs/123 \
     FULLSEND_FAILURE_CATEGORY="workflow setup" \
@@ -68,7 +78,7 @@ run_case() {
     printf 'PASS: %s\n' "${name}"
   else
     printf 'FAIL: %s — expected %s, got %s\n' "${name}" "${expected:-no call}" "${actual:-no call}" >&2
-    return 1
+    FAILURES=$((FAILURES + 1))
   fi
 }
 
@@ -82,24 +92,11 @@ run_case "lookalike app is not trusted" "github-actions" "acme-reviewer[bot]" "a
 run_case "marker must start the comment" "github-actions" "fullsend-ai-review[bot]" "" "review" "embedded" "post"
 run_case "different run posts a new historical comment" "github-actions" "fullsend-ai-review[bot]" "" "review" "old-run" "post"
 run_case "prefix-matching run posts a new historical comment" "github-actions" "fullsend-ai-review[bot]" "" "review" "prefix-run" "post"
+run_case "GraphQL viewer failure does not prevent reporting" "github-actions" "fullsend-ai-review[bot]" "" "review" "marker" "patch" "true"
+run_case "stable harness marker updates a prior run" "github-actions" "fullsend-ai-harness[bot]" "" "harness" "old-run" "patch" "false" "true" "harness"
 
-export MOCK_VIEWER_LOGIN="github-actions"
-export MOCK_GRAPHQL_FAIL=true
-export MOCK_COMMENTS_JSON='[[{"id":42,"user":{"type":"Bot","login":"fullsend-ai-review[bot]"},"body":"<!-- fullsend:agent-startup-failure:review:123 -->\n\nold comment\n\n[View the workflow run](https://github.com/org/repo/actions/runs/123)"}]]'
-: > "${TMPDIR}/calls"
-PATH="${MOCK_BIN}:${PATH}" \
-  GH_TOKEN=test \
-  RUNNER_TEMP="${TMPDIR}" \
-  FULLSEND_FAILURE_REPOSITORY=org/repo \
-  FULLSEND_FAILURE_NUMBER=123 \
-  FULLSEND_FAILURE_AGENT=review \
-  FULLSEND_FAILURE_ROLE=review \
-  FULLSEND_FAILURE_RUN_URL=https://github.com/org/repo/actions/runs/123 \
-  FULLSEND_FAILURE_CATEGORY="workflow setup" \
-  bash "${SCRIPT}" >/dev/null
-if [[ "$(cat "${TMPDIR}/calls")" == "patch" ]]; then
-  printf 'PASS: GraphQL viewer failure does not prevent reporting\n'
-else
-  printf 'FAIL: GraphQL viewer failure did not report\n' >&2
+if [[ "${FAILURES}" -gt 0 ]]; then
+  printf '%d test(s) FAILED\n' "${FAILURES}"
   exit 1
 fi
+printf 'All tests passed\n'

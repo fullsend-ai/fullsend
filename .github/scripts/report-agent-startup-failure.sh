@@ -14,6 +14,8 @@ FULLSEND_FAILURE_AGENT="${FULLSEND_FAILURE_AGENT:-}"
 FULLSEND_FAILURE_ROLE="${FULLSEND_FAILURE_ROLE:-${FULLSEND_FAILURE_AGENT}}"
 FULLSEND_FAILURE_RUN_URL="${FULLSEND_FAILURE_RUN_URL:-}"
 FULLSEND_FAILURE_CATEGORY="${FULLSEND_FAILURE_CATEGORY:-}"
+FULLSEND_FAILURE_SUMMARY="${FULLSEND_FAILURE_SUMMARY:-}"
+FULLSEND_FAILURE_STABLE_MARKER="${FULLSEND_FAILURE_STABLE_MARKER:-false}"
 
 if [[ ! "${FULLSEND_FAILURE_REPOSITORY}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "::warning::Skipping startup failure comment: invalid repository" >&2
@@ -38,16 +40,28 @@ case "${FULLSEND_FAILURE_CATEGORY}" in
     exit 1
     ;;
 esac
+if [[ "${FULLSEND_FAILURE_STABLE_MARKER}" != "true" && "${FULLSEND_FAILURE_STABLE_MARKER}" != "false" ]]; then
+  echo "::warning::Skipping startup failure comment: invalid stable-marker flag" >&2
+  exit 1
+fi
 if [[ ! "${FULLSEND_FAILURE_RUN_URL}" =~ ^https://[A-Za-z0-9.-]+/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/actions/runs/[1-9][0-9]*$ ]]; then
   echo "::warning::Skipping startup failure comment: invalid workflow URL" >&2
   exit 1
 fi
 
-MARKER="<!-- fullsend:agent-startup-failure:${FULLSEND_FAILURE_AGENT}:${FULLSEND_FAILURE_NUMBER} -->"
+MARKER="<!-- fullsend:agent-startup-failure:${FULLSEND_FAILURE_AGENT}:${FULLSEND_FAILURE_NUMBER}"
+if [[ "${FULLSEND_FAILURE_STABLE_MARKER}" == "true" ]]; then
+  MARKER+=":stable"
+fi
+MARKER+=" -->"
 BODY_FILE="${RUNNER_TEMP:-/tmp}/fullsend-agent-startup-failure.md"
 {
   printf '%s\n\n' "${MARKER}"
-  printf '⚠️ **Fullsend %s agent did not run**\n\n' "${FULLSEND_FAILURE_AGENT}"
+  if [[ -n "${FULLSEND_FAILURE_SUMMARY}" ]]; then
+    printf '⚠️ **%s**\n\n' "${FULLSEND_FAILURE_SUMMARY}"
+  else
+    printf '⚠️ **Fullsend %s agent did not run**\n\n' "${FULLSEND_FAILURE_AGENT}"
+  fi
   printf 'The agent could not start because of a **%s** failure.\n\n' "${FULLSEND_FAILURE_CATEGORY}"
   printf '[View the workflow run](%s)\n\n' "${FULLSEND_FAILURE_RUN_URL}"
 } > "${BODY_FILE}"
@@ -74,11 +88,13 @@ TRUSTED_BOTS_JSON="$(jq -Rn \
 COMMENT_ID="$(printf '%s' "${COMMENTS_JSON}" | jq -r \
   --arg marker "${MARKER}" \
   --arg run_link "[View the workflow run](${FULLSEND_FAILURE_RUN_URL})" \
+  --arg stable "${FULLSEND_FAILURE_STABLE_MARKER}" \
   --argjson trusted "${TRUSTED_BOTS_JSON}" \
   'add | map(select((.user.type == "Bot")
     and ((.user.login | sub("\\[bot\\]$"; "")) as $login
       | (($trusted | index($login)) != null))
-    and (.body | startswith($marker) and contains($run_link)))) | last | .id // empty')"
+    and (.body | startswith($marker)
+      and ($stable == "true" or contains($run_link))))) | last | .id // empty')"
 
 if [[ -n "${COMMENT_ID}" ]]; then
   gh api --method PATCH "repos/${FULLSEND_FAILURE_REPOSITORY}/issues/comments/${COMMENT_ID}" \

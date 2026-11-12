@@ -97,6 +97,7 @@ run_test() {
     SOURCE_REPO="org/repo" \
     GH_TOKEN="fake" \
     FULLSEND_APP_SET="${app_set}" \
+    GITHUB_OUTPUT="${TMPDIR}/eligibility-output" \
     bash "${SCRIPT}" 2>&1) || actual_exit=$?
 
   if [[ "${actual_exit}" -ne "${expected_exit}" ]]; then
@@ -107,6 +108,12 @@ run_test() {
 
   if [[ -n "${expected_annotation}" ]] && [[ "${output}" != *"${expected_annotation}"* ]]; then
     echo "FAIL: ${name} — expected annotation '${expected_annotation}' not found in output"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${expected_exit}" -eq 1 ]] && ! grep -qx "policy_skip=true" "${TMPDIR}/eligibility-output"; then
+    echo "FAIL: ${name} — expected policy_skip=true output"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -187,6 +194,7 @@ MOCKEOF
     PR_NUM="999" \
     SOURCE_REPO="org/repo" \
     GH_TOKEN="fake" \
+    GITHUB_OUTPUT="${TMPDIR}/eligibility-output" \
     bash "${SCRIPT}" 2>&1) || actual_exit=$?
 
   if [[ "${actual_exit}" -ne 1 ]]; then
@@ -197,6 +205,12 @@ MOCKEOF
 
   if [[ "${output}" != *"::error::Failed to fetch PR info"* ]]; then
     echo "FAIL: gh pr view failure — expected ::error:: annotation not found in output"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qx "policy_skip=false" "${TMPDIR}/eligibility-output"; then
+    echo "FAIL: gh pr view failure — expected policy_skip=false output"
     FAILURES=$((FAILURES + 1))
     return
   fi

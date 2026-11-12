@@ -94,9 +94,10 @@ chmod +x "${MOCK_BIN}/gh"
 #   $4 — expected review body (exact; ignored when expected exit is non-zero)
 #   $5 — expected output substring (optional)
 #   $6 — FULLSEND_APP_SET override (optional; default custom-prefix)
+#   $7 — expected policy_skip output (optional)
 run_test() {
   local name="$1" expected_exit="$2" trigger="$3" expected_body="$4"
-  local expected_output="${5:-}" app_set="${6-custom-prefix}"
+  local expected_output="${5:-}" app_set="${6-custom-prefix}" expected_policy="${7:-false}"
   local workspace="${TMPDIR}/workspace"
   rm -rf "${workspace}"
   mkdir -p "${workspace}"
@@ -124,6 +125,12 @@ run_test() {
   if [[ -n "${expected_output}" ]] && [[ "${output}" != *"${expected_output}"* ]]; then
     echo "FAIL: ${name} — expected output '${expected_output}' not found"
     echo "${output}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qx "policy_skip=${expected_policy}" "${TMPDIR}/github-output"; then
+    echo "FAIL: ${name} — expected policy_skip=${expected_policy} output"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -213,7 +220,7 @@ reset_pages
 filler 30 1 | write_page 1
 filler 15 31 | write_page 2
 run_test "no match fails bot-triggered run" 1 "${ORG_BOT}" "" \
-  "Bot-triggered run but review body is empty"
+  "Bot-triggered run but review body is empty" "custom-prefix" "true"
 run_test "no match proceeds for human trigger" 0 "human-user" "" \
   "Pre-fetched review body: 1 bytes"
 
@@ -226,7 +233,7 @@ reset_pages
 review 1 "${ORG_BOT}" "CHANGES_REQUESTED" "unreachable" | write_page 1
 touch "${TMPDIR}/fail"
 run_test "API failure warns and fails bot-triggered run" 1 "${ORG_BOT}" "" \
-  "::warning::Failed to fetch reviews for PR #123: HTTP 502: Bad Gateway"
+  "::warning::Failed to fetch reviews for PR #123: HTTP 502: Bad Gateway" "custom-prefix" "false"
 run_test "API failure warns and proceeds for human trigger" 0 "human-user" "" \
   "::warning::Failed to fetch reviews for PR #123"
 rm -f "${TMPDIR}/fail"
