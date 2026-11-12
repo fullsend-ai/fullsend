@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -279,6 +279,43 @@ test("tool_result: v2 canary block with updatedToolOutput keeps the redacted tex
   const { onToolResult } = createHooks(manifest, { spawn, ...quiet });
   const patch = onToolResult({ toolName: "ls", input: {}, content: "x CANARY y" });
   assert.deepEqual(patch, { content: [{ type: "text", text: "x [CANARY_REDACTED] y" }], isError: true });
+});
+
+test("MCP resources: Claude hook groups and the real allowlist see translated names", (t) => {
+  const python = realPython();
+  if (python === null) {
+    t.skip("python3 not available");
+    return;
+  }
+  const names = {
+    list_mcp_resources: "ListMcpResourcesTool",
+    list_mcp_resource_templates: "ListMcpResourcesTool",
+    read_mcp_resource: "ReadMcpResourceTool",
+  };
+  const dir = mkdtempSync(join(tmpdir(), "fullsend-resource-hooks-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "matched.py"), 'import json,sys\nprint(json.dumps({"decision":"block","reason":"matched: "+json.load(sys.stdin)["tool_name"]}))\nsys.exit(1)\n');
+  const hookDir = fileURLToPath(new URL("../../security/hooks/", import.meta.url));
+  for (const [piName, claudeName] of Object.entries(names)) {
+    // The Go integration test supplies the production reverse map.
+    const toolNames = process.env.FULLSEND_TEST_HOOK_TOOL_NAMES ? JSON.parse(process.env.FULLSEND_TEST_HOOK_TOOL_NAMES) : names;
+    const base = { ...manifest, hooks: { ...manifest.hooks, toolNames } };
+    const grouped = createHooks({ ...base, hooks: { ...base.hooks, dir, groups: [
+      { phase: "PreToolUse", tools: [claudeName], scripts: ["matched.py"] },
+    ] } }, { env: { ...process.env, [HOOK_PYTHON_ENV]: python }, ...quiet });
+    assert.deepEqual(grouped.onToolCall({ toolName: piName, input: {} }), { block: true, reason: `matched: ${claudeName}` });
+    for (const allow of [claudeName, "Read"]) {
+      const { onToolCall } = createHooks({ ...base, hooks: { ...base.hooks, dir: hookDir, groups: [
+        { phase: "PreToolUse", tools: ["*"], scripts: ["tool_allowlist_pretool.py"] },
+      ] } }, { env: { ...process.env, [HOOK_PYTHON_ENV]: python, FULLSEND_TOOL_ALLOWLIST: allow }, ...quiet });
+      const verdict = onToolCall({ toolName: piName, input: {} });
+      if (allow === claudeName) assert.equal(verdict, undefined, piName);
+      else {
+        assert.equal(verdict.block, true, piName);
+        assert.match(verdict.reason, new RegExp(claudeName));
+      }
+    }
+  }
 });
 
 // realPython returns the absolute path of the python3 on PATH, or null.

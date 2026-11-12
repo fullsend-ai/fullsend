@@ -12,6 +12,17 @@ import (
 
 // Real frontmatter must reach real pi; no hand-written tool manifests.
 func TestPiBootstrap_DirectMCPRealPi(t *testing.T) {
+	for _, tc := range []struct{ name, parent, persona string }{
+		{"pattern", "mcp__docs__*", "mcp__docs__search"},
+		{"bare-parent", "mcp__docs", "mcp__docs__search"},
+		{"bare-persona", "mcp__docs", "mcp__docs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) { testPiDirectMCP(t, tc.parent, tc.persona) })
+	}
+}
+
+func testPiDirectMCP(t *testing.T, selector, persona string) {
+	t.Helper()
 	bin := os.Getenv("FULLSEND_TEST_PI_BIN")
 	if bin == "" {
 		t.Skip("FULLSEND_TEST_PI_BIN not set")
@@ -25,10 +36,10 @@ func TestPiBootstrap_DirectMCPRealPi(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(extension, "index.js"), source, 0600))
 	skill := t.TempDir()
-	writePersonaFile(t, skill, "docs", "---\nname: docs\ntools: [mcp__docs__search]\n---\nSearch docs.\n")
+	writePersonaFile(t, skill, "docs", "---\nname: docs\ntools: ["+persona+"]\n---\nSearch docs.\n")
 	require.NoError(t, (PiRuntime{}).Bootstrap(bootstrapInput{
 		sandboxName: "sb", agentName: "code", skillDirs: []string{skill}, plugins: piPlugins(extension),
-		agentPath: writeAgentFile(t, "---\nname: code\ntools: [Agent, 'mcp__docs__*']\n---\nSearch docs."),
+		agentPath: writeAgentFile(t, "---\nname: code\ntools: [Agent, '"+selector+"']\n---\nSearch docs."),
 	}))
 	var m piManifest
 	require.NoError(t, json.Unmarshal(storedUpload(t, store, PiRuntime{}.ConfigDir()+"/fullsend-manifest.json"), &m))

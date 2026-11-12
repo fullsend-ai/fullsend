@@ -1054,6 +1054,13 @@ with `-e`, after the hook adapter — when the agent definition has no `tools:` 
 `Agent`/`Task`; otherwise the older "no sub-agent tool" runtime note is appended instead.
 
 Direct-exposure MCP tools can be selected through agent and persona frontmatter.
+The mapper expands bare `mcp__<server>` selectors to `mcp__<server>__*`,
+preserving exact tool names and existing patterns. Selectors use pi's registered
+namespace (server-name hyphens become underscores). The reverse hook map
+translates `list_mcp_resources` and `list_mcp_resource_templates` to
+`ListMcpResourcesTool`, and `read_mcp_resource` to `ReadMcpResourceTool`, so
+Claude-named hook groups and the tool allowlist see the same resource vocabulary
+as under Claude Code.
 Nested calls to `codemode`/`deferred` tools require a separately reachable
 executor. `--no-extensions` disables pi's built-in MCP, codemode, and search
 extensions; `codemode` and `tool_search` are not accepted by the explicit tool

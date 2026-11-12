@@ -8,7 +8,8 @@ import { childArgs, childTools } from "../pi_extension/fullsend-agent.js";
 const [encoded, command, extension] = process.argv.slice(2);
 const agent = JSON.parse(encoded);
 assert.deepEqual(agent.tools, ["mcp__docs__*", "read"]);
-assert.deepEqual(agent.personas.docs.tools, ["mcp__docs__search"]);
+const serverWidePersona = agent.personas.docs.tools.includes("mcp__docs__*");
+assert.deepEqual(agent.personas.docs.tools, [serverWidePersona ? "mcp__docs__*" : "mcp__docs__search"]);
 assert.equal(agent.declaredExtensions.length, 1);
 assert.equal(agent.declaredExtensions[0].name, "docs-plugin");
 // The sandbox uploader's path is mapped back to its local fixture for this
@@ -33,10 +34,11 @@ try {
   assert.match(parent.stderr, /EXECUTED:mcp__docs__write/);
   const {active, registered} = JSON.parse(readFileSync(env.TEST_SNAPSHOT, "utf8"));
   const tools = childTools(agent, "docs", active, registered);
-  assert.deepEqual(tools, ["mcp__docs__search"]);
+  assert.deepEqual(tools, serverWidePersona ? ["mcp__docs__search", "mcp__docs__write"] : ["mcp__docs__search"]);
   const child = run(childArgs(agent, {seq: 1, modelSpec: "faux/faux-1", tools}));
   assert.match(child.stderr, /EXECUTED:mcp__docs__search/);
-  assert.doesNotMatch(child.stderr, /EXECUTED:mcp__docs__write/);
+  if (serverWidePersona) assert.match(child.stderr, /EXECUTED:mcp__docs__write/);
+  else assert.doesNotMatch(child.stderr, /EXECUTED:mcp__docs__write/);
 } finally {
   rmSync(home, {recursive: true, force: true});
 }

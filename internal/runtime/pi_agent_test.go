@@ -1,6 +1,9 @@
 package runtime
 
 import (
+	"encoding/json"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/security"
@@ -161,6 +164,10 @@ func TestPiToolsFor(t *testing.T) {
 	tools, unsupported = piToolsFor([]string{"Bash", "mcp__docs__search", "mcp__docs__*"})
 	assert.Equal(t, []string{"bash", "mcp__docs__search", "mcp__docs__*"}, tools, "MCP tool names pass through verbatim")
 	assert.Nil(t, unsupported)
+
+	tools, unsupported = piToolsFor([]string{"mcp__docs", "mcp__docs__*", "mcp__docs__search", "mcp__other*", "mcp__", "mcp__docs_api"})
+	assert.Equal(t, []string{"mcp__docs__*", "mcp__docs__search", "mcp__other*", "mcp__", "mcp__docs_api__*"}, tools, "bare servers expand and deduplicate without rewriting exact names or patterns")
+	assert.Nil(t, unsupported)
 }
 
 func TestPiMCPResourceTools(t *testing.T) {
@@ -213,8 +220,25 @@ func TestPiToolNameMapsAreInverse(t *testing.T) {
 		assert.Equal(t, claude, claudeToolForPi[pi], "pi tool %q must map back to %q", pi, claude)
 	}
 	for pi, claude := range claudeToolForPi {
-		assert.Equal(t, pi, piToolForClaude[claude], "Claude tool %q must map back to %q", claude, pi)
+		mapped, unsupported := piToolsFor([]string{claude})
+		assert.Empty(t, unsupported)
+		assert.Contains(t, mapped, pi, "Claude tool %q must expand to pi tool %q", claude, pi)
 	}
+}
+
+func TestPiMCPResourceHookEnforcement(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not installed")
+	}
+	names, err := json.Marshal(claudeToolForPi)
+	require.NoError(t, err)
+	cmd := exec.Command("node", "--test", "--test-name-pattern", "MCP resources:", "pi_extension/fullsend-hooks.test.mjs")
+	cmd.Env = append(os.Environ(), "FULLSEND_TEST_HOOK_TOOL_NAMES="+string(names))
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
 }
 
 // The hook scripts only recognise canonical (or legacy) Claude names, so the

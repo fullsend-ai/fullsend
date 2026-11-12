@@ -389,11 +389,18 @@ provides gets `--no-builtin-tools`, and its extensions still load: `-e` is indep
 An agent without `tools:` gets pi's default set plus whatever its extensions register.
 
 MCP tool names such as `mcp__docs__search` and patterns such as
-`mcp__docs__*` pass through the pi tool mapping. In parent and persona tool
-lists, Claude's `ListMcpResourcesTool` maps to `list_mcp_resources` and
-`list_mcp_resource_templates`; `ReadMcpResourceTool` maps to
+`mcp__docs__*` pass through the pi tool mapping. A bare server selector
+`mcp__docs` expands to `mcp__docs__*` in both parent and persona lists; exact
+tool names and existing patterns are unchanged. Use pi's registered server
+namespace: pi replaces hyphens in MCP server names with underscores (for
+example, server `docs-api` registers tools under `mcp__docs_api__`).
+In parent and persona tool lists, Claude's `ListMcpResourcesTool` maps to
+`list_mcp_resources` and `list_mcp_resource_templates`; `ReadMcpResourceTool` maps to
 `read_mcp_resource`. Use the Claude names for definitions shared with Claude
-Code. Pi-native resource names and scoped patterns such as `list_mcp_*` or
+Code. The hook adapter translates both list operations back to
+`ListMcpResourcesTool` and reads back to `ReadMcpResourceTool`, so Claude-named
+hook matchers and `FULLSEND_TOOL_ALLOWLIST` entries apply to resource calls.
+Pi-native resource names and scoped patterns such as `list_mcp_*` or
 `read_mcp_*` also pass through, but those spellings are pi-only.
 Sub-agents load the same
 declared extensions, with their directory hashes checked before each launch.

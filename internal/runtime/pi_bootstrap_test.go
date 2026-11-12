@@ -150,6 +150,9 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 	require.NotNil(t, m.Hooks)
 	assert.Equal(t, cfg+"/hooks", m.Hooks.Dir)
 	assert.Equal(t, "Bash", m.Hooks.ToolNames["bash"])
+	assert.Equal(t, "ListMcpResourcesTool", m.Hooks.ToolNames["list_mcp_resources"])
+	assert.Equal(t, "ListMcpResourcesTool", m.Hooks.ToolNames["list_mcp_resource_templates"])
+	assert.Equal(t, "ReadMcpResourceTool", m.Hooks.ToolNames["read_mcp_resource"])
 	var phases []string
 	for _, g := range m.Hooks.Groups {
 		phases = append(phases, g.Phase)

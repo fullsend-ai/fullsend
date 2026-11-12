@@ -198,17 +198,21 @@ var piToolForClaude = map[string]string{
 	"LS":        "ls",
 }
 
-// claudeToolForPi is the inverse map, handed to the hook adapter so the hook
-// scripts keep seeing Claude-vocabulary tool names (security.HookGroup.Tools,
+// claudeToolForPi maps pi names (including resource expansions) back to Claude
+// names. The hook adapter uses it so scripts keep seeing Claude-vocabulary
+// tool names (security.HookGroup.Tools,
 // FULLSEND_TOOL_ALLOWLIST) regardless of the runtime (#608).
 var claudeToolForPi = map[string]string{
-	"bash":  "Bash",
-	"read":  "Read",
-	"write": "Write",
-	"edit":  "Edit",
-	"grep":  "Grep",
-	"find":  "Glob",
-	"ls":    "LS",
+	"bash":                        "Bash",
+	"read":                        "Read",
+	"write":                       "Write",
+	"edit":                        "Edit",
+	"grep":                        "Grep",
+	"find":                        "Glob",
+	"ls":                          "LS",
+	"list_mcp_resources":          "ListMcpResourcesTool",
+	"list_mcp_resource_templates": "ListMcpResourcesTool",
+	"read_mcp_resource":           "ReadMcpResourceTool",
 }
 
 // Sub-agent tool. Claude Code's Agent tool (legacy name Task) has no pi
@@ -286,10 +290,14 @@ func piToolsFor(claudeTools []string) (tools, unsupported []string) {
 			continue
 		}
 		if strings.HasPrefix(ct, "mcp__") || piMCPResourcePattern(ct) {
-			// MCP tool names are canonical: hooks and the allowlist match
-			// them verbatim, and pi's --tools accepts them as patterns. A
-			// declared MCP tool must be named here or pi never declares it
-			// to the model (--tools is a strict selection).
+			// Claude accepts a bare server selector; pi requires a wildcard
+			// for its tools. Preserve exact tool names and existing patterns.
+			if strings.HasPrefix(ct, "mcp__") {
+				server := strings.TrimPrefix(ct, "mcp__")
+				if server != "" && !strings.Contains(server, "__") && !strings.Contains(server, "*") {
+					ct += "__*"
+				}
+			}
 			if !seen[ct] {
 				seen[ct] = true
 				tools = append(tools, ct)
