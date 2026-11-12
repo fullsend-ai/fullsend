@@ -32,6 +32,13 @@ func TestTaskProgressCacheAdmissionRetainsGuardsAndDedup(t *testing.T) {
 	if len(r.progress.taskProgressSeen) > limits.maxRows()+limits.maxTaskEntries() || len(r.progress.taskProgressRuns) > limits.maxTaskEntries() {
 		t.Fatal("unbounded cache/control state")
 	}
+	// The bound above has slack for one row per task, so check the row limit
+	// directly: the rows ran out before the last task's agents arrived.
+	for _, row := range r.progress.taskProgressSeen {
+		if row.event.TaskID == last && row.event.AgentIndex > 0 {
+			t.Fatal("row limit admitted an agent of the last task")
+		}
+	}
 	before := out.String()
 	for _, row := range r.progress.taskProgressSeen {
 		if row.event.AgentIndex > 0 {

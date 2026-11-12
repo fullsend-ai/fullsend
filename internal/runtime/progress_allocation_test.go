@@ -42,9 +42,10 @@ func TestProgressCacheOwnsNormalizedStrings(t *testing.T) {
 	runtime.KeepAlive(r)
 	runtime.KeepAlive(padded)
 	// The rows retain 3*rows one-byte values. Allow GC/runtime noise but
-	// reject half of the 3*rows padded backing allocations being retained.
-	leaked := uint64(3 * rows * len(padded))
-	if after.HeapAlloc > before.HeapAlloc+leaked/2 {
+	// reject one of the three cached fields retaining its padded backing
+	// allocations: the limit is half of what a single field would pin.
+	oneField := uint64(rows * len(padded))
+	if after.HeapAlloc > before.HeapAlloc+oneField/2 {
 		t.Fatalf("tiny cached fields retained %d bytes", after.HeapAlloc-before.HeapAlloc)
 	}
 }
