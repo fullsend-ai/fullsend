@@ -150,8 +150,10 @@ func composeRunHarness(ctx context.Context, in runHarnessInput, printer *ui.Prin
 	case lockState.stale:
 		// The shared lock-update hint (LockUpdateCommand, built once the
 		// harness path is known), so the stale advice carries --forge and
-		// --fullsend-dir exactly like run's other lock advice (#8988).
-		printer.StepWarn("Harness has changed since lock file was generated. Run " + composeOpts.LockUpdateCommand + ".")
+		// --fullsend-dir exactly like run's other lock advice (#8988). The
+		// command ends the sentence: a period right after its last argument
+		// would be copied with it and break the advice as written.
+		printer.StepWarn("Harness has changed since lock file was generated; run: " + composeOpts.LockUpdateCommand)
 	case len(lockState.pins) > 0:
 		noun := "dependency"
 		if len(lockState.pins) > 1 {
