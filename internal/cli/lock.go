@@ -946,6 +946,7 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 		field     string
 		url       string
 		localPath string
+		sha256    string
 	}
 
 	var mutations []mutation
@@ -1038,7 +1039,7 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 		// ResolvedProfile list, not by mutating a harness field. Keep it a
 		// no-op if that switch ever grows a profile case, or move this append
 		// after the rename.
-		mutations = append(mutations, mutation{field: lockDep.Field, url: lockDep.URL, localPath: localPath})
+		mutations = append(mutations, mutation{field: lockDep.Field, url: lockDep.URL, localPath: localPath, sha256: lockDep.SHA256})
 		dep := resolve.Dependency{
 			Field:     lockDep.Field,
 			URL:       lockDep.URL,
@@ -1170,6 +1171,17 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 			}
 		case m.field == "policy":
 			if lockFieldHolds(h.Policy, m.url) {
+				// An overlay that matched only at run time may pin the same
+				// URL to another revision than the lock recorded, and the
+				// lock keys dependencies by URL alone, so forge or overlay
+				// variants of one URL collapse to the first pin recorded
+				// (runLock keeps the first platform's entry); replaying the
+				// locked content would run that other revision's bytes and
+				// report success. Refuse so the run resolves without the
+				// lock, leaving the harness holding the pinned URL.
+				if _, pin, _ := harness.ParseIntegrityHash(h.Policy); pin != "" && pin != m.sha256 {
+					return resolve.ResolveResult{}, fmt.Errorf("policy %s is pinned to another revision than the lock file records (the lock records sha256=%s; an overlay that did not match at lock time, or forge/overlay variants whose pins the lock collapsed by URL, may have selected it); resolving without the lock", h.Policy, m.sha256)
+				}
 				h.Policy = m.localPath
 			}
 		case strings.HasPrefix(m.field, "policy["):
