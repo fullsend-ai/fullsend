@@ -583,8 +583,10 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	}
 	forgeSecrets := UninstallSecretsForForge(cfg.Forge)
 
+	// A failed delete does not stop the remaining names from being
+	// attempted; every failure is reported with the cleanup result.
 	var varsDeleted, secretsDeleted int
-	var varErr, secretErr error
+	var varErrs, secretErrs []error
 	var innerWg sync.WaitGroup
 
 	innerWg.Add(2)
@@ -592,8 +594,8 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		defer innerWg.Done()
 		for _, name := range forgeVars {
 			if delErr := client.DeleteRepoVariable(ctx, owner, repo, name); delErr != nil {
-				varErr = fmt.Errorf("deleting variable %s: %w", name, delErr)
-				return
+				varErrs = append(varErrs, fmt.Errorf("deleting variable %s: %w", name, delErr))
+				continue
 			}
 			varsDeleted++
 		}
@@ -606,16 +608,17 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 					// The webhook credentials are not known to any redactor
 					// at this point, so an error echoing one must not reach
 					// uninstall output; withhold the server text.
-					secretErr = safeAPIError("deleting secret "+name, delErr)
+					secretErrs = append(secretErrs, safeAPIError("deleting secret "+name, delErr))
 				} else {
-					secretErr = fmt.Errorf("deleting secret %s: %w", name, delErr)
+					secretErrs = append(secretErrs, fmt.Errorf("deleting secret %s: %w", name, delErr))
 				}
-				return
+				continue
 			}
 			secretsDeleted++
 		}
 	}()
 	innerWg.Wait()
+	varErr, secretErr := errors.Join(varErrs...), errors.Join(secretErrs...)
 
 	result.VarsDeleted += varsDeleted
 	result.SecretsDeleted = secretsDeleted
