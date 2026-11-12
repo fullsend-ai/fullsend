@@ -115,9 +115,10 @@ The same conventions work across forges:
 | Comment starting with `/fs-code` | code |
 | Label `ready-to-code` added | code |
 
-To rerun the code agent, or to change a pull request it already opened, see
+After the code agent has opened a pull request or merge request, see
 [Changing direction after a pull request
-exists](#changing-direction-after-a-pull-request-exists).
+exists](#changing-direction-after-a-pull-request-exists) before you comment
+`/fs-code` again.
 
 A slash command is only recognized as the **first token of the comment's first
 line**. The rest of that line is recorded in the normalized event as
@@ -229,134 +230,132 @@ requires, as for any other trigger. See
 
 ### Changing direction after a pull request exists
 
-After the code agent opens a pull request for a Jira issue, the plan can
-change. Someone edits the acceptance criteria, narrows the scope, or wants a
-different approach. Pick the row that matches what you want:
+The code agent opened a pull request for your Jira issue, and then the plan
+changed: new acceptance criteria, a narrower scope, or a different approach.
+Pick the row that matches what you want. On a GitLab target, read "merge
+request" for "pull request".
 
-| Goal | What to do |
-|---|---|
-| Change the existing pull request | Comment `/fs-fix <instruction>` on the pull request. Restate any Jira edit in the comment |
-| Rerun the code agent | Comment `/fs-code` on the Jira issue. If the run is skipped because of an open human pull request or child issues, comment `/fs-code --force` |
-| Start over | Close the pull request, then comment `/fs-code` on the Jira issue |
+| You want to | Do this | Result |
+|---|---|---|
+| Adjust the pull request you have | Comment `/fs-fix <instruction>` on the pull request | The fix agent pushes new commits to the same pull request |
+| Throw the work away and build from the edited Jira issue | Wait for the code run to end, close the pull request, then comment `/fs-code` on the Jira issue | The code agent opens one new pull request |
+| Run the code agent after it skipped the run | Comment `/fs-code --force` on the Jira issue (GitHub only; [GitLab route](#if-the-code-agent-skips-the-run)) | The code agent runs despite an open human pull request or child issues |
 
-On a GitLab target, read "merge request" for "pull request" in this section.
-Before you comment `/fs-code` again, check that the earlier code run has
-finished. See
-[Wait for the earlier run to finish](#wait-for-the-earlier-run-to-finish).
+Do not comment `/fs-code` again while the pull request is still open. See
+[If you rerun without closing the pull
+request](#if-you-rerun-without-closing-the-pull-request) for what happens.
 
-#### Change the existing pull request
+#### Adjust the pull request you have
 
-Comment on the pull request on the code host, not on the Jira issue:
+1. Open the pull request. Its URL is in the comment the code agent posted on
+   the Jira issue.
+2. Comment on the pull request, not on the Jira issue:
 
-```text
-/fs-fix Also reject empty names, as the updated acceptance criteria say.
-```
+   ```text
+   /fs-fix Also reject empty names, as the updated acceptance criteria say.
+   ```
 
-The fix agent receives the text of the `/fs-fix` comment. It does not read
-the Jira issue, so it does not see a later edit to it, such as new acceptance
-criteria or a changed scope. Restate that change in the comment. The fix
-agent pushes its commits to the same pull request. Fix does not write to Jira,
-so the Jira issue shows no update for this step (see
+3. Wait for the fix agent's new commits on the same pull request.
+
+The fix agent reads the pull request and your comment. It does not read the
+Jira issue, so it does not see an edit you made there. Restate the change in
+the comment. The Jira issue shows no update for this step, because fix does
+not write to Jira (see
 [Where built-in agent results appear](#where-built-in-agent-results-appear)).
 
-#### Rerun the code agent
+#### Check whether a code run has ended
 
-Comment on the Jira issue:
+On a GitHub target, a new code run for a Jira issue cancels an earlier code
+run for the same issue, whether that run is queued or already working. The
+cancelled run's work is lost. Runs of other agents, such as triage, do not
+cancel it. On a GitLab target, the new run waits for the earlier one.
 
-```text
-/fs-code
-```
+So before you comment `/fs-code` or re-add the label, read the **newest**
+run-status comment on the Jira issue. An older "Started" comment can stay on
+the issue after its run has ended.
 
-Removing the `ready-to-code` label and adding it again also starts a run. The
-new run starts from the default branch and reads the Jira issue as it is now,
-including your edits.
+| Newest run-status comment starts with | Meaning |
+|---|---|
+| `🤖 Code · Started` | The run is in progress. A new `/fs-code` cancels it |
+| `🤖 Finished Code` | The run has ended, whatever the result |
+| `🤖 Code · ⚠ Cancelled` or `🤖 Code · ❌ Terminated` | The run was stopped. It has ended |
 
-The branch is named `agent/<KEY>-<slug>`. The agent chooses the slug, so two
-runs can produce two different branch names. What happens to the existing
-pull request depends on that name:
+The poller runs every five minutes, so a new run can take a few minutes to
+post its first comment. A repository can also turn these comments off with
+[`status_notifications`](../../reference/config-reference.md#status_notifications).
+If you see no run-status comment, check the workflow run in GitHub Actions or
+the pipeline in GitLab.
 
-| Branch name | Earlier pull request | Result |
-|---|---|---|
-| Same as the earlier run | Open | The run pushes to the same branch and keeps the pull request. The new commits replace the earlier ones. The code-stage update on the Jira issue reads "pushed new commits to pull request `<URL>`" |
-| Same as the earlier run | Closed | The run deletes the old remote branch and opens a new pull request |
-| Different | Open | The run opens a second pull request. The first one stays open |
-| Different | Closed | The run opens a new pull request |
+#### Start over with a new pull request
 
-A rerun therefore does not always update the existing pull request. To end
-with one pull request, use `/fs-fix` on it, or close it before you comment
-`/fs-code`.
+1. [Check that the earlier code run has
+   ended](#check-whether-a-code-run-has-ended). The newest run-status comment
+   on the Jira issue must not start with `🤖 Code · Started`.
+2. Close the pull request.
+3. Comment on the Jira issue:
 
-Before the agent starts, the code pre-script skips the run when either of
-these holds:
+   ```text
+   /fs-code
+   ```
 
-- An open pull request by a human names the issue key in its title or
-  description. Pull requests opened by fullsend's own bots do not count, so
-  the code agent's earlier pull request does not cause a skip.
-- The issue has child issues. Subtasks do not count, so an issue split into
-  subtasks still runs.
+   Removing the `ready-to-code` label and adding it again starts a run too.
+4. Wait for the code agent's comment on the Jira issue. It now carries the URL
+   of the new pull request.
 
-A skipped run posts one comment on the Jira issue. It starts with one of
-these texts, and both texts name `/fs-code --force`:
+The new run builds from the default branch and reads the Jira issue as it is
+now, including your edits. It does not carry over commits from the closed
+pull request, whether the code agent, the fix agent, or you pushed them. If
+the run picks the same branch name as before, it replaces the old branch.
 
-- `An open pull request already addresses <KEY> — skipping automated implementation.`
-- `<KEY> has child issues — skipping automated implementation.`
+#### If you rerun without closing the pull request
 
-To run the code agent anyway, comment:
+The code agent names its branch `agent/<KEY>-<short-description>`, for
+example `agent/PROJ-123-reject-empty-names`. It writes the description again
+on each run, so you cannot tell in advance whether a rerun reuses the branch.
+With the earlier pull request still open, a rerun ends in one of two ways:
+
+| Branch name the rerun picks | What happens |
+|---|---|
+| A different one | The run opens a second pull request and the first stays open. The code agent's comment on the Jira issue then shows only the newer URL |
+| The same one | The run fails when it pushes, and the pull request keeps its earlier commits ([agents#409](https://github.com/fullsend-ai/agents/issues/409)) |
+
+Neither is what you want. Use `/fs-fix` on the pull request, or close it
+first.
+
+#### If the code agent skips the run
+
+Before it starts, the code agent skips the run in two cases. Each one posts a
+comment on the Jira issue:
+
+| Comment on the Jira issue starts with | Why |
+|---|---|
+| `An open pull request already addresses <KEY> — skipping automated implementation.` | An open pull request written by a person names the issue key in its title or description. Pull requests written by bots, including the code agent's own, do not count |
+| `<KEY> has child issues — skipping automated implementation.` | The issue has child issues, open or closed. Subtasks do not count, so an issue split into subtasks still runs |
+
+To run the code agent anyway, comment on the Jira issue:
 
 ```text
 /fs-code --force
 ```
 
-`--force` bypasses both checks. It counts only as the second word of the
-comment's first line, directly after `/fs-code`. Anywhere else, the pre-script
-ignores it. A run started by the `ready-to-code` label has no comment, so it
-cannot carry `--force`.
+Put `--force` directly after `/fs-code` on the first line of the comment. It
+is ignored anywhere else. A run started by the `ready-to-code` label has no
+comment, so it cannot be forced.
 
-On a GitLab target, `--force` has no effect yet, because the trigger comment
-does not reach the pre-script
-([#9187](https://github.com/fullsend-ai/fullsend/issues/9187)). Until that
-is fixed:
+The forced run then behaves like any code run: a `🤖 Code · Started` comment
+appears on the Jira issue, and the code agent comments with the pull request
+URL when it is done.
 
-- For an open human merge request, close it, or edit its title and
+On a GitLab target, `--force` does nothing yet
+([#9187](https://github.com/fullsend-ai/fullsend/issues/9187)). Until that is
+fixed, remove the cause of the skip:
+
+- **Open merge request by a person:** close it, or edit its title and
   description so they no longer name the issue key. Then comment `/fs-code`.
-- For an issue with child issues, run the code agent on the child issues.
+- **Child issues:** run the code agent on the child issues.
 
-#### Start over
-
-1. Close the pull request on the code host.
-2. Comment `/fs-code` on the Jira issue.
-
-The new run opens a new pull request, so one pull request stays open. If the
-run picks the same branch name as before, it first deletes the old remote
-branch. A closed pull request does not cause a skip.
-
-#### Wait for the earlier run to finish
-
-Comment `/fs-code` or re-add the `ready-to-code` label only after the earlier
-code run for the issue has finished. On a GitHub target, Jira-sourced runs go
-through the `harness-run` job in `reusable-dispatch.yml`. Its concurrency
-group combines the agent, the repository, and the Jira issue, and sets
-`cancel-in-progress: true`. A new code run for the same issue therefore
-cancels the earlier one, whether it is still queued or already running. Runs
-of other agents, such as triage, do not cancel it.
-
-To see whether a code run is still going, read its status comment on the
-Jira issue (see
-[Where built-in agent results appear](#where-built-in-agent-results-appear)):
-
-| Status comment starts with | Meaning |
-|---|---|
-| `🤖 Code · Started` | The run is in progress. A new `/fs-code` cancels it |
-| `🤖 Finished Code` | The run has ended. You can comment again |
-
-The poller runs every five minutes, so a run can wait a few minutes before
-its status comment appears. When `status_notifications.comment.start` is
-`disabled`, no start comment appears. Check the workflow run in GitHub
-Actions instead.
-
-On a GitLab target, the agent job uses a `resource_group` for each stage and
-Jira issue instead. A second run waits for the first one to finish rather
-than cancelling it.
+On GitLab, a merge request counts as bot-written when its author's username
+starts with `fullsend`, or ends in `[bot]` or `_bot`.
 
 ## Event semantics — input only
 
@@ -1282,8 +1281,8 @@ However, more pollers against the same Jira project means more API calls per cyc
 | The poll fails with `all N events this cycle were dropped before dispatch (… failed matching)` | Every event of the cycle was dropped before dispatch and at least one failed trigger matching — either the matcher errored on each event, or a mixed cycle where the remaining events failed validation; the error's counts say how many of each | No checkpoint was advanced, so the events are retried next cycle — with the same bound as failed validation: the red runs repeat until the events age past the first-poll backfill floor (24h by default) or another selected issue produces a valid event. Read the per-event `WARNING: skipping event …` and `WARNING: matching event …` lines above the error for the cause — when the error lists both counts, inspect both kinds of warning. A matcher that errors on every event is a harness trigger or execution-ref problem, not a Jira problem |
 | The poll fails with `all N events this cycle failed normalized-event validation` and the per-event warnings name `entity.key "P-1" is not a Jira work item key` (every cycle) | The Jira project's key is a single character, which exists only on legacy Server/Data Center deployments: the config gate accepts it (`jiraProjectKeyRe`), but a Jira work item key requires a two-or-more-character project part, so every event of the project fails validation | Such a project cannot be polled by this driver. No checkpoint advances, so the failure repeats every cycle; report it to fullsend with the log lines |
 | Triage or code results do not appear on the Jira issue | The built-in agents are pinned to a release that predates Jira result writes | Use built-in agents from the agents release that follows v0.52.0, or later. Re-pin a harness registered with `source:` or composed with `base:` with `fullsend agent update <name>`. See [Where built-in agent results appear](#where-built-in-agent-results-appear) |
-| Code run skipped; the Jira issue has a comment starting `An open pull request already addresses <KEY> — skipping automated implementation.` | An open pull request by a human names the issue key in its title or description. Bot pull requests do not count | Comment `/fs-code --force` on the Jira issue, or close the pull request and comment `/fs-code`. On a GitLab target `--force` has no effect yet. See [Rerun the code agent](#rerun-the-code-agent) |
-| Code run skipped; the Jira issue has a comment starting `<KEY> has child issues — skipping automated implementation.` | The issue has child issues. Subtasks do not count | Run the code agent on the child issues, or comment `/fs-code --force` to implement the parent issue anyway. On a GitLab target `--force` has no effect yet. See [Rerun the code agent](#rerun-the-code-agent) |
+| Code run skipped; the Jira issue has a comment starting `An open pull request already addresses <KEY> — skipping automated implementation.` | An open pull request written by a person names the issue key in its title or description. Bot pull requests do not count | GitHub: comment `/fs-code --force` on the Jira issue. GitLab: close the merge request, then comment `/fs-code`. See [If the code agent skips the run](#if-the-code-agent-skips-the-run) |
+| Code run skipped; the Jira issue has a comment starting `<KEY> has child issues — skipping automated implementation.` | The issue has child issues, open or closed. Subtasks do not count | Run the code agent on the child issues. On GitHub you can also comment `/fs-code --force` to implement the parent issue. See [If the code agent skips the run](#if-the-code-agent-skips-the-run) |
 | Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm the Jira credentials reach the agent job, that `tracker.jira.base_url` is set (a missing or invalid setting stops a Jira-sourced run before the sandbox, with a `jira-sourced run:` error in the run log), and that the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
 
 ## See also
