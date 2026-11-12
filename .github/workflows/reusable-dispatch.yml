@@ -2103,7 +2103,8 @@ jobs:
       actions: write
       contents: read
       id-token: write
-      pull-requests: read
+      issues: write
+      pull-requests: write
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
     steps:
@@ -2257,6 +2258,36 @@ jobs:
             echo
             echo "${DELIM}"
           } >> "${GITHUB_OUTPUT}"
+
+      - name: Report harness dispatch failure
+        if: ${{ failure() && !cancelled() && steps.dispatch.outcome != 'success' && (github.event.issue.number != '' || github.event.pull_request.number != '') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULLSEND_FAILURE_REPOSITORY: ${{ github.repository }}
+          FULLSEND_FAILURE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          FULLSEND_FAILURE_AGENT: harness
+          FULLSEND_FAILURE_ROLE: harness
+          FULLSEND_FAILURE_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          FULLSEND_FAILURE_CATEGORY: workflow setup
+          FULLSEND_FAILURE_TRUSTED_BOTS: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+        run: |
+          set -euo pipefail
+          script=".defaults/.github/scripts/report-agent-startup-failure.sh"
+          [[ -f "${script}" ]] || script=".fullsend/.defaults/.github/scripts/report-agent-startup-failure.sh"
+          if [[ ! -f "${script}" ]]; then
+            script="${RUNNER_TEMP}/fullsend-agent-startup-failure.sh"
+            if encoded="$(gh api "repos/${{ job.workflow_repository }}/contents/.github/scripts/report-agent-startup-failure.sh?ref=${{ job.workflow_sha }}" --jq .content)"; then
+              printf '%s' "${encoded}" | base64 --decode > "${script}"
+              chmod +x "${script}"
+            else
+              echo "::warning::Startup failure reporter is unavailable"
+              exit 0
+            fi
+          fi
+          export FULLSEND_FAILURE_REPOSITORY FULLSEND_FAILURE_NUMBER \
+            FULLSEND_FAILURE_AGENT FULLSEND_FAILURE_ROLE FULLSEND_FAILURE_RUN_URL \
+            FULLSEND_FAILURE_CATEGORY FULLSEND_FAILURE_TRUSTED_BOTS
+          bash "${script}"
 
   harness-run:
     name: Harness run (${{ matrix.agent }})
