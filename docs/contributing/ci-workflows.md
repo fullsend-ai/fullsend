@@ -187,7 +187,7 @@ Jobs triggered by `pull_request_target` that check out and execute PR-head code 
 
 When all five components are present, any code the PR author controls can read and exfiltrate every secret in that step's environment.
 
-**ADR-0009 and the shim distinction:** ADR-0009 documents why `pull_request_target` is safe for the shim workflow — the shim never checks out PR code, so components 2–3 are absent. This safety reasoning does **not** transfer to jobs that check out and execute PR-head code (e.g., the behaviour and playback jobs in `e2e.yml`).
+**ADR-0009 and the shim distinction:** ADR-0009 documents why `pull_request_target` is safe for the shim workflow — the shim never checks out PR code, so components 2–3 are absent. This safety reasoning does **not** transfer to jobs that check out and execute PR-head code (e.g., the behaviour, playback, and repos jobs in `e2e.yml`).
 
 ### Credential blast radius
 
@@ -202,11 +202,11 @@ Prefer short-lived narrowly-scoped credentials whenever possible. When long-live
 
 ### Gate job mitigation
 
-The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour and playback jobs check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`):
+The `check-e2e-authorization` gate job (`gate` in `e2e.yml`) mitigates the risk by requiring authorization before the behaviour, playback, and repos jobs check out PR-head code. `e2e.yml` and `e2e-ok-to-test.yml` no longer use `pull_request_target` ([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)): same-repository PRs run on `pull_request`, and fork PRs run only after a `/ok-to-test <sha>` comment (`issue_comment`):
 
 - **Same-repository PRs** — the gate authorizes authors with write access (collaborator permission API) and trusted bots. Fork `pull_request` runs get no secrets, so the suites skip them.
 - **Fork PRs** — require a user with write access (Write role or above) to review the PR diff and comment `/ok-to-test <sha>`, naming the reviewed commit, including when the fork author has write access. The gate reads the comment from the API, checks the commenter's permission, and authorizes the PR head only when it is the named sha. Another head is refused (`stale_ok_to_test`), and a comment with no sha is refused (`missing_sha`). The gate uses no timing. The `ok-to-test` label no longer starts e2e.
-- **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports the `behaviour` and `playback` check runs on the authorized sha. The behaviour/playback jobs run on the PR-head checkout with `contents: read` and `id-token: write` only.
+- **Separation of concerns** — the gate (authorize/report) job runs on the base-branch checkout and is the only job with `pull-requests: write` and `checks: write`; it reports the `behaviour`, `playback`, and `repos` check runs on the authorized sha. The behaviour/playback jobs run on the PR-head checkout with `contents: read` and `id-token: write` only; the repos job runs on the PR-head checkout with `contents: read` only (it needs no GCP access).
 
 **Limitations of the gate:**
 

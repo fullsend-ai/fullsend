@@ -9,9 +9,9 @@ name: E2E ok-to-test
 #
 # Called jobs report as "run / behaviour" on the default-branch commit, which
 # the main ruleset does not read. So `authorize` creates check runs named
-# behaviour and playback on the authorized head sha, and `report` completes
-# them from the suite results. Only these two jobs hold write scopes; the
-# suite jobs that run PR code never do (gh-aw's safe-outputs split).
+# behaviour, playback and repos on the authorized head sha, and `report`
+# completes them from the suite results. Only these two jobs hold write scopes;
+# the suite jobs that run PR code never do (gh-aw's safe-outputs split).
 #
 # No caller-level concurrency: e2e.yml queues /ok-to-test runs in its own
 # e2e-ok-to-test-{n} group, and sharing a group with the callee deadlocks.
@@ -40,6 +40,7 @@ jobs:
       head_sha: ${{ steps.auth.outputs.head_sha }}
       behaviour_check_id: ${{ steps.checks.outputs.behaviour }}
       playback_check_id: ${{ steps.checks.outputs.playback }}
+      repos_check_id: ${{ steps.checks.outputs.repos }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -65,7 +66,7 @@ jobs:
         run: |
           [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad head sha '${HEAD_SHA}'"; exit 1; }
 
-      - name: Create behaviour and playback check runs on the PR head
+      - name: Create behaviour, playback and repos check runs on the PR head
         id: checks
         if: steps.auth.outputs.authorized == 'true'
         env:
@@ -75,7 +76,7 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          for name in behaviour playback; do
+          for name in behaviour playback repos; do
             id=$(gh api -X POST "repos/${REPO}/check-runs" \
               -f name="${name}" -f head_sha="${HEAD_SHA}" -f status=in_progress \
               -f details_url="${RUN_URL}" \
@@ -121,7 +122,7 @@ jobs:
     permissions:
       checks: write
     steps:
-      - name: Complete behaviour and playback check runs
+      - name: Complete behaviour, playback and repos check runs
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -130,6 +131,8 @@ jobs:
           BEHAVIOUR_RESULT: ${{ needs.run.outputs.behaviour_result }}
           PLAYBACK_ID: ${{ needs.authorize.outputs.playback_check_id }}
           PLAYBACK_RESULT: ${{ needs.run.outputs.playback_result }}
+          REPOS_ID: ${{ needs.authorize.outputs.repos_check_id }}
+          REPOS_RESULT: ${{ needs.run.outputs.repos_result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
@@ -142,7 +145,7 @@ jobs:
             esac
           }
           status=0
-          for pair in "behaviour:${BEHAVIOUR_ID}:${BEHAVIOUR_RESULT}" "playback:${PLAYBACK_ID}:${PLAYBACK_RESULT}"; do
+          for pair in "behaviour:${BEHAVIOUR_ID}:${BEHAVIOUR_RESULT}" "playback:${PLAYBACK_ID}:${PLAYBACK_RESULT}" "repos:${REPOS_ID}:${REPOS_RESULT}"; do
             IFS=: read -r name id result <<<"${pair}"
             [[ -n "${id}" ]] || { echo "::error::no ${name} check run id"; status=1; continue; }
             c=$(conclusion "${result}")

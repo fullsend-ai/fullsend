@@ -23,8 +23,9 @@ const reusablePrioritizePath = ".github/workflows/reusable-prioritize.yml"
 var e2eRelevanceFilterRe = regexp.MustCompile(`grep -qE '([^']+)'; then`)
 
 // e2eRelevanceFilters returns the behaviour and playback relevance filters
-// from the repo's own e2e.yml. There must be exactly two, one per suite, and
-// they must be identical — the invariant the regression script also enforces.
+// from the repo's own e2e.yml. The first two filters, one per suite, must be
+// identical — the invariant the regression script also enforces. The repos
+// suite adds a third, intentionally narrower filter that is not returned.
 func e2eRelevanceFilters(t *testing.T) []string {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "e2e.yml"))
@@ -34,9 +35,9 @@ func e2eRelevanceFilters(t *testing.T) []string {
 	for _, m := range matches {
 		filters = append(filters, m[1])
 	}
-	require.Len(t, filters, 2, "expected one behaviour and one playback relevance filter")
+	require.GreaterOrEqual(t, len(filters), 2, "expected one behaviour and one playback relevance filter")
 	assert.Equal(t, filters[0], filters[1], "the behaviour and playback relevance filters must stay identical")
-	return filters
+	return filters[:2]
 }
 
 // matchesFilter reports whether path is relevant under one of e2e.yml's
