@@ -416,12 +416,11 @@ func newIssuesPostCommentCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "post-comment",
-		Short: "Post or update a sticky comment on an issue",
-		Long: `Posts a comment with a sticky marker on an issue. On first
-run, creates a new comment. On re-runs, finds the existing comment
-by its marker and its own author and edits in-place, collapsing old
-content into <details> blocks. This prevents comment flooding on
-re-runs.
+		Short: "Post a marked comment on an issue",
+		Long: `Posts a comment carrying a hidden marker on an issue. Every run
+adds a new comment at the end of the thread: nothing is edited in
+place and there are no collapsed "Previous run" sections — the thread
+itself is the history.
 
 Works across GitHub, GitLab, and Jira via --tracker.
 
@@ -431,12 +430,13 @@ For --tracker jira, the marker is stored as an invisible comment
 entity property rather than embedded in the visible comment body,
 so marker character restrictions do not apply.
 
-Trust model: an existing comment is edited only when it carries the
-marker and its author is exactly the identity this command posts as
-(the login on GitHub and GitLab, the account ID on Jira). A comment
-anyone else wrote with the same marker is ignored, never edited. If
-that identity cannot be resolved after a short retry, the command fails
-without posting or editing anything; rerun it.
+With --only-if-exists, the comment is posted only when an earlier
+comment with this marker exists (written by the identity this
+command posts as — the login on GitHub and GitLab, the account ID on
+Jira), so an all-clear follows earlier findings instead of arriving
+unannounced. A comment anyone else wrote with the same marker is
+ignored. If that identity cannot be resolved after a short retry,
+the command fails without posting anything; rerun it.
 
 --tracker is required unless a default is supplied via config: set
 "tracker: {jira: {...}}" (or github/gitlab) in config.yaml and pass --fullsend-dir
@@ -447,6 +447,7 @@ The --result flag accepts a file path or "-" for stdin.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("keep-history") {
 				cfg.keepHistory = &keepHistory
+				warnKeepHistoryDeprecated(cmd)
 			}
 			return runIssuesPostComment(cmd.Context(), &cfg)
 		},
@@ -455,12 +456,12 @@ The --result flag accepts a file path or "-" for stdin.`,
 	cmd.Flags().StringVar(&cfg.trackerName, "tracker", "", "tracker backend: github, gitlab, or jira (required unless a default is set via config)")
 	cmd.Flags().StringVar(&cfg.project, "project", "", projectFlagUsage)
 	cmd.Flags().IntVar(&cfg.number, "number", 0, "issue number (required)")
-	cmd.Flags().StringVar(&cfg.marker, "marker", "", "sticky marker to identify this agent's comments (required)")
+	cmd.Flags().StringVar(&cfg.marker, "marker", "", "marker identifying this agent's comments (required)")
 	cmd.Flags().StringVar(&cfg.result, "result", "-", "path to comment body file, or '-' for stdin")
 	cmd.Flags().StringVar(&cfg.token, "token", "", tokenFlagUsage)
-	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print what would be posted without posting or editing anything")
-	cmd.Flags().BoolVar(&cfg.onlyIfExists, "only-if-exists", false, "update an existing comment with this marker but never create one (for an all-clear that should replace earlier findings)")
-	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
+	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print what would be posted without posting anything")
+	cmd.Flags().BoolVar(&cfg.onlyIfExists, "only-if-exists", false, "post only when an earlier comment with this marker exists (for an all-clear that follows earlier findings)")
+	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "deprecated: no effect (every result is posted as a new comment; sticky comments were removed)")
 	cmd.Flags().StringVar(&cfg.fullsendDir, "fullsend-dir", "", "path to .fullsend config directory (sources defaults, including the tracker.jira connection settings, from its config.yaml when flags are omitted)")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("marker")
@@ -510,7 +511,7 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 
 	keepHistory, err := resolveKeepHistory(cfg.keepHistory, cfg.fullsendDir, cfg.testConfigReader)
 	if err != nil {
-		printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to keep_history=true", err))
+		printer.StepWarn(fmt.Sprintf("Warning: %v (keep_history is deprecated and unused; every result is posted as a new comment)", err))
 	}
 
 	stickyCfg := sticky.Config{
@@ -518,25 +519,22 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 		DryRun:      cfg.dryRun,
 		KeepHistory: keepHistory,
 	}
-	if trackerName == trackerJira {
-		// The Jira write path routes every body through
-		// jira.MarkdownToADF, which hard-rejects input over
-		// jira.MaxMarkdownBytes. Sticky's default max size (65000,
-		// derived from GitHub's comment cap) is well over that, so an
-		// accumulated sticky body that grows past the Jira limit would
-		// otherwise pass sticky's trim and only fail once it reaches
-		// Jira. Capping here keeps sticky's own trimming in charge of
-		// staying under the limit that will actually be enforced.
-		stickyCfg.MaxSize = jira.MaxMarkdownBytes
-	}
 
-	// Jira stores sticky markers as comment entity properties instead
+	// Jira stores markers as comment entity properties instead
 	// of embedding them in the visible ADF body (Jira has no HTML
 	// comments — the marker would be visible to users). When the
 	// tracker.Client is a *tracker.JiraClient, use the property-based
 	// path; otherwise fall back to the body-embedded path used by
 	// GitHub/GitLab.
 	if jc, ok := tc.(*tracker.JiraClient); ok {
+		// The Jira write path routes every body through
+		// jira.MarkdownToADF, which hard-rejects input over
+		// jira.MaxMarkdownBytes. Sticky's default max size (65000,
+		// derived from GitHub's comment cap) is well over that, so a
+		// body capped at the default would only fail once it reaches
+		// Jira. Capping here keeps the pre-create truncation under the
+		// limit that will actually be enforced.
+		stickyCfg.MaxSize = jira.MaxMarkdownBytes
 		_, err = postJiraStickyComment(ctx, jc, project, cfg.number, body, stickyCfg, cfg.onlyIfExists, printer)
 	} else {
 		_, err = postTrackerStickyComment(ctx, tc, project, cfg.number, body, stickyCfg, cfg.onlyIfExists, printer)
@@ -544,16 +542,18 @@ func runIssuesPostComment(ctx context.Context, cfg *issuesPostCommentConfig) err
 	return err
 }
 
-// postJiraStickyComment implements the sticky comment lifecycle for Jira
-// using comment entity properties to store the marker, keeping it out
-// of the visible ADF body. Jira has no HTML comment equivalent, so
-// without this the marker would be visible to users.
+// postJiraStickyComment posts an agent result as a new Jira comment,
+// storing the marker as a comment entity property so it stays out of the
+// visible ADF body (Jira has no HTML comment equivalent, so an embedded
+// marker would be visible to users). Nothing is edited in place: sticky
+// comments were removed (#9334), every run appends a comment, and the
+// thread itself is the history.
 //
-// On create, the marker is stored as a comment property via the Jira
-// comment-create API's properties array. On lookup, comments are fetched
-// with ?expand=properties and matched by property value. On update, the
-// property is set only for a legacy comment matched by its body-embedded
-// marker, migrating it; a comment matched by property is left as is.
+// onlyIfExists gates the post on an earlier comment with this marker: an
+// all-clear then follows earlier findings at the end of the thread
+// instead of replacing them. The gate considers only the poster's own
+// comments, matched by exact account ID, so a marker another account
+// planted never controls it.
 func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project string, number int, body string, cfg sticky.Config, onlyIfExists bool, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
@@ -566,63 +566,27 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 	// GitHub/GitLab path does, in the form that stays escaped through
 	// the Markdown -> ADF -> Markdown round trip.
 	body = statuscomment.NeutralizeMarkersADF(body)
-
-	// Same rule as the GitHub/GitLab path: only the poster's own comments
-	// are candidates, matched by exact account ID. Filtering before the
-	// lookup covers both the marker property and the legacy body-text
-	// fallback, either of which another account can plant.
-	self, err := resolveTrackerSelf(ctx, jc)
-	if err != nil {
-		return "", unverifiedSelfError(err)
-	}
-
-	jiraComments, err := jc.ListJiraComments(ctx, project, number)
-	if err != nil {
-		return "", fmt.Errorf("listing comments: %w", err)
-	}
-
-	existing := jc.FindCommentByMarkerProperty(ownJiraComments(jiraComments, self), cfg.Marker)
-
-	if existing != nil {
-		printer.StepStart("Found existing comment, updating in-place")
-
-		// Build the updated body using sticky's history-collapsing
-		// logic. The old body is read from Jira as Markdown (via
-		// ADFToMarkdown). A legacy body-embedded marker is cut from the
-		// front of oldBody (the property-based path has none). The new
-		// body is passed without the marker prefix because the marker
-		// lives in a property, not the visible body.
-		//
-		// ADFToMarkdown decodes any escaped marker in the stored text
-		// back into a live one, so the old body is neutralized again
-		// after it is read back. The legacy marker is cut first so it
-		// is dropped rather than kept as escaped text in history.
-		// BuildUpdatedBody's own escaping uses "&lt;", which Jira would
-		// decode, so its result is neutralized once more as well.
-		oldBody := jira.ADFToMarkdown(existing.Body)
-		oldBody, _ = strings.CutPrefix(oldBody, cfg.Marker)
-		oldBody = statuscomment.NeutralizeMarkersADF(oldBody)
-		newBody := statuscomment.NeutralizeMarkersADF(sticky.BuildUpdatedBody(oldBody, body, cfg))
-
-		if cfg.DryRun {
-			printer.StepInfo("Dry run — would update comment " + existing.ID)
-			printer.StepInfo(fmt.Sprintf("Body length: %d", len(newBody)))
-			return "", nil
-		}
-
-		if err := jc.MigrateAndUpdateComment(ctx, project, number, *existing, tracker.Body(newBody), cfg.Marker); err != nil {
-			return "", fmt.Errorf("updating comment: %w", err)
-		}
-		printer.StepDone("Comment updated")
-		return "", nil // Jira has no stable comment permalink
-	}
+	// The create path has no history trimming, so cap the body at the
+	// configured size before creating: an oversized single result would
+	// otherwise fail the post.
+	body = truncateForPost(body, cfg)
 
 	if onlyIfExists {
-		printer.StepInfo("No existing comment with this marker; nothing to post (--only-if-exists)")
-		return "", nil
+		self, err := resolveTrackerSelf(ctx, jc)
+		if err != nil {
+			return "", unverifiedSelfError(err)
+		}
+		jiraComments, err := jc.ListJiraComments(ctx, project, number)
+		if err != nil {
+			return "", fmt.Errorf("listing comments: %w", err)
+		}
+		if jc.FindCommentByMarkerProperty(ownJiraComments(jiraComments, self), cfg.Marker) == nil {
+			printer.StepInfo("No existing comment with this marker; nothing to post (--only-if-exists)")
+			return "", nil
+		}
 	}
 
-	printer.StepStart("No existing comment found, creating new one")
+	printer.StepStart("Posting comment")
 
 	if cfg.DryRun {
 		printer.StepInfo("Dry run — would create new comment")
@@ -638,18 +602,18 @@ func postJiraStickyComment(ctx context.Context, jc *tracker.JiraClient, project 
 	return created.HTMLURL, nil
 }
 
-// postTrackerStickyComment implements the sticky comment lifecycle using
-// tracker.Client instead of forge.Client. It mirrors the behavior of
-// sticky.Post: find an existing comment bearing the marker, collapse
-// old content into history, and create or update in-place.
+// postTrackerStickyComment posts an agent result as a new comment using
+// tracker.Client instead of forge.Client. It mirrors sticky.Post: nothing
+// is edited in place — sticky comments were removed (#9334), every run
+// appends a comment, and the thread itself is the history.
 //
-// It never edits a comment it cannot verify as its own: an existing
-// comment matches only when it carries the marker and its author is
-// exactly the login this client posts as, so a comment anyone could plant
-// with the same marker is ignored. When that login cannot be resolved
-// (after a short retry) it returns an error and posts nothing, with or
-// without onlyIfExists, which updates an existing comment but never
-// creates one.
+// onlyIfExists gates the post on an earlier comment with this marker, so
+// an all-clear follows earlier findings at the end of the thread instead
+// of replacing them. The gate matches only the poster's own comments (the
+// author must be exactly the login this client posts as, so a comment
+// anyone could plant with the same marker is ignored). When that login
+// cannot be resolved (after a short retry) it returns an error and posts
+// nothing.
 func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project string, number int, body string, cfg sticky.Config, onlyIfExists bool, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
@@ -658,48 +622,30 @@ func postTrackerStickyComment(ctx context.Context, tc tracker.Client, project st
 		return "", fmt.Errorf("marker is empty")
 	}
 
-	// Without a verified identity nothing is posted at all: editing would
-	// trust an unverified comment, and creating a new one would orphan the
-	// earlier comment, whose stale content later runs would never update.
-	self, err := resolveTrackerSelf(ctx, tc)
-	if err != nil {
-		return "", unverifiedSelfError(err)
-	}
-
-	comments, err := tc.ListComments(ctx, project, number)
-	if err != nil {
-		return "", fmt.Errorf("listing comments: %w", err)
-	}
-
-	existing := findMarkedTrackerComment(comments, cfg.Marker, self)
 	// Escape marker syntax in the agent-written body before the runner's
 	// own marker is prepended, so the runner's marker is the only live one.
 	markedBody := cfg.Marker + "\n" + statuscomment.NeutralizeMarkers(body)
-
-	if existing != nil {
-		printer.StepStart("Found existing comment, updating in-place")
-
-		newBody := sticky.BuildUpdatedBody(string(existing.Body), markedBody, cfg)
-
-		if cfg.DryRun {
-			printer.StepInfo("Dry run — would update comment " + existing.ID)
-			printer.StepInfo(fmt.Sprintf("Body length: %d", len(newBody)))
-			return "", nil
-		}
-
-		if err := tc.UpdateComment(ctx, project, number, existing.ID, tracker.Body(newBody)); err != nil {
-			return "", fmt.Errorf("updating comment: %w", err)
-		}
-		printer.StepDone("Comment updated")
-		return existing.HTMLURL, nil
-	}
+	// The create path has no history trimming, so cap the body at the
+	// configured size before creating: an oversized single result would
+	// otherwise fail the post.
+	markedBody = truncateForPost(markedBody, cfg)
 
 	if onlyIfExists {
-		printer.StepInfo("No existing comment with this marker; nothing to post (--only-if-exists)")
-		return "", nil
+		self, err := resolveTrackerSelf(ctx, tc)
+		if err != nil {
+			return "", unverifiedSelfError(err)
+		}
+		comments, err := tc.ListComments(ctx, project, number)
+		if err != nil {
+			return "", fmt.Errorf("listing comments: %w", err)
+		}
+		if findMarkedTrackerComment(comments, cfg.Marker, self) == nil {
+			printer.StepInfo("No existing comment with this marker; nothing to post (--only-if-exists)")
+			return "", nil
+		}
 	}
 
-	printer.StepStart("No existing comment found, creating new one")
+	printer.StepStart("Posting comment")
 
 	if cfg.DryRun {
 		printer.StepInfo("Dry run — would create new comment")
@@ -937,6 +883,27 @@ func resolveKeepHistory(flag *bool, fullsendDir string, testConfigReader config.
 		return prc.ConfigKeepHistory(), nil
 	}
 	return true, nil
+}
+
+// warnKeepHistoryDeprecated prints a one-line warning when --keep-history is
+// explicitly passed: the flag is accepted but has no effect (sticky comments
+// were removed, #9334). Shell scripts never read help text, so the warning
+// is the only advance notice external automation gets before a cleanup
+// removes the flag (mirroring --vendor-fullsend-binary).
+func warnKeepHistoryDeprecated(cmd *cobra.Command) {
+	fmt.Fprintln(cmd.ErrOrStderr(), "warning: --keep-history is deprecated and has no effect; every result is posted as a new comment")
+}
+
+// truncateForPost caps a comment body at cfg's size limit before it is
+// created. The create path has no history trimming (the update path that
+// used to cap the assembled body is gone with sticky comments, #9334), so
+// an oversized single result would otherwise fail the post.
+func truncateForPost(body string, cfg sticky.Config) string {
+	maxSize := cfg.MaxSize
+	if maxSize <= 0 {
+		maxSize = sticky.DefaultMaxSize
+	}
+	return sticky.TruncateBody(body, maxSize)
 }
 
 // ownJiraComments returns the comments whose author account ID is exactly

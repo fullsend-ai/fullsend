@@ -446,11 +446,11 @@ func (c *perRepoConfig) ConfigForge() string {
 	return ""
 }
 
-// ConfigKeepHistory reports whether sticky comment updates should
-// append previous content as a collapsed "Previous run" block.
-// KeepHistory is a *bool: nil falls through to parent, non-nil
-// (including explicit false) is the local decision. Code default
-// is true (history appended).
+// ConfigKeepHistory reports the keep_history setting, which is deprecated
+// and has no effect on posting: sticky comments were removed (#9334);
+// every result is a new comment. The field stays until a cleanup removes
+// it. KeepHistory is a *bool: nil falls through to parent, non-nil is the
+// local decision. Code default is true.
 func (c *perRepoConfig) ConfigKeepHistory() bool {
 	if c.KeepHistory != nil {
 		return *c.KeepHistory
@@ -678,9 +678,9 @@ func (c *perRepoConfig) SetRoles(roles []string) { c.Roles = roles }
 // SetRuntime replaces the configured agent runtime.
 func (c *perRepoConfig) SetRuntime(runtime string) { c.Runtime = runtime }
 
-// SetKeepHistory sets whether sticky comment updates append history.
-// Stores a *bool so that an explicit false is distinguishable from
-// unset (nil) across layers.
+// SetKeepHistory stores the deprecated keep_history setting, which has
+// no effect on posting (see ConfigKeepHistory). Stores a *bool so that
+// an explicit false is distinguishable from unset (nil) across layers.
 func (c *perRepoConfig) SetKeepHistory(v bool) { c.KeepHistory = &v }
 
 // SetMintURL sets the token mint URL.

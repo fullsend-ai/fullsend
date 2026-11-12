@@ -1,8 +1,6 @@
 // Package statuscomment posts agent start/completion status comments
 // on issues and pull requests via the tracker abstraction.
 //
-// Unlike internal/sticky, which manages persistent bot comments that
-// accumulate history across multiple runs (e.g. review output),
 // statuscomment manages transient lifecycle markers: a start comment
 // created when the agent begins, then updated or replaced on
 // completion (including cancellation). GitHub and GitLab use invisible HTML

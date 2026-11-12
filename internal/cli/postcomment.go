@@ -26,7 +26,7 @@ func newPostCommentCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:        "post-comment",
-		Short:      "Post or update a sticky comment on an issue or PR (deprecated: use 'fullsend issues post-comment')",
+		Short:      "Post a marked comment on an issue or PR (deprecated: use 'fullsend issues post-comment')",
 		Deprecated: "use 'fullsend issues post-comment --tracker github' instead",
 		Long: `Posts a comment with a hidden HTML marker on an issue or pull request.
 
@@ -34,9 +34,9 @@ DEPRECATED: This command targets GitHub only. Use
 'fullsend issues post-comment --tracker github' for GitHub, GitLab,
 or Jira support.
 
-On first run, creates a new comment. On re-runs, finds the existing
-comment by its marker and edits in-place, collapsing old content into
-<details> blocks. This prevents comment flooding on re-runs.
+Every run adds a new comment at the end of the thread: nothing is
+edited in place and there are no collapsed "Previous run" sections —
+the thread itself is the history.
 
 The --marker flag identifies this agent's comments. Each agent should
 use a unique marker (e.g. "<!-- fullsend:triage-agent -->").
@@ -75,11 +75,13 @@ The --result flag accepts a file path or "-" for stdin.`,
 			// --fullsend-dir (matching the pattern in issues post-comment
 			// and post-review).
 			resolvedKeepHistory := keepHistory
-			if !cmd.Flags().Changed("keep-history") {
+			if cmd.Flags().Changed("keep-history") {
+				warnKeepHistoryDeprecated(cmd)
+			} else {
 				var khFlag *bool // nil = not explicitly set
 				resolved, resolveErr := resolveKeepHistory(khFlag, fullsendDir, nil)
 				if resolveErr != nil {
-					printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to keep_history=true", resolveErr))
+					printer.StepWarn(fmt.Sprintf("Warning: %v (keep_history is deprecated and unused; every result is posted as a new comment)", resolveErr))
 				}
 				resolvedKeepHistory = resolved
 			}
@@ -100,7 +102,7 @@ The --result flag accepts a file path or "-" for stdin.`,
 	cmd.Flags().StringVar(&result, "result", "-", "path to comment body file, or '-' for stdin")
 	cmd.Flags().StringVar(&token, "token", "", "GitHub token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
-	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
+	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "deprecated: no effect (every result is posted as a new comment; sticky comments were removed)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", os.Getenv("FULLSEND_DIR"), "path to .fullsend config directory (default: $FULLSEND_DIR; sources defaults from its config.yaml when flags are omitted)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")

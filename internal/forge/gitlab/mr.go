@@ -458,7 +458,7 @@ func (c *LiveClient) UpdatePullRequestBranch(ctx context.Context, owner, repo st
 //     verdict. A post-hoc 401 handler remains as a safety net for edge
 //     cases (e.g., a future per-role PAT where the pre-call identity
 //     check doesn't apply but project settings still block approval).
-//     The sticky review comment remains the authoritative record either
+//     The review comment remains the authoritative record either
 //     way.
 //   - REQUEST_CHANGES or COMMENT: POST a note with the review body,
 //     plus inline comments (see below).

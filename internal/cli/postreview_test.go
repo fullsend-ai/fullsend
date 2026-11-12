@@ -181,6 +181,10 @@ func TestPostStaleHeadNotice(t *testing.T) {
 	require.Len(t, comments, 1)
 	assert.Contains(t, comments[0].Body, "stale-head")
 	assert.Contains(t, comments[0].Body, "old_sha_123")
+	// The notice must not carry the review marker: prior-review fetchers
+	// select the newest review-marker comment as the previous review.
+	assert.Contains(t, comments[0].Body, reviewNoticeMarker)
+	assert.NotContains(t, comments[0].Body, reviewMarker)
 
 	// Verify the error carries StaleHeadExitCode for post-review.sh.
 	var she *staleHeadError
@@ -208,6 +212,7 @@ func TestPostFailureNotice_WithBody(t *testing.T) {
 	comments := fc.IssueComments["o/r/1"]
 	require.Len(t, comments, 1)
 	assert.Contains(t, comments[0].Body, "Custom failure message")
+	assert.Contains(t, comments[0].Body, reviewNoticeMarker)
 }
 
 func TestPostFailureNotice_WithoutBody(t *testing.T) {
@@ -260,7 +265,7 @@ func TestPostReviewContent_FormalReviewFailureDoesNotFailCommand(t *testing.T) {
 	assert.Contains(t, comments[0].Body, "Looks good")
 	assert.Empty(t, fc.CreatedReviews)
 	assert.Contains(t, buf.String(), "Formal review submission failed")
-	assert.Contains(t, buf.String(), "sticky review comment was posted")
+	assert.Contains(t, buf.String(), "review comment was posted")
 }
 
 func TestPostReviewContent_RequestChangesFormalReviewFailureDoesNotFailCommand(t *testing.T) {
@@ -2645,5 +2650,5 @@ func TestPostFailureNotice_EscapesProjectionMarker(t *testing.T) {
 
 	comments := fc.IssueComments["o/r/1"]
 	require.Len(t, comments, 1)
-	assert.Equal(t, reviewMarker+"\n&lt;!-- fullsend:review-findings-v2:eyJ9 -->\nFailed", comments[0].Body)
+	assert.Equal(t, reviewNoticeMarker+"\n&lt;!-- fullsend:review-findings-v2:eyJ9 -->\nFailed", comments[0].Body)
 }

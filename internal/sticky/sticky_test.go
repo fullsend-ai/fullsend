@@ -2,11 +2,9 @@ package sticky
 
 import (
 	"context"
-	"errors"
 	"io"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -225,13 +223,13 @@ func TestBuildUpdatedBody_NoHistory_MultipleRuns(t *testing.T) {
 
 func TestTruncateBody_UnderLimit(t *testing.T) {
 	body := "short body"
-	assert.Equal(t, body, TruncateBody(body, defaultMaxSize))
+	assert.Equal(t, body, TruncateBody(body, DefaultMaxSize))
 }
 
 func TestTruncateBody_OverLimit(t *testing.T) {
-	body := strings.Repeat("a", defaultMaxSize+1000)
-	result := TruncateBody(body, defaultMaxSize)
-	assert.LessOrEqual(t, len(result), defaultMaxSize+100)
+	body := strings.Repeat("a", DefaultMaxSize+1000)
+	result := TruncateBody(body, DefaultMaxSize)
+	assert.LessOrEqual(t, len(result), DefaultMaxSize+100)
 	assert.Contains(t, result, "truncated")
 }
 
@@ -258,7 +256,7 @@ func TestTruncateBody_RuneSafe(t *testing.T) {
 	// at a naive byte boundary.
 	prefix := strings.Repeat("a", 100)
 	multibyte := strings.Repeat("é", 50) // é is 2 bytes in UTF-8
-	body := prefix + multibyte + strings.Repeat("b", defaultMaxSize)
+	body := prefix + multibyte + strings.Repeat("b", DefaultMaxSize)
 
 	result := TruncateBody(body, 200)
 
@@ -283,24 +281,24 @@ func TestPost_CreateNew(t *testing.T) {
 	assert.Contains(t, comments[0].Body, "Body.")
 }
 
-func TestPost_UpdateExisting(t *testing.T) {
+func TestPost_TruncatesOversizedBodyBeforeCreate(t *testing.T) {
+	// Every run creates a new comment now (#9334), and the create path
+	// has no history trimming, so a single result over the size limit
+	// must be truncated before it is created instead of failing the post
+	// at the forge's own limit.
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "bot"
-	client.IssueComments = map[string][]forge.IssueComment{
-		"o/r/1": {{ID: 100, HTMLURL: "https://github.com/o/r/issues/1#issuecomment-100", Body: "<!-- test -->\nOld.", Author: "bot"}},
-	}
 	printer := ui.New(io.Discard)
 
-	cfg := Config{Marker: "<!-- test -->", KeepHistory: true}
-	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
+	cfg := Config{Marker: "<!-- test -->", MaxSize: 500}
+	commentURL, err := Post(context.Background(), client, "o", "r", 1, strings.Repeat("a", 800), cfg, printer)
 	require.NoError(t, err)
-	assert.Equal(t, "https://github.com/o/r/issues/1#issuecomment-100", commentURL)
+	assert.Contains(t, commentURL, "issuecomment-")
 
-	require.Len(t, client.UpdatedComments, 1)
-	assert.Equal(t, 100, client.UpdatedComments[0].CommentID)
-	assert.Contains(t, client.UpdatedComments[0].Body, "New.")
-	assert.Contains(t, client.UpdatedComments[0].Body, "<details>")
-	assert.Contains(t, client.UpdatedComments[0].Body, "Old.")
+	comments := client.IssueComments["o/r/1"]
+	require.Len(t, comments, 1)
+	assert.LessOrEqual(t, len(comments[0].Body), 500, "the created body must fit the configured size")
+	assert.Contains(t, comments[0].Body, "<!-- test -->")
 }
 
 func TestPost_DryRun(t *testing.T) {
@@ -347,126 +345,6 @@ func TestPost_EmptyMarker(t *testing.T) {
 	assert.Contains(t, err.Error(), "marker")
 }
 
-func TestPost_UpdateExisting_EmptyHTMLURL(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "bot"
-	client.IssueComments = map[string][]forge.IssueComment{
-		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
-	}
-	printer := ui.New(io.Discard)
-
-	cfg := Config{Marker: "<!-- test -->", KeepHistory: true}
-	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
-	require.NoError(t, err)
-	assert.Empty(t, commentURL, "should return empty URL when existing comment has no HTMLURL")
-
-	require.Len(t, client.UpdatedComments, 1)
-	assert.Contains(t, client.UpdatedComments[0].Body, "New.")
-}
-
-func TestPost_DryRunExisting(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "bot"
-	client.IssueComments = map[string][]forge.IssueComment{
-		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
-	}
-	printer := ui.New(io.Discard)
-
-	cfg := Config{Marker: "<!-- test -->", DryRun: true}
-	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
-	require.NoError(t, err)
-	assert.Empty(t, commentURL)
-
-	assert.Empty(t, client.UpdatedComments)
-}
-
-// fastBotUserLookup shortens the identity-lookup retry backoff for a test.
-func fastBotUserLookup(t *testing.T) {
-	t.Helper()
-	saved := botUserLookupBackoff
-	botUserLookupBackoff = []time.Duration{time.Millisecond, time.Millisecond}
-	t.Cleanup(func() { botUserLookupBackoff = saved })
-}
-
-// flakyAuthClient fails GetAuthenticatedUser failures times, then defers to
-// the wrapped forge.Client.
-type flakyAuthClient struct {
-	forge.Client
-	failures int
-	calls    int
-}
-
-func (c *flakyAuthClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
-	c.calls++
-	if c.calls <= c.failures {
-		return "", errors.New("502 Bad Gateway")
-	}
-	return c.Client.GetAuthenticatedUser(ctx)
-}
-
-func TestPost_PersistentIdentityFailure_ErrorsAndPostsNothing(t *testing.T) {
-	fastBotUserLookup(t)
-	fc := forge.NewFakeClient()
-	fc.AuthenticatedUser = "bot"
-	fc.IssueComments = map[string][]forge.IssueComment{
-		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
-	}
-	client := &flakyAuthClient{Client: fc, failures: 1000}
-	printer := ui.New(io.Discard)
-
-	cfg := Config{Marker: "<!-- test -->", KeepHistory: true}
-	_, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cannot verify which identity")
-	assert.Contains(t, err.Error(), "502 Bad Gateway", "the error must name the cause")
-	assert.Equal(t, len(botUserLookupBackoff)+1, client.calls)
-
-	assert.Empty(t, fc.UpdatedComments, "no comment may be edited")
-	require.Len(t, fc.IssueComments["o/r/1"], 1, "no comment may be created")
-}
-
-func TestPost_TransientIdentityFailure_RetriesThenEdits(t *testing.T) {
-	fastBotUserLookup(t)
-	fc := forge.NewFakeClient()
-	fc.AuthenticatedUser = "bot"
-	fc.IssueComments = map[string][]forge.IssueComment{
-		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
-	}
-	client := &flakyAuthClient{Client: fc, failures: len(botUserLookupBackoff)}
-	printer := ui.New(io.Discard)
-
-	cfg := Config{Marker: "<!-- test -->", KeepHistory: true}
-	_, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
-	require.NoError(t, err)
-	assert.Equal(t, len(botUserLookupBackoff)+1, client.calls, "every retry is used before success")
-
-	require.Len(t, fc.UpdatedComments, 1)
-	assert.Equal(t, 100, fc.UpdatedComments[0].CommentID)
-	assert.Contains(t, fc.UpdatedComments[0].Body, "New.")
-}
-
-func TestPost_IgnoresPlantedMarker_EditsOnlyOwnComment(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "bot"
-	client.IssueComments = map[string][]forge.IssueComment{
-		"o/r/1": {
-			{ID: 100, Body: "<!-- test -->\nplanted by attacker", Author: "attacker"},
-			{ID: 101, Body: "<!-- test -->\nOld.", Author: "bot"},
-		},
-	}
-	printer := ui.New(io.Discard)
-
-	cfg := Config{Marker: "<!-- test -->", KeepHistory: true}
-	_, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
-	require.NoError(t, err)
-
-	require.Len(t, client.UpdatedComments, 1)
-	assert.Equal(t, 101, client.UpdatedComments[0].CommentID, "only the bot's own comment may be edited")
-
-	comments := client.IssueComments["o/r/1"]
-	assert.NotContains(t, comments[0].Body, "New.", "the planted comment must be left untouched")
-}
-
 func TestPost_OnlyPlantedMarker_CreatesNewCommentWithoutTouchingPlanted(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "bot"
@@ -484,21 +362,5 @@ func TestPost_OnlyPlantedMarker_CreatesNewCommentWithoutTouchingPlanted(t *testi
 	require.Len(t, comments, 2, "a new comment is created; the planted one is left in place")
 	assert.NotContains(t, comments[0].Body, "New.", "the planted comment must be untouched")
 	assert.Contains(t, comments[1].Body, "New.")
-	assert.Empty(t, client.UpdatedComments)
-}
-
-func TestPost_DryRun_UnresolvedIdentity_Errors(t *testing.T) {
-	fastBotUserLookup(t)
-	client := forge.NewFakeClient()
-	client.IssueComments = map[string][]forge.IssueComment{
-		"o/r/1": {{ID: 100, Body: "<!-- test -->\nOld.", Author: "bot"}},
-	}
-	printer := ui.New(io.Discard)
-
-	cfg := Config{Marker: "<!-- test -->", DryRun: true}
-	commentURL, err := Post(context.Background(), client, "o", "r", 1, "New.", cfg, printer)
-	require.Error(t, err, "dry run must not imply an edit would occur when identity is unresolved")
-	assert.Contains(t, err.Error(), "cannot verify which identity")
-	assert.Empty(t, commentURL)
 	assert.Empty(t, client.UpdatedComments)
 }

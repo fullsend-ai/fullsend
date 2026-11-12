@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/cucumber/godog"
@@ -48,6 +49,19 @@ func registerForgeStateSteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^a comment on the (`+targetAlternation+`) contains "([^"]+)"$`, func(ctx context.Context, target, text string) (context.Context, error) {
 		return ctx, thenTargetCommentContains(world.FromContext(ctx), target, text)
+	})
+	sc.Step(`^the issue has (\d+) comments? containing "([^"]+)"$`, func(ctx context.Context, count, text string) (context.Context, error) {
+		n, err := strconv.Atoi(count)
+		if err != nil {
+			return ctx, fmt.Errorf("parsing comment count %q: %w", count, err)
+		}
+		return ctx, thenIssueCommentCountContains(world.FromContext(ctx), n, text)
+	})
+	sc.Step(`^the last comment on the issue contains "([^"]+)"$`, func(ctx context.Context, text string) (context.Context, error) {
+		return ctx, thenLastIssueCommentContains(world.FromContext(ctx), text)
+	})
+	sc.Step(`^a comment on the issue other than the last contains "([^"]+)"$`, func(ctx context.Context, text string) (context.Context, error) {
+		return ctx, thenIssueCommentOtherThanLastContains(world.FromContext(ctx), text)
 	})
 	sc.Step(`^the pull request body contains "([^"]+)"$`, func(ctx context.Context, text string) (context.Context, error) {
 		return ctx, thenPullRequestBodyContains(world.FromContext(ctx), text)
@@ -173,6 +187,67 @@ func thenTargetCommentContains(w *world.World, target, text string) error {
 		}
 	}
 	return fmt.Errorf("no comment on %s #%d contains %q (%d comments checked)", target, number, text, len(comments))
+}
+
+// thenIssueCommentCountContains asserts that exactly count comments on
+// the scenario's issue contain text. Sticky comments were removed
+// (#9334): a re-run must append its result as a new comment, so the
+// number of comments carrying the agent's marker is what separates
+// append-on-every-run from a regression to edit-in-place, which keeps
+// the count at one.
+func thenIssueCommentCountContains(w *world.World, count int, text string) error {
+	comments, number, err := listTargetComments(w, targetIssue)
+	if err != nil {
+		return err
+	}
+	matched := 0
+	for _, c := range comments {
+		if strings.Contains(c.Body, text) {
+			matched++
+		}
+	}
+	if matched != count {
+		return fmt.Errorf("issue #%d has %d comments containing %q, want %d (%d comments checked)", number, matched, text, count, len(comments))
+	}
+	return nil
+}
+
+// thenLastIssueCommentContains asserts that the last comment on the
+// scenario's issue contains text: the newest result sits at the end of
+// the thread, where readers look for new activity.
+func thenLastIssueCommentContains(w *world.World, text string) error {
+	comments, number, err := listTargetComments(w, targetIssue)
+	if err != nil {
+		return err
+	}
+	if len(comments) == 0 {
+		return fmt.Errorf("issue #%d has no comments", number)
+	}
+	last := comments[len(comments)-1]
+	if !strings.Contains(last.Body, text) {
+		return fmt.Errorf("the last comment on issue #%d does not contain %q:\n%s", number, text, last.Body)
+	}
+	return nil
+}
+
+// thenIssueCommentOtherThanLastContains asserts that a comment before
+// the last on the scenario's issue contains text: an earlier result
+// stays where it was posted instead of being folded into the newest
+// comment.
+func thenIssueCommentOtherThanLastContains(w *world.World, text string) error {
+	comments, number, err := listTargetComments(w, targetIssue)
+	if err != nil {
+		return err
+	}
+	if len(comments) < 2 {
+		return fmt.Errorf("issue #%d has %d comments, need at least 2", number, len(comments))
+	}
+	for _, c := range comments[:len(comments)-1] {
+		if strings.Contains(c.Body, text) {
+			return nil
+		}
+	}
+	return fmt.Errorf("no comment before the last on issue #%d contains %q (%d comments checked)", number, text, len(comments)-1)
 }
 
 // thenPullRequestBodyContains asserts that the scenario's pull request

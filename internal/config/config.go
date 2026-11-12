@@ -965,11 +965,10 @@ type perRepoConfig struct {
 	KillSwitch *bool           `yaml:"kill_switch,omitempty"`
 	Runtime    string          `yaml:"runtime,omitempty"`
 
-	// KeepHistory controls whether sticky comment updates append the
-	// previous body as a collapsed "Previous run" <details> block. When
-	// nil (omitted), falls through to parent (code default true —
-	// history appended). When explicitly false, updates replace the body
-	// in-place with no history.
+	// KeepHistory is deprecated and has no effect: sticky comments were
+	// removed (#9334); every result is a new comment. Kept until a
+	// cleanup removes the field. When nil (omitted), falls through to
+	// parent (code default true).
 	KeepHistory *bool `yaml:"keep_history,omitempty"`
 
 	Roles  []string     `yaml:"roles,omitempty"`

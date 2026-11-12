@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -14,15 +13,23 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-const defaultMaxSize = 65000
+// DefaultMaxSize is the default maximum comment body size in bytes.
+const DefaultMaxSize = 65000
 
-// Config controls how a sticky comment is identified and managed.
+// Config controls how an agent result comment is marked and posted.
 type Config struct {
 	Marker       string // hidden HTML comment, e.g. "<!-- fullsend:review-agent -->"
 	FooterMarker string // optional footer delimiter, stripped before collapsing history
 	MaxSize      int    // max comment body size (default 65000)
 	DryRun       bool
-	KeepHistory  bool // when false, updates replace the body in-place with no "Previous run" history
+
+	// KeepHistory is deprecated and has no effect on posting: sticky
+	// comments were removed (#9334), so every result is a new comment and
+	// nothing is folded into "Previous run" blocks. It is still read by
+	// BuildUpdatedBody, which no posting path calls anymore; the flag and
+	// config field that set it stay accepted so existing callers keep
+	// working until a cleanup removes them.
+	KeepHistory bool
 
 	// TrustedLeadingLine, when set, matches a marker line that the trusted
 	// caller places at the start of the body. Matching leading lines are
@@ -38,20 +45,16 @@ func (c Config) maxSize() int {
 	if c.MaxSize > 0 {
 		return c.MaxSize
 	}
-	return defaultMaxSize
+	return DefaultMaxSize
 }
 
-// Post implements the sticky comment lifecycle: find an existing comment
-// bearing the marker, collapse old content into history, and create or
-// update in-place. Returns the HTML URL of the comment (empty on dry run).
-//
-// It never edits a comment it cannot verify as its own: an existing
-// comment matches only when it carries the marker and its author is
-// exactly the login this client posts as, so a comment anyone could plant
-// with the same marker is ignored. When that login cannot be resolved
-// (after a short retry) it returns an error and posts nothing — not even
-// on dry run, since dry run should not claim an edit would occur when none
-// safely could.
+// Post publishes an agent result as a new comment at the end of the
+// thread and returns the HTML URL of the created comment (empty on dry
+// run). It never edits an existing comment: sticky comments were removed
+// (#9334), so every run appends its own comment and the thread itself is
+// the history. The marker is still prepended so other steps can find this
+// agent's comments; readers looking for the newest result find it at the
+// bottom, where new activity is expected.
 func Post(ctx context.Context, client forge.Client, owner, repo string, number int, body string, cfg Config, printer *ui.Printer) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
@@ -60,44 +63,16 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 		return "", fmt.Errorf("marker is empty")
 	}
 
-	// Without a verified identity nothing is posted at all: editing would
-	// trust an unverified comment, and creating a new one would orphan the
-	// earlier comment, whose stale content later runs would never update.
-	botUser, err := resolveBotUser(ctx, client)
-	if err != nil {
-		return "", unverifiedBotUserError(err)
-	}
-
-	comments, err := client.ListIssueComments(ctx, owner, repo, number)
-	if err != nil {
-		return "", fmt.Errorf("listing comments: %w", err)
-	}
-
-	existing := FindMarkedComment(comments, cfg.Marker, botUser)
 	// Escape marker syntax in the agent-written body before the runner's
 	// own marker is prepended, so the runner's marker is the only live one
 	// (apart from a validated trusted leading line, see neutralizeBody).
 	markedBody := cfg.Marker + "\n" + neutralizeBody(body, cfg)
+	// The create path has no history trimming (the update path that used
+	// to cap the assembled body is gone), so cap the body before
+	// creating: an oversized single result would otherwise fail the post.
+	markedBody = TruncateBody(markedBody, cfg.maxSize())
 
-	if existing != nil {
-		printer.StepStart("Found existing comment, updating in-place")
-
-		newBody := BuildUpdatedBody(existing.Body, markedBody, cfg)
-
-		if cfg.DryRun {
-			printer.StepInfo("Dry run — would update comment " + strconv.Itoa(existing.ID))
-			printer.StepInfo("Body length: " + strconv.Itoa(len(newBody)))
-			return "", nil
-		}
-
-		if err := client.UpdateIssueComment(ctx, owner, repo, existing.ID, newBody); err != nil {
-			return "", fmt.Errorf("updating comment: %w", err)
-		}
-		printer.StepDone("Comment updated")
-		return existing.HTMLURL, nil
-	}
-
-	printer.StepStart("No existing comment found, creating new one")
+	printer.StepStart("Posting comment")
 
 	if cfg.DryRun {
 		printer.StepInfo("Dry run — would create new comment")
@@ -141,9 +116,8 @@ func neutralizeBody(body string, cfg Config) string {
 
 // FindMarkedComment returns the first comment whose body contains the given
 // marker string and whose author is exactly botUser, or nil if none is
-// found. An empty botUser matches nothing: callers pass it only when
-// identity resolution failed, and matching on the marker alone would let
-// anyone's comment be treated as the bot's own and edited in-place.
+// found. An empty botUser matches nothing: matching on the marker alone
+// would let anyone's comment be treated as the bot's own.
 func FindMarkedComment(comments []forge.IssueComment, marker, botUser string) *forge.IssueComment {
 	if botUser == "" {
 		return nil
@@ -157,46 +131,6 @@ func FindMarkedComment(comments []forge.IssueComment, marker, botUser string) *f
 		}
 	}
 	return nil
-}
-
-// botUserLookupBackoff is the wait before each retry of the bot identity
-// lookup; its length is the number of retries. Tests shorten it.
-var botUserLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second}
-
-// resolveBotUser returns the exact login client posts as, retrying a failed
-// or empty lookup per botUserLookupBackoff so a transient error does not
-// degrade marker spoofing protection. This mirrors resolveTrackerSelf in
-// internal/cli/issues.go, but internal/cli imports this package, so the
-// retry logic is kept local here rather than shared, to avoid an import
-// cycle.
-func resolveBotUser(ctx context.Context, client forge.Client) (string, error) {
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		botUser, err := client.GetAuthenticatedUser(ctx)
-		if err == nil && botUser == "" {
-			err = fmt.Errorf("the authenticated user is empty")
-		}
-		if err == nil {
-			return botUser, nil
-		}
-		lastErr = err
-		if attempt >= len(botUserLookupBackoff) {
-			return "", fmt.Errorf("after %d attempts: %w", attempt+1, lastErr)
-		}
-		select {
-		case <-ctx.Done():
-			return "", fmt.Errorf("%w (last lookup error: %v)", ctx.Err(), lastErr)
-		case <-time.After(botUserLookupBackoff[attempt]):
-		}
-	}
-}
-
-// unverifiedBotUserError reports that the posting identity could not be
-// resolved, so nothing was posted or edited.
-func unverifiedBotUserError(err error) error {
-	return fmt.Errorf("cannot verify which identity this posts as, so no comment was posted or edited; "+
-		"rerun if the failure was transient, otherwise check that the token can read its own identity "+
-		"(the authenticated user): %w", err)
 }
 
 // History blocks are wrapped with sentinel comments so extraction is safe
@@ -219,6 +153,10 @@ var legacyDetailsRe = regexp.MustCompile(`(?s)<details>\s*<summary>Previous [^<]
 // When cfg.KeepHistory is false, the old body is discarded entirely and
 // the new body is returned with footer re-appended (no "Previous run"
 // blocks).
+//
+// Deprecated: no posting path calls this anymore — sticky comments were
+// removed (#9334) and every result is posted as a new comment. It is kept
+// only until a cleanup deletes the history-folding machinery.
 func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 	// When history is disabled, replace the body entirely. We still
 	// need to preserve the footer from the old body if configured.
@@ -332,15 +270,21 @@ func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 	return combined
 }
 
-// TruncateBody trims body to fit within maxSize, keeping the current
-// content at the top and trimming history from the end. The truncation
-// point is aligned to a valid UTF-8 boundary.
+// TruncateBody trims body to fit within maxSize, keeping the content at
+// the top and cutting the end. The truncation point is aligned to a valid
+// UTF-8 boundary.
 func TruncateBody(body string, maxSize int) string {
 	if len(body) <= maxSize {
 		return body
 	}
 
-	truncationMsg := "\n\n---\n*Previous history truncated due to comment size limits.*"
+	// No thematic break ("---") before the note: the Jira door round-trips
+	// the body through MarkdownToADF/ADFToMarkdown, and that renders a
+	// thematic break with a following blank line — one byte longer than
+	// the markdown that was posted. Without the break the round trip is
+	// byte-stable, so a body truncated to the Jira limit stays within it
+	// as the stored comment's markdown rendering too.
+	truncationMsg := "\n\n*Comment truncated due to comment size limits.*"
 	budget := maxSize - len(truncationMsg)
 	if budget < 0 {
 		budget = 0

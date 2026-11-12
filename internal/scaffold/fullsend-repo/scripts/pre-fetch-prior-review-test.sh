@@ -325,6 +325,31 @@ run_test "html-comment-sha-with-history" \
   "5429609dce9a122a2721107edb51551c8d73cc6f" \
   0
 
+# 14. Several marked comments by the same review bot — the newest wins.
+#     Every re-review run appends its own comment now that sticky comments
+#     are gone (#9334), so multiple matches are the norm; a regression to
+#     first-match would silently degrade every re-review to considering
+#     the oldest review.
+BODY_OLDER_REVIEW="<!-- fullsend:review-agent -->
+## Review
+
+**Head SHA:** aaaa111
+
+Older review content."
+
+BODY_NEWER_REVIEW="<!-- fullsend:review-agent -->
+## Review
+
+**Head SHA:** bbbb222
+
+Newer review content."
+
+run_test "multiple-marked-comments-newest-wins" \
+  "$(make_comment_json "${BODY_OLDER_REVIEW}")
+$(make_comment_json "${BODY_NEWER_REVIEW}")" \
+  "bbbb222" \
+  0
+
 # --- Summary ---
 
 echo ""

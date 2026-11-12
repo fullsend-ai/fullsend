@@ -22,7 +22,8 @@
 # Treat the result file as untrusted: it is model output. Only the three
 # fields below are ever read, each must be a string, and the comment body is
 # piped on stdin rather than interpolated into a command. comment may be
-# missing or empty when status is ok, because nothing new is posted then.
+# missing or empty when status is ok, because the all-clear is the summary
+# alone.
 
 set -euo pipefail
 
@@ -129,19 +130,22 @@ fi
 REPO="${BASH_REMATCH[1]}"
 NUMBER="${BASH_REMATCH[3]}"
 
-# On ok, post nothing — unless an earlier run left a findings comment on
-# this work item. The harness trigger fires again on later pushes, so a
-# problem the author has since fixed would otherwise stay reported.
-# --only-if-exists makes fullsend replace that comment with the all-clear,
-# and post nothing when there is no earlier comment. It matches only a
-# comment carrying this marker whose author is exactly the login fullsend
-# posts as, so a comment anyone else planted with the marker is never
-# edited. When that login cannot be resolved it exits non-zero without
-# posting; under `set -e` this script, and so the run, then fails
-# visibly — rerun it.
+# On ok, post nothing — unless an earlier comment with this marker exists
+# on this work item, from findings or a previous all-clear alike (the gate
+# is marker-only, so it stays open once the first all-clear is posted).
+# The harness trigger fires again on later pushes, so a problem the author
+# has since fixed would otherwise stay reported.
+# --only-if-exists makes fullsend post the all-clear as a new comment at
+# the end of the thread, but only when an earlier comment with this
+# marker exists; with none, nothing is posted. It matches only a comment
+# carrying this marker whose author is exactly the login fullsend posts
+# as, so a comment anyone else planted with the marker never counts.
+# When that login cannot be resolved it exits non-zero without posting;
+# under `set -e` this script, and so the run, then fails visibly —
+# rerun it.
 if [[ "${status}" == "ok" ]]; then
   if [[ "${__DRY_RUN_VAR__:-}" == "1" ]]; then
-    echo "post-__AGENT_NAME__: status=ok, nothing to post (dry run: did not check for an earlier findings comment to replace)" >&2
+    echo "post-__AGENT_NAME__: status=ok, nothing to post (dry run: did not check for an earlier findings comment)" >&2
     exit 0
   fi
   # The runner's fullsend may predate --only-if-exists (it is pinned by the
@@ -151,7 +155,7 @@ if [[ "${status}" == "ok" ]]; then
   # Only a working CLI without the flag keeps the old behaviour — post
   # nothing.
   if ! help_text=$(fullsend issues post-comment --help 2>&1); then
-    printf '%s\n' "post-__AGENT_NAME__: 'fullsend issues post-comment --help' failed; cannot replace an earlier findings comment" >&2
+    printf '%s\n' "post-__AGENT_NAME__: 'fullsend issues post-comment --help' failed; cannot check for an earlier findings comment" >&2
     printf '%s\n' "${help_text}" >&2
     exit 1
   fi
@@ -159,9 +163,11 @@ if [[ "${status}" == "ok" ]]; then
     echo "post-__AGENT_NAME__: status=ok, nothing to post (this fullsend has no --only-if-exists; an earlier findings comment, if any, stays until a later run with findings)" >&2
     exit 0
   fi
-  # --keep-history=false: the all-clear replaces the comment in place, so
-  # repeated clean runs do not stack identical "Previous run" blocks. With
-  # no comment the all-clear is the summary alone.
+  # --keep-history=false is deprecated and, on a fullsend that has this
+  # change, has no effect: the all-clear is posted as a new comment at the
+  # end of the thread, following any earlier findings. It stays for
+  # runners pinned to an older CLI by the repository's fullsend-ref. With
+  # no comment in the result the all-clear is the summary alone.
   # The format is chosen here, never taken from the result file.
   body_format='**%s**\n\n%s\n'
   [[ -n "${comment}" ]] || body_format='**%s**\n%s'
@@ -193,9 +199,9 @@ if [[ "${__DRY_RUN_VAR__:-}" == "1" ]]; then
   exit 0
 fi
 
-# fullsend issues post-comment is the repo's sticky-comment primitive: it
-# finds this agent's previous comment by marker and its own author and edits
-# it in place, so re-runs do not flood the work item.
+# fullsend issues post-comment posts the result as a new comment at the
+# end of the thread, carrying this agent's marker so later steps can find
+# it; the thread itself is the history.
 printf '**%s**\n\n%s\n' "${summary}" "${comment}" \
   | fullsend issues post-comment \
       --tracker github \
