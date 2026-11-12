@@ -138,7 +138,7 @@ func TestPrePullGHCRImage_PullsWithRunScopedAuthFile(t *testing.T) {
 	_, err = os.Stat(filepath.Dir(fake.authFiles[0]))
 	assert.True(t, os.IsNotExist(err), "auth directory must be removed after a successful pull")
 
-	assert.Contains(t, buf.String(), "Pulled sandbox image")
+	assert.Contains(t, buf.String(), "Pulled image")
 	assert.NotContains(t, buf.String(), testWorkflowToken)
 }
 

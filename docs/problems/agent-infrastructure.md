@@ -148,7 +148,10 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
   URL decided in
   [ADR 0156](../ADRs/0156-separate-jira-api-url-from-site-url.md). Other
   agent resource access remains open.
-- Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
+- Do we need a dedicated “agent runner” image or environment with a known,
+  auditable tool set? Repositories can supply toolchain images separately
+  from Fullsend's sandbox image; whether Fullsend should maintain a dedicated
+  base image remains open ([ADR 0173](../ADRs/0173-compose-multiple-images-into-agent-sandboxes.md)).
 - ~~How do we preserve end-to-end traceability for event-driven agent dispatch in GitHub Actions?~~ Decided in [ADR 0041](../ADRs/0041-synchronous-workflow-call-event-dispatch.md) (synchronous `workflow_call` dispatch for the event path).
 - How do we compare 3rd party vs internal vs build-our-own on concrete criteria: cost, time to first agent, compliance, and alignment with our security and coordination model?
 - Who in the org would own and operate agent infrastructure, and how does that align with existing platform or CI ownership? [ADR 0123](../ADRs/0123-tenant-configuration-from-repos-yaml.md) establishes the existing `repos.yaml` v1 format for tenant configuration in a possible centralized offering; the source of truth, service, operational ownership, and infrastructure remain open.

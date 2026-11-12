@@ -13,7 +13,7 @@ version: 1
 
 filesystem_policy:
   include_workdir: true
-  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log, /opt/fullsend]
   read_write: [/sandbox, /tmp, /dev/null]
 landlock:
   compatibility: best_effort

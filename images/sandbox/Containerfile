@@ -27,13 +27,16 @@
 # Build:
 #   podman build -t <registry>/fullsend-sandbox:v1 \
 #     -f images/sandbox/Containerfile images/sandbox/
+#   podman build --target fullsend-sandbox-tools \
+#     -t <registry>/fullsend-sandbox-tools:v1 \
+#     -f images/sandbox/Containerfile images/sandbox/
 #
 # Per-org images that need extra tools (e.g. Go, Rust) should extend
 # this base:
 #   FROM <registry>/fullsend-sandbox:v1
 #   RUN apt-get install -y golang
 
-FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e
+FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e AS fullsend-sandbox-build
 
 # The base image runs as the sandbox user (998). Switch to root for
 # package installation and switch back at the end.
@@ -73,7 +76,7 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
     && test -x "${NPM_CLAUDE}" \
     && rm -f /usr/local/bin/claude \
-    && ln -s "${NPM_CLAUDE}" /usr/local/bin/claude \
+    && ln -sr "${NPM_CLAUDE}" /usr/local/bin/claude \
     && GOT="$(claude --version | awk '{print $1}')" \
     && if [ "${GOT}" != "${CLAUDE_CODE_VERSION}" ]; then \
          echo "claude on PATH reports ${GOT}, expected CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}" >&2; \
@@ -282,7 +285,7 @@ RUN npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION} \
 RUN NPM_CODEX="$(npm prefix -g)/bin/codex" \
     && test -x "${NPM_CODEX}" \
     && rm -f /usr/local/bin/codex \
-    && ln -s "${NPM_CODEX}" /usr/local/bin/codex \
+    && ln -sr "${NPM_CODEX}" /usr/local/bin/codex \
     && GOT="$(codex --version)" \
     && if [ "${GOT}" != "codex-cli ${CODEX_VERSION}" ]; then \
          echo "codex on PATH reports '${GOT}', expected 'codex-cli ${CODEX_VERSION}'" >&2; \
@@ -459,10 +462,13 @@ RUN case "$TARGETARCH" in \
     && fd --version | grep -q "^fd ${FD_VERSION}$"
 
 # ---------------------------------------------------------------------------
-# pre-commit + gitlint — pre-commit runs repo-defined hooks (formatting,
-# linting, etc.) on changed files. gitlint validates commit message format.
+# pre-commit + gitlint + jsonschema — pre-commit runs repo-defined hooks
+# (formatting, linting, etc.) on changed files; gitlint validates commit
+# messages; jsonschema backs the agent-facing fullsend-check-output helper.
 # Baking them in avoids pip installs on every run and ensures availability
-# even if pip is network-restricted inside the sandbox.
+# even if pip is network-restricted inside the sandbox. Keep jsonschema in a
+# dedicated path so the mounted Fullsend Python can load it independently of
+# the user-provided sandbox image's Python packages.
 ARG PRECOMMIT_VERSION=4.5.1
 ARG GITLINT_VERSION=0.19.1
 ARG JSONSCHEMA_VERSION=4.23.0
@@ -472,6 +478,8 @@ RUN apt-get update \
     && pip install --no-cache-dir --break-system-packages \
       "pre-commit==${PRECOMMIT_VERSION}" \
       "gitlint-core==${GITLINT_VERSION}" \
+    && pip install --no-cache-dir --break-system-packages \
+      --target /usr/local/share/fullsend/python/site-packages \
       "jsonschema==${JSONSCHEMA_VERSION}"
 
 # ---------------------------------------------------------------------------
@@ -534,5 +542,24 @@ RUN case "$TARGETARCH" in \
     && chmod +x /usr/local/bin/acli \
     && rm -rf /tmp/acli.tar.gz /tmp/acli_${ACLI_VERSION}_linux_${TARGETARCH}
 
+# In the regular sandbox image, expose the same tool paths the runner uses
+# when this image is mounted read-only at /opt/fullsend. The OCI image mount
+# covers this directory with the mounted image's root filesystem; without a
+# mount, this link resolves to the tools installed in this image.
+RUN install -d -o root -g root -m 0755 /opt/fullsend \
+    && ln -s /usr /opt/fullsend/usr
+
 # Switch back to the sandbox user.
 USER sandbox
+
+# The ordinary sandbox image uses this link so the runner can find the
+# installed tools at /opt/fullsend/usr/... without an image mount. A mounted
+# OCI root is already exposed at /opt/fullsend, so its own /usr tree must stay
+# a real directory. Publish this target separately for image_mounts users.
+FROM fullsend-sandbox-build AS fullsend-sandbox-tools
+USER root
+RUN rm /opt/fullsend/usr
+USER sandbox
+
+# Keep the ordinary fullsend-sandbox image as the default build target.
+FROM fullsend-sandbox-build AS fullsend-sandbox

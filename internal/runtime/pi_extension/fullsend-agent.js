@@ -799,7 +799,7 @@ export function createAgentTool(manifest, { spawn = nodeSpawn, log: rawLog = (m)
   // travel inside the manifest, so the manifest digest covers them: a
   // rewrite that drops or edits them is itself a manifest drift, caught
   // first below. The vendored provider extensions under
-  // /usr/local/share/pi-extensions carry none on purpose — they are
+  // /opt/fullsend/usr/local/share/pi-extensions carry none on purpose — they are
   // root-owned and read-only in the image, outside anything the agent can
   // write, so there is nothing there to re-check.
   const extensionDigests = Object.entries(agent.extensionDigests ?? {}).filter(

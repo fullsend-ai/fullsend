@@ -519,6 +519,34 @@ Key patterns to note:
 
 For the complete list of harness fields, see the [Harness Field Reference](../../reference/harness-reference.md).
 
+#### Mount the Fullsend runtime tools
+
+Use `image_mounts` when your sandbox image needs Fullsend's pinned runtime
+tools from a separate OCI image:
+
+```yaml
+image_mounts:
+  - image: ghcr.io/fullsend-ai/fullsend-sandbox-tools@sha256:<image-digest>
+    dest: /opt/fullsend
+```
+
+Fullsend mounts the image read-only. Its OCI `ENV`, user, working directory
+and entrypoint do not apply. The sandbox policy must include `/opt/fullsend`
+in `filesystem_policy.read_only`. The OpenShell Podman gateway must enable
+`allow_driver_config` and disable resource admission. The `fullsend-sandbox`
+package publishes a matching mount-ready `fullsend-sandbox-tools` image; use
+that image rather than mounting the ordinary sandbox image, whose
+`/opt/fullsend/usr` compatibility link would point back into the sandbox.
+The mount image should use the same
+OpenShell sandbox base, or a Linux image with compatible system libraries and
+Python/Node runtimes. The local Podman backend supports this PoC; other
+backends may reject the mount. For merge behavior and destination rules, see
+the [harness merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays).
+Distinct image mount destinations cannot contain one another (for example,
+`/opt/fullsend` and `/opt/fullsend/org-tools`) or overlap a `host_files`
+destination. A child can still replace an inherited image mount at the exact
+same destination.
+
 ### Agent definitions
 
 The agent definition is Markdown with YAML frontmatter:
@@ -561,7 +589,7 @@ different filesystem or process rules, for example
 version: 1
 filesystem_policy:
   include_workdir: true
-  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log, /opt/fullsend]
   read_write: [/sandbox, /tmp, /dev/null]
 landlock:
   compatibility: best_effort

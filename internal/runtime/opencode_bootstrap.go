@@ -427,7 +427,7 @@ func openCodeVerifyAgent(sandboxName, agentName string, r OpenCodeRuntime) error
 // openCodePreflightVersion runs `opencode --version` so a missing or broken
 // binary is reported before any iteration, not as an empty transcript.
 func openCodePreflightVersion(sandboxName string) error {
-	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, "opencode --version", 30*time.Second)
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, sandboxFullsendToolPathCommand("opencode --version"), 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("opencode preflight: %w", err)
 	}

@@ -23,6 +23,7 @@ type ForgeConfig struct {
 	Providers      []string          `yaml:"providers,omitempty"`
 	OpenShell      *OpenShellConfig  `yaml:"openshell,omitempty"`
 	HostFiles      []HostFile        `yaml:"host_files,omitempty"`
+	ImageMounts    []ImageMount      `yaml:"image_mounts,omitempty"`
 	ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
 	RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
 	Env            *EnvConfig        `yaml:"env,omitempty"`
@@ -125,6 +126,9 @@ func (h *Harness) validateForge() error {
 				return fmt.Errorf("forge.%s.host_files[%d].src must be a local path, not a URL", key, i)
 			}
 		}
+		if err := validateImageMounts(fc.ImageMounts, fc.HostFiles, fmt.Sprintf("forge.%s.image_mounts", key)); err != nil {
+			return err
+		}
 		// Field-level merge inherits script from the top-level loop.
 		topHasScript := h.ValidationLoop != nil && h.ValidationLoop.Script != ""
 		if err := validateValidationLoop(fmt.Sprintf("forge.%s", key), fc.ValidationLoop, topHasScript); err != nil {
@@ -205,6 +209,9 @@ func validateOverlayForgeConfigInherit(idx int, fc *ForgeConfig, inheritScript b
 		if IsURL(hf.Src) {
 			return fmt.Errorf("%s.host_files[%d].src must be a local path, not a URL", prefix, i)
 		}
+	}
+	if err := validateImageMounts(fc.ImageMounts, fc.HostFiles, prefix+".image_mounts"); err != nil {
+		return err
 	}
 	return validateValidationLoop(prefix, fc.ValidationLoop, inheritScript)
 }
@@ -369,6 +376,7 @@ func (h *Harness) ResolveForge(platform string) error {
 //   - Providers: top-level + forge (concatenated)
 //   - OpenShell.Profiles: top-level + forge (concatenated)
 //   - HostFiles: top-level + forge (concatenated with last-writer-wins dedup by Dest)
+//   - ImageMounts: top-level + forge (deduplicated by Dest; forge wins)
 //   - RunnerEnv: top-level merged with forge; forge keys win
 //   - ValidationLoop: field-level merge; forge non-zero fields win
 //
@@ -412,6 +420,9 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) error {
 
 	if fc.HostFiles != nil {
 		h.HostFiles = mergeHostFiles(h.HostFiles, fc.HostFiles)
+	}
+	if fc.ImageMounts != nil {
+		h.ImageMounts = mergeImageMounts(h.ImageMounts, fc.ImageMounts)
 	}
 
 	if fc.RunnerEnv != nil {

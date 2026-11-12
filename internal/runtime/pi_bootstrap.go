@@ -838,7 +838,7 @@ func piAgentThinking() string {
 // run and which vendored provider extension directories the image has:
 // one line for the binary, then one per existing directory.
 func piAgentProbeCommand() string {
-	return "command -v pi; for d in " + shellQuote(piVertexExtensionPath) + " " + shellQuote(piXaiVertexExtensionPath) +
+	return sandboxFullsendToolPathCommand("command -v pi") + "; for d in " + shellQuote(piVertexExtensionPath) + " " + shellQuote(piXaiVertexExtensionPath) +
 		" " + shellQuote(piInferenceGatewayExtensionPath) +
 		`; do test -d "$d" && echo "$d"; done; true`
 }
@@ -948,7 +948,7 @@ func piHooksManifestFor(hooksDir string, hooks security.SandboxHookConfig) *piHo
 // the pinned binary is missing or broken in the image, which is reported
 // before any iteration rather than as an empty transcript.
 func piPreflightVersion(sandboxName string) (string, error) {
-	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, "pi --version", 30*time.Second)
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, sandboxFullsendToolPathCommand("pi --version"), 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("pi preflight: %w", err)
 	}

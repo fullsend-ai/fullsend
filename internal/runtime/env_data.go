@@ -93,6 +93,12 @@ func EnvDataControlLines() []string {
 	return envDataControlLines(sandbox.SandboxWorkspace)
 }
 
+// sandboxFullsendToolPathCommand runs a fixed runner command with the
+// mounted Fullsend tool image ahead of the sandbox's ambient PATH.
+func sandboxFullsendToolPathCommand(command string) string {
+	return "PATH=" + shellQuote(sandbox.SandboxFullsendToolPath) + `${PATH:+:$PATH} ` + command
+}
+
 func envDataControlLines(workspace string) []string {
 	iteration := workspace + "/.fullsend/iteration.env"
 	return []string{
@@ -115,9 +121,10 @@ func envDataControlLines(workspace string) []string {
 // again.
 const envDataWritableAncestor = `while :; do if test -w "$p" || test -O "$p"; then continue 2; fi; case $p in (/) break ;; esac; p=${p%/*}; p=${p:-/}; done`
 
-// envDataTrustedPath records the launch PATH without the directories the
-// agent user can write. It runs before anything the agent wrote is read, so
-// the PATH it filters is the runner's. A sandbox image can put an
+// envDataTrustedPath records the Fullsend tool-image paths followed by the
+// launch PATH, without directories the agent user can write. It runs before
+// anything the agent wrote is read, so the PATH it filters is the runner's.
+// A sandbox image can put an
 // agent-owned directory first (a virtualenv's bin, say), so a plain PATH
 // lookup there finds whatever the agent left. Each entry is recorded as its
 // physical path (`cd -P`, a builtin), so a symlinked entry is judged by the
@@ -128,7 +135,7 @@ const envDataWritableAncestor = `while :; do if test -w "$p" || test -O "$p"; th
 // only relative and empty entries and missing directories are left out.
 func envDataTrustedPath() string {
 	return `{ readonly ` + envDataTrustedPathVar + `="$(IFS=:; set -f; s=; ` +
-		`for d in $PATH; do case $d in (/*) ;; (*) continue ;; esac; if ! test -O /; then ` +
+		`for d in ` + sandbox.SandboxFullsendToolPath + `:$PATH; do case $d in (/*) ;; (*) continue ;; esac; if ! test -O /; then ` +
 		`d="$(cd -P "$d" 2>/dev/null && pwd -P)" || continue; case $d in (*:*) continue ;; esac; p=$d; ` + envDataWritableAncestor + `; fi; ` +
 		`if test -d "$d"; then printf '%s%s' "$s" "$d"; s=:; fi; done)"; }`
 }

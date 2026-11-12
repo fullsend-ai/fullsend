@@ -484,11 +484,12 @@ derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`,
 `PUSH_TOKEN` still receive the minted App identity.
 
 The runner itself also reads `GH_WORKFLOW_TOKEN` for one purpose besides provider credential
-expansion: before it creates the sandbox, on GitHub Actions, when the harness `image:` is on
-`ghcr.io`, it pulls the image with the token through Podman (a run-scoped auth file in a private
-temporary directory, removed after the pull), so the image can be a private package. Only the
-shipped code and fix workflows grant `packages: read`, so a private image works on code and fix
-harnesses; on other agents a private image is denied and sandbox creation fails. The package must also
+expansion: before it creates the sandbox, on GitHub Actions, it pulls each `ghcr.io` harness
+`image` and `image_mounts[].image` reference with the token through Podman (a run-scoped auth file
+in a private temporary directory, removed after the pull), so those images can be private packages. Only the
+shipped code and fix workflows grant `packages: read`, so private sandbox and
+`image_mounts` images work on code and fix harnesses; on other agents a private
+image is denied and sandbox creation fails. The package must also
 allow Actions access from the repository. If the pull fails, the runner logs a warning and the
 OpenShell gateway attempts its own unauthenticated pull, so public images keep working. For images
 on other registries the runner adds no credentials. See

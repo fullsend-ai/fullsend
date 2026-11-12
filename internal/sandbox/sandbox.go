@@ -28,6 +28,17 @@ import (
 )
 
 const (
+	// SandboxFullsendRoot is the mount point for the Fullsend tool image. Its
+	// root filesystem is mounted here read-only.
+	SandboxFullsendRoot = "/opt/fullsend"
+	// SandboxFullsendLocalBinDir holds the Fullsend sandbox's pinned CLIs and
+	// scanners when its image root is mounted at SandboxFullsendRoot.
+	SandboxFullsendLocalBinDir = SandboxFullsendRoot + "/usr/local/bin"
+	// SandboxFullsendBinDir holds system tools from the mounted image.
+	SandboxFullsendBinDir = SandboxFullsendRoot + "/usr/bin"
+	// SandboxFullsendToolPath is prepended to PATH so runner-pinned tools
+	// resolve from the mounted tool image before project-image commands.
+	SandboxFullsendToolPath = SandboxFullsendLocalBinDir + ":" + SandboxFullsendBinDir
 	// SandboxWorkspace is the workspace directory inside the sandbox.
 	SandboxWorkspace = "/sandbox/workspace" //nolint:gosec // not a credential
 	// SandboxClaudeConfig is the Claude config directory inside the sandbox.
@@ -54,7 +65,7 @@ const (
 	// sandbox image (images/sandbox/Containerfile), root-owned and outside
 	// PI_CODING_AGENT_DIR so pi never auto-loads them; PiRuntime.Run passes
 	// each one explicitly with -e.
-	SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"
+	SandboxPiExtensionsDir = SandboxFullsendRoot + "/usr/local/share/pi-extensions"
 	// SandboxOpenCodeConfig is the OpenCode config directory inside the
 	// sandbox. Exported as OPENCODE_CONFIG_DIR (OpenCodeRuntime.EnvExports).
 	// Outside the cloned repo tree, like SandboxClaudeConfig and
@@ -1425,8 +1436,14 @@ func effectiveReadyTimeout(override time.Duration) time.Duration {
 // Create creates a persistent OpenShell sandbox and waits for it to be ready.
 // It retries up to DefaultMaxCreateAttempts times with exponential backoff,
 // deleting the failed sandbox between attempts.
-func Create(name string, providers []string, image, policy string) error {
-	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0, false)
+func Create(name string, providers []string, image, policy string, imageMounts ...ImageMount) error {
+	return CreateWithRetry(name, providers, image, policy, DefaultMaxCreateAttempts, 0, false, imageMounts...)
+}
+
+// ImageMount is an OCI image mounted read-only into a Podman-backed sandbox.
+type ImageMount struct {
+	Source string // OCI image reference
+	Target string // absolute mount destination inside the sandbox
 }
 
 // CreateWithRetry creates a sandbox, retrying up to maxAttempts times with
@@ -1437,7 +1454,7 @@ func Create(name string, providers []string, image, policy string) error {
 // If keep is true (--keep-sandbox), a failed attempt is neither deleted nor
 // retried: retrying would require deleting the sandbox under the same name,
 // which destroys the state the caller asked to keep for inspection.
-func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration, keep bool) error {
+func CreateWithRetry(name string, providers []string, image, policy string, maxAttempts int, readyTimeoutOverride time.Duration, keep bool, imageMounts ...ImageMount) error {
 	if maxAttempts < 1 {
 		return fmt.Errorf("maxAttempts must be >= 1, got %d", maxAttempts)
 	}
@@ -1446,7 +1463,7 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		lastErr = createOnce(name, providers, image, policy, timeout)
+		lastErr = createOnce(name, providers, image, policy, timeout, imageMounts...)
 		if lastErr == nil {
 			return nil
 		}
@@ -1529,11 +1546,29 @@ func terminalSandboxPhase(output string) string {
 	return ""
 }
 
+// podmanDriverConfig carries the per-sandbox settings understood by the
+// OpenShell Podman backend.
+type podmanDriverConfig struct {
+	Podman podmanDriverSettings `json:"podman"`
+}
+
+type podmanDriverSettings struct {
+	Mounts []podmanImageMount `json:"mounts"`
+}
+
+type podmanImageMount struct {
+	Type     string `json:"type"`
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"read_only"`
+}
+
 // createOnce creates a persistent OpenShell sandbox and waits for it to be
 // ready. If providers are given, they are passed as --provider flags. If image
 // is non-empty, it is passed as --from to start the sandbox from a container
 // image. If policy is non-empty, it is applied at creation time via --policy.
-func createOnce(name string, providers []string, image, policy string, timeout time.Duration) error {
+// Image mounts are passed as read-only Podman driver configuration.
+func createOnce(name string, providers []string, image, policy string, timeout time.Duration, imageMounts ...ImageMount) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout+readyCtxBuffer)
 	defer cancel()
 
@@ -1549,6 +1584,22 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 	}
 	if policy != "" {
 		args = append(args, "--policy", policy)
+	}
+	if len(imageMounts) > 0 {
+		mounts := make([]podmanImageMount, 0, len(imageMounts))
+		for _, mount := range imageMounts {
+			mounts = append(mounts, podmanImageMount{
+				Type:     "image",
+				Source:   mount.Source,
+				Target:   mount.Target,
+				ReadOnly: true,
+			})
+		}
+		config, err := json.Marshal(podmanDriverConfig{Podman: podmanDriverSettings{Mounts: mounts}})
+		if err != nil {
+			return fmt.Errorf("encoding Podman image mounts: %w", err)
+		}
+		args = append(args, "--driver-config-json", string(config))
 	}
 	for _, p := range providers {
 		args = append(args, "--provider", p)

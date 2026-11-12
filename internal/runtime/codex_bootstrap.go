@@ -514,7 +514,7 @@ func codexHooksManifestFor(hooksDir string, hooks security.SandboxHookConfig) *c
 // means the pinned binary is missing or broken in the image, which is reported
 // before any iteration rather than as an empty transcript.
 func codexPreflightVersion(sandboxName string) (string, error) {
-	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, "codex --version", 30*time.Second)
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, sandboxFullsendToolPathCommand("codex --version"), 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("codex preflight: %w", err)
 	}

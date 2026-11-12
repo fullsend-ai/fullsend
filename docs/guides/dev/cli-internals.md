@@ -535,9 +535,9 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │  └── security hooks                      │                   │
 │  │                                          │                   │
 │  │  bootstrapEnv() writes:                  │                   │
-│  │  ├── PATH=/usr/local/go/bin:             │                   │
-│  │  │     $HOME/go/bin:$PATH:               │                   │
-│  │  │     /sandbox/workspace/bin (last)     │                   │
+│  │  ├── PATH=/opt/fullsend/...:             │                   │
+│  │  │     /usr/local/go/bin:$HOME/go/bin:   │                   │
+│  │  │     $PATH:/sandbox/workspace/bin      │                   │
 │  │  ├── readonly FULLSEND_RUNNER_PATH       │                   │
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
@@ -699,7 +699,7 @@ SandboxWorkspace       = "/sandbox/workspace"
 SandboxClaudeConfig    = "/sandbox/claude-config"
 SandboxCodexConfig     = "/sandbox/codex-config"
 SandboxPiConfig        = "/sandbox/pi-config"
-SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"   // image-baked, read-only pi extensions (loaded only via -e)
+SandboxPiExtensionsDir = "/opt/fullsend/usr/local/share/pi-extensions"   // image-baked, read-only pi extensions (loaded only via -e)
 ```
 
 For sandbox workspace layout, agent rule layering, and security scanning

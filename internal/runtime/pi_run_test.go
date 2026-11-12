@@ -110,7 +110,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	for _, want := range []string{
 		"--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
 		"--session-dir '/sandbox/pi-config/sessions'",
-		"-e '/usr/local/share/pi-extensions/anthropic-vertex'",
+		"-e '/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex'",
 		"-e '/sandbox/pi-config/fullsend-hooks.js'",
 		"--tools 'bash'",
 		"--model 'anthropic-vertex/claude-opus-5-5'",
@@ -827,7 +827,7 @@ func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {
 	assert.Contains(t, cmd, "--model 'anthropic/claude-opus-5-5'")
 	assert.NotContains(t, cmd, "unset ANTHROPIC_API_KEY", "direct Anthropic provider needs its key")
 	assert.NotContains(t, cmd, "GOOGLE_CLOUD_PROJECT")
-	assert.NotContains(t, cmd, "/usr/local/share/pi-extensions/anthropic-vertex", "the Vertex extension is only loaded for the anthropic-vertex provider")
+	assert.NotContains(t, cmd, "/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex", "the Vertex extension is only loaded for the anthropic-vertex provider")
 }
 
 func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
@@ -847,7 +847,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 	assert.NotContains(t, cmd, "--no-builtin-tools")
 	assert.NotContains(t, cmd, "fullsend-hooks.js", "no hook extension when the runner has security disabled")
 	assert.NotContains(t, cmd, "pi hook adapter or manifest missing", "and no hook guard")
-	assert.Contains(t, cmd, "-e '/usr/local/share/pi-extensions/anthropic-vertex'")
+	assert.Contains(t, cmd, "-e '/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex'")
 	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task' </dev/null 2>>'/sandbox/workspace/pi-debug.log'"), cmd)
 }
 

@@ -17,7 +17,7 @@ import (
 func TestRunnerPathLines(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, []string{
-		"export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH:/sandbox/workspace/bin",
+		"export PATH=" + sandbox.SandboxFullsendToolPath + ":/usr/local/go/bin:$HOME/go/bin:$PATH:/sandbox/workspace/bin",
 		`if ( FULLSEND_RUNNER_PATH= ) 2>/dev/null; then FULLSEND_RUNNER_PATH="$PATH"; readonly FULLSEND_RUNNER_PATH; fi`,
 	}, runnerPathLines())
 	assert.Equal(t, `export PATH="$FULLSEND_RUNNER_PATH${PATH:+:$PATH}"`, runnerPathRestoreLine())

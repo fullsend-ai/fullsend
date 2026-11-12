@@ -321,7 +321,7 @@ func openCodeUtilityPin() string {
 	assignments := make([]string, 0, len(utilities))
 	individualChecks := make([]string, 0, len(utilities))
 	for _, utility := range utilities {
-		assignments = append(assignments, utility.variable+`=$(for d in /usr/local/bin /usr/bin /bin; do if test -x "$d/`+utility.name+`"; then printf '%s' "$d/`+utility.name+`"; break; fi; done)`)
+		assignments = append(assignments, utility.variable+`=$(for d in `+sandbox.SandboxFullsendLocalBinDir+` `+sandbox.SandboxFullsendBinDir+`; do if test -x "$d/`+utility.name+`"; then printf '%s' "$d/`+utility.name+`"; break; fi; done)`)
 		individualChecks = append(individualChecks,
 			`if ! test -n "$`+utility.variable+`"; then echo 'fullsend: required opencode utility not found: `+utility.name+`' >&2; exit 127; fi`)
 	}

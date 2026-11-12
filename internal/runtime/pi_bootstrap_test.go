@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -54,7 +55,7 @@ if [ "$2" = "exec" ]; then
       exit $? ;;
     "pi --version") echo "0.84.2"; exit 0 ;;
     ` + hookEnvReadStubArm + `
-    "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
+    "command -v pi"*) printf '%s\n' /opt/fullsend/usr/bin/pi '/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
     *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
     *"--print --mode json"*) cat '` + streamFixture + `'; exit 0 ;;
@@ -1146,13 +1147,13 @@ func TestPiAgentTool_OpenAISubagent(t *testing.T) {
 func TestPiAgentProbeCommand(t *testing.T) {
 	t.Parallel()
 	cmd := piAgentProbeCommand()
-	assert.True(t, strings.HasPrefix(cmd, "command -v pi"), cmd)
+	assert.True(t, strings.HasPrefix(cmd, "PATH="+shellQuote(sandbox.SandboxFullsendToolPath)), cmd)
 	assert.Contains(t, cmd, shellQuote(piVertexExtensionPath))
 	assert.Contains(t, cmd, shellQuote(piXaiVertexExtensionPath))
 	assert.Contains(t, cmd, `test -d "$d" && echo "$d"`)
 
-	bin, exts := parsePiAgentProbe("/usr/bin/pi\n/usr/local/share/pi-extensions/xai-vertex\n")
-	assert.Equal(t, "/usr/bin/pi", bin)
+	bin, exts := parsePiAgentProbe("/opt/fullsend/usr/bin/pi\n/opt/fullsend/usr/local/share/pi-extensions/xai-vertex\n")
+	assert.Equal(t, "/opt/fullsend/usr/bin/pi", bin)
 	assert.Equal(t, []string{piXaiVertexExtensionPath}, exts)
 	bin, exts = parsePiAgentProbe("")
 	assert.Equal(t, "pi", bin, "no probe output (the exec failed silently) falls back to PATH lookup at spawn time")

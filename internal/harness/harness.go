@@ -89,6 +89,14 @@ type HostFile struct {
 	Optional bool   `yaml:"optional,omitempty"` // skip if src path is missing or expands to empty
 }
 
+// ImageMount describes an OCI image mounted read-only into the sandbox.
+// Image is an OCI image reference; Dest is the absolute mount point in the
+// sandbox. The mounted image's OCI environment and entrypoint are not applied.
+type ImageMount struct {
+	Image string `yaml:"image"`
+	Dest  string `yaml:"dest"`
+}
+
 // ProviderDef is a declarative definition of an OpenShell provider. Files in
 // the experiment's providers/ directory are loaded as ProviderDefs and
 // reconciled against the gateway before sandbox creation.
@@ -382,6 +390,7 @@ type Harness struct {
 	SchemaVersion          *schemaVersionValue     `yaml:"schema_version,omitempty"`
 	Base                   string                  `yaml:"base,omitempty"`
 	Image                  string                  `yaml:"image,omitempty"`
+	ImageMounts            []ImageMount            `yaml:"image_mounts,omitempty"`
 	Policy                 string                  `yaml:"policy,omitempty"`
 	Skills                 []SkillEntry            `yaml:"skills,omitempty"`
 	Plugins                []PluginSpec            `yaml:"plugins,omitempty"` // runtime-scoped plugin directories (ADR 0094)
@@ -499,6 +508,15 @@ func parseRaw(data []byte) (*Harness, error) {
 	if err := yaml.Unmarshal(data, &h); err != nil {
 		return nil, fmt.Errorf("parsing harness YAML: %w", err)
 	}
+	h.ImageMounts = mergeImageMounts(nil, h.ImageMounts)
+	for _, fc := range h.Forge {
+		if fc != nil {
+			fc.ImageMounts = mergeImageMounts(nil, fc.ImageMounts)
+		}
+	}
+	for i := range h.Overlays {
+		h.Overlays[i].ImageMounts = mergeImageMounts(nil, h.Overlays[i].ImageMounts)
+	}
 	if err := validateSchemaVersion(h.SchemaVersion); err != nil {
 		return nil, fmt.Errorf("parsing harness YAML: %w", err)
 	}
@@ -585,6 +603,9 @@ func (h *Harness) Validate() error {
 		if err := ValidateHostFileDest(hf.Dest); err != nil {
 			return fmt.Errorf("host_files[%d]: %w", i, err)
 		}
+	}
+	if err := validateImageMounts(h.ImageMounts, h.HostFiles, "image_mounts"); err != nil {
+		return err
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
 		return fmt.Errorf("validation_loop.script is required when validation_loop is set")

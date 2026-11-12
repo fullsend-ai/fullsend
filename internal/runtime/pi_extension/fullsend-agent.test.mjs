@@ -119,7 +119,7 @@ function fixture() {
       enabled: true,
       piBin,
       sessionsDir: join(dir, "sessions"),
-      extensions: ["/usr/local/share/pi-extensions/anthropic-vertex", "/usr/local/share/pi-extensions/xai-vertex", "/sandbox/pi-config/fullsend-hooks.js"],
+      extensions: ["/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex", "/opt/fullsend/usr/local/share/pi-extensions/xai-vertex", "/sandbox/pi-config/fullsend-hooks.js"],
       models: {
         default: "anthropic-vertex/claude-opus-4-6",
         opus: "anthropic-vertex/claude-opus-4-6",
@@ -264,9 +264,9 @@ test("resolveModel: openai under a non-openai parent needs a configured openai c
 
 test("resolveModel: gateway under a non-gateway parent is admitted by its listed ids (#8280)", () => {
   const { manifest } = fixture();
-  // The child gets the extension as /usr/local/share/pi-extensions/
+  // The child gets the extension as /opt/fullsend/usr/local/share/pi-extensions/
   // inference-gateway; its basename is not the provider id it registers.
-  const extensions = [...manifest.agent.extensions, "/usr/local/share/pi-extensions/inference-gateway"];
+  const extensions = [...manifest.agent.extensions, "/opt/fullsend/usr/local/share/pi-extensions/inference-gateway"];
   for (const parent of ["google-vertex/gemini-3.8-flash", "openai/gpt-5.6-luna", "anthropic-vertex/claude-opus-4-6"]) {
     // No gateway list (no inference.gateway block): the provider is not
     // available, even with the extension on the -e list.
@@ -378,8 +378,8 @@ test("childArgs mirrors the runner's pi command line, extensions in manifest ord
   assert.deepEqual(args, [
     "--print", "--mode", "json", "--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
     "--session-dir", join(manifest.agent.sessionsDir, "agent-3"),
-    "-e", "/usr/local/share/pi-extensions/anthropic-vertex",
-    "-e", "/usr/local/share/pi-extensions/xai-vertex",
+    "-e", "/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex",
+    "-e", "/opt/fullsend/usr/local/share/pi-extensions/xai-vertex",
     "-e", "/sandbox/pi-config/fullsend-hooks.js",
     "--tools", "read,grep",
     "--model", "anthropic-vertex/claude-sonnet-4-6",
@@ -707,7 +707,7 @@ test("run: a hook adapter rewritten after load stops the next dispatch", async (
     ...manifest.agent,
     // The vendored provider extension carries no digest: it is root-owned
     // and read-only in the image. Only the config-dir file does.
-    extensions: ["/usr/local/share/pi-extensions/anthropic-vertex", adapter],
+    extensions: ["/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex", adapter],
     extensionDigests: { [adapter]: createHash("sha256").update(bytes).digest("hex") },
   };
   const { spawn, children } = fakeSpawn();

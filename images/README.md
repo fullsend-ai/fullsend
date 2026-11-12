@@ -11,15 +11,38 @@ run dependencies (see [Runner image](#runner-image) below).
 ```
 ghcr.io/nvidia/openshell-community/sandboxes/base  (upstream, multi-arch)
   └── ghcr.io/fullsend-ai/fullsend-sandbox          (base sandbox)
+        ├── ghcr.io/fullsend-ai/fullsend-sandbox-tools (mountable Fullsend tools)
         └── ghcr.io/fullsend-ai/fullsend-code        (code agent)
 ```
 
 | Image | Directory | Description |
 |-------|-----------|-------------|
 | `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, pi, Codex, ripgrep + fd (pi grep/find backends), jq, acli, gitleaks, tirith, pre-commit, and gitlint. |
+| `fullsend-sandbox-tools` | [`images/sandbox/`](sandbox/) | The same pinned tool image with its `/opt/fullsend/usr` compatibility symlink removed, so its OCI root can be mounted at `/opt/fullsend`. |
 | `fullsend-code` | [`images/code/`](code/) | Extends `fullsend-sandbox` with Go toolchain and scan-secrets wrapper. Used by the code-implementation agent. |
 
-Both images are built for **linux/amd64** and **linux/arm64**.
+All sandbox images are built for **linux/amd64** and **linux/arm64**.
+
+## Mounting the Fullsend tool image
+
+The `fullsend-sandbox-tools` image provides the runner's pinned tools through
+an `image_mounts` entry at `/opt/fullsend`. The runner reads runtime CLIs from
+`/opt/fullsend/usr/local/bin`, system tools from `/opt/fullsend/usr/bin`, and
+pi provider extensions from `/opt/fullsend/usr/local/share/pi-extensions`.
+The OCI image root is visible at that mount point; its `ENV`, user, working
+directory and entrypoint are ignored. The mount is read-only.
+
+The regular sandbox image has `/opt/fullsend/usr -> /usr`, which keeps the
+runner paths available when no image is mounted. The tools image removes that
+link, so the image mount exposes its own `/usr` tree at `/opt/fullsend/usr`.
+Use the same OpenShell base image for both images or verify compatible
+architecture, ELF loader, glibc, Python and Node runtimes. Mounted executables
+run in the sandbox environment rather than a separate root filesystem. The
+prelaunch check runs `/opt/fullsend/usr/bin/node --version` before repository
+setup. The harness PoC targets
+OpenShell's Podman backend; the sandbox policy must allow `/opt/fullsend`
+read-only, and the gateway must enable `allow_driver_config` and disable
+resource admission for image mounts.
 
 ## Runner image
 

@@ -41,9 +41,9 @@ func isGHCRImage(image string) bool {
 	return ok && strings.EqualFold(host, ghcrRegistry)
 }
 
-// prePullGHCRImage pulls a ghcr.io sandbox image into the runner user's
-// Podman store with the Actions workflow token, so harness images published
-// as private GitHub packages can be used (#9019).
+// prePullGHCRImage pulls a ghcr.io sandbox or mounted image into the runner
+// user's Podman store with the Actions workflow token, so private GitHub
+// packages can be used (#9019).
 //
 // At the pinned OpenShell (0.1.4) the Podman driver pulls the sandbox image
 // through the libpod API without registry credentials, using the "missing"
@@ -59,8 +59,8 @@ func isGHCRImage(image string) bool {
 // other helpers makes the pull run anonymously; it then fails for a private
 // image and the warning below is the only trace.
 //
-// It runs only on GitHub Actions, for ghcr.io images, when GH_WORKFLOW_TOKEN
-// is set. Failures are warnings: the gateway still attempts its own
+// It runs only on GitHub Actions, for ghcr.io sandbox and image_mounts images,
+// when GH_WORKFLOW_TOKEN is set. Failures are warnings: the gateway still attempts its own
 // unauthenticated pull, which keeps public images working as before.
 func prePullGHCRImage(ctx context.Context, image string, printer *ui.Printer) {
 	if os.Getenv("GITHUB_ACTIONS") != "true" || !isGHCRImage(image) {
@@ -71,7 +71,7 @@ func prePullGHCRImage(ctx context.Context, image string, printer *ui.Printer) {
 		return
 	}
 	if _, err := imagePullLookPathFn("podman"); err != nil {
-		printer.StepWarn("podman not found; the sandbox gateway will pull " + image + " without registry credentials")
+		printer.StepWarn("podman not found; the OpenShell gateway will pull " + image + " without registry credentials")
 		return
 	}
 
@@ -88,7 +88,7 @@ func prePullGHCRImage(ctx context.Context, image string, printer *ui.Printer) {
 		if detail == "" {
 			detail = err.Error()
 		}
-		printer.StepWarn(fmt.Sprintf("%s failed: %s; the sandbox gateway will pull %s without registry credentials",
+		printer.StepWarn(fmt.Sprintf("%s failed: %s; the OpenShell gateway will pull %s without registry credentials",
 			step, strings.ReplaceAll(detail, token, "***"), image))
 	}
 
@@ -107,10 +107,10 @@ func prePullGHCRImage(ctx context.Context, image string, printer *ui.Printer) {
 		return
 	}
 
-	printer.StepStart("Pulling sandbox image with the workflow token: " + image)
+	printer.StepStart("Pulling image with the workflow token: " + image)
 	if out, err := runPodmanFn(ctx, "pull", "--quiet", "--authfile", authFile, image); err != nil {
 		warn("pulling "+image, out, err)
 		return
 	}
-	printer.StepDone("Pulled sandbox image " + image)
+	printer.StepDone("Pulled image " + image)
 }
