@@ -163,6 +163,12 @@ jobs:
           sparse-checkout: |
             .fullsend/config.yaml
             .fullsend/config.base.yaml
+            .defaults/action.yml
+            .defaults/.github/actions/prepare-workspace/
+            .defaults/.github/scripts/review-diff-hash.sh
+            .fullsend/.defaults/action.yml
+            .fullsend/.defaults/.github/actions/prepare-workspace/
+            .fullsend/.defaults/.github/scripts/review-diff-hash.sh
             /OWNERS
             /OWNERS_ALIASES
           sparse-checkout-cone-mode: false
@@ -458,11 +464,12 @@ jobs:
       # still enforce the same policy for the final routed stage.
       - name: Check review deduplication guards
         id: review-dedup-guard
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.bash-route.outputs.stage == 'review'
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
         shell: bash
         run: |
           set -euo pipefail
           allowed=true
+          prevalidated=false
           kill_switch="false"
           overlay_ks="null"
           if [[ -f .fullsend/config.yaml ]]; then
@@ -498,13 +505,18 @@ jobs:
               allowed=false
             fi
           fi
+          if [[ "${allowed}" == "true" ]]; then
+            prevalidated=true
+          fi
           echo "allowed=${allowed}" >> "${GITHUB_OUTPUT}"
+          echo "prevalidated=${prevalidated}" >> "${GITHUB_OUTPUT}"
 
       # Keep the route job's platform token read-only. For eligible
       # synchronize events, mint a review-app token solely for the PR-visible
       # skip status note.
       - name: Checkout upstream defaults for review token
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
@@ -513,24 +525,45 @@ jobs:
           fetch-depth: 1
           sparse-checkout: |
             .github/actions/
+            .github/scripts/review-diff-hash.sh
             internal/scaffold/fullsend-repo/
           sparse-checkout-cone-mode: false
 
       - name: Prepare workspace for review token
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
         id: review-token-workspace
+        continue-on-error: true
         uses: ./.defaults/.github/actions/prepare-workspace
         with:
           source_repo: ${{ github.repository }}
 
+      - name: Prepare workspace for review token (nested vendor)
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        id: review-token-workspace-nested
+        continue-on-error: true
+        uses: ./.fullsend/.defaults/.github/actions/prepare-workspace
+        with:
+          source_repo: ${{ github.repository }}
+
       - name: Mint review token for skip status
-        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
         id: review-token
         continue-on-error: true
         uses: ./.defaults/.github/actions/mint-token
         with:
           role: review
           repos: ${{ steps.review-token-workspace.outputs.repo_name }}
+          level: write
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Mint review token for skip status (nested vendor)
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
+        id: review-token-nested
+        continue-on-error: true
+        uses: ./.fullsend/.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace-nested.outputs.repo_name }}
           level: write
           mint_url: ${{ inputs.mint_url }}
 
@@ -542,9 +575,9 @@ jobs:
         id: review-diff
         if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
         env:
-          GH_TOKEN: ${{ steps.review-token.outputs.token || github.token }}
-          REVIEW_TOKEN: ${{ steps.review-token.outputs.token }}
-          REVIEW_TOKEN_OUTCOME: ${{ steps.review-token.outcome }}
+          GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
+          REVIEW_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token }}
+          REVIEW_TOKEN_OUTCOME: ${{ steps.review-token.outcome || steps.review-token-nested.outcome || 'skipped' }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           ORG_NAME: ${{ github.repository_owner }}
@@ -620,29 +653,18 @@ jobs:
             exit 0
           fi
 
-          if ! hash_input=$(printf '%s\n' "${file_json}" | jq -s -c --argjson base_modes "${base_modes}" --argjson head_modes "${head_modes}" '
-            if length == 0 or any(.[]; .patch == null or .patch == "") then
-              empty
-            else
-              sort_by(.filename, .previous_filename, .status)
-              | map(. + {old_mode: ($base_modes[(if .status == "added" then "" elif (.previous_filename // "") == "" then .filename else .previous_filename end)] // ""), new_mode: ($head_modes[(if .status == "removed" then "" else .filename end)] // "")})
-              | if any(.[]; (.status == "added" and .new_mode == "") or (.status == "removed" and .old_mode == "") or ((.status != "added" and .status != "removed") and (.old_mode == "" or .new_mode == ""))) then empty else map({filename: .filename, previous_filename: .previous_filename, status: .status, old_mode: .old_mode, new_mode: .new_mode, patch: .patch}) end
-            end'); then
+          defaults_dir=".defaults"
+          if [[ -f .fullsend/.defaults/action.yml ]]; then
+            defaults_dir=".fullsend/.defaults"
+          fi
+          if ! current_hash=$(printf '%s\n' "${file_json}" | "${defaults_dir}/.github/scripts/review-diff-hash.sh" "${base_modes}" "${head_modes}"); then
             echo "::warning::Could not canonicalize PR file diffs; running review"
             exit 0
           fi
-          if [[ -z "${hash_input}" ]]; then
+          if [[ -z "${current_hash}" ]]; then
             echo "::notice::PR diff is incomplete or empty; running review"
             exit 0
           fi
-          # Match Go's encoding/json output (with HTML escaping disabled): Go
-          # escapes U+2028/U+2029 but emits DEL literally, while jq emits DEL
-          # as the JSON escape \u007f.
-          if ! hash_input=$(printf '%s' "${hash_input}" | perl -CS -pe 's/(?<!\\)\\u007f/\x{007f}/g; s/\x{2028}/\\u2028/g; s/\x{2029}/\\u2029/g'); then
-            echo "::warning::Could not normalize PR file diffs; running review"
-            exit 0
-          fi
-          current_hash="$(printf '%s' "${hash_input}" | sha256sum | awk '{print $1}')"
 
           if ! head_after=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '.head.sha'); then
             echo "::warning::Could not verify PR HEAD after diff fetch; running review"
@@ -1163,7 +1185,7 @@ jobs:
           fi
 
       - name: Check kill switch
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && (steps.review-dedup-guard.outputs.prevalidated != 'true' || steps.route.outputs.stage != 'review')
         run: |
           set -euo pipefail
           # Mirrors internal/config's IsKillSwitchActive(): if
@@ -1252,7 +1274,7 @@ jobs:
 
       - name: Check agent is enabled
         id: agent-check
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && (steps.review-dedup-guard.outputs.prevalidated != 'true' || steps.route.outputs.stage != 'review')
         env:
           STAGE: ${{ steps.route.outputs.stage }}
         run: |

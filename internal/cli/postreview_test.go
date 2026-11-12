@@ -5,12 +5,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -356,6 +359,15 @@ func TestPullRequestDiffHash_IsStableAndFailsOpenForIncompleteDiffs(t *testing.T
 	incompleteHash, err := pullRequestDiffHash(context.Background(), incomplete, "o", "r", 1)
 	require.NoError(t, err)
 	assert.Empty(t, incompleteHash)
+
+	unverifiedModes := forge.NewFakeClient()
+	unverifiedModes.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"o/r/1": {{Path: "a.yaml", Patch: "@@ -1 +1 @@\n-a\n+a2"}},
+	}
+	unverifiedModes.PRFileDiffModes = map[string]bool{"o/r/1": false}
+	unverifiedModesHash, err := pullRequestDiffHash(context.Background(), unverifiedModes, "o", "r", 1)
+	require.NoError(t, err)
+	assert.Empty(t, unverifiedModesHash, "unverified file modes must fail open")
 }
 
 func TestPullRequestDiffHash_MatchesWorkflowCanonicalJSON(t *testing.T) {
@@ -380,6 +392,83 @@ func TestPullRequestDiffHash_MatchesWorkflowCanonicalJSON(t *testing.T) {
 	canonicalJSON := `[{"filename":"a\u2028.txt","previous_filename":"","status":"modified","old_mode":"100644","new_mode":"100755","patch":"@@ -1 +1 @@\n-old\n+new\u2029` + "\x7f" + `"}]`
 	wantSum := sha256.Sum256([]byte(canonicalJSON))
 	assert.Equal(t, hex.EncodeToString(wantSum[:]), hash)
+}
+
+func TestPullRequestDiffHash_MatchesWorkflowCanonicalizer(t *testing.T) {
+	_, testFile, _, ok := runtime.Caller(0)
+	require.True(t, ok)
+	script := filepath.Join(filepath.Dir(testFile), "..", "..", ".github", "scripts", "review-diff-hash.sh")
+
+	tests := []struct {
+		name  string
+		diff  forge.PullRequestFileDiff
+		modes map[string]string
+	}{
+		{
+			name:  "modified with unicode and DEL",
+			diff:  forge.PullRequestFileDiff{Path: "a\u2028.txt", Status: "modified", OldMode: "100644", NewMode: "100755", Patch: "@@ -1 +1 @@\n-old\n+new\u2029\x7f"},
+			modes: map[string]string{"old:a\u2028.txt": "100644", "new:a\u2028.txt": "100755"},
+		},
+		{
+			name:  "backslash followed by DEL",
+			diff:  forge.PullRequestFileDiff{Path: "a.txt", Status: "modified", OldMode: "100644", NewMode: "100644", Patch: "@@ -1 +1 @@\n-old\n+new\\\x7f"},
+			modes: map[string]string{"old:a.txt": "100644", "new:a.txt": "100644"},
+		},
+		{
+			name:  "renamed",
+			diff:  forge.PullRequestFileDiff{Path: "new.txt", PreviousPath: "old.txt", Status: "renamed", OldMode: "100644", NewMode: "100644", Patch: "@@ -1 +1 @@\n-old\n+new"},
+			modes: map[string]string{"old:old.txt": "100644", "new:new.txt": "100644"},
+		},
+		{
+			name:  "added",
+			diff:  forge.PullRequestFileDiff{Path: "new.txt", Status: "added", NewMode: "100644", Patch: "@@ -0,0 +1 @@\n+new"},
+			modes: map[string]string{"new:new.txt": "100644"},
+		},
+		{
+			name:  "removed",
+			diff:  forge.PullRequestFileDiff{Path: "old.txt", Status: "removed", OldMode: "100644", Patch: "@@ -1 +0,0 @@\n-old"},
+			modes: map[string]string{"old:old.txt": "100644"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{"o/r/1": {tt.diff}}
+			fc.PRFileDiffModes = map[string]bool{"o/r/1": true}
+			goHash, err := pullRequestDiffHash(context.Background(), fc, "o", "r", 1)
+			require.NoError(t, err)
+
+			file := map[string]any{
+				"filename":          tt.diff.Path,
+				"previous_filename": tt.diff.PreviousPath,
+				"status":            tt.diff.Status,
+				"patch":             tt.diff.Patch,
+			}
+			fileJSON, err := json.Marshal(file)
+			require.NoError(t, err)
+			baseModes, err := json.Marshal(modeFixture(tt.modes, "old:"))
+			require.NoError(t, err)
+			headModes, err := json.Marshal(modeFixture(tt.modes, "new:"))
+			require.NoError(t, err)
+
+			cmd := exec.Command("bash", script, string(baseModes), string(headModes))
+			cmd.Stdin = bytes.NewReader(append(fileJSON, '\n'))
+			workflowHash, err := cmd.Output()
+			require.NoError(t, err)
+			assert.Equal(t, goHash, strings.TrimSpace(string(workflowHash)))
+		})
+	}
+}
+
+func modeFixture(modes map[string]string, prefix string) map[string]string {
+	result := make(map[string]string)
+	for key, value := range modes {
+		if strings.HasPrefix(key, prefix) {
+			result[strings.TrimPrefix(key, prefix)] = value
+		}
+	}
+	return result
 }
 
 func TestPullRequestDiffHash_DistinguishesDELFromLiteralUnicodeEscape(t *testing.T) {
