@@ -201,9 +201,9 @@ func RestoreAgents(w *world.World) error {
 // without error.
 //
 // The hosting repo is ephemeral: created per-scenario and deleted by
-// CleanupScenario (same lifecycle as fork repos). When a leased repo is
-// in use, the logical name is remapped via resolveHostRepoName so each
-// parallel scenario gets its own isolated hosting repo.
+// CleanupScenario (same lifecycle as fork repos). The logical name is
+// remapped via resolveHostRepoName so each parallel scenario gets its
+// own isolated hosting repo.
 func givenHarnessHostingRepo(w *world.World, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -238,33 +238,21 @@ func givenHarnessHostingRepo(w *world.World, name string) error {
 	return nil
 }
 
-// resolveHostRepoName maps a logical harness-hosting repo name from a
-// Gherkin feature file to the actual GitHub repository name. When a
-// leased repo is in use (w.LeasedRepoName is set), the logical name
-// is prefixed with the leased repo name so each parallel scenario gets
-// its own isolated hosting repository.
+// resolveHostRepoName derives the hosting repo name from the ephemeral repo
+// name. The logical name from the Gherkin feature file is appended as a suffix.
 //
-// This mirrors resolveForkName in fork.go — both use the leased repo
-// name to namespace ephemeral repos created per-scenario.
-//
-// Examples:
-//
-//	"url-harness-host" + leased "test-repo-07" → "test-repo-07-url-harness-host"
-//	"url-harness-host" + no lease              → "url-harness-host" (unchanged)
+//	w.RepoName="bt-a1b2c3d4-triage" logicalName="url-harness-host" → "bt-a1b2c3d4-triage-url-harness-host"
 func resolveHostRepoName(w *world.World, logicalName string) string {
-	if w.LeasedRepoName == "" {
-		return logicalName
-	}
 	return w.RepoName + "-" + logicalName
 }
 
 // givenURLSourcedCustomHarness commits a harness YAML to the harness-hosting
 // repository, then registers it as a URL-sourced agent in config.yaml on the
-// enrolled test repository. The URL points to the file via
+// test repository. The URL points to the file via
 // raw.githubusercontent.com on the default branch of the hosting repo.
 func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarnessOpts) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before URL-harness operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before URL-harness operations")
 	}
 	name = strings.TrimSpace(name)
 	doc = strings.TrimSpace(doc)
@@ -348,17 +336,7 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	// Build the URL prefix for the allowlist.
 	urlPrefix := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/", hostOwner, hostRepo)
 
-	// Snapshot the current allowed_remote_resources and agents before any
-	// modification so CleanupScenario can restore them when the slot is
-	// reused.
-	if err := snapshotAllowedResources(w); err != nil {
-		return fmt.Errorf("snapshotting allowed_remote_resources: %w", err)
-	}
-	if err := snapshotAgents(w); err != nil {
-		return fmt.Errorf("snapshotting agents: %w", err)
-	}
-
-	// Update config.yaml on the enrolled test repo: register agent with URL
+	// Update config.yaml on the test repo: register agent with URL
 	// source and update allowlist.
 	cfgOwner := w.Org
 	cfgRepo := w.RepoName

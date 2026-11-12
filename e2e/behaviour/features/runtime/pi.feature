@@ -15,7 +15,7 @@ Feature: pi runtime runs an agent unattended
 
   @requires:capability:runtime-pi
   Scenario: pi run selects the runtime, calls tools through the hook adapter, and reports metrics
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
     And the repository runtime is "pi"
     And a custom harness "pi-smoke" with:
       """

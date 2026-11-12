@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/cucumber/godog"
 	messages "github.com/cucumber/messages/go/v34"
@@ -24,14 +23,30 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-// panickingSCM is a fake scm.Driver whose CloseIssue panics.
-// Used to verify that afterScenario's deferred driver.DeallocateRepo runs
-// even when steps.CleanupScenario panics during issue cleanup.
+// fakeCleanupSCM records DeleteRepo calls for cleanup tests.
+type fakeCleanupSCM struct {
+	scm.Driver
+	deletedRepos []string
+	deleteErr    error
+}
+
+// panickingSCM is a no-op SCM except CloseIssue, which panics for cleanup tests.
 type panickingSCM struct{}
 
+func (f *fakeCleanupSCM) DeleteRepo(_ context.Context, owner, repo string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedRepos = append(f.deletedRepos, owner+"/"+repo)
+	return nil
+}
+func (f *fakeCleanupSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
+	return nil, forge.ErrNotFound
+}
 func (p *panickingSCM) CreateIssue(context.Context, string, string, string, string, ...string) (*forge.Issue, error) {
 	return nil, nil
 }
@@ -252,7 +267,7 @@ func TestSkipErrorForTagNames(t *testing.T) {
 		{name: "skip gitlab on gitlab", tags: []string{"@skip:gitlab"}, wantErr: godog.ErrSkip, cfg: env.RunnerConfig{SCM: "gitlab"}},
 		{name: "requires capability undeclared", tags: []string{"@requires:capability:applier-branch-namespace"}, wantErr: godog.ErrSkip},
 		{name: "requires capability declared", tags: []string{"@requires:capability:applier-branch-namespace"}, wantErr: nil,
-			cfg: env.RunnerConfig{InstallMode: "per-repo", SCM: "github", Capabilities: []string{"applier-branch-namespace"}}},
+			cfg: env.RunnerConfig{SCM: "github", Capabilities: []string{"applier-branch-namespace"}}},
 		{name: "requires capability other declared", tags: []string{"@requires:capability:applier-branch-namespace"}, wantErr: godog.ErrSkip,
 			cfg: env.RunnerConfig{InstallMode: "per-repo", SCM: "github", Capabilities: []string{"something-else"}}},
 		{name: "playback tag outside playback suite", tags: []string{"@playback"}, wantErr: godog.ErrSkip},
@@ -278,7 +293,7 @@ func TestSkipErrorForTagNames(t *testing.T) {
 }
 
 func TestSkipErrorForTagNames_MalformedCapabilityTag(t *testing.T) {
-	w := &world.World{Config: env.RunnerConfig{InstallMode: "per-repo", SCM: "github"}}
+	w := &world.World{Config: env.RunnerConfig{SCM: "github"}}
 	err := SkipErrorForTagNames([]string{"@requires:capability:"}, w)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, godog.ErrSkip, "an empty capability name is a tag-authoring mistake, not a normal skip")
@@ -301,7 +316,7 @@ func TestBeforeScenario_ClonesAndResetsWorld(t *testing.T) {
 	require.NotNil(t, w)
 	assert.NotSame(t, template, w)
 	assert.Equal(t, "test-org", w.Org)
-	assert.Equal(t, "test-repo", w.RepoName)
+	assert.Equal(t, "test-repo", w.RepoName, "the template's configured repo is preserved")
 	assert.Equal(t, 0, w.IssueNumber, "scenario fields should be zeroed")
 	assert.False(t, w.ScenarioStart.IsZero(), "ScenarioStart should be set")
 	assert.Equal(t, w.ScenarioStart, w.ScenarioBegin, "ScenarioBegin should be set")
@@ -326,13 +341,15 @@ func TestBeforeScenario_NoPoolAcquire(t *testing.T) {
 
 func TestBeforeScenario_NilDriver(t *testing.T) {
 	template := &world.World{Org: "test-org"}
+	scenario := &godog.Scenario{Name: "nil driver scenario"}
 
-	ctx, err := beforeScenario(context.Background(), nil, template, "a scenario", "features/a.feature")
+	ctx, err := beforeScenario(context.Background(), nil, template, scenario.Name, "features/a.feature")
 	require.NoError(t, err)
 
 	w := world.FromContext(ctx)
 	require.NotNil(t, w)
-	assert.Empty(t, w.LeasedRepoName, "no driver → no leased name")
+	assert.Equal(t, "", w.RepoName, "no driver → no repo name")
+	assert.Equal(t, "nil driver scenario", w.ScenarioName)
 }
 
 func TestBeforeScenario_PlaybackDriverGetsRepoHint(t *testing.T) {
@@ -352,132 +369,51 @@ func TestBeforeScenario_PlaybackDriverGetsRepoHint(t *testing.T) {
 }
 
 func TestAfterScenario_NilWorld(t *testing.T) {
-	// When Before fails (e.g. tag skip), the After hook receives a context
-	// with no World. It should pass through the original error unchanged.
 	origErr := godog.ErrSkip
-	ctx := context.Background() // no World stored
+	ctx := context.Background()
 
 	_, err := afterScenario(ctx, nil, origErr)
 	assert.Equal(t, origErr, err, "original error should be preserved")
 }
 
-func TestAfterScenario_DeallocatesRepo(t *testing.T) {
+// afterScenario performs per-scenario cleanup and returns the leased slot
+// through the driver; CleanupScenario itself leaves the slot repo intact.
+
+func TestAfterScenario_LeavesLeasedSlotDeletionToDriver(t *testing.T) {
+	scmDriver := &fakeCleanupSCM{}
 	driver := newFakeDriver(1)
-
-	name, err := driver.AllocateRepo(context.Background())
+	repo, err := driver.AllocateRepo(context.Background())
 	require.NoError(t, err)
-
-	w := &world.World{LeasedRepoName: name}
-	ctx := world.WithWorld(context.Background(), w)
-
-	_, err = afterScenario(ctx, driver, nil)
-	require.NoError(t, err)
-	assert.Equal(t, 1, driver.deallocated)
-
-	// The deallocated name should be available for re-allocation.
-	got, err := driver.AllocateRepo(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, name, got)
-}
-
-func TestAfterScenario_DoubleDeallocateSurfacesError(t *testing.T) {
-	driver := newFakeDriver(2)
-
-	name, err := driver.AllocateRepo(context.Background())
-	require.NoError(t, err)
-
-	// Deallocate before After — simulates a double-release.
-	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
-
-	w := &world.World{LeasedRepoName: name}
-	ctx := world.WithWorld(context.Background(), w)
-
-	// After should surface the deallocation error, not panic.
-	_, err = afterScenario(ctx, driver, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "deallocating repo")
-}
-
-func TestAfterScenario_PreservesOriginalError(t *testing.T) {
-	driver := newFakeDriver(2)
-
-	name, err := driver.AllocateRepo(context.Background())
-	require.NoError(t, err)
-
-	w := &world.World{LeasedRepoName: name}
-	ctx := world.WithWorld(context.Background(), w)
-
-	origErr := assert.AnError
-	_, err = afterScenario(ctx, driver, origErr)
-	// Original error is preserved; deallocation error (if any) is logged
-	// but not returned when there is already an error from the scenario.
-	assert.Equal(t, origErr, err)
-}
-
-func TestAfterScenario_DeallocatesOnCleanupPanic(t *testing.T) {
-	driver := newFakeDriver(1)
-
-	name, err := driver.AllocateRepo(context.Background())
-	require.NoError(t, err)
-
-	// Build a World whose cleanup will panic: panickingSCM.CloseIssue
-	// panics, and IssueNumber > 0 triggers that code path in
-	// steps.CleanupScenario.
 	w := &world.World{
-		SCM:            &panickingSCM{},
-		IssueNumber:    1,
-		LeasedRepoName: name,
+		SCM:            scmDriver,
+		Driver:         driver,
+		RepoOwner:      "test-org",
+		RepoName:       repo,
+		Org:            "test-org",
+		LeasedRepoName: repo,
+		LeasedRepoOrg:  "test-org",
 	}
 	ctx := world.WithWorld(context.Background(), w)
 
-	// afterScenario should panic (from CleanupScenario), but the
-	// deferred DeallocateRepo must still run during stack unwinding.
-	assert.Panics(t, func() {
-		afterScenario(ctx, driver, nil) //nolint:errcheck // panic prevents return
-	})
-
-	// The deferred DeallocateRepo ran: the leased name is back in the
-	// driver and can be re-allocated.
-	got, err := driver.AllocateRepo(context.Background())
+	_, err = afterScenario(ctx, w.Driver, nil)
 	require.NoError(t, err)
-	assert.Equal(t, name, got, "deferred DeallocateRepo should have returned the name")
+	assert.Empty(t, scmDriver.deletedRepos, "scenario cleanup should leave the leased slot for deallocation")
+	assert.Equal(t, 1, driver.deallocated, "afterScenario returns the lease through the driver")
 }
 
-func TestAfterScenario_NoLeaseNoDeallocation(t *testing.T) {
-	driver := newFakeDriver(2)
-
-	// Scenario that never allocated a repo.
-	w := &world.World{}
+func TestAfterScenario_PreservesOriginalError(t *testing.T) {
+	w := &world.World{
+		SCM:       &fakeCleanupSCM{},
+		RepoOwner: "test-org",
+		RepoName:  "bt-fake-test",
+		Org:       "test-org",
+		Driver:    &fakeDriver{},
+	}
 	ctx := world.WithWorld(context.Background(), w)
 
-	_, err := afterScenario(ctx, driver, nil)
-	require.NoError(t, err)
-	assert.Equal(t, 0, driver.deallocated, "should not deallocate when no lease exists")
-}
-
-func TestAfterScenario_AllocateBlocksUntilDeallocate(t *testing.T) {
-	driver := newFakeDriver(1)
-
-	name, err := driver.AllocateRepo(context.Background())
-	require.NoError(t, err)
-
-	// Allocate with a short-timeout context should fail (pool exhausted).
-	shortCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-
-	_, err = driver.AllocateRepo(shortCtx)
-	require.Error(t, err)
-
-	// After deallocates the first name.
-	w := &world.World{LeasedRepoName: name}
-	ctx := world.WithWorld(context.Background(), w)
-	_, err = afterScenario(ctx, driver, nil)
-	require.NoError(t, err)
-
-	// Now a second allocation should succeed.
-	name2, err := driver.AllocateRepo(context.Background())
-	require.NoError(t, err)
-	assert.NotEmpty(t, name2)
+	origErr := assert.AnError
+	_, err := afterScenario(ctx, w.Driver, origErr)
+	assert.Equal(t, origErr, err)
 }
 
 // TestAfterScenario_FailedScenarioWritesFailureSummaryBeforeDeallocating

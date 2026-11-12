@@ -78,30 +78,6 @@ func TestFakeEnsurer_Succeeds(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestFakeEnsurer_CachesResult(t *testing.T) {
-	e := newFakeEnsurer()
-	ctx := context.Background()
-
-	err := e.EnsureRepo(ctx, "org", "test-repo-01")
-	require.NoError(t, err)
-
-	err = e.EnsureRepo(ctx, "org", "test-repo-01")
-	require.NoError(t, err)
-
-	// Only one real ensure call.
-	assert.Equal(t, int32(1), e.calls.Load())
-}
-
-func TestFakeEnsurer_IndependentRepos(t *testing.T) {
-	e := newFakeEnsurer()
-	ctx := context.Background()
-
-	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-01"))
-	require.NoError(t, e.EnsureRepo(ctx, "org", "test-repo-02"))
-
-	assert.Equal(t, int32(2), e.calls.Load())
-}
-
 func TestFakeEnsurer_ReleaseRepoClearsCache(t *testing.T) {
 	e := newFakeEnsurer()
 	ctx := context.Background()
@@ -143,13 +119,10 @@ func TestVendoredBinaryPathMatchesLayers(t *testing.T) {
 
 // stubClient implements the forge.Client methods used by repoEnsurer.
 type stubClient struct {
-	forge.Client // embed to satisfy interface; panics on uncovered methods
+	forge.Client
 
 	getRepoErr       error
-	createRepoErr    error
-	createRepoErrSeq []error // per-call CreateRepo errors; nil entry = success
 	createRepoCalled atomic.Int32
-
 	deleteRepoErr    error
 	deleteRepoCalled atomic.Int32
 
@@ -159,8 +132,7 @@ type stubClient struct {
 	staleGetAfterDelete bool
 
 	// blockedByExistingRepo makes CreateRepo return forge.ErrAlreadyExists
-	// until DeleteRepo(org, repoName) actually clears it. Unlike
-	// createRepoErr/createRepoErrSeq (fixed per-call scripts), this ties
+	// until DeleteRepo(org, repoName) actually clears it. This ties
 	// CreateRepo's outcome to whether the blocking repo was really
 	// deleted, so a test using it fails if the delete call that clears
 	// the name is removed (#7839).
@@ -188,8 +160,15 @@ type stubClient struct {
 
 	// getWorkflowErr, when set, is returned by GetWorkflow.
 	// When nil and installed is true, GetWorkflow returns a valid Workflow.
-	getWorkflowErr    error
-	getWorkflowCalled atomic.Int32
+	getWorkflowErr      error
+	getWorkflowCalled   atomic.Int32
+	getWorkflowFailures int
+	workflowReady       bool
+
+	getFileFn              func(context.Context, string, string, string) ([]byte, error)
+	createIssueErr         error
+	createCommentErr       error
+	listWorkflowRunsResult []forge.WorkflowRun
 }
 
 func (s *stubClient) GetRepo(_ context.Context, _, repo string) (*forge.Repository, error) {
@@ -206,21 +185,10 @@ func (s *stubClient) GetRepo(_ context.Context, _, repo string) (*forge.Reposito
 }
 
 func (s *stubClient) CreateRepo(_ context.Context, _, _, _ string, _ bool) (*forge.Repository, error) {
-	n := s.createRepoCalled.Add(1)
+	s.createRepoCalled.Add(1)
 	if s.blockedByExistingRepo {
 		return nil, forge.ErrAlreadyExists
 	}
-	if seq := s.createRepoErrSeq; seq != nil {
-		idx := int(n - 1)
-		if idx < len(seq) && seq[idx] != nil {
-			return nil, seq[idx]
-		}
-	} else if s.createRepoErr != nil {
-		return nil, s.createRepoErr
-	}
-	// Simulate eventual consistency: the repo is available after create,
-	// so subsequent GetRepo calls should succeed.
-	s.getRepoErr = nil
 	return &forge.Repository{}, nil
 }
 
@@ -239,14 +207,15 @@ func (s *stubClient) DeleteRepo(_ context.Context, _, repo string) error {
 	}
 	s.blockedByExistingRepo = false
 	if !s.staleGetAfterDelete {
-		// Simulate eventual consistency: the repo is gone after delete,
-		// so subsequent GetRepo calls should return ErrNotFound.
 		s.getRepoErr = forge.ErrNotFound
 	}
 	return nil
 }
 
-func (s *stubClient) GetFileContent(_ context.Context, _, _, path string) ([]byte, error) {
+func (s *stubClient) GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error) {
+	if s.getFileFn != nil {
+		return s.getFileFn(ctx, owner, repo, path)
+	}
 	if !s.installed {
 		return nil, forge.ErrNotFound
 	}
@@ -259,19 +228,40 @@ func (s *stubClient) GetFileContent(_ context.Context, _, _, path string) ([]byt
 }
 
 func (s *stubClient) GetWorkflow(_ context.Context, _, _, _ string) (*forge.Workflow, error) {
-	s.getWorkflowCalled.Add(1)
+	call := int(s.getWorkflowCalled.Add(1))
 	if s.getWorkflowErr != nil {
 		return nil, s.getWorkflowErr
 	}
-	if !s.installed {
+	if s.getWorkflowFailures == -1 {
+		return nil, forge.ErrNotFound
+	}
+	if s.getWorkflowFailures > 0 && call <= s.getWorkflowFailures {
+		return nil, forge.ErrNotFound
+	}
+	if !s.workflowReady && s.getWorkflowFailures == 0 {
 		return nil, forge.ErrNotFound
 	}
 	return &forge.Workflow{ID: 1, Name: "fullsend", Path: ".github/workflows/fullsend.yaml", State: "active"}, nil
 }
 
+func (s *stubClient) CreateIssue(_ context.Context, _, _, _, _ string, _ ...string) (*forge.Issue, error) {
+	if s.createIssueErr != nil {
+		return nil, s.createIssueErr
+	}
+	return &forge.Issue{Number: 1}, nil
+}
+
+func (s *stubClient) CreateIssueComment(_ context.Context, _, _ string, _ int, _ string) (*forge.IssueComment, error) {
+	return nil, s.createCommentErr
+}
+
+func (s *stubClient) ListWorkflowRuns(_ context.Context, _, _, _ string) ([]forge.WorkflowRun, error) {
+	return s.listWorkflowRunsResult, nil
+}
+
 func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
 	sc := &stubClient{}
-	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", "", t.Logf)
 	require.NoError(t, err)
 	require.NotNil(t, e, "newRepoEnsurer should return a non-nil ensurer")
 
@@ -282,7 +272,7 @@ func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
 func TestNewRepoEnsurer_ConfigPresetFromEnv(t *testing.T) {
 	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "https://example.com/preset.yaml")
 	sc := &stubClient{}
-	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", "", t.Logf)
 	require.NoError(t, err)
 	re, ok := e.(*repoEnsurer)
 	require.True(t, ok)
@@ -292,7 +282,7 @@ func TestNewRepoEnsurer_ConfigPresetFromEnv(t *testing.T) {
 func TestNewRepoEnsurer_ConfigPresetUnset(t *testing.T) {
 	t.Setenv("BEHAVIOUR_CONFIG_PRESET", "")
 	sc := &stubClient{}
-	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	e, err := newRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", "", t.Logf)
 	require.NoError(t, err)
 	re, ok := e.(*repoEnsurer)
 	require.True(t, ok)
@@ -1407,11 +1397,26 @@ func noopSettle(_ context.Context, _ forge.Client, _, _, _ string, _ func(string
 	return nil
 }
 
+// noopEventDelivery is an EventDeliveryFunc that does nothing.
+func noopEventDelivery(_ context.Context, _ forge.Client, _, _ string, _ int, _ string, _ func(string, ...any)) error {
+	return nil
+}
+
+// speedUpSettlePoll sets settlePoll to zero for fast tests.
+func speedUpSettlePoll(t *testing.T) {
+	t.Helper()
+	orig := settlePoll
+	settlePoll = 0
+	t.Cleanup(func() { settlePoll = orig })
+}
+
+// --- awaitWorkflowReady tests ---
+
 func TestAwaitWorkflowReady_ImmediateSuccess(t *testing.T) {
-	sc := &stubClient{installed: true}
+	sc := &stubClient{workflowReady: true}
 	err := awaitWorkflowReady(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
 	require.NoError(t, err)
-	assert.Equal(t, int32(1), sc.getWorkflowCalled.Load(), "should succeed on first poll")
+	assert.Equal(t, int32(1), sc.getWorkflowCalled.Load())
 }
 
 func TestAwaitWorkflowReady_ReportsLastPollError(t *testing.T) {
@@ -1427,9 +1432,9 @@ func TestAwaitWorkflowReady_ReportsLastPollError(t *testing.T) {
 }
 
 func TestAwaitWorkflowReady_ContextCancelled(t *testing.T) {
-	sc := &stubClient{installed: false, getWorkflowErr: forge.ErrNotFound}
+	sc := &stubClient{getWorkflowErr: forge.ErrNotFound}
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately
+	cancel()
 
 	err := awaitWorkflowReady(ctx, sc, "org", "repo", "fullsend.yaml", t.Logf)
 	require.Error(t, err)
@@ -1626,7 +1631,7 @@ func TestDoEnsure_SettleCalledAfterInstall(t *testing.T) {
 		ensured: make(map[string]struct{}),
 	}
 
-	err := e.EnsureRepo(context.Background(), "org", "test-repo-settle")
+	err := e.EnsureRepo(context.Background(), "org", "repo")
 	require.NoError(t, err)
 	assert.True(t, settleCalled, "settle should be called after install")
 }
@@ -2014,7 +2019,7 @@ func TestDoEnsure_SettleError_Propagated(t *testing.T) {
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-settle-err")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "waiting for Actions readiness")
+	assert.Contains(t, err.Error(), "waiting for Actions readiness on org/test-repo-settle-err")
 	assert.Contains(t, err.Error(), "Actions not ready")
 }
 
@@ -2381,8 +2386,8 @@ func TestAwaitDeletion_RetriesUntilConfirmed(t *testing.T) {
 	speedUpResetRetries(t)
 	client := &countingRepoClient{
 		switchAfter: 3,
-		initialErr:  nil,               // repo still visible for 3 calls
-		switchedErr: forge.ErrNotFound, // then confirmed deleted
+		initialErr:  nil,
+		switchedErr: forge.ErrNotFound,
 	}
 	e := &repoEnsurer{client: client, logf: t.Logf}
 
@@ -2560,4 +2565,67 @@ func TestProvisionWIFProvider_ProvisionErrorReleasesGate(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "provision boom")
 	assert.Empty(t, provisionGate, "gate released")
+}
+
+// --- awaitEventDelivery tests ---
+
+func TestAwaitEventDelivery_ImmediateSuccess(t *testing.T) {
+	speedUpSettlePoll(t)
+	sc := &stubClient{
+		listWorkflowRunsResult: []forge.WorkflowRun{
+			{ID: 42, Status: "completed", CreatedAt: time.Now().Format(time.RFC3339)},
+		},
+	}
+	err := awaitEventDelivery(context.Background(), sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+}
+
+func TestAwaitEventDelivery_CommentError(t *testing.T) {
+	sc := &stubClient{
+		createCommentErr: fmt.Errorf("comment failed"),
+	}
+	err := awaitEventDelivery(context.Background(), sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "posting warmup comment")
+}
+
+func TestAwaitEventDelivery_ExhaustsAttempts(t *testing.T) {
+	speedUpSettlePoll(t)
+	sc := &stubClient{}
+	err := awaitEventDelivery(context.Background(), sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "event delivery not confirmed")
+}
+
+func TestAwaitEventDelivery_IgnoresInProgressRuns(t *testing.T) {
+	speedUpSettlePoll(t)
+	sc := &stubClient{
+		listWorkflowRunsResult: []forge.WorkflowRun{
+			{ID: 42, Status: "in_progress", CreatedAt: time.Now().Format(time.RFC3339)},
+		},
+	}
+	err := awaitEventDelivery(context.Background(), sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "event delivery not confirmed")
+}
+
+func TestAwaitEventDelivery_IgnoresOldRuns(t *testing.T) {
+	speedUpSettlePoll(t)
+	sc := &stubClient{
+		listWorkflowRunsResult: []forge.WorkflowRun{
+			{ID: 42, Status: "completed", CreatedAt: time.Now().Add(-5 * time.Minute).Format(time.RFC3339)},
+		},
+	}
+	err := awaitEventDelivery(context.Background(), sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "event delivery not confirmed")
+}
+
+func TestAwaitEventDelivery_ContextCancelled(t *testing.T) {
+	sc := &stubClient{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := awaitEventDelivery(ctx, sc, "org", "repo", 1, "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
 }

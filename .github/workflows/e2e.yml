@@ -53,6 +53,11 @@ on:
   merge_group:
   workflow_dispatch:
     inputs:
+      run_behaviour:
+        description: Run the behaviour test suite
+        required: true
+        type: boolean
+        default: false
       run_playback:
         description: Run the playback behaviour suite
         required: true
@@ -131,8 +136,9 @@ jobs:
       group: ${{ github.workflow }}-${{ github.run_id }}-${{ github.event_name == 'push' && 'stage-org' || 'behaviour-dev' }}
       cancel-in-progress: false
     # Gate authorization protects checkout of untrusted PR-head code with secrets.
-    # Runs only on authorized PRs, merge_group (required check; treated as
-    # PR-class / dev), and push to main (stage). Skip workflow_dispatch.
+    # Runs on authorized PRs, merge_group (required check; treated as
+    # PR-class / dev), push to main (stage), and an explicit manual dispatch.
+    # Dispatch requires write access and runs the selected branch in dev.
     # Environment uses event_name, not github.ref: pull_request sets
     # github.ref to refs/pull/N/merge and issue_comment to the default branch.
     needs: gate
@@ -141,6 +147,7 @@ jobs:
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'merge_group') ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_behaviour) ||
         (github.event_name == 'pull_request' && needs.gate.outputs.authorized == 'true') ||
         (github.event_name == 'issue_comment' && inputs.head_sha != '')
       )
@@ -242,9 +249,10 @@ jobs:
           mkdir -p "${{ runner.temp }}/behaviour-artifacts"
           make behaviour-test 2>&1 | tee "${{ runner.temp }}/behaviour-artifacts/behaviour-test.log"
         env:
+          E2E_KEEP_REPOS: ${{ vars.E2E_KEEP_REPOS }}
           BEHAVIOUR_SCM: github
           BEHAVIOUR_CI: githubactions
-          BEHAVIOUR_INSTALL_MODE: per-repo
+          BEHAVIOUR_FULLSEND_REF: ${{ github.head_ref || github.ref_name }}
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
           # Refuse the infra retry after a 40m attempt 1, so attempt 2 (up to
           # its own 45m -timeout) still finishes inside timeout-minutes.

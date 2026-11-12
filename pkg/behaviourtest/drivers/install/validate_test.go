@@ -38,7 +38,7 @@ func (c *retryTestClient) GetFileContent(ctx context.Context, owner, repo, path 
 	return c.getFileFn(ctx, owner, repo, path)
 }
 
-func TestValidatePerRepoPostInstall_OK(t *testing.T) {
+func TestValidatePostInstall_OK(t *testing.T) {
 	client := forge.NewFakeClient()
 	org, repo := "acme", "test-repo"
 	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
@@ -57,7 +57,7 @@ func TestValidatePerRepoPostInstall_OK(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestValidatePerRepoPostInstall_MissingShim(t *testing.T) {
+func TestValidatePostInstall_MissingShim(t *testing.T) {
 	speedUpValidateRetries(t)
 	client := forge.NewFakeClient()
 	err := ValidatePerRepoPostInstall(context.Background(), client, "acme", "test-repo")
@@ -358,7 +358,7 @@ func TestGetFileWithRetry_RespectsContextCancellation(t *testing.T) {
 		"should stop after context is cancelled")
 }
 
-// --- ValidatePerRepoPostInstall retry integration tests ---
+// --- ValidatePostInstall retry integration tests ---
 
 // transientNotFoundClient wraps a forge.FakeClient and returns
 // ErrNotFound for the first failCount GetFileContent calls before
@@ -376,7 +376,7 @@ func (c *transientNotFoundClient) GetFileContent(ctx context.Context, owner, rep
 	return c.FakeClient.GetFileContent(ctx, owner, repo, path)
 }
 
-func TestValidatePerRepoPostInstall_RetriesTransient404(t *testing.T) {
+func TestValidatePostInstall_RetriesTransient404(t *testing.T) {
 	speedUpValidateRetries(t)
 
 	org, repo := "acme", "test-repo"
@@ -402,7 +402,7 @@ func TestValidatePerRepoPostInstall_RetriesTransient404(t *testing.T) {
 		"should have retried at least once")
 }
 
-func TestValidatePerRepoPostInstall_ExhaustsRetriesWithClearError(t *testing.T) {
+func TestValidatePostInstall_ExhaustsRetriesWithClearError(t *testing.T) {
 	speedUpValidateRetries(t)
 
 	// All calls return 404 — retries should exhaust and surface a clear error.
@@ -415,4 +415,75 @@ func TestValidatePerRepoPostInstall_ExhaustsRetriesWithClearError(t *testing.T) 
 	err := ValidatePerRepoPostInstall(context.Background(), client, "org", "repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing .github/workflows/fullsend.yaml")
+}
+
+// --- ValidatePostInstallRefPinned tests ---
+
+func TestValidateRefPinned_OK(t *testing.T) {
+	org, repo := "acme", "test-repo"
+	client := forge.NewFakeClient()
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml": []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":           cfg,
+	}
+
+	err = ValidatePerRepoPostInstallNonVendored(context.Background(), client, org, repo)
+	require.NoError(t, err)
+}
+
+func TestValidateRefPinned_MissingWorkflow(t *testing.T) {
+	speedUpValidateRetries(t)
+	client := forge.NewFakeClient()
+
+	err := ValidatePerRepoPostInstallNonVendored(context.Background(), client, "org", "repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing .github/workflows/fullsend.yaml")
+}
+
+func TestValidateRefPinned_MissingConfig(t *testing.T) {
+	speedUpValidateRetries(t)
+	org, repo := "acme", "test-repo"
+	client := forge.NewFakeClient()
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml": []byte("name: fullsend"),
+	}
+
+	err := ValidatePerRepoPostInstallNonVendored(context.Background(), client, org, repo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading .fullsend/config.yaml")
+}
+
+func TestValidateRefPinned_InvalidConfig(t *testing.T) {
+	org, repo := "acme", "test-repo"
+	client := forge.NewFakeClient()
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml": []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":           []byte("not valid yaml: [[["),
+	}
+
+	err := ValidatePerRepoPostInstallNonVendored(context.Background(), client, org, repo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing .fullsend/config.yaml")
+}
+
+func TestValidateRefPinned_WrongRuntime(t *testing.T) {
+	org, repo := "acme", "test-repo"
+	client := forge.NewFakeClient()
+	perRepoCfg := config.NewPerRepoConfig(nil, org+"/"+repo)
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml": []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":           cfg,
+	}
+
+	err = ValidatePerRepoPostInstallNonVendored(context.Background(), client, org, repo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "want dummy")
 }

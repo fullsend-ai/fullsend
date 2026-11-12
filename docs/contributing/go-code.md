@@ -586,7 +586,7 @@ This already happened: an enrollment for `crc-org/crc` used a June-era mise `ful
 
 ## Running e2e tests
 
-The e2e tests mint short-lived GitHub App installation tokens via the central token mint. Pool-org admin operations use mint/OIDC in CI and do not require a dedicated mint URL secret.
+The e2e tests mint short-lived GitHub App installation tokens via the central token mint. Test-org admin operations use mint/OIDC in CI and do not require a dedicated mint URL secret.
 
 - **CI (mint):** Uses the hosted public mint (same default as `fullsend github setup --mint-url`) with the workflow's OIDC identity. The e2e workflow exchanges the OIDC JWT for an `e2e`-role installation token on the pool org. Override with `FULLSEND_MINT_URL` if needed.
 - **Local:** Run `gh auth login` (or set `GH_TOKEN` / `GITHUB_TOKEN` with pool-org admin access). Mint uses `FULLSEND_MINT_URL` or the hosted default.
@@ -609,7 +609,7 @@ suite timeout.
 
 **When reviewing PRs:** Flag unauthorized suite-timeout increases as an **important-severity** finding (policy violation). Explicit human authorization in the linked issue or a PR comment is the only exception.
 
-See [`docs/guides/dev/e2e-testing.md`](../guides/dev/e2e-testing.md) and `make help` for pool org setup and troubleshooting.
+See [`docs/guides/dev/e2e-testing.md`](../guides/dev/e2e-testing.md) and `make help` for test org setup and troubleshooting.
 
 ## Per-repo config field checklist
 

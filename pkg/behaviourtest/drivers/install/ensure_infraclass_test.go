@@ -20,9 +20,9 @@ import (
 // are visible only inside the test build; they never reach a non-test
 // compilation.
 
-// speedUpSettlePoll shrinks awaitWorkflowReady's settle window for fast
+// speedUpSettleWindow shrinks awaitWorkflowReady's settle window for fast
 // tests (speedUpSettle restores it on cleanup).
-func speedUpSettlePoll(t *testing.T) {
+func speedUpSettleWindow(t *testing.T) {
 	t.Helper()
 	speedUpSettle(t, 20*time.Millisecond)
 }
@@ -49,7 +49,7 @@ func AwaitCreationNeverVisibleForTest(t *testing.T) error {
 // Actions never recognises the dispatch workflow.
 func AwaitWorkflowNeverSettledForTest(t *testing.T) error {
 	t.Helper()
-	speedUpSettlePoll(t)
+	speedUpSettleWindow(t)
 	sc := &stubClient{installed: false, getWorkflowErr: forge.ErrNotFound}
 	return awaitWorkflowReady(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
 }
@@ -109,7 +109,7 @@ func IsForkReplacedForTest(err error) bool { return errors.Is(err, errForkReplac
 // once the poll exhausts on that GetWorkflow failure.
 func AwaitWorkflowGetErrorForTest(t *testing.T, err error) error {
 	t.Helper()
-	speedUpSettlePoll(t)
+	speedUpSettleWindow(t)
 	sc := &stubClient{installed: false, getWorkflowErr: err}
 	return awaitWorkflowReady(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
 }

@@ -135,7 +135,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 
 Steps must **not** import forge-specific packages (`internal/forge/github`, `internal/forge/gitlab`) directly — only drivers. This keeps scenarios vendor-agnostic.
 
-Steps use `w.Org` and `w.RepoName` (the allocated repo name) plus per-repo constants from the `install` package (`PerRepoTriageWorkflow`, `PerRepoAgentWorkflow`, `PerRepoAgentArtifact`) for workflow and artifact paths.
+Steps use `w.Org` and `w.RepoName` (the created repo name) plus constants from the `install` package (`TriageWorkflow`, `AgentWorkflow`, `AgentArtifact`) for workflow and artifact paths.
 
 ## Testing drivers
 

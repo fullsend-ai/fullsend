@@ -1,7 +1,7 @@
 Feature: Base-composed harness dispatch
 
   Background:
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
     And a harness-hosting repository "base-harness-host"
 
   Scenario: Base-composed harnesses dispatch with local and remote base variants

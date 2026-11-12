@@ -18,9 +18,10 @@ import (
 
 // InitScenario registers tag-based skips, Before/After hooks, and shared steps.
 // Each scenario receives its own World cloned from template. The unified
-// install.Driver on template.Driver handles repo allocation/deallocation;
-// scenarios that need a repo call AllocateRepo in a step (e.g. "Given the
-// enrolled test repository"), and the After hook deallocates on cleanup.
+// install.Driver on template.Driver handles repo creation/deletion;
+// scenarios that need a repo call CreateRepo in a step (e.g. "Given a
+// test repository with fullsend installed"), and the After hook deletes
+// the repo on cleanup.
 func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
 		return beforeScenario(ctx, tagNames(scenario.Tags), template, scenario.Name, scenario.Uri)
@@ -106,7 +107,7 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 	retErr = scenarioErr
 	w := world.FromContext(ctx)
 	if w == nil {
-		return ctx, retErr
+		return ctx, scenarioErr
 	}
 	if driver != nil && w.LeasedRepoName != "" {
 		name, org := w.LeasedRepoName, w.LeasedRepoOrg
@@ -303,11 +304,6 @@ func SkipErrorForTagNames(tags []string, w *world.World) error {
 			// suite trying (and failing) to run playback-only steps.
 			return godog.ErrSkip
 		case strings.HasPrefix(name, "requires:capability:"):
-			// Skip unless the runner declares the capability via
-			// BEHAVIOUR_CAPABILITIES. Gates scenarios that assert
-			// behavior only present past a dependency version, so CI
-			// stays green until the dependency ships and the runner
-			// opts in.
 			capability := strings.TrimPrefix(name, "requires:capability:")
 			if capability == "" {
 				return fmt.Errorf("malformed tag %q: requires:capability: needs a name", tag)

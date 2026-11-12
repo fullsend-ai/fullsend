@@ -34,7 +34,6 @@ func TestValidate_AcceptsDevAndStage(t *testing.T) {
 			cfg := RunnerConfig{
 				SCM:         "github",
 				CI:          "githubactions",
-				InstallMode: "per-repo",
 				Environment: envName,
 			}
 			require.NoError(t, cfg.Validate())
@@ -46,7 +45,15 @@ func TestValidate_AcceptsGitLabSCM(t *testing.T) {
 	cfg := RunnerConfig{
 		SCM:         "gitlab",
 		CI:          "githubactions",
-		InstallMode: "per-repo",
+		Environment: "dev",
+	}
+	require.NoError(t, cfg.Validate())
+}
+
+func TestValidate_AcceptsGitLabCI(t *testing.T) {
+	cfg := RunnerConfig{
+		SCM:         "github",
+		CI:          "gitlabci",
 		Environment: "dev",
 	}
 	require.NoError(t, cfg.Validate())
@@ -56,7 +63,6 @@ func TestValidate_RejectsUnknownEnvironment(t *testing.T) {
 	cfg := RunnerConfig{
 		SCM:         "github",
 		CI:          "githubactions",
-		InstallMode: "per-repo",
 		Environment: "prod",
 	}
 	err := cfg.Validate()
@@ -66,9 +72,8 @@ func TestValidate_RejectsUnknownEnvironment(t *testing.T) {
 
 func TestValidate_RejectsEmptyEnvironment(t *testing.T) {
 	cfg := RunnerConfig{
-		SCM:         "github",
-		CI:          "githubactions",
-		InstallMode: "per-repo",
+		SCM: "github",
+		CI:  "githubactions",
 	}
 	err := cfg.Validate()
 	require.Error(t, err)

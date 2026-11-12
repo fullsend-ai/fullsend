@@ -14,44 +14,34 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-func TestShouldRemoveArtifactDir(t *testing.T) {
-	t.Parallel()
-
-	ciRoot := "/tmp/behaviour-artifacts"
-	assert.False(t, shouldRemoveArtifactDir(ciRoot, ciRoot))
-	assert.False(t, shouldRemoveArtifactDir(ciRoot+"/run-123", ciRoot))
-	assert.True(t, shouldRemoveArtifactDir("/tmp/behaviour-artifacts-evil/run-123", ciRoot))
-	assert.True(t, shouldRemoveArtifactDir("/var/tmp/local-run", ciRoot))
-	assert.True(t, shouldRemoveArtifactDir("/tmp/local-run", ""))
+// fakeCleanupDriver tracks MarkDeleted calls.
+type fakeCleanupDriver struct {
+	install.Driver
+	marked []string
 }
 
-func TestArtifactDirUnderCIRoot(t *testing.T) {
-	t.Parallel()
-
-	ciRoot := "/tmp/behaviour-artifacts"
-	assert.True(t, artifactDirUnderCIRoot(ciRoot, ciRoot))
-	assert.True(t, artifactDirUnderCIRoot(ciRoot+"/run-456", ciRoot))
-	assert.False(t, artifactDirUnderCIRoot("/tmp/behaviour-artifacts-evil/run", ciRoot))
+func (f *fakeCleanupDriver) MarkDeleted(name string) {
+	f.marked = append(f.marked, name)
 }
 
-func TestCleanupScenario_ClosesForkPR(t *testing.T) {
+func TestCleanupScenario_PreservesLeasedSlotRepo(t *testing.T) {
 	t.Parallel()
 
 	scmDriver := &fakeCleanupSCM{}
+	driver := &fakeCleanupDriver{}
 	w := &world.World{
-		RepoOwner:    "org",
-		RepoName:     "repo",
-		ForkPRNumber: 42,
-		SCM:          scmDriver,
+		RepoOwner: "org",
+		RepoName:  "bt-abc123",
+		SCM:       scmDriver,
+		Driver:    driver,
 	}
 	CleanupScenario(w)
-	require.Len(t, scmDriver.closedIssues, 1)
-	assert.Equal(t, "org", scmDriver.closedIssues[0].owner)
-	assert.Equal(t, "repo", scmDriver.closedIssues[0].repo)
-	assert.Equal(t, 42, scmDriver.closedIssues[0].number)
+	assert.Empty(t, scmDriver.deletedRepos, "the lease driver deallocates the slot after scenario cleanup")
+	assert.Empty(t, driver.marked, "slot deletion is owned by the lease driver")
 }
 
 func TestCleanupScenario_ClosesAgentFiledIssues(t *testing.T) {
@@ -149,79 +139,14 @@ func TestCleanupScenario_SkipsForkCleanupWhenNotSet(t *testing.T) {
 	scmDriver := &fakeCleanupSCM{}
 	w := &world.World{
 		RepoOwner: "org",
-		RepoName:  "repo",
+		RepoName:  "bt-abc123",
 		SCM:       scmDriver,
 	}
 	CleanupScenario(w)
-	assert.Empty(t, scmDriver.closedIssues)
+	assert.Empty(t, scmDriver.deletedRepos, "no fork or auxiliary repo was recorded")
 }
 
-func TestCleanupScenario_DeletesForkBranch(t *testing.T) {
-	t.Parallel()
-
-	scmDriver := &fakeCleanupSCM{}
-	w := &world.World{
-		RepoOwner:    "org",
-		RepoName:     "repo",
-		ForkPRNumber: 10,
-		ForkOwner:    "org",
-		ForkRepo:     "fork-repo",
-		ForkPRBranch: "test-branch",
-		SCM:          scmDriver,
-	}
-	CleanupScenario(w)
-
-	require.Len(t, scmDriver.closedIssues, 1)
-	assert.Equal(t, 10, scmDriver.closedIssues[0].number)
-
-	require.Len(t, scmDriver.deletedBranches, 1)
-	assert.Equal(t, "org", scmDriver.deletedBranches[0].owner)
-	assert.Equal(t, "fork-repo", scmDriver.deletedBranches[0].repo)
-	assert.Equal(t, "test-branch", scmDriver.deletedBranches[0].branch)
-}
-
-func TestCleanupScenario_DeleteBranchNotFound_SilentlyIgnored(t *testing.T) {
-	t.Parallel()
-
-	var logged []string
-	scmDriver := &fakeCleanupSCM{deleteBranchErr: fmt.Errorf("delete branch: %w", forge.ErrNotFound)}
-	w := &world.World{
-		RepoOwner:    "org",
-		RepoName:     "repo",
-		ForkOwner:    "org",
-		ForkRepo:     "fork-repo",
-		ForkPRBranch: "gone-branch",
-		SCM:          scmDriver,
-		Logf:         func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-	}
-	CleanupScenario(w)
-
-	// 404/ErrNotFound is silently ignored — no log output for branch deletion.
-	for _, msg := range logged {
-		assert.NotContains(t, msg, "fork branch", "ErrNotFound should be silently ignored")
-	}
-}
-
-func TestCleanupScenario_DeleteBranchError_Logged(t *testing.T) {
-	t.Parallel()
-
-	var logged []string
-	scmDriver := &fakeCleanupSCM{deleteBranchErr: fmt.Errorf("server error")}
-	w := &world.World{
-		RepoOwner:    "org",
-		RepoName:     "repo",
-		ForkOwner:    "org",
-		ForkRepo:     "fork-repo",
-		ForkPRBranch: "bad-branch",
-		SCM:          scmDriver,
-		Logf:         func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-	}
-	CleanupScenario(w)
-
-	require.Len(t, logged, 1)
-	assert.Contains(t, logged[0], "delete fork branch bad-branch")
-	assert.Contains(t, logged[0], "server error")
-}
+// --- Fork repo cleanup tests ---
 
 func TestCleanupScenario_DeletesForkRepo(t *testing.T) {
 	t.Parallel()
@@ -233,11 +158,10 @@ func TestCleanupScenario_DeletesForkRepo(t *testing.T) {
 		ForkOwner: "org",
 		ForkRepo:  "repo-fork",
 		SCM:       scmDriver,
+		Driver:    &fakeCleanupDriver{},
 	}
 	CleanupScenario(w)
-
 	require.Len(t, scmDriver.deletedRepos, 1)
-	assert.Equal(t, "org", scmDriver.deletedRepos[0].owner)
 	assert.Equal(t, "repo-fork", scmDriver.deletedRepos[0].repo)
 }
 
@@ -252,6 +176,7 @@ func TestCleanupScenario_DeleteForkRepoNotFound_SilentlyIgnored(t *testing.T) {
 		ForkOwner: "org",
 		ForkRepo:  "repo-fork",
 		SCM:       scmDriver,
+		Driver:    &fakeCleanupDriver{},
 		Logf:      func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
 	}
 	CleanupScenario(w)
@@ -259,26 +184,6 @@ func TestCleanupScenario_DeleteForkRepoNotFound_SilentlyIgnored(t *testing.T) {
 	for _, msg := range logged {
 		assert.NotContains(t, msg, "fork repo", "ErrNotFound should be silently ignored")
 	}
-}
-
-func TestCleanupScenario_DeleteForkRepoError_Logged(t *testing.T) {
-	t.Parallel()
-
-	var logged []string
-	scmDriver := &fakeCleanupSCM{deleteRepoErr: fmt.Errorf("server error")}
-	w := &world.World{
-		RepoOwner: "org",
-		RepoName:  "repo",
-		ForkOwner: "org",
-		ForkRepo:  "repo-fork",
-		SCM:       scmDriver,
-		Logf:      func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-	}
-	CleanupScenario(w)
-
-	require.Len(t, logged, 1)
-	assert.Contains(t, logged[0], "delete fork repo org/repo-fork")
-	assert.Contains(t, logged[0], "server error")
 }
 
 func TestCleanupScenario_SkipsForkRepoDelete_WhenForkRepoEqualsRepoName(t *testing.T) {
@@ -289,12 +194,13 @@ func TestCleanupScenario_SkipsForkRepoDelete_WhenForkRepoEqualsRepoName(t *testi
 		RepoOwner: "org",
 		RepoName:  "repo",
 		ForkOwner: "org",
-		ForkRepo:  "repo", // same as RepoName — must not be deleted
+		ForkRepo:  "repo",
 		SCM:       scmDriver,
+		Driver:    &fakeCleanupDriver{},
 	}
 	CleanupScenario(w)
 
-	assert.Empty(t, scmDriver.deletedRepos, "repo deletion should be skipped when ForkRepo == RepoName")
+	assert.Empty(t, scmDriver.deletedRepos, "the base repo is the leased slot and remains until deallocation")
 }
 
 func TestCleanupScenario_ActorOwnedForkDeletedThroughForkSCM(t *testing.T) {
@@ -343,6 +249,7 @@ func TestCleanupScenario_SkipsForkRepoDelete_WhenFieldsMissing(t *testing.T) {
 				RepoName:  "repo",
 				ForkRepo:  "repo-fork",
 				SCM:       &fakeCleanupSCM{},
+				Driver:    &fakeCleanupDriver{},
 			},
 		},
 		{
@@ -352,63 +259,15 @@ func TestCleanupScenario_SkipsForkRepoDelete_WhenFieldsMissing(t *testing.T) {
 				RepoName:  "repo",
 				ForkOwner: "org",
 				SCM:       &fakeCleanupSCM{},
+				Driver:    &fakeCleanupDriver{},
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
 			scm := tt.world.SCM.(*fakeCleanupSCM)
 			CleanupScenario(tt.world)
-			assert.Empty(t, scm.deletedRepos, "repo deletion should be skipped when fields are missing")
-		})
-	}
-}
-
-func TestCleanupScenario_SkipsBranchDelete_WhenFieldsMissing(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		world *world.World
-	}{
-		{
-			name: "missing ForkPRBranch",
-			world: &world.World{
-				RepoOwner: "org",
-				RepoName:  "repo",
-				ForkOwner: "org",
-				ForkRepo:  "fork-repo",
-				SCM:       &fakeCleanupSCM{},
-			},
-		},
-		{
-			name: "missing ForkOwner",
-			world: &world.World{
-				RepoOwner:    "org",
-				RepoName:     "repo",
-				ForkRepo:     "fork-repo",
-				ForkPRBranch: "branch",
-				SCM:          &fakeCleanupSCM{},
-			},
-		},
-		{
-			name: "missing ForkRepo",
-			world: &world.World{
-				RepoOwner:    "org",
-				RepoName:     "repo",
-				ForkOwner:    "org",
-				ForkPRBranch: "branch",
-				SCM:          &fakeCleanupSCM{},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			scm := tt.world.SCM.(*fakeCleanupSCM)
-			CleanupScenario(tt.world)
-			assert.Empty(t, scm.deletedBranches, "branch deletion should be skipped when fields are missing")
+			assert.Empty(t, scm.deletedRepos, "the base repo is the leased slot and remains until deallocation")
 		})
 	}
 }
@@ -419,125 +278,36 @@ func TestCleanupScenario_DeletesHostingRepo(t *testing.T) {
 	t.Parallel()
 
 	scmDriver := &fakeCleanupSCM{}
+	driver := &fakeCleanupDriver{}
 	w := &world.World{
 		RepoOwner:           "org",
-		RepoName:            "repo",
+		RepoName:            "bt-abc123",
+		ForkOwner:           "org",
+		ForkRepo:            "bt-abc123-fork",
 		URLHarnessRepoOwner: "org",
-		URLHarnessRepoName:  "test-repo-07-url-harness-host",
+		URLHarnessRepoName:  "bt-abc123-url-harness-host",
 		SCM:                 scmDriver,
+		Driver:              driver,
 	}
 	CleanupScenario(w)
-
-	require.Len(t, scmDriver.deletedRepos, 1)
-	assert.Equal(t, "org", scmDriver.deletedRepos[0].owner)
-	assert.Equal(t, "test-repo-07-url-harness-host", scmDriver.deletedRepos[0].repo)
+	require.Len(t, scmDriver.deletedRepos, 2, "the fork and auxiliary hosting repo should be deleted")
+	assert.Equal(t, "bt-abc123-fork", scmDriver.deletedRepos[0].repo)
+	assert.Equal(t, "bt-abc123-url-harness-host", scmDriver.deletedRepos[1].repo)
+	assert.Empty(t, driver.marked, "slot deletion is owned by the lease driver")
 }
 
-func TestCleanupScenario_SkipsHostingRepoDelete_WhenEqualsRepoName(t *testing.T) {
-	t.Parallel()
-
-	scmDriver := &fakeCleanupSCM{}
-	w := &world.World{
-		RepoOwner:           "org",
-		RepoName:            "repo",
-		URLHarnessRepoOwner: "org",
-		URLHarnessRepoName:  "repo", // same as RepoName — must not be deleted
-		SCM:                 scmDriver,
-	}
-	CleanupScenario(w)
-
-	assert.Empty(t, scmDriver.deletedRepos, "repo deletion should be skipped when URLHarnessRepoName == RepoName")
-}
-
-func TestCleanupScenario_SkipsHostingRepoDelete_WhenFieldsMissing(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		world *world.World
-	}{
-		{
-			name: "missing URLHarnessRepoOwner",
-			world: &world.World{
-				RepoOwner:          "org",
-				RepoName:           "repo",
-				URLHarnessRepoName: "host-repo",
-				SCM:                &fakeCleanupSCM{},
-			},
-		},
-		{
-			name: "missing URLHarnessRepoName",
-			world: &world.World{
-				RepoOwner:           "org",
-				RepoName:            "repo",
-				URLHarnessRepoOwner: "org",
-				SCM:                 &fakeCleanupSCM{},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			scm := tt.world.SCM.(*fakeCleanupSCM)
-			CleanupScenario(tt.world)
-			assert.Empty(t, scm.deletedRepos, "repo deletion should be skipped when hosting repo fields are missing")
-		})
-	}
-}
-
-func TestCleanupScenario_DeleteHostingRepoNotFound_SilentlyIgnored(t *testing.T) {
-	t.Parallel()
-
-	var logged []string
-	scmDriver := &fakeCleanupSCM{deleteRepoErr: fmt.Errorf("delete repo: %w", forge.ErrNotFound)}
-	w := &world.World{
-		RepoOwner:           "org",
-		RepoName:            "repo",
-		URLHarnessRepoOwner: "org",
-		URLHarnessRepoName:  "host-repo",
-		SCM:                 scmDriver,
-		Logf:                func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-	}
-	CleanupScenario(w)
-
-	for _, msg := range logged {
-		assert.NotContains(t, msg, "harness-hosting repo", "ErrNotFound should be silently ignored")
-	}
-}
-
-func TestCleanupScenario_DeleteHostingRepoError_Logged(t *testing.T) {
-	t.Parallel()
-
-	var logged []string
-	scmDriver := &fakeCleanupSCM{deleteRepoErr: fmt.Errorf("server error")}
-	w := &world.World{
-		RepoOwner:           "org",
-		RepoName:            "repo",
-		URLHarnessRepoOwner: "org",
-		URLHarnessRepoName:  "host-repo",
-		SCM:                 scmDriver,
-		Logf:                func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-	}
-	CleanupScenario(w)
-
-	// The shared deleteRepoErr causes log messages for both hosting repo
-	// (no fork fields set, so only hosting repo cleanup fires).
-	require.Len(t, logged, 1)
-	assert.Contains(t, logged[0], "delete harness-hosting repo org/host-repo")
-	assert.Contains(t, logged[0], "server error")
-}
-
-// fakeCleanupSCM implements scm.Driver for cleanup unit tests.
+// fakeCleanupSCM implements scm.Driver for cleanup and runtime unit tests.
+// Fields beyond cleanup (fileContent, commitFile*) are used by
+// recordingSCM in runtime_test.go which embeds this type.
 type fakeCleanupSCM struct {
-	closedIssues     []closedIssueRecord
-	closeIssueErr    error
-	deletedBranches  []deletedBranchRecord
-	deleteBranchErr  error
 	deletedRepos     []deletedRepoRecord
 	deleteRepoErr    error
+	closedIssues     []closedIssueRecord
+	closeIssueErr    error
 	commitFileCalled bool
 	commitFileErr    error
 	commits          []committedFileRecord
+	deletedBranches  []deletedBranchRecord
 	fileContent      []byte
 	getFileErr       error
 	// baseFileConfigured, when true, makes GetFileContent answer
@@ -577,19 +347,8 @@ type deletedRepoRecord struct {
 }
 
 func (f *fakeCleanupSCM) CloseIssue(_ context.Context, owner, repo string, number int) error {
-	if f.closeIssueErr != nil {
-		return f.closeIssueErr
-	}
 	f.closedIssues = append(f.closedIssues, closedIssueRecord{owner: owner, repo: repo, number: number})
-	return nil
-}
-
-func (f *fakeCleanupSCM) DeleteBranch(_ context.Context, owner, repo, branch string) error {
-	if f.deleteBranchErr != nil {
-		return f.deleteBranchErr
-	}
-	f.deletedBranches = append(f.deletedBranches, deletedBranchRecord{owner: owner, repo: repo, branch: branch})
-	return nil
+	return f.closeIssueErr
 }
 
 func (f *fakeCleanupSCM) DeleteRepo(_ context.Context, owner, repo string) error {
@@ -601,6 +360,11 @@ func (f *fakeCleanupSCM) DeleteRepo(_ context.Context, owner, repo string) error
 }
 
 // Unused scm.Driver methods — required for interface satisfaction.
+
+func (f *fakeCleanupSCM) DeleteBranch(_ context.Context, owner, repo, branch string) error {
+	f.deletedBranches = append(f.deletedBranches, deletedBranchRecord{owner: owner, repo: repo, branch: branch})
+	return nil
+}
 
 func (f *fakeCleanupSCM) CreateIssue(context.Context, string, string, string, string, ...string) (*forge.Issue, error) {
 	return nil, nil

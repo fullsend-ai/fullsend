@@ -17,6 +17,9 @@ import (
 )
 
 const (
+	// settleMaxAttempts bounds the event-delivery probe's workflow-run polls.
+	settleMaxAttempts = 30
+
 	// settleWorkflowActive is the GetWorkflow state that marks a
 	// workflow as able to receive events.
 	settleWorkflowActive = "active"
@@ -38,10 +41,11 @@ const (
 	resetMaxAttempts = 5
 )
 
-// resetRetryDelay is the initial delay for exponential backoff when
-// polling GetRepo after delete or create. Doubled on each retry.
-// Overridden in tests to avoid slow retry loops.
+// resetRetryDelay is the initial delay for read-after-write retries.
 var resetRetryDelay = time.Second
+
+// settlePoll is the delay between GetWorkflow polls. Overridden in tests.
+var settlePoll = 5 * time.Second
 
 // Settle timing for awaitWorkflowReady. Polls start settlePollInitial
 // apart and double up to settlePollMax, until settleTimeout has passed.
@@ -239,7 +243,7 @@ type repoEnsurer struct {
 func newRepoEnsurer(
 	e2eCfg e2etest.EnvConfig,
 	client forge.Client,
-	token, binary string,
+	token, binary, fullsendRef string,
 	logf func(string, ...any),
 ) (ensurer, error) {
 	opts := common.DefaultGitHubSetupOpts()
@@ -939,4 +943,54 @@ func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, wor
 		}
 		delay = min(delay*2, settlePollMax)
 	}
+}
+
+// awaitEventDelivery posts a comment on a pre-created warmup issue and
+// polls ListWorkflowRuns until a completed run appears, proving that
+// GitHub's event delivery pipeline is live for this repo. The comment
+// body does not start with /fs-, so the shim's dispatch job is skipped
+// by its if: condition — no triage or agent work runs.
+//
+// On pre-existing repos (the old pool flow) the pipeline is already
+// warm and the run appears in seconds. On freshly created ephemeral
+// repos there can be a gap between workflow indexing and event delivery
+// readiness; this function absorbs that gap.
+func awaitEventDelivery(ctx context.Context, client forge.Client, org, repo string, issueNumber int, workflowFile string, logf func(string, ...any)) error {
+	target := org + "/" + repo
+	logf("[ensure] verifying event delivery on %s", target)
+
+	probeTime := time.Now()
+
+	if _, err := client.CreateIssueComment(ctx, org, repo, issueNumber, "fullsend event delivery probe"); err != nil {
+		return fmt.Errorf("posting warmup comment on %s: %w", target, err)
+	}
+
+	for attempt := 1; attempt <= settleMaxAttempts; attempt++ {
+		runs, err := client.ListWorkflowRuns(ctx, org, repo, workflowFile)
+		if err == nil {
+			for _, run := range runs {
+				t, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+				if parseErr != nil {
+					continue
+				}
+				if !t.Before(probeTime.Add(-30*time.Second)) && run.Status == "completed" {
+					logf("[ensure] event delivery confirmed on %s after %d attempt(s) (run %d)", target, attempt, run.ID)
+					return nil
+				}
+			}
+		}
+
+		if attempt < settleMaxAttempts {
+			if ctx.Err() != nil {
+				return fmt.Errorf("context cancelled while verifying event delivery on %s: %w", target, ctx.Err())
+			}
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while verifying event delivery on %s: %w", target, ctx.Err())
+			case <-time.After(settlePoll):
+			}
+		}
+	}
+
+	return fmt.Errorf("event delivery not confirmed on %s after %d attempts", target, settleMaxAttempts)
 }
