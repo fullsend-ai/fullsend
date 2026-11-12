@@ -3,13 +3,16 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -239,6 +242,100 @@ func TestRunReposInstall_GitLabRefusedPollerMergeGrantStillPreparesTriggerAccoun
 	assert.Equal(t, 1, strings.Count(output, "FAILED: group/project"), "the repo is counted once")
 }
 
+// seedTriggerInstallWebhookReadiness commits the files the webhook readiness
+// gate reads and gives group/project the ID the webhook URL embeds.
+func seedTriggerInstallWebhookReadiness(t *testing.T, fc *forge.FakeClient) {
+	t.Helper()
+	fc.Repos = []forge.Repository{{ID: 9, Name: "project", FullName: "group/project", DefaultBranch: "main"}}
+	for _, path := range []string{".gitlab/ci/fullsend-pipeline.yml", ".gitlab/ci/fullsend-agent.yml", ".gitlab/ci/fullsend-poll.yml", ".gitlab/ci/fullsend-dispatcher.yml"} {
+		content, err := scaffold.GitLabPerRepoFile(path)
+		require.NoError(t, err)
+		fc.FileContents["group/project/"+path] = content
+	}
+	root, err := repos.MergeGitLabCI(nil)
+	require.NoError(t, err)
+	fc.FileContents["group/project/.gitlab-ci.yml"] = root
+	fc.FileContents["group/project/.gitlab/ci/scripts/install-fullsend-cli.sh"] = []byte("#!/bin/sh\n")
+	fc.FileContents["group/project/.gitlab/ci/scripts/run-dispatcher-job.sh"] = []byte("#!/bin/sh\n. \"${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/pin-ci-job-identity.sh\"\n. \"${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/select-gitlab-role-token.sh\"\n")
+	fc.FileContents["group/project/.gitlab/ci/scripts/pin-ci-job-identity.sh"] = []byte("#!/bin/sh\n")
+	fc.FileContents["group/project/.gitlab/ci/scripts/select-gitlab-role-token.sh"] = []byte("#!/bin/sh\n")
+	fc.ProtectedBranches["group/project/main"] = true
+}
+
+// seedTriggerInstallActiveAccountRoute records a ready trigger account whose
+// dispatch activation is recorded, as the lifecycle leaves it, on a project
+// whose Maintainers-only merge rule admits the account only through its
+// deploy-key push grant (GitLab Free).
+func seedTriggerInstallActiveAccountRoute(t *testing.T, fc *forge.FakeClient) {
+	t.Helper()
+	const nonce = "0123456789abcdef"
+	digest := sha256.Sum256([]byte("published-account-token"))
+	fc.VariableValues["group/project/"+forge.VarGitLabTriggerAccount] = `{"version":1,"phase":"ready","branch":"main","nonce":"` + nonce + `","account_id":501,"deploy_key_fingerprint":"SHA256:abc","deploy_key_id":77,"grant_entry_id":5,"trigger_token_id":9001,"trigger_token_digest":"` + hex.EncodeToString(digest[:]) + `","trigger_published":true,"publish_started":true}`
+	fc.VariableValues["group/project/"+forge.VarGitLabDispatchActivation] = `{"version":1,"nonce":"` + nonce + `","account_id":501,"deploy_key_id":77,"grant_entry_id":5,"trigger_token_id":9001}`
+	fc.PipelineTriggerTokens["group/project"] = append(fc.PipelineTriggerTokens["group/project"], forge.PipelineTriggerToken{ID: 9001, Description: "fullsend-trigger-" + nonce, OwnerID: 501})
+	fc.ProjectMemberAccess[501] = forge.GitLabAccessLevelDeveloper
+	fc.ProtectedBranchRules["group/project/main"] = &forge.ProtectedBranchRule{
+		Name:              "main",
+		PushAccessLevels:  []forge.ProtectedBranchAccess{{DeployKeyID: 77}},
+		MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: forge.GitLabAccessLevelMaintainer}},
+	}
+	require.NoError(t, fc.CreateRepoSecret(context.Background(), "group", "project", forge.SecretGitLabTriggerAccountToken, "published-account-token"))
+	// Live GitLab returns stored variable values to the installer.
+	fc.VariableValues["group/project/"+forge.SecretGitLabTriggerAccountToken] = "published-account-token"
+}
+
+// #9343: when the Poller stage fails (on GitLab Free, where the per-user merge
+// grant a replacement Poller needs is refused), the same install run still
+// provisions the trigger-account webhook from scratch (no webhook and no
+// webhook secret existed), on the account's trigger token, without minting
+// anything for the Poller and without granting merge access.
+func TestRunReposInstall_GitLabPollerFailureProvisionsAccountWebhookFromScratch(t *testing.T) {
+	manifestPath := writeTestManifest(t, triggerInstallManifest)
+	fc := newTriggerInstallFake(t)
+	seedPipelineSchedules(fc)
+	seedTriggerInstallWebhookReadiness(t, fc)
+	fc.ProtectedBranchRules["group/project/main"] = &forge.ProtectedBranchRule{
+		Name:              "main",
+		MergeAccessLevels: []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+		PushAccessLevels:  []forge.ProtectedBranchAccess{{AccessLevel: 40}},
+	}
+	fc.Errors["GrantProtectedBranchMergeUser"] = &gitlab.APIError{StatusCode: http.StatusForbidden, Message: "premium feature"}
+
+	opts := gitlabInstallOpts(manifestPath, fc)
+	opts.testClient = triggerInstallBaseURLClient{fc}
+	require.Empty(t, fc.ProjectHooks["group/project"], "the project starts without a webhook")
+	require.Empty(t, fc.VariableValues["group/project/"+forge.SecretWebhookSecret], "the project starts without a webhook secret")
+	opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string, bool) error {
+		seedTriggerInstallActiveAccountRoute(t, fc)
+		return nil
+	}
+	var runErr error
+	output := captureStdout(t, func() { runErr = runReposInstall(context.Background(), opts) })
+
+	require.Error(t, runErr, "the unresolved Poller grant stays the repo's reported failure")
+	assert.Equal(t, 1, strings.Count(output, "FAILED: group/project"), "the repo is counted once")
+	require.Len(t, fc.CreatedProjectHooks, 1, "the webhook is created in the same run, not merely refreshed")
+	assert.Contains(t, fc.CreatedProjectHooks[0].URL, "token=published-account-token", "the webhook carries the trigger account's token")
+	assert.Contains(t, fc.CreatedProjectHooks[0].Description, "(trigger token ID 9001)")
+	var webhookSecrets []string
+	for _, s := range fc.CreatedSecrets {
+		if s.Name == forge.SecretWebhookSecret {
+			webhookSecrets = append(webhookSecrets, s.Value)
+		}
+	}
+	require.Len(t, webhookSecrets, 1, "the webhook secret is provisioned")
+	assert.Len(t, webhookSecrets[0], 64)
+	assert.NotContains(t, output, webhookSecrets[0])
+	assert.Empty(t, fc.CreatedTriggerTokens, "nothing is minted for the failed Poller")
+	assert.Empty(t, fc.VariableValues["group/project/"+forge.SecretTriggerToken], "the Poller trigger variable is not used on the account route")
+	assert.NotContains(t, output, "published-account-token")
+	for _, rule := range fc.ProtectedBranchRules {
+		for _, l := range rule.MergeAccessLevels {
+			assert.Zero(t, l.UserID, "no per-user merge access was granted")
+		}
+	}
+}
+
 // GitLab.com Free refuses the Poller's per-user protected-branch merge grant
 // but accepts the deploy-key push grant. The whole runReposInstall flow runs
 // against a real gitlab.LiveClient and the stateful GitLab emulation, with no
@@ -298,6 +395,55 @@ func TestRunReposInstall_GitLabFreeRefusedPollerGrantPreparesTriggerAccountEndTo
 	e.requireLeaseReleased()
 }
 
+// postTriggerPipeline starts a pipeline through the emulated trigger endpoint
+// of the isolated test project and returns the HTTP status.
+func postTriggerPipeline(t *testing.T, s *tahServer, ref, token string) int {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, s.srv.URL+"/api/v4"+tahProject+"/ref/"+ref+"/trigger/pipeline?token="+url.QueryEscape(token), nil)
+	require.NoError(t, err)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// #9343 integration coverage: the trigger token the lifecycle publishes starts
+// a pipeline on the protected default branch as the trigger account, on a
+// Free-style project whose only merge rule is Maintainers, with no merge grant
+// and no probe pipeline in a customer project. The emulation is an isolated
+// in-memory project. The deploy-key push entry the lifecycle adds is what
+// admits the account: a control run without it, and one for a different
+// branch, are refused.
+func TestTriggerAccountTokenStartsProtectedBranchPipelineWithOnlyDeployKeyGrant(t *testing.T) {
+	e := newTAHEnv(t)
+	e.s.rejectMergeGrant = true
+	e.s.mergeRole = 40 // Maintainers-only merge rule; per-user merge grants are refused.
+	led := e.installReady()
+	token := e.triggerToken(led.TriggerTokenID)
+
+	s := e.s
+	s.with(func() {
+		assert.Empty(t, s.mergeUsers, "no per-user merge access was granted")
+		assert.Equal(t, 0, s.mergeGrantAttempts, "the lifecycle never asks for a merge grant")
+		assert.Equal(t, forge.GitLabAccessLevelDeveloper, s.members[led.AccountID], "the account stays at Developer")
+	})
+	assert.Equal(t, []int{led.DeployKeyID}, s.pushKeyIDs(), "only the exact deploy-key push entry was added")
+
+	assert.Equal(t, http.StatusCreated, postTriggerPipeline(t, s, tahBranch, token),
+		"the published trigger starts a protected-branch pipeline as the trigger account")
+	s.with(func() { assert.Contains(t, s.events, fmt.Sprintf("trigger-pipeline:%d:%s", led.AccountID, tahBranch)) })
+
+	assert.NotEqual(t, http.StatusCreated, postTriggerPipeline(t, s, tahBranch, "not-the-token"), "an unknown token starts nothing")
+
+	// Control: without the deploy-key entry the same token is refused, so the
+	// grant is what admits the account on the protected branch.
+	s.with(func() {
+		s.push = slices.DeleteFunc(s.push, func(en tahPushEntry) bool { return en.DeployKeyID != 0 })
+	})
+	assert.Equal(t, http.StatusBadRequest, postTriggerPipeline(t, s, tahBranch, token))
+}
+
 // installEmulation answers the GitLab requests a full runReposInstall makes
 // outside the trigger-account lifecycle: the pinned scaffold, the scaffold
 // merge request, poll-state branches, pipeline schedules, and project access
@@ -309,6 +455,9 @@ type installEmulation struct {
 	tokens   []map[string]any
 	nextTok  int
 	nextUser int
+	// hooks are the project webhooks created through the emulated hooks API.
+	hooks    []map[string]any
+	nextHook int
 }
 
 func (e *installEmulation) handle(w http.ResponseWriter, r *http.Request) bool {
@@ -348,7 +497,37 @@ func (e *installEmulation) handle(w http.ResponseWriter, r *http.Request) bool {
 		tahJSON(w, http.StatusCreated, map[string]any{"name": "fullsend/scaffold-install"})
 	case r.Method == http.MethodGet && p == proj+"repository/tree":
 		tahJSON(w, http.StatusOK, []any{})
-	case r.Method == http.MethodGet && (p == proj+"forks" || p == proj+"merge_requests" || p == proj+"hooks" ||
+	case r.Method == http.MethodGet && p == proj+"hooks":
+		tahJSON(w, http.StatusOK, e.hooks)
+	case r.Method == http.MethodPost && p == proj+"hooks":
+		var h map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&h)
+		e.nextHook++
+		h["id"] = 3000 + e.nextHook
+		delete(h, "token") // GitLab never returns the secret token
+		e.hooks = append(e.hooks, h)
+		tahJSON(w, http.StatusCreated, h)
+	case (r.Method == http.MethodPut || r.Method == http.MethodDelete) && strings.HasPrefix(p, proj+"hooks/"):
+		id := strings.TrimPrefix(p, proj+"hooks/")
+		for i, h := range e.hooks {
+			if fmt.Sprint(h["id"]) != id {
+				continue
+			}
+			if r.Method == http.MethodDelete {
+				e.hooks = append(e.hooks[:i:i], e.hooks[i+1:]...)
+				w.WriteHeader(http.StatusNoContent)
+				return true
+			}
+			var upd map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&upd)
+			delete(upd, "token")
+			upd["id"] = h["id"]
+			e.hooks[i] = upd
+			tahJSON(w, http.StatusOK, upd)
+			return true
+		}
+		tahJSON(w, http.StatusNotFound, map[string]any{"message": "404 Not found"})
+	case r.Method == http.MethodGet && (p == proj+"forks" || p == proj+"merge_requests" ||
 		p == proj+"resource_groups" || p == proj+"protected_branches" || p == proj+"protected_tags"):
 		tahJSON(w, http.StatusOK, []any{})
 	case r.Method == http.MethodGet && p == proj+"push_rule":

@@ -55,6 +55,10 @@ type trigFakeGitLab struct {
 	ownerlessSchedules []int
 	// noPushKeys are deploy key IDs GitLab reports with can_push false.
 	noPushKeys map[int]bool
+	// pushUnsupported makes the deploy-key push grant fail as an unsupported
+	// capability; pushIgnored makes an older GitLab accept it without
+	// recording the entry.
+	pushUnsupported, pushIgnored bool
 	// state is the project's schedule store, shared with the installer
 	// client, so schedules the account creates are visible to both.
 	state *forge.FakeClient
@@ -221,6 +225,12 @@ func (f *trigFakeGitLab) HasExactProtectedBranchRule(context.Context, string, st
 func (f *trigFakeGitLab) GrantProtectedBranchPushDeployKey(_ context.Context, _, _, _ string, keyID int) error {
 	ok, err := f.enter("GrantProtectedBranchPushDeployKey")
 	if !ok {
+		return err
+	}
+	if f.pushUnsupported {
+		return fmt.Errorf("gitlab api: 403 premium feature: %w", forge.ErrNotSupported)
+	}
+	if f.pushIgnored {
 		return err
 	}
 	if _, exists := f.keys[keyID]; !exists {
@@ -1211,6 +1221,36 @@ func TestConvergeGitLabTriggerAccount_UnsupportedCapabilityDefers(t *testing.T) 
 	assert.Zero(t, e.f.calls["CreateProjectServiceAccount"])
 }
 
+// An instance that cannot grant a deploy key push on a protected branch (the
+// request is refused, or accepted and silently ignored) fails closed with an
+// upgrade message. The account never becomes ready, so no route is activated,
+// and nothing broader than the exact deploy-key entry is granted instead.
+func TestConvergeGitLabTriggerAccount_DeployKeyPushCapabilityGapDefers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(f *trigFakeGitLab)
+		want   string
+	}{
+		{"refused", func(f *trigFakeGitLab) { f.pushUnsupported = true }, "rejected the exact-branch deploy-key push grant"},
+		{"silently ignored", func(f *trigFakeGitLab) { f.pushIgnored = true }, "did not record it"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTrigEnv()
+			tc.mutate(e.f)
+			res, err := ConvergeGitLabTriggerAccount(context.Background(), e.opts())
+			require.NoError(t, err)
+			assert.Contains(t, res.Deferred, tc.want)
+			assert.Contains(t, res.Deferred, "GitLab 18.11 or later")
+			assert.Contains(t, res.Deferred, "does not promote an account or widen branch access")
+			assert.False(t, res.Ready, "the account is not ready without its narrow push grant")
+			assert.Empty(t, e.f.pushes, "no branch access was granted")
+			for _, level := range e.f.members {
+				assert.LessOrEqual(t, level, forge.GitLabAccessLevelDeveloper, "no member was promoted past Developer")
+			}
+		})
+	}
+}
+
 func TestConvergeGitLabTriggerAccount_WeakOverrideRoleDefersBeforeCreatingAnything(t *testing.T) {
 	key := trigOwner + "/" + trigRepo
 	for name, role := range map[string]string{
@@ -1565,8 +1605,12 @@ func TestConvergeGitLabTriggerAccount_BadCreateResponses(t *testing.T) {
 		e := newTrigEnv()
 		o := e.opts()
 		o.API = trigNoEntry{e.f}
-		_, err := ConvergeGitLabTriggerAccount(context.Background(), o)
-		require.ErrorContains(t, err, "could not be read back")
+		res, err := ConvergeGitLabTriggerAccount(context.Background(), o)
+		// A grant GitLab accepted but did not record is a capability gap: the
+		// account fails closed with an upgrade message instead of an error.
+		require.NoError(t, err)
+		assert.Contains(t, res.Deferred, "did not record it")
+		assert.False(t, res.Ready)
 	})
 }
 

@@ -1231,9 +1231,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			// replacement Poller is verified, which surfaces here as an opaque
 			// provisioning failure). The failure stays the repo's recorded
 			// error and the dispatch-route stages below remain skipped, so
-			// it is counted once. The callback still refreshes an existing
-			// webhook after the lifecycle: ordinary repair can replace the
-			// account token even without a requested rotation.
+			// it is counted once. After the lifecycle the callback
+			// provisions or converges the account-route webhook: it creates
+			// a missing webhook and secret from scratch and repairs a stale
+			// one, but never builds a Poller-route webhook or trigger.
 			convergeTriggerAfterPollerFailure := func(pollerErr error) error {
 				// Do not force rotation on a failed Poller stage, but do repair
 				// the webhook if normal account convergence changed its token.
@@ -1286,8 +1287,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				// grant. The trigger account does not use that grant, so its
 				// resource preparation still runs. The Poller failure stays the
 				// repo's recorded error. The full dispatch-route stages below
-				// remain skipped; the callback only refreshes an existing webhook
-				// route after account repair. The failure is counted once.
+				// remain skipped; the callback provisions or converges only the
+				// account-route webhook. The failure is counted once.
 				if pollerMergeGrantRejected(err) {
 					err = convergeTriggerAfterPollerFailure(err)
 				}

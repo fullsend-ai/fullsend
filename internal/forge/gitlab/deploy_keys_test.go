@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 const deployKeysPath = "/api/v4/projects/myorg%2Fmyrepo/deploy_keys"
@@ -259,6 +261,41 @@ func TestGrantProtectedBranchPushDeployKey_Errors(t *testing.T) {
 		w.WriteHeader(http.StatusBadRequest)
 	})
 	assert.Error(t, failing.GrantProtectedBranchPushDeployKey(context.Background(), "myorg", "myrepo", "main", 12))
+}
+
+// A refusal that says the feature is absent or gated is a capability gap the
+// caller can fail closed on; ordinary input errors are not.
+func TestGrantProtectedBranchPushDeployKey_ClassifiesUnsupportedCapability(t *testing.T) {
+	cases := []struct {
+		name        string
+		status      int
+		message     string
+		unsupported bool
+	}{
+		{"payment required", http.StatusPaymentRequired, "plan", true},
+		{"forbidden", http.StatusForbidden, "403 Forbidden", true},
+		{"missing endpoint", http.StatusNotFound, "404 Not Found", true},
+		{"tier gated bad request", http.StatusBadRequest, "Deploy key push access is a Premium feature", true},
+		{"tier gated unprocessable", http.StatusUnprocessableEntity, "not available on your license", true},
+		{"invalid input", http.StatusUnprocessableEntity, "deploy key is not enabled for this project", false},
+		{"bare bad request", http.StatusBadRequest, "bad", false},
+		{"server error", http.StatusInternalServerError, "boom", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/protected_branches/main", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodGet {
+					writeJSON(t, w, http.StatusOK, map[string]any{"name": "main"})
+					return
+				}
+				writeJSON(t, w, tc.status, map[string]any{"message": tc.message})
+			})
+			err := client.GrantProtectedBranchPushDeployKey(context.Background(), "myorg", "myrepo", "main", 12)
+			require.Error(t, err)
+			assert.Equal(t, tc.unsupported, forge.IsNotSupported(err))
+		})
+	}
 }
 
 func TestRevokeProtectedBranchPushDeployKeyEntry(t *testing.T) {

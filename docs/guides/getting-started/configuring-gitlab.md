@@ -969,17 +969,31 @@ reason and resource IDs.
 - **GitLab.com Free:** GitLab refuses the legacy per-user protected-branch
   merge grant for the Poller. Install still prepares the trigger account in
   that case. The Poller access failure is reported once for the repo, and the
-  full dispatch-route stages that follow it stay skipped. Install still
-  refreshes the webhook after ordinary trigger-account repair if the account
-  route is active, because repair can replace its token. It does not move an
-  account webhook onto an unverified Poller route; a requested rotation waits
-  for a successful Poller stage. The trigger account itself needs no merge
+  full dispatch-route stages that follow it stay skipped. If the account route
+  is active, the same install run provisions the account's webhook and webhook
+  secret from scratch, or repairs a stale webhook, on the trigger account's
+  token. Install does not create a webhook or trigger on an unverified Poller
+  route; a requested rotation waits for a successful Poller stage. A
+  replacement Poller is a new identity, so the previous Poller's merge grant
+  never counts for it. Install tries only the narrow per-user merge grant for
+  the new identity and never widens a Developer or other access level to make
+  it work. Where GitLab refuses that grant, the replacement credential is not
+  published, the failure is reported, and polling is a supported fallback only
+  while an already verified Poller holds access; the webhook route does not
+  depend on it. If no Poller is verified, polling is unavailable until the
+  grant is possible (a paid tier, or an administrator-added entry), and install
+  says so rather than treating the project as complete. The trigger account itself needs no merge
   grant there: it reaches the protected default branch through its deploy-key
   push grant, which GitLab offers on Free from 18.10. Together with project
   service accounts (generally available on Free in 18.11), the trigger-account
   route therefore needs GitLab 18.11 or later. On an older self-managed
   instance the account defers with a message naming that minimum version;
   upgrade GitLab rather than promoting an account or widening branch access.
+  Because GitLab has no read-only probe for the deploy-key push capability,
+  install also detects a missing capability when it adds the account's exact
+  deploy-key push entry (a refusal naming a tier, license or missing feature,
+  or a grant GitLab accepts but does not record) and defers with the same
+  upgrade message. The account never becomes ready, so no route is activated.
 - **Dispatch activation gate:** whenever install leaves the trigger account
   ready, including after the Poller grant is refused, it rechecks the
   prerequisites for the child-pipeline route that uses the account's job token and

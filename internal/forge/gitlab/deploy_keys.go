@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -146,10 +147,45 @@ func (c *LiveClient) GrantProtectedBranchPushDeployKey(ctx context.Context, owne
 	}
 	resp, err := c.patch(ctx, path, body)
 	if err != nil {
-		return fmt.Errorf("grant protected branch deploy key push: %w", err)
+		return fmt.Errorf("grant protected branch deploy key push: %w", markDeployKeyPushUnsupported(err))
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// deployKeyPushUnsupportedError marks a refusal that means the instance or
+// tier does not offer deploy-key entries in a protected branch's push-access
+// list. It matches forge.ErrNotSupported so callers can fail closed with an
+// upgrade message instead of widening access.
+type deployKeyPushUnsupportedError struct{ err error }
+
+func (e *deployKeyPushUnsupportedError) Error() string { return e.err.Error() }
+func (e *deployKeyPushUnsupportedError) Unwrap() error { return e.err }
+func (e *deployKeyPushUnsupportedError) Is(target error) bool {
+	return target == forge.ErrNotSupported
+}
+
+// markDeployKeyPushUnsupported classifies a failed deploy-key push grant.
+// Statuses that mean the endpoint or feature is absent (402, 403, 404, 405) are
+// capability gaps; 400 and 422 are only when GitLab's message says the feature
+// is gated by tier, license or version, since they also report invalid input.
+func markDeployKeyPushUnsupported(err error) error {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	switch apiErr.StatusCode {
+	case http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed:
+		return &deployKeyPushUnsupportedError{err: err}
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		msg := strings.ToLower(apiErr.Message)
+		for _, hint := range []string{"premium", "ultimate", "license", "tier", "plan", "not available", "not supported"} {
+			if strings.Contains(msg, hint) {
+				return &deployKeyPushUnsupportedError{err: err}
+			}
+		}
+	}
+	return err
 }
 
 // RevokeProtectedBranchPushDeployKeyEntry removes one deploy-key push entry,

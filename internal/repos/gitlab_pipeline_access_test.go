@@ -397,6 +397,36 @@ func TestDescribePipelineAccess(t *testing.T) {
 	assert.Contains(t, got, "access_level:60")
 }
 
+// A replacement Poller is a new identity: the previous Poller's per-user merge
+// grant never counts for it. Where the narrow per-user grant is refused (GitLab
+// Free), the replacement stays unverified and the rule is left exactly as it
+// was: the previous grant is kept, nothing is added for the new identity, and
+// no access level is widened to make the replacement work.
+func TestReplacementPollerAccessIsNotInheritedFromPreviousIdentity(t *testing.T) {
+	const previous, replacement = 70, 501
+	newRule := func() *forge.ProtectedBranchRule {
+		rule := maintainerOnlyRule("main")
+		rule.MergeAccessLevels = append(rule.MergeAccessLevels, forge.ProtectedBranchAccess{UserID: previous})
+		return rule
+	}
+	fc := forge.NewFakeClient()
+	seedRepo(fc, "g", "p", "main")
+	fc.ProtectedBranchRules["g/p/main"] = newRule()
+	fc.Errors["GrantProtectedBranchMergeUser"] = errors.New("per-user grants are not available")
+
+	require.NoError(t, VerifyGitLabPollerProtectedPipelineAccess(context.Background(), fc, "g", "p", previous))
+	var denied *PollerPipelineAccessDeniedError
+	require.ErrorAs(t, VerifyGitLabPollerProtectedPipelineAccess(context.Background(), fc, "g", "p", replacement), &denied)
+	assert.Equal(t, replacement, denied.UserID)
+
+	err := VerifyGitLabReplacementPipelineAccess(context.Background(), fc, "g", "p", replacement)
+	var grantErr *PollerMergeGrantError
+	require.ErrorAs(t, err, &grantErr)
+	assert.Equal(t, replacement, grantErr.UserID, "the grant was attempted for the new identity, not assumed")
+	assert.Equal(t, newRule(), fc.ProtectedBranchRules["g/p/main"], "a refused grant leaves the branch rule unchanged")
+	assert.False(t, PollerCanCreatePipeline(fc.ProtectedBranchRules["g/p/main"], []int{replacement}))
+}
+
 func TestReplacementPipelineAccessVerifiesGrant(t *testing.T) {
 	for _, failure := range []bool{false, true} {
 		t.Run(fmt.Sprint(failure), func(t *testing.T) {

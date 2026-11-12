@@ -671,10 +671,12 @@ reports the result of a containment as drift (the published trigger token was
 removed or revoked) until `repos install` publishes a replacement. The
 account lifecycle does not publish a replacement until those checks pass. If a
 Poller role stage fails, a requested trigger-account rotation waits so the
-existing webhook is not left pointing at a revoked token. The installer still
-refreshes the webhook after ordinary account repair in that failure path when
-the account route is active, because repair can replace its token. It does not
-move an account webhook onto an unverified Poller route. The poller,
+existing webhook is not left pointing at a revoked token. When the account
+route is active, the installer still provisions or converges the account's
+webhook in that same run: it creates a missing webhook and its secret from
+scratch, and repairs a stale one, on the trigger account's token. It never
+creates a webhook or trigger on the Poller route while the Poller stage has
+failed. The poller,
 dispatcher, and agent job scripts unset both trigger-token variables before
 running, and `fullsend run` excludes them from harness expansion.
 
@@ -1018,7 +1020,14 @@ trigger-account route needs GitLab 18.11 or later, where project service
 accounts (generally available on Free in 18.11) and protected-branch
 deploy-key push access (on Free since 18.10) exist on every tier. Upgrade an
 older self-managed instance; install does not promote an account or widen
-branch access in their place. A deferral for the override role that is weakened or cannot be
+branch access in their place. GitLab offers no read-only probe for the
+deploy-key push capability, so install detects a missing capability when it
+adds the account's exact-branch deploy-key push entry: a refusal that says the
+feature is absent or gated by tier or license, or a request GitLab accepts but
+does not record, defers with the same upgrade message. The account then never
+becomes ready, so no route is activated and no other access is granted. The
+account, its key and its trigger stay recorded in the ledger for the next run
+or `repos uninstall`. A deferral for the override role that is weakened or cannot be
 read also removes an already published token variable and revokes the
 account's triggers; `repos status` reports the live role. Install fails, before the account is raised
 to Maintainer, when the account owns an SSH key, a pipeline schedule, or a
