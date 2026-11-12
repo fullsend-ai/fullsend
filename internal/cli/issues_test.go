@@ -452,7 +452,7 @@ func TestPostTrackerStickyComment_Create(t *testing.T) {
 	assert.Contains(t, string(comments[0].Body), "hello world")
 }
 
-func TestPostTrackerStickyComment_Update(t *testing.T) {
+func TestPostTrackerStickyComment_SecondRunAppends(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
 	tc := tracker.NewForgeClient(fc)
@@ -465,16 +465,18 @@ func TestPostTrackerStickyComment_Update(t *testing.T) {
 	_, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "first run", cfg, false, printer)
 	require.NoError(t, err)
 
-	// Second post updates in-place.
+	// Second run adds a new comment at the end of the thread.
 	_, err = postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "second run", cfg, false, printer)
 	require.NoError(t, err)
 
-	// Verify only one comment exists (updated, not duplicated).
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
-	require.Len(t, comments, 1)
-	assert.Contains(t, string(comments[0].Body), "second run")
-	assert.Contains(t, string(comments[0].Body), "Previous run")
+	require.Len(t, comments, 2, "a second run must add a new comment")
+	assert.Contains(t, string(comments[0].Body), "first run")
+	assert.NotContains(t, string(comments[0].Body), "second run", "the earlier comment is left unchanged")
+	assert.Contains(t, string(comments[1].Body), "second run")
+	assert.Contains(t, string(comments[1].Body), "<!-- test -->")
+	assert.NotContains(t, string(comments[1].Body), "Previous run")
 }
 
 func TestPostTrackerStickyComment_NeutralizesMarkersInBody(t *testing.T) {
@@ -494,18 +496,20 @@ func TestPostTrackerStickyComment_NeutralizesMarkersInBody(t *testing.T) {
 
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
-	require.Len(t, comments, 1)
-	got := string(comments[0].Body)
+	require.Len(t, comments, 3, "every run adds its own comment")
 
-	assert.True(t, strings.HasPrefix(got, cfg.Marker+"\n"))
-	assert.Equal(t, 1, strings.Count(got, cfg.Marker), "exactly one runner marker")
-	assert.Equal(t, 1, strings.Count(got, "fullsend:triage-agent"), "no escaped copy of the runner's marker lands in history")
-	assert.Equal(t, 1, strings.Count(strings.ToLower(got), "<!-- fullsend:"), "only the runner's marker is live")
-	assert.NotContains(t, got, "<!--FULLSEND")
-	assert.Equal(t, 3, strings.Count(got, "&lt;!-- fullsend:agent-status:999 -->"), "current body and both history entries")
-	assert.Equal(t, 3, strings.Count(got, "&lt;!--FULLSEND\t:review-agent-->"))
-	assert.Equal(t, 3, strings.Count(got, "already &lt;!-- fullsend:x -->"), "pre-escaped text is unchanged")
-	assert.NotContains(t, got, "&amp;lt;")
+	for i, c := range comments {
+		got := string(c.Body)
+		assert.True(t, strings.HasPrefix(got, cfg.Marker+"\n"), "comment %d: marker at the start", i)
+		assert.Equal(t, 1, strings.Count(got, cfg.Marker), "comment %d: exactly one runner marker", i)
+		assert.Equal(t, 1, strings.Count(got, "fullsend:triage-agent"), "comment %d: no escaped copy of the runner's marker", i)
+		assert.Equal(t, 1, strings.Count(strings.ToLower(got), "<!-- fullsend:"), "comment %d: only the runner's marker is live", i)
+		assert.NotContains(t, got, "<!--FULLSEND")
+		assert.Equal(t, 1, strings.Count(got, "&lt;!-- fullsend:agent-status:999 -->"), "comment %d: agent marker escaped once", i)
+		assert.Equal(t, 1, strings.Count(got, "&lt;!--FULLSEND\t:review-agent-->"), "comment %d", i)
+		assert.Equal(t, 1, strings.Count(got, "already &lt;!-- fullsend:x -->"), "comment %d: pre-escaped text is unchanged", i)
+		assert.NotContains(t, got, "&amp;lt;")
+	}
 }
 
 func TestPostTrackerStickyComment_EmptyBody(t *testing.T) {
@@ -547,7 +551,7 @@ func TestPostTrackerStickyComment_DryRun_Create(t *testing.T) {
 	assert.Empty(t, comments)
 }
 
-func TestPostTrackerStickyComment_DryRun_Update(t *testing.T) {
+func TestPostTrackerStickyComment_DryRun_WithExistingComment(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
 	tc := tracker.NewForgeClient(fc)
@@ -559,7 +563,7 @@ func TestPostTrackerStickyComment_DryRun_Update(t *testing.T) {
 	_, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "first", cfg, false, printer)
 	require.NoError(t, err)
 
-	// Dry run update should not modify the comment.
+	// A dry run posts nothing, so the existing comment is unchanged.
 	cfg.DryRun = true
 	url, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, "second", cfg, false, printer)
 	require.NoError(t, err)
@@ -833,7 +837,7 @@ func TestRunIssuesPostComment_Create(t *testing.T) {
 	assert.Contains(t, string(comments[0].Body), "automated comment body")
 }
 
-func TestRunIssuesPostComment_Update(t *testing.T) {
+func TestRunIssuesPostComment_SecondRunAppends(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
 	tc := tracker.NewForgeClient(fc)
@@ -853,15 +857,17 @@ func TestRunIssuesPostComment_Update(t *testing.T) {
 	err := runIssuesPostComment(ctx, cfg)
 	require.NoError(t, err)
 
-	// Second run updates.
+	// Second run adds a new comment at the end of the thread.
 	cfg.testBody = "second run"
 	err = runIssuesPostComment(ctx, cfg)
 	require.NoError(t, err)
 
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
-	require.Len(t, comments, 1)
-	assert.Contains(t, string(comments[0].Body), "second run")
+	require.Len(t, comments, 2)
+	assert.Contains(t, string(comments[0].Body), "first run")
+	assert.NotContains(t, string(comments[0].Body), "second run", "the earlier comment is left unchanged")
+	assert.Contains(t, string(comments[1].Body), "second run")
 }
 
 func TestRunIssuesPostComment_InvalidNumber(t *testing.T) {
@@ -945,76 +951,6 @@ func TestRunIssuesPostComment_FromFile(t *testing.T) {
 	assert.Contains(t, string(comments[0].Body), "comment from file")
 }
 
-func TestRunIssuesPostComment_JiraCapsStickyMaxSize(t *testing.T) {
-	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	// Under jira.MaxMarkdownBytes individually (so MarkdownToADF accepts
-	// it on the first run), but large enough that the second-run body —
-	// "second run" plus a <details> wrapper around this history — exceeds
-	// jira.MaxMarkdownBytes, forcing the Jira-aware MaxSize cap to trim
-	// the history rather than assembling a body that would fail once it
-	// reaches Jira's MarkdownToADF.
-	firstBody := strings.Repeat("a", 32700)
-
-	cfg := &issuesPostCommentConfig{
-		trackerName: trackerJira,
-		project:     "PROJ",
-		number:      42,
-		marker:      "<!-- test:agent -->",
-		testClient:  tc,
-		testPrinter: ui.New(io.Discard),
-		testBody:    firstBody,
-	}
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-
-	cfg.testBody = "second run"
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-
-	comments, err := tc.ListComments(ctx, "PROJ", 42)
-	require.NoError(t, err)
-	require.Len(t, comments, 1)
-
-	// The collapsed ~32 KB history plus "second run" and its <details>
-	// wrapper exceeds jira.MaxMarkdownBytes, so the Jira path must
-	// trim the history rather than assembling a body that would fail
-	// once it reaches Jira's MarkdownToADF.
-	assert.LessOrEqual(t, len(comments[0].Body), jira.MaxMarkdownBytes)
-	assert.Contains(t, string(comments[0].Body), "second run")
-}
-
-func TestRunIssuesPostComment_NonJiraKeepsDefaultStickyMaxSize(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.AuthenticatedUser = "bot"
-	tc := tracker.NewForgeClient(fc)
-	ctx := context.Background()
-
-	firstBody := strings.Repeat("a", 40000)
-
-	cfg := &issuesPostCommentConfig{
-		trackerName: trackerGitHub,
-		project:     "acme/widgets",
-		number:      42,
-		marker:      "<!-- test:agent -->",
-		testClient:  tc,
-		testPrinter: ui.New(io.Discard),
-		testBody:    firstBody,
-	}
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-
-	cfg.testBody = "second run"
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-
-	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
-	require.NoError(t, err)
-	require.Len(t, comments, 1)
-
-	// Non-Jira trackers keep sticky's default 65000-byte cap, so the same
-	// accumulated body (well under 65000) keeps its history intact.
-	assert.Contains(t, string(comments[0].Body), "Previous run")
-}
-
 func TestRunIssuesPostComment_JiraAcceptsMarkerWithSpecialChars(t *testing.T) {
 	// Jira now stores markers in comment entity properties instead of
 	// the visible body, so marker character restrictions no longer
@@ -1071,13 +1007,12 @@ func TestRunIssuesPostComment_JiraProjectWithoutConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "no default Jira project is configured")
 }
 
-func TestRunIssuesPostComment_JiraRoundTripUpdatesInPlace(t *testing.T) {
-	// Drives the Jira property-based sticky comment path twice through
+func TestRunIssuesPostComment_JiraSecondRunAppends(t *testing.T) {
+	// Drives the Jira property-based comment path twice through
 	// tracker.JiraClient (via NewFakeJiraClientWithFake) so comment
 	// bodies round-trip through real jira.MarkdownToADF/ADFToMarkdown.
 	// The marker is stored in a comment entity property, not in the
-	// visible ADF body, and must be matched via property on the second
-	// run to update in place instead of flooding a new comment.
+	// visible ADF body, and the second run appends a new comment.
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	ctx := context.Background()
@@ -1098,9 +1033,60 @@ func TestRunIssuesPostComment_JiraRoundTripUpdatesInPlace(t *testing.T) {
 
 	comments, err := tc.ListComments(ctx, "PROJ", 42)
 	require.NoError(t, err)
-	require.Len(t, comments, 1, "second run should update the existing comment in place, not flood a new one")
-	assert.Contains(t, string(comments[0].Body), "second run")
-	assert.Contains(t, string(comments[0].Body), "Previous run")
+	require.Len(t, comments, 2, "second run should append a new comment")
+	assert.Contains(t, string(comments[0].Body), "first run")
+	assert.NotContains(t, string(comments[0].Body), "second run", "the earlier comment is left unchanged")
+	assert.Contains(t, string(comments[1].Body), "second run")
+	assert.NotContains(t, string(comments[1].Body), "Previous run")
+}
+
+func TestRunIssuesPostComment_JiraTruncatesOversizedBody(t *testing.T) {
+	// Pins the Jira door's create-path size cap: runIssuesPostComment
+	// caps stickyCfg.MaxSize at jira.MaxMarkdownBytes, and the fake
+	// client runs the real jira.MarkdownToADF, which hard-rejects input
+	// over that limit — so an oversized single result must be truncated
+	// before it is created instead of failing the post.
+	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	cfg := &issuesPostCommentConfig{
+		trackerName: trackerJira,
+		project:     "PROJ",
+		number:      42,
+		marker:      "<!-- fullsend:triage-agent -->",
+		testClient:  tc,
+		testPrinter: ui.New(io.Discard),
+		testBody:    strings.Repeat("a", jira.MaxMarkdownBytes+5000),
+	}
+	require.NoError(t, runIssuesPostComment(ctx, cfg))
+
+	comments, err := tc.ListComments(ctx, "PROJ", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.LessOrEqual(t, len(string(comments[0].Body)), jira.MaxMarkdownBytes,
+		"the created body must be truncated to the Jira markdown limit")
+}
+
+func TestPostTrackerStickyComment_TruncatesOversizedBodyBeforeCreate(t *testing.T) {
+	// Mirrors TestPost_TruncatesOversizedBodyBeforeCreate for the
+	// tracker door: a single result over the configured size limit is
+	// truncated before it is created instead of failing the post.
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	tc := tracker.NewForgeClient(fc)
+	printer := ui.New(io.Discard)
+	ctx := context.Background()
+
+	cfg := sticky.Config{Marker: "<!-- test -->", MaxSize: 500}
+	_, err := postTrackerStickyComment(ctx, tc, "acme/widgets", 42, strings.Repeat("a", 800), cfg, false, printer)
+	require.NoError(t, err)
+
+	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	assert.LessOrEqual(t, len(string(comments[0].Body)), 500, "the created body must fit the configured size")
+	assert.Contains(t, string(comments[0].Body), "<!-- test -->")
 }
 
 func TestRunIssuesPostComment_JiraMarkerNotInVisibleBody(t *testing.T) {
@@ -1129,53 +1115,6 @@ func TestRunIssuesPostComment_JiraMarkerNotInVisibleBody(t *testing.T) {
 	assert.NotContains(t, string(comments[0].Body), "<!-- fullsend:triage-agent -->")
 }
 
-func TestRunIssuesPostComment_JiraLegacyMigration(t *testing.T) {
-	// A legacy Jira comment has the marker embedded in the visible ADF
-	// body (old behavior). On the next run, the property-based path
-	// should find it via body-text fallback, set the property, and
-	// strip the marker from the body on update.
-	tc, fc, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	marker := "<!-- fullsend:triage-agent -->"
-
-	// Simulate a legacy comment: marker embedded in body, no property.
-	legacyBody := marker + "\nlegacy content"
-	_, createErr := fc.CreateComment(ctx, "PROJ-42", legacyBody)
-	require.NoError(t, createErr)
-
-	// Run post-comment, which should find the legacy comment via body
-	// fallback, update it, and set the property.
-	cfg := &issuesPostCommentConfig{
-		trackerName: trackerJira,
-		project:     "PROJ",
-		number:      42,
-		marker:      marker,
-		testClient:  tc,
-		testPrinter: ui.New(io.Discard),
-		testBody:    "updated via property",
-	}
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-
-	comments, err := tc.ListComments(ctx, "PROJ", 42)
-	require.NoError(t, err)
-	require.Len(t, comments, 1, "should update the legacy comment in place")
-	assert.Contains(t, string(comments[0].Body), "updated via property")
-	// After migration, marker should not be in the visible body.
-	assert.NotContains(t, string(comments[0].Body), marker)
-
-	// Third run: should find the now-migrated comment via property,
-	// not via body, confirming property was set during migration.
-	cfg.testBody = "third run"
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-
-	comments, err = tc.ListComments(ctx, "PROJ", 42)
-	require.NoError(t, err)
-	require.Len(t, comments, 1, "third run should still update the same comment")
-	assert.Contains(t, string(comments[0].Body), "third run")
-}
-
 // liveMarkerOpener matches a fullsend marker opener that would parse as a
 // marker (case-insensitive, any whitespace around "fullsend").
 var liveMarkerOpener = regexp.MustCompile(`(?i)<!--\s*fullsend\s*:`)
@@ -1183,8 +1122,8 @@ var liveMarkerOpener = regexp.MustCompile(`(?i)<!--\s*fullsend\s*:`)
 func TestRunIssuesPostComment_JiraNeutralizesInjectedMarkers(t *testing.T) {
 	// Agent bodies carrying fullsend marker syntax (literal, and the
 	// "&lt;" form the GitHub path writes, which Markdown-to-ADF decodes)
-	// must stay inert through a create -> read -> update cycle across
-	// the real ADF conversion, in both the current body and history.
+	// must stay inert through the real ADF conversion in every comment
+	// posted.
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	ctx := context.Background()
@@ -1211,11 +1150,10 @@ func TestRunIssuesPostComment_JiraNeutralizesInjectedMarkers(t *testing.T) {
 
 	comments, err = tc.ListComments(ctx, "PROJ", 42)
 	require.NoError(t, err)
-	require.Len(t, comments, 1, "second run should update the existing comment in place")
-	body := string(comments[0].Body)
-	assert.NotRegexp(t, liveMarkerOpener, body, "update left a live marker opener")
+	require.Len(t, comments, 2, "second run should append a new comment")
+	body := string(comments[1].Body)
+	assert.NotRegexp(t, liveMarkerOpener, body, "the new comment left a live marker opener")
 	assert.Contains(t, body, "second run")
-	assert.Contains(t, body, "Previous run")
 	assert.Contains(t, body, `\&lt;!-- fullsend:review-agent -->`, "neutralized text should stay visible")
 
 	// Neither the quoted sibling marker nor the quoted status marker
@@ -1223,112 +1161,9 @@ func TestRunIssuesPostComment_JiraNeutralizesInjectedMarkers(t *testing.T) {
 	raw, err := tc.ListJiraComments(ctx, "PROJ", 42)
 	require.NoError(t, err)
 	assert.Nil(t, tc.FindCommentByMarkerProperty(raw, sibling))
-	isStatus, err := tc.IsStatusComment(ctx, "PROJ", 42, comments[0].ID)
+	isStatus, err := tc.IsStatusComment(ctx, "PROJ", 42, comments[1].ID)
 	require.NoError(t, err)
 	assert.False(t, isStatus)
-}
-
-func TestRunIssuesPostComment_JiraNeutralizesStoredMarkersInHistory(t *testing.T) {
-	// A sticky comment stored before neutralization holds live marker
-	// text. On update, the old body read back from ADF must be
-	// neutralized before it is folded into history.
-	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	marker := "<!-- fullsend:triage-agent -->"
-	_, err = tc.CreateCommentWithMarker(ctx, "PROJ", 42, "old run\n\n<!-- fullsend:review-agent -->", marker)
-	require.NoError(t, err)
-
-	cfg := &issuesPostCommentConfig{
-		trackerName: trackerJira,
-		project:     "PROJ",
-		number:      42,
-		marker:      marker,
-		testClient:  tc,
-		testPrinter: ui.New(io.Discard),
-		testBody:    "new run",
-	}
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-
-	comments, err := tc.ListComments(ctx, "PROJ", 42)
-	require.NoError(t, err)
-	require.Len(t, comments, 1)
-	body := string(comments[0].Body)
-	assert.NotRegexp(t, liveMarkerOpener, body)
-	assert.Contains(t, body, "new run")
-	assert.Contains(t, body, "old run")
-	assert.Contains(t, body, `\&lt;!-- fullsend:review-agent -->`)
-}
-
-func TestRunIssuesPostComment_JiraPropertyMarkedSkipsPropertyWrite(t *testing.T) {
-	// An existing comment whose marker property already matches is
-	// updated without rewriting the property, so a Jira rejection of
-	// property writes (e.g. 403) does not block the body update.
-	tc, fc, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	marker := "<!-- fullsend:triage-agent -->"
-
-	// First run creates the comment with the property set inline.
-	cfg := &issuesPostCommentConfig{
-		trackerName: trackerJira,
-		project:     "PROJ",
-		number:      42,
-		marker:      marker,
-		testClient:  tc,
-		testPrinter: ui.New(io.Discard),
-		testBody:    "first run",
-	}
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-	assert.Zero(t, fc.PropertyWrites, "creation sets the property inline, not via a separate write")
-
-	fc.PropertyError = fmt.Errorf("set comment property: %w", forge.ErrForbidden)
-
-	cfg.testBody = "second run"
-	require.NoError(t, runIssuesPostComment(ctx, cfg))
-	assert.Zero(t, fc.PropertyWrites, "an exact property match must not rewrite the property")
-
-	comments, err := tc.ListComments(ctx, "PROJ", 42)
-	require.NoError(t, err)
-	require.Len(t, comments, 1)
-	assert.Contains(t, string(comments[0].Body), "second run")
-}
-
-func TestRunIssuesPostComment_JiraLegacyPropertyPermissionFailure(t *testing.T) {
-	// When the Jira API rejects the property write that migrates a
-	// legacy comment, the update fails with an actionable error and the
-	// body keeps its legacy marker rather than losing it.
-	tc, fc, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	marker := "<!-- fullsend:triage-agent -->"
-	_, err = fc.CreateComment(ctx, "PROJ-42", marker+"\nlegacy content")
-	require.NoError(t, err)
-
-	fc.PropertyError = fmt.Errorf("set comment property: %w", forge.ErrForbidden)
-
-	cfg := &issuesPostCommentConfig{
-		trackerName: trackerJira,
-		project:     "PROJ",
-		number:      42,
-		marker:      marker,
-		testClient:  tc,
-		testPrinter: ui.New(io.Discard),
-		testBody:    "second run",
-	}
-	err = runIssuesPostComment(ctx, cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "sticky marker property")
-	assert.Equal(t, 1, fc.PropertyWrites)
-
-	comments, err := tc.ListComments(ctx, "PROJ", 42)
-	require.NoError(t, err)
-	require.Len(t, comments, 1)
-	assert.NotContains(t, string(comments[0].Body), "second run")
-	assert.Contains(t, string(comments[0].Body), marker)
 }
 
 func TestPostJiraStickyComment_DryRun_Create(t *testing.T) {
@@ -1348,8 +1183,8 @@ func TestPostJiraStickyComment_DryRun_Create(t *testing.T) {
 	assert.Empty(t, comments)
 }
 
-func TestPostJiraStickyComment_DryRun_Update(t *testing.T) {
-	// Dry-run update should not modify the existing comment.
+func TestPostJiraStickyComment_DryRun_WithExistingComment(t *testing.T) {
+	// A dry run posts nothing, so the existing comment is unchanged.
 	tc, _, err := tracker.NewFakeJiraClientWithFake("https://acme.atlassian.net")
 	require.NoError(t, err)
 	printer := ui.New(io.Discard)
@@ -1360,7 +1195,7 @@ func TestPostJiraStickyComment_DryRun_Update(t *testing.T) {
 	_, err = postJiraStickyComment(ctx, tc, "PROJ", 42, "first", cfg, false, printer)
 	require.NoError(t, err)
 
-	// Dry run update should not modify the comment.
+	// A dry run posts nothing, so the existing comment is unchanged.
 	cfg.DryRun = true
 	url, err := postJiraStickyComment(ctx, tc, "PROJ", 42, "second", cfg, false, printer)
 	require.NoError(t, err)
@@ -1655,7 +1490,7 @@ func TestRunIssuesPostComment_OnlyIfExists_SkipsCreate(t *testing.T) {
 	assert.Empty(t, comments, "only-if-exists must not create a first comment")
 }
 
-func TestRunIssuesPostComment_OnlyIfExists_ReplacesEarlierFindings(t *testing.T) {
+func TestRunIssuesPostComment_OnlyIfExists_AppendsAllClearAfterEarlierFindings(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
 	tc := tracker.NewForgeClient(fc)
@@ -1678,8 +1513,10 @@ func TestRunIssuesPostComment_OnlyIfExists_ReplacesEarlierFindings(t *testing.T)
 
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
-	require.Len(t, comments, 1)
-	assert.Contains(t, string(comments[0].Body), "all clear")
+	require.Len(t, comments, 2, "the all-clear is a new comment at the end of the thread")
+	assert.Contains(t, string(comments[0].Body), "2 broken links")
+	assert.NotContains(t, string(comments[0].Body), "all clear", "the earlier findings are left unchanged")
+	assert.Contains(t, string(comments[1].Body), "all clear")
 }
 
 func TestRunIssuesPostComment_Jira_OnlyIfExists(t *testing.T) {
@@ -1703,7 +1540,8 @@ func TestRunIssuesPostComment_Jira_OnlyIfExists(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, comments)
 
-	// An earlier findings comment exists: it is replaced.
+	// An earlier findings comment exists: the all-clear follows it as a
+	// new comment.
 	cfg.onlyIfExists = false
 	cfg.testBody = "2 broken links"
 	require.NoError(t, runIssuesPostComment(ctx, cfg))
@@ -1712,8 +1550,10 @@ func TestRunIssuesPostComment_Jira_OnlyIfExists(t *testing.T) {
 	require.NoError(t, runIssuesPostComment(ctx, cfg))
 	comments, err = tc.ListComments(ctx, "PROJ", 42)
 	require.NoError(t, err)
-	require.Len(t, comments, 1)
-	assert.Contains(t, string(comments[0].Body), "all clear")
+	require.Len(t, comments, 2)
+	assert.Contains(t, string(comments[0].Body), "2 broken links")
+	assert.NotContains(t, string(comments[0].Body), "all clear", "the earlier findings are left unchanged")
+	assert.Contains(t, string(comments[1].Body), "all clear")
 }
 
 // fastSelfLookup shortens the identity-lookup retry backoff for a test.
@@ -1776,13 +1616,14 @@ func postAfterCommentBy(t *testing.T, author string, onlyIfExists bool, failures
 	return runErr, comments, tc
 }
 
-func TestRunIssuesPostComment_EditsOwnComment(t *testing.T) {
+func TestRunIssuesPostComment_AppendsAfterOwnComment(t *testing.T) {
 	for _, onlyIfExists := range []bool{false, true} {
 		t.Run(fmt.Sprintf("only-if-exists=%v", onlyIfExists), func(t *testing.T) {
 			err, comments, _ := postAfterCommentBy(t, testBot, onlyIfExists, 0)
 			require.NoError(t, err)
-			require.Len(t, comments, 1)
-			assert.Contains(t, string(comments[0].Body), "new result")
+			require.Len(t, comments, 2, "the result is a new comment at the end of the thread")
+			assert.NotContains(t, string(comments[0].Body), "new result", "the earlier comment is left unchanged")
+			assert.Contains(t, string(comments[1].Body), "new result")
 		})
 	}
 }
@@ -1809,31 +1650,31 @@ func TestRunIssuesPostComment_IgnoresPlantedMarker(t *testing.T) {
 	}
 }
 
-func TestRunIssuesPostComment_TransientSelfFailureRetriesThenEdits(t *testing.T) {
-	err, comments, tc := postAfterCommentBy(t, testBot, false, len(selfLookupBackoff))
+func TestRunIssuesPostComment_TransientSelfFailureRetriesThenPosts(t *testing.T) {
+	// Only --only-if-exists resolves the posting identity (to gate on the
+	// poster's own earlier comment); a transient failure there is retried.
+	err, comments, tc := postAfterCommentBy(t, testBot, true, len(selfLookupBackoff))
 	require.NoError(t, err)
 	assert.Equal(t, len(selfLookupBackoff)+1, tc.calls, "every retry is used before success")
-	require.Len(t, comments, 1, "a transient failure must not create a second comment")
-	assert.Contains(t, string(comments[0].Body), "new result")
+	require.Len(t, comments, 2)
+	assert.Contains(t, string(comments[1].Body), "new result")
 }
 
 func TestRunIssuesPostComment_PersistentSelfFailureErrorsAndPostsNothing(t *testing.T) {
-	for _, onlyIfExists := range []bool{false, true} {
-		t.Run(fmt.Sprintf("only-if-exists=%v", onlyIfExists), func(t *testing.T) {
-			err, comments, tc := postAfterCommentBy(t, testBot, onlyIfExists, 1000)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "cannot verify which identity")
-			assert.Contains(t, err.Error(), "rerun")
-			assert.Contains(t, err.Error(), "502 Bad Gateway", "the error must name the cause")
-			assert.Equal(t, len(selfLookupBackoff)+1, tc.calls)
-			require.Len(t, comments, 1, "no comment may be created")
-			assert.NotContains(t, string(comments[0].Body), "new result", "no comment may be edited")
-		})
-	}
+	// Only --only-if-exists resolves the posting identity, so only that
+	// path fails when it cannot be verified.
+	err, comments, tc := postAfterCommentBy(t, testBot, true, 1000)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot verify which identity")
+	assert.Contains(t, err.Error(), "rerun")
+	assert.Contains(t, err.Error(), "502 Bad Gateway", "the error must name the cause")
+	assert.Equal(t, len(selfLookupBackoff)+1, tc.calls)
+	require.Len(t, comments, 1, "no comment may be created")
 }
 
 func TestRunIssuesPostComment_EmptySelfErrors(t *testing.T) {
 	// An empty login with no error is unresolved too, never marker-only.
+	// Only --only-if-exists resolves the posting identity.
 	fastSelfLookup(t)
 	ctx := context.Background()
 	fc := forge.NewFakeClient()
@@ -1842,21 +1683,19 @@ func TestRunIssuesPostComment_EmptySelfErrors(t *testing.T) {
 	_, err := tc.CreateComment(ctx, "acme/widgets", 42, tracker.Body(marker+"\nauthorless"))
 	require.NoError(t, err)
 
-	for _, onlyIfExists := range []bool{false, true} {
-		cfg := &issuesPostCommentConfig{
-			trackerName:  trackerGitHub,
-			project:      "acme/widgets",
-			number:       42,
-			marker:       marker,
-			onlyIfExists: onlyIfExists,
-			testClient:   tc,
-			testPrinter:  ui.New(io.Discard),
-			testBody:     "new result",
-		}
-		err := runIssuesPostComment(ctx, cfg)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "authenticated user is empty")
+	cfg := &issuesPostCommentConfig{
+		trackerName:  trackerGitHub,
+		project:      "acme/widgets",
+		number:       42,
+		marker:       marker,
+		onlyIfExists: true,
+		testClient:   tc,
+		testPrinter:  ui.New(io.Discard),
+		testBody:     "new result",
 	}
+	err = runIssuesPostComment(ctx, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authenticated user is empty")
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
 	require.Len(t, comments, 1)
@@ -1893,9 +1732,10 @@ func TestRunIssuesPostComment_OnlyIfExists_SkipsPlantedCommentBeforeOwn(t *testi
 
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
-	require.Len(t, comments, 2)
-	assert.NotContains(t, string(comments[0].Body), "all clear")
-	assert.Contains(t, string(comments[1].Body), "all clear")
+	require.Len(t, comments, 3, "the all-clear is a new comment at the end of the thread")
+	assert.NotContains(t, string(comments[0].Body), "all clear", "the planted comment must be untouched")
+	assert.NotContains(t, string(comments[1].Body), "all clear", "the own earlier comment is left unchanged")
+	assert.Contains(t, string(comments[2].Body), "all clear")
 }
 
 func TestResolveTrackerSelf_StopsRetryingWhenCancelled(t *testing.T) {
@@ -1917,7 +1757,7 @@ func TestResolveTrackerSelf_StopsRetryingWhenCancelled(t *testing.T) {
 // author (with the marker as a comment property, or, when legacy is set,
 // embedded in the body the way pre-property comments stored it), then
 // runs post-comment as tracker.FakeJiraBot.
-func postJiraAfterCommentBy(t *testing.T, author jira.User, legacy bool, myselfErr error) (error, []tracker.Comment) {
+func postJiraAfterCommentBy(t *testing.T, author jira.User, legacy bool, myselfErr error, onlyIfExists bool) (error, []tracker.Comment) {
 	t.Helper()
 	fastSelfLookup(t)
 	ctx := context.Background()
@@ -1936,13 +1776,14 @@ func postJiraAfterCommentBy(t *testing.T, author jira.User, legacy bool, myselfE
 	fc.Myself = tracker.FakeJiraBot
 	fc.MyselfError = myselfErr
 	cfg := &issuesPostCommentConfig{
-		trackerName: trackerJira,
-		project:     "PROJ",
-		number:      42,
-		marker:      marker,
-		testClient:  tc,
-		testPrinter: ui.New(io.Discard),
-		testBody:    "new result",
+		trackerName:  trackerJira,
+		project:      "PROJ",
+		number:       42,
+		marker:       marker,
+		onlyIfExists: onlyIfExists,
+		testClient:   tc,
+		testPrinter:  ui.New(io.Discard),
+		testBody:     "new result",
 	}
 	runErr := runIssuesPostComment(ctx, cfg)
 
@@ -1951,13 +1792,14 @@ func postJiraAfterCommentBy(t *testing.T, author jira.User, legacy bool, myselfE
 	return runErr, comments
 }
 
-func TestRunIssuesPostComment_Jira_EditsOwnComment(t *testing.T) {
+func TestRunIssuesPostComment_Jira_AppendsAfterOwnComment(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
-			err, comments := postJiraAfterCommentBy(t, tracker.FakeJiraBot, legacy, nil)
+			err, comments := postJiraAfterCommentBy(t, tracker.FakeJiraBot, legacy, nil, false)
 			require.NoError(t, err)
-			require.Len(t, comments, 1)
-			assert.Contains(t, string(comments[0].Body), "new result")
+			require.Len(t, comments, 2, "the result is a new comment at the end of the thread")
+			assert.NotContains(t, string(comments[0].Body), "new result", "the earlier comment is left unchanged")
+			assert.Contains(t, string(comments[1].Body), "new result")
 		})
 	}
 }
@@ -1968,7 +1810,7 @@ func TestRunIssuesPostComment_Jira_IgnoresPlantedMarker(t *testing.T) {
 	mallory := jira.User{AccountID: "mallory-account-id", DisplayName: tracker.FakeJiraBot.DisplayName}
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%v", legacy), func(t *testing.T) {
-			err, comments := postJiraAfterCommentBy(t, mallory, legacy, nil)
+			err, comments := postJiraAfterCommentBy(t, mallory, legacy, nil, false)
 			require.NoError(t, err)
 			require.Len(t, comments, 2, "the planted comment is left alone and a new one posted")
 			assert.NotContains(t, string(comments[0].Body), "new result")
@@ -1978,12 +1820,13 @@ func TestRunIssuesPostComment_Jira_IgnoresPlantedMarker(t *testing.T) {
 }
 
 func TestRunIssuesPostComment_Jira_UnresolvableSelfErrorsAndPostsNothing(t *testing.T) {
-	err, comments := postJiraAfterCommentBy(t, tracker.FakeJiraBot, false, errors.New("401 Unauthorized"))
+	// Only --only-if-exists resolves the posting identity, so only that
+	// path fails when it cannot be verified.
+	err, comments := postJiraAfterCommentBy(t, tracker.FakeJiraBot, false, errors.New("401 Unauthorized"), true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot verify which identity")
 	assert.Contains(t, err.Error(), "401 Unauthorized")
 	require.Len(t, comments, 1, "no comment may be created")
-	assert.NotContains(t, string(comments[0].Body), "new result", "no comment may be edited")
 }
 
 func TestOwnJiraComments(t *testing.T) {
@@ -1998,9 +1841,10 @@ func TestOwnJiraComments(t *testing.T) {
 	assert.Empty(t, ownJiraComments(comments, ""), "an unverified self owns nothing, not even authorless comments")
 }
 
-func TestRunIssuesPostComment_DryRunStillVerifiesIdentity(t *testing.T) {
-	// --dry-run resolves the posting identity too: a dry run that cannot
-	// verify it fails rather than silently previewing an edit.
+func TestRunIssuesPostComment_DryRunOnlyIfExistsStillVerifiesIdentity(t *testing.T) {
+	// --dry-run --only-if-exists resolves the posting identity too: a dry
+	// run that cannot verify it fails rather than silently previewing a
+	// post gated on the poster's own earlier comment.
 	fastSelfLookup(t)
 	ctx := context.Background()
 	const marker = "<!-- test:agent -->"
@@ -2022,14 +1866,15 @@ func TestRunIssuesPostComment_DryRunStillVerifiesIdentity(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &issuesPostCommentConfig{
-				trackerName: tc.tracker,
-				project:     tc.project,
-				number:      42,
-				marker:      marker,
-				dryRun:      true,
-				testClient:  tc.client,
-				testPrinter: ui.New(io.Discard),
-				testBody:    "preview",
+				trackerName:  tc.tracker,
+				project:      tc.project,
+				number:       42,
+				marker:       marker,
+				dryRun:       true,
+				onlyIfExists: true,
+				testClient:   tc.client,
+				testPrinter:  ui.New(io.Discard),
+				testBody:     "preview",
 			}
 			err := runIssuesPostComment(ctx, cfg)
 			require.Error(t, err)
@@ -2070,10 +1915,10 @@ func TestRunIssuesPostComment_Jira_OnlyIfExistsIgnoresPlantedMarker(t *testing.T
 	assert.NotContains(t, string(comments[0].Body), "all clear")
 }
 
-func TestRunIssuesPostComment_OnlyIfExistsWithoutHistoryReplacesInPlace(t *testing.T) {
-	// The generated ok path passes --keep-history=false: the all-clear
-	// replaces the earlier findings, and repeated clean runs leave one
-	// all-clear rather than stacking identical "Previous run" blocks.
+func TestRunIssuesPostComment_OnlyIfExistsAppendsAllClear(t *testing.T) {
+	// The generated ok path passes --keep-history=false, which no longer
+	// has an effect: the all-clear follows the earlier findings as a new
+	// comment, and repeated clean runs each add their own.
 	ctx := context.Background()
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
@@ -2099,9 +1944,10 @@ func TestRunIssuesPostComment_OnlyIfExistsWithoutHistoryReplacesInPlace(t *testi
 
 	comments, err := tc.ListComments(ctx, "acme/widgets", 42)
 	require.NoError(t, err)
-	require.Len(t, comments, 1)
-	body := string(comments[0].Body)
-	assert.Equal(t, 1, strings.Count(body, "all clear"), "the all-clear replaces in place; got:\n%s", body)
-	assert.NotContains(t, body, "2 broken links")
-	assert.NotContains(t, body, "Previous run")
+	require.Len(t, comments, 4, "the findings comment plus one all-clear per clean run")
+	assert.Contains(t, string(comments[0].Body), "2 broken links")
+	for _, c := range comments[1:] {
+		assert.Contains(t, string(c.Body), "all clear")
+		assert.NotContains(t, string(c.Body), "Previous run")
+	}
 }

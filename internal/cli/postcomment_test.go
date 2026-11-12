@@ -71,10 +71,16 @@ func TestPostCommentCmd_AcceptsGHToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sawAuth = r.Header.Get("Authorization")
 		switch {
-		case r.URL.Path == "/user":
-			_ = json.NewEncoder(w).Encode(map[string]string{"login": "octocat"})
-		case strings.Contains(r.URL.Path, "/issues/1/comments"):
-			_, _ = io.WriteString(w, "[]")
+		// A dry run makes no API call (nothing is edited in place
+		// anymore, so no identity needs resolving), so the token is
+		// observed on the comment it posts.
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/1/comments":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":       1,
+				"html_url": "https://github.com/owner/repo/issues/1#issuecomment-1",
+				"body":     "comment body",
+				"user":     map[string]string{"login": "octocat"},
+			})
 		default:
 			http.NotFound(w, r)
 		}
@@ -97,7 +103,6 @@ func TestPostCommentCmd_AcceptsGHToken(t *testing.T) {
 		"--number", "1",
 		"--marker", "<!-- fullsend:test -->",
 		"--result", bodyFile,
-		"--dry-run",
 	})
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
