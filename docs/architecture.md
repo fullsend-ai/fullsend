@@ -502,6 +502,12 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `labels: project_roles` (which, with no lists, resolves every event through
   the roster, as with no entry)
   ([ADR 0153](ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+- Jira bot label hand-off (target state): the Jira poller stops dropping
+  bot-authored label-added events, including its own account's. They take the
+  repository's `labels:` rule like a human's. Only the poller's account or
+  Jira's `app` account type classifies a label author as a bot, and other bot
+  events stay dropped. Harness authors keep hand-off chains acyclic
+  ([ADR 0172](ADRs/0172-let-bot-added-labels-start-agents-on-jira.md)).
 - The Jira site URL is kept for links and cloud-ID discovery, and API calls
   go through the Atlassian API gateway for the site, whose host can be
   overridden. A token with the account's email is sent with Basic auth (bot
@@ -576,7 +582,9 @@ The existing design principle is that [the repo is the coordinator](problems/age
   the labeler's verified effective role. Provider-verified bot label
   handoffs use a separate grant for the exact transition and its proven
   projection; label-to-agent mapping remains harness/CEL routing. At the time
-  of ADR 0107, GitHub is the only production implementation. CEL may
+  of ADR 0107, GitHub is the only production implementation; Jira is the
+  second for the label grant (target state,
+  [ADR 0172](ADRs/0172-let-bot-added-labels-start-agents-on-jira.md)). CEL may
   further restrict recognized bot roles but cannot authorize an unknown bot on
   non-label paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md);
   [Authorization Contract v1](normative/authorization/v1/) for current dispatch;

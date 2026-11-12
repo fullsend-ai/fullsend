@@ -24,6 +24,9 @@ meet the selected harness's effective `human_min_role` for target CEL dispatch;
 the accepted label mutation alone no longer bypasses a stronger human minimum.
 This ADR's provider-classified bot label grant and registered-bot gate remain.
 
+[ADR 0172](0172-let-bot-added-labels-start-agents-on-jira.md) makes the
+Jira poll adapter the second implementation of the label grant.
+
 Extends [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
 and defines the bot behavior to be added to the existing v1 contracts. This ADR
 explicitly permits the deferred migration from legacy bot exceptions to
