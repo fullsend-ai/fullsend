@@ -1049,6 +1049,15 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 	return result, nil
 }
 
+// Trace-size caps for GetWorkflowRunLogs. Package-level vars, not function
+// constants, so tests can lower them through this seam instead of moving
+// ~100 MiB of trace bytes per subtest (docs/contributing/go-code.md,
+// injectable variables).
+var (
+	maxTraceSize     int64 = 10 << 20  // 10 MiB per job
+	maxAggregateSize int64 = 100 << 20 // 100 MiB total across all jobs
+)
+
 // GetWorkflowRunLogs concatenates the trace (log output) of each job in a
 // pipeline that was not skipped, separated by headers; a skipped job never
 // ran, so only its header is written and its trace is not fetched.
@@ -1057,8 +1066,6 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 	if err != nil {
 		return "", fmt.Errorf("list jobs for logs: %w", err)
 	}
-	const maxTraceSize = 10 << 20      // 10 MiB per job
-	const maxAggregateSize = 100 << 20 // 100 MiB total across all jobs
 
 	var b strings.Builder
 	var totalRead int64

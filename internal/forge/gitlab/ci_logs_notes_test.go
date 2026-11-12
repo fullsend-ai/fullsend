@@ -96,9 +96,17 @@ func TestGetWorkflowRunLogs_SkippedJobsAfterAggregateLimit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			client, mux := setupTest(t)
-			// Ten traces of exactly the per-job cap (10 MiB each) bring
-			// totalRead to the 100 MiB aggregate limit; the job after them
-			// is the case's eleventh job.
+			// Lower the caps through their seam (the package-level vars
+			// in ci.go) so the test reaches the aggregate limit with
+			// bytes instead of ~100 MiB of traffic: ten traces of exactly
+			// the 10-byte per-job cap bring totalRead to the 100-byte
+			// aggregate limit; the job after them is the case's eleventh
+			// job.
+			const testMaxTraceSize = 10
+			const testMaxAggregateSize = 10 * testMaxTraceSize
+			oldTrace, oldAggregate := maxTraceSize, maxAggregateSize
+			maxTraceSize, maxAggregateSize = testMaxTraceSize, testMaxAggregateSize
+			t.Cleanup(func() { maxTraceSize, maxAggregateSize = oldTrace, oldAggregate })
 			jobs := make([]string, 0, 11)
 			for i := 1; i <= 10; i++ {
 				jobs = append(jobs, fmt.Sprintf(`{"id":%d,"name":"job%d","status":"success"}`, i, i))
@@ -108,7 +116,7 @@ func TestGetWorkflowRunLogs_SkippedJobsAfterAggregateLimit(t *testing.T) {
 				w.Header().Set("Content-Type", "application/json")
 				fmt.Fprintf(w, "[%s]", strings.Join(jobs, ","))
 			})
-			trace := strings.Repeat("a", 10<<20)
+			trace := strings.Repeat("a", testMaxTraceSize)
 			for i := 1; i <= 10; i++ {
 				mux.HandleFunc(fmt.Sprintf("/api/v4/projects/o%%2Fr/jobs/%d/trace", i), func(w http.ResponseWriter, _ *http.Request) {
 					_, _ = w.Write([]byte(trace))
