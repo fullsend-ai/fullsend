@@ -148,7 +148,9 @@ Your external repository needs these variables and secrets configured:
 - `FULLSEND_JIRA_TOKEN` - Scoped Jira API token for the Jira poller, status
   notifications, and Jira agents. For an Atlassian service account OAuth
   credential, set `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`
-  instead.
+  instead; the two cannot be set together, and the built-in triage and code
+  agents need the token until
+  [#9220](https://github.com/fullsend-ai/fullsend/issues/9220).
 - `FULLSEND_JIRA_EMAIL` - The bot account's email. Set it when the token
   belongs to a bot account (Basic auth); omit it for a service account's token
   (Bearer auth). Without it, a bot account's token fails with 401.

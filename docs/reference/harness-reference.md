@@ -206,16 +206,20 @@ See [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md).
 and `validation_loop.script`), layered over the `fullsend run`
 process environment. (`validation_loop.preflight_check` also reads `env.runner`
 declarations, but atop its own allowlisted environment — see above, not the
-process environment.) A few named workflow secrets are **not** inherited from that environment:
-`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
-`OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
-receives one only when the harness declares it, e.g. `FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`
-under `env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.
-Earlier releases passed them to every script unconditionally; a harness whose scripts read
-`JIRA_TOKEN` or `JIRA_USER_EMAIL` must declare them in `env.runner`, mapped from the Jira
-repository secrets (for example `JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`). The
-Jira repository secrets `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` follow the same rule (see
-[Jira integration § Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs)).
+process environment.) These names are **not** inherited from that environment:
+
+- the Jira repository secrets `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`;
+- the reserved names `JIRA_TOKEN` and `JIRA_USER_EMAIL`;
+- the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_*_HEADERS`
+  (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`).
+
+A script receives one only when the harness declares it under `env.runner`, for example
+`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`. A script that reads the `JIRA_*` names gets them
+mapped from the Jira repository secrets: `JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`,
+`JIRA_USER_EMAIL: "${FULLSEND_JIRA_EMAIL}"`. `fullsend run` itself still reads these names for its
+own Jira client and trace export. Earlier releases passed them to every script. See
+[Jira integration § Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs).
 `FULLSEND_JIRA_EMAIL` is optional: a `${FULLSEND_JIRA_EMAIL}` reference does not fail validation
 when the variable is unset, and an `env.runner` entry for it that resolves empty is omitted, so
 the script sees no variable rather than an empty one. `FULLSEND_JIRA_CLIENT_ID` and

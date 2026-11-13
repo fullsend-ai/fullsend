@@ -970,8 +970,10 @@ Jira secrets `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL`
 to Jira-sourced runs only. Declare them in `env.runner` of an overlay
 guarded on `event.source.system == "jira"`
 (`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`) and your `harness-run`
-scripts receive them; a top-level reference fails every other run; this channel is for every other secret and every other
-stage. On GitHub, store
+scripts receive them. Do not declare them at the top level: on every other
+run they are unset, so the reference fails the run.
+
+For every other secret and every other stage, use runner secrets. On GitHub, store
 all such tokens in one secret, `FULLSEND_GITHUB_RUNNER_SECRETS`, as a JSON
 object of name → value. The installed shim forwards it, and the reusable
 workflow hands it to each stage's composite action. The action writes it to a
@@ -1093,10 +1095,10 @@ GitLab. On every forge, references to these values in `env.sandbox`, expanded
 empty. Provider credential values resolve empty too, except
 `${FULLSEND_JIRA_TOKEN}`, which the provider proxy holds. See
 [Jira integration](jira-integration.md#jira-repository-secrets-in-agent-runs)
-for details. Other CI/CD variables still reach host-side scripts except
-`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`,
-`FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`,
-`FULLSEND_JIRA_CLIENT_SECRET` and the OTLP headers.
+for details. Other CI/CD variables still reach host-side scripts, except the
+Jira credentials (`FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+`FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`), the reserved names
+`JIRA_TOKEN` and `JIRA_USER_EMAIL`, and the OTLP headers.
 
 ### Harness composition with `base`
 

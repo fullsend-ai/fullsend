@@ -514,21 +514,30 @@ implementation
 > **Upgrading:** Fullsend and the built-in agents no longer read the
 > `JIRA_TOKEN` and `JIRA_USER_EMAIL` repository secrets.
 >
-> - **Who is affected:** repositories that run the built-in Jira agents with
->   those two secrets set.
-> - **Before you upgrade:**
+> - **Who is affected:** repositories that run the built-in Jira agents, and
+>   harnesses that map `${JIRA_TOKEN}` or `${JIRA_USER_EMAIL}` in
+>   `env.runner`.
+> - **Before you upgrade fullsend:**
 >   1. Make sure `FULLSEND_JIRA_TOKEN` holds the Jira token.
 >   2. If the token belongs to a bot account, set `FULLSEND_JIRA_EMAIL` to the
->      value of your `JIRA_USER_EMAIL` secret.
->   3. If a harness `base:` pins a fullsend-ai/agents commit, move it to a
->      version whose `jira-ro` provider reads `FULLSEND_JIRA_TOKEN`.
-> - **If you skip step 2:** the email is empty, so the sandbox uses Bearer auth
->   with a bot account's token and its Jira reads fail with 401.
-> - **After you upgrade:** delete the `JIRA_TOKEN` and `JIRA_USER_EMAIL`
->   secrets.
+>      value of your `JIRA_USER_EMAIL` secret. If you skip this, the email is
+>      empty, the sandbox uses Bearer auth with a bot account's token, and its
+>      Jira reads fail with 401.
+>   3. If a harness registered with `source:` or composed with `base:` pins a
+>      fullsend-ai/agents commit, re-pin it with `fullsend agent update <name>`
+>      to a version whose `jira-ro` provider reads `FULLSEND_JIRA_TOKEN`. If
+>      you skip this, the old provider reads `JIRA_TOKEN`, gets an empty
+>      value, and its Jira reads fail.
+>   4. In your own harnesses, replace `${JIRA_TOKEN}` and `${JIRA_USER_EMAIL}`
+>      in `env.runner` with `${FULLSEND_JIRA_TOKEN}` and
+>      `${FULLSEND_JIRA_EMAIL}`, for example
+>      `JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`.
+> - **After you upgrade:** once a Jira-sourced run succeeds, delete the
+>   `JIRA_TOKEN` and `JIRA_USER_EMAIL` secrets.
 > - **OAuth repositories:** if your repository uses `FULLSEND_JIRA_CLIENT_ID`
->   and `FULLSEND_JIRA_CLIENT_SECRET`, do not add `FULLSEND_JIRA_TOKEN`. The two
->   cannot be set together, and the built-in Jira agents need a token until
+>   and `FULLSEND_JIRA_CLIENT_SECRET`, keep them for the poller and do not add
+>   `FULLSEND_JIRA_TOKEN`: the two cannot be set together. The built-in Jira
+>   agents cannot run on such a repository until
 >   [#9220](https://github.com/fullsend-ai/fullsend/issues/9220).
 
 The poller and Jira-originated agent workflows use either the token and
@@ -560,7 +569,7 @@ every `FULLSEND_*` name. The runtime mapping is:
 | `fullsend run` process environment | `FULLSEND_JIRA_TOKEN`, optional `FULLSEND_JIRA_EMAIL` | `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` |
 | Host-side scripts (pre, post, validation) | Only when the harness declares the variables in `env.runner` | Only when the harness declares both variables in `env.runner` |
 | Provider credential values | `${FULLSEND_JIRA_TOKEN}` expands, so the provider proxy holds the token; `${FULLSEND_JIRA_EMAIL}` resolves empty | References resolve empty |
-| Sandbox-bound sites and provider config values | Not inherited; references resolve empty. For the email on Jira-sourced runs, reference `${JIRA_USER_EMAIL}` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) | Not inherited; references resolve empty |
+| Sandbox-bound sites and provider config values | Not inherited; references resolve empty. The sandbox gets the token through the `jira-ro` provider, not a reference. For the email on Jira-sourced runs, reference `${JIRA_USER_EMAIL}` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) | Not inherited; references resolve empty |
 
 OAuth 2.0 client credentials follow the same path. The action inputs
 `jira-client-id` and `jira-client-secret` reach `fullsend run` as
@@ -624,10 +633,10 @@ Host-side scripts receive them only when the harness declares them in
   project, and query stay in the effective
   [`tracker.jira` config](../../reference/config-reference.md#trackerjira-connection-and-polling-settings).
 
-The built-in triage and code harnesses declare `FULLSEND_JIRA_TOKEN` and
-`FULLSEND_JIRA_EMAIL` under `env.runner` in their Jira overlays. They map the
-values to the `JIRA_TOKEN` and `JIRA_USER_EMAIL` names their post-scripts
-read. Their `jira-ro` provider reads `FULLSEND_JIRA_TOKEN` for the sandbox
+In their Jira overlays, the built-in triage and code harnesses set
+`JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"` and
+`JIRA_USER_EMAIL: "${FULLSEND_JIRA_EMAIL}"` under `env.runner`, because their
+post-scripts read the `JIRA_*` names. Their `jira-ro` provider reads `FULLSEND_JIRA_TOKEN` for the sandbox
 (see [Sandbox credentials and network access](#sandbox-credentials-and-network-access)).
 
 ### Sandbox credentials and network access
