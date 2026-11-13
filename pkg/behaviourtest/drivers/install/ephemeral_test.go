@@ -126,12 +126,20 @@ func TestEphemeralLockedRunIDs(t *testing.T) {
 	assert.Len(t, locked, 2)
 }
 
-func TestEphemeralDeallocateLease_Retains(t *testing.T) {
+func TestEphemeralDeallocateLease_RetainsAndSanitizes(t *testing.T) {
 	d, fc := ephemeralTestDriver(t, "org", 1)
 	d.created["bt-x"] = true
-	require.NoError(t, d.DeallocateLease(context.Background(), "org", "bt-x"))
+	ctx := context.Background()
+	require.NoError(t, fc.CreateOrUpdateRepoVariable(ctx, "org", "bt-x", "FULLSEND_MINT_URL", "https://mint"))
+	require.NoError(t, fc.CreateOrUpdateRepoVariable(ctx, "org", "bt-x", "FULLSEND_GCP_WIF_PROVIDER", "wif"))
+
+	require.NoError(t, d.DeallocateLease(ctx, "org", "bt-x"))
+
 	assert.Empty(t, fc.DeletedRepos, "deallocate retains the repo for later pruning")
 	assert.NotContains(t, d.created, "bt-x", "deallocate stops tracking the repo")
+	vars, err := fc.ListRepoVariables(ctx, "org", "bt-x")
+	require.NoError(t, err)
+	assert.Empty(t, vars, "retained repo's variables must be stripped so it cannot invoke the shared WIF")
 }
 
 func TestEphemeralStillOwnsLease(t *testing.T) {

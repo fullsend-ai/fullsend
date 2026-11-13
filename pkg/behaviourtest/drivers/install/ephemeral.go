@@ -267,14 +267,36 @@ func (d *ephemeralDriver) AllocateLease(ctx context.Context) (RepoLease, error) 
 	}, nil
 }
 
-// DeallocateLease retains the repo (GitHub policy, ADR 0114): it only stops
-// tracking the repo as outstanding. Retained repos are batch-pruned at
-// Finalize.
-func (d *ephemeralDriver) DeallocateLease(_ context.Context, _, repo string) error {
+// DeallocateLease retains the repo (GitHub policy, ADR 0114): it sanitizes
+// the repo so it cannot invoke the shared org-scoped WIF after its scenario
+// ends, then stops tracking it. Retained repos are batch-pruned at Finalize.
+func (d *ephemeralDriver) DeallocateLease(ctx context.Context, _, repo string) error {
+	d.sanitizeRetainedRepo(ctx, repo)
 	d.mu.Lock()
 	delete(d.created, repo)
 	d.mu.Unlock()
 	return nil
+}
+
+// sanitizeRetainedRepo strips the repo's variables before it is retained, so
+// leftover CI configuration cannot resolve the mint URL or the shared
+// org-scoped WIF provider and invoke it after the scenario (ADR 0114).
+// Best-effort: failures are logged, not fatal.
+//
+// NOTE: disabling Actions and uninstalling the app are stronger measures
+// left to a follow-up (they need new forge surface); stripping the
+// mint/WIF variables already removes the repo's ability to mint.
+func (d *ephemeralDriver) sanitizeRetainedRepo(ctx context.Context, repo string) {
+	vars, err := d.client.ListRepoVariables(ctx, d.org, repo)
+	if err != nil {
+		d.logf("[driver] sanitize: listing variables on %s/%s: %v", d.org, repo, err)
+		return
+	}
+	for name := range vars {
+		if err := d.client.DeleteRepoVariable(ctx, d.org, repo, name); err != nil && !forge.IsNotFound(err) {
+			d.logf("[driver] sanitize: deleting variable %s on %s/%s: %v", name, d.org, repo, err)
+		}
+	}
 }
 
 // StillOwnsLease is always true for ephemeral repos: names are unique to
