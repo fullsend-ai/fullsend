@@ -148,6 +148,7 @@ const (
 	openCodeRunnerSubdir       = "runner-state"
 	openCodeRunRCFile          = "runner-state/opencode-run-rc"
 	openCodeHookActivationFile = "runner-state/opencode-hook-activation"
+	openCodePromptFile         = "runner-state/opencode-prompt.txt"
 )
 
 // openCodeSandboxTranscriptPath is the sandbox file Run tees the --format json
@@ -274,17 +275,17 @@ func buildOpenCodeRunCommand(params RunParams, agentName string, trustedEnv open
 	}
 	invocation = append(invocation, "--agent "+shellQuote(openCodeValidatedArg(agentName)))
 
-	// Retry iterations inject the previous failure via params.Prompt
-	// (#1050/#6494); ignoring it degrades feedback_mode to a blind retry.
-	prompt := DefaultAgentPrompt
+	// Retry feedback is uploaded separately: putting it in this sh -c
+	// argument can exceed OpenShell's 32 KiB limit. OpenCode reads a regular
+	// stdin file to EOF without stripping newlines or evaluating its contents.
 	if params.Prompt != "" {
-		prompt = params.Prompt
+		promptPath := sandbox.SandboxWorkspace + "/" + openCodePromptFile
+		prelude = append(prelude, "&& "+openCodePromptGuard(promptPath, params.Prompt))
+		invocation = append(invocation, "<"+shellQuote(promptPath))
+	} else {
+		// Close the sandbox exec's open stdin pipe on the first iteration.
+		invocation = append(invocation, shellQuote(DefaultAgentPrompt), "</dev/null")
 	}
-	invocation = append(invocation, shellQuote(prompt))
-
-	// Close stdin: run.ts reads Bun.stdin when not a TTY and would block on the
-	// pipe the sandbox exec holds open.
-	invocation = append(invocation, "</dev/null")
 	if params.Debug != "" {
 		invocation = append(invocation, "2>>"+shellQuote(sandbox.SandboxWorkspace+"/"+openCodeDebugLogFile))
 	}
@@ -460,6 +461,16 @@ func openCodeAgentGuard(agentPath, definition string) string {
 		shellQuote(hex.EncodeToString(sum[:])), openCodePrintfVar, openCodeAgentModifiedExit)
 }
 
+// openCodePromptGuard checks the separately uploaded feedback before launch.
+// Like the agent guard, it detects changes but retains the same-user race
+// between verification and the CLI opening the file.
+func openCodePromptGuard(promptPath, prompt string) string {
+	sum := sha256.Sum256([]byte(prompt))
+	return fmt.Sprintf(`{ "$%s" "$("$%s" %s | "$%s" -d' ' -f1)" = %s || { "$%s" '%%s\n' 'fullsend: opencode prompt missing or modified; refusing to run' >&2; exit %d; }; }`,
+		openCodeTestVar, openCodeSHA256Var, shellQuote(promptPath), openCodeCutVar,
+		shellQuote(hex.EncodeToString(sum[:])), openCodePrintfVar, openCodeAgentModifiedExit)
+}
+
 // openCodeHooksExtensionBytes returns the runner-vetted hook adapter bytes the
 // guard hashes.
 func openCodeHooksExtensionBytes() []byte { return openCodeHookAdapter }
@@ -488,6 +499,11 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	if trustedEnv.AgentDefinition != "" {
 		if err := r.restoreOpenCodeAgent(params.SandboxName, agentName, trustedEnv); err != nil {
 			return -1, fmt.Errorf("opencode run: %w", err)
+		}
+	}
+	if params.Prompt != "" {
+		if err := uploadBytes(params.SandboxName, sandbox.SandboxWorkspace+"/"+openCodePromptFile, []byte(params.Prompt)); err != nil {
+			return -1, fmt.Errorf("opencode run: uploading retry prompt: %w", err)
 		}
 	}
 	cmd := buildOpenCodeRunCommand(params, agentName, trustedEnv)
