@@ -297,7 +297,7 @@ func (l *jiraLifecycle) poll(t *testing.T) ([]lifecycleDispatch, error) {
 		require.NoError(t, parseErr)
 		assert.Equal(t, l.repo, r.SourceRepo)
 		assert.Equal(t, l.repo, r.StatusRepo)
-		out = append(out, lifecycleDispatch{agent: r.Agent, event: ev, payload: r.EventPayload, statusNumber: r.StatusNumber})
+		out = append(out, lifecycleDispatch{agent: r.Agent, event: ev, payload: string(r.EventPayload), statusNumber: r.StatusNumber})
 	}
 	return out, nil
 }

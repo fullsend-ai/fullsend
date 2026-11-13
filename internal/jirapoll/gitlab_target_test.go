@@ -305,7 +305,7 @@ func (embeddingMatcher) Match(_ context.Context, event *normevent.Event) ([]Disp
 	if err != nil {
 		return nil, err
 	}
-	return []DispatchRecord{{Agent: "triage", StatusNumber: event.Entity.Key, EventPayload: string(payload)}}, nil
+	return []DispatchRecord{{Agent: "triage", StatusNumber: event.Entity.Key, EventPayload: payload}}, nil
 }
 
 // validatingDispatcher parses and validates the embedded event as the

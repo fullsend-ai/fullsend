@@ -71,7 +71,7 @@ on:
         required: false
         default: "ubuntu-24.04"
       matrix:
-        description: "Pre-computed harness matrix (skips harness-dispatch if provided). Enables custom pollers to invoke harness agents directly. Format matches fullsend dispatch --output-driver gha-matrix."
+        description: "Pre-computed harness matrix (skips harness-dispatch if provided). Enables custom pollers to invoke harness agents directly. Format matches fullsend dispatch --output-driver gha-matrix (event_payload must be a structured JSON object)."
         required: false
         type: string
         default: ""
@@ -2143,7 +2143,7 @@ jobs:
       - name: Write dispatch event payload
         shell: bash
         env:
-          EVENT_PAYLOAD: ${{ matrix.event_payload }}
+          EVENT_PAYLOAD: ${{ toJSON(matrix.event_payload) }}
         run: |
           set -euo pipefail
           mkdir -p .fullsend/dispatch
@@ -2206,7 +2206,7 @@ jobs:
         id: dispatch-env
         shell: bash
         env:
-          EVENT_PAYLOAD: ${{ matrix.event_payload }}
+          EVENT_PAYLOAD: ${{ toJSON(matrix.event_payload) }}
           # Pass only agent names, not the event payloads in the full matrix.
           # The matrix can exceed a process environment entry's size limit.
           MATRIX_AGENT_NAMES: ${{ toJSON(fromJSON(inputs.matrix != '' && inputs.matrix || needs.harness-dispatch.outputs.matrix).include.*.agent) }}
@@ -2288,10 +2288,10 @@ jobs:
           agent: ${{ matrix.agent }}
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          jira-token: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
-          jira-email: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
-          jira-client-id: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
-          jira-client-secret: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
+          jira-token: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_TOKEN || '' }}
+          jira-email: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_EMAIL || '' }}
+          jira-client-id: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}
+          jira-client-secret: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}
           role: ${{ matrix.role }}
           runner_secrets: ${{ secrets.FULLSEND_GITHUB_RUNNER_SECRETS }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
@@ -2299,7 +2299,7 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}
           status-number: ${{ matrix.status_number }}
-          status-comment-id: ${{ fromJSON(matrix.event_payload).comment.id }}
+          status-comment-id: ${{ matrix.event_payload.comment.id }}
           mint-url: ${{ inputs.mint_url }}
-          pr-head-sha: ${{ fromJSON(matrix.event_payload).pull_request.head.sha || '' }}
+          pr-head-sha: ${{ matrix.event_payload.pull_request.head.sha || '' }}
           artifact-name: ${{ steps.dispatch-env.outputs.artifact_name }}

@@ -125,13 +125,15 @@ The `matrix` input (a GitHub Actions [matrix strategy](https://docs.github.com/e
       "agent": "agent-name",
       "source_repo": "org/repo",
       "role": "harness",
-      "event_payload": "{...}",
+      "event_payload": { ... },
       "status_repo": "org/repo",
       "status_number": "123"
     }
   ]
 }
 ```
+
+> **Note:** The `event_payload` field must be a structured JSON object matching the output of `fullsend dispatch --output-driver gha-matrix`, not an escaped JSON string literal.
 
 ## Prerequisites
 

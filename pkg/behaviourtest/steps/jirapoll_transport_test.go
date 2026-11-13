@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -222,9 +223,9 @@ func TestJiraTransport_DispatcherRejectsBadPayloads(t *testing.T) {
 	d := jiradispatch.GitLabDispatcher{Poller: &reached}
 	ctx := context.Background()
 
-	require.Error(t, d.Dispatch(ctx, jirapoll.DispatchRecord{Agent: "triage", EventPayload: "not json"}))
-	require.Error(t, d.Dispatch(ctx, jirapoll.DispatchRecord{Agent: "triage", EventPayload: `{}`}))
-	require.Error(t, d.Dispatch(ctx, jirapoll.DispatchRecord{Agent: "triage", EventPayload: `{"_normalized_event": "[]"}`}))
+	require.Error(t, d.Dispatch(ctx, jirapoll.DispatchRecord{Agent: "triage", EventPayload: json.RawMessage("not json")}))
+	require.Error(t, d.Dispatch(ctx, jirapoll.DispatchRecord{Agent: "triage", EventPayload: json.RawMessage(`{}`)}))
+	require.Error(t, d.Dispatch(ctx, jirapoll.DispatchRecord{Agent: "triage", EventPayload: json.RawMessage(`{"_normalized_event": "[]"}`)}))
 	require.False(t, reached.called, "a bad payload must fail before the dispatch door is reached")
 }
 
