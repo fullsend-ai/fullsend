@@ -667,7 +667,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// names the harness and succeeds as written. The harness is not
 		// resolved yet, so the hint cannot carry --forge; it is rebuilt
 		// once the harness path is known.
-		LockUpdateCommand: lockUpdateHint(agentName, fullsendDir, "", forgePlatform),
+		LockUpdateCommand: lockUpdateHint(agentName, fullsendDir, "", forgePlatform, true),
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
@@ -693,7 +693,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// the forge platform: for a child with no forge: block run under one,
 	// the advised re-lock must carry --forge or it composes with platform
 	// "" and drops the forge-specific base files (#8988).
-	composeOpts.LockUpdateCommand = lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform)
+	composeOpts.LockUpdateCommand = lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform, true)
 
 	// If the harness has a URL base and org config failed to load,
 	// load it strictly now so LoadWithBase gets a proper error path
@@ -719,12 +719,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	case lockState.loadErr != nil:
 		printer.StepWarn("Could not load lock file: " + lockState.loadErr.Error())
 	case lockState.stale:
-		// The shared lock-update hint (LockUpdateCommand, built once the
-		// harness path is known), so the stale advice carries --forge and
-		// --fullsend-dir exactly like run's other lock advice (#8988). The
-		// command ends the sentence: a period right after its last argument
-		// would be copied with it and break the advice as written.
-		printer.StepWarn("Harness has changed since lock file was generated; run: " + composeOpts.LockUpdateCommand)
+		// A plain lock re-composes a stale entry (lock returns early only
+		// when the entry is current), so the stale advice carries no
+		// --update: it would set BypassURLIndex and re-fetch every
+		// un-pinned relative base file from upstream, taking changes the
+		// user was not told about, where the URL index's cached copies
+		// re-compose the entry as before. The hint still carries --forge
+		// and --fullsend-dir exactly like run's other lock advice (#8988),
+		// and the command ends the sentence: a period right after its last
+		// argument would be copied with it and break the advice as written.
+		printer.StepWarn("Harness has changed since lock file was generated; run: " + lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform, false))
 	case len(lockState.pins) > 0:
 		noun := "dependency"
 		if len(lockState.pins) > 1 {

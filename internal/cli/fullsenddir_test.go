@@ -230,8 +230,28 @@ func TestLockUpdateHintGuardsLeadingDashName(t *testing.T) {
 		{"-all", "/tmp/d", "fullsend lock --update --fullsend-dir '/tmp/d' -- '-all'"},
 	}
 	for _, c := range cases {
-		if got := lockUpdateHint(c.name, c.dir, "", ""); got != c.want {
-			t.Errorf("lockUpdateHint(%q, %q) = %q, want %q", c.name, c.dir, got, c.want)
+		if got := lockUpdateHint(c.name, c.dir, "", "", true); got != c.want {
+			t.Errorf("lockUpdateHint(%q, %q, true) = %q, want %q", c.name, c.dir, got, c.want)
+		}
+	}
+}
+
+// TestLockUpdateHintOmitsUpdate: the stale-lock advice carries no --update —
+// a plain lock already re-composes a stale entry from the URL index's cached
+// copies, and --update would set BypassURLIndex and re-fetch every un-pinned
+// relative base file from upstream.
+func TestLockUpdateHintOmitsUpdate(t *testing.T) {
+	cases := []struct {
+		name, dir, want string
+	}{
+		{"code", ".fullsend", "fullsend lock code"},
+		{"code", "/tmp/d", "fullsend lock code --fullsend-dir '/tmp/d'"},
+		{"-all", ".fullsend", "fullsend lock -- '-all'"},
+		{"-all", "/tmp/d", "fullsend lock --fullsend-dir '/tmp/d' -- '-all'"},
+	}
+	for _, c := range cases {
+		if got := lockUpdateHint(c.name, c.dir, "", "", false); got != c.want {
+			t.Errorf("lockUpdateHint(%q, %q, false) = %q, want %q", c.name, c.dir, got, c.want)
 		}
 	}
 }

@@ -338,7 +338,7 @@ func lockOneAgent(ctx context.Context, agentName, fullsendDir, absFullsendDir, f
 			// with no forge: block (#8988).
 			BypassURLIndex:    update,
 			ResolvedKeys:      resolvedKeys,
-			LockUpdateCommand: lockUpdateHint(agentName, fullsendDir, harnessPath, forgeFlag),
+			LockUpdateCommand: lockUpdateHint(agentName, fullsendDir, harnessPath, forgeFlag, true),
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))

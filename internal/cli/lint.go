@@ -341,7 +341,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		// Offline-miss errors advise the named command, same as run,
 		// including --forge for a forge-less child composed under a forge
 		// platform (#8988).
-		agentOpts.LockUpdateCommand = lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform)
+		agentOpts.LockUpdateCommand = lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform, true)
 		h, _, err := harness.LoadWithBase(cmd.Context(), harnessPath, agentOpts)
 		if err != nil {
 			wrapped := fmt.Errorf("loading harness for agent %q: %w", agentName, err)

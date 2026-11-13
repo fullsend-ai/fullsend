@@ -39,7 +39,7 @@ func TestResolveFromLock_CacheMissAdviceNamesHarness(t *testing.T) {
 	}
 
 	printer := ui.New(os.Stdout)
-	_, err := resolveFromLock(h, entry, lockUpdateHint("code", "/custom/dir", "", ""), t.TempDir(), nil, printer)
+	_, err := resolveFromLock(h, entry, lockUpdateHint("code", "/custom/dir", "", "", true), t.TempDir(), nil, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in cache")
 	assert.Contains(t, err.Error(), "fullsend lock code --update")
@@ -127,7 +127,7 @@ func TestResolveFromLock_AdviceArmsNameHarness(t *testing.T) {
 			root := t.TempDir()
 			entry, h := tc.build(t, root)
 			printer := ui.New(os.Stdout)
-			_, err := resolveFromLock(h, entry, lockUpdateHint("code", "/custom/dir", "", ""), root, nil, printer)
+			_, err := resolveFromLock(h, entry, lockUpdateHint("code", "/custom/dir", "", "", true), root, nil, printer)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
 			assert.Contains(t, err.Error(), "fullsend lock code --update")

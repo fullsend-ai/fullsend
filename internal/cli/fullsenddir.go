@@ -169,19 +169,29 @@ func unpinnedDepsWarning(agentName string, unpinned []string, fullsendDir, harne
 		lockUpdateArgs(agentName, fullsendDir, harnessPath, forgePlatform))
 }
 
-// lockUpdateHint returns the lock-update command the run, lint and lock
-// advice prints: it names the harness and succeeds as written, and carries
+// lockUpdateHint returns the lock command the run, lint and lock advice
+// prints: it names the harness and succeeds as written, and carries
 // --forge when the re-lock needs the platform named (lockForgeArg). A name
 // that starts with '-' is printed behind the "--" end-of-options marker,
 // with every flag before it: quoted or not, the CLI's own flag parser
 // would read such a name as a flag, so the guard is the only rendering
-// that succeeds as written.
-func lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform string) string {
+// that succeeds as written. update adds --update, which re-resolves from
+// the source instead of the URL index's cached copies — right for the
+// pin-mismatch, offline-miss, replay and unpinned-dependency advice,
+// where taking upstream content is the point, and wrong for a stale
+// entry, where a plain lock already re-composes from the index.
+func lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform string, update bool) string {
 	dir, forge := fullsendDirArg(fullsendDir), lockForgeArg(harnessPath, forgePlatform)
 	if strings.HasPrefix(agentName, "-") {
-		return fmt.Sprintf("fullsend lock --update%s%s -- %s", dir, forge, shellQuoteArg(agentName))
+		if update {
+			return fmt.Sprintf("fullsend lock --update%s%s -- %s", dir, forge, shellQuoteArg(agentName))
+		}
+		return fmt.Sprintf("fullsend lock%s%s -- %s", dir, forge, shellQuoteArg(agentName))
 	}
-	return fmt.Sprintf("fullsend lock %s --update%s%s", shellQuoteArg(agentName), dir, forge)
+	if update {
+		return fmt.Sprintf("fullsend lock %s --update%s%s", shellQuoteArg(agentName), dir, forge)
+	}
+	return fmt.Sprintf("fullsend lock %s%s%s", shellQuoteArg(agentName), dir, forge)
 }
 
 // lockUpdateArgs renders the argument part of the advised lock-update
