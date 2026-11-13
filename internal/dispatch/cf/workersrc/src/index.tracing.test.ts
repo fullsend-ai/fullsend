@@ -167,8 +167,12 @@ describe("mint worker OTLP export bridge", () => {
     // deadline rather than the 20 s host-fetch timeout.
     expectMintRejection(res);
     expect(elapsed).toBeLessThan(EXPORT_BUDGET_MS + 3_000);
-    // The underlying fetch was aborted, not left running.
+    // The underlying fetch was aborted, not left running. The abort comes
+    // from AbortSignal.timeout(remaining deadline) in createFetchCallback,
+    // a separate timer from the Go-side export deadline that releases
+    // the mint response, so the two can fire in either order. Wait for
+    // the abort instead of sampling it once.
     expect(signal).toBeDefined();
-    expect(signal?.aborted).toBe(true);
+    await vi.waitFor(() => expect(signal?.aborted).toBe(true));
   }, 15_000);
 });
