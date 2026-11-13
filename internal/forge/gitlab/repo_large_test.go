@@ -110,6 +110,7 @@ func TestResolveRootCommitSHA_ProbeErrorMidSearch(t *testing.T) {
 			"default_branch": "main", "visibility": "public",
 		})
 	})
+	errorServed := false
 	mux.HandleFunc("/api/v4/projects/owner%2Frepo/repository/commits", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") == "1" {
 			commits := make([]map[string]any, 100)
@@ -120,6 +121,7 @@ func TestResolveRootCommitSHA_ProbeErrorMidSearch(t *testing.T) {
 			json.NewEncoder(w).Encode(commits)
 			return
 		}
+		errorServed = true
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"message": "boom"})
 	})
@@ -127,6 +129,7 @@ func TestResolveRootCommitSHA_ProbeErrorMidSearch(t *testing.T) {
 	_, err := client.resolveRootCommitSHA(context.Background(), "owner", "repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "list root commits")
+	assert.True(t, errorServed, "500 error handler should be invoked")
 }
 
 func TestResolveRootCommitSHA_NeverEndingHistoryIsBounded(t *testing.T) {
