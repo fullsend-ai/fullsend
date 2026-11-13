@@ -2928,7 +2928,7 @@ func TestWithoutAmbiguousRetry_RetriesReplaySafeReads(t *testing.T) {
 	}
 }
 
-func TestWithoutAmbiguousRetry_DoesNotRetryNonIdempotentRequests(t *testing.T) {
+func TestWithoutAmbiguousRetry_DoesNotRetryMutatingRequests(t *testing.T) {
 	tests := []struct {
 		name   string
 		method string
