@@ -2,9 +2,10 @@ package jirapoll
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -207,114 +208,151 @@ func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabHost string) string {
 	return strings.ToLower(strings.Join(parts, "/"))
 }
 
-// filterRouting filters candidate issues based on attached repository links
-// and configured component. Returns an error if all candidates fail remote-link
-// lookup.
-func (p *Poller) filterRouting(ctx context.Context, candidates []jira.Issue) ([]jira.Issue, error) {
-	if len(candidates) == 0 {
-		return candidates, nil
+const routingBatchConcurrency = 8
+
+func isRoutingAbortError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
 	}
-	routed, linkErrors := p.filterRoutingPage(ctx, candidates)
-	if linkErrors == len(candidates) {
-		return nil, fmt.Errorf("all %d candidates dropped by remote-link lookup errors", len(candidates))
+	var apiErr *jira.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500
 	}
-	return routed, nil
+	return false
 }
 
-// filterRoutingPage evaluates repository routing for one page of candidates,
-// returning routed issues and the count of candidates dropped due to
-// remote-link API errors.
-func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue) ([]jira.Issue, int) {
+// filterRoutingPage evaluates repository routing for one page of candidates in
+// bounded batches of up to routingBatchConcurrency, stopping early once needed
+// (>0) routed candidates are collected, ctx expires, or a rate-limit/5xx
+// lookup error occurs. It returns the routed issues, number of candidates
+// attempted, count of candidates dropped due to lookup errors, and whether
+// further candidate scanning in this cycle should stop.
+func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue, needed int) ([]jira.Issue, int, int, bool) {
 	if len(candidates) == 0 {
-		return candidates, 0
+		return candidates, 0, 0, false
 	}
 
 	targetRepo := strings.ToLower(strings.TrimSpace(p.opts.TargetRepo))
 	allowedGitLabHost := hostFromURL(p.opts.GitLabURL)
 
-	// Fetch remote links concurrently with a bounded worker pool (max 8 concurrent)
-	// while preserving candidate order.
 	type linkResult struct {
 		links []jira.RemoteLink
 		err   error
 	}
 
-	results := make([]linkResult, len(candidates))
-	g, gCtx := errgroup.WithContext(ctx)
-	g.SetLimit(8)
-
-	for i, issue := range candidates {
-		i, issueKey := i, issue.Key
-		g.Go(func() error {
-			links, err := p.client.ListRemoteLinks(gCtx, issueKey)
-			results[i] = linkResult{links: links, err: err}
-			return nil
-		})
-	}
-	_ = g.Wait()
-
 	var routed []jira.Issue
-	var linkErrors int
+	var attempted, linkErrors int
+	var stopScan bool
 
-	for i, issue := range candidates {
-		res := results[i]
-		if res.err != nil {
-			// Fail-safe: if remote links lookup failed (transient error, auth failure, etc.),
-			// do NOT fall back to component or permissive claiming. Skip this issue for this cycle
-			// to avoid claiming an issue that might belong to another repository.
-			log.Printf("WARNING: listing remote links for %s: %v (skipping candidate to avoid misrouting)", issue.Key, res.err)
-			linkErrors++
-			continue
+	for start := 0; start < len(candidates); {
+		if ctx.Err() != nil {
+			stopScan = true
+			break
 		}
 
-		var attachedRepos []string
-		for _, link := range res.links {
-			if slug := extractRepoSlugWithAllowedHost(link.Object.URL, allowedGitLabHost); slug != "" {
-				attachedRepos = append(attachedRepos, slug)
+		batchSize := routingBatchConcurrency
+		if needed > 0 {
+			rem := needed - len(routed)
+			if rem <= 0 {
+				break
+			}
+			if rem < batchSize {
+				batchSize = rem
 			}
 		}
+		end := start + batchSize
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		batch := candidates[start:end]
+		start = end
 
-		// Priority 1: Attached Git repository links
-		if len(attachedRepos) > 0 {
-			matched := false
-			for _, r := range attachedRepos {
-				if r == targetRepo {
-					matched = true
-					break
+		results := make([]linkResult, len(batch))
+		g, gCtx := errgroup.WithContext(ctx)
+		g.SetLimit(routingBatchConcurrency)
+
+		for i, issue := range batch {
+			i, issueKey := i, issue.Key
+			g.Go(func() error {
+				links, err := p.client.ListRemoteLinks(gCtx, issueKey)
+				results[i] = linkResult{links: links, err: err}
+				return nil
+			})
+		}
+		_ = g.Wait()
+		attempted += len(batch)
+
+		for i, issue := range batch {
+			res := results[i]
+			if res.err != nil {
+				// Fail-safe: if remote links lookup failed (transient error, auth failure, etc.),
+				// do NOT fall back to component or permissive claiming. Skip this issue for this cycle
+				// to avoid claiming an issue that might belong to another repository.
+				log.Printf("WARNING: listing remote links for %s: %v (skipping candidate to avoid misrouting)", issue.Key, res.err)
+				linkErrors++
+				if isRoutingAbortError(res.err) {
+					stopScan = true
+				}
+				continue
+			}
+
+			var attachedRepos []string
+			for _, link := range res.links {
+				if slug := extractRepoSlugWithAllowedHost(link.Object.URL, allowedGitLabHost); slug != "" {
+					attachedRepos = append(attachedRepos, slug)
 				}
 			}
 
-			if matched {
-				log.Printf("routing %s to %s via attached repository link", issue.Key, p.opts.TargetRepo)
-				routed = append(routed, issue)
-			} else {
-				log.Printf("skipping %s: attached repository link(s) %v do not match target repo %q", issue.Key, attachedRepos, p.opts.TargetRepo)
-			}
-			continue
-		}
-
-		// Priority 2: Jira Component fallback
-		if p.opts.JiraComponent != "" {
-			componentMatched := false
-			for _, comp := range issue.Fields.Components {
-				if strings.EqualFold(comp.Name, p.opts.JiraComponent) {
-					componentMatched = true
-					break
+			// Priority 1: Attached Git repository links
+			if len(attachedRepos) > 0 {
+				matched := false
+				for _, r := range attachedRepos {
+					if r == targetRepo {
+						matched = true
+						break
+					}
 				}
+
+				if matched {
+					log.Printf("routing %s to %s via attached repository link", issue.Key, p.opts.TargetRepo)
+					routed = append(routed, issue)
+				} else {
+					log.Printf("skipping %s: attached repository link(s) %v do not match target repo %q", issue.Key, attachedRepos, p.opts.TargetRepo)
+				}
+				continue
 			}
 
-			if componentMatched {
-				log.Printf("routing %s to %s via component %q", issue.Key, p.opts.TargetRepo, p.opts.JiraComponent)
-				routed = append(routed, issue)
-			} else {
-				log.Printf("skipping %s: no attached repo and components do not match %q", issue.Key, p.opts.JiraComponent)
+			// Priority 2: Jira Component fallback
+			if p.opts.JiraComponent != "" {
+				componentMatched := false
+				for _, comp := range issue.Fields.Components {
+					if strings.EqualFold(comp.Name, p.opts.JiraComponent) {
+						componentMatched = true
+						break
+					}
+				}
+
+				if componentMatched {
+					log.Printf("routing %s to %s via component %q", issue.Key, p.opts.TargetRepo, p.opts.JiraComponent)
+					routed = append(routed, issue)
+				} else {
+					log.Printf("skipping %s: no attached repo and components do not match %q", issue.Key, p.opts.JiraComponent)
+				}
+				continue
 			}
-			continue
+
+			// Priority 3: No attached repo links and no component configured -> keep candidate
+			routed = append(routed, issue)
 		}
 
-		// Priority 3: No attached repo links and no component configured -> keep candidate
-		routed = append(routed, issue)
+		if (needed > 0 && len(routed) >= needed) || stopScan {
+			break
+		}
 	}
 
-	return routed, linkErrors
+	if needed > 0 && len(routed) > needed {
+		routed = routed[:needed]
+	}
+
+	return routed, attempted, linkErrors, stopScan
 }

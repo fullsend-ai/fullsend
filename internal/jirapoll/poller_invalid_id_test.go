@@ -401,7 +401,7 @@ func TestRun_MatcherErrEventsDroppedNotLost(t *testing.T) {
 // Center deployment whose project key is a single character (which the
 // config gate's jiraProjectKeyRe accepts) through the scoped default query
 // too: the CLI always sets a JQL, so the project-key check in
-// searchCandidates (which runs only with no JQL at all) never intercepts
+// buildCandidateJQL (which runs only with no JQL at all) never intercepts
 // it. The mock serves the issue regardless of the JQL, as Jira does for
 // either query.
 func TestRun_MalformedKeyEventSkipped(t *testing.T) {

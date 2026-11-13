@@ -1392,20 +1392,64 @@ func TestListRemoteLinks_Empty(t *testing.T) {
 	assert.Empty(t, links)
 }
 
+func TestSearchIssuesPage_DefaultMaxResultsAndError(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/search/jql", func(w http.ResponseWriter, r *http.Request) {
+		var body searchRequest
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		if body.JQL == "bad" {
+			writeJSON(t, w, http.StatusBadRequest, map[string]any{
+				"errorMessages": []string{"Invalid JQL"},
+			})
+			return
+		}
+		assert.Equal(t, 50, body.MaxResults)
+		writeJSON(t, w, http.StatusOK, SearchResult{IsLast: true})
+	})
+
+	res, err := client.SearchIssuesPage(ctx, "project = PROJ", "", 0)
+	require.NoError(t, err)
+	assert.True(t, res.IsLast)
+
+	_, err = client.SearchIssuesPage(ctx, "bad", "", 10)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "search issues")
+}
+
 func TestListRemoteLinks_LinkingDisabled(t *testing.T) {
 	t.Parallel()
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
 	mux.HandleFunc("/rest/api/3/issue/PROJ-44/remotelink", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusNotFound, map[string]any{
-			"errorMessages": []string{"Remote issue linking is currently disabled."},
+		writeJSON(t, w, http.StatusForbidden, map[string]any{
+			"errorMessages": []string{"Issue linking is currently disabled."},
 		})
 	})
 
 	links, err := client.ListRemoteLinks(ctx, "PROJ-44")
 	require.NoError(t, err)
 	assert.Empty(t, links)
+}
+
+func TestListRemoteLinks_ForbiddenPermissionError(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/rest/api/3/issue/PROJ-45/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]any{
+			"errorMessages": []string{"You do not have permission to view this issue."},
+		})
+	})
+
+	_, err := client.ListRemoteLinks(ctx, "PROJ-45")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list remote links for PROJ-45")
+	assert.ErrorIs(t, err, forge.ErrForbidden)
 }
 
 func TestListRemoteLinks_Error(t *testing.T) {

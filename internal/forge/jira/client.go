@@ -1043,17 +1043,19 @@ func (c *LiveClient) GetMyself(ctx context.Context) (*User, error) {
 }
 
 // ListRemoteLinks returns the external web links attached to an issue via
-// GET /rest/api/3/issue/{issueIdOrKey}/remotelink. If Jira returns HTTP 404
-// because remote issue linking is disabled on the site, an empty slice and
-// nil error are returned so routing can fall back to components/defaults.
+// GET /rest/api/3/issue/{issueIdOrKey}/remotelink. If Jira returns HTTP 403
+// (or 404 on some deployments) because issue linking is disabled on the site,
+// a warning is logged and an empty slice and nil error are returned so routing
+// can fall back to components/defaults.
 func (c *LiveClient) ListRemoteLinks(ctx context.Context, issueIDOrKey string) ([]RemoteLink, error) {
 	var links []RemoteLink
 	path := "/issue/" + url.PathEscape(issueIDOrKey) + "/remotelink"
 	if err := c.do(ctx, http.MethodGet, path, nil, &links); err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusForbidden || apiErr.StatusCode == http.StatusNotFound) {
 			msg := strings.ToLower(apiErr.Message)
 			if strings.Contains(msg, "linking") && strings.Contains(msg, "disabled") {
+				log.Printf("WARNING: remote issue linking is disabled on Jira for %s (HTTP %d); treating remote links as empty", issueIDOrKey, apiErr.StatusCode)
 				return []RemoteLink{}, nil
 			}
 		}

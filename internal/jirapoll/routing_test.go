@@ -3,7 +3,10 @@ package jirapoll
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -196,6 +199,71 @@ func TestExtractRepoSlug(t *testing.T) {
 			rawURL:   "",
 			expected: "",
 		},
+		{
+			name:     "Invalid URL parse error",
+			rawURL:   "://not-a-valid-url",
+			expected: "",
+		},
+		{
+			name:     "Relative path without host",
+			rawURL:   "/owner/repo",
+			expected: "",
+		},
+		{
+			name:     "Unsupported ftp scheme",
+			rawURL:   "ftp://github.com/my-org/pay-backend",
+			expected: "",
+		},
+		{
+			name:     "SSH git@ without colon",
+			rawURL:   "git@github.com/my-org/pay-backend.git",
+			expected: "",
+		},
+		{
+			name:     "HTTPS URL with port strips port",
+			rawURL:   "https://github.com:443/my-org/pay-backend",
+			expected: "my-org/pay-backend",
+		},
+		{
+			name:     "Root host URL without path",
+			rawURL:   "https://github.com/",
+			expected: "",
+		},
+		{
+			name:     "GitHub single-segment path rejected",
+			rawURL:   "https://github.com/my-org",
+			expected: "",
+		},
+		{
+			name:     "GitHub path with dotdot segment rejected",
+			rawURL:   "https://github.com/my-org/../pay-backend",
+			expected: "",
+		},
+		{
+			name:     "Bitbucket reserved workspace route rejected",
+			rawURL:   "https://bitbucket.org/workspaces/team",
+			expected: "",
+		},
+		{
+			name:     "GitLab single-segment path rejected",
+			rawURL:   "https://gitlab.com/my-org",
+			expected: "",
+		},
+		{
+			name:     "GitLab path with dot segment rejected",
+			rawURL:   "https://gitlab.com/my-org/./repo",
+			expected: "",
+		},
+		{
+			name:     "Generic git.* host with /-/",
+			rawURL:   "https://git.example.com/group/sub/repo/-/merge_requests/1.git",
+			expected: "group/sub/repo",
+		},
+		{
+			name:     "Generic SSH single-segment path rejected",
+			rawURL:   "ssh://git@git.example.com/only-one",
+			expected: "",
+		},
 	}
 
 	for _, tc := range tests {
@@ -204,13 +272,38 @@ func TestExtractRepoSlug(t *testing.T) {
 			t.Parallel()
 			actual := extractRepoSlugWithAllowedHost(tc.rawURL, tc.allowedGitLabHost)
 			assert.Equal(t, tc.expected, actual)
+			if tc.allowedGitLabHost == "" {
+				assert.Equal(t, tc.expected, extractRepoSlug(tc.rawURL))
+			}
 		})
 	}
+	assert.Equal(t, "", hostFromURL(""))
+	assert.Equal(t, "", hostFromURL("://bad"))
+	assert.Equal(t, "code.internal.corp", hostFromURL("https://Code.Internal.Corp:8443/team/repo"))
+}
+
+func runDiscoverForCandidates(ctx context.Context, mc *mockClient, opts Options, candidates []jira.Issue) ([]jira.Issue, error) {
+	mc.searchResult = candidates
+	if opts.JiraProject == "" {
+		opts.JiraProject = "PROJ"
+	}
+	return newTestPoller(mc, nil, opts).discoverCandidates(ctx)
 }
 
 func TestFilterRouting(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
+
+	t.Run("EmptyCandidates", func(t *testing.T) {
+		t.Parallel()
+		mc := newMockClient()
+		p := newTestPoller(mc, nil, Options{JiraProject: "PROJ", TargetRepo: "my-org/pay-backend"})
+		routed, attempted, linkErrors, stopScan := p.filterRoutingPage(ctx, nil, 0)
+		assert.Empty(t, routed)
+		assert.Zero(t, attempted)
+		assert.Zero(t, linkErrors)
+		assert.False(t, stopScan)
+	})
 
 	t.Run("AttachedLinkMatch", func(t *testing.T) {
 		t.Parallel()
@@ -221,12 +314,9 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		p := newTestPoller(mc, nil, Options{
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
 			TargetRepo: "my-org/pay-backend",
-		})
-
-		candidates := []jira.Issue{{Key: "PROJ-1"}}
-		routed, err := p.filterRouting(ctx, candidates)
+		}, []jira.Issue{{Key: "PROJ-1"}})
 		require.NoError(t, err)
 		require.Len(t, routed, 1)
 		assert.Equal(t, "PROJ-1", routed[0].Key)
@@ -241,14 +331,11 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		p := newTestPoller(mc, nil, Options{
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
 			TargetRepo:  "team/sub/pay-backend",
 			TargetForge: TargetForgeGitLab,
 			GitLabURL:   "https://code.internal.corp",
-		})
-
-		candidates := []jira.Issue{{Key: "PROJ-1"}}
-		routed, err := p.filterRouting(ctx, candidates)
+		}, []jira.Issue{{Key: "PROJ-1"}})
 		require.NoError(t, err)
 		require.Len(t, routed, 1)
 		assert.Equal(t, "PROJ-1", routed[0].Key)
@@ -263,12 +350,9 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		p := newTestPoller(mc, nil, Options{
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
 			TargetRepo: "my-org/pay-backend",
-		})
-
-		candidates := []jira.Issue{{Key: "PROJ-1"}}
-		routed, err := p.filterRouting(ctx, candidates)
+		}, []jira.Issue{{Key: "PROJ-1"}})
 		require.NoError(t, err)
 		assert.Empty(t, routed)
 	})
@@ -284,11 +368,6 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		p := newTestPoller(mc, nil, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "backend",
-		})
-
 		candidates := []jira.Issue{
 			{
 				Key: "PROJ-1",
@@ -297,7 +376,10 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		routed, err := p.filterRouting(ctx, candidates)
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:    "my-org/pay-backend",
+			JiraComponent: "backend",
+		}, candidates)
 		require.NoError(t, err)
 		assert.Empty(t, routed)
 	})
@@ -313,11 +395,6 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		p := newTestPoller(mc, nil, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "backend",
-		})
-
 		candidates := []jira.Issue{
 			{
 				Key: "PROJ-1",
@@ -326,7 +403,10 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		routed, err := p.filterRouting(ctx, candidates)
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:    "my-org/pay-backend",
+			JiraComponent: "backend",
+		}, candidates)
 		require.NoError(t, err)
 		require.Len(t, routed, 1)
 		assert.Equal(t, "PROJ-1", routed[0].Key)
@@ -343,12 +423,9 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		p := newTestPoller(mc, nil, Options{
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
 			TargetRepo: "my-org/pay-backend",
-		})
-
-		candidates := []jira.Issue{{Key: "PROJ-1"}}
-		routed, err := p.filterRouting(ctx, candidates)
+		}, []jira.Issue{{Key: "PROJ-1"}})
 		require.NoError(t, err)
 		require.Len(t, routed, 1)
 		assert.Equal(t, "PROJ-1", routed[0].Key)
@@ -359,11 +436,6 @@ func TestFilterRouting(t *testing.T) {
 		mc := &mockClient{
 			remoteLinks: map[string][]jira.RemoteLink{},
 		}
-		p := newTestPoller(mc, nil, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "Payments",
-		})
-
 		candidates := []jira.Issue{
 			{
 				Key: "PROJ-1",
@@ -372,7 +444,10 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		routed, err := p.filterRouting(ctx, candidates)
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:    "my-org/pay-backend",
+			JiraComponent: "Payments",
+		}, candidates)
 		require.NoError(t, err)
 		require.Len(t, routed, 1)
 		assert.Equal(t, "PROJ-1", routed[0].Key)
@@ -383,11 +458,6 @@ func TestFilterRouting(t *testing.T) {
 		mc := &mockClient{
 			remoteLinks: map[string][]jira.RemoteLink{},
 		}
-		p := newTestPoller(mc, nil, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "Payments",
-		})
-
 		candidates := []jira.Issue{
 			{
 				Key: "PROJ-1",
@@ -396,7 +466,10 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		routed, err := p.filterRouting(ctx, candidates)
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:    "my-org/pay-backend",
+			JiraComponent: "Payments",
+		}, candidates)
 		require.NoError(t, err)
 		assert.Empty(t, routed)
 	})
@@ -406,12 +479,9 @@ func TestFilterRouting(t *testing.T) {
 		mc := &mockClient{
 			remoteLinks: map[string][]jira.RemoteLink{},
 		}
-		p := newTestPoller(mc, nil, Options{
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
 			TargetRepo: "my-org/pay-backend",
-		})
-
-		candidates := []jira.Issue{{Key: "PROJ-1"}}
-		routed, err := p.filterRouting(ctx, candidates)
+		}, []jira.Issue{{Key: "PROJ-1"}})
 		require.NoError(t, err)
 		require.Len(t, routed, 1)
 		assert.Equal(t, "PROJ-1", routed[0].Key)
@@ -429,11 +499,6 @@ func TestFilterRouting(t *testing.T) {
 				"PROJ-1": fmt.Errorf("network timeout"),
 			},
 		}
-		p := newTestPoller(mc, nil, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "Backend",
-		})
-
 		candidates := []jira.Issue{
 			{
 				Key: "PROJ-1",
@@ -448,7 +513,10 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		routed, err := p.filterRouting(ctx, candidates)
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:    "my-org/pay-backend",
+			JiraComponent: "Backend",
+		}, candidates)
 		require.NoError(t, err)
 		require.Len(t, routed, 1)
 		assert.Equal(t, "PROJ-2", routed[0].Key)
@@ -464,13 +532,10 @@ func TestFilterRouting(t *testing.T) {
 				"PROJ-2": fmt.Errorf("403 forbidden"),
 			},
 		}
-		p := newTestPoller(mc, nil, Options{
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
 			TargetRepo:    "my-org/pay-backend",
 			JiraComponent: "Backend",
-		})
-
-		candidates := []jira.Issue{{Key: "PROJ-1"}, {Key: "PROJ-2"}}
-		routed, err := p.filterRouting(ctx, candidates)
+		}, []jira.Issue{{Key: "PROJ-1"}, {Key: "PROJ-2"}})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "all 2 candidates dropped by remote-link lookup errors")
 		assert.Empty(t, routed)
@@ -487,12 +552,9 @@ func TestFilterRouting(t *testing.T) {
 				},
 			},
 		}
-		p := newTestPoller(mc, nil, Options{
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
 			TargetRepo: "my-org/pay-backend",
-		})
-
-		candidates := []jira.Issue{{Key: "PROJ-1"}}
-		routed, err := p.filterRouting(ctx, candidates)
+		}, []jira.Issue{{Key: "PROJ-1"}})
 		require.NoError(t, err)
 		assert.Empty(t, routed)
 	})
@@ -506,22 +568,143 @@ func TestFilterRouting(t *testing.T) {
 				"PROJ-3": {{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/pay-backend"}}},
 			},
 		}
-		p := newTestPoller(mc, nil, Options{
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
 			TargetRepo: "my-org/pay-backend",
-		})
-
-		candidates := []jira.Issue{
+		}, []jira.Issue{
 			{Key: "PROJ-1"},
 			{Key: "PROJ-2"},
 			{Key: "PROJ-3"},
-		}
-		routed, err := p.filterRouting(ctx, candidates)
+		})
 		require.NoError(t, err)
 		require.Len(t, routed, 3)
 		assert.Equal(t, "PROJ-1", routed[0].Key)
 		assert.Equal(t, "PROJ-2", routed[1].Key)
 		assert.Equal(t, "PROJ-3", routed[2].Key)
 	})
+
+	t.Run("StopsFetchingOnceMReached", func(t *testing.T) {
+		t.Parallel()
+		mc := newMockClient()
+		candidates := make([]jira.Issue, 20)
+		for i := range candidates {
+			key := fmt.Sprintf("PROJ-%d", i+1)
+			candidates[i] = jira.Issue{Key: key}
+			mc.remoteLinks[key] = []jira.RemoteLink{
+				{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/pay-backend"}},
+			}
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+			M:          2,
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routed, 2)
+		assert.Equal(t, 1, mc.searchPageCalls)
+		assert.LessOrEqual(t, len(mc.remoteLinksCalls), routingBatchConcurrency)
+	})
+
+	t.Run("AbortsEarlyOnRateLimitOrServerError", func(t *testing.T) {
+		t.Parallel()
+		mc := newMockClient()
+		candidates := make([]jira.Issue, 20)
+		for i := range candidates {
+			key := fmt.Sprintf("PROJ-%d", i+1)
+			candidates[i] = jira.Issue{Key: key}
+			mc.remoteLinks[key] = []jira.RemoteLink{
+				{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/pay-backend"}},
+			}
+		}
+		mc.remoteLinksErr["PROJ-1"] = &jira.APIError{StatusCode: http.StatusTooManyRequests, Message: "rate limited"}
+
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+			M:          10,
+		}, candidates)
+		require.NoError(t, err)
+		// Batch 1 (8 issues) finishes with 7 routed and 1 429 error; batch 2 is not started.
+		assert.Len(t, routed, routingBatchConcurrency-1)
+		assert.Len(t, mc.remoteLinksCalls, routingBatchConcurrency)
+
+		// When an entire first batch fails with 5xx, discoverCandidates stops and reports error.
+		mc2 := newMockClient()
+		for i := 0; i < routingBatchConcurrency; i++ {
+			key := fmt.Sprintf("PROJ-%d", i+1)
+			mc2.remoteLinksErr[key] = &jira.APIError{StatusCode: http.StatusServiceUnavailable, Message: "unavailable"}
+		}
+		routed2, err2 := runDiscoverForCandidates(ctx, mc2, Options{
+			TargetRepo: "my-org/pay-backend",
+			M:          10,
+		}, candidates)
+		require.Error(t, err2)
+		assert.Contains(t, err2.Error(), fmt.Sprintf("all %d candidates dropped by remote-link lookup errors", routingBatchConcurrency))
+		assert.Empty(t, routed2)
+		assert.Len(t, mc2.remoteLinksCalls, routingBatchConcurrency)
+	})
+
+	t.Run("AbortsOnFanoutDeadline", func(t *testing.T) {
+		t.Parallel()
+		mc := newMockClient()
+		mc.searchResult = []jira.Issue{{Key: "PROJ-1"}}
+		p := newTestPoller(mc, nil, Options{
+			JiraProject: "PROJ",
+			TargetRepo:  "my-org/pay-backend",
+		})
+		p.routingFanoutTimeout = 1 * time.Nanosecond
+		time.Sleep(2 * time.Millisecond)
+
+		routed, err := p.discoverCandidates(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, routed)
+		assert.Empty(t, mc.remoteLinksCalls)
+
+		expiredCtx, cancel := context.WithCancel(ctx)
+		cancel()
+		routed2, err2 := runDiscoverForCandidates(expiredCtx, newMockClient(), Options{
+			TargetRepo: "my-org/pay-backend",
+		}, []jira.Issue{{Key: "PROJ-1"}})
+		require.NoError(t, err2)
+		assert.Empty(t, routed2)
+	})
+}
+
+func TestIsRoutingAbortError(t *testing.T) {
+	t.Parallel()
+	assert.True(t, isRoutingAbortError(context.DeadlineExceeded))
+	assert.True(t, isRoutingAbortError(context.Canceled))
+	assert.True(t, isRoutingAbortError(&jira.APIError{StatusCode: http.StatusTooManyRequests}))
+	assert.True(t, isRoutingAbortError(&jira.APIError{StatusCode: http.StatusBadGateway}))
+	assert.False(t, isRoutingAbortError(&jira.APIError{StatusCode: http.StatusForbidden}))
+	assert.False(t, isRoutingAbortError(fmt.Errorf("transient network error")))
+}
+
+func TestPollerDiscoverCandidates_LinkingDisabled403_EndToEnd(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/rest/api/3/search/jql":
+			_, _ = w.Write([]byte(`{"issues":[{"id":"1","key":"PROJ-1","fields":{"summary":"Fix bug","labels":[]}}],"isLast":true}`))
+		case "/rest/api/3/issue/PROJ-1/remotelink":
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"errorMessages":["Issue linking is currently disabled."],"errors":{}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := jira.New("test-token", jira.WithBaseURL(srv.URL), jira.WithEmail("bot@example.com"), jira.WithHTTPClient(srv.Client()))
+	require.NoError(t, err)
+
+	p := newTestPoller(client, nil, Options{
+		JiraProject: "PROJ",
+		TargetRepo:  "my-org/pay-backend",
+	})
+	routed, err := p.discoverCandidates(context.Background())
+	require.NoError(t, err)
+	require.Len(t, routed, 1)
+	assert.Equal(t, "PROJ-1", routed[0].Key)
 }
 
 func TestPollerRun_AllRemoteLinksErrorsReturnError(t *testing.T) {

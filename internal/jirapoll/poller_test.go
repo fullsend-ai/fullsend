@@ -37,8 +37,9 @@ type mockClient struct {
 	searchPageCalls  int
 	searchPageLimits []int
 
-	remoteLinks    map[string][]jira.RemoteLink
-	remoteLinksErr map[string]error
+	remoteLinks      map[string][]jira.RemoteLink
+	remoteLinksErr   map[string]error
+	remoteLinksCalls []string
 
 	issues   map[string]*jira.Issue
 	issueErr map[string]error
@@ -153,6 +154,7 @@ func (m *mockClient) SearchIssuesPage(_ context.Context, jql, nextPageToken stri
 func (m *mockClient) ListRemoteLinks(_ context.Context, issueKey string) ([]jira.RemoteLink, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.remoteLinksCalls = append(m.remoteLinksCalls, issueKey)
 	if m.remoteLinksErr != nil {
 		if err, ok := m.remoteLinksErr[issueKey]; ok && err != nil {
 			return nil, err
@@ -1754,43 +1756,53 @@ func TestFilterLockedErrorsWhenAllLockReadsFail(t *testing.T) {
 	}
 }
 
-// TestSearchCandidatesQuotesProjectKey checks that the default JQL quotes
-// the project key rather than interpolating it bare, as defense in depth
+// TestDiscoverCandidatesQuotesProjectKey checks that buildCandidateJQL / discoverCandidates
+// quotes the project key rather than interpolating it bare, as defense in depth
 // against JQL injection even though the key is already validated upstream.
-func TestSearchCandidatesQuotesProjectKey(t *testing.T) {
+func TestDiscoverCandidatesQuotesProjectKey(t *testing.T) {
 	mc := newMockClient()
 	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ"})
 
-	if _, err := p.searchCandidates(context.Background()); err != nil {
-		t.Fatalf("searchCandidates() error: %v", err)
+	jql, err := p.buildCandidateJQL()
+	if err != nil {
+		t.Fatalf("buildCandidateJQL() error: %v", err)
+	}
+	want := `project = "PROJ" AND statusCategory != Done ORDER BY updated DESC`
+	if jql != want {
+		t.Errorf("buildCandidateJQL() = %q, want %q", jql, want)
 	}
 
-	want := `project = "PROJ" AND statusCategory != Done ORDER BY updated DESC`
+	if _, err := p.discoverCandidates(context.Background()); err != nil {
+		t.Fatalf("discoverCandidates() error: %v", err)
+	}
 	if mc.lastQuery != want {
 		t.Errorf("JQL = %q, want %q", mc.lastQuery, want)
 	}
 }
 
-// TestSearchCandidatesBoundsBySettingM checks that searchCandidates asks
-// SearchIssues to stop paginating once M results are collected, instead of
-// exhausting the full JQL match set and truncating client-side.
-func TestSearchCandidatesBoundsBySettingM(t *testing.T) {
+// TestDiscoverCandidatesBoundsBySettingM checks that discoverCandidates asks
+// SearchIssuesPage for page-sized batches and stops once M routed results are
+// collected, instead of scanning all pages and truncating afterward.
+func TestDiscoverCandidatesBoundsBySettingM(t *testing.T) {
 	mc := newMockClient()
 	mc.searchResult = make([]jira.Issue, 200)
 	for i := range mc.searchResult {
 		mc.searchResult[i] = jira.Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1)}
 	}
-	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ", M: 50})
+	p := newTestPoller(mc, nil, Options{JiraProject: "PROJ", TargetRepo: "my-org/pay-backend", M: 50})
 
-	candidates, err := p.searchCandidates(context.Background())
+	candidates, err := p.discoverCandidates(context.Background())
 	if err != nil {
-		t.Fatalf("searchCandidates() error: %v", err)
+		t.Fatalf("discoverCandidates() error: %v", err)
 	}
 	if len(candidates) != 50 {
 		t.Errorf("len(candidates) = %d, want 50", len(candidates))
 	}
 	if mc.lastLimit != 50 {
-		t.Errorf("SearchIssues called with limit %d, want 50 (p.opts.M)", mc.lastLimit)
+		t.Errorf("SearchIssuesPage called with limit %d, want 50", mc.lastLimit)
+	}
+	if mc.searchPageCalls != 1 {
+		t.Errorf("searchPageCalls = %d, want 1", mc.searchPageCalls)
 	}
 }
 

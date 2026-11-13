@@ -63,7 +63,7 @@ type Options struct {
 	Dispatcher              RecordDispatcher // Optional output driver that schedules records directly (GitLab)
 	JiraBaseURL             string           // Jira instance base URL
 	JiraProject             string           // Jira project key for default JQL
-	JiraComponent           string           // Jira component for fallback repo routing
+	JiraComponent           string           // Jira component for fallback repo routing (internal/test-only; not wired to CLI flags or config.yaml)
 	JQL                     string           // Custom JQL override
 	OutputPath              string           // Path to write dispatch records JSON
 	M                       int              // Max candidate issues per cycle (default: 50)

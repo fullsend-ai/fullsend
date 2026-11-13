@@ -1669,4 +1669,6 @@ field. The poller itself treats an issue served without a labels array as
 unlabeled — `state.labels` becomes an empty list — so neither shape an issue
 arrives in loses events; the unit tests serve each shape directly.
 
+**`jiramock.State.AddRemoteLink` and `Jira issue "<key>" has a remote link to "<url>"` addition:** `jiramock.State.AddRemoteLink(issueKey, rawURL)` appends an attached web link returned by the new `GET /rest/api/3/issue/{key}/remotelink` mock endpoint, and the `Jira issue "<key>" has a remote link to "<url>"` step populates it in scenarios testing multi-repo routing. Non-breaking additions.
+
 Bump the pinned version when behaviour step vocabulary or `pkg/behaviourtest` APIs change.
