@@ -86,19 +86,55 @@ var (
 // freshly created repo, using a pre-created warmup issue.
 type EventDeliveryFunc func(ctx context.Context, client forge.Client, org, repo string, issueNumber int, workflowFile string, logf func(string, ...any)) error
 
-// ephemeralRepoName derives a unique repo name from the run id: a shared
-// bt-{run-id} prefix plus a per-repo 8-hex suffix.
+const (
+	// ephemeralAllowInfix marks a repo the run's mint trusts as a workflow
+	// host: bt-{run-id}-allow-{uuid8}. The mint's WORKFLOW_HOST_REPOS is
+	// scoped to bt-{run-id}-allow-*, so every repo the run creates for its
+	// own work is trusted.
+	ephemeralAllowInfix = "allow"
+	// ephemeralDenyInfix marks a repo deliberately kept off the allowlist:
+	// bt-{run-id}-deny-{uuid8}. It carries the run-id (so prune and cleanup
+	// still find it) but does not match bt-{run-id}-allow-*, so the mint
+	// rejects it — used by the mint-probe unapproved-host scenarios.
+	ephemeralDenyInfix = "deny"
+)
+
+// ephemeralRepoName derives a unique repo name from the run id: the shared
+// bt-{run-id}- prefix, the "allow" trust marker, and a per-repo 8-hex suffix.
 func ephemeralRepoName(runID RunID) string {
-	return fmt.Sprintf("bt-%s-%s", runID, strings.ReplaceAll(uuid.New().String(), "-", "")[:8])
+	return fmt.Sprintf("bt-%s-%s-%s", runID, ephemeralAllowInfix, uuid8())
+}
+
+// uuid8 returns 8 hex chars of a fresh random UUID, the per-repo suffix.
+func uuid8() string {
+	return strings.ReplaceAll(uuid.New().String(), "-", "")[:8]
 }
 
 // ephemeralWorkflowHostPrefix is the run-scoped WORKFLOW_HOST_REPOS value
-// for the ephemeral mint: a prefix glob matching exactly this run's repos
-// (org/bt-{run-id}-*). Every repo a run creates shares the bt-{run-id}-
-// prefix, so all are trusted workflow hosts, while repos from other runs or
-// outside the prefix are not — tighter than a bare "*".
+// for the ephemeral mint: a prefix glob matching exactly this run's trusted
+// repos (org/bt-{run-id}-allow-*). Every repo a run creates for its own work
+// carries the "allow" marker, so all are trusted workflow hosts, while repos
+// from other runs, outside the prefix, or marked "deny" are not — tighter
+// than a bare "*".
 func ephemeralWorkflowHostPrefix(org string, runID RunID) string {
-	return fmt.Sprintf("%s/bt-%s-*", org, runID)
+	return fmt.Sprintf("%s/bt-%s-%s-*", org, runID, ephemeralAllowInfix)
+}
+
+// UnapprovedProbeHost returns a workflow-host repo name the active mint will
+// reject, derived from the leased repo. For an ephemeral leased repo
+// (bt-{run-id}-allow-{uuid8}) it swaps the "allow" marker for "deny", so the
+// host keeps the run-id — prune and scenario cleanup still find it — while
+// falling outside the mint's bt-{run-id}-allow-* allowlist. For a slot-pool
+// repo (test-repo-NN, no marker) it appends "-mint-unapproved", which is on
+// no list. Used by the mint-probe unapproved-host scenarios.
+func UnapprovedProbeHost(leasedRepo string) string {
+	marker := "-" + ephemeralAllowInfix + "-"
+	if strings.HasPrefix(leasedRepo, "bt-") {
+		if i := strings.Index(leasedRepo, marker); i >= 0 {
+			return leasedRepo[:i] + "-" + ephemeralDenyInfix + "-" + leasedRepo[i+len(marker):]
+		}
+	}
+	return leasedRepo + "-mint-unapproved"
 }
 
 // createRepo creates and provisions one ephemeral repo, returning its name.

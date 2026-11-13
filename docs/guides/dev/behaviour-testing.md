@@ -681,7 +681,9 @@ How a run works in this mode:
    by liveness, not a fixed timeout.
 2. A public preview mint is deployed for that org and the org-scoped WIF
    provider is resolved **once** and reused for every repo.
-3. Each `AllocateLease` **creates a unique `bt-{RunID}-{uuid8}` repo**,
+3. Each `AllocateLease` **creates a unique `bt-{RunID}-allow-{uuid8}` repo**
+   (the `allow` marker scopes the mint's trusted workflow hosts to this run;
+   see below),
    installs fullsend via `repos install --fullsend-ref` (no vendoring), and
    verifies git readiness, workflow indexing, and event delivery. No repo is
    reused.

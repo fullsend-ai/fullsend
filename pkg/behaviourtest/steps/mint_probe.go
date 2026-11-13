@@ -30,9 +30,10 @@ import (
 //
 //  1. create a temporary, public host repository in the pool org holding
 //     the reusable probe workflow (mint_probe_workflow.yml): the approved
-//     host test-repo-NN-mint-host, which the install driver lists on the
-//     mint's WORKFLOW_HOST_REPOS, and for unapproved-host rows also
-//     test-repo-NN-mint-unapproved, which is on no list;
+//     host {leased}-mint-host, which the install driver lists on the mint's
+//     WORKFLOW_HOST_REPOS (or, for the ephemeral mint, matches its
+//     bt-{run-id}-allow-* prefix), and for unapproved-host rows an
+//     unapproved host (install.UnapprovedProbeHost) that is on no list;
 //  2. push a shim workflow to a temporary branch of the leased repository
 //     that calls the probe twice in one run: a control request (same
 //     role and level, the leased repository only, approved host) and the
@@ -60,11 +61,6 @@ const (
 	// mintProbeWorkflowPath is where the reusable probe workflow lives in
 	// a host repository.
 	mintProbeWorkflowPath = ".github/workflows/mint-probe.yml"
-
-	// mintProbeUnapprovedHostSuffix names the unapproved host for the
-	// leased repo: test-repo-NN + suffix. It must never be listed in the
-	// mint's WORKFLOW_HOST_REPOS (see install.MintProbeHostRepoSuffix).
-	mintProbeUnapprovedHostSuffix = "-mint-unapproved"
 
 	mintProbeControlArtifact = "mint-probe-control"
 	mintProbeSubjectArtifact = "mint-probe-subject"
@@ -205,7 +201,7 @@ func givenMintProbe(ctx context.Context, w *world.World, forgeName, arrangement 
 	}
 	p.SubjectHostRepo = p.ApprovedHostRepo
 	if arrangement == mintProbeHostUnapproved {
-		p.SubjectHostRepo = w.RepoName + mintProbeUnapprovedHostSuffix
+		p.SubjectHostRepo = install.UnapprovedProbeHost(w.RepoName)
 	}
 	// Attach before creating anything so CleanupScenario sees every repo
 	// created even when a later step fails.

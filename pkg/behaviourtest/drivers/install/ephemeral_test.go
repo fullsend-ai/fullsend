@@ -15,11 +15,28 @@ func TestEphemeralRepoName(t *testing.T) {
 	a := ephemeralRepoName(runID)
 	b := ephemeralRepoName(runID)
 
-	assert.True(t, strings.HasPrefix(a, "bt-"+runID.String()+"-"), "name must carry the shared run-id prefix: %s", a)
-	assert.Len(t, a, ephemeralRepoPrefixLen+8, "name = bt-{runID}-{8hex}")
+	assert.True(t, strings.HasPrefix(a, "bt-"+runID.String()+"-allow-"),
+		"name must carry the shared run-id prefix and allow marker: %s", a)
+	assert.Len(t, a, ephemeralRepoPrefixLen+len(ephemeralAllowInfix)+1+8, "name = bt-{runID}-allow-{8hex}")
 	assert.NotEqual(t, a, b, "per-repo suffixes must differ within a run")
 	// The run-id slice used by prune must recover the run id exactly.
 	assert.Equal(t, runID.String(), a[3:3+RunIDLen])
+}
+
+func TestUnapprovedProbeHost(t *testing.T) {
+	runID := newTestRunID(t)
+
+	// Ephemeral: swap the allow marker for deny; keeps the run-id (so prune
+	// and cleanup still find it) but falls outside bt-{run-id}-allow-*.
+	leased := ephemeralRepoName(runID)
+	deny := UnapprovedProbeHost(leased)
+	assert.True(t, strings.HasPrefix(deny, "bt-"+runID.String()+"-deny-"),
+		"ephemeral unapproved host carries the run-id with the deny marker: %s", deny)
+	assert.NotContains(t, deny, "-allow-", "the allow marker must be gone")
+	assert.Equal(t, runID.String(), deny[3:3+RunIDLen], "run-id is preserved for prune/cleanup")
+
+	// Slot pool (no marker): append -mint-unapproved, on no list.
+	assert.Equal(t, "test-repo-07-mint-unapproved", UnapprovedProbeHost("test-repo-07"))
 }
 
 // ephemeralTestDriver builds an ephemeralDriver over a FakeClient with a
