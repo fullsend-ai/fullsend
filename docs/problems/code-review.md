@@ -87,6 +87,8 @@ Reviews changes for threats to the platform and its users. Collapses the platfor
 
 **Context needed:** The diff, security-relevant code paths, RBAC configuration, known vulnerability patterns, sandboxing mechanisms.
 
+This sub-agent reviews the code but does not run it. Executable validation, such as reproduction tests against disposable test environments, does not fit the per-PR budget. [Deep security audit](deep-security-audit.md) scopes a separate, opt-in workflow for that work.
+
 ### Intent & Coherence (sonnet)
 
 Evaluates whether the change matches an authorized intent and whether its scope matches its claimed intent authorization tier.
