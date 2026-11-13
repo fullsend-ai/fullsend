@@ -318,7 +318,7 @@ With the earlier pull request still open, a rerun ends in one of three ways:
 |---|---|
 | A different one | The run opens a second pull request and the first stays open. The code agent's comment on the Jira issue then shows only the newer URL |
 | The same one, and the pull request holds only the code agent's commits | The run replaces those commits with the new ones. The pull request stays open |
-| The same one, and the pull request holds a commit by anyone else | The run fails when it pushes and the pull request keeps its commits. A comment on the Jira issue names the commit |
+| The same one, and the pull request holds a commit by anyone else | The run fails when it pushes and the pull request keeps its commits. The Jira issue shows the failed run; the workflow log names the commit |
 
 "Anyone else" covers a commit by you, a commit by the fix agent (`/fs-fix`),
 a code agent commit you amended, and the merge commit GitHub's **Update
@@ -475,10 +475,7 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   `jira-ro` provider's placeholder, not the real token.
 
 When the code agent makes no PR or MR, or the run fails, nothing beyond the
-run-status update is written to Jira. The one exception is a same-branch
-rerun that fails because the pull request holds a commit by anyone else. The
-code agent then also comments on the Jira issue to name that commit. See
-[If you rerun without closing the pull request](#if-you-rerun-without-closing-the-pull-request).
+run-status update is written to Jira.
 
 Custom agents can use `fullsend issues post-comment --tracker jira` to post
 results back to Jira, and `fullsend issues create --tracker jira` to create
