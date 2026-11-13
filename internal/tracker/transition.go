@@ -29,7 +29,7 @@ func (o TransitionOptions) Validate() error {
 		}
 	}
 	if selectors != 1 {
-		return fmt.Errorf("specify exactly one of --state, --transition, or --status")
+		return fmt.Errorf("specify exactly one lifecycle state, transition name, or target status")
 	}
 	if o.State != "" && o.State != "closed" {
 		return fmt.Errorf("unsupported lifecycle state %q: use closed", o.State)
@@ -41,16 +41,16 @@ func (o TransitionOptions) Validate() error {
 // semantic lifecycle state was already satisfied; any requested comment is
 // still posted. Named transitions are explicit actions, including self-transitions.
 type TransitionResult struct {
-	Changed    bool   `json:"changed"`
-	Transition string `json:"transition,omitempty"`
-	Status     string `json:"status,omitempty"`
+	Changed    bool
+	Transition string
+	Status     string
 }
 
 // Transitioner is the optional tracker capability for workflow changes. Callers
 // authorize the target before invoking it. Implementations do not retry uncertain
 // writes; an error can mean the action succeeded but its response was lost.
 type Transitioner interface {
-	TransitionIssue(context.Context, string, int, TransitionOptions) (*TransitionResult, error)
+	TransitionIssue(ctx context.Context, project string, number int, opts TransitionOptions) (*TransitionResult, error)
 }
 
 var _ Transitioner = (*ForgeClient)(nil)
@@ -88,8 +88,8 @@ func (c *ForgeClient) TransitionIssue(ctx context.Context, project string, numbe
 }
 
 type jiraTransitions interface {
-	ListTransitions(context.Context, string) ([]jira.Transition, error)
-	ApplyTransition(context.Context, string, string, map[string]any, string) error
+	ListTransitions(ctx context.Context, issueIDOrKey string) ([]jira.Transition, error)
+	ApplyTransition(ctx context.Context, issueIDOrKey, id string, fields map[string]any, comment string) error
 }
 
 // TransitionIssue resolves a unique currently available Jira action. Workflow
@@ -109,6 +109,9 @@ func (c *JiraClient) TransitionIssue(ctx context.Context, project string, number
 			return nil, wrapNotFound(err)
 		}
 		if issue.Fields.Status.StatusCategory.Key == "done" {
+			if opts.Resolution != "" {
+				return nil, fmt.Errorf("issue %q is already closed; applying a resolution requires an explicit transition name or target status", key)
+			}
 			if opts.Comment != "" {
 				if _, err := c.CreateComment(ctx, project, number, opts.Comment); err != nil {
 					return nil, fmt.Errorf("issue already closed, but posting the comment failed: %w", err)
@@ -131,7 +134,7 @@ func (c *JiraClient) TransitionIssue(ctx context.Context, project string, number
 		return nil, fmt.Errorf("no matching Jira transition available on %q; check workflow and Transition Issues permission", key)
 	}
 	if len(matches) != 1 {
-		return nil, fmt.Errorf("ambiguous Jira transition on %q (%d matches); choose a unique --transition name", key, len(matches))
+		return nil, fmt.Errorf("ambiguous Jira transition on %q (%d matches); choose a unique transition name", key, len(matches))
 	}
 	tr := matches[0]
 	if tr.ID == "" {
@@ -169,17 +172,22 @@ func transitionFields(tr jira.Transition, resolution string, comment Body) (map[
 		}
 		fields["resolution"] = matches[0]
 	}
-	for name, field := range tr.Fields {
-		if !field.Required || field.HasDefaultValue || (name == "comment" && comment != "") {
-			continue
+	if field, ok := tr.Fields["resolution"]; ok && field.Required && !field.HasDefaultValue && resolution == "" {
+		// Select only an unambiguous workflow-provided value, never a guessed
+		// resolution or the first usable entry in a malformed list.
+		var value struct {
+			ID string `json:"id"`
 		}
-		if _, ok := fields[name]; ok {
-			continue
+		if len(field.AllowedValues) != 1 || json.Unmarshal(field.AllowedValues[0], &value) != nil || strings.TrimSpace(value.ID) == "" {
+			return nil, fmt.Errorf("transition %q requires a resolution (an allowed resolution ID or name)", tr.Name)
 		}
-		if name == "resolution" {
-			return nil, fmt.Errorf("transition %q requires --resolution (an allowed resolution ID or name)", tr.Name)
-		}
-		return nil, fmt.Errorf("transition %q requires unsupported field %q; configure a transition with defaults or complete it in Jira", tr.Name, name)
+		fields["resolution"] = map[string]string{"id": value.ID}
 	}
+	if field := tr.Fields["comment"]; field.Required && !field.HasDefaultValue && comment == "" {
+		return nil, fmt.Errorf("transition %q requires a comment", tr.Name)
+	}
+	// Other required fields may already be populated on the issue. Leave
+	// them unchanged and let Jira validate the transition against its current
+	// values and workflow rules, rather than rejecting metadata alone.
 	return fields, nil
 }

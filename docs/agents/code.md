@@ -104,18 +104,7 @@ composition.
 
 ### Variables
 
-These optional settings belong in the code harness's `env.runner` mapping.
-Use an agents version that includes the corresponding hooks and a Fullsend
-version that provides `fullsend issues transition`.
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `CODE_JIRA_STARTED_TRANSITION` | `"off"` | Jira transition after code preflight completes without a fatal error, before sandbox creation |
-| `CODE_JIRA_PR_READY_TRANSITION` | `"off"` | Jira transition after confirming an open, non-draft PR or MR |
-
-Values are Jira transition names, not destination status names. See
-[Optional code transitions](../guides/user/jira-integration.md#optional-code-transitions)
-for configuration, permissions, and failure behavior.
+None.
 
 ## Source
 

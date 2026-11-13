@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -50,7 +51,7 @@ func TestJiraTransition(t *testing.T) {
 		{name: "no id", opts: TransitionOptions{Name: "Review"}, transitions: []jira.Transition{{Name: "Review"}}, wantErr: "no ID"},
 		{name: "list error", opts: TransitionOptions{Name: "Review"}, listErr: forge.ErrNotFound, wantErr: "not found"},
 		{name: "apply error", opts: TransitionOptions{Name: "Review"}, transitions: []jira.Transition{review}, applyErr: errors.New("permission denied"), wantErr: "permission denied"},
-		{name: "required field", opts: TransitionOptions{Name: "Review"}, transitions: []jira.Transition{{ID: "21", Name: "Review", Fields: map[string]jira.TransitionField{"customfield_123": {Required: true}}}}, wantErr: "requires unsupported field"},
+		{name: "required field", opts: TransitionOptions{Name: "Review"}, transitions: []jira.Transition{{ID: "21", Name: "Review", Fields: map[string]jira.TransitionField{"customfield_123": {Required: true}}}}},
 		{name: "invalid selectors", opts: TransitionOptions{Name: "Review", State: "closed"}, wantErr: "exactly one"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -83,7 +84,7 @@ func TestTransitionFields(t *testing.T) {
 	}{
 		{"name", "Fixed", map[string]jira.TransitionField{"resolution": resolution}, ""},
 		{"id", "2", map[string]jira.TransitionField{"resolution": resolution}, ""},
-		{"required", "", map[string]jira.TransitionField{"resolution": resolution}, "requires --resolution"},
+		{"required", "", map[string]jira.TransitionField{"resolution": resolution}, "requires a resolution"},
 		{"invalid", "unknown", map[string]jira.TransitionField{"resolution": resolution}, "must match one"},
 		{"not on screen", "Fixed", nil, "does not accept"},
 		{"default", "", map[string]jira.TransitionField{"resolution": {Required: true, HasDefaultValue: true}}, ""},
@@ -192,10 +193,81 @@ func TestTransitionRequiredComment(t *testing.T) {
 	c, err := NewJiraClient(f, "https://example.atlassian.net")
 	require.NoError(t, err)
 	_, err = c.TransitionIssue(context.Background(), "P", 1, TransitionOptions{Name: "Review"})
-	require.ErrorContains(t, err, `requires unsupported field "comment"`)
+	require.ErrorContains(t, err, "requires a comment")
 	assert.Zero(t, f.calls)
 	_, err = c.TransitionIssue(context.Background(), "P", 1, TransitionOptions{Name: "Review", Comment: "Ready for review"})
 	require.NoError(t, err)
 	assert.Equal(t, "Ready for review", f.comment)
 	assert.Equal(t, 1, f.calls)
+}
+
+func TestJiraAlreadyClosedResolutionDoesNotWrite(t *testing.T) {
+	for _, comment := range []Body{"", "reason"} {
+		f := &transitionJira{FakeJiraClient: &FakeJiraClient{Issues: map[string]*jira.Issue{"P-1": {Fields: jira.IssueFields{Status: jira.Status{StatusCategory: jira.StatusCategory{Key: "done"}}}}}}}
+		c, err := NewJiraClient(f, "https://example.atlassian.net")
+		require.NoError(t, err)
+		_, err = c.TransitionIssue(context.Background(), "P", 1, TransitionOptions{State: "closed", Resolution: "Fixed", Comment: comment})
+		require.ErrorContains(t, err, "already closed")
+		assert.Zero(t, f.calls)
+		assert.Empty(t, f.Comments)
+	}
+}
+
+func TestTransitionAutomaticResolution(t *testing.T) {
+	for _, tt := range []struct {
+		name                string
+		values              []json.RawMessage
+		optional, defaulted bool
+		wantID              string
+		wantErr             bool
+	}{
+		{name: "single", values: []json.RawMessage{json.RawMessage(`{"id":"1","name":"Fixed"}`)}, wantID: "1"},
+		{name: "none", wantErr: true},
+		{name: "multiple", values: []json.RawMessage{json.RawMessage(`{"id":"1"}`), json.RawMessage(`{"id":"2"}`)}, wantErr: true},
+		{name: "malformed alternative", values: []json.RawMessage{json.RawMessage(`{"id":"1"}`), json.RawMessage(`null`)}, wantErr: true},
+		{name: "malformed", values: []json.RawMessage{json.RawMessage(`"bad"`)}, wantErr: true},
+		{name: "missing ID", values: []json.RawMessage{json.RawMessage(`{"name":"Fixed"}`)}, wantErr: true},
+		{name: "empty ID", values: []json.RawMessage{json.RawMessage(`{"id":""}`)}, wantErr: true},
+		{name: "whitespace ID", values: []json.RawMessage{json.RawMessage(`{"id":" "}`)}, wantErr: true},
+		{name: "numeric ID", values: []json.RawMessage{json.RawMessage(`{"id":1}`)}, wantErr: true},
+		{name: "optional", values: []json.RawMessage{json.RawMessage(`{"id":"1"}`)}, optional: true},
+		{name: "default", values: []json.RawMessage{json.RawMessage(`{"id":"1"}`)}, defaulted: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			tr := jira.Transition{Name: "Close", Fields: map[string]jira.TransitionField{"resolution": {Required: !tt.optional, HasDefaultValue: tt.defaulted, AllowedValues: tt.values}}}
+			fields, err := transitionFields(tr, "", "")
+			if tt.wantErr {
+				require.ErrorContains(t, err, "requires a resolution")
+				return
+			}
+			require.NoError(t, err)
+			if tt.wantID != "" {
+				assert.Equal(t, map[string]string{"id": tt.wantID}, fields["resolution"])
+			} else {
+				assert.Empty(t, fields)
+			}
+		})
+	}
+}
+
+func TestJiraRequiredFieldsValidatedByServer(t *testing.T) {
+	for _, field := range []string{"summary", "assignee", "customfield_123"} {
+		for _, serverErr := range []error{nil, errors.New("Jira API: 400: required field is empty")} {
+			t.Run(field+"/"+fmt.Sprint(serverErr), func(t *testing.T) {
+				f := &transitionJira{FakeJiraClient: &FakeJiraClient{}, transitions: []jira.Transition{{ID: "21", Name: "Review", Fields: map[string]jira.TransitionField{field: {Required: true}}}}, applyErr: serverErr}
+				c, err := NewJiraClient(f, "https://example.atlassian.net")
+				require.NoError(t, err)
+				_, err = c.TransitionIssue(context.Background(), "P", 1, TransitionOptions{Name: "Review", Comment: "Ready"})
+				if serverErr != nil {
+					require.ErrorIs(t, err, serverErr)
+				} else {
+					require.NoError(t, err)
+				}
+				assert.Equal(t, 1, f.calls)
+				assert.Empty(t, f.fields)
+				assert.Equal(t, "Ready", f.comment)
+				assert.Empty(t, f.Comments)
+			})
+		}
+	}
 }

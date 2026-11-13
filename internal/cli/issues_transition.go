@@ -13,29 +13,46 @@ import (
 )
 
 type issuesTransitionConfig struct {
-	trackerName, project, token, fullsendDir string
-	number                                   int
-	opts                                     tracker.TransitionOptions
-	comment                                  string
-	testClient                               tracker.Client
-	testConfigReader                         config.PerRepoConfigReader
-	testWriter                               io.Writer
+	trackerName string
+	project     string
+	token       string
+	fullsendDir string
+	number      int
+	opts        tracker.TransitionOptions
+	comment     string
+
+	// Test overrides — when non-nil, bypass production dependencies.
+	testClient       tracker.Client
+	testConfigReader config.PerRepoConfigReader
+	testWriter       io.Writer
+}
+
+// issueTransitionResult is the CLI JSON representation of a tracker result.
+type issueTransitionResult struct {
+	Changed    bool   `json:"changed"`
+	Transition string `json:"transition,omitempty"`
+	Status     string `json:"status,omitempty"`
 }
 
 func newIssuesTransitionCmd() *cobra.Command {
 	var cfg issuesTransitionConfig
 	cmd := &cobra.Command{
-		Use: "transition", Short: "Transition an issue through its tracker workflow",
+		Use:   "transition",
+		Short: "Transition an issue through its tracker workflow",
 		Long: `Close an issue with --state closed, or select an exact Jira transition
 name with --transition or target status with --status. Exactly one selector
 is required. Jira resolves a unique available action and accepts --resolution
-when the workflow requires it. No arbitrary workflow action is chosen.
+when the workflow requires it. A required resolution is selected automatically
+only when Jira offers exactly one valid allowed value and no default. No arbitrary
+workflow action or resolution is chosen.
 
 An optional --comment is submitted with the Jira transition, or after closing
 on GitHub/GitLab. A comment failure on a forge leaves the issue closed and
 returns an error. Inspect the issue after an uncertain failure before retrying.`,
 		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error { return runIssuesTransition(cmd.Context(), &cfg) },
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runIssuesTransition(cmd.Context(), &cfg)
+		},
 	}
 	cmd.Flags().StringVar(&cfg.trackerName, "tracker", "", "tracker backend: github, gitlab, or jira (required unless a default is set via config)")
 	cmd.Flags().StringVar(&cfg.project, "project", "", projectFlagUsage)
@@ -87,5 +104,9 @@ func runIssuesTransition(ctx context.Context, cfg *issuesTransitionConfig) error
 	if out == nil {
 		out = os.Stdout
 	}
-	return json.NewEncoder(out).Encode(result)
+	return json.NewEncoder(out).Encode(issueTransitionResult{
+		Changed:    result.Changed,
+		Transition: result.Transition,
+		Status:     result.Status,
+	})
 }

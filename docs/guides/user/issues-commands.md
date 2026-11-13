@@ -2,7 +2,7 @@
 
 Read and write issue content across GitHub, GitLab, and Jira from
 custom agent scripts using `fullsend issues get`,
-`fullsend issues create`, `fullsend issues post-comment`, and
+`fullsend issues create`, `fullsend issues post-comment`,
 `fullsend issues link`, and `fullsend issues transition`.
 
 ## When to use
@@ -379,7 +379,7 @@ Exactly one selector is required:
 | `--state closed` | Portable closure on GitHub, GitLab, and Jira. Jira selects a unique available transition whose destination has status category `done`. |
 | `--transition NAME` | Exact, case-sensitive Jira transition name, such as `Review`. This names an action, not its destination status. |
 | `--status NAME` | Exact Jira destination status name. Requires one available transition to that status. |
-| `--resolution ID_OR_NAME` | Jira resolution selected from the transition's allowed values. Required when the transition requires a resolution without a default. |
+| `--resolution ID_OR_NAME` | Jira resolution selected from the transition's allowed values. Required when the transition requires a resolution without a default and does not offer exactly one valid allowed value. |
 | `--comment TEXT` | Optional Markdown explanation. Jira submits it atomically with the transition; GitHub/GitLab post it after closing. |
 
 `--tracker`, `--project`, `--number`, `--fullsend-dir`, and `--token`
@@ -389,16 +389,22 @@ positive. Jira requires its connection settings in the configuration directory.
 
 The command prints JSON with `changed`, and, where available, `transition` and
 `status`. Portable closure of an already closed issue returns `changed: false`,
-but still posts a requested comment. Explicit named transitions always execute,
+but still posts a requested comment. For Jira, supplying `--resolution` on an
+already closed issue instead returns an error before posting a comment: no
+transition would run to apply that resolution. Explicit named transitions always execute,
 including self-transitions. The command does not infer that an unavailable action
 means the issue is already at the desired destination.
 
 Jira controls allowed source states and account permissions. The account needs
 issue visibility and Transition Issues permission (and permission to add a comment
 when one is requested). Zero or multiple matching actions fail without a write.
-Resolution values are never guessed. A supplied `--comment` also satisfies a
-required comment on the transition screen. Other required fields without defaults
-produce an error. Configure the workflow or complete those actions in Jira.
+When Jira requires a resolution without a default, the command selects it
+automatically only if the allowed-values list contains exactly one valid ID.
+Otherwise, supply `--resolution`; the command never chooses among different
+resolution meanings. A supplied `--comment` satisfies a required comment on the
+transition screen. Jira validates other required fields against the existing
+issue values. If a required field is missing, Jira rejects the transition and
+the command reports the API error. Complete those fields in Jira before retrying.
 
 A failure is nonzero. On GitHub/GitLab, a comment failure can leave the issue
 closed; the error reports that partial result. Network/server failures on the
@@ -407,7 +413,6 @@ already occurred. Inspect the issue before retrying any uncertain result; reruns
 can repeat comments or self-transition side effects. Normal rejected-request
 handling for rate limits and expired OAuth credentials remains in effect.
 
-This command is a shared operation, not a code-agent policy. A code-agent harness
-can supply a named transition to its post-script; triage can independently call
-portable closure. GitHub Projects fields, run-start transitions, and PR-merge
-monitoring are outside this command's first implementation.
+The command runs only when invoked. It does not install event handlers or
+change the built-in code or triage harnesses. It updates issue lifecycle state,
+not GitHub Projects fields.

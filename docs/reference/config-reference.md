@@ -431,7 +431,7 @@ shared Jira client: `FULLSEND_JIRA_TOKEN` is required and
 `FULLSEND_JIRA_CLIENT_SECRET` replace both, as described above. The legacy
 `JIRA_TOKEN` and `JIRA_USER_EMAIL` variables are not used by the poller.
 
-The `fullsend issues` commands (`get`, `create`, `post-comment`, `link`),
+The `fullsend issues` commands (`get`, `create`, `post-comment`, `link`, `transition`),
 `fullsend run` Jira status updates, and `fullsend reconcile-status` read the
 Jira connection only from these settings, with no flag or environment
 fallback: `base_url` and `project` must be set, and Jira API calls fail

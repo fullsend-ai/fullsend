@@ -17,10 +17,14 @@ type transitionTracker struct {
 	number  int
 	opts    tracker.TransitionOptions
 	err     error
+	result  *tracker.TransitionResult
 }
 
 func (f *transitionTracker) TransitionIssue(_ context.Context, project string, number int, opts tracker.TransitionOptions) (*tracker.TransitionResult, error) {
 	f.project, f.number, f.opts = project, number, opts
+	if f.result != nil {
+		return f.result, f.err
+	}
 	return &tracker.TransitionResult{Changed: true, Transition: opts.Name}, f.err
 }
 
@@ -83,3 +87,21 @@ type noTransitionTracker struct{ tracker.Client }
 type failingTransitionWriter struct{}
 
 func (failingTransitionWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestRunIssuesTransitionJSONContract(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		result tracker.TransitionResult
+		want   string
+	}{
+		{"changed", tracker.TransitionResult{Changed: true, Transition: "Review", Status: "In Review"}, `{"changed":true,"transition":"Review","status":"In Review"}`},
+		{"already closed", tracker.TransitionResult{Status: "Closed"}, `{"changed":false,"status":"Closed"}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			cfg := &issuesTransitionConfig{trackerName: "jira", project: "PROJ", number: 1, opts: tracker.TransitionOptions{State: "closed"}, testClient: &transitionTracker{result: &tt.result}, testWriter: &out}
+			require.NoError(t, runIssuesTransition(context.Background(), cfg))
+			assert.JSONEq(t, tt.want, out.String())
+		})
+	}
+}

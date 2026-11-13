@@ -60,5 +60,5 @@ func TestTransitionErrorsAndNoRetry(t *testing.T) {
 		})
 	}
 	c, _ := setupTest(t)
-	require.ErrorContains(t, c.ApplyTransition(context.Background(), "P-1", "1", map[string]any{"bad": make(chan int)}, ""), "encoding transition")
+	require.ErrorContains(t, c.ApplyTransition(context.Background(), "P-1", "1", map[string]any{"bad": make(chan int)}, ""), "encode transition")
 }
