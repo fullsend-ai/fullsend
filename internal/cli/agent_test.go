@@ -2604,11 +2604,122 @@ func TestRunAgentRemove_DefaultsOnlyWhenNeeded(t *testing.T) {
 	})
 }
 
+// `agent remove` cleans only the overlay's own allowlist layer: with no
+// base layer and a GHES GITHUB_SERVER_URL, removing one of two
+// locally-listed prefixes leaves the other local entry alone in
+// config.yaml — no default and no GHES-derived prefix is baked in.
+func TestRunAgentRemove_NoDefaultsBakedWithoutBase(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "https://ghes.example.com")
+	defaultPrefix := config.DefaultAllowedRemoteResources()[0]
+	integrity := "#sha256=" + strings.Repeat("a", 64)
+	otherPrefix := "https://raw.githubusercontent.com/other-org/repo/"
+	otherSource := otherPrefix + testCommitSHA + "/harness/other.yaml" + integrity
+	removedPrefix := "https://example.com/removed-org/repo/"
+	removedSource := removedPrefix + testCommitSHA + "/harness/removed.yaml" + integrity
+
+	t.Run("local-only write, no defaults or GHES entries", func(t *testing.T) {
+		dir := t.TempDir()
+		overlay := fmt.Sprintf("allowed_remote_resources:\n  - %q\n  - %q\nagents:\n  - name: other\n    source: %q\n  - name: removed\n    source: %q\n", otherPrefix, removedPrefix, otherSource, removedSource)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.OverlayConfigFile), []byte(overlay), 0o644))
+
+		var out bytes.Buffer
+		require.NoError(t, runAgentRemove(dir, "removed", ui.New(&out)))
+
+		written, err := os.ReadFile(filepath.Join(dir, config.OverlayConfigFile))
+		require.NoError(t, err)
+		// Only the overlay's own entries are in config.yaml: the other
+		// local prefix stays, the removed one goes, and neither
+		// fullsend's default prefixes nor the GITHUB_SERVER_URL-derived
+		// GHES entries reach the committed file.
+		assert.Contains(t, string(written), otherPrefix)
+		assert.NotContains(t, string(written), removedPrefix)
+		assert.NotContains(t, string(written), defaultPrefix)
+		assert.NotContains(t, string(written), "ghes.example.com")
+
+		cfg, err := loadAgentConfig(filepath.Join(dir, config.OverlayConfigFile))
+		require.NoError(t, err)
+		// The overlay's own list is exactly the remaining local entry
+		// (the resolved read keeps unioning the parent chain's
+		// defaults; that is the layering design, not a write).
+		local, ok := cfg.(interface{ LocalAllowedRemoteResources() []string })
+		require.True(t, ok)
+		assert.Equal(t, []string{otherPrefix}, local.LocalAllowedRemoteResources())
+		require.NoError(t, validateAgentConfig(cfg))
+	})
+
+	t.Run("a base-owned prefix is left to the base", func(t *testing.T) {
+		dir := t.TempDir()
+		overlay := fmt.Sprintf("agents:\n  - name: removed\n    source: %q\n", removedSource)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.OverlayConfigFile), []byte(overlay), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, config.BaseConfigFile), []byte(fmt.Sprintf("allowed_remote_resources:\n  - %q\n", removedPrefix)), 0o644))
+
+		var out bytes.Buffer
+		require.NoError(t, runAgentRemove(dir, "removed", ui.New(&out)))
+		// The base owns the prefix: nothing is announced, the overlay
+		// key stays omitted, and the base still resolves it (its own
+		// parent chain keeps unioning fullsend's defaults).
+		assert.NotContains(t, out.String(), "Removed unused prefix")
+		cfg, err := loadAgentConfig(filepath.Join(dir, config.OverlayConfigFile))
+		require.NoError(t, err)
+		local, ok := cfg.(interface{ LocalAllowedRemoteResources() []string })
+		require.True(t, ok)
+		assert.Nil(t, local.LocalAllowedRemoteResources())
+		assert.Contains(t, cfg.AllowedResources(), removedPrefix)
+	})
+}
+
+// `agent add` appends to the overlay's own allowlist layer only, so with
+// no base layer and a GHES GITHUB_SERVER_URL the written config.yaml
+// carries the local entries plus the new prefix and nothing else: no
+// fullsend default prefix and no GHES-derived entry is baked in. Drives
+// runAgentAdd end-to-end against the offline test server, like
+// TestRunAgentAdd_URLAddsAllowlistPrefix, with a pre-existing local
+// allowlist entry and GITHUB_SERVER_URL set.
+func TestAgentAddWritesLocalOnly(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "https://ghes.example.com")
+	defaultPrefix := config.DefaultAllowedRemoteResources()[0]
+	localPrefix := "https://raw.githubusercontent.com/other-org/repo/"
+
+	harnessContent := []byte("role: triage\n")
+	harnessHash := fetch.ComputeSHA256(harnessContent)
+	srv, policy := newAgentTestServer(t, map[string][]byte{
+		"/my-org/my-agents/" + testCommitSHA + "/harness/triage.yaml": harnessContent,
+	})
+	origPolicy := fetch.DefaultPolicy
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = origPolicy }()
+
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, "allowed_remote_resources:\n  - "+localPrefix+"\n")
+
+	source := srv.URL + "/my-org/my-agents/" + testCommitSHA + "/harness/triage.yaml#sha256=" + harnessHash
+	client := forge.NewFakeClient()
+	printer := ui.New(os.Stdout)
+	require.NoError(t, runAgentAdd(context.Background(), source, "", dir, client, printer))
+
+	written, err := os.ReadFile(filepath.Join(dir, config.OverlayConfigFile))
+	require.NoError(t, err)
+	newPrefix := srv.URL + "/my-org/my-agents/"
+	assert.Contains(t, string(written), localPrefix)
+	assert.Contains(t, string(written), newPrefix)
+	assert.NotContains(t, string(written), defaultPrefix)
+	assert.NotContains(t, string(written), "ghes.example.com")
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, config.OverlayConfigFile))
+	require.NoError(t, err)
+	local, ok := cfg.(interface{ LocalAllowedRemoteResources() []string })
+	require.True(t, ok)
+	// Exactly the overlay's own entries, in write order: the local
+	// prefix that was already there plus the new one.
+	assert.Equal(t, []string{localPrefix, newPrefix}, local.LocalAllowedRemoteResources())
+	require.NoError(t, validateAgentConfig(cfg))
+}
+
 // `agent add` checks the prefix against the effective allowlist, so a
 // default prefix the running commands already admit leaves the overlay
-// list unchanged (the end-to-end branch needs a
-// raw.githubusercontent.com source, which the offline test server cannot
-// serve, so the decision is pinned directly).
+// list unchanged. The gate needs a default-prefix source, which the
+// offline test server cannot serve, so the decision is pinned directly;
+// the write it gates is pinned end-to-end by TestAgentAddWritesLocalOnly.
 func TestAgentAddWritesPrefix_AllowlistOverBaseEmptyList(t *testing.T) {
 	defaultPrefix := config.DefaultAllowedRemoteResources()[0]
 
