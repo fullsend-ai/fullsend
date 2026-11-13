@@ -176,6 +176,7 @@ A human reviewer can say "I'm not sure about this, let me think" or "I need some
 - When should a review agent escalate to a human?
 - How does an agent express uncertainty? Confidence scores? Explicit "I don't know" signals?
 - Should there be a minimum number of agent reviewers that agree before auto-merge?
+- How does a finding say what it rests on? A confirmed code defect, an exploit under stated conditions, and a deployment impact need different evidence. [Review finding evidence](review-finding-evidence.md) proposes fields for this, including an explicit "unknown".
 
 ### Dual-interpretation escalation
 
