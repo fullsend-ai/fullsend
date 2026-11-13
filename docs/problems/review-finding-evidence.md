@@ -116,8 +116,10 @@ Any option should meet these requirements:
 - **Policy can act on it.** Post-processing can read the evidence state with a
   deterministic rule, not by parsing prose.
 - **Self-reports are labeled.** Most evidence fields are written by the review
-  agent itself. Where the harness can derive a value, such as challenge state,
-  it derives it rather than trusting the agent.
+  agent itself. Where the harness can observe a value independently, such as
+  challenge state from a trusted dispatch record, it uses the observed value
+  rather than trusting the agent. A value inferred from agent-written output
+  stays labeled as self-reported.
 - **Public output stays safe.** Some deployment details are sensitive. The
   evidence format must not force them into a public review comment.
 
@@ -129,14 +131,14 @@ explicit `unknown`, and an absent field means `unknown`.
 
 | Field | Scope | Allowed values | Notes |
 |---|---|---|---|
-| `claim` | Finding | `code-defect`, `exploitable`, `deployment-impact` | The strongest claim the finding makes. A higher claim needs the fields below it. |
+| `claim` | Finding | `code-defect`, `exploitable`, `deployment-impact`, `unknown` | The strongest claim the finding makes. A higher claim needs the fields below it. `unknown` means the finding does not say how strong a claim it makes. |
 | `reachability` | Finding | `path-shown`, `path-asserted`, `not-reachable`, `unknown` | `path-shown` cites the entry point and each step. `path-asserted` claims a path without citing it. |
 | `attacker_prerequisites` | Finding | `status`: `known`, `none`, `unknown`; `items`: list of strings | `none` means no prerequisites, such as an unauthenticated public endpoint. An empty list without `status` is invalid. |
 | `deployment_assumptions` | Finding | `status`: `known`, `none`, `unknown`; `items`: list of `{assumption, source}` | `source` is one of `deployment-context`, `repository-code`, `reviewer-inference`, `unknown`. |
 | `affected_configurations` | Finding | `status`: `all`, `listed`, `none-supported`, `unknown`; `items`: list of strings | `none-supported` means the defect only appears in configurations the project does not support. |
 | `reproduction` | Finding | `reproduced`, `attempted-not-reproduced`, `not-attempted`, `not-possible-in-sandbox`, `unknown` | Review runs read code and diffs. Most findings are `not-attempted` today. |
 | `challenge` | Finding | `kept`, `downgraded`, `merged`, `not-challenged`, `unknown` | Keeps the challenger action that step 6d strips today. `not-challenged` covers withheld findings. |
-| `challenge` | Run | `status`: `completed`, `skipped-no-findings`, `skipped-time-budget`, `failed`, `partial`, `unknown`; `reason`: string; `withheld_count`: integer | `partial` means some findings were withheld. Ideally the harness derives this instead of the agent. |
+| `challenge` | Run | `status`: `completed`, `skipped-no-findings`, `skipped-time-budget`, `failed`, `partial`, `unknown`; `reason`: string; `withheld_count`: integer | `partial` means some findings were withheld. Ideally the harness observes this from a trusted dispatch record instead of taking the agent's word. |
 | `deployment_context` | Run | `status`: `provided`, `absent`, `stale`, `unknown`; `ref`: document path and revision | Records which deployment-context document, if any, informed the review. |
 
 Two of these fields exist in another form today. The challenger already
@@ -198,12 +200,16 @@ agent.
 Record only run-level state: challenge status and deployment-context status.
 Leave per-finding evidence in prose.
 
-**Pros:** This is the smallest contract change. The harness can derive most
-of it, for example from the presence and text of a challenger
-`sub-agent-failure` finding, so it does not depend on agent self-report. It
-closes the "approved without challenge" gap directly.
+**Pros:** This is the smallest contract change. It closes the "approved
+without challenge" gap directly.
 **Cons:** It does not separate code defects from exploitability or deployment
-impact. Severity calibration stays where it is.
+impact. Severity calibration stays where it is. The state is only as
+trustworthy as its source. A challenger `sub-agent-failure` finding is written
+by the orchestrating agent, so a state inferred from its presence or text is
+self-reported, and a missing failure finding cannot show that a challenge
+completed, because a partial challenge leaves no marker. Harness-observed
+completion needs trusted dispatch or accounting records. Without them, the
+inferred state should be labeled self-reported or `unknown`.
 
 ### Option 3: separate evidence artifact
 
@@ -226,7 +232,8 @@ Ask reviewers to write fixed headings in each description, such as
 way a gate can check.
 
 These options can be combined. For example, Option 2 can land first because it
-needs no agent self-report, and Option 1 can follow once eval cases show which
+is the smallest change, provided its state is labeled self-reported until
+trusted dispatch records exist, and Option 1 can follow once eval cases show which
 per-finding fields change outcomes.
 
 ## A deployment-context document
@@ -299,7 +306,15 @@ requires for scoring.
 
 The table below shows one possible mapping from challenge and reproduction
 state to policy behavior. It is a starting point for discussion, not a
-decision. "Today" is the behavior at commit `8be868f`.
+decision. "Today" is the baseline behavior at commit `8be868f`, before the
+existing blocking rules below apply.
+
+The existing outcome rules take precedence over this table. They include the
+request for changes on an actionable `low` or `info` finding with a non-empty
+remediation, the comment-only outcome for advisory-only `medium` findings, the
+re-review rules, and the approval gates. Each "Today" entry for `low` or `info`
+findings assumes none of those rules apply, and each "Today" entry for a
+`medium` or above finding assumes it is a functional finding.
 
 | Run challenge status | Finding reproduction | Highest remaining severity | Today | Possible behavior |
 |---|---|---|---|---|
@@ -314,9 +329,11 @@ decision. "Today" is the behavior at commit `8be868f`.
 
 Post-processing could add an evidence gate next to the protected-path and risk
 gates. Like those gates, it would downgrade an approval to a comment. It would
-never upgrade a verdict. Where the harness can derive a value, such as run
-challenge status, the gate should use the derived value. Agent-reported values
-are [self-reports](security-threat-model.md#cross-cutting-concern-agent-self-report-unreliability):
+never upgrade a verdict. Where the harness can observe a value independently,
+such as run challenge status from a trusted dispatch record, the gate should
+use the observed value. Agent-reported values, including state inferred from
+agent-written findings, are
+[self-reports](security-threat-model.md#cross-cutting-concern-agent-self-report-unreliability):
 the harness can validate their format, but not their truth.
 
 ## Follow-up work outside this repository
