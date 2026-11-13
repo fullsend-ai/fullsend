@@ -265,7 +265,9 @@ jobs:
           BEHAVIOUR_ORG: ${{ vars.BEHAVIOUR_ORG }}
           BEHAVIOUR_LOCK_POOL: ${{ vars.BEHAVIOUR_LOCK_POOL }}
           BEHAVIOUR_LOCK_SLOTS_PER_ORG: ${{ vars.BEHAVIOUR_LOCK_SLOTS_PER_ORG }}
-          BEHAVIOUR_FULLSEND_REF: ${{ github.head_ref || github.ref_name }}
+          # A commit SHA, not a branch name: the repos.yaml fullsend_ref field
+          # rejects '/', so branch refs like agent/foo are invalid there.
+          BEHAVIOUR_FULLSEND_REF: ${{ github.event.pull_request.head.sha || github.sha }}
           E2E_KEEP_REPOS: ${{ (github.event_name == 'workflow_dispatch' && inputs.behaviour_ephemeral) && 'true' || vars.E2E_KEEP_REPOS }}
           # Refuse the infra retry after a 40m attempt 1, so attempt 2 (up to
           # its own 45m -timeout) still finishes inside timeout-minutes.
