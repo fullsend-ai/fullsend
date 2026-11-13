@@ -54,7 +54,8 @@ if ! gh api --paginate "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews?per_page=10
   echo "" > "${REVIEW_FILE}"
 fi
 
-BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
+# BSD wc (macOS) pads the count with leading spaces; strip them (#9298).
+BYTE_COUNT="$(wc -c < "${REVIEW_FILE}" | tr -d '[:space:]')"
 echo "Pre-fetched review body: ${BYTE_COUNT} bytes"
 MAX_REVIEW_BYTES=1048576
 if [[ "${BYTE_COUNT}" -gt "${MAX_REVIEW_BYTES}" ]]; then
