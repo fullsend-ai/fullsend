@@ -1086,11 +1086,12 @@ On GitLab, skip the object. Add each secret as its own masked CI/CD variable
 The rules above (refused names, host side only, overlays) apply to names in the
 GitHub object only. `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
 `FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` are not
-inherited by host-side scripts; declare either value in `env.runner` when a
-trusted script needs it. This is the same host-script rule on GitHub and
+inherited by host-side scripts; declare the ones a trusted script needs in
+`env.runner`. This is the same host-script rule on GitHub and
 GitLab. On every forge, references to these values in `env.sandbox`, expanded
-`host_files`, `FULLSEND_OUTPUT_FILE`, and provider config or credential values
-resolve empty. See
+`host_files`, `FULLSEND_OUTPUT_FILE`, and provider config values resolve
+empty. Provider credential values resolve empty too, except
+`${FULLSEND_JIRA_TOKEN}`, which the provider proxy holds. See
 [Jira integration](jira-integration.md#jira-repository-secrets-in-agent-runs)
 for details. Other CI/CD variables still reach host-side scripts except
 `JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`,

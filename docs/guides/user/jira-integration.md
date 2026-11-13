@@ -403,12 +403,13 @@ The label marks that a run started, not that the agent created or merged a PR.
 
 ### Jira connection variables in agent runs
 
-For a Jira-sourced run, `fullsend run` also sets two Jira URLs before harness env expansion, so `${JIRA_BASE_URL}` and `${JIRA_API_URL}` in `env.runner`, `env.sandbox`, and `host_files` entries with `expand: true` resolve to them:
+For a Jira-sourced run, `fullsend run` also sets two Jira URLs and the Jira account email before harness env expansion, so `${JIRA_BASE_URL}`, `${JIRA_API_URL}` and `${JIRA_USER_EMAIL}` in `env.runner`, `env.sandbox`, and `host_files` entries with `expand: true` resolve to them:
 
 | Variable | Value |
 |---|---|
 | `JIRA_BASE_URL` | `tracker.jira.base_url`. It replaces any inherited value, such as the `JIRA_BASE_URL` repository variable or the `jira_base_url` dispatch input, so config is the only source. |
 | `JIRA_API_URL` | The per-site API gateway base `{api_url}/ex/jira/{cloudId}`, with no trailing slash, where `api_url` is `tracker.jira.api_url` (default `https://api.atlassian.com`). It is the same base fullsend's own Jira client uses, and the cloud ID is discovered the same way, from `{base_url}/_edge/tenant_info`. |
+| `JIRA_USER_EMAIL` | The trimmed `FULLSEND_JIRA_EMAIL`, or empty when that secret is unset or blank. A set value selects Basic auth for a bot account's token; an empty value selects Bearer auth for a service account's token. It replaces any inherited value. |
 
 The built-in agents send Jira REST calls to `${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/...`. Because `fullsend run` always sets `JIRA_API_URL` for a Jira-sourced run that starts, those calls go through the gateway, which accepts a service account's scoped token and an OAuth 2.0 access token; a bot user's classic token has been observed to work there too, though Atlassian does not promise it.
 
@@ -416,12 +417,12 @@ A Jira-sourced run fails closed. It stops before the sandbox starts, rather than
 
 | Case | Result |
 |---|---|
-| Discovery succeeds | Both variables are set; the run continues |
+| Discovery succeeds | The variables are set; the run continues |
 | Discovery fails or times out (10-second limit) | The run stops; the error names the site URL |
 | `fullsend run --offline` | The run stops: the gateway address needs a network lookup |
 | `tracker.jira` connection settings missing or invalid (for example `base_url` or `api_url` not `https`, or with credentials, a query, or a fragment) | The run stops; the URL is never printed |
 
-Reference these variables only in a harness overlay that applies to Jira runs (`when: 'has(event.source) && event.source.system == "jira"'`). On a GitHub- or GitLab-sourced run, fullsend leaves them as they are, and an unset reference fails the run. Both values are URLs, not credentials, and a runner secret cannot override `JIRA_API_URL` or `JIRA_BASE_URL`.
+Reference these variables only in a harness overlay that applies to Jira runs (`when: 'has(event.source) && event.source.system == "jira"'`). On a GitHub- or GitLab-sourced run, fullsend leaves them as they are, and an unset reference fails the run. The URLs and the email identify the site and the account; they are not authentication secrets. A [runner secret](../../cli/run.md#runner-secrets) (a key in `FULLSEND_GITHUB_RUNNER_SECRETS`) cannot override `JIRA_API_URL`, `JIRA_BASE_URL` or `JIRA_USER_EMAIL`.
 
 For sandboxed use, the network profile must allow the gateway host. The built-in agents' `jira-ro` provider profile allows `api.atlassian.com`. The legacy `atlassian-cloud` profile below allows only `*.atlassian.net`, so it serves bot-user calls to the site URL only.
 
@@ -506,20 +507,29 @@ implementation
 | Secret / variable | Value |
 |---|---|
 | `FULLSEND_JIRA_TOKEN` | Scoped Jira API token for the poller and agent run-status updates; use instead of the client credentials below |
-| `FULLSEND_JIRA_EMAIL` | Optional. Bot user's email for a scoped user token. Omit it for a service-account token |
+| `FULLSEND_JIRA_EMAIL` | Bot account's email. Set it when the token belongs to a bot account; omit it for a service account's token. It selects Basic auth (email set) or Bearer auth (unset) everywhere, including the agents' sandbox Jira reads |
 | `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Alternative to `FULLSEND_JIRA_TOKEN`: a service account's OAuth 2.0 credential (see [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)). Not yet supported by the built-in triage and code agents |
 | `JIRA_BASE_URL` | Jira site URL used by built-in agent result-write scripts. For Jira-sourced runs, `fullsend run` replaces it with `tracker.jira.base_url` and also sets `JIRA_API_URL` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) |
 
 > **Upgrading:** Fullsend and the built-in agents no longer read the
-> `JIRA_TOKEN` and `JIRA_USER_EMAIL` repository secrets. Store the token once,
-> as `FULLSEND_JIRA_TOKEN`, and a bot user's email as `FULLSEND_JIRA_EMAIL`.
-> After you upgrade, you can delete the two old secrets. A harness whose
-> `base:` pins a fullsend-ai/agents commit must move to a version whose
-> `jira-ro` provider reads `FULLSEND_JIRA_TOKEN`. If your repository
-> uses `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`, do not add
-> `FULLSEND_JIRA_TOKEN`: the two cannot be set together, and the built-in
-> Jira agents need a token until
-> [#9220](https://github.com/fullsend-ai/fullsend/issues/9220).
+> `JIRA_TOKEN` and `JIRA_USER_EMAIL` repository secrets.
+>
+> - **Who is affected:** repositories that run the built-in Jira agents with
+>   those two secrets set.
+> - **Before you upgrade:**
+>   1. Make sure `FULLSEND_JIRA_TOKEN` holds the Jira token.
+>   2. If the token belongs to a bot account, set `FULLSEND_JIRA_EMAIL` to the
+>      value of your `JIRA_USER_EMAIL` secret.
+>   3. If a harness `base:` pins a fullsend-ai/agents commit, move it to a
+>      version whose `jira-ro` provider reads `FULLSEND_JIRA_TOKEN`.
+> - **If you skip step 2:** the email is empty, so the sandbox uses Bearer auth
+>   with a bot account's token and its Jira reads fail with 401.
+> - **After you upgrade:** delete the `JIRA_TOKEN` and `JIRA_USER_EMAIL`
+>   secrets.
+> - **OAuth repositories:** if your repository uses `FULLSEND_JIRA_CLIENT_ID`
+>   and `FULLSEND_JIRA_CLIENT_SECRET`, do not add `FULLSEND_JIRA_TOKEN`. The two
+>   cannot be set together, and the built-in Jira agents need a token until
+>   [#9220](https://github.com/fullsend-ai/fullsend/issues/9220).
 
 The poller and Jira-originated agent workflows use either the token and
 optional email or the OAuth client ID and secret. They take the Jira site and
@@ -549,7 +559,8 @@ every `FULLSEND_*` name. The runtime mapping is:
 | Fullsend composite action input | `jira-token`, `jira-email` | `jira-client-id`, `jira-client-secret` |
 | `fullsend run` process environment | `FULLSEND_JIRA_TOKEN`, optional `FULLSEND_JIRA_EMAIL` | `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` |
 | Host-side scripts (pre, post, validation) | Only when the harness declares the variables in `env.runner` | Only when the harness declares both variables in `env.runner` |
-| Sandbox-bound sites | Not inherited; references resolve empty (see breaking change below). | Not inherited; references resolve empty (see breaking change below). |
+| Provider credential values | `${FULLSEND_JIRA_TOKEN}` expands, so the provider proxy holds the token; `${FULLSEND_JIRA_EMAIL}` resolves empty | References resolve empty |
+| Sandbox-bound sites and provider config values | Not inherited; references resolve empty. For the email on Jira-sourced runs, reference `${JIRA_USER_EMAIL}` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) | Not inherited; references resolve empty |
 
 OAuth 2.0 client credentials follow the same path. The action inputs
 `jira-client-id` and `jira-client-secret` reach `fullsend run` as
@@ -579,16 +590,29 @@ Host-side scripts receive them only when the harness declares them in
   `FULLSEND_JIRA_CLIENT_SECRET`. These are optional in the same way, and with
   client credentials set, `FULLSEND_JIRA_TOKEN` is optional too. One harness
   can therefore declare both credential types.
-- **Breaking change: sandbox-bound expansion.** On every forge,
-  `${FULLSEND_JIRA_TOKEN}` and `${FULLSEND_JIRA_EMAIL}` references in
-  `env.sandbox`, expanded `host_files` content, `FULLSEND_OUTPUT_FILE`, and
-  provider config or credential values now resolve empty without a validation
-  error. These sites previously expanded the values from the `fullsend run`
-  process environment. Remove those references; where a trusted host-side
-  script needs Jira access, declare the credential under `env.runner` as
-  described above. Host-side scripts already require an explicit `env.runner`
-  mapping on both GitHub and GitLab, so this change does not introduce a
-  GitLab-specific host-script migration.
+- **Breaking change: sandbox-bound expansion.** On every forge:
+  - **What changed:** `${FULLSEND_JIRA_TOKEN}` and `${FULLSEND_JIRA_EMAIL}`
+    references in `env.sandbox`, expanded `host_files` content,
+    `FULLSEND_OUTPUT_FILE`, and provider config values now resolve empty
+    without a validation error, and so does `${FULLSEND_JIRA_EMAIL}` in
+    provider credential values. These sites used to expand the values from
+    the `fullsend run` process environment.
+  - **What to do:** remove those references. Where a trusted host-side
+    script needs Jira access, declare the credential under `env.runner` as
+    described above. Host-side scripts already need that mapping on both
+    GitHub and GitLab.
+  - **Token in provider credentials:** a provider credential value can
+    reference `${FULLSEND_JIRA_TOKEN}`, for example
+    `credentials: {JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"}`. Credential values
+    reach only the provider proxy; the sandbox gets the provider's
+    placeholder.
+  - **Email:** reference `${JIRA_USER_EMAIL}` instead. Jira-sourced runs set
+    it from `FULLSEND_JIRA_EMAIL`, and it resolves in `env.runner`,
+    `env.sandbox`, and `host_files` entries with `expand: true`.
+- **`JIRA_USER_EMAIL` on Jira-sourced runs.** `fullsend run` sets
+  `JIRA_USER_EMAIL` from `FULLSEND_JIRA_EMAIL`; no repository secret is a
+  source. For the upgrade steps, see the **Upgrading** note under
+  [Credential setup](#credential-setup).
 - **Residual exposure in the `fullsend run` process.** The action sets both
   values in the initial environment of the process that runs `fullsend run`,
   because the Jira client reads them from the process environment. Other

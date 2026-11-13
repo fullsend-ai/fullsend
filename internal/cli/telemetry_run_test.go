@@ -603,38 +603,72 @@ func TestIsInheritedScriptDenyKey(t *testing.T) {
 
 // TestProviderDefinitionsCannotExpandJiraSecrets verifies that provider
 // definitions may not expand the Jira repository secrets in config values
-// (argv) or credential values (child environment): they are host-script-only
-// (#9079), so the openshell child sees neither the arguments nor the
-// credential variables carrying them.
+// (argv), and may expand only FULLSEND_JIRA_TOKEN in credential values
+// (child environment): the token reaches the provider proxy so the jira-ro
+// provider can read it (#9411), while the email and the OAuth 2.0 client
+// credentials stay host-script-only (#9079).
 func TestProviderDefinitionsCannotExpandJiraSecrets(t *testing.T) {
 	const token, email = "jira-secret-token-9f8e7d", "jira-bot-secret@example.com"
+	const clientID, clientSecret = "jira-client-id-4c3b2a", "jira-client-secret-1a2b3c"
 	t.Setenv("FULLSEND_JIRA_TOKEN", token)
 	t.Setenv("FULLSEND_JIRA_EMAIL", email)
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", clientID)
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", clientSecret)
 	t.Setenv("HARMLESS_PROVIDER_VALUE", "harmless-ok")
 
 	binDir := t.TempDir()
-	capture := filepath.Join(binDir, "capture.log")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(capture) + "\nprintf '%s|%s|%s\\n' \"${JIRA_CRED-<unset>}\" \"${JIRA_CRED2-<unset>}\" \"${OTHER-<unset>}\" >> " + shellQuoteForTest(capture) + "\nexit 0\n"
+	argsLog := filepath.Join(binDir, "args.log")
+	envLog := filepath.Join(binDir, "env.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + shellQuoteForTest(argsLog) +
+		"\nprintf '%s|%s|%s|%s|%s\\n' \"${JIRA_TOKEN-<unset>}\" \"${JIRA_CRED2-<unset>}\" \"${JIRA_CRED3-<unset>}\" \"${JIRA_CRED4-<unset>}\" \"${OTHER-<unset>}\" >> " +
+		shellQuoteForTest(envLog) + "\nexit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	err := sandbox.EnsureProvider(context.Background(), "jira-probe", "custom",
 		map[string]string{
-			"JIRA_CRED":  "${FULLSEND_JIRA_TOKEN}",
+			"JIRA_TOKEN": "${FULLSEND_JIRA_TOKEN}",
 			"JIRA_CRED2": "${FULLSEND_JIRA_EMAIL}",
+			"JIRA_CRED3": "${FULLSEND_JIRA_CLIENT_ID}",
+			"JIRA_CRED4": "${FULLSEND_JIRA_CLIENT_SECRET}",
 			"OTHER":      "${HARMLESS_PROVIDER_VALUE}",
 		},
 		map[string]string{
-			"TOKEN_URL": "https://x/${FULLSEND_JIRA_TOKEN}",
-			"EMAIL_URL": "https://x/${FULLSEND_JIRA_EMAIL}",
+			"TOKEN_URL":  "https://x/${FULLSEND_JIRA_TOKEN}",
+			"EMAIL_URL":  "https://x/${FULLSEND_JIRA_EMAIL}",
+			"CLIENT_URL": "https://x/${FULLSEND_JIRA_CLIENT_ID}/${FULLSEND_JIRA_CLIENT_SECRET}",
 		}, false)
 	require.NoError(t, err)
 
-	out, err := os.ReadFile(capture)
+	args, err := os.ReadFile(argsLog)
 	require.NoError(t, err)
-	assert.NotContains(t, string(out), token, "provider expansion must refuse FULLSEND_JIRA_TOKEN")
-	assert.NotContains(t, string(out), email, "provider expansion must refuse FULLSEND_JIRA_EMAIL")
-	assert.Contains(t, string(out), "harmless-ok", "an unrelated key still expands")
+	for _, secret := range []string{token, email, clientID, clientSecret} {
+		assert.NotContains(t, string(args), secret, "provider argv must never carry a Jira secret")
+	}
+	assert.Contains(t, string(args), "TOKEN_URL=https://x/", "a config value expands the token empty")
+
+	env, err := os.ReadFile(envLog)
+	require.NoError(t, err)
+	assert.Equal(t, token+"|<unset>|<unset>|<unset>|harmless-ok\n", string(env),
+		"only FULLSEND_JIRA_TOKEN expands in a credential value; the others expand empty")
+}
+
+// TestJiraTokenRefusedAtSandboxSites verifies that allowing
+// FULLSEND_JIRA_TOKEN in provider credential values (#9411) does not let it
+// reach the sandbox: env.sandbox values, expanded host_files content and
+// FULLSEND_OUTPUT_FILE still expand it empty, and the runtime redactor still
+// masks its value.
+func TestJiraTokenRefusedAtSandboxSites(t *testing.T) {
+	const token = "jira-secret-token-sandbox-5e6f"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+
+	assert.Equal(t, "x--y", expandSandboxEnvValue("x-${FULLSEND_JIRA_TOKEN}-y", harnessEnvExpand), "env.sandbox")
+	assert.NotContains(t, shellSafeExpandEnv("export JIRA_TOKEN=\"${FULLSEND_JIRA_TOKEN}\"\n"), token, "host_files content")
+	assert.Equal(t, "out-.json", expandRunnerEntry("FULLSEND_OUTPUT_FILE", "out-${FULLSEND_JIRA_TOKEN}.json", harnessEnvExpand),
+		"FULLSEND_OUTPUT_FILE")
+
+	assert.NotContains(t, redactFeedback("leaked "+token, nil), token, "the runtime redactor masks the token")
+	assert.Contains(t, security.RuntimeSecrets(), token)
 }
 
 // TestHarnessEnvLookup_OptionalJiraEmail verifies that a harness may declare

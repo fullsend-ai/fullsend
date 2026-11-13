@@ -145,10 +145,13 @@ Your external repository needs these variables and secrets configured:
 - `FULLSEND_GCP_WIF_PROVIDER` - GCP Workload Identity Federation (WIF) provider
 - `FULLSEND_GCP_PROJECT_ID` - GCP project ID
 - `OTEL_EXPORTER_OTLP_TRACES_HEADERS` - [OTEL](../../glossary.md#otel-primary-facts) auth headers (optional)
-- `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL` - Scoped Jira API
-  token authentication for the Jira poller, status notifications, and Jira
-  agents. For an Atlassian service account OAuth credential, set
-  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` instead.
+- `FULLSEND_JIRA_TOKEN` - Scoped Jira API token for the Jira poller, status
+  notifications, and Jira agents. For an Atlassian service account OAuth
+  credential, set `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`
+  instead.
+- `FULLSEND_JIRA_EMAIL` - The bot account's email. Set it when the token
+  belongs to a bot account (Basic auth); omit it for a service account's token
+  (Bearer auth). Without it, a bot account's token fails with 401.
 
 ## How It Works
 
