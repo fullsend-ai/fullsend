@@ -145,12 +145,14 @@ agent wrote while reading untrusted input.
 ### Credentials
 
 Fullsend's credential model has
-[four delivery tiers](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md).
-In tiers 1 to 3, real credentials stay outside the sandbox. In tier 4, the
+[four credential delivery tiers](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md).
+In credential delivery tiers 1 to 3, real credentials stay outside the
+sandbox. In credential delivery tier 4, the
 harness copies credential files into the sandbox with `host_files`. There,
 the network policy is the security boundary, not credential isolation.
 
-The current review harness already uses tier 4 for some inputs. At
+The current review harness already uses credential delivery tier 4 for some
+inputs. At
 [`fullsend-ai/agents@8be868f`](https://github.com/fullsend-ai/agents/blob/8be868f58820b4e59663d7dd58894ebbea72e3f6/harness/review.yaml#L55-L67),
 `harness/review.yaml` can copy a GCP service-account file into the sandbox
 when one is configured. An audit harness that reused this pattern would also
@@ -163,16 +165,20 @@ endpoints the policy allows, and what a compromised run could reach.
 
 Options:
 
-- **No runtime credentials (tier 1 only).** The harness prefetches the code
-  and the test environment images. Model inference goes through a provider
-  placeholder or a gateway outside the sandbox. This gives the strongest
-  claim but may rule out some model back ends.
-- **Allow tier 2 and 3, forbid tier 4.** Credentials never enter the sandbox
-  filesystem. Some inference set-ups, such as file-based cloud auth, would
-  not be available for audits.
-- **Allow tier 4 with documentation.** The audit can use any back end, but
-  every audit report must say that real credentials were present and what the
-  policy allowed.
+- **No runtime credentials for audit inputs (credential delivery tier 1
+  only).** The harness prefetches the code and the test environment images,
+  and the sandbox holds no credentials for repository or test-environment
+  access. Model inference is classified separately: it needs at least
+  credential delivery tier 2 (a provider placeholder swapped at the gateway
+  proxy) or credential delivery tier 3, unless the model runs entirely
+  outside the sandbox. This gives the strongest claim for audit inputs but
+  may rule out some model back ends.
+- **Allow credential delivery tiers 2 and 3, forbid credential delivery
+  tier 4.** Credentials never enter the sandbox filesystem. Some inference
+  set-ups, such as file-based cloud auth, would not be available for audits.
+- **Allow credential delivery tier 4 with documentation.** The audit can use
+  any back end, but every audit report must say that real credentials were
+  present and what the policy allowed.
 
 ### Validation budget
 
@@ -233,7 +239,7 @@ and the patch review. The audit agent does not merge.
 |---|---|---|
 | A specific finding was reproduced | Yes | The harness kept the reproduction test and its output, and a person can rerun it |
 | The audit stayed inside its authorized scope | Partly | Egress policy and audit trail support it; audit log integrity is [not yet enforced](security-threat-model.md#cross-cutting-concern-audit-log-integrity) |
-| The audit ran without credentials | Only for a stated configuration | Every input uses credential delivery tier 1 to 3; false for tier 4 `host_files` set-ups |
+| The audit ran without credentials | Only for a stated configuration | Every input uses credential delivery tiers 1 to 3; false for credential delivery tier 4 `host_files` set-ups |
 | The change has no vulnerabilities | No | An audit can find flaws; it cannot prove that none exist |
 | The audit completed its validation | Only when the harness confirms it | A budget-exhausted or timed-out run is reported as incomplete |
 | The findings were kept confidential | Not yet | Depends on [#9431](https://github.com/fullsend-ai/fullsend/issues/9431) and on artifact, log and trace settings |
@@ -259,7 +265,7 @@ and the patch review. The audit agent does not merge.
 - Which triggers should be allowed, and which human role can authorize each
   one?
 - Which credential delivery tiers are acceptable for an audit harness? Is
-  tier 4 ever acceptable when the sandbox runs untrusted reproduction code?
+  credential delivery tier 4 ever acceptable when the sandbox runs untrusted reproduction code?
 - How large should the reserved validation budget be, and who sets it?
 - Which validation states should the result schema expose, and how does the
   harness check them without trusting the agent's own report?
