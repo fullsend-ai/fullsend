@@ -136,8 +136,8 @@ func (p *Poller) Run(ctx context.Context) error {
 	// as human follow-up re-dispatches the same agent in a loop.
 	p.selfAccountID = userID(*myself)
 
-	// Step 1: Execute JQL to get candidate issues.
-	candidates, err := p.searchCandidates(ctx)
+	// Step 1: Discover and route candidate issues up to M across bounded search pages.
+	candidates, err := p.discoverCandidates(ctx)
 	if err != nil {
 		return fmt.Errorf("search candidates: %w", err)
 	}
@@ -401,17 +401,74 @@ func (p *Poller) resolveActorRoles(ctx context.Context, actorIDs []string) error
 	return nil
 }
 
+// maxCandidateScanPages caps how many JQL result pages (50 issues/page =
+// up to 250 candidates) discoverCandidates scans per poll cycle while
+// filtering issues for TargetRepo.
+const maxCandidateScanPages = 5
+
+func (p *Poller) buildCandidateJQL() (string, error) {
+	if p.opts.JQL != "" {
+		return p.opts.JQL, nil
+	}
+	if !validProjectKey.MatchString(p.opts.JiraProject) {
+		return "", fmt.Errorf("invalid Jira project key %q: must match %s", p.opts.JiraProject, validProjectKey.String())
+	}
+	return fmt.Sprintf("project = %q AND statusCategory != Done ORDER BY updated DESC", p.opts.JiraProject), nil
+}
+
 // searchCandidates executes JQL and collects up to M results.
 func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
-	jql := p.opts.JQL
-	if jql == "" {
-		if !validProjectKey.MatchString(p.opts.JiraProject) {
-			return nil, fmt.Errorf("invalid Jira project key %q: must match %s", p.opts.JiraProject, validProjectKey.String())
-		}
-		jql = fmt.Sprintf("project = %q AND statusCategory != Done ORDER BY updated DESC", p.opts.JiraProject)
+	jql, err := p.buildCandidateJQL()
+	if err != nil {
+		return nil, err
 	}
 
 	return p.client.SearchIssues(ctx, jql, p.opts.M)
+}
+
+// discoverCandidates scans up to maxCandidateScanPages JQL pages (50 issues per
+// page), applying repository routing on each page incrementally until M routed
+// candidates are collected or results are exhausted.
+func (p *Poller) discoverCandidates(ctx context.Context) ([]jira.Issue, error) {
+	jql, err := p.buildCandidateJQL()
+	if err != nil {
+		return nil, err
+	}
+
+	limit := p.opts.M
+	var collected []jira.Issue
+	var nextPageToken string
+	var totalScanned, totalLinkErrors int
+
+	for page := 0; page < maxCandidateScanPages; page++ {
+		res, err := p.client.SearchIssuesPage(ctx, jql, nextPageToken, 50)
+		if err != nil {
+			return nil, err
+		}
+		if len(res.Issues) == 0 {
+			break
+		}
+
+		totalScanned += len(res.Issues)
+		routed, linkErrors := p.filterRoutingPage(ctx, res.Issues)
+		totalLinkErrors += linkErrors
+		collected = append(collected, routed...)
+
+		if limit > 0 && len(collected) >= limit {
+			collected = collected[:limit]
+			break
+		}
+		if res.IsLast || res.NextPageToken == "" {
+			break
+		}
+		nextPageToken = res.NextPageToken
+	}
+
+	if totalScanned > 0 && totalLinkErrors == totalScanned {
+		return nil, fmt.Errorf("all %d candidates dropped by remote-link lookup errors", totalScanned)
+	}
+
+	return collected, nil
 }
 
 // filterLocked removes locked issues and cleans up stale locks. If every

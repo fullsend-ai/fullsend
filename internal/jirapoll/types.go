@@ -17,7 +17,9 @@ type JiraClient interface {
 	// A limit <= 0 returns all matching issues (bounded by the
 	// implementation's own pagination cap).
 	SearchIssues(ctx context.Context, jql string, limit int) ([]jira.Issue, error)
+	SearchIssuesPage(ctx context.Context, jql, nextPageToken string, maxResults int) (*jira.SearchResult, error)
 	GetIssue(ctx context.Context, issueIDOrKey string) (*jira.Issue, error)
+	ListRemoteLinks(ctx context.Context, issueIDOrKey string) ([]jira.RemoteLink, error)
 	// GetStatus resolves a status name to its statusCategory, used to
 	// classify status transitions (closed/reopened) without relying on
 	// locale/workflow-specific status name substrings.
@@ -61,6 +63,7 @@ type Options struct {
 	Dispatcher              RecordDispatcher // Optional output driver that schedules records directly (GitLab)
 	JiraBaseURL             string           // Jira instance base URL
 	JiraProject             string           // Jira project key for default JQL
+	JiraComponent           string           // Jira component for fallback repo routing
 	JQL                     string           // Custom JQL override
 	OutputPath              string           // Path to write dispatch records JSON
 	M                       int              // Max candidate issues per cycle (default: 50)

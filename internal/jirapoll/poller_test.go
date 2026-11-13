@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -29,10 +30,15 @@ func newTestPoller(client JiraClient, matcher EventMatcher, opts Options) *Polle
 type mockClient struct {
 	mu sync.Mutex
 
-	searchResult []jira.Issue
-	searchErr    error
-	lastQuery    string
-	lastLimit    int
+	searchResult     []jira.Issue
+	searchErr        error
+	lastQuery        string
+	lastLimit        int
+	searchPageCalls  int
+	searchPageLimits []int
+
+	remoteLinks    map[string][]jira.RemoteLink
+	remoteLinksErr map[string]error
 
 	issues   map[string]*jira.Issue
 	issueErr map[string]error
@@ -86,8 +92,76 @@ func newMockClient() *mockClient {
 		propertySetErr: make(map[string]error),
 		statuses:       make(map[string]jira.Status),
 		statusErr:      make(map[string]error),
+		remoteLinks:    make(map[string][]jira.RemoteLink),
+		remoteLinksErr: make(map[string]error),
 		myselfUser:     &jira.User{AccountID: "poller-service-account", AccountType: "atlassian", Active: true},
 	}
+}
+
+func (m *mockClient) SearchIssuesPage(_ context.Context, jql, nextPageToken string, maxResults int) (*jira.SearchResult, error) {
+	m.mu.Lock()
+	m.lastQuery = jql
+	m.lastLimit = maxResults
+	m.searchPageCalls++
+	m.searchPageLimits = append(m.searchPageLimits, maxResults)
+	searchErr := m.searchErr
+	m.mu.Unlock()
+
+	if searchErr != nil {
+		return nil, searchErr
+	}
+	if maxResults <= 0 {
+		maxResults = 50
+	}
+	start := 0
+	if nextPageToken != "" {
+		var err error
+		start, err = strconv.Atoi(nextPageToken)
+		if err != nil || start < 0 {
+			return nil, fmt.Errorf("invalid mock page token %q", nextPageToken)
+		}
+	}
+	// The default mock serves an issue without labels with "labels": []
+	// (one shape Jira serves); rawSearchClient serves the raw nil shape
+	// instead, so tests pin both.
+	for i := range m.searchResult {
+		if m.searchResult[i].Fields.Labels == nil {
+			m.searchResult[i].Fields.Labels = []string{}
+		}
+	}
+	if start >= len(m.searchResult) {
+		return &jira.SearchResult{IsLast: true}, nil
+	}
+	end := start + maxResults
+	if end > len(m.searchResult) {
+		end = len(m.searchResult)
+	}
+	page := make([]jira.Issue, end-start)
+	copy(page, m.searchResult[start:end])
+	isLast := end >= len(m.searchResult)
+	next := ""
+	if !isLast {
+		next = strconv.Itoa(end)
+	}
+	return &jira.SearchResult{
+		Issues:        page,
+		NextPageToken: next,
+		IsLast:        isLast,
+	}, nil
+}
+
+func (m *mockClient) ListRemoteLinks(_ context.Context, issueKey string) ([]jira.RemoteLink, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.remoteLinksErr != nil {
+		if err, ok := m.remoteLinksErr[issueKey]; ok && err != nil {
+			return nil, err
+		}
+	}
+	if m.remoteLinks == nil {
+		return nil, nil
+	}
+	return m.remoteLinks[issueKey], nil
 }
 
 func (m *mockClient) SearchIssues(_ context.Context, jql string, limit int) ([]jira.Issue, error) {
@@ -3239,5 +3313,175 @@ func TestPoller_DispatchesStructuredEventPayload(t *testing.T) {
 	headMap, ok := prMap["head"].(map[string]any)
 	if !ok || headMap["sha"] != "abc1234" {
 		t.Errorf("payloadMap[pull_request][head][sha] = %v, want abc1234", headMap["sha"])
+	}
+}
+
+func TestRun_RoutingAttachedLink(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{"u1": "Developers"}
+
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "1001",
+			Key: "PROJ-1",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+		{
+			ID:  "1002",
+			Key: "PROJ-2",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-1"] = []jira.Comment{{
+		ID:      "1",
+		Body:    "/fs-triage go",
+		Created: now.Format("2006-01-02T15:04:05.000-0700"),
+		Author:  jira.User{AccountID: "u1", AccountType: "atlassian"},
+	}}
+	mc.comments["PROJ-2"] = []jira.Comment{{
+		ID:      "2",
+		Body:    "/fs-triage go",
+		Created: now.Format("2006-01-02T15:04:05.000-0700"),
+		Author:  jira.User{AccountID: "u1", AccountType: "atlassian"},
+	}}
+
+	mc.remoteLinks["PROJ-1"] = []jira.RemoteLink{
+		{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/other-repo"}},
+	}
+	mc.remoteLinks["PROJ-2"] = []jira.RemoteLink{
+		{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/pay-backend/pull/5"}},
+	}
+
+	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
+		TargetRepo:  "my-org/pay-backend",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if len(p.dispatches) == 0 {
+		t.Fatal("expected dispatches for PROJ-2, got none")
+	}
+	for _, d := range p.dispatches {
+		if d.StatusNumber != "1002" {
+			t.Errorf("unexpected dispatch StatusNumber = %q, want only \"1002\" (PROJ-2)", d.StatusNumber)
+		}
+	}
+}
+
+func TestRun_RoutingComponent(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleMembership = map[string]string{"u1": "Developers"}
+
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "1001",
+			Key: "PROJ-1",
+			Fields: jira.IssueFields{
+				Components: []jira.Component{{Name: "Payments"}},
+				Reporter:   jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:    now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:    now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+		{
+			ID:  "1002",
+			Key: "PROJ-2",
+			Fields: jira.IssueFields{
+				Components: []jira.Component{{Name: "Frontend"}},
+				Reporter:   jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:    now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:    now.Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-1"] = []jira.Comment{{
+		ID:      "1",
+		Body:    "/fs-triage go",
+		Created: now.Format("2006-01-02T15:04:05.000-0700"),
+		Author:  jira.User{AccountID: "u1", AccountType: "atlassian"},
+	}}
+	mc.comments["PROJ-2"] = []jira.Comment{{
+		ID:      "2",
+		Body:    "/fs-triage go",
+		Created: now.Format("2006-01-02T15:04:05.000-0700"),
+		Author:  jira.User{AccountID: "u1", AccountType: "atlassian"},
+	}}
+
+	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
+		TargetRepo:    "my-org/pay-backend",
+		JiraBaseURL:   "https://acme.atlassian.net",
+		JiraProject:   "PROJ",
+		JiraComponent: "Payments",
+		OutputPath:    filepath.Join(t.TempDir(), "dispatches.json"),
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if len(p.dispatches) == 0 {
+		t.Fatal("expected dispatches for PROJ-1, got none")
+	}
+	for _, d := range p.dispatches {
+		if d.StatusNumber != "1001" {
+			t.Errorf("unexpected dispatch StatusNumber = %q, want only \"1001\" (PROJ-1)", d.StatusNumber)
+		}
+	}
+}
+
+func TestDiscoverCandidates_FivePageScanBound(t *testing.T) {
+	mc := newMockClient()
+	mc.searchResult = make([]jira.Issue, 300)
+	for i := range mc.searchResult {
+		key := fmt.Sprintf("PROJ-%d", i+1)
+		mc.searchResult[i] = jira.Issue{ID: fmt.Sprintf("%d", i+1), Key: key}
+		if i == 248 || i == 249 || i >= 250 {
+			mc.remoteLinks[key] = []jira.RemoteLink{
+				{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/pay-backend"}},
+			}
+		} else {
+			mc.remoteLinks[key] = []jira.RemoteLink{
+				{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/other-repo"}},
+			}
+		}
+	}
+
+	p := newTestPoller(mc, nil, Options{
+		JiraProject: "PROJ",
+		TargetRepo:  "my-org/pay-backend",
+		M:           50,
+	})
+
+	candidates, err := p.discoverCandidates(context.Background())
+	if err != nil {
+		t.Fatalf("discoverCandidates() error: %v", err)
+	}
+	if mc.searchPageCalls != maxCandidateScanPages {
+		t.Errorf("searchPageCalls = %d, want %d", mc.searchPageCalls, maxCandidateScanPages)
+	}
+	wantLimits := []int{50, 50, 50, 50, 50}
+	if len(mc.searchPageLimits) != len(wantLimits) {
+		t.Fatalf("searchPageLimits = %v, want %v", mc.searchPageLimits, wantLimits)
+	}
+	for i, want := range wantLimits {
+		if mc.searchPageLimits[i] != want {
+			t.Errorf("searchPageLimits[%d] = %d, want %d", i, mc.searchPageLimits[i], want)
+		}
+	}
+	if len(candidates) != 2 || candidates[0].Key != "PROJ-249" || candidates[1].Key != "PROJ-250" {
+		t.Errorf("candidates = %+v, want [PROJ-249, PROJ-250] (must stop at 5 pages without reading page 6)", candidates)
 	}
 }
