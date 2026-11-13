@@ -211,6 +211,7 @@ script-test:
 	$(call run-timed,bash hack/gitlab-runner-vm/grow-root-fs_test.sh)
 	$(call run-timed,bash hack/setup-e2e-inference-gateway_test.sh)
 	$(call run-timed,bash hack/setup-new-e2e-org_test.sh)
+	$(call run-timed,bash hack/pad-e2e-org-repos_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
 	$(call run-timed,bash hack/ci-local/ci-local_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
