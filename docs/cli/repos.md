@@ -575,7 +575,7 @@ flag or environment variable supplies them.
   any write, until `--jira-token` is supplied or `FULLSEND_JIRA_TOKEN` already
   exists. Re-runs, CI jobs, and scripted installs that previously succeeded
   need the flag added, for example
-  `fullsend repos install --jira-token "$JIRA_TOKEN"`. Setting
+  `fullsend repos install --jira-token "$FULLSEND_JIRA_TOKEN"`. Setting
   `poll.enabled: false` also avoids the requirement.
 - **Disabled (`poll.enabled: false`, or `poll`/`poll.enabled` omitted).**
   Install removes the Fullsend-owned Jira poll resources. `FULLSEND_JIRA_TOKEN`

@@ -97,7 +97,7 @@ base: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/code.ya
 
 env:
   runner:
-    JIRA_TOKEN: "${JIRA_TOKEN}"     # Merged with base env; child keys win
+    MYORG_API_TOKEN: "${MYORG_API_TOKEN}"  # Merged with base env; child keys win
   sandbox:
     JIRA_PROJECT: "MYPROJ"
 ```

@@ -49,13 +49,18 @@ var runnerSecretRefusedPrefixes = []string{
 
 // workflowSetEnvNames are the names reusable-dispatch.yml,
 // reusable-prioritize.yml and action.yml set on a fullsend run step
-// outside the refused families, such as the named JIRA_TOKEN and
-// JIRA_USER_EMAIL secrets on harness-run. A runner secret may not shadow
-// one, so each name has a single source.
+// outside the refused families, such as JIRA_BASE_URL on harness-run, plus
+// names fullsend reserves for itself. A runner secret may not shadow one,
+// so each name has a single source.
 // TestRunnerSecretNameRefused_CoversWorkflowSetNames keeps the step env:
 // part of the list in step with the workflows. GIT_BOT_EMAIL and the
 // OPENSHELL_* names arrive through GITHUB_ENV, and TARGET_REPO_DIR and
 // JIRA_API_URL are set by fullsend run itself, so the test cannot see them.
+// JIRA_TOKEN and JIRA_USER_EMAIL are no longer workflow secrets but stay
+// refused: fullsend run sets JIRA_USER_EMAIL from FULLSEND_JIRA_EMAIL on
+// Jira-sourced runs, and JIRA_TOKEN is the jira-ro provider's credential
+// key and the name the built-in harnesses map FULLSEND_JIRA_TOKEN to, so
+// neither may be shadowed by a runner secret.
 var workflowSetEnvNames = []string{
 	"AGENT", "CODE_ALLOWED_TARGET_BRANCHES", "COMMENT_BODY", "FIX_ITERATION",
 	"HUMAN_INSTRUCTION", "ISSUE_NUMBER", "JIRA_BASE_URL", "JIRA_TOKEN",

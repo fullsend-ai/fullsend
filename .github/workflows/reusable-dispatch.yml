@@ -99,10 +99,14 @@ on:
       OTEL_EXPORTER_OTLP_HEADERS:
         required: false
       JIRA_TOKEN:
-        description: "Jira Cloud API token for Jira-based agents"
+        description: >-
+          Ignored. Retired in favour of FULLSEND_JIRA_TOKEN; kept for one
+          release so callers that still pass it do not fail validation.
         required: false
       JIRA_USER_EMAIL:
-        description: "Jira account email for Basic auth"
+        description: >-
+          Ignored. Retired in favour of FULLSEND_JIRA_EMAIL; kept for one
+          release so callers that still pass it do not fail validation.
         required: false
       FULLSEND_JIRA_TOKEN:
         description: >-
@@ -2711,8 +2715,6 @@ jobs:
           # Inference gateway API key for inference.gateway.auth api-key (ADR 0138),
           # read by the runner under its own name; unused in the oidc mode.
           FULLSEND_INFERENCE_GATEWAY_API_KEY: ${{ secrets.FULLSEND_INFERENCE_GATEWAY_API_KEY }}
-          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
-          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}

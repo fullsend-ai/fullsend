@@ -131,6 +131,8 @@ func TestValidateBaseURL_RejectsEmbeddedCredentials(t *testing.T) {
 	_, err := New("test-token", WithBaseURL("https://user:secret@jira.example.com"))
 	require.Error(t, err, "a base URL with embedded credentials must be rejected")
 	assert.Contains(t, err.Error(), "must not embed credentials")
+	assert.Contains(t, err.Error(), TokenEnvVar)
+	assert.NotContains(t, err.Error(), "JIRA_USER_EMAIL")
 	assert.NotContains(t, err.Error(), "secret", "the password must be redacted in the error")
 }
 

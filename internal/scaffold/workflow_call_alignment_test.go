@@ -625,6 +625,51 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 	})
 }
 
+// TestRetiredJiraSecretsNotForwarded pins the retirement of the JIRA_TOKEN
+// and JIRA_USER_EMAIL secrets (#9413): no workflow or scaffold template
+// forwards them, and reusable-dispatch.yml keeps both workflow_call
+// declarations, optional and described as ignored, for one release so a
+// caller that still passes them does not fail validation.
+func TestRetiredJiraSecretsNotForwarded(t *testing.T) {
+	retired := []string{"JIRA_TOKEN", "JIRA_USER_EMAIL"}
+	for _, tc := range []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"scaffold/templates/jira-poll-per-repo.yaml", loadScaffoldFile("templates/jira-poll-per-repo.yaml")},
+		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"reusable-prioritize.yml", loadRepoFile(".github/workflows/reusable-prioritize.yml")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := string(tc.content(t))
+			for _, name := range retired {
+				assert.NotContains(t, body, "secrets."+name+" }}", "%s must not forward the retired %s secret", tc.name, name)
+			}
+		})
+	}
+
+	var parsed struct {
+		On struct {
+			WorkflowCall struct {
+				Secrets map[string]struct {
+					Description string `yaml:"description"`
+					Required    bool   `yaml:"required"`
+				} `yaml:"secrets"`
+			} `yaml:"workflow_call"`
+		} `yaml:"on"`
+	}
+	require.NoError(t, yaml.Unmarshal(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t), &parsed))
+	for _, name := range retired {
+		secret, ok := parsed.On.WorkflowCall.Secrets[name]
+		require.True(t, ok, "reusable-dispatch.yml must keep declaring %s for one release", name)
+		assert.False(t, secret.Required, "%s must stay optional", name)
+		assert.True(t, strings.HasPrefix(secret.Description, "Ignored."), "%s must be described as ignored, got %q", name, secret.Description)
+	}
+}
+
 // TestJiraCredentialSecretThreading validates that the scoped Jira credentials
 // reach every fullsend run that may post status to a Jira-originated work item.
 // Both secrets are optional because service-account tokens omit the email.

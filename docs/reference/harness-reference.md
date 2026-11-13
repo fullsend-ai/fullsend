@@ -112,7 +112,8 @@ overlays:
   env:
     runner:
       GH_TOKEN: "${GH_TOKEN}"
-      JIRA_TOKEN: "${JIRA_TOKEN}"
+      FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"
+      FULLSEND_JIRA_EMAIL: "${FULLSEND_JIRA_EMAIL}"
 - when: 'runtime.forge == "github"'
   pre_script: scripts/pre-gh.sh
   post_script: scripts/post-gh.sh
@@ -205,37 +206,55 @@ See [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md).
 and `validation_loop.script`), layered over the `fullsend run`
 process environment. (`validation_loop.preflight_check` also reads `env.runner`
 declarations, but atop its own allowlisted environment — see above, not the
-process environment.) A few named workflow secrets are **not** inherited from that environment:
-`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
-`OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
-receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under
-`env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.
-Earlier releases passed them to every script unconditionally; a harness whose scripts read
-`JIRA_TOKEN` or `JIRA_USER_EMAIL` without declaring them must add them to `env.runner`. The
-Jira repository secrets `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` follow the same rule (see
-[Jira integration § Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs)).
+process environment.) These names are **not** inherited from that environment:
+
+- the Jira repository secrets `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`;
+- the reserved names `JIRA_TOKEN` and `JIRA_USER_EMAIL`;
+- the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_*_HEADERS`
+  (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`).
+
+A script receives one only when the harness declares it under `env.runner`, for example
+`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`. A script that reads the `JIRA_*` names gets them
+mapped from the Jira repository secrets: `JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`,
+`JIRA_USER_EMAIL: "${FULLSEND_JIRA_EMAIL}"`. `fullsend run` itself still reads these names for its
+own Jira client and trace export. Earlier releases passed them to every script. See
+[Jira integration § Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs).
 `FULLSEND_JIRA_EMAIL` is optional: a `${FULLSEND_JIRA_EMAIL}` reference does not fail validation
 when the variable is unset, and an `env.runner` entry for it that resolves empty is omitted, so
 the script sees no variable rather than an empty one. `FULLSEND_JIRA_CLIENT_ID` and
 `FULLSEND_JIRA_CLIENT_SECRET` (a service account's OAuth 2.0 credential) are optional the same
 way, and `FULLSEND_JIRA_TOKEN` is optional too while the client credentials are set. A harness can
-therefore declare both credential types. The Jira repository secrets expand empty in
-`env.sandbox`, expanded `host_files` content, `FULLSEND_OUTPUT_FILE` and provider config values.
-A provider credential value may expand `${FULLSEND_JIRA_TOKEN}`, because credential values reach
-only the provider proxy and never the sandbox; `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`
-and `FULLSEND_JIRA_CLIENT_SECRET` expand empty there too. Scripts
-always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, so bytecode never
-breaks the hash-verified fetch cache.
+therefore declare both credential types. Scripts always run with `PYTHONDONTWRITEBYTECODE=1`,
+overriding any `env.runner` value, so bytecode never breaks the hash-verified fetch cache.
 
-For a Jira-sourced run, `fullsend run` sets `JIRA_BASE_URL` to `tracker.jira.base_url`,
-`JIRA_API_URL` to the API gateway base `{tracker.jira.api_url}/ex/jira/{cloudId}`, and
-`JIRA_USER_EMAIL` to the trimmed `FULLSEND_JIRA_EMAIL` (empty when that is unset or blank) before
-env expansion, replacing any inherited `JIRA_BASE_URL` or `JIRA_USER_EMAIL`. A `${JIRA_BASE_URL}`,
-`${JIRA_API_URL}` or `${JIRA_USER_EMAIL}` reference in `env.runner`, `env.sandbox`, or a
-`host_files` entry with `expand: true` resolves to these values. A Jira-sourced run stops before the sandbox starts when cloud-ID discovery fails,
-when the run is `--offline`, or when the `tracker.jira` connection settings are missing or invalid,
-instead of letting agents fall back to the site URL. A runner secret cannot override any of these names. Runs from other sources do not get these variables from `fullsend run`, so
-reference them only in an overlay guarded on `event.source.system == "jira"`: an unset reference
+Outside `env.runner`, the Jira repository secrets expand as follows:
+
+- **Sandbox-bound sites** (`env.sandbox`, expanded `host_files` content, `FULLSEND_OUTPUT_FILE`
+  and provider config values): all four expand empty.
+- **Provider credential values:** `${FULLSEND_JIRA_TOKEN}` expands, because credential values
+  reach only the provider proxy and never the sandbox. `FULLSEND_JIRA_EMAIL`,
+  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` expand empty.
+
+For a Jira-sourced run, `fullsend run` sets three connection variables before env expansion,
+replacing any inherited value:
+
+- `JIRA_BASE_URL`: `tracker.jira.base_url`.
+- `JIRA_API_URL`: the API gateway base `{tracker.jira.api_url}/ex/jira/{cloudId}`.
+- `JIRA_USER_EMAIL`: the trimmed `FULLSEND_JIRA_EMAIL`, or empty when that is unset or blank.
+
+A `${JIRA_BASE_URL}`, `${JIRA_API_URL}` or `${JIRA_USER_EMAIL}` reference in `env.runner`,
+`env.sandbox`, or a `host_files` entry with `expand: true` resolves to these values. A key in the
+`FULLSEND_GITHUB_RUNNER_SECRETS` object (described below) cannot override any of these names.
+
+A Jira-sourced run stops before the sandbox starts when it cannot build `JIRA_API_URL`, instead
+of letting agents fall back to the site URL:
+
+- cloud-ID discovery fails;
+- the run is `--offline`;
+- the `tracker.jira` connection settings are missing or invalid.
+
+Runs from other sources do not get these variables from `fullsend run`, so reference them only in an overlay guarded on `event.source.system == "jira"`: an unset reference
 fails env validation on a GitHub or GitLab run. See
 [Jira integration § Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
 
@@ -252,8 +271,9 @@ These rules make a run fail before `pre_script` starts:
   `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
   runner-infrastructure names (`HOME`, `SHELL`, `BASH_ENV`, `ENV`,
   `TRACEPARENT`), and every name the reusable workflow sets on the `fullsend
-  run` step, such as the named `JIRA_TOKEN`, `JIRA_USER_EMAIL` and
-  `JIRA_BASE_URL` on `harness-run`. An `env.runner` key with one of those names
+  run` step, such as `JIRA_BASE_URL` on `harness-run`, plus `JIRA_TOKEN` and
+  `JIRA_USER_EMAIL`, which fullsend reserves for the Jira sandbox provider and
+  email. An `env.runner` key with one of those names
   may not receive a value from the object either. `GH_ENTERPRISE_TOKEN` is
   refused because the mint now owns it; a repository that stores an enterprise
   credential under that name must store it under a different name and
