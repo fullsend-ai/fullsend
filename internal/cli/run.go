@@ -3605,6 +3605,13 @@ var sandboxDeniedKeys = map[string]bool{
 	jira.ClientSecretEnvVar: true,
 }
 
+// providerCredentialJiraKeys are the sandboxDeniedKeys that provider
+// credential values may still expand (#9411). Every sandbox-bound harness
+// site and provider config value keeps refusing them.
+var providerCredentialJiraKeys = map[string]bool{
+	jira.TokenEnvVar: true,
+}
+
 // expandSandboxEnvValue expands ${VAR} references in an env.sandbox value
 // with expander, refusing sandboxDeniedKeys (they expand empty).
 func expandSandboxEnvValue(v string, expander func(string) string) string {
@@ -3692,8 +3699,17 @@ func init() {
 	}
 	// The Jira repository secrets are host-script-only (#9079): provider
 	// definitions may not expand them in config values (argv) or credential
-	// values, the same as the sandbox-bound harness sites above.
+	// values, the same as the sandbox-bound harness sites above. The one
+	// exception is FULLSEND_JIRA_TOKEN in provider credential values: they
+	// reach only the provider proxy through the openshell child
+	// environment, never the sandbox, so the jira-ro provider can read the
+	// token without a second, differently named secret (#9411). Config
+	// values still refuse it.
 	for k := range sandboxDeniedKeys {
+		if providerCredentialJiraKeys[k] {
+			sandbox.CredentialOnlyExpansionKeys(k)
+			continue
+		}
 		sandbox.DenyExpansionKeys(k)
 	}
 	// Provider-only keys are reserved in the sandbox (env.sandbox cannot
