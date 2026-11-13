@@ -24,6 +24,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -92,6 +93,21 @@ func (s lockSlot) String() string { return s.Org + "/" + s.Name }
 // lockSlotName derives a lock repo name from its 1-based index.
 func lockSlotName(index int) string { return fmt.Sprintf("lock-%d", index) }
 
+// lockRepoNamePrefix precedes the index in every lock repo name.
+const lockRepoNamePrefix = "lock-"
+
+// isLockRepoName reports whether name is a lock-pool coordination repo
+// (lock-<positive-int>), so prune can find every lock in an org regardless of
+// the current run's configured slot count.
+func isLockRepoName(name string) bool {
+	rest, ok := strings.CutPrefix(name, lockRepoNamePrefix)
+	if !ok || rest == "" {
+		return false
+	}
+	n, err := strconv.Atoi(rest)
+	return err == nil && n > 0
+}
+
 // OrgSlots configures one org's membership in the pool and its slot count.
 type OrgSlots struct {
 	Org   string
@@ -131,16 +147,11 @@ func (c LockPoolConfig) slots() []lockSlot {
 	return out
 }
 
-// ClientForOrg resolves a forge client scoped to the given org. The driver
-// wires this to the suite's per-org token+client factory; tests pass a
-// fake.
-type ClientForOrg func(ctx context.Context, org string) (forge.Client, error)
-
 // LockPool acquires and holds one slot of the counting semaphore for a run.
 type LockPool struct {
 	cfg       LockPoolConfig
 	runID     RunID
-	clientFor ClientForOrg
+	clientFor OrgClientFunc
 	logf      func(string, ...any)
 
 	// now is the clock, injectable for tests.
@@ -150,7 +161,7 @@ type LockPool struct {
 }
 
 // NewLockPool builds a lock pool for one run.
-func NewLockPool(cfg LockPoolConfig, runID RunID, clientFor ClientForOrg, logf func(string, ...any)) (*LockPool, error) {
+func NewLockPool(cfg LockPoolConfig, runID RunID, clientFor OrgClientFunc, logf func(string, ...any)) (*LockPool, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
@@ -264,10 +275,20 @@ func (p *LockPool) claim(ctx context.Context, client forge.Client, slot lockSlot
 	return p.startHold(ctx, client, slot), nil
 }
 
-// tryReclaim inspects an occupied slot and, if it is stale, reclaims it via
-// a compare-and-delete followed by an atomic recreate. A nil error with a
-// nil HeldLock means the slot is live or the reclaim lost a race; retry
-// elsewhere.
+// tryReclaim inspects an occupied slot and, if it is stale, reclaims it by
+// deleting the dead lock and atomically recreating it under this run. A nil
+// error with a nil HeldLock means the slot is live or the reclaim lost a
+// race; retry elsewhere.
+//
+// Reclamation is best-effort, not a true compare-and-swap: a forge repo has
+// no atomic conditional delete, so delete and recreate are separate calls. We
+// shrink the race window by re-reading and re-judging liveness immediately
+// before deleting (so a heartbeat landing between the reads cancels the
+// reclaim) and only reclaim a confirmed-dead owner. A rare residual remains —
+// two reclaimers that both pass the re-read before either deletes can leave
+// one deleting the other's fresh lock — but reclamation only targets runs
+// that have already stopped heartbeating for lockProgressWindow, so it cannot
+// disturb a live run; the loser of such a race simply retries another slot.
 func (p *LockPool) tryReclaim(ctx context.Context, client forge.Client, slot lockSlot) (*HeldLock, error) {
 	repo, err := client.GetRepo(ctx, slot.Org, slot.Name)
 	if forge.IsNotFound(err) {
@@ -282,8 +303,11 @@ func (p *LockPool) tryReclaim(ctx context.Context, client forge.Client, slot loc
 		return nil, nil
 	}
 
-	// Compare-and-delete: re-read and proceed only if the slot still
-	// carries the stale token we just judged dead.
+	// Re-read and re-judge liveness immediately before deleting. Checking
+	// staleness again (not just the owner token) means a heartbeat that
+	// landed between the two reads — bumping UpdatedAt without changing the
+	// token — cancels the reclaim, instead of a token-only check deleting a
+	// lock that has just proven itself live.
 	cur, err := client.GetRepo(ctx, slot.Org, slot.Name)
 	if forge.IsNotFound(err) {
 		return nil, nil // another reclaimer won
@@ -291,10 +315,12 @@ func (p *LockPool) tryReclaim(ctx context.Context, client forge.Client, slot loc
 	if err != nil {
 		return nil, fmt.Errorf("re-reading lock %s: %w", slot, err)
 	}
-	curToken, curOK := parseOwnerToken(cur.Description)
-	if curOK && (token == "" || curToken != token) {
-		// Owner changed since we judged it dead (heartbeat or another
-		// reclaim); abort without deleting.
+	curToken, curStale := p.staleness(cur)
+	if !curStale {
+		return nil, nil // became live again, or re-judged healthy
+	}
+	if token != "" && curToken != token {
+		// Owner changed since we judged it dead (another reclaim); abort.
 		return nil, nil
 	}
 
@@ -363,11 +389,17 @@ type HeldLock struct {
 	hbDone chan struct{}
 	runID  RunID
 
+	// lost is set when a heartbeat discovers the slot no longer carries this
+	// run's owner token — i.e. it was reclaimed as stale while this run
+	// stalled. Once lost, the heartbeat stops and Release is a no-op, so a
+	// resumed old holder never overwrites or deletes the replacement's lock.
+	lost atomic.Bool
+
 	releaseOnce sync.Once
 }
 
-// Slot returns the held (org, lock-name) position.
-func (h *HeldLock) Slot() lockSlot { return h.slot }
+// Slot returns the held position as "org/lock-name", for logging.
+func (h *HeldLock) Slot() string { return h.slot.String() }
 
 // Org returns the org whose slot is held.
 func (h *HeldLock) Org() string { return h.slot.Org }
@@ -375,8 +407,15 @@ func (h *HeldLock) Org() string { return h.slot.Org }
 // RunID returns the owner token this lock carries.
 func (h *HeldLock) RunID() RunID { return h.runID }
 
+// Lost reports whether this run lost ownership of its slot (it was reclaimed
+// as stale and now belongs to another run).
+func (h *HeldLock) Lost() bool { return h.lost.Load() }
+
 // heartbeat periodically re-writes the owner token to bump UpdatedAt,
-// signalling liveness, until its context is cancelled by Release.
+// signalling liveness, until its context is cancelled by Release. Before each
+// write it confirms the slot still carries this run's token; if it does not,
+// the slot was reclaimed while this run stalled, so the heartbeat records the
+// loss and stops rather than clobbering the new owner's token.
 func (h *HeldLock) heartbeat(ctx context.Context) {
 	defer close(h.hbDone)
 	ticker := time.NewTicker(lockHeartbeatInterval)
@@ -386,6 +425,16 @@ func (h *HeldLock) heartbeat(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			repo, err := h.client.GetRepo(ctx, h.slot.Org, h.slot.Name)
+			if err != nil {
+				h.pool.logf("[lockpool] heartbeat read of %s failed (continuing): %v", h.slot, err)
+				continue
+			}
+			if token, ok := parseOwnerToken(repo.Description); !ok || token != h.runID {
+				h.lost.Store(true)
+				h.pool.logf("[lockpool] lost ownership of %s (now owner %q); stopping heartbeat", h.slot, repo.Description)
+				return
+			}
 			if err := h.client.UpdateRepoDescription(ctx, h.slot.Org, h.slot.Name, h.pool.ownerToken()); err != nil {
 				h.pool.logf("[lockpool] heartbeat of %s failed (continuing): %v", h.slot, err)
 			}

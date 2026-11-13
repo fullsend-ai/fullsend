@@ -189,6 +189,88 @@ func TestLockPool_Heartbeat(t *testing.T) {
 	}, time.Second, 5*time.Millisecond, "heartbeat should bump UpdatedAt")
 }
 
+// reclaimRaceClient wraps a FakeClient and runs onSecondGet just before the
+// second GetRepo returns, to simulate a heartbeat landing between tryReclaim's
+// two reads.
+type reclaimRaceClient struct {
+	*forge.FakeClient
+	gets        int
+	onSecondGet func()
+}
+
+func (c *reclaimRaceClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Repository, error) {
+	c.gets++
+	if c.gets == 2 && c.onSecondGet != nil {
+		c.onSecondGet()
+	}
+	return c.FakeClient.GetRepo(ctx, owner, repo)
+}
+
+func TestLockPool_ReclaimAbortsOnHeartbeatBetweenReads(t *testing.T) {
+	slowHeartbeat(t)
+	prevPoll, prevTimeout := lockAcquirePoll, lockAcquireTimeout
+	lockAcquirePoll, lockAcquireTimeout = 5*time.Millisecond, 30*time.Millisecond
+	t.Cleanup(func() { lockAcquirePoll, lockAcquireTimeout = prevPoll, prevTimeout })
+
+	runID := newTestRunID(t)
+	fc := forge.NewFakeClient()
+	foreign := newTestRunID(t)
+	old := time.Now().Add(-30 * time.Minute)
+	fc.Repos = []forge.Repository{{
+		ID: 1, Name: "lock-1", FullName: "org/lock-1",
+		Description: lockRepoDescriptionPrefix + foreign.String(),
+		CreatedAt:   old, UpdatedAt: old, // stale on the first read
+	}}
+	rc := &reclaimRaceClient{FakeClient: fc, onSecondGet: func() {
+		// The foreign owner heartbeats between our two reads: same token,
+		// fresh UpdatedAt. The re-judged liveness must cancel the reclaim.
+		_ = fc.UpdateRepoDescription(context.Background(), "org", "lock-1",
+			lockRepoDescriptionPrefix+foreign.String())
+	}}
+	p, err := NewLockPool(singleOrgCfg("org", 1), runID,
+		func(context.Context, string) (forge.Client, error) { return rc, nil }, nil)
+	require.NoError(t, err)
+
+	_, err = p.Acquire(context.Background())
+	assert.ErrorIs(t, err, ErrLockPoolExhausted,
+		"a heartbeat landing between the two reads must cancel the reclaim")
+	repo, err := fc.GetRepo(context.Background(), "org", "lock-1")
+	require.NoError(t, err)
+	assert.Contains(t, repo.Description, foreign.String(),
+		"the revived lock must keep its original owner")
+}
+
+func TestLockPool_HeartbeatStopsOnLostOwnership(t *testing.T) {
+	prev := lockHeartbeatInterval
+	lockHeartbeatInterval = 10 * time.Millisecond
+	t.Cleanup(func() { lockHeartbeatInterval = prev })
+
+	runID := newTestRunID(t)
+	p, fc := fakeLockPool(t, singleOrgCfg("org", 1), runID)
+	held, err := p.Acquire(context.Background())
+	require.NoError(t, err)
+
+	// Another run reclaims the slot while this one is (notionally) stalled.
+	other := newTestRunID(t)
+	require.NoError(t, fc.UpdateRepoDescription(context.Background(), "org", "lock-1",
+		lockRepoDescriptionPrefix+other.String()))
+
+	// The resumed heartbeat must notice the token changed and stop, rather
+	// than clobbering the new owner's token.
+	require.Eventually(t, held.Lost, time.Second, 5*time.Millisecond,
+		"heartbeat must detect lost ownership and stop")
+	repo, err := fc.GetRepo(context.Background(), "org", "lock-1")
+	require.NoError(t, err)
+	assert.Contains(t, repo.Description, other.String(),
+		"the old holder's heartbeat must not overwrite the new owner's token")
+
+	// Release is now a no-op: it must not delete the replacement's lock.
+	require.NoError(t, held.Release(context.Background()))
+	repo, err = fc.GetRepo(context.Background(), "org", "lock-1")
+	require.NoError(t, err)
+	assert.Contains(t, repo.Description, other.String())
+}
+
 func TestParseLockPoolSpec(t *testing.T) {
 	cfg, err := parseLockPoolSpec("org-a:4, org-b:2 ,org-c:1")
 	require.NoError(t, err)

@@ -301,7 +301,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Base-branch script only — PR head must not control artifact redaction (#5221).
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          # On manual dispatch the selected branch is not trusted for the redaction
+          # script, so use the default branch (matches the playback job below).
+          ref: >-
+            ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch
+                || github.event_name == 'pull_request' && github.event.pull_request.base.sha
+                || github.sha }}
           sparse-checkout: scripts/redact-behaviour-artifacts.sh
           path: base-scripts
           persist-credentials: false

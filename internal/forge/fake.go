@@ -361,6 +361,10 @@ type FakeClient struct {
 	// Refs for GetRef.
 	Refs map[string]string // key: "owner/repo/refPath" → commit SHA
 
+	// ActionsDisabled records repos ("owner/repo") that DisableActions was
+	// called on.
+	ActionsDisabled map[string]bool
+
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
 
@@ -558,6 +562,22 @@ func (f *FakeClient) ListAllOrgRepos(_ context.Context, org string) ([]Repositor
 		}
 	}
 	return result, nil
+}
+
+// DisableActions records that Actions were disabled on org/repo, for
+// forge.ActionsDisabler.
+func (f *FakeClient) DisableActions(_ context.Context, org, repo string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DisableActions"); e != nil {
+		return e
+	}
+	if f.ActionsDisabled == nil {
+		f.ActionsDisabled = map[string]bool{}
+	}
+	f.ActionsDisabled[org+"/"+repo] = true
+	return nil
 }
 
 func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string, private bool) (*Repository, error) {

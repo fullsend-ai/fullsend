@@ -82,6 +82,10 @@ func NewEphemeralCFMint(pool PoolConfig) (Driver, error) {
 	}
 	client := pool.NewClient(token)
 
+	// Record a rate-limit baseline before any repo work, so the run's total
+	// GitHub API consumption can be read off the start/finalize log lines.
+	logStartRateLimit(ctx, client, org, logf)
+
 	// Deploy a public preview mint for the org, scoped to this run's repos.
 	mintURL, mint, err := deployEphemeralMint(ctx, pool, org, runID, token, client, logf)
 	if err != nil {

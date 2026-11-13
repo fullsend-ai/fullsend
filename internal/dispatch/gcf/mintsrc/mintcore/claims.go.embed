@@ -124,19 +124,20 @@ func ValidateWorkflowRef(ref string, workflowHostRepos map[string]bool, allowedW
 	if !matched {
 		for host := range workflowHostRepos {
 			lowerHost := strings.ToLower(host)
-			// A host entry ending in "*" is a prefix (glob) match: "*"
-			// alone accepts any host, and "org/bt-<run-id>-*" accepts every
-			// repo under that prefix. This serves the public preview test
-			// mint (ADR 0114 ephemeral repos), whose caller repos are
-			// created per scenario and cannot be enumerated in
-			// WORKFLOW_HOST_REPOS; scoping to the run's bt-<run-id>- prefix
-			// keeps the mint from trusting unrelated repositories. Because
-			// the host part cannot be stripped by an exact prefix, the
-			// workflow path is recovered from the ".github/workflows/"
-			// segment.
+			// A host entry ending in "*" is a prefix (glob) match, e.g.
+			// "org/bt-<run-id>-allow-*" accepts every repo under that prefix.
+			// This serves the public preview test mint, whose caller repos
+			// are created per scenario and cannot be enumerated in
+			// WORKFLOW_HOST_REPOS; scoping to the run's own prefix keeps the
+			// mint from trusting unrelated repositories. A bare "*" (empty
+			// prefix, match any host) is NOT accepted: an entry must name a
+			// concrete prefix, so WORKFLOW_HOST_REPOS remains an explicit
+			// allowlist and never degrades to "trust everything". Because the
+			// host part cannot be stripped by an exact prefix, the workflow
+			// path is recovered from the ".github/workflows/" segment.
 			if strings.HasSuffix(lowerHost, "*") {
 				prefix := strings.TrimSuffix(lowerHost, "*")
-				if !strings.HasPrefix(lowerRef, prefix) {
+				if prefix == "" || !strings.HasPrefix(lowerRef, prefix) {
 					continue
 				}
 				if i := strings.Index(lowerRef, "/.github/workflows/"); i >= 0 {

@@ -122,38 +122,19 @@ func TestValidateWorkflowRef_DefaultHost(t *testing.T) {
 	assert.Contains(t, err.Error(), "does not reference an allowed workflow host repo")
 }
 
-func TestValidateWorkflowRef_WildcardHost(t *testing.T) {
-	// A "*" workflow-host entry accepts any host (public preview test mint,
-	// ADR 0114), while still enforcing the allowed-workflow-files list.
+func TestValidateWorkflowRef_BareWildcardHostRejected(t *testing.T) {
+	// A bare "*" workflow-host entry is NOT a match-any wildcard: an entry
+	// must name a concrete prefix, so WORKFLOW_HOST_REPOS stays an explicit
+	// allowlist and never degrades to "trust every repo on the forge". Only
+	// run-scoped prefix globs (org/bt-<run-id>-allow-*) are honored.
 	wildcard := map[string]bool{"*": true}
 
 	err := ValidateWorkflowRef(
-		"fullsend-ai-test/bt-abc-mint-host/.github/workflows/mint-probe.yml@refs/heads/main",
+		"any-org/any-repo/.github/workflows/mint-probe.yml@refs/heads/main",
 		wildcard, []string{"mint-probe.yml"},
 	)
-	assert.NoError(t, err, "any host is accepted under a \"*\" workflow-host entry")
-
-	// Case-insensitive host, mixed with the files allowlist wildcard.
-	err = ValidateWorkflowRef(
-		"Any-Org/Any-Repo/.github/workflows/whatever.yml@refs/heads/main",
-		wildcard, []string{"*"},
-	)
-	assert.NoError(t, err)
-
-	// The files allowlist is still enforced under a wildcard host.
-	err = ValidateWorkflowRef(
-		"any/repo/.github/workflows/not-allowed.yml@refs/heads/main",
-		wildcard, []string{"mint-probe.yml"},
-	)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not in allowed list")
-
-	// A ref that is not a workflow path is still rejected under "*".
-	err = ValidateWorkflowRef(
-		"any/repo/some/other/path@refs/heads/main",
-		wildcard, []string{"*"},
-	)
-	require.Error(t, err)
+	require.Error(t, err, "a bare \"*\" host entry must not accept arbitrary hosts")
+	assert.Contains(t, err.Error(), "does not reference an allowed workflow host repo")
 }
 
 func TestValidateWorkflowRef_PrefixGlobHost(t *testing.T) {

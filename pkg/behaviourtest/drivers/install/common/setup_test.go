@@ -30,9 +30,16 @@ func TestRunReposInstall_SetsAppSetAndManifestFields(t *testing.T) {
 		return "", nil
 	}
 
-	err := RunReposInstall("/bin/fullsend", "tok", "fullsend-ai-test/bt-x-allow-1",
-		"https://mint.test", "deadbeef", "fullsend-test", "", "proj", "projects/1/.../github-oidc",
-		runner, t.Logf)
+	err := RunReposInstall(ReposInstallOpts{
+		Binary:       "/bin/fullsend",
+		Token:        "tok",
+		Target:       "fullsend-ai-test/bt-x-allow-1",
+		MintURL:      "https://mint.test",
+		FullsendRef:  "deadbeef",
+		AppSet:       "fullsend-test",
+		GCPProjectID: "proj",
+		WIFProvider:  "projects/1/.../github-oidc",
+	}, runner, t.Logf)
 	require.NoError(t, err)
 
 	all := strings.Join(calls, "\n")
@@ -69,9 +76,15 @@ func TestRunReposInstall_ConfigPresetStagedAndRuntimeInherited(t *testing.T) {
 		calls = append(calls, strings.Join(args, " "))
 		return "", nil
 	}
-	err := RunReposInstall("/bin/fullsend", "tok", "org/bt-x-allow-1",
-		"https://mint.test", "deadbeef", "fullsend-test", "preset.yaml", "", "",
-		runner, t.Logf)
+	err := RunReposInstall(ReposInstallOpts{
+		Binary:       "/bin/fullsend",
+		Token:        "tok",
+		Target:       "org/bt-x-allow-1",
+		MintURL:      "https://mint.test",
+		FullsendRef:  "deadbeef",
+		AppSet:       "fullsend-test",
+		ConfigPreset: "preset.yaml",
+	}, runner, t.Logf)
 	require.NoError(t, err)
 
 	all := strings.Join(calls, "\n")

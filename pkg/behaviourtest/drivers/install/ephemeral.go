@@ -20,6 +20,7 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -42,12 +43,6 @@ var repoKeepThreshold = 200
 // KeepRepos reports whether retained repos should be preserved (no pruning),
 // for debugging. Set E2E_KEEP_REPOS=true.
 func KeepRepos() bool { return os.Getenv("E2E_KEEP_REPOS") == "true" }
-
-// ephemeralInstall installs fullsend into an ephemeral repo via
-// common.RunReposInstall. It is the default RunReposInstallFn.
-func ephemeralInstall(binary, token, target, mintURL, fullsendRef, appSet, configPreset, gcpProjectID, wifProvider string, runCLI CLIRunnerFunc, logf func(string, ...any)) error {
-	return common.RunReposInstall(binary, token, target, mintURL, fullsendRef, appSet, configPreset, gcpProjectID, wifProvider, runCLI, logf)
-}
 
 // ephemeralEnsurer creates ephemeral repos with fullsend installed. Each
 // call generates a unique name, creates the repo, waits for git readiness,
@@ -194,11 +189,17 @@ func (e *ephemeralEnsurer) createRepo(ctx context.Context, org, hint string) (st
 }
 
 func (e *ephemeralEnsurer) installFullsend(org, repoName string) error {
-	return RunReposInstallFn(
-		e.binary, e.token, org+"/"+repoName,
-		e.mintURL, e.fullsendRef, e.appSet, e.configPreset, e.gcpProjectID, e.wifProvider,
-		e.runCLI, e.logf,
-	)
+	return runReposInstallFn(common.ReposInstallOpts{
+		Binary:       e.binary,
+		Token:        e.token,
+		Target:       org + "/" + repoName,
+		MintURL:      e.mintURL,
+		FullsendRef:  e.fullsendRef,
+		AppSet:       e.appSet,
+		ConfigPreset: e.configPreset,
+		GCPProjectID: e.gcpProjectID,
+		WIFProvider:  e.wifProvider,
+	}, e.runCLI, e.logf)
 }
 
 // awaitGitReady polls GetRef("heads/main") until the git layer is ready,
@@ -257,9 +258,9 @@ func awaitEventDelivery(ctx context.Context, client forge.Client, org, repo stri
 	return fmt.Errorf("event delivery not confirmed on %s after %d attempts", target, ephemeralEventMaxAttempts)
 }
 
-// RunReposInstallFn is the install hook, overridable in tests. Defaults to
-// common.RunReposInstall via ephemeralInstall.
-var RunReposInstallFn = ephemeralInstall
+// runReposInstallFn installs fullsend into an ephemeral repo. Override in
+// tests to stub the `repos install` CLI without shelling out.
+var runReposInstallFn = common.RunReposInstall
 
 // ephemeralRepoPrefixLen is the fixed length of the "bt-{run-id}-" prefix
 // (3 for "bt-" + RunIDLen + 1 for the trailing "-").
@@ -314,36 +315,56 @@ func (d *ephemeralDriver) AllocateLease(ctx context.Context) (RepoLease, error) 
 	}, nil
 }
 
-// DeallocateLease retains the repo (GitHub policy, ADR 0114): it sanitizes
-// the repo so it cannot invoke the shared org-scoped WIF after its scenario
-// ends, then stops tracking it. Retained repos are batch-pruned at Finalize.
+// DeallocateLease retains the repo (GitHub policy, ADR 0114): it retires the
+// repo so it cannot invoke the shared org-scoped WIF after its scenario ends,
+// then stops tracking it. Retained repos are batch-pruned at Finalize. A
+// retirement failure is returned rather than swallowed, so the suite does not
+// treat a still-authorized repo as cleanly deallocated.
 func (d *ephemeralDriver) DeallocateLease(ctx context.Context, _, repo string) error {
-	d.sanitizeRetainedRepo(ctx, repo)
+	err := d.sanitizeRetainedRepo(ctx, repo)
 	d.mu.Lock()
 	delete(d.created, repo)
 	d.mu.Unlock()
+	if err != nil {
+		return fmt.Errorf("retiring retained repo %s/%s: %w", d.org, repo, err)
+	}
 	return nil
 }
 
-// sanitizeRetainedRepo strips the repo's variables before it is retained, so
-// leftover CI configuration cannot resolve the mint URL or the shared
-// org-scoped WIF provider and invoke it after the scenario (ADR 0114).
-// Best-effort: failures are logged, not fatal.
-//
-// NOTE: disabling Actions and uninstalling the app are stronger measures
-// left to a follow-up (they need new forge surface); stripping the
-// mint/WIF variables already removes the repo's ability to mint.
-func (d *ephemeralDriver) sanitizeRetainedRepo(ctx context.Context, repo string) {
+// sanitizeRetainedRepo retires a repo before it is retained. The mint URL and
+// WIF provider are configuration, not secrets, so deleting the repo's
+// variables alone is not an authorization boundary: a workflow could carry
+// those values directly and the repo still matches the run's trusted host
+// prefix until the mint is torn down. So the primary control is disabling
+// Actions, which stops any further workflow run from starting there; stripping
+// the mint/WIF variables is secondary cleanup. Errors are collected and
+// returned (not just logged) so DeallocateLease can surface a repo that could
+// not be retired. In-flight runs are not cancelled here; the mint teardown at
+// Finalize closes that residual window.
+func (d *ephemeralDriver) sanitizeRetainedRepo(ctx context.Context, repo string) error {
+	var errs []error
+
+	// Primary boundary: no new workflow runs can start on the retired repo.
+	if disabler, ok := d.client.(forge.ActionsDisabler); ok {
+		if err := disabler.DisableActions(ctx, d.org, repo); err != nil && !forge.IsNotFound(err) {
+			errs = append(errs, fmt.Errorf("disabling Actions: %w", err))
+		}
+	} else {
+		d.logf("[driver] sanitize: client cannot disable Actions on %s/%s (relying on mint teardown)", d.org, repo)
+	}
+
+	// Secondary cleanup: strip leftover mint/WIF variables.
 	vars, err := d.client.ListRepoVariables(ctx, d.org, repo)
 	if err != nil {
-		d.logf("[driver] sanitize: listing variables on %s/%s: %v", d.org, repo, err)
-		return
-	}
-	for name := range vars {
-		if err := d.client.DeleteRepoVariable(ctx, d.org, repo, name); err != nil && !forge.IsNotFound(err) {
-			d.logf("[driver] sanitize: deleting variable %s on %s/%s: %v", name, d.org, repo, err)
+		errs = append(errs, fmt.Errorf("listing variables: %w", err))
+	} else {
+		for name := range vars {
+			if err := d.client.DeleteRepoVariable(ctx, d.org, repo, name); err != nil && !forge.IsNotFound(err) {
+				errs = append(errs, fmt.Errorf("deleting variable %s: %w", name, err))
+			}
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // StillOwnsLease is always true for ephemeral repos: names are unique to
@@ -371,14 +392,16 @@ func (d *ephemeralDriver) Capacity() int { return 1000 }
 // Finalize prunes old runs (unless E2E_KEEP_REPOS), releases the lock slot,
 // and tears down the mint.
 func (d *ephemeralDriver) Finalize(ctx context.Context) error {
-	d.logAPIConsumption("at finalize")
+	logAPIConsumption(d.client, d.org, "at finalize", d.logf)
 	if !KeepRepos() {
 		d.pruneOldRuns(ctx)
 	}
 
 	var relErr error
 	if d.held != nil {
-		relErr = d.held.Release(ctx)
+		if err := d.held.Release(ctx); err != nil {
+			relErr = fmt.Errorf("Finalize: releasing lock: %w", err)
+		}
 	}
 
 	var mintErr error
@@ -388,14 +411,28 @@ func (d *ephemeralDriver) Finalize(ctx context.Context) error {
 		}
 	}
 
-	switch {
-	case relErr != nil && mintErr != nil:
-		return fmt.Errorf("%w; %w", relErr, mintErr)
-	case relErr != nil:
-		return fmt.Errorf("Finalize: releasing lock: %w", relErr)
-	default:
-		return mintErr
+	return errors.Join(relErr, mintErr)
+}
+
+// logStartRateLimit records a run-start rate-limit baseline so the run's total
+// GitHub API consumption can be recovered from the start and finalize lines as
+// (remaining_start - remaining_end) + (limit_end - limit_start). The limit term
+// is needed because an installation token's cap climbs as the org gains repos,
+// so a bare remaining delta would undercount. It reads /rate_limit (which does
+// not consume quota and so is a clean pre-work baseline, before any repo is
+// created) and seeds the client's observation. Best-effort: a failure is logged
+// and leaves the finalize line's per-window counters as the fallback measure.
+func logStartRateLimit(ctx context.Context, client forge.Client, org string, logf func(string, ...any)) {
+	f, ok := client.(forge.RateLimitFetcher)
+	if !ok {
+		return
 	}
+	rl, err := f.FetchRateLimit(ctx)
+	if err != nil {
+		logf("[driver] rate-limit at start (org %s): baseline read failed: %v", org, err)
+		return
+	}
+	logf("[driver] rate-limit at start (org %s): %s", org, rl.String())
 }
 
 // logAPIConsumption reports the run's GitHub API usage against the org's
@@ -404,20 +441,22 @@ func (d *ephemeralDriver) Finalize(ctx context.Context) error {
 // reflects the installation token's server-side consumption — including the
 // `repos install` CLI subprocess, which shares the token but not this
 // client — while APICalls() is the suite-side per-caller breakdown only.
-func (d *ephemeralDriver) logAPIConsumption(when string) {
-	if r, ok := d.client.(forge.APIQuotaReporter); ok {
+// Paired with the logStartRateLimit baseline, the run total is
+// (remaining_start - remaining_end) + (limit_end - limit_start).
+func logAPIConsumption(client forge.Client, org, when string, logf func(string, ...any)) {
+	if r, ok := client.(forge.APIQuotaReporter); ok {
 		for _, c := range r.APIQuotaCounters() {
-			d.logf("[driver] rate-limit quota %s (org %s): %s", when, d.org, formatAPIQuotaCounter(c))
+			logf("[driver] rate-limit quota %s (org %s): %s", when, org, formatAPIQuotaCounter(c))
 		}
 	}
-	if r, ok := d.client.(forge.RateLimitReporter); ok {
+	if r, ok := client.(forge.RateLimitReporter); ok {
 		if rl, seen := r.RateLimit(); seen {
-			d.logf("[driver] rate-limit %s (org %s): %s", when, d.org, rl.String())
+			logf("[driver] rate-limit %s (org %s): %s", when, org, rl.String())
 		}
 	}
-	if r, ok := d.client.(forge.APICallReporter); ok {
+	if r, ok := client.(forge.APICallReporter); ok {
 		if calls := r.APICalls(); len(calls) > 0 {
-			d.logf("[driver] suite-side API calls %s (org %s): %s", when, d.org, formatAPICalls(calls))
+			logf("[driver] suite-side API calls %s (org %s): %s", when, org, formatAPICalls(calls))
 		}
 	}
 }
@@ -433,11 +472,19 @@ func (d *ephemeralDriver) pruneOldRuns(ctx context.Context) {
 	}
 	repos, err := lister.ListAllOrgRepos(ctx, d.org)
 	if err != nil {
+		// Listing is the single source for both the repos to prune and the
+		// locks that protect them; if it fails we prune nothing, so a
+		// degraded forge can never make an active run's repos look
+		// unprotected (ADR 0114 × 0115).
 		d.logf("[driver] prune: failed to list repos: %v", err)
 		return
 	}
 
-	locked := d.lockedRunIDs(ctx)
+	// Derive the protected run-ids from the same listing: every lock repo in
+	// the org (not just this run's configured slots) whose description names a
+	// current owner. No separate per-slot reads, so there is no path where a
+	// transient lock read fails open and a running suite's repos get deleted.
+	locked := lockedRunIDs(repos)
 
 	groups := make(map[string][]string)
 	for _, r := range repos {
@@ -483,23 +530,19 @@ func (d *ephemeralDriver) pruneOldRuns(ctx context.Context) {
 	d.logf("[driver] prune: %d bt-* repos remaining", total)
 }
 
-// lockedRunIDs reads the org's lock repos and returns the set of run ids
-// that currently own a lock slot, so prune never deletes a running suite's
-// repos out from under it.
-func (d *ephemeralDriver) lockedRunIDs(ctx context.Context) map[string]bool {
+// lockedRunIDs returns the set of run ids that currently own a lock slot,
+// read from an org repo listing: every lock repo (lock-<N>, any index) whose
+// description carries a valid owner token. Deriving this from the same listing
+// prune already fetched means prune never deletes a running suite's repos out
+// from under it — there are no separate per-slot reads that could fail open,
+// and a run holding a slot outside the current config's range is still seen.
+func lockedRunIDs(repos []forge.Repository) map[string]bool {
 	locked := make(map[string]bool)
-	if d.lockPool == nil {
-		return locked
-	}
-	for _, slot := range d.lockPool.cfg.slots() {
-		if slot.Org != d.org {
+	for _, r := range repos {
+		if !isLockRepoName(r.Name) {
 			continue
 		}
-		repo, err := d.client.GetRepo(ctx, slot.Org, slot.Name)
-		if err != nil {
-			continue
-		}
-		if token, ok := parseOwnerToken(repo.Description); ok {
+		if token, ok := parseOwnerToken(r.Description); ok {
 			locked[token.String()] = true
 		}
 	}

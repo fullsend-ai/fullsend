@@ -555,10 +555,7 @@ type Repository struct {
 	CreatedAt time.Time
 	// UpdatedAt is when the repository was last updated (its metadata or
 	// contents). Populated by GetRepo on GitHub (updated_at) and GitLab
-	// (last_activity_at); zero when the forge did not report it. The
-	// behaviour-test lock pool (ADR 0115) uses it as a liveness signal:
-	// a run heartbeats its lock by re-writing the repo description, which
-	// bumps UpdatedAt.
+	// (last_activity_at); zero when the forge did not report it.
 	UpdatedAt time.Time
 }
 
@@ -856,17 +853,29 @@ func (r RateLimit) String() string {
 
 // AllRepoLister is an optional Client capability that lists every
 // repository an org owns, including archived repos and forks (unlike
-// ListOrgRepos, which filters those out). The behaviour-test lock pool's
-// pruning (ADR 0114) uses it to enumerate all ephemeral repos — including
-// fork and host companion repos — for a run.
+// ListOrgRepos, which filters those out).
 type AllRepoLister interface {
 	ListAllOrgRepos(ctx context.Context, org string) ([]Repository, error)
+}
+
+// ActionsDisabler is an optional Client capability that turns off the forge's
+// CI/Actions for a repository, so no further workflow runs can start there.
+type ActionsDisabler interface {
+	DisableActions(ctx context.Context, owner, repo string) error
 }
 
 // RateLimitReporter is implemented by clients that track RateLimit.
 // ok is false until the client has seen a response carrying the headers.
 type RateLimitReporter interface {
 	RateLimit() (state RateLimit, ok bool)
+}
+
+// RateLimitFetcher is an optional Client capability that reads the token's
+// current rate-limit without consuming quota (GitHub's /rate_limit endpoint
+// is not itself rate-limited), for recording a baseline before other calls.
+// Fetching also seeds the client's RateLimitReporter observation.
+type RateLimitFetcher interface {
+	FetchRateLimit(ctx context.Context) (RateLimit, error)
 }
 
 // APICallerOther is the caller name of API calls made with a context that
@@ -1043,10 +1052,8 @@ type Client interface {
 	// UpdateRepoVisibility sets a repository's visibility to public or private.
 	UpdateRepoVisibility(ctx context.Context, owner, repo string, private bool) error
 	// UpdateRepoDescription sets a repository's description, leaving all
-	// other fields unchanged. The behaviour-test lock pool (ADR 0115)
-	// uses it to heartbeat a held lock (re-writing the same owner token
-	// bumps the repo's UpdatedAt) and is otherwise a thin wrapper over the
-	// forge's repo-update endpoint.
+	// other fields unchanged. A thin wrapper over the forge's repo-update
+	// endpoint; writing the description also bumps the repo's UpdatedAt.
 	UpdateRepoDescription(ctx context.Context, owner, repo, description string) error
 	DeleteRepo(ctx context.Context, owner, repo string) error
 

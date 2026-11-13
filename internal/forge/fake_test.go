@@ -875,6 +875,7 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 		// Client
 		"ListOrgRepos":          func(fc *FakeClient) []any { return pack(fc.ListOrgRepos(ctx, "o", true)) },
 		"ListAllOrgRepos":       func(fc *FakeClient) []any { return pack(fc.ListAllOrgRepos(ctx, "o")) },
+		"DisableActions":        func(fc *FakeClient) []any { return pack(fc.DisableActions(ctx, "o", "r")) },
 		"GetRepo":               func(fc *FakeClient) []any { return pack(fc.GetRepo(ctx, "o", "r")) },
 		"CreateRepo":            func(fc *FakeClient) []any { return pack(fc.CreateRepo(ctx, "o", "new", "d", false)) },
 		"UpdateRepoVisibility":  func(fc *FakeClient) []any { return pack(fc.UpdateRepoVisibility(ctx, "o", "r", true)) },

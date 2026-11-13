@@ -123,6 +123,8 @@ const (
 var _ forge.Client = (*LiveClient)(nil)
 var _ forge.GitHubExtensions = (*LiveClient)(nil)
 var _ forge.RateLimitReporter = (*LiveClient)(nil)
+var _ forge.RateLimitFetcher = (*LiveClient)(nil)
+var _ forge.ActionsDisabler = (*LiveClient)(nil)
 var _ forge.APICallReporter = (*LiveClient)(nil)
 var _ forge.APIQuotaReporter = (*LiveClient)(nil)
 
@@ -132,6 +134,45 @@ func (c *LiveClient) RateLimit() (forge.RateLimit, bool) {
 	c.rateMu.Lock()
 	defer c.rateMu.Unlock()
 	return c.rate, c.rateSeen
+}
+
+// FetchRateLimit reads the token's current core rate-limit from GitHub's
+// /rate_limit endpoint, which does not consume core quota. The returned
+// RateLimit is taken from the response body's resources.core (authoritative),
+// and the response headers also seed RateLimit(). The single request is
+// counted under a distinct "ratelimit-baseline" caller so it does not inflate
+// another caller's tally.
+func (c *LiveClient) FetchRateLimit(ctx context.Context) (forge.RateLimit, error) {
+	resp, err := c.get(forge.WithAPICaller(ctx, "ratelimit-baseline"), "/rate_limit")
+	if err != nil {
+		return forge.RateLimit{}, fmt.Errorf("fetching rate limit: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var payload struct {
+		Resources struct {
+			Core struct {
+				Limit     int   `json:"limit"`
+				Remaining int   `json:"remaining"`
+				Reset     int64 `json:"reset"`
+			} `json:"core"`
+		} `json:"resources"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return forge.RateLimit{}, fmt.Errorf("decoding rate limit: %w", err)
+	}
+	core := payload.Resources.Core
+	var reset time.Time
+	if core.Reset > 0 {
+		reset = time.Unix(core.Reset, 0)
+	}
+	return forge.RateLimit{
+		Limit:     core.Limit,
+		Remaining: core.Remaining,
+		Reset:     reset,
+		Resource:  "core",
+		Observed:  time.Now(),
+	}, nil
 }
 
 // APICalls returns how many responses this client has received, by
@@ -1139,6 +1180,7 @@ func (c *LiveClient) ListAllOrgRepos(ctx context.Context, org string) ([]forge.R
 			ID            int64  `json:"id"`
 			Name          string `json:"name"`
 			FullName      string `json:"full_name"`
+			Description   string `json:"description"`
 			DefaultBranch string `json:"default_branch"`
 			Private       bool   `json:"private"`
 			Archived      bool   `json:"archived"`
@@ -1152,6 +1194,7 @@ func (c *LiveClient) ListAllOrgRepos(ctx context.Context, org string) ([]forge.R
 				ID:            r.ID,
 				Name:          r.Name,
 				FullName:      r.FullName,
+				Description:   r.Description,
 				DefaultBranch: r.DefaultBranch,
 				Private:       r.Private,
 				Archived:      r.Archived,
@@ -1257,6 +1300,22 @@ func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo strin
 	}{Private: private}
 	_, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo), body)
 	return err
+}
+
+// DisableActions turns off GitHub Actions for a repository so no new workflow
+// runs can start. Used to retire a retained ephemeral behaviour-test repo at
+// an enforceable boundary. PUT /repos/{owner}/{repo}/actions/permissions with
+// {enabled:false}; already-in-flight runs are not cancelled.
+func (c *LiveClient) DisableActions(ctx context.Context, owner, repo string) error {
+	body := struct {
+		Enabled bool `json:"enabled"`
+	}{Enabled: false}
+	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/actions/permissions", owner, repo), body)
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // UpdateRepoDescription sets a repository's description, leaving all other

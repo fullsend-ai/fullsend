@@ -765,7 +765,9 @@ func TestCreateRepo_AlreadyTaken(t *testing.T) {
 	mux.HandleFunc("/api/v4/groups/org", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{"id": 5})
 	})
+	var handlerCalled bool
 	mux.HandleFunc("/api/v4/projects", func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
 		// GitLab reports a duplicate project name as 400, not 409.
 		w.WriteHeader(http.StatusBadRequest)
 		json.NewEncoder(w).Encode(map[string]any{
@@ -775,6 +777,7 @@ func TestCreateRepo_AlreadyTaken(t *testing.T) {
 
 	_, err := client.CreateRepo(context.Background(), "org", "lock-1", "owner=run-7", false)
 	require.Error(t, err)
+	assert.True(t, handlerCalled, "the create-project endpoint must be exercised")
 	assert.ErrorIs(t, err, forge.ErrAlreadyExists,
 		"a taken project name must map to ErrAlreadyExists for the lock pool's create-to-claim")
 }

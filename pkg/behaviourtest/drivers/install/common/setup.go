@@ -378,24 +378,42 @@ func ParseInferenceStatusWIFProvider(output string) (string, error) {
 	return status.WIFProvider, nil
 }
 
+// ReposInstallOpts configures a single behaviour-test `repos install`. Binary,
+// Token and Target are required; the remaining fields are optional and written
+// into the manifest only when set. Bundling them in a struct keeps the many
+// string parameters from being silently transposable at the call site.
+//
+// AppSet must match the app set the suite's mint was deployed with: it is
+// written as the repo's FULLSEND_APP_SET, which the dispatch shim uses to
+// recognize the registered role bots (e.g. {app_set}-review[bot]). Omitting it
+// defaults the repo to the production app set and breaks bot-identity
+// authorization such as the review-bot fix path.
+type ReposInstallOpts struct {
+	Binary       string // path to the fullsend binary
+	Token        string // forge token for the install
+	Target       string // org/repo to install into
+	MintURL      string // token mint URL (entry config.mint_url)
+	FullsendRef  string // github.fullsend_ref
+	AppSet       string // github.app_set (FULLSEND_APP_SET)
+	ConfigPreset string // BEHAVIOUR_CONFIG_PRESET path or URL (config_base)
+	GCPProjectID string // --vertex-project
+	WIFProvider  string // --vertex-wif-provider
+}
+
 // RunReposInstall installs fullsend into an ephemeral behaviour-test repo
 // via `repos install <target> --fullsend-ref`, the no-vendoring path used by
-// the ephemeral-repo model (ADR 0114). A fresh temp manifest path is used
-// per call for concurrency safety; the empty file is removed first so
-// `repos install` bootstraps a v1 manifest rather than failing on a
-// version-0 empty file. mintURL, fullsendRef, appSet, gcpProjectID and
-// wifProvider are appended only when set.
-//
-// appSet must match the app set the suite's mint was deployed with: it is
-// written as the repo's FULLSEND_APP_SET, which the dispatch shim uses to
-// recognize the registered role bots (e.g. {app_set}-review[bot]). Omitting
-// it defaults the repo to the production app set and breaks bot-identity
-// authorization such as the review-bot fix path.
+// the ephemeral-repo model. A fresh temp manifest path is used per call for
+// concurrency safety; the empty file is removed first so `repos install`
+// bootstraps a v1 manifest rather than failing on a version-0 empty file. The
+// optional ReposInstallOpts fields are written only when set.
 func RunReposInstall(
-	binary, token, target, mintURL, fullsendRef, appSet, configPreset, gcpProjectID, wifProvider string,
+	opts ReposInstallOpts,
 	runCLI CLIRunnerFunc,
 	logf func(string, ...any),
 ) error {
+	binary, token, target := opts.Binary, opts.Token, opts.Target
+	mintURL, fullsendRef, appSet := opts.MintURL, opts.FullsendRef, opts.AppSet
+	configPreset, gcpProjectID, wifProvider := opts.ConfigPreset, opts.GCPProjectID, opts.WIFProvider
 	// The manifest lives in a fresh temp dir so a local config preset can be
 	// staged next to it: `repos install` only reads local presets from inside
 	// the manifest directory. The dir (manifest + any staged preset) is
