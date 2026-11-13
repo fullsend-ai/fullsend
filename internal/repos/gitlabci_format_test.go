@@ -129,7 +129,7 @@ build:
 }
 
 func TestMergeGitLabCI_ReindentedFileKeepsBlankLines(t *testing.T) {
-	existing := "include:\n    - local: other.yml\n\nworkflow:\n    rules:\n        - if: $X\n\n          when: always\n\nbuild:\n    script: echo\n"
+	existing := "include:\n    - local: other.yml\n\nstages:\n    - build\n\nworkflow:\n    rules:\n        - if: $X\n\n          when: always\n\nbuild:\n    script: echo\n"
 	result, err := MergeGitLabCI([]byte(existing))
 	require.NoError(t, err)
 	out := string(result)

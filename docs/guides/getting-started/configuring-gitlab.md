@@ -2154,6 +2154,17 @@ webhook dispatcher job (`fullsend-dispatcher.yml`), which runs only in
 default branch; such a pipeline runs the dispatcher alone, never an agent
 job. Install does not overwrite unrelated jobs.
 
+GitLab replaces a `stages:` list across includes instead of merging it, so
+without a root `stages:` the fullsend include's list would become the
+pipeline's entire stage list. When `.gitlab-ci.yml` has a top-level
+`stages:` list, install appends `dispatch`, `poll`, and `agent` to it. When it
+has none but defines jobs, install writes a `stages:` list with GitLab's
+defaults (`build`, `test`, `deploy`) followed by fullsend's stages, so existing
+jobs keep their stage. When it has none and includes other files, install
+stops before writing anything, because an included file may supply the stage
+list: add a top-level `stages:` list that names every stage your jobs use, then
+run install again. Upgrades of an existing installation follow the same rule.
+
 When an existing, non-empty file already has a `workflow:` block, fullsend sets
 `workflow.auto_cancel.on_new_commit: none` if that key is missing, and does not
 overwrite an existing value. It also adds a `CI_DEBUG_TRACE` deny-before-admit
