@@ -778,9 +778,11 @@ The registry is the bridge between the abstract roles defined in [agent-architec
 Fullsend provides a base set of agent definitions. Each target repository's
 **`.fullsend/`** directory extends this with repo-specific agents, following
 the inheritance model: fullsend defaults, then repo baseline (`config.base.yaml`
-/ harness `base:` references), then repo overrides
-([ADR 0033](ADRs/0033-per-repo-installation-mode.md),
-[ADR 0058](ADRs/0058-agent-registration.md)).
+and its imports), then the ordered imports in `config.yaml`, then the local
+`config.yaml` values. Harness `base:` references compose the individual agent
+definitions ([ADR 0033](ADRs/0033-per-repo-installation-mode.md),
+[ADR 0058](ADRs/0058-agent-registration.md),
+[ADR 0174](ADRs/0174-compose-pinned-configuration-imports.md)).
 
 **Decided:**
 
@@ -788,6 +790,7 @@ the inheritance model: fullsend defaults, then repo baseline (`config.base.yaml`
 - Runtime resolution: `fullsend run <name>` resolves agents in two tiers: (1) entries from the config's `agents` list (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config. The agents-repo fallback is a transitional mechanism for the agent extraction; it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5).
 - Config lookup: config entries are looked up directly via `findConfigAgentEntry`; the agents-repo fallback operates independently when the agent is not found in config. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
 - CLI management: `fullsend agent add|list|set|update|remove` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
+- Configuration imports: `config.yaml` can import ordered, SHA-256-pinned full configuration documents. Imports are composed before the importing file's own values using the existing per-field merge rules; a config document's own imports are composed before that document ([ADR 0174](ADRs/0174-compose-pinned-configuration-imports.md)).
 - Agent generation: `fullsend agent new <name>` writes a complete custom agent — harness, agent definition, result schema, post-script, and the base policy a per-repo install does not vendor; its built-in providers are bare names whose definitions and profiles come from the `fullsend` binary — validates it with the loader dispatch uses, and registers it through the `agent add` path above. A `trigger:` is mandatory, because a trigger-less harness registers and validates and is then silently never dispatched; `--role` is a closed table of the roles the hosted mint serves, so an unservable role fails locally rather than as a `403` at first dispatch ([ADR 0102](ADRs/0102-generate-custom-agents-from-the-cli.md)).
 - Functional tests: agent functional tests live in fullsend-ai/agents, not in this repo. The fullsend release gate runs the release tier (each agent's `release: true` case), and the full tier runs nightly in the agents repo against fullsend `main` ([ADR 0139](ADRs/0139-agent-functional-test-suite-lives-in-agents-repo.md), superseding [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md)'s `eval/` layout).
 
@@ -892,7 +895,11 @@ issue linking to all filed proposals.
 
 ## Configuration layering
 
-Fullsend uses a three-tier configuration inheritance model for all configuration: agent definitions, skills, plugins, policies, harness definitions, and guardrails. Each configuration tier can extend or override the one below it. Guardrails can only be tightened, never weakened.
+Fullsend has three configuration owners: Fullsend defaults, a repository
+baseline, and repository configuration. The repository configuration may import
+ordered, pinned full configuration documents. Imports are composed before the
+importing file's own values with the existing field-specific merge rules.
+Guardrails can only be tightened, never weakened.
 
 ```
 
@@ -919,13 +926,13 @@ Fullsend uses a three-tier configuration inheritance model for all configuration
   │  Repo-specific overrides:                                        │
   │    AGENTS.md          per-repo agent instructions                │
   │    skills/            repo-specific skills (domain knowledge)    │
-  │    .fullsend/config.yaml  overlay - adjust timeouts, agents      │
+  │    .fullsend/config.yaml  imports, then local config overrides   │
   │                                                                  │
   │  Owned by: repo maintainers (CODEOWNERS)                         │
   └──────────────────────────────────────────────────────────────────┘
 
-  Inheritance:  fullsend defaults  <  config.base.yaml  <  config.yaml + repo files
-                (base)                (preset/baseline)    (extend/tighten)
+  Inheritance:  defaults < config.base.yaml < ordered imports < local config + repo files
+                (base)     (baseline)        (shared layers)    (highest priority)
 ```
 
 Per-repo installation is the only supported model. The dedicated
@@ -937,6 +944,11 @@ per-org installation
 Skills flow downward through this stack. A repo-level skill might encode domain knowledge ("this repo uses a custom ORM — here's how queries work"). Upstream fullsend provides foundational skills (code implementation, triage coordination, testing conventions).
 
 AGENTS.md files follow the same layering. A repo's `.fullsend/AGENTS.md` gives agents repo-specific instructions (build commands, test patterns, architectural constraints). Role-specific agent definitions come from upstream unless the repo registers custom agents in the `agents:` list of `.fullsend/config.yaml`.
+
+An imported config can register agents or add a per-agent harness contribution.
+The local `config.yaml` can then override those contributions through the same
+agent-name and harness-composition rules ([ADR 0174](ADRs/0174-compose-pinned-configuration-imports.md),
+[ADR 0162](ADRs/0162-agent-entries-may-carry-harness-overrides.md)).
 
 See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the historical org config repo convention and [ADR 0024](ADRs/0024-harness-definitions.md) for harness definitions.
 
