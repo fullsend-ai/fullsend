@@ -941,6 +941,24 @@ func TestValidateAgentEntries_Trigger(t *testing.T) {
 	require.ErrorContains(t, err, "agents[0] (harness/lint.yaml): invalid trigger")
 }
 
+func TestValidateAgentEntriesAt_ReportsGivenPositions(t *testing.T) {
+	require.NoError(t, ValidateAgentEntriesAt([]AgentEntry{{Name: "review", Source: "harness/review.yaml"}}, []int{3}, nil))
+
+	err := ValidateAgentEntriesAt([]AgentEntry{{Name: "review", Runtime: "made-up-runtime"}}, []int{1}, nil)
+	require.ErrorContains(t, err, `agents[1] (review): invalid runtime "made-up-runtime"`)
+
+	// Duplicate detection reports the second entry's position, not its
+	// index within the subset.
+	err = ValidateAgentEntriesAt([]AgentEntry{
+		{Name: "review", Source: "harness/a.yaml"},
+		{Name: "review", Source: "harness/b.yaml"},
+	}, []int{0, 2}, nil)
+	require.ErrorContains(t, err, "agents[2] (review): duplicate agent name")
+
+	err = ValidateAgentEntriesAt([]AgentEntry{{Name: "review", Source: "harness/review.yaml"}}, nil, nil)
+	require.ErrorContains(t, err, "0 agent positions for 1 agent entries")
+}
+
 func TestPerRepoConfigValidate_RejectsInvalidAgentTrigger(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nagents:\n  - name: review\n    trigger: event.transition.kind ==\n"), 0o644))
