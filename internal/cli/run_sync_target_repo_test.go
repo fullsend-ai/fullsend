@@ -19,6 +19,14 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
+	manifest, err := recordTargetRepoManifest(dstDir)
+	if err != nil {
+		return err
+	}
+	return syncTargetRepoDirWithManifest(srcDir, dstDir, excludes, manifest)
+}
+
 func TestRunCommand_HasSyncTargetRepoFlag(t *testing.T) {
 	cmd := newRunCmd()
 	flag := cmd.Flags().Lookup("sync-target-repo")
@@ -696,7 +704,9 @@ func TestSyncTargetRepoDirWithManifest_ReadonlyRepoRestoresDirModes(t *testing.T
 
 	require.NoError(t, os.Chmod(dstDir, 0o555))
 
-	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, nil))
+	manifest, err := recordTargetRepoManifest(dstDir)
+	require.NoError(t, err)
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest))
 
 	rootInfo, err := os.Stat(dstDir)
 	require.NoError(t, err)
@@ -831,11 +841,21 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 	assert.Contains(t, buf.String(), "Skipping target repository synchronization: validation did not pass")
 
 	buf.Reset()
-	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", []string{"AGENTS.md"}, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]bool) error {
+	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", []string{"AGENTS.md"}, map[string]bool{}, ui.New(&buf), func(_, _ string, _ []string, _ map[string]bool) error {
 		return errors.New("boom")
 	})
 	assert.Equal(t, "failed (boom)", status)
 	assert.Contains(t, buf.String(), "Target repository synchronization failed: boom")
+
+	buf.Reset()
+	called = false
+	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", nil, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]bool) error {
+		called = true
+		return nil
+	})
+	assert.False(t, called)
+	assert.Equal(t, "skipped (pre-run manifest snapshot unavailable)", status)
+	assert.Contains(t, buf.String(), "Skipping target repository synchronization: pre-run manifest snapshot unavailable")
 
 	buf.Reset()
 	var gotExcludes []string
@@ -987,4 +1007,114 @@ func TestRunAgent_SyncTargetRepo_SyncFailureStillRunsPostScript(t *testing.T) {
 	assert.Contains(t, buf.String(), "failed (disk full)")
 	_, err = os.Stat(postMarker)
 	assert.NoError(t, err, "post_script must still run when target repo sync fails")
+}
+
+func TestSyncTargetRepoDirWithManifest_ReadonlySourcePreservesWritableHostModes(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Writable host checkout (0755 dirs, 0644/0755 files) before a readonly_repo run.
+	require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "pkg"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "pkg", "unchanged.txt"), []byte("same"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "pkg", "modified.txt"), []byte("old"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "pkg", "became_exec.sh"), []byte("#!/bin/sh\necho hi"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "pkg", "was_exec.sh"), []byte("#!/bin/sh\necho keep"), 0o755))
+
+	manifest, err := recordTargetRepoManifest(dstDir)
+	require.NoError(t, err)
+
+	// Sandbox checkout after step 8c `chmod a-w` (0555 dirs, 0444/0555 files).
+	t.Cleanup(func() {
+		_ = os.Chmod(filepath.Join(srcDir, "pkg"), 0o755)
+		_ = os.Chmod(filepath.Join(srcDir, "newdir"), 0o755)
+	})
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "pkg"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "pkg", "unchanged.txt"), []byte("same"), 0o444))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "pkg", "modified.txt"), []byte("new"), 0o444))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "pkg", "became_exec.sh"), []byte("#!/bin/sh\necho hi"), 0o555))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "pkg", "was_exec.sh"), []byte("#!/bin/sh\necho keep"), 0o555))
+	require.NoError(t, os.Chmod(filepath.Join(srcDir, "pkg"), 0o555))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "newdir"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "newdir", "added.txt"), []byte("added"), 0o444))
+	require.NoError(t, os.Chmod(filepath.Join(srcDir, "newdir"), 0o555))
+
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest))
+
+	pkgInfo, err := os.Stat(filepath.Join(dstDir, "pkg"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), pkgInfo.Mode().Perm(), "existing writable host directory must stay writable")
+
+	newDirInfo, err := os.Stat(filepath.Join(dstDir, "newdir"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), newDirInfo.Mode().Perm(), "new directory on writable host checkout must be writable")
+
+	unchangedInfo, err := os.Stat(filepath.Join(dstDir, "pkg", "unchanged.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), unchangedInfo.Mode().Perm(), "existing 0644 file must not become 0444")
+
+	modifiedInfo, err := os.Stat(filepath.Join(dstDir, "pkg", "modified.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), modifiedInfo.Mode().Perm(), "modified file must preserve host write bits")
+
+	becameExecInfo, err := os.Stat(filepath.Join(dstDir, "pkg", "became_exec.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), becameExecInfo.Mode().Perm(), "executable bit change from readonly source must keep host write bits")
+
+	wasExecInfo, err := os.Stat(filepath.Join(dstDir, "pkg", "was_exec.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), wasExecInfo.Mode().Perm(), "existing 0755 file must stay 0755")
+
+	addedInfo, err := os.Stat(filepath.Join(dstDir, "newdir", "added.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), addedInfo.Mode().Perm(), "new file on writable host checkout must not be 0444")
+}
+
+func TestSyncTargetRepoDirWithManifest_ModeOnlyChangeBreaksHardlink(t *testing.T) {
+	externalDir := t.TempDir()
+	extSharedFile := filepath.Join(externalDir, "store.txt")
+	require.NoError(t, os.WriteFile(extSharedFile, []byte("shared-content"), 0o644))
+
+	dstDir := t.TempDir()
+	dstLinkedFile := filepath.Join(dstDir, "linked.sh")
+	require.NoError(t, os.Link(extSharedFile, dstLinkedFile))
+
+	manifest, err := recordTargetRepoManifest(dstDir)
+	require.NoError(t, err)
+
+	srcDir := t.TempDir()
+	// Same bytes, different mode (0755 vs 0644).
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "linked.sh"), []byte("shared-content"), 0o755))
+
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest))
+
+	dstInfo, err := os.Stat(dstLinkedFile)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), dstInfo.Mode().Perm())
+
+	extInfo, err := os.Stat(extSharedFile)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), extInfo.Mode().Perm(), "mode-only sync update must break hardlink instead of mutating shared inode")
+	assert.NotEqual(t, extInfo.Sys().(*syscall.Stat_t).Ino, dstInfo.Sys().(*syscall.Stat_t).Ino)
+}
+
+func TestSyncTargetRepoDirWithManifest_NilManifestSkipsPruning(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "host-only.txt"), []byte("keep"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "new.txt"), []byte("new"), 0o644))
+
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, nil))
+
+	assert.FileExists(t, filepath.Join(dstDir, "new.txt"))
+	assert.FileExists(t, filepath.Join(dstDir, "host-only.txt"), "nil manifest must fail closed and skip pruning")
+}
+
+func TestRunOverrides_InvalidSyncTargetRepo(t *testing.T) {
+	t.Setenv("FULLSEND_SYNC_TARGET_REPO", "yes")
+	_, err := resolveRunOverrides(runOverrideFlags{}, os.Getenv, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_SYNC_TARGET_REPO")
+	assert.Contains(t, err.Error(), `"yes"`)
 }

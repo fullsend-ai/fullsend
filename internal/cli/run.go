@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
@@ -1385,6 +1386,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 	printer.KeyValue("Runtime", fmt.Sprintf("%s (from %s)", runtimeBackend.Runtime.Name(), runtimeConfigSource))
+	if overrides.syncTargetRepoSource != "" {
+		printer.KeyValue("Target repo sync", withSource(strconv.FormatBool(overrides.syncTargetRepo), overrides.syncTargetRepoSource))
+	}
 	if h.Image != "" {
 		printer.KeyValue("Image", h.Image)
 	}
@@ -2455,11 +2459,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// is not uploaded or committed. GHA keeps output as a sibling, so Rel
 	// fails IsLocal and nothing is excluded.
 	var preRunSyncManifest map[string]bool
+	var preRunSyncManifestErr error
 	if overrides.syncTargetRepo {
-		var manifestErr error
-		preRunSyncManifest, manifestErr = recordTargetRepoManifest(hostRepositoryDir)
-		if manifestErr != nil {
-			printer.StepWarn("Could not snapshot target repo manifest before upload: " + manifestErr.Error())
+		preRunSyncManifest, preRunSyncManifestErr = recordTargetRepoManifest(hostRepositoryDir)
+		if preRunSyncManifestErr != nil {
+			printer.StepWarn("Could not snapshot target repo manifest before upload (disabling target repo sync): " + preRunSyncManifestErr.Error())
 		}
 	}
 
@@ -3199,6 +3203,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer,
 		syncTargetRepoDirFn,
 	)
+	if strings.HasPrefix(syncStatus, "synchronized") && h.SecurityEnabled() {
+		postSyncFindings := scanRepoContextFiles(hostRepositoryDir)
+		if security.HasCriticalFindings(postSyncFindings) {
+			printer.StepWarn(fmt.Sprintf("Post-sync security scan: %d critical finding(s) in synced context files; inspect before building or running tools", len(postSyncFindings)))
+		} else if len(postSyncFindings) > 0 {
+			printer.StepWarn(fmt.Sprintf("Post-sync security scan: %d finding(s) in synced context files", len(postSyncFindings)))
+		}
+	}
 
 	// 10. Print results.
 	printer.Blank()
@@ -6319,6 +6331,11 @@ func runTargetRepoSync(
 		printer.StepWarn("Skipping target repository synchronization: " + skipReason)
 		return fmt.Sprintf("skipped (%s)", skipReason)
 	}
+	if preRunManifest == nil {
+		const reason = "pre-run manifest snapshot unavailable"
+		printer.StepWarn("Skipping target repository synchronization: " + reason)
+		return fmt.Sprintf("skipped (%s)", reason)
+	}
 
 	syncStart := time.Now()
 	printer.StepStart("Synchronizing sandbox changes to target repository")
@@ -6385,11 +6402,11 @@ func wouldSanitizeStripSymlink(linkPath, absRootResolved string) bool {
 	return !strings.HasPrefix(resolved+string(filepath.Separator), absRootResolved+string(filepath.Separator))
 }
 
-// syncTargetRepoDir synchronizes files from srcDir into dstDir, mirroring additions,
-// modifications, and deletions, while strictly preserving paths matching excludes
-// (such as ".git" at any depth, runner-injected files, and nested output directories).
-func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
-	return syncTargetRepoDirWithManifest(srcDir, dstDir, excludes, nil)
+func hasMultipleLinks(fi os.FileInfo) bool {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return st.Nlink > 1
+	}
+	return false
 }
 
 type dirPermEntry struct {
@@ -6406,7 +6423,8 @@ type pruneDirEntry struct {
 // syncTargetRepoDirWithManifest mirrors additions, modifications, and deletions from
 // srcDir into dstDir. When preRunManifest is non-nil, entries absent from both srcDir
 // and preRunManifest (such as host-only files created during an agent run) are preserved,
-// and symlinks that sanitizeDownload strips are never pruned.
+// and symlinks that sanitizeDownload strips are never pruned. When preRunManifest is nil,
+// pruning is disabled (fail-closed) so no host entries are deleted.
 func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, preRunManifest map[string]bool) error {
 	absSrc, err := filepath.Abs(srcDir)
 	if err != nil {
@@ -6423,7 +6441,9 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 	if err := os.MkdirAll(absDst, 0o755); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
 	}
+	rootReadOnly := false
 	if fi, statErr := os.Stat(absDst); statErr == nil && fi.Mode().Perm()&0o200 == 0 {
+		rootReadOnly = true
 		origRootPerm := fi.Mode().Perm()
 		if err := os.Chmod(absDst, origRootPerm|0o700); err != nil {
 			return fmt.Errorf("ensuring destination directory is writable: %w", err)
@@ -6458,8 +6478,8 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 		return nil
 	})
 
-	// Track directory permissions separately so read-only modes (e.g. readonly_repo)
-	// are applied only after child writes and prunes finish.
+	// Track directory permissions separately so pre-existing read-only host directories
+	// (or new directories in a read-only host root) are restored only after child writes and prunes finish.
 	var dirPerms []dirPermEntry
 
 	// 1. Copy / update all files from srcDir to dstDir (skipping excludes).
@@ -6504,7 +6524,17 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 		}
 
 		if d.IsDir() {
-			if fi, statErr := os.Lstat(targetPath); statErr == nil && !fi.IsDir() {
+			if fi, statErr := os.Lstat(targetPath); statErr == nil {
+				if fi.IsDir() {
+					origPerm := fi.Mode().Perm()
+					if origPerm&0o200 == 0 {
+						if err := os.Chmod(targetPath, origPerm|0o700); err != nil {
+							return err
+						}
+						dirPerms = append(dirPerms, dirPermEntry{path: targetPath, perm: origPerm})
+					}
+					return nil
+				}
 				if isAncestorOfExcludedPath(rel, allExcludes) {
 					return fmt.Errorf("cannot replace ancestor of excluded path %q with directory", rel)
 				}
@@ -6517,23 +6547,30 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 				return err
 			}
 			perm := info.Mode().Perm()
+			if !rootReadOnly && perm&0o200 == 0 {
+				perm |= 0o200
+			}
 			if err := os.MkdirAll(targetPath, perm|0o700); err != nil {
 				return err
 			}
 			if err := os.Chmod(targetPath, perm|0o700); err != nil {
 				return err
 			}
-			dirPerms = append(dirPerms, dirPermEntry{path: targetPath, perm: perm})
+			if perm&0o200 == 0 {
+				dirPerms = append(dirPerms, dirPermEntry{path: targetPath, perm: perm})
+			}
 			return nil
 		}
 
-		if fi, statErr := os.Lstat(targetPath); statErr == nil && !fi.Mode().IsRegular() {
+		dstInfo, dstStatErr := os.Lstat(targetPath)
+		if dstStatErr == nil && !dstInfo.Mode().IsRegular() {
 			if isAncestorOfExcludedPath(rel, allExcludes) {
 				return fmt.Errorf("cannot replace ancestor of excluded path %q with file", rel)
 			}
 			if err := os.RemoveAll(targetPath); err != nil {
 				return err
 			}
+			dstStatErr = os.ErrNotExist
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -6543,17 +6580,30 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 		if err != nil {
 			return err
 		}
-		if fi, statErr := os.Lstat(targetPath); statErr == nil && fi.Mode().IsRegular() && fi.Size() == info.Size() {
+		wantPerm := info.Mode().Perm()
+		if dstStatErr == nil && dstInfo.Mode().IsRegular() {
+			if dstInfo.Mode().Perm()&0o200 != 0 && wantPerm&0o200 == 0 {
+				// Sandbox files may have write bits stripped by readonly_repo; keep the
+				// host file's non-exec bits while propagating executable-bit changes.
+				wantPerm = (dstInfo.Mode().Perm() &^ 0o111) | (wantPerm & 0o111)
+			}
+		} else if !rootReadOnly && wantPerm&0o200 == 0 {
+			wantPerm |= 0o200
+		}
+		if dstStatErr == nil && dstInfo.Mode().IsRegular() && dstInfo.Size() == info.Size() {
 			if dstData, dstErr := os.ReadFile(targetPath); dstErr == nil && bytes.Equal(data, dstData) {
-				if fi.Mode().Perm() != info.Mode().Perm() {
-					if err := os.Chmod(targetPath, info.Mode().Perm()); err != nil {
+				if dstInfo.Mode().Perm() == wantPerm {
+					return nil
+				}
+				if !hasMultipleLinks(dstInfo) {
+					if err := os.Chmod(targetPath, wantPerm); err != nil {
 						return err
 					}
+					return nil
 				}
-				return nil
 			}
 		}
-		if err := writeAtomicFile(targetPath, data, info.Mode().Perm()); err != nil {
+		if err := writeAtomicFile(targetPath, data, wantPerm); err != nil {
 			return err
 		}
 		_ = os.Chtimes(targetPath, time.Now(), info.ModTime())
@@ -6565,75 +6615,78 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 
 	// 2. Prune files from dstDir that do not exist in srcDir (skipping excludes,
 	// sanitizer-stripped symlinks, and host-only entries created after upload).
-	var dirsToPrune []pruneDirEntry
-	err = filepath.WalkDir(absDst, func(path string, d os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if os.IsNotExist(walkErr) {
-				return nil
-			}
-			return walkErr
-		}
-		rel, err := filepath.Rel(absDst, path)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		if isExcludedPath(rel, allExcludes) {
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		srcPath := filepath.Join(absSrc, rel)
-		if _, statErr := os.Lstat(srcPath); os.IsNotExist(statErr) {
-			if isAncestorOfExcludedPath(rel, allExcludes) {
-				return nil
-			}
-			if d.Type()&os.ModeSymlink != 0 && wouldSanitizeStripSymlink(path, absDstResolved) {
-				return nil
-			}
-			if preRunManifest != nil && !preRunManifest[rel] {
-				return nil
-			}
-			if d.IsDir() {
-				entry := pruneDirEntry{path: path}
-				if info, infoErr := d.Info(); infoErr == nil && info.Mode().Perm()&0o200 == 0 {
-					entry.origPerm = info.Mode().Perm()
-					if chmodErr := os.Chmod(path, entry.origPerm|0o700); chmodErr == nil {
-						entry.chmodded = true
-					}
+	// Fail closed if preRunManifest is nil so a snapshot failure never deletes host files.
+	if preRunManifest != nil {
+		var dirsToPrune []pruneDirEntry
+		err = filepath.WalkDir(absDst, func(path string, d os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				if os.IsNotExist(walkErr) {
+					return nil
 				}
-				dirsToPrune = append(dirsToPrune, entry)
-				return nil
+				return walkErr
 			}
-			if err := os.Remove(path); err != nil {
+			rel, err := filepath.Rel(absDst, path)
+			if err != nil {
 				return err
 			}
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("pruning deleted files from target repository: %w", err)
-	}
-
-	// Remove empty pruned directories deepest-first, leaving any directory that
-	// still holds protected descendants (excludes, stripped symlinks, host-only files).
-	for i := len(dirsToPrune) - 1; i >= 0; i-- {
-		dp := dirsToPrune[i]
-		entries, readErr := os.ReadDir(dp.path)
-		if readErr == nil && len(entries) == 0 {
-			if rmErr := os.Remove(dp.path); rmErr != nil {
-				return fmt.Errorf("pruning deleted files from target repository: %w", rmErr)
+			if rel == "." {
+				return nil
 			}
-		} else if dp.chmodded {
-			_ = os.Chmod(dp.path, dp.origPerm)
+			if isExcludedPath(rel, allExcludes) {
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+
+			srcPath := filepath.Join(absSrc, rel)
+			if _, statErr := os.Lstat(srcPath); os.IsNotExist(statErr) {
+				if isAncestorOfExcludedPath(rel, allExcludes) {
+					return nil
+				}
+				if d.Type()&os.ModeSymlink != 0 && wouldSanitizeStripSymlink(path, absDstResolved) {
+					return nil
+				}
+				if !preRunManifest[rel] {
+					return nil
+				}
+				if d.IsDir() {
+					entry := pruneDirEntry{path: path}
+					if info, infoErr := d.Info(); infoErr == nil && info.Mode().Perm()&0o200 == 0 {
+						entry.origPerm = info.Mode().Perm()
+						if chmodErr := os.Chmod(path, entry.origPerm|0o700); chmodErr == nil {
+							entry.chmodded = true
+						}
+					}
+					dirsToPrune = append(dirsToPrune, entry)
+					return nil
+				}
+				if err := os.Remove(path); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return fmt.Errorf("pruning deleted files from target repository: %w", err)
+		}
+
+		// Remove empty pruned directories deepest-first, leaving any directory that
+		// still holds protected descendants (excludes, stripped symlinks, host-only files).
+		for i := len(dirsToPrune) - 1; i >= 0; i-- {
+			dp := dirsToPrune[i]
+			entries, readErr := os.ReadDir(dp.path)
+			if readErr == nil && len(entries) == 0 {
+				if rmErr := os.Remove(dp.path); rmErr != nil {
+					return fmt.Errorf("pruning deleted files from target repository: %w", rmErr)
+				}
+			} else if dp.chmodded {
+				_ = os.Chmod(dp.path, dp.origPerm)
+			}
 		}
 	}
 
-	// 3. Apply final directory permissions deepest-first (supports readonly_repo).
+	// 3. Apply final directory permissions deepest-first (supports read-only host dirs).
 	for i := len(dirPerms) - 1; i >= 0; i-- {
 		if err := os.Chmod(dirPerms[i].path, dirPerms[i].perm); err != nil {
 			return fmt.Errorf("restoring directory permissions: %w", err)

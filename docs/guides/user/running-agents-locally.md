@@ -335,6 +335,7 @@ By default, `fullsend run` operates in an isolated sandbox and leaves your local
    fullsend run code \
      --fullsend-dir /tmp/fullsend-agents/ \
      --target-repo /tmp/target-repo/ \
+     --forge github \
      --env-file fullsend-code.env \
      --sync-target-repo
    ```
@@ -348,7 +349,9 @@ By default, `fullsend run` operates in an isolated sandbox and leaves your local
    git diff
    ```
 
-*Note*: Synchronization is strictly success-gated. If the agent run, validation loop, or transcript encounters an error, or if the run times out, synchronization is skipped to ensure the target repository remains untouched. Critical paths like `.git/` (at any depth) and configured output directories are excluded from synchronization and protected against pruning. Runner-injected files (`AGENTS.md`, `CLAUDE.md`) and uncommitted agent working directories (`.agentready/`, `.fullsend-workspace/`) are also excluded when they did not exist on the host prior to the run. Atomic file writes are used to break hardlinks and prevent modifying shared inodes outside the target repository.
+*Note*: Synchronization is strictly success-gated. If the agent run, validation loop, or transcript encounters an error, or if the run times out, synchronization is skipped to ensure the target repository remains untouched. Critical paths like `.git/` (at any depth) and configured output directories are excluded from synchronization and protected against pruning. Runner-injected files (`AGENTS.md`, `CLAUDE.md`) and uncommitted agent working directories (`.agentready/`, `.fullsend-workspace/`) are also excluded when they did not exist on the host prior to the run. Atomic file writes break hardlinks on modified files and mode-only updates so shared inodes outside the target repository are not mutated in place.
+
+*Security warning*: Synchronized files are **untrusted agent output** (`SafeDownload` strips unsafe symlinks and special files, not arbitrary code or config edits). Always inspect `git status` and `git diff` in `/tmp/target-repo` before running builds/tests, loading `.envrc`, opening the checkout in an IDE, or pointing another agent runtime at it.
 
 ### Choosing the runtime
 

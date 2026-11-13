@@ -137,10 +137,12 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 		o.syncTargetRepo = flags.syncTargetRepo
 		o.syncTargetRepoSource = sourceFlagSyncTargetRepo
 	} else if v := env(envSyncTargetRepo); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			o.syncTargetRepo = b
-			o.syncTargetRepoSource = envSyncTargetRepo
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return runOverrides{}, fmt.Errorf("%s: invalid boolean value %q: must be true or false", envSyncTargetRepo, v)
 		}
+		o.syncTargetRepo = b
+		o.syncTargetRepoSource = envSyncTargetRepo
 	}
 
 	return o, nil
