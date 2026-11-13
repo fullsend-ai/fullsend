@@ -52,8 +52,10 @@ GCP_PROJECT=<mint-project> e2e/org-pool/enroll.sh NN
 
 Set `REGION` to override the mint region (default `us-central1`).
 
-The script enrolls `test-repo` and the behaviour pool slots `test-repo-01`
-… `test-repo-12`. It is idempotent, and the GitHub repositories need not
+The script enrolls only the behaviour pool slots `test-repo-01` …
+`test-repo-12`; it does not enroll the singular `test-repo` (a scratch
+repo, not a behaviour slot). It is idempotent, and the GitHub
+repositories need not
 exist — enroll is an allowlist/WIF update only. Do not enroll `*-fork`
 names or the `*-mint-host` / `*-mint-unapproved` probe hosts. Re-run when
 adding a new pool org or after mint infrastructure changes that drop
