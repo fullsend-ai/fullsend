@@ -1562,6 +1562,12 @@ fullsend repos uninstall group/subgroup/project
 | `--uninstall-only` | Yes | No |
 
 - **Default:** tear down + remove from manifest. Only repos whose teardown succeeds are removed from the manifest.
+  When uninstall removes entries from a local `repos.yaml`, it reads the
+  file again just before writing and removes the entries from that copy.
+  Edits another command made to the file during the teardown, such as a
+  tracker default recorded by a concurrent `repos install`, are kept. If
+  the file no longer parses or validates by then, uninstall leaves it
+  untouched and fails; fix the file, then re-run with `--manifest-only`.
 - **`--manifest-only`:** remove the manifest entry without tearing down the installation. Use when the repo is already deleted/transferred or was never successfully installed.
 - **`--uninstall-only`:** tear down the installation but keep the manifest entry. Use for temporary teardown with intent to reinstall later.
 

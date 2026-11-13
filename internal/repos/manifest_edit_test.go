@@ -116,6 +116,161 @@ func TestRemoveFromManifest_Basic(t *testing.T) {
 	}
 }
 
+// TestRemoveFromManifest_KeepsConcurrentEdits covers #9320: uninstall loads
+// repos.yaml before teardown, and an install that runs during the teardown
+// records edits in the file. The removal must apply to the file as it is at
+// write time, so those edits survive.
+func TestRemoveFromManifest_KeepsConcurrentEdits(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	data, err := MarshalWithHeader(testManifest("acme/api", "acme/web"))
+	if err != nil {
+		t.Fatalf("MarshalWithHeader() error = %v", err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	loaded, err := LoadManifest(context.Background(), manifestPath)
+	if err != nil {
+		t.Fatalf("LoadManifest() error = %v", err)
+	}
+
+	// Another command edits the file after uninstall loaded it.
+	if _, err := SetManifestValue(manifestPath, `github.repos["acme/web"].config.tracker`, `{"github": {}}`); err != nil {
+		t.Fatalf("SetManifestValue(tracker) error = %v", err)
+	}
+	if _, err := SetManifestValue(manifestPath, `github.repos["acme/new"]`, `{}`); err != nil {
+		t.Fatalf("SetManifestValue(new entry) error = %v", err)
+	}
+
+	result, updated, err := RemoveFromManifest(ManifestEditConfig{
+		Manifest:     loaded,
+		ManifestPath: manifestPath,
+	}, []string{"acme/api"}, nil)
+	if err != nil {
+		t.Fatalf("RemoveFromManifest() error = %v", err)
+	}
+	if len(result.Removed) != 1 || result.Removed[0] != "acme/api" {
+		t.Errorf("Removed = %v, want [acme/api]", result.Removed)
+	}
+
+	reloaded, err := LoadManifest(context.Background(), manifestPath)
+	if err != nil {
+		t.Fatalf("LoadManifest() error = %v", err)
+	}
+	for _, m := range []*Manifest{updated, reloaded} {
+		var names []string
+		var webTracker bool
+		for _, e := range m.AllRepos() {
+			names = append(names, e.Name)
+			if e.Name == "acme/web" && e.Config.IsSet() {
+				webTracker = true
+			}
+		}
+		if len(names) != 2 || names[0] != "acme/web" || names[1] != "acme/new" {
+			t.Errorf("repos = %v, want [acme/web acme/new]", names)
+		}
+		if !webTracker {
+			t.Error("tracker recorded for acme/web after load was dropped")
+		}
+	}
+}
+
+// TestRemoveFromManifest_RefusesInvalidCurrentFile checks that a file that
+// changed into an invalid manifest is not overwritten.
+func TestRemoveFromManifest_RefusesInvalidCurrentFile(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	data, err := MarshalWithHeader(testManifest("acme/api", "acme/web"))
+	if err != nil {
+		t.Fatalf("MarshalWithHeader() error = %v", err)
+	}
+
+	for name, content := range map[string]string{
+		"unparsable": "version: 1\nunknown_key: true\n",
+		"invalid":    "version: 2\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			loaded, err := LoadManifest(context.Background(), manifestPath)
+			if err != nil {
+				t.Fatalf("LoadManifest() error = %v", err)
+			}
+			if err := os.WriteFile(manifestPath, []byte(content), 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			_, _, err = RemoveFromManifest(ManifestEditConfig{
+				Manifest:     loaded,
+				ManifestPath: manifestPath,
+			}, []string{"acme/api"}, nil)
+			if err == nil {
+				t.Fatal("RemoveFromManifest() error = nil, want error")
+			}
+			got, readErr := os.ReadFile(manifestPath)
+			if readErr != nil {
+				t.Fatalf("ReadFile() error = %v", readErr)
+			}
+			if string(got) != content {
+				t.Errorf("manifest was rewritten:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestRemoveFromManifest_CapitalizationChangedAfterLoad checks that an entry
+// whose capitalization changed after load is still removed from the file.
+func TestRemoveFromManifest_CapitalizationChangedAfterLoad(t *testing.T) {
+	dir := t.TempDir()
+	manifestPath := filepath.Join(dir, "repos.yaml")
+
+	write := func(m *Manifest) {
+		t.Helper()
+		data, err := MarshalWithHeader(m)
+		if err != nil {
+			t.Fatalf("MarshalWithHeader() error = %v", err)
+		}
+		if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+	}
+
+	write(testManifest("acme/api", "acme/web"))
+	loaded, err := LoadManifest(context.Background(), manifestPath)
+	if err != nil {
+		t.Fatalf("LoadManifest() error = %v", err)
+	}
+	write(testManifest("Acme/API", "acme/web"))
+
+	if _, _, err := RemoveFromManifest(ManifestEditConfig{
+		Manifest:     loaded,
+		ManifestPath: manifestPath,
+	}, []string{"acme/api"}, nil); err != nil {
+		t.Fatalf("RemoveFromManifest() error = %v", err)
+	}
+
+	reloaded, err := LoadManifest(context.Background(), manifestPath)
+	if err != nil {
+		t.Fatalf("LoadManifest() error = %v", err)
+	}
+	all := reloaded.AllRepos()
+	if len(all) != 1 || all[0].Name != "acme/web" {
+		t.Errorf("repos = %v, want only acme/web", all)
+	}
+}
+
+func TestReloadManifestForWrite_NonRegularPath(t *testing.T) {
+	for _, path := range []string{t.TempDir(), filepath.Join(t.TempDir(), "missing.yaml")} {
+		got, err := reloadManifestForWrite(path)
+		if err != nil || got != nil {
+			t.Errorf("reloadManifestForWrite(%q) = %v, %v; want nil, nil", path, got, err)
+		}
+	}
+}
+
 func TestRemoveFromManifest_Glob(t *testing.T) {
 	manifest := testManifest("acme/api", "acme/web", "other/docs")
 
