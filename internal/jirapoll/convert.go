@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
@@ -47,6 +48,20 @@ func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
 		State: normevent.State{
 			Labels: labels,
 		},
+	}
+
+	if event.IssueType != nil {
+		// Optional metadata must satisfy the schema without preventing an
+		// otherwise valid event from dispatching when Jira omits or corrupts it.
+		idLen := utf8.RuneCountInString(event.IssueType.ID)
+		nameLen := utf8.RuneCountInString(event.IssueType.Name)
+		if idLen >= 1 && idLen <= 255 && nameLen >= 1 && nameLen <= 255 {
+			ne.State.IssueType = &normevent.IssueType{
+				ID:        event.IssueType.ID,
+				Name:      event.IssueType.Name,
+				IsSubtask: event.IssueType.Subtask,
+			}
+		}
 	}
 
 	switch event.Type {

@@ -59,6 +59,7 @@ versioning note in [README.md](README.md)).
 | `entity.linked_change_proposal` | Omitted — Jira poll emits work-item events only |
 | `actor` | Comment/changelog author (see below) |
 | `transition` | Mapped semantic transition (see below) |
+| `state.issue_type` | Current issue type `{id, name, is_subtask}` from `fields.issuetype`; omitted when unavailable |
 | `state.labels` | Current Jira label names at event time |
 
 ## Transition mapping
@@ -125,6 +126,13 @@ deployments and field configurations, so the adapter tolerates both rather
 than depending on either.
 
 ## State
+
+- `state.issue_type` — optional current Jira issue type: `id` and `name` are
+  strings of 1–255 characters; `is_subtask` is a boolean (Jira's `subtask`). The adapter omits the
+  object if either string is empty or exceeds that limit. The ID is stable within the Jira instance;
+  the name may be customized or renamed. This is the search snapshot, not the
+  historical type at the transition timestamp. Type-only changes do not emit
+  events. CEL rules SHOULD guard access with `has(event.state.issue_type)`.
 
 - `state.labels` — label names from `fields.labels` at event time; see
   [Validation and skipping](#validation-and-skipping) for how an issue served

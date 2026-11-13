@@ -525,8 +525,9 @@ type searchRequest struct {
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
-// searchFields lists the issue fields SearchIssues requests. Of these,
-// the poller reads only "created", "labels", and "reporter". "project"
+// searchFields lists the issue fields SearchIssues requests. The poller
+// reads "created", "labels", "reporter", "assignee", and "issuetype"
+// (for normalized state.issue_type metadata). "project"
 // carries the immutable project database ID, the Jira container identity
 // for trace binding (ADR 0154), so search results hold the same identity
 // as issue reads; GetIssue fetches it through its own request.
@@ -536,7 +537,7 @@ type searchRequest struct {
 // plausibly exceed the client's 10MB decode cap — and since a failed
 // search aborts the whole cycle with the same data returning every time,
 // that failure mode would wedge the poller for the entire project.
-var searchFields = []string{"summary", "status", "labels", "reporter", "assignee", "created", "updated", "project"}
+var searchFields = []string{"summary", "status", "labels", "reporter", "assignee", "created", "updated", "project", "issuetype"}
 
 // maxSearchPages limits pagination to prevent unbounded memory growth
 // from overly broad JQL queries.

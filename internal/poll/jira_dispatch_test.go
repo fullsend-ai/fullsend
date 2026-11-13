@@ -74,7 +74,9 @@ func TestDispatchJiraEvent_NestedProjectThroughAPIRoute(t *testing.T) {
 		PollJobURL:  "https://gitlab.example.com/gitlab/group/sub/project/-/jobs/9",
 	}))
 
-	if err := p.DispatchJiraEvent(context.Background(), "triage", jiraTestEvent("group/sub/project")); err != nil {
+	event := jiraTestEvent("group/sub/project")
+	event.State.IssueType = &normevent.IssueType{ID: "10002", Name: "Subtask", IsSubtask: true}
+	if err := p.DispatchJiraEvent(context.Background(), "triage", event); err != nil {
 		t.Fatalf("DispatchJiraEvent: %v", err)
 	}
 	if len(mc.pipelineCalls) != 1 {
@@ -116,6 +118,9 @@ func TestDispatchJiraEvent_NestedProjectThroughAPIRoute(t *testing.T) {
 	}
 
 	eventType, ev := decodeJiraPayload(t, vars["EVENT_PAYLOAD_B64"])
+	if ev.State.IssueType == nil || *ev.State.IssueType != *event.State.IssueType {
+		t.Errorf("issue type = %+v, want %+v", ev.State.IssueType, event.State.IssueType)
+	}
 	if eventType != "jira_comment" {
 		t.Errorf("payload type = %q, want jira_comment", eventType)
 	}

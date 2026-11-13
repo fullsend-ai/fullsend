@@ -194,13 +194,14 @@ func TestSearchIssues_Pagination(t *testing.T) {
 		// unbounded payloads can exceed the client's decode cap and wedge
 		// the whole cycle.
 		assert.Equal(t, searchFields, body.Fields)
+		assert.Contains(t, body.Fields, "issuetype")
 
 		callCount++
 		switch body.NextPageToken {
 		case "":
 			issues := make([]Issue, 50)
 			for i := range issues {
-				issues[i] = Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1)}
+				issues[i] = Issue{ID: fmt.Sprintf("%d", i+1), Key: fmt.Sprintf("PROJ-%d", i+1), Fields: IssueFields{IssueType: &IssueType{ID: "10001", Name: "Bug", Subtask: false}}}
 			}
 			writeJSON(t, w, http.StatusOK, SearchResult{
 				Issues:        issues,
@@ -234,6 +235,7 @@ func TestSearchIssues_Pagination(t *testing.T) {
 	assert.Len(t, issues, 120)
 	assert.Equal(t, 3, callCount)
 	assert.Equal(t, "PROJ-1", issues[0].Key)
+	assert.Equal(t, &IssueType{ID: "10001", Name: "Bug", Subtask: false}, issues[0].Fields.IssueType)
 	assert.Equal(t, "PROJ-120", issues[119].Key)
 }
 

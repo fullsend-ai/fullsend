@@ -128,12 +128,13 @@ func (a Authorization) labelMode() string {
 
 // JiraEvent is the intermediate event representation, analogous to poll.RoutableEvent.
 type JiraEvent struct {
-	Type      string    // "comment_added", "label_changed", "opened", "reopened", "edited", "closed"
-	IssueID   string    // Jira numeric issue ID
-	IssueKey  string    // e.g., "PROJ-123"
-	IssueURL  string    // Browse URL
-	UpdatedAt time.Time // When this event occurred
-	Labels    []string  // Current labels at event time
+	IssueType *jira.IssueType // Current issue type; nil when Jira omits it
+	Type      string          // "comment_added", "label_changed", "opened", "reopened", "edited", "closed"
+	IssueID   string          // Jira numeric issue ID
+	IssueKey  string          // e.g., "PROJ-123"
+	IssueURL  string          // Browse URL
+	UpdatedAt time.Time       // When this event occurred
+	Labels    []string        // Current labels at event time
 
 	// Comment fields (when Type == "comment_added")
 	CommentID     string
