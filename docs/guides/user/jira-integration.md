@@ -446,8 +446,8 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   `JIRA_DUPLICATE_TRANSITION`, `JIRA_NOT_PLANNED_TRANSITION`, and
   `JIRA_SPLIT_TRANSITION` in the triage harness's Jira overlay (by default
   `Duplicate`, `Won't Do`, and `Obsolete`). Override them in a harness if your
-  Jira workflow uses different names. Tracker-neutral transition discovery is
-  tracked in [#6704](https://github.com/fullsend-ai/fullsend/issues/6704).
+  Jira workflow uses different names. Code uses the shared
+  `fullsend issues transition` command for the optional hooks described below.
 - **Updates Jira cannot apply:** triage lists them under **Not applied in
   Jira** in its comment instead of dropping them. This covers a label add for
   a label not used anywhere on the Jira site (triage does not create new
@@ -460,17 +460,19 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   posts a new one.
 - **Write failures:** a failed Jira write fails the step, so it is never
   reported as a success. For triage this covers label adds and removals,
-  component updates, comments, and transitions. For code the step fails even
-  though the PR or MR already exists.
+  component updates, comments, and transitions. For code, a failed stage comment fails the step even
+  though the PR or MR already exists. Optional code transitions only warn
+  on failure; they do not fail the run.
 - **Bot loops:** the writes authenticate as `JIRA_USER_EMAIL` / `JIRA_TOKEN`,
   the same account the poller classifies as `actor.kind: bot`, so they do not
   dispatch agents again. See [How it works](#how-it-works).
 - **Credentials:** the triage and code harnesses pass `JIRA_USER_EMAIL` and
-  `JIRA_TOKEN` to the runner-side post-scripts only. The sandbox gets the
+  `JIRA_TOKEN` to runner-side pre- and post-scripts only. The sandbox gets the
   `jira-ro` provider's placeholder, not the real token.
 
-When the code agent makes no PR or MR, or the run fails, nothing beyond the
-run-status update is written to Jira.
+When the code agent makes no PR or MR, it does not perform a PR-ready
+transition. A configured run label or started transition may already have
+been applied, even if the run later fails.
 
 Custom agents can use `fullsend issues post-comment --tracker jira` to post
 results back to Jira, and `fullsend issues create --tracker jira` to create
@@ -478,6 +480,43 @@ Jira issues and sub-tasks. These commands use the `tracker.Client` Jira
 implementation
 ([#5989](https://github.com/fullsend-ai/fullsend/issues/5989)). See
 [Issue commands](issues-commands.md) for usage.
+
+### Optional code transitions
+
+Use a code-agent harness with the transition hooks and a Fullsend version that
+provides `fullsend issues transition`. Configure these settings in the harness,
+not in `config.yaml`:
+
+```yaml
+env:
+  runner:
+    CODE_JIRA_STARTED_TRANSITION: "In Progress"
+    CODE_JIRA_PR_READY_TRANSITION: "Review"
+```
+
+Both settings default to `"off"`; unset or empty values also disable the hook.
+They are independent. Values must exactly match **transition names** available
+in your Jira workflow, not destination status names. `In Progress` works here
+only if the workflow has a transition with that name. Jira defines the allowed
+source statuses and checks the account's transition permissions and workflow
+conditions. Restrict the transitions in Jira if they must not reopen or move
+blocked issues.
+
+The started hook runs after Jira code preflight completes without a fatal error,
+including its skip checks and dependency-setup phase. Skipped runs do not
+execute the transition. Existing warning-only
+setup failures remain nonfatal. This happens before sandbox creation, so it
+means the run passed preflight, not that code generation started. A later startup
+failure does not roll back the transition.
+
+The PR-ready hook runs after the code-stage comment succeeds and the post-script
+confirms an open, non-draft GitHub PR or GitLab MR. It does not watch for later
+draft-to-ready changes or merges. Both hooks use the shared
+[`fullsend issues transition`](issues-commands.md) command on the source Jira
+issue. Missing prerequisites, unavailable transitions, and failed optional
+writes produce warnings rather than failing the run. The hooks do not
+retry failed writes automatically. A subsequent run may execute the transition
+again, including a Jira self-transition if the workflow allows it.
 
 ## Prerequisites
 
@@ -1303,4 +1342,4 @@ However, more pollers against the same Jira project means more API calls per cyc
 - [CEL Triggers Reference](cel-triggers-reference.md) — NormalizedEvent fields and routing rules
 - [Bring Your Own Agent](bring-your-own-agent.md) — adding custom agents
 - [Configuring agent behavior](customizing-agents.md) — harness configuration
-- [Issue commands](issues-commands.md) — `fullsend issues get`, `create`, and `post-comment`, including Jira
+- [Issue commands](issues-commands.md) — `fullsend issues get`, `create`, `post-comment`, and `transition`, including Jira
