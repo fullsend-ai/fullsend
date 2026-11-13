@@ -203,7 +203,9 @@ role's instructions and the message its parent sends. At most four are open at o
 is one. A runner-owned hook admits a spawn only for a registered role with `fork_context:
 false` and no model or effort override; it denies resume, Codex's built-in `explorer` and
 `worker`, and any spawn from a child. A denied spawn is final for that role: the parent runs that
-sub-agent definition itself. A spawn the hook did not admit fails the run after the fact, within
+sub-agent definition itself. In one live run the parent dropped it instead, and its result did not
+say so ([#9073](https://github.com/fullsend-ai/fullsend/issues/9073)).
+A spawn the hook did not admit fails the run after the fact, within
 the limits named in [Troubleshooting](#troubleshooting): per iteration the runner counts the
 spawns seen in the event stream or in the children's rollouts on disk, each child once, and
 compares the run's total with the admissions the hook recorded. Every child's rollout is saved and redacted like the
@@ -405,16 +407,13 @@ has no default behaviour-test coverage; its scenario is gated. What was run, and
 is recorded in [codex runtime
 internals](../contributing/runtime-implementation.md#codex-runtime-internals-6920).
 
-**Keep `review` and `retro` on Claude Code.** Their sub-agents run as native Codex children
-([Sub-agents](#sub-agents)), but that path has not completed a fleet-shaped run yet. Nothing
-prevents a repo-wide `runtime: codex` from applying to them — they will run — so pin them with
-`runtime: claude` on their `agents:` entries until it has:
-
-```yaml
-agents:
-  - name: review
-    runtime: claude
-```
+**`review` and `retro` delegate.** On a V1 parent on the direct route with
+harness security on, `review` runs its skill's personas and `retro` its
+investigation tasks as native Codex children ([Sub-agents](#sub-agents));
+otherwise they run in one context. Both completed fleet-shaped runs
+that way on `gpt-5.6-luna`, on macOS and on Fedora, locally rather than
+through the fleet workflows
+([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)).
 
 **`code` and `fix` delegate too.** They declare no `tools:`, so on a V1 parent on the direct route with harness security
 on they get the `default` and `explore` roles, children with the parent's shell and `apply_patch`,
