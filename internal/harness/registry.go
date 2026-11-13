@@ -45,9 +45,10 @@ func RegisteredAgents(cfg config.ConfigReader) ([]RegisteredAgent, error) {
 		if !entry.IsEnabled() {
 			continue
 		}
-		// An override-only entry tunes a built-in agent (runtime/model/
-		// effort) but registers no harness of its own: the built-in stage
-		// runs it, so it is not a custom harness to enumerate or lock.
+		// An override-only entry tunes a built-in agent (any setting
+		// HasSettings counts) but registers no harness of its own: the
+		// built-in stage runs it, so it is not a custom harness to
+		// enumerate or lock.
 		if entry.IsOverrideOnly() {
 			continue
 		}

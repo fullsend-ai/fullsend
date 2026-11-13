@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
@@ -107,6 +108,13 @@ type ComposeOpts struct {
 	// records them, never cache paths. Nil disables pinning.
 	LockedPins map[string]LockedPin
 
+	// Blocks are the harness: blocks of the agent's agents: entry, outermost
+	// config layer first (config.AgentEntry.HarnessBlocks). LoadWithBase
+	// composes them on the agent's harness as child layers (ADR 0162).
+	Blocks []*config.AgentHarness
+	// Agent names the agent in errors about Blocks.
+	Agent string
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
@@ -184,15 +192,19 @@ func checkLockedHash(field, rawURL, pin, got string) error {
 //
 // Pipeline:
 //  1. LoadRaw(path) — preserves forge map
-//  2. If base absent: resolve URL-sourced resources → ResolveForge → ResolveOverlays → Validate → return
+//  2. If base absent: resolve URL-sourced resources → compose opts.Blocks
+//     (step 5) → ResolveForge → ResolveOverlays → Validate → return
 //  3. If base present: loadBaseChain recursively (each base layer resolves its
 //     own forge/overlays via resolveBaseForgeAndOverlays before merging into
 //     the next layer), then mergeBaseIntoChild with the flat base
 //  4. Resolve remaining URL-sourced resources and scripts (child's own relative paths)
-//  5. ResolveForge and ResolveOverlays on child's own forge/overlay blocks
-//  6. Validate
+//  5. Compose opts.Blocks, the harness: blocks of the agent's agents: entry,
+//     as further child layers (composeAgentBlocks, ADR 0162)
+//  6. ResolveForge and ResolveOverlays on the result's own forge/overlay blocks
+//  7. Validate
 //
-// When base is absent, this behaves identically to LoadWithOpts.
+// When base is absent and opts.Blocks is empty, this behaves identically to
+// LoadWithOpts.
 func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness, []Dependency, error) {
 	childDir := filepath.Dir(path)
 
@@ -200,7 +212,6 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	if err != nil {
 		return nil, nil, err
 	}
-
 	// A local harness's relative skill paths are resolved against the
 	// workspace root now, so every merge below compares declared names;
 	// ResolveRelativeTo later finds them absolute. The root comes from the
@@ -256,6 +267,10 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			deps = append(deps, pluginDeps...)
 		}
 
+		child, err = composeAgentBlocks(child, opts)
+		if err != nil {
+			return nil, nil, err
+		}
 		if err := child.validateForge(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
@@ -267,7 +282,11 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		}
 		// Capture forge presence before ResolveForge nils the map so Lint()
 		// can emit the forge deprecation warning; LoadWithOpts does the same.
-		child.hadForgeBeforeResolve = child.Forge != nil
+		// OR semantics: composeAgentBlocks may have carried the marker from
+		// the agent's harness to a block.
+		if child.Forge != nil {
+			child.hadForgeBeforeResolve = true
+		}
 		if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 			return nil, nil, fmt.Errorf("resolving forge config: %w", err)
 		}
@@ -277,6 +296,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.Validate(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
+		child.restoreUnresolvedForge()
 		return child, deps, nil
 	}
 
@@ -389,6 +409,11 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		deps = append(deps, pluginDeps...)
 	}
 
+	child, err = composeAgentBlocks(child, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	// ResolveForge and ResolveOverlays once on the merged result
 	if err := child.validateForge(); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
@@ -413,6 +438,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	if err := child.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
 	}
+	child.restoreUnresolvedForge()
 
 	return child, deps, nil
 }
@@ -651,6 +677,21 @@ func loadBaseChain(
 // used by a child that runs on github only). The non-matching platform's
 // config is simply discarded when the forge map is niled.
 func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
+	return resolveLayerForgeAndOverlays(base, opts, true)
+}
+
+// resolveLayerForgeAndOverlays is resolveBaseForgeAndOverlays for any
+// layer a child composes on: a base: ancestor (isBase), or the agent's own
+// harness beneath an agents: entry's harness: block (ADR 0162), whose
+// errors read as they do without a block.
+func resolveLayerForgeAndOverlays(base *Harness, opts ComposeOpts, isBase bool) error {
+	invalid, resolving, forge := "invalid harness", "resolving overlays", "resolving forge config"
+	if isBase {
+		invalid, resolving, forge = "invalid base harness", "resolving base overlays", "invalid base harness"
+	}
+	// Record this layer's declared env names before its non-matching
+	// forge: blocks and overlays are discarded below (ADR 0162).
+	base.recordDeclaredEnv()
 	// Capture forge presence before the map is niled below so the
 	// deprecation marker survives for Lint(); mergeBaseIntoChild propagates
 	// it up the chain. OR semantics: an ancestor's marker may already be
@@ -666,12 +707,12 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// while both are still present so mutual-exclusion checks fire.
 	if base.Forge != nil {
 		if err := base.validateForge(); err != nil {
-			return fmt.Errorf("invalid base harness: %w", err)
+			return fmt.Errorf("%s: %w", invalid, err)
 		}
 	}
 	if len(base.Overlays) > 0 {
 		if err := base.validateOverlays(); err != nil {
-			return fmt.Errorf("invalid base harness: %w", err)
+			return fmt.Errorf("%s: %w", invalid, err)
 		}
 	}
 
@@ -685,9 +726,16 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// ResolveForge("") would also be a no-op, and keeping the base's
 	// forge map around would violate the mergeBaseIntoChild precondition.
 	if base.Forge != nil && opts.ForgePlatform != "" {
+		// Unlike a base, the agent's own harness must configure the
+		// platform, as ResolveForge requires of it without a block.
+		if !isBase {
+			if _, err := base.forgeConfigFor(opts.ForgePlatform); err != nil {
+				return fmt.Errorf("%s: %w", forge, err)
+			}
+		}
 		if fc, ok := base.Forge[opts.ForgePlatform]; ok && fc != nil {
 			if err := mergeForgeConfig(base, fc); err != nil {
-				return fmt.Errorf("invalid base harness: forge.%s: %w", opts.ForgePlatform, err)
+				return fmt.Errorf("%s: forge.%s: %w", forge, opts.ForgePlatform, err)
 			}
 		}
 	}
@@ -697,10 +745,10 @@ func resolveBaseForgeAndOverlays(base *Harness, opts ComposeOpts) error {
 	// entries into top-level fields.
 	if len(base.Overlays) > 0 {
 		if err := ValidateOverlayRunnerSecretRefs(base.Overlays, opts.RunnerSecretNames); err != nil {
-			return fmt.Errorf("invalid base harness: %w", err)
+			return fmt.Errorf("%s: %w", invalid, err)
 		}
 		if err := base.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
-			return fmt.Errorf("resolving base overlays: %w", err)
+			return fmt.Errorf("%s: %w", resolving, err)
 		}
 	}
 	base.Overlays = nil
@@ -840,6 +888,7 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	if base.hadForgeBeforeResolve {
 		child.hadForgeBeforeResolve = true
 	}
+	child.mergeDeclaredEnv(base)
 
 	// GITHUB_ISSUE_URL diagnostics (#8742): record the child's own before
 	// base fields are merged into its top level, then append the base's

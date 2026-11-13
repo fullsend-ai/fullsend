@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -227,7 +228,11 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	if err != nil {
 		return nil, fmt.Errorf("reading harness file: %w", err)
 	}
-	harnessHash := fetch.ComputeSHA256(harnessData)
+	blocks := lockHarnessBlocks(orgCfg, absFullsendDir, agentName, harnessPath)
+	harnessHash, err := lockHarnessHash(harnessData, blocks)
+	if err != nil {
+		return nil, err
+	}
 
 	// The subset check also covers the cached path: a fetch-capable harness
 	// whose lock entry is current returns below before the harness is ever
@@ -235,8 +240,9 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	// the raw declaration here, before the up-to-date return —
 	// allowed_remote_resources and allow_runtime_fetch are not inherited
 	// from base:, so the child's own declaration is the complete list
-	// (#9291).
-	if rawH, rawErr := harness.LoadRaw(harnessPath); rawErr == nil && shouldStartFetchService(rawH) {
+	// (#9291). A harness: block is one more child layer, so with blocks the
+	// last block's declaration is the complete list.
+	if rawH, rawErr := harness.RuntimeFetchLayer(harnessPath, agentName, blocks); rawErr == nil && shouldStartFetchService(rawH) {
 		if orgCfg == nil {
 			var cfgErr error
 			if rawH.HasURLReferences() {
@@ -323,6 +329,8 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			GitToken:      composeGitToken,
 			Config:        harness.BuildConfigMap(orgCfg),
 			SourceURL:     sourceURL,
+			Blocks:        blocks,
+			Agent:         agentName,
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
@@ -601,7 +609,7 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 			lf.SetHarness(name, result.harnessLock)
 			locked = append(locked, name)
 		} else if entry := lf.Lookup(name); entry != nil {
-			if isHarnessUpToDate(absFullsendDir, name, entry, printer) {
+			if isHarnessUpToDate(absFullsendDir, name, entry, orgCfg, printer) {
 				upToDate++
 			} else {
 				delete(lf.Harnesses, name)
@@ -652,15 +660,20 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 // <agent>.yaml nor <agent>.yml exists in the harness directory.
 var errHarnessNotFound = errors.New("harness file not found")
 
+// localHarnessPaths returns where agentName's harness file may live in the
+// local harness directory: the .yaml path, which wins, and the .yml path.
+func localHarnessPaths(dir, agentName string) (yamlPath, ymlPath string) {
+	return filepath.Join(dir, "harness", agentName+".yaml"), filepath.Join(dir, "harness", agentName+".yml")
+}
+
 // resolveHarnessPath finds the harness file for agentName, preferring .yaml
 // over .yml. Warns via printer when both extensions exist.
 func resolveHarnessPath(dir, agentName string, printer *ui.Printer) (string, error) {
-	yamlPath := filepath.Join(dir, "harness", agentName+".yaml")
+	yamlPath, ymlPath := localHarnessPaths(dir, agentName)
 	if _, err := os.Stat(yamlPath); err != nil {
 		if !os.IsNotExist(err) {
 			return "", fmt.Errorf("checking harness file: %w", err)
 		}
-		ymlPath := filepath.Join(dir, "harness", agentName+".yml")
 		if _, ymlErr := os.Stat(ymlPath); ymlErr != nil {
 			if !os.IsNotExist(ymlErr) {
 				return "", fmt.Errorf("checking harness file: %w", ymlErr)
@@ -669,7 +682,7 @@ func resolveHarnessPath(dir, agentName string, printer *ui.Printer) (string, err
 		}
 		return ymlPath, nil
 	}
-	if _, ymlErr := os.Stat(filepath.Join(dir, "harness", agentName+".yml")); ymlErr == nil {
+	if _, ymlErr := os.Stat(ymlPath); ymlErr == nil {
 		printer.StepWarn(fmt.Sprintf("Both %s.yaml and %s.yml exist; using .yaml", agentName, agentName))
 	}
 	return yamlPath, nil
@@ -775,9 +788,10 @@ func discoverHarnessNames(dir string) ([]string, error) {
 }
 
 // isHarnessUpToDate checks whether a lock entry's hash matches the current
-// harness file on disk. Used by runLockAll to distinguish "already locked"
-// from "re-evaluated with no remote deps" when lockOneAgent returns nil.
-func isHarnessUpToDate(absFullsendDir, name string, entry *lock.HarnessLock, printer *ui.Printer) bool {
+// harness file on disk and the agent's harness: blocks. Used by runLockAll
+// to distinguish "already locked" from "re-evaluated with no remote deps"
+// when lockOneAgent returns nil.
+func isHarnessUpToDate(absFullsendDir, name string, entry *lock.HarnessLock, orgCfg config.ConfigReader, printer *ui.Printer) bool {
 	harnessPath, err := resolveHarnessPath(absFullsendDir, name, printer)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("Cannot stat harness for %s: %v; preserving lock entry", name, err))
@@ -788,7 +802,68 @@ func isHarnessUpToDate(absFullsendDir, name string, entry *lock.HarnessLock, pri
 		printer.StepWarn(fmt.Sprintf("Cannot read %s: %v; preserving lock entry", harnessPath, err))
 		return true
 	}
-	return !entry.IsStale(fetch.ComputeSHA256(data))
+	hash, err := lockHarnessHash(data, lockHarnessBlocks(orgCfg, absFullsendDir, name, harnessPath))
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Cannot hash the harness: blocks of %s: %v; preserving lock entry", name, err))
+		return true
+	}
+	return !entry.IsStale(hash)
+}
+
+// lockHarnessBlocks returns the harness: blocks lock composes on harnessPath:
+// those of agentName's agents: entry when harnessPath is that entry's
+// harness. lock prefers a local harness/<name> file, but fullsend run
+// composes the blocks on the entry's source or on the built-in agent, so a
+// local file the entry does not name is locked without them.
+func lockHarnessBlocks(orgCfg config.ConfigReader, absFullsendDir, agentName, harnessPath string) []*config.AgentHarness {
+	if orgCfg == nil {
+		return nil
+	}
+	entries := orgCfg.AgentEntries()
+	entry, ok := config.AgentSettingsFor(entries, agentName)
+	if !ok {
+		return nil
+	}
+	if entry.Source == "" || harness.IsURL(entry.Source) {
+		// lock resolved this entry's harness unless a local file took its place.
+		if yamlPath, ymlPath := localHarnessPaths(absFullsendDir, agentName); harnessPath == yamlPath || harnessPath == ymlPath {
+			return nil
+		}
+	} else if !sameFile(filepath.Join(absFullsendDir, entry.Source), harnessPath) {
+		return nil
+	}
+	return config.HarnessBlocksFor(entries, agentName)
+}
+
+// sameFile reports whether two paths name one existing file.
+func sameFile(a, b string) bool {
+	ai, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	bi, err := os.Stat(b)
+	return err == nil && os.SameFile(ai, bi)
+}
+
+// lockHarnessHash is the hash a lock entry records for an agent's harness:
+// the harness file's, or, when the agent's agents: entry carries harness:
+// blocks (ADR 0162), the hash of the file followed by each block, so a
+// change to a block makes the entry stale like a change to the file. An
+// agent without blocks keeps the file hash existing entries record.
+func lockHarnessHash(harnessData []byte, blocks []*config.AgentHarness) (string, error) {
+	if len(blocks) == 0 {
+		return fetch.ComputeSHA256(harnessData), nil
+	}
+	buf := bytes.NewBuffer(slices.Clone(harnessData))
+	for _, b := range blocks {
+		data, err := yaml.Marshal(b)
+		if err != nil {
+			return "", fmt.Errorf("serializing harness: block: %w", err)
+		}
+		buf.WriteString("\n--- agents entry harness: block\n")
+		buf.Write(data)
+	}
+	return fetch.ComputeSHA256(buf.Bytes()), nil
 }
 
 // lockForgePlatforms determines which forge platform(s) to lock. When a
@@ -877,7 +952,7 @@ func planSkillOverrideReplay(h *harness.Harness, deps []resolve.Dependency) ([]s
 type runLockState struct {
 	loadErr error             // lock.yaml exists but cannot be loaded
 	entry   *lock.HarnessLock // agentName's entry; nil if none
-	stale   bool              // entry does not match the harness file
+	stale   bool              // entry does not match the harness file and blocks
 	// pins are the current entry's pins for harness.LoadWithBase, which
 	// resolves a URL base's relative files to them instead of the cache URL
 	// index (#8979). Nil when there is no current entry.
@@ -885,8 +960,9 @@ type runLockState struct {
 }
 
 // readRunLock reads agentName's entry in <absFullsendDir>/lock.yaml and
-// checks it against the harness at harnessPath.
-func readRunLock(absFullsendDir, agentName, harnessPath string) (runLockState, error) {
+// checks it against the harness at harnessPath and the agent's harness:
+// blocks.
+func readRunLock(absFullsendDir, agentName, harnessPath string, blocks []*config.AgentHarness) (runLockState, error) {
 	lf, err := lock.Load(filepath.Join(absFullsendDir, "lock.yaml"))
 	if err != nil {
 		return runLockState{loadErr: err}, nil
@@ -899,7 +975,11 @@ func readRunLock(absFullsendDir, agentName, harnessPath string) (runLockState, e
 	if err != nil {
 		return runLockState{}, fmt.Errorf("reading harness file for lock check: %w", err)
 	}
-	st := runLockState{entry: entry, stale: entry.IsStale(fetch.ComputeSHA256(data))}
+	hash, err := lockHarnessHash(data, blocks)
+	if err != nil {
+		return runLockState{}, err
+	}
+	st := runLockState{entry: entry, stale: entry.IsStale(hash)}
 	if st.stale {
 		return st, nil
 	}

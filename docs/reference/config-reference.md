@@ -52,6 +52,8 @@ agents:                              # Registered agent sources and per-agent tu
       default: sonnet                # Fallback model for personas without an explicit entry
       code-reviewer: opus            # Model for a specific persona
     # trigger: <CEL expression>      # When the built-in review agent runs (review entry only)
+    # harness:                       # Changes harness settings without a base: harness
+    #   timeout_minutes: 90
 
 # ── Remote resources ─────────────────────────────────────────
 allowed_remote_resources:            # URL prefixes allowed for remote resources (agents, policies, skills, plugins, profiles, providers, and base composition)
@@ -215,7 +217,7 @@ Omitting the key inherits the parent's roles. See
 
 Registered agent sources and per-agent tuning. Each entry identifies an agent
 by source URL or local path, with optional overrides for runtime, model,
-effort, sub-agent models and the trigger.
+effort, sub-agent models, the trigger and harness settings.
 
 - **`source`** — URL (must include `#sha256=<64-hex-char>` integrity hash) or
   local path. URL sources must be covered by `allowed_remote_resources`.
@@ -255,10 +257,93 @@ effort, sub-agent models and the trigger.
   invalid `model` or `effort`, an invalid `trigger` makes every agent run in
   the repository fail with `invalid agent config`, not only built-in routing, so
   check the expression before you merge the change.
-- **`harness`** — Decided, not yet implemented:
-  [ADR 0162](../ADRs/0162-agent-entries-may-carry-harness-overrides.md) adds a
-  block that overrides the agent's harness fields without a `base:`
-  harness.
+- **`harness`** — A partial harness composed on the agent's harness as a
+  child layer, as if it named that harness in `base:`, with nothing pinned
+  ([ADR 0162](../ADRs/0162-agent-entries-may-carry-harness-overrides.md)).
+  It changes harness settings without a `base:` harness, so the agent keeps
+  getting agent updates. It merges by the `base:` composition rules of the
+  [harness field reference](../contributing/harness-fields.md#merge-and-inheritance-rules).
+  A scalar replaces the harness value. A list adds to it. Each `env`
+  variable replaces the harness value, and `~` sets it empty.
+
+  ```yaml
+  agents:
+    - name: review
+      harness:
+        env:
+          runner: { REVIEW_FINDING_SEVERITY_THRESHOLD: medium }
+          sandbox: { REVIEW_FINDING_SEVERITY_THRESHOLD: medium }
+    - name: code
+      harness:
+        timeout_minutes: 90
+        env:
+          runner: { GITHUB_SIGNED_COMMITS: "true" }
+          sandbox: { TIMEOUT_SECONDS: "5400" }
+    - name: fix
+      harness:
+        env:
+          runner: { GITHUB_SIGNED_COMMITS: "true" }
+  ```
+
+  `GITHUB_SIGNED_COMMITS: "true"` turns on signed commits for the code and
+  fix agents on GitHub. The post-script publishes the agent's commits through
+  the Git Data API, and GitHub signs them (see
+  [Signed commits](https://github.com/fullsend-ai/agents/blob/main/docs/code.md#signed-commits)).
+
+  `TIMEOUT_SECONDS` is `timeout_minutes` in seconds. The code, fix and review
+  skills read their time limit from it, so change both together.
+
+  - **Fields.** The block takes every harness field except `base`, `forge`
+    and `runner_env`; an overlay in the block cannot set `runner_env`
+    either. An unknown key fails. So does a value that no harness accepts,
+    such as an unknown `effort`.
+  - **`env` names.** The block cannot add a variable. A name that the
+    agent's harness does not declare in that section fails. The error names
+    the agent and the variable. A name counts as declared when any layer of
+    the harness sets it at top level, in a `forge:` block or in an overlay. A name
+    fullsend reserves in the sandbox fails in either section. Adding a
+    variable still takes a `base:` harness.
+  - **`schema_version`.** Absent means `1`. A block whose version differs
+    from the agent's harness fails to load
+    ([ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md)).
+  - **Runtime fetch.** Like a `base:` child, the block does not inherit
+    `allowed_remote_resources`, `allow_runtime_fetch` or
+    `max_runtime_fetches`. `fullsend lint` warns when a block leaves out
+    one that the harness or the `config.base.yaml` block sets. The warning
+    names the field. To keep it, set it in the block. When both files have
+    a block, set it in the `config.yaml` one. To drop the fields on purpose,
+    set `allow_runtime_fetch: false` in the block; lint then does not warn.
+  - **Paths.** Relative paths in the block resolve against the `.fullsend`
+    directory, like a local harness file's, and a path that escapes it is
+    rejected.
+  - **Layers.** The `config.base.yaml` block composes first, then the
+    `config.yaml` block, so `config.yaml` can replace a value from
+    `config.base.yaml` but not remove it. An entry in `config.yaml` with no
+    block, an empty one or a null one keeps the `config.base.yaml` block.
+    In `repos.yaml`, only one of the
+    `defaults`, forge and repository `config` layers may set an agent's
+    block, since they render into one `config.yaml`. A repository pinned to
+    a `fullsend_ref` from before blocks cannot take one: `repos install`
+    fails that repository and names the entry (see
+    [Configuration schema of a pinned ref](../cli/repos.md#configuration-schema-of-a-pinned-ref)).
+  - **Fields the entry already has.** Setting `model`, `effort` or
+    `trigger` both on the entry and in the block fails, checked on the
+    entry merged from both files. The built-in agents are `review`,
+    `retro`, `triage`, `prioritize`, `code` and `fix`, whether or not the
+    entry has a `source`. On a built-in agent, a `harness.trigger` is not
+    evaluated. The configuration loads with a warning that names the agent.
+    The entry's `trigger` keeps deciding routing as described above. This
+    lasts until built-in agents are routed by CEL alone
+    ([#2902](https://github.com/fullsend-ai/fullsend/issues/2902)).
+  - **Who reads it.** `fullsend run`, `fullsend lint`, `fullsend lock` and
+    dispatch, CEL dispatch and the Jira poller included, all compose the
+    block. A change to it makes the agent's lock entry stale. `fullsend lock`
+    composes the block on the entry's harness only. It locks a local
+    `harness/<name>.yaml` that the entry does not name without the block,
+    because `fullsend run` does not use that file for the entry. A non-empty
+    block alone makes a valid override-only entry. On a disabled entry the
+    block is not composed. It is still validated when the entry has a
+    `source`.
 
 In the layered config system, agents use keyed merge by `DerivedName()` — see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).

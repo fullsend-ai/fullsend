@@ -663,3 +663,35 @@ skills:
 	require.NoError(t, err)
 	require.Len(t, out, 1)
 }
+
+// A block's trigger replaces a custom agent's; on a built-in agent name it is not evaluated.
+func TestListTriggeredHarnesses_HarnessBlockTrigger(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	const body = `agent: agents/triage.md
+role: triage
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "issue-ping.yaml"), []byte(body), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "triage.yaml"),
+		[]byte(body+`trigger: 'event.transition.kind == "closed"'`+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+agents:
+  - source: harness/issue-ping.yaml
+    harness:
+      trigger: 'event.transition.kind == "opened"'
+  - source: harness/triage.yaml
+    harness:
+      trigger: 'event.transition.kind == "label_changed"'
+`), 0o644))
+
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg, nil)
+	require.NoError(t, err)
+	require.Len(t, out, 2)
+	assert.Equal(t, `event.transition.kind == "opened"`, out[0].Harness.Trigger)
+	assert.Equal(t, `event.transition.kind == "closed"`, out[1].Harness.Trigger, "triage keeps its harness file's trigger")
+}

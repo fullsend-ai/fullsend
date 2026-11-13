@@ -27,7 +27,7 @@ func schemaAncestryKey(sha string) string {
 
 // schemaTestClient returns a fake upstream client where v0.1.0 is a legacy
 // release predating the schema declaration and the tracker mapping, and
-// v0.9.0 declares the current schema.
+// v0.9.0 declares the tracker-mapping schema.
 func schemaTestClient() *forge.FakeClient {
 	fc := forge.NewFakeClient()
 	fc.FileContentsAnyRef = nil
@@ -59,12 +59,17 @@ func TestResolveManagedConfigSchema(t *testing.T) {
 		fc.CommitAncestry[schemaAncestryKey(schemaTestCurrentSHA)] = "ahead"
 		delete(fc.FileContentsRef, schemaDeclKey(schemaTestCurrentSHA))
 		s := resolveManagedConfigSchema(ctx, "v0.9.0", "", "", NewRefResolver(fc))
-		assert.Equal(t, config.ManagedConfigSchemaVersion, s.Version)
+		assert.Equal(t, config.ManagedConfigSchemaTrackerMapping, s.Version)
 		assert.Empty(t, s.Unknown)
 	})
 
-	t.Run("declared current schema", func(t *testing.T) {
-		s := resolveManagedConfigSchema(ctx, "v0.9.0", "", "", NewRefResolver(schemaTestClient()))
+	t.Run("declared schema", func(t *testing.T) {
+		fc := schemaTestClient()
+		s := resolveManagedConfigSchema(ctx, "v0.9.0", "", "", NewRefResolver(fc))
+		assert.Equal(t, managedConfigSchema{Ref: "v0.9.0", Version: config.ManagedConfigSchemaTrackerMapping}, s)
+
+		fc.FileContentsRef[schemaDeclKey(schemaTestCurrentSHA)] = []byte("3\n")
+		s = resolveManagedConfigSchema(ctx, "v0.9.0", "", "", NewRefResolver(fc))
 		assert.Equal(t, managedConfigSchema{Ref: "v0.9.0", Version: config.ManagedConfigSchemaVersion}, s)
 	})
 
@@ -137,6 +142,23 @@ func TestSelectManagedConfigSchema(t *testing.T) {
 	tcfg.FullsendRef = "v0.1.0"
 	s = selectManagedConfigSchema(ctx, tcfg, nil, "", "", nil)
 	assert.Contains(t, s.Unknown, "upstream GitHub client")
+
+	// So does a harness: block, in the desired body or in the installed overlay.
+	bcfg, ok := blockManifest(t).ResolveConfig("acme", "api")
+	require.True(t, ok)
+	bcfg.FullsendRef = "v0.9.0"
+	s = selectManagedConfigSchema(ctx, bcfg, nil, "", "", NewRefResolver(schemaTestClient()))
+	assert.Equal(t, config.ManagedConfigSchemaTrackerMapping, s.Version)
+	cfg.FullsendRef = "v0.9.0"
+	s = selectManagedConfigSchema(ctx, cfg, []byte("agents:\n  - name: review\n    harness: { timeout_minutes: 30 }\n"), "", "", NewRefResolver(schemaTestClient()))
+	assert.Equal(t, config.ManagedConfigSchemaTrackerMapping, s.Version)
+}
+
+func blockManifest(t *testing.T) *Manifest {
+	t.Helper()
+	m := newConvergeManifest("acme/api")
+	m.Defaults.Config = mustManagedConfig(t, "agents:\n  - name: review\n    harness:\n      timeout_minutes: 30\n")
+	return m
 }
 
 func trackerManifest(t *testing.T) *Manifest {
@@ -179,6 +201,21 @@ func TestDesiredManagedConfig_LegacyUnsupportedSetting(t *testing.T) {
 	require.ErrorContains(t, err, "legacy configuration schema")
 }
 
+// A harness: block is rendered for a ref that reads it and refused for an older one.
+func TestDesiredManagedConfig_HarnessBlockNeedsCurrentSchema(t *testing.T) {
+	cfg, ok := blockManifest(t).ResolveConfig("acme", "api")
+	require.True(t, ok)
+
+	current, _, err := desiredManagedConfig(cfg)
+	require.NoError(t, err)
+	assert.Contains(t, string(current), "timeout_minutes: 30")
+
+	cfg.ConfigSchema = managedConfigSchema{Ref: "v0.9.0", Version: config.ManagedConfigSchemaTrackerMapping}
+	_, managed, err := desiredManagedConfig(cfg)
+	assert.True(t, managed)
+	require.ErrorContains(t, err, `fullsend_ref "v0.9.0": agents entry "review": a harness: block cannot be expressed`)
+}
+
 func TestCheckManagedConfigDrift_RefSchema(t *testing.T) {
 	ctx := context.Background()
 	m := trackerManifest(t)
@@ -219,6 +256,29 @@ func TestCheckManagedConfigDrift_RefSchema(t *testing.T) {
 		assert.Contains(t, status.ConfigCompatibilityReason, "tracker mapping")
 		require.Len(t, status.Drifts, 1)
 		assert.Equal(t, preset.OverlayPath, status.Drifts[0].Field)
+	})
+
+	t.Run("installed harness: block at an older ref is incompatible", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		installed, _, err := desiredManagedConfig(managedResolved(t, fc, blockManifest(t), "acme", "api"))
+		require.NoError(t, err)
+		fc.FileContents[overlayKey] = installed
+		cfg := legacyCfg(fc)
+		cfg.ConfigSchema = managedConfigSchema{Ref: "v0.9.0", Version: config.ManagedConfigSchemaTrackerMapping}
+		status := RepoStatus{Installed: true}
+		checkManagedConfigDrift(ctx, cfg, &status)
+		assert.Empty(t, status.Error)
+		assert.Equal(t, ConfigIncompatible, status.ConfigCompatibility)
+		assert.Contains(t, status.ConfigCompatibilityReason, "harness: block")
+	})
+
+	t.Run("desired harness: block at an older ref is an error naming the entry", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		cfg := managedResolved(t, fc, blockManifest(t), "acme", "api")
+		cfg.ConfigSchema = managedConfigSchema{Ref: "v0.9.0", Version: config.ManagedConfigSchemaTrackerMapping}
+		status := RepoStatus{Installed: true}
+		checkManagedConfigDrift(ctx, cfg, &status)
+		assert.Contains(t, status.Error, `agents entry "review": a harness: block cannot be expressed`)
 	})
 
 	t.Run("unknown schema is reported, file not judged current", func(t *testing.T) {

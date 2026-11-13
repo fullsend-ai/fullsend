@@ -14,6 +14,16 @@ fullsend run <agent-name> [flags]
 
 A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration) must have every harness-level `allowed_remote_resources` prefix covered by the config-level allowlist — `config.yaml`'s `allowed_remote_resources` plus the built-in default prefixes (the defaults are included when the list is omitted or non-empty; an explicit `allowed_remote_resources: []` stays deny-all and excludes them); `fullsend run` fails naming an uncovered prefix, and fails closed when no repository config (`config.yaml` or `config.base.yaml`) exists. See the [`allow_runtime_fetch` entry](../reference/harness-reference.md) in the harness reference.
 
+When the agent's `agents:` entry in `config.yaml` carries a `harness:` block,
+`fullsend run` composes the block on the agent's harness as a child layer
+([Config Reference — `agents`](../reference/config-reference.md#agents)). The
+block does not inherit the runtime fetch fields of the harness below it, so the
+rule above then applies to the `allowed_remote_resources` list that the block
+sets. A change to the block makes the agent's `lock.yaml` entry stale, like a
+change to the harness file. The block is read from the `config.yaml` at the
+root of `--fullsend-dir`. A run that finds it only in a sibling
+`.fullsend/config.yaml` fails and names the directory to pass.
+
 ## Flags
 
 | Flag | Description |
@@ -62,6 +72,11 @@ The **Runtime** line shows which runtime was selected and the config source it w
 ## Runtime selection
 
 The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases, each read only when that runtime is the one selected) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi uses it for aliased models on the top-level run when Vertex does not serve the model (two specific 404/403 messages, same provider only; sub-agent children get none); codex ignores it with a warning.
+
+A `model` or `effort` set in the `harness:` block of the agent's `agents:`
+entry is a harness value. It ranks where harness `model:` and `effort:` do in
+the order above, and `override_source` reports the model as `harness`. Setting
+either one both on the entry and in its block fails validation.
 
 The plan block prints `Runtime: <name> (from <source>)` and, when an override applied, `Model: <value> (from <source>)`; stderr carries `runtime: selected "<name>" from <source>` (and `model: requested "<value>" from <source>`) for scripts. A value from the config file is labelled with the file path, suffixed ` agents.<name>` when the agent's entry decided. When `models.aliases` in `.fullsend/config.yaml` remaps the alias, the line keeps the alias and its source and adds the remap: `Model: sonnet (from <source>) → claude-sonnet-5 (from <config path> models.aliases)`, with `model: alias "sonnet" remapped to "claude-sonnet-5" from <config path> models.aliases` on stderr. An alias that is not remapped shows the id it resolves to through the runtime's built-in table instead: `Model: haiku (from FULLSEND_MODEL) → claude-haiku-5-5 (built-in default)` on `claude` (`opus`, `sonnet`, `haiku`) and `pi` (those three plus `fable`). Aliased entries in the `Fallback models` line show as `alias → id` (`sonnet → claude-sonnet-5, claude-opus-4-6 (from FULLSEND_FALLBACK_MODELS)`); literal ids print as written; Claude Code and pi use the chain for aliased models when Vertex does not serve the model and ignore it for pinned ids. With no `FULLSEND_FALLBACK_MODELS`, a `claude` or `pi` run on `opus`, `sonnet` or `haiku` (not retargeted) prints the alias's built-in chain instead: `Fallback models: claude-opus-4-6 (built-in for opus, when not served)`. An invalid override — unknown runtime, unknown effort level, an `agents:` entry that names no agent, or a `models.aliases` key or value the block does not accept — fails before the sandbox is created.
 
@@ -530,6 +545,9 @@ them into the sandbox. Matching is case-insensitive. It warns twice:
   `N env.sandbox key(s) are reserved and will be dropped instead of exported into the sandbox: ...`
 - As it writes the sandbox environment, one stderr line per key:
   `WARNING: env.sandbox key "NAME" is reserved (runner infrastructure or security deny-list); skipping`
+
+A reserved name in the `harness:` block of an `agents:` entry fails the run
+instead, in `env.runner` as well as in `env.sandbox`.
 
 `fullsend lint` also reports the load-time warning, and
 `fullsend lint --strict` exits non-zero on it. `fullsend lock` prints the

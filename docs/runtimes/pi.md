@@ -605,8 +605,9 @@ subagents: challenger → openai/gpt-5.6-luna (from subagents.challenger)
 
 If you route a persona with `--subagent` and the agent's harness is a local file that does not
 declare `openai`, `agent set` warns. The config is still written, so you can edit the harness
-afterwards. A harness fetched by URL, one with `base:`, `overlays:` or `forge:` blocks, and a
-persona from a skill fetched by URL are not checked here; the run checks them.
+afterwards. A harness fetched by URL, one with `base:`, `overlays:` or `forge:` blocks, an
+entry with a `harness:` block, and a persona from a skill fetched by URL are not checked here;
+the run checks them.
 
 ```console
   ✓ Set agent "my-review": runtime="pi" model="opus" effort="" (empty = inherit) subagents: challenger=openai/gpt-5.6-luna

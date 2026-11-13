@@ -24,7 +24,7 @@ import (
 // It stays silent whenever it cannot tell: a runtime other than pi, an
 // agent whose harness is a URL (fleet harnesses declare openai) or is not
 // in this config, a harness that does not load or has overlays: or forge:
-// blocks, or a provider entry that is a URL.
+// blocks, an entry with a harness: block, or a provider entry that is a URL.
 func warnOpenAISubagentWithoutProvider(cfg config.ConfigReader, absDir, agentName, runtimeName string, subagents map[string]*string, printer *ui.Printer) {
 	pr, ok := cfg.(config.PerRepoConfigReader)
 	if !ok {
@@ -38,6 +38,10 @@ func warnOpenAISubagentWithoutProvider(cfg config.ConfigReader, absDir, agentNam
 	}
 	source := agentHarnessSource(cfg.AgentEntries(), agentName)
 	if source == "" || urlutil.IsURL(source) {
+		return
+	}
+	// A harness: block may add providers too (ADR 0162).
+	if len(config.HarnessBlocksFor(cfg.AgentEntries(), agentName)) > 0 {
 		return
 	}
 	h, err := harness.Load(underDir(absDir, source))

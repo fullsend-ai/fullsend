@@ -266,6 +266,9 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		if len(deps) > 0 && deps[0].URL != "" {
 			composeOpts.SourceURL = deps[0].URL
 		}
+		// A harness: block may set role (ADR 0162).
+		composeOpts.Blocks = config.HarnessBlocksFor(cfg.AgentEntries(), o.agent)
+		composeOpts.Agent = o.agent
 		if h, _, err := harness.LoadWithBase(ctx, path, composeOpts); err == nil {
 			harnessRole = h.Role
 		} else {

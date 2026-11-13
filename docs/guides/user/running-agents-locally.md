@@ -378,7 +378,8 @@ you can tune resolution limits:
 
 If a `lock.yaml` file exists in the fullsend directory, `fullsend run` uses it
 to skip re-resolution when the harness has not changed since the lock was
-generated. Generate or update a lock file with:
+generated. A `harness:` block on the agent's `config.yaml` entry counts as
+part of the harness. Generate or update a lock file with:
 
 ```bash
 fullsend lock code --fullsend-dir /path/to/.fullsend
@@ -402,10 +403,11 @@ dependencies is locked. If your agent's forge-specific files come only from a
 for example `--forge github`, so `fullsend lock` pins them. Without it, the run
 warns that the lock entry does not pin them.
 
-When the lock entry is current (harness SHA256 matches), dependencies are
-resolved from the local cache without network access. If the harness has changed
-or a cached artifact is missing, `fullsend run` falls back to normal network
-resolution and prints a warning suggesting you re-run `fullsend lock`.
+When the lock entry is current (the SHA256 of the harness and its `harness:`
+block matches), dependencies are resolved from the local cache without network
+access. If the harness or the block has changed, or a cached artifact is
+missing, `fullsend run` falls back to normal network resolution and prints a
+warning suggesting you re-run `fullsend lock`.
 
 A current lock entry also pins the files a URL `base:` (or an agent fetched from
 a URL) names by relative path: agent, policy, skills, skill file overrides,

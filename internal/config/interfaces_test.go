@@ -69,6 +69,47 @@ func TestPerRepoConfig_AgentEntries_TriggerLayeredMerge(t *testing.T) {
 	assert.Equal(t, parentTrigger, merged[0].Trigger, "a blank trigger inherits the parent's")
 }
 
+func TestPerRepoConfig_AgentEntries_HarnessLayeredMerge(t *testing.T) {
+	w, err := ParsePerRepoConfigWriterLayered([]byte(`
+agents:
+  - name: review
+    harness: { env: { sandbox: { REVIEW_FINDING_SEVERITY_THRESHOLD: high } } }
+  - name: code
+    model: opus
+  - name: retro
+    harness: {}
+`), []byte(`
+agents:
+  - name: review
+    harness: { timeout_minutes: 30 }
+  - name: code
+    harness: { timeout_minutes: 90 }
+  - name: triage
+    harness: { timeout_minutes: 10 }
+  - name: retro
+    harness: { timeout_minutes: 20 }
+`))
+	require.NoError(t, err)
+
+	byName := map[string]AgentEntry{}
+	for _, a := range w.AgentEntries() {
+		byName[a.DerivedName()] = a
+	}
+	review := byName["review"].HarnessBlocks()
+	require.Len(t, review, 2, "each config layer's block stays a layer of its own")
+	assert.True(t, review[0].Sets("timeout_minutes"), "config.base.yaml's block comes first")
+	assert.True(t, review[1].Sets("env"), "config.yaml's block comes last")
+
+	code := byName["code"].HarnessBlocks()
+	require.Len(t, code, 1, "an overlay entry without a block keeps the parent's")
+	assert.True(t, code[0].Sets("timeout_minutes"))
+	assert.Equal(t, "opus", byName["code"].Model)
+
+	assert.Len(t, byName["triage"].HarnessBlocks(), 1)
+	assert.True(t, byName["retro"].Harness.Sets("timeout_minutes"), "an empty overlay block keeps the parent's, like no block")
+	assert.Empty(t, asPerRepo(w).Agents[0].inheritedHarness, "the merge must not write to a layer's own entries")
+}
+
 func TestPerRepoConfig_IsKillSwitchActive(t *testing.T) {
 	tr := true
 	cfg := &perRepoConfig{KillSwitch: &tr}

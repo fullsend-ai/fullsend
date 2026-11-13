@@ -369,7 +369,11 @@ non-empty `allowed_remote_resources` list is unioned with the inherited
 prefixes, and an explicit empty list replaces the inherited value. The
 managed file is sparse and cannot record that reset, so validation rejects a
 non-empty `allowed_remote_resources` list declared in a more specific layer
-than an explicit empty one; declare the full list in a single layer. A
+than an explicit empty one; declare the full list in a single layer.
+Validation also rejects an agent's `harness:` block that is set in more than
+one of the `defaults`, forge section and repository `config` layers, because
+they render into one `config.yaml`. Set the block in one layer (see the
+[config reference](../../reference/config-reference.md#agents)). A
 forge section's `config` never affects repositories of the other forge.
 The managed configuration contains only explicitly supplied values —
 code defaults and `config.base.yaml` are not baked into the file.

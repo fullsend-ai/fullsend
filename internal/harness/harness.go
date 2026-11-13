@@ -419,6 +419,20 @@ type Harness struct {
 	// issueURLDiagsCaptured is true.
 	issueURLDiags         []Diagnostic `yaml:"-"`
 	issueURLDiagsCaptured bool         `yaml:"-"`
+
+	// declaredEnv holds the env names any layer declares, checked against
+	// an agents: entry's harness: block (ADR 0162).
+	declaredEnv declaredEnvNames `yaml:"-"`
+	// blockDroppedFetch names the runtime fetch fields a layer below the
+	// last harness: block set and that block did not; Lint() warns about it.
+	blockDroppedFetch []string `yaml:"-"`
+	// blockTriggerIgnored names the built-in agent whose harness: block set
+	// a trigger that composition dropped; Lint() warns about it.
+	blockTriggerIgnored string `yaml:"-"`
+	// unresolvedForge holds the forge: sections of the harness under a
+	// harness: block while the block is composed with no forge selected;
+	// restoreUnresolvedForge puts them back.
+	unresolvedForge map[string]*ForgeConfig `yaml:"-"`
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -519,19 +533,28 @@ func LoadRaw(path string) (*Harness, error) {
 
 // Validate checks that required fields are present.
 func (h *Harness) Validate() error {
+	return h.validate(true)
+}
+
+// validate checks h's field values. With whole it also checks what only a
+// composed harness can be held to: the required fields, consistent runtime
+// fetch fields and the trigger. Without it h is one layer, such as an
+// agents: entry's harness: block (ADR 0162), and only the values no
+// composition can make valid fail.
+func (h *Harness) validate(whole bool) error {
 	// Base field must be consumed by LoadWithBase before validation.
 	// If it's still set, the harness was loaded via Load/LoadWithOpts which
 	// don't process base composition — a silent misconfiguration.
 	if h.Base != "" {
 		return fmt.Errorf("base field is set but harness was not loaded with LoadWithBase; use LoadWithBase to enable base composition")
 	}
-	if h.Agent == "" {
+	if whole && h.Agent == "" {
 		return fmt.Errorf("agent field is required")
 	}
 	// Agent name (filename without .md) must be safe for shell interpolation.
 	// Skip name validation when agent is a URL — the resolver will replace it
 	// with a local cache path before it reaches the shell.
-	if !IsURL(h.Agent) {
+	if h.Agent != "" && !IsURL(h.Agent) {
 		agentBase := strings.TrimSuffix(filepath.Base(h.Agent), ".md")
 		if !validAgentName.MatchString(agentBase) {
 			return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", agentBase)
@@ -543,10 +566,10 @@ func (h *Harness) Validate() error {
 	if h.Effort != "" && !validEffortLevel(h.Effort) {
 		return fmt.Errorf("effort %q is not valid (allowed: %s)", h.Effort, strings.Join(validEffortLevels, ", "))
 	}
-	if h.Role == "" {
+	if whole && h.Role == "" {
 		return fmt.Errorf("role field is required")
 	}
-	if !validRoleName.MatchString(h.Role) {
+	if h.Role != "" && !validRoleName.MatchString(h.Role) {
 		return fmt.Errorf("role %q contains invalid characters (allowed: a-z, 0-9, _, -; must start with a lowercase letter)", h.Role)
 	}
 	if strings.Contains(h.Role, "--") {
@@ -586,7 +609,7 @@ func (h *Harness) Validate() error {
 			return fmt.Errorf("host_files[%d]: %w", i, err)
 		}
 	}
-	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
+	if whole && h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
 		return fmt.Errorf("validation_loop.script is required when validation_loop is set")
 	}
 	if h.ValidationLoop != nil {
@@ -603,11 +626,11 @@ func (h *Harness) Validate() error {
 	if err := h.ValidateResourceTypes(); err != nil {
 		return err
 	}
-	if h.AllowRuntimeFetch && len(h.AllowedRemoteResources) == 0 {
+	if whole && h.AllowRuntimeFetch && len(h.AllowedRemoteResources) == 0 {
 		return fmt.Errorf("allow_runtime_fetch requires at least one entry in allowed_remote_resources")
 	}
 	if h.MaxRuntimeFetches != nil {
-		if !h.AllowRuntimeFetch {
+		if whole && !h.AllowRuntimeFetch {
 			return fmt.Errorf("max_runtime_fetches requires allow_runtime_fetch to be true")
 		}
 		if *h.MaxRuntimeFetches <= 0 || *h.MaxRuntimeFetches > 1000 {
@@ -617,11 +640,14 @@ func (h *Harness) Validate() error {
 	if err := h.validateForge(); err != nil {
 		return err
 	}
-	if err := h.validateOverlays(); err != nil {
+	// A layer's overlay may leave its loop's script to a layer below.
+	if err := h.validateOverlayEntries(!whole || (h.ValidationLoop != nil && h.ValidationLoop.Script != "")); err != nil {
 		return err
 	}
-	if err := ValidateTriggerExpression(h.Trigger); err != nil {
-		return fmt.Errorf("trigger: %w", err)
+	if whole {
+		if err := ValidateTriggerExpression(h.Trigger); err != nil {
+			return fmt.Errorf("trigger: %w", err)
+		}
 	}
 	// ValidateAllowedRemoteResources requires the org allowlist and is called
 	// by the integration layer, not here.
