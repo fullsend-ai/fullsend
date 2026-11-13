@@ -314,18 +314,19 @@ example `agent/PROJ-123-reject-empty-names`. It writes the description again
 on each run, so you cannot tell in advance whether a rerun reuses the branch.
 With the earlier pull request still open, a rerun ends in one of three ways:
 
-| Branch name the rerun picks | What happens |
+| What the rerun finds | What happens |
 |---|---|
-| A different one | The run opens a second pull request and the first stays open. The code agent's comment on the Jira issue then shows only the newer URL |
-| The same one, and the pull request holds only the code agent's commits | The run replaces those commits with the new ones. The pull request stays open |
-| The same one, and the pull request holds a commit by anyone else | The run fails when it pushes and the pull request keeps its commits. The Jira issue shows the failed run; the workflow log names the commit |
+| A different branch name | The run opens a second pull request and the first stays open. The code agent's comment on the Jira issue then shows only the newer URL |
+| The same branch name, and the pull request holds only the code agent's commits | The run replaces those commits with the new ones. The pull request stays open |
+| The same branch name, and the pull request holds a commit by anyone else | The run fails when it pushes, and the pull request keeps its commits. The newest run-status comment on the Jira issue starts with `🤖 Finished Code` and marks the run as failed. The log of the workflow run in GitHub Actions, or of the pipeline in GitLab, names the commit |
 
 "Anyone else" covers a commit by you, a commit by the fix agent (`/fs-fix`),
-a code agent commit you amended, and the merge commit GitHub's **Update
-branch** button adds.
+a code agent commit you amended, and a merge commit that brings the pull
+request up to date, such as the one GitHub's **Update branch** button adds.
 
-You cannot pick which of these you get. To adjust the pull request, use
-`/fs-fix` on it. To start over, close it before you rerun.
+You cannot choose the outcome. To adjust the pull request, comment `/fs-fix`
+on it. To start over, close the pull request, then comment `/fs-code` on the
+Jira issue again.
 
 #### If the code agent skips the run
 
