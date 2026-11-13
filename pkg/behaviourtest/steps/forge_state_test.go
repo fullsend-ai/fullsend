@@ -232,6 +232,40 @@ func TestThenLastIssueCommentContains(t *testing.T) {
 	require.ErrorContains(t, thenLastIssueCommentContains(w, "x"), "listing comments on issue #7")
 }
 
+func TestThenLastIssueCommentContainingContains(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeForgeStateSCM{comments: map[int][]forge.IssueComment{
+		7: {
+			{Body: "<!-- fullsend:triage-agent -->\nThis issue is ready for implementation."},
+			{Body: "<!-- fullsend:triage-agent -->\nRe-triage on the second run"},
+			// A status completion appended behind the result: the
+			// marker-scoped step must ignore it, where the
+			// any-kind last-comment step would read it instead.
+			{Body: "🤖 Triage · Completed"},
+		},
+	}}
+	w := forgeStateWorld(f)
+
+	require.NoError(t, thenLastIssueCommentContainingContains(w, "<!-- fullsend:triage-agent -->", "Re-triage on the second run"))
+	// Only the last marker comment satisfies the step, not an earlier one.
+	require.ErrorContains(t, thenLastIssueCommentContainingContains(w, "<!-- fullsend:triage-agent -->", "This issue is ready for implementation."),
+		`the last comment on issue #7 containing "<!-- fullsend:triage-agent -->" does not contain "This issue is ready for implementation."`)
+	// The comment behind the last marker comment is not the one asserted on.
+	require.ErrorContains(t, thenLastIssueCommentContainingContains(w, "<!-- fullsend:triage-agent -->", "Completed"),
+		`does not contain "Completed"`)
+
+	// No comment carries the marker.
+	f2 := &fakeForgeStateSCM{comments: map[int][]forge.IssueComment{7: {{Body: "unrelated"}}}}
+	require.ErrorContains(t, thenLastIssueCommentContainingContains(forgeStateWorld(f2), "<!-- fullsend:triage-agent -->", "x"),
+		`no comment on issue #7 contains "<!-- fullsend:triage-agent -->" (1 comments checked)`)
+
+	require.ErrorContains(t, thenLastIssueCommentContainingContains(&world.World{}, "m", "x"), "no issue created")
+
+	f.err = errors.New("HTTP 403")
+	require.ErrorContains(t, thenLastIssueCommentContainingContains(w, "m", "x"), "listing comments on issue #7")
+}
+
 func TestThenIssueCommentOtherThanLastContains(t *testing.T) {
 	t.Parallel()
 
