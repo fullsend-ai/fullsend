@@ -460,9 +460,12 @@ func codexSubagentNote(roles []codexRole) string {
 		"child you spawned and never resume one. A `wait_agent` that returns `timed_out: true` and " +
 		"no status has timed out, not failed: call it again. A child whose status is `errored` is " +
 		"final for that role. " +
-		"A denied spawn is final for that role: do not retry it, execute that sub-agent " +
-		"definition yourself with the same context package, and treat the output as that " +
-		"sub-agent's result.\n\n" +
+		"A spawn denied because its `agent_type` is not a registered role denied no role: retry " +
+		"it once with the registered role the denial names (the persona's full name, not a short " +
+		"form). Any other denied spawn is final for that role: do not retry it, execute that " +
+		"sub-agent definition yourself with the same context package, and treat the output as that " +
+		"sub-agent's result. A selected sub-agent that ran neither as a child nor in your own " +
+		"context must appear in your result as a failure, never as coverage.\n\n" +
 		codexChunkedReadNote
 }
 

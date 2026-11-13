@@ -726,6 +726,12 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		}
 		printer.StepWarn(msg + "; the progress log is incomplete")
 	}
+	// A denied spawn emits no stream item; print the guard's denials so a
+	// selected sub-agent that never ran shows in the run's own output.
+	if checkSpawns {
+		digests.ReportedDenials = reportCodexSpawnDenials(params.SandboxName, printer, digests.ReportedDenials)
+		recordRunnerHeldDigests(params.SandboxName, digests)
+	}
 	if childIDs.UnreadSpawn {
 		return exitCode, fmt.Errorf("%s: a spawn_agent item longer than %d bytes could not be read", codexSpawnWithoutAdmission, streamBufSize)
 	}

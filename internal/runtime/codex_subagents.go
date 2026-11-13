@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // Native child accounting for the Codex runtime. A child's tokens never reach
@@ -483,6 +484,13 @@ const codexSpawnAdmitFinding = "codex_spawn_guard_admit"
 // codexFindingsLogPath is the adapter's FINDINGS_PATH.
 const codexFindingsLogPath = sandbox.SandboxWorkspace + "/.security/findings.jsonl"
 
+// codexSpawnDenyFinding is the adapter's SPAWN_DENY_FINDING.
+const codexSpawnDenyFinding = "codex_spawn_guard_block"
+
+// codexSpawnDenialsPrinted bounds the denials printed per iteration; the
+// rest are counted in one line.
+const codexSpawnDenialsPrinted = 20
+
 // codexSpawnWithoutAdmission starts the cross-check's error.
 const codexSpawnWithoutAdmission = "codex_spawn_without_admission"
 
@@ -716,4 +724,63 @@ func checkCodexSpawnAdmissions(sandboxName, primary string, senders []string, co
 		return fmt.Errorf("%w; the admissions read was cut at %d bytes", err, codexChildUsageMaxBytes)
 	}
 	return err
+}
+
+// The denials report. Codex shows the guard's deny reason to the parent
+// only; the stream carries no item for a denied spawn, so without this a
+// selected sub-agent that never ran leaves no trace in the run's own output
+// (#9073). The findings log is agent-writable, so this is visibility, not
+// policy: a planted line only adds a warning, and a truncated log hides
+// denials from it.
+
+// codexSpawnDenialsReadCommand prints the findings log's lines that name a
+// spawn-guard deny, bounded like the admissions read.
+func codexSpawnDenialsReadCommand(findingsLog string) string {
+	return fmt.Sprintf(`command -p grep -a -e %s -- %s 2>/dev/null | command -p head -c %d`,
+		shellQuote(`"`+codexSpawnDenyFinding+`"`), shellQuote(findingsLog), codexChildUsageMaxBytes)
+}
+
+// parseCodexSpawnDenials returns the detail of each line that decodes as a
+// finding named codexSpawnDenyFinding, in log order.
+func parseCodexSpawnDenials(data []byte) []string {
+	var details []string
+	for line := range bytes.Lines(data) {
+		var finding struct {
+			Name   string `json:"name"`
+			Detail string `json:"detail"`
+		}
+		if json.Unmarshal(line, &finding) == nil && finding.Name == codexSpawnDenyFinding {
+			details = append(details, finding.Detail)
+		}
+	}
+	return details
+}
+
+// reportCodexSpawnDenials prints, as warnings, the spawn denials the
+// findings log gained since the run's earlier iterations (reported of them
+// were printed already), and returns the log's denial count. The log
+// persists across iterations. A failed read is a warning, and returns
+// reported unchanged.
+func reportCodexSpawnDenials(sandboxName string, printer *ui.Printer, reported int) int {
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, codexSpawnDenialsReadCommand(codexFindingsLogPath), 10*time.Second)
+	if err == nil && exitCode != 0 {
+		err = fmt.Errorf("exited %d: %s", exitCode, strings.TrimSpace(sanitizeOutput(stderr)))
+	}
+	if err != nil {
+		printer.StepWarn("Could not read the spawn guard's denials: " + redactSummary(sanitizeOutput(err.Error())))
+		return reported
+	}
+	denials := parseCodexSpawnDenials([]byte(stdout))
+	if len(denials) <= reported {
+		return len(denials)
+	}
+	fresh := denials[reported:]
+	for i, detail := range fresh {
+		if i == codexSpawnDenialsPrinted {
+			printer.StepWarn(fmt.Sprintf("%d more spawn(s) denied; see %s", len(fresh)-i, codexFindingsLogPath))
+			break
+		}
+		printer.StepWarn("Spawn denied by the runner's spawn guard: " + redactSummary(sanitizeOutput(detail)))
+	}
+	return len(denials)
 }
