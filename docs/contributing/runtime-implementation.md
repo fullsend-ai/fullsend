@@ -189,6 +189,9 @@ How the shared PostToolUse chain reaches each runtime — the three sanitizer ro
   stores them on the runner keyed by sandbox name, and Run restores them after reading the
   agent-writable `.env`. A missing entry fails closed. This requires Bootstrap and Run to share the
   same one-shot CLI process; a future long-lived runner must evict state when each sandbox finishes.
+  The launch drops `OPENCODE_EXPERIMENTAL*` assignments from loaded environment files and clears
+  inherited variables with that prefix. This keeps experimental modes, including background
+  subagents, disabled without changing foreground Task permissions.
 - **OpenCode agent permissions and reset:** OpenCode evaluates agent-level permission rules after
   the global policy (`findLast`), so Bootstrap intersects the translated agent record with the
   trusted `OPENCODE_CONFIG_CONTENT` policy: a declared tool gets every trusted rule that applies

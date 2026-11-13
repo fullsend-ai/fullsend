@@ -136,6 +136,7 @@ var openCodeEnvDataDrop = []string{
 	openCodeHomePinVar,
 	openCodePathPinVar,
 	"OPENCODE_PURE",
+	"OPENCODE_EXPERIMENTAL*",
 }
 
 // Sandbox-side layout. The transcript and the exit-code file live under
@@ -401,7 +402,13 @@ var openCodeDangerousEnvVars = []string{
 }
 
 func openCodeTrustedEnvRestore() string {
-	return "unset " + strings.Join(openCodeDangerousEnvVars, " ") +
+	// The loader drops experimental assignments, but inherited flags still
+	// exist in the launch shell. Its pinned Python emits only valid names,
+	// so word splitting here cannot introduce shell syntax or glob patterns.
+	experimental := `import os, re; print(" ".join(k for k in os.environ if k.startswith("OPENCODE_EXPERIMENTAL") and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k)))`
+	return envDataExportsVar + `="$("$` + envDataPythonVar + `" -I -S -c ` + shellQuote(experimental) + `)"` +
+		" && unset $" + envDataExportsVar + " && unset " + envDataExportsVar +
+		" && unset " + strings.Join(openCodeDangerousEnvVars, " ") +
 		` && export OPENCODE_CONFIG_CONTENT="$` + openCodeConfigContentPinVar +
 		`" GOOGLE_APPLICATION_CREDENTIALS="$` + openCodeCredentialsPathPinVar +
 		`" HOME="$` + openCodeHomePinVar +

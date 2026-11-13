@@ -192,6 +192,9 @@ isolated Python mode and trusted PATH. Default plugins are disabled and nonempty
 rejected; use the harness provider/environment credential route. Shell-startup injection
 variables are cleared for tool subprocesses.
 The launch also clears `OPENCODE_PURE`, which would disable the hook plugin.
+It drops `OPENCODE_EXPERIMENTAL*` assignments from `.env` files and clears
+inherited variables with that prefix. Experimental modes, including background
+subagents, are disabled; ordinary foreground Tasks still follow the configured permissions.
 Disabling OpenCode default plugins is a compatibility constraint: harnesses
 must use the configured provider/environment credential route rather than
 relying on a default plugin to provide authentication or provider behavior.
