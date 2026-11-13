@@ -60,6 +60,9 @@ func registerForgeStateSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the last comment on the issue contains "([^"]+)"$`, func(ctx context.Context, text string) (context.Context, error) {
 		return ctx, thenLastIssueCommentContains(world.FromContext(ctx), text)
 	})
+	sc.Step(`^the last comment on the issue containing "([^"]+)" contains "([^"]+)"$`, func(ctx context.Context, marker, text string) (context.Context, error) {
+		return ctx, thenLastIssueCommentContainingContains(world.FromContext(ctx), marker, text)
+	})
 	sc.Step(`^a comment on the issue other than the last contains "([^"]+)"$`, func(ctx context.Context, text string) (context.Context, error) {
 		return ctx, thenIssueCommentOtherThanLastContains(world.FromContext(ctx), text)
 	})
@@ -226,6 +229,32 @@ func thenLastIssueCommentContains(w *world.World, text string) error {
 	last := comments[len(comments)-1]
 	if !strings.Contains(last.Body, text) {
 		return fmt.Errorf("the last comment on issue #%d does not contain %q:\n%s", number, text, last.Body)
+	}
+	return nil
+}
+
+// thenLastIssueCommentContainingContains asserts that the last comment
+// on the scenario's issue carrying marker (an agent's result marker)
+// also contains text: the newest of an agent's results is the one
+// readers look for, whatever other comments — a status completion, a
+// command — were posted behind it. Unlike thenLastIssueCommentContains
+// it does not depend on which comment the run left last of any kind.
+func thenLastIssueCommentContainingContains(w *world.World, marker, text string) error {
+	comments, number, err := listTargetComments(w, targetIssue)
+	if err != nil {
+		return err
+	}
+	last := -1
+	for i, c := range comments {
+		if strings.Contains(c.Body, marker) {
+			last = i
+		}
+	}
+	if last < 0 {
+		return fmt.Errorf("no comment on issue #%d contains %q (%d comments checked)", number, marker, len(comments))
+	}
+	if !strings.Contains(comments[last].Body, text) {
+		return fmt.Errorf("the last comment on issue #%d containing %q does not contain %q:\n%s", number, marker, text, comments[last].Body)
 	}
 	return nil
 }
