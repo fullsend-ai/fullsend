@@ -98,7 +98,7 @@ func newJiraTrackerClient(settings *config.JiraTrackingConfig) (*tracker.JiraCli
 	if err != nil {
 		if os.Getenv("JIRA_TOKEN") != "" && os.Getenv(jira.TokenEnvVar) == "" &&
 			os.Getenv(jira.ClientIDEnvVar) == "" && os.Getenv(jira.ClientSecretEnvVar) == "" {
-			return nil, fmt.Errorf("%w (legacy JIRA_TOKEN is no longer read here; set %s and %s, or %s and %s, instead, and set the Jira site URL in tracker.jira.base_url instead of JIRA_BASE_URL)",
+			return nil, fmt.Errorf("%w (JIRA_TOKEN is no longer read; store the same token as %s (and the email as %s), or use %s and %s; set the Jira site URL in tracker.jira.base_url instead of JIRA_BASE_URL)",
 				err, jira.TokenEnvVar, jira.EmailEnvVar, jira.ClientIDEnvVar, jira.ClientSecretEnvVar)
 		}
 		return nil, err

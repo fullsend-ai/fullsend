@@ -101,9 +101,10 @@ is intended: the matrix output could only ever lead to a `fullsend run` that
 refuses the key anyway. The general rule that pattern tightening requires v2
 still holds for shapes consumers accept.
 
-The new optional actor fields are additive, but consumers that vendor this
+The new optional fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
-adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise
+adapter emits `actor.bot_role`, `actor.role_verified`,
+`actor.is_entity_assignee` or `state.issue_type`; otherwise
 their local validator may reject an otherwise valid v1 event. Fullsend controls the supported
 NormalizedEvent producers and consumers, so the bundled validator and other
 supported consumers MUST be updated to this v1 schema before any adapter emits
@@ -361,7 +362,7 @@ until it is listed here. For example `transition.comment` (its `body`,
 `actor.kind` (some adapters infer it from a display name),
 `actor.is_entity_author` (the author makes it true by acting),
 `actor.is_entity_assignee` (anyone who can assign issues can make it true),
-`state.labels`,
+`state.labels`, `state.issue_type` (editable tracker metadata),
 `base_ref` (the author picks the target branch), `head_*` and the change facts
 are untrusted. A guarded overlay may test `has()` only on objects the schema
 always requires, such as `source`; reading `is_fork` when there is no change
@@ -444,7 +445,7 @@ contract):
 | `event_payload.issue` | `entity` when `entity.kind == "work_item"`: `{number: entity.id, html_url: entity.url}` |
 | `event_payload.pull_request` | See below |
 | `event_payload.comment` | `transition.comment` when present: `{body: transition.comment.body}` |
-| `event_payload._normalized_event` | Complete `NormalizedEvent` embedded by `buildEventPayload` for CEL overlay resolution during `fullsend run` (#6748); includes `actor.bot_role` and `actor.role_verified` only when the adapter set them (ADR 0107) |
+| `event_payload._normalized_event` | Complete `NormalizedEvent` embedded by `buildEventPayload` for CEL overlay resolution during `fullsend run` (#6748); includes optional `state.issue_type` (`id`, `name`, `is_subtask`) from Jira snapshots and `actor.bot_role` and `actor.role_verified` only when the adapter set them (ADR 0107) |
 | `trigger_source` (fix agent only) | See below |
 | `status-repo` | `repo` |
 | `status-number` | `entity.id` |

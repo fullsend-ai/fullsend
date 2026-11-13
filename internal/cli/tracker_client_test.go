@@ -133,7 +133,20 @@ func TestNewConfiguredTrackerClient_JiraLegacyTokenHint(t *testing.T) {
 	_, err := newConfiguredTrackerClient(trackerJira, "", "", parseTestConfig(t, testJiraConfig))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), jira.TokenEnvVar+" is required")
-	assert.Contains(t, err.Error(), "legacy JIRA_TOKEN is no longer read")
+	assert.Contains(t, err.Error(), "JIRA_TOKEN is no longer read; store the same token as "+
+		jira.TokenEnvVar+" (and the email as "+jira.EmailEnvVar+"), or use "+
+		jira.ClientIDEnvVar+" and "+jira.ClientSecretEnvVar)
+	assert.Contains(t, err.Error(), "tracker.jira.base_url")
+	assert.NotContains(t, err.Error(), "legacy-token")
+}
+
+func TestNewConfiguredTrackerClient_JiraLegacyTokenHintNotShownWithNewToken(t *testing.T) {
+	t.Setenv(jira.TokenEnvVar, "new-token")
+	t.Setenv(jira.ClientIDEnvVar, "client-id")
+	t.Setenv("JIRA_TOKEN", "legacy-token")
+	_, err := newConfiguredTrackerClient(trackerJira, "", "", parseTestConfig(t, testJiraConfig))
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "JIRA_TOKEN is no longer read")
 	assert.NotContains(t, err.Error(), "legacy-token")
 }
 

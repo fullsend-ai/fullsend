@@ -6,6 +6,10 @@ description: >-
   action is only available once .defaults/ exists on disk).
 
 inputs:
+  defaults_root:
+    description: Root directory containing the checked-out upstream defaults
+    required: false
+    default: .defaults
   source_repo:
     description: Target repository in owner/name form
     required: true
@@ -20,9 +24,11 @@ runs:
   steps:
     - name: Prepare workspace (upstream defaults + repo overrides)
       shell: bash
+      env:
+        DEFAULTS_ROOT: ${{ inputs.defaults_root }}
       run: |
         set -euo pipefail
-        SRC=".defaults/internal/scaffold/fullsend-repo"
+        SRC="${DEFAULTS_ROOT}/internal/scaffold/fullsend-repo"
         LAYERED_DIRS="agents skills schemas harness plugins scripts env"
         DEST=".fullsend/"
         for dir in ${LAYERED_DIRS}; do
@@ -36,6 +42,22 @@ runs:
 
     - name: Validate enrollment and extract repo metadata
       id: repo-parts
-      uses: ./.defaults/.github/actions/validate-enrollment
-      with:
-        source_repo: ${{ inputs.source_repo }}
+      shell: bash
+      env:
+        SOURCE_REPO: ${{ inputs.source_repo }}
+      run: |
+        set -euo pipefail
+        : "${SOURCE_REPO:?SOURCE_REPO is required}"
+        : "${GITHUB_REPOSITORY_OWNER:?GITHUB_REPOSITORY_OWNER is required}"
+        if [[ ! "${SOURCE_REPO}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
+          echo "::error::Invalid source_repo format: must be owner/repo"
+          exit 1
+        fi
+        repo_owner="${SOURCE_REPO%%/*}"
+        if [[ "${repo_owner}" != "${GITHUB_REPOSITORY_OWNER}" ]]; then
+          echo "::error::source_repo owner does not match org"
+          exit 1
+        fi
+        echo "Per-repo mode — skipping config.yaml enrollment check (self-enrolled)"
+        echo "Validation passed for ${SOURCE_REPO}"
+        echo "name=${SOURCE_REPO##*/}" >> "${GITHUB_OUTPUT}"

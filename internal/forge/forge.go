@@ -424,6 +424,12 @@ func IsTreeTruncated(err error) bool {
 	return errors.Is(err, ErrTreeTruncated)
 }
 
+// ErrDiffListingTruncated indicates that a forge returned a safety-capped
+// file-diff listing. Callers that need a complete diff must fail open, while
+// callers that only need the available hunks may still use the returned
+// entries.
+var ErrDiffListingTruncated = errors.New("pull request file diff listing truncated")
+
 // ErrNoChanges indicates that a change proposal could not be created
 // because there are no differences between the head and base branches.
 var ErrNoChanges = errors.New("no changes between branches")
@@ -819,9 +825,22 @@ type ReviewThreadPage struct {
 
 // PullRequestFileDiff represents a file changed in a pull request along
 // with its unified diff patch. The patch may be empty for binary files,
-// rename-only changes, or when GitHub truncates large diffs.
+// rename-only changes, or when the forge cannot represent the full diff.
+// PreviousPath is populated only for renames. Status is normalized across
+// forges to added, removed, renamed, or modified.
 type PullRequestFileDiff struct {
-	Path  string
+	Path string
+	// PreviousPath is set only when the file was renamed.
+	PreviousPath string
+	// Status is normalized across forges to added, removed, renamed, or modified.
+	Status string
+	// OldMode and NewMode are the Git tree modes for the old and new paths.
+	// ModesVerified is false when the forge could not provide mode metadata;
+	// hash consumers must fail open in that case.
+	OldMode       string
+	NewMode       string
+	ModesVerified bool
+	// Patch is the unified diff, when the forge can represent it.
 	Patch string
 }
 
@@ -1416,6 +1435,10 @@ type Client interface {
 	// ListPullRequestFileDiffs returns the files changed by a pull request
 	// along with their unified diff patches. Use this when you need to
 	// determine which lines are within diff hunks (e.g. for inline comments).
+	// When a forge reaches its safety cap, it returns the entries collected so
+	// far together with forge.ErrDiffListingTruncated; callers that require a
+	// complete listing must fail open, while callers that can use partial hunks
+	// may continue with the returned entries.
 	ListPullRequestFileDiffs(ctx context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error)
 
 	// Pull request review operations.

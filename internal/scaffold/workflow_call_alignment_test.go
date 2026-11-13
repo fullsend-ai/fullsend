@@ -625,6 +625,51 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 	})
 }
 
+// TestRetiredJiraSecretsNotForwarded pins the retirement of the JIRA_TOKEN
+// and JIRA_USER_EMAIL secrets (#9413): no workflow or scaffold template
+// forwards them, and reusable-dispatch.yml keeps both workflow_call
+// declarations, optional and described as ignored, for one release so a
+// caller that still passes them does not fail validation.
+func TestRetiredJiraSecretsNotForwarded(t *testing.T) {
+	retired := []string{"JIRA_TOKEN", "JIRA_USER_EMAIL"}
+	for _, tc := range []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"scaffold/templates/jira-poll-per-repo.yaml", loadScaffoldFile("templates/jira-poll-per-repo.yaml")},
+		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml")},
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"reusable-prioritize.yml", loadRepoFile(".github/workflows/reusable-prioritize.yml")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := string(tc.content(t))
+			for _, name := range retired {
+				assert.NotContains(t, body, "secrets."+name+" }}", "%s must not forward the retired %s secret", tc.name, name)
+			}
+		})
+	}
+
+	var parsed struct {
+		On struct {
+			WorkflowCall struct {
+				Secrets map[string]struct {
+					Description string `yaml:"description"`
+					Required    bool   `yaml:"required"`
+				} `yaml:"secrets"`
+			} `yaml:"workflow_call"`
+		} `yaml:"on"`
+	}
+	require.NoError(t, yaml.Unmarshal(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t), &parsed))
+	for _, name := range retired {
+		secret, ok := parsed.On.WorkflowCall.Secrets[name]
+		require.True(t, ok, "reusable-dispatch.yml must keep declaring %s for one release", name)
+		assert.False(t, secret.Required, "%s must stay optional", name)
+		assert.True(t, strings.HasPrefix(secret.Description, "Ignored."), "%s must be described as ignored, got %q", name, secret.Description)
+	}
+}
+
 // TestJiraCredentialSecretThreading validates that the scoped Jira credentials
 // reach every fullsend run that may post status to a Jira-originated work item.
 // Both secrets are optional because service-account tokens omit the email.
@@ -674,16 +719,16 @@ func TestJiraCredentialSecretThreading(t *testing.T) {
 			for _, marker := range markers {
 				t.Run(marker, func(t *testing.T) {
 					section := extractStepSection(t, body, marker)
-					payload := "needs.route.outputs.event_payload"
+					payloadExpr := "fromJSON(needs.route.outputs.event_payload)"
 					if marker == "Run harness agent" {
-						payload = "matrix.event_payload"
+						payloadExpr = "matrix.event_payload"
 					} else if wf == ".github/workflows/reusable-prioritize.yml" {
-						payload = "inputs.event_payload"
+						payloadExpr = "fromJSON(inputs.event_payload)"
 					}
-					assert.Contains(t, section, "jira-token: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets."+token+" || '' }}", "%s must pass the Jira token only for Jira-originated runs", marker)
-					assert.Contains(t, section, "jira-email: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets."+email+" || '' }}", "%s must pass the optional Jira email only for Jira-originated runs", marker)
-					assert.Contains(t, section, "jira-client-id: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}", "%s must pass the OAuth client ID only for Jira-originated runs", marker)
-					assert.Contains(t, section, "jira-client-secret: ${{ fromJSON("+payload+")._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}", "%s must pass the OAuth client secret only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-token: ${{ "+payloadExpr+"._normalized_event.source.system == 'jira' && secrets."+token+" || '' }}", "%s must pass the Jira token only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-email: ${{ "+payloadExpr+"._normalized_event.source.system == 'jira' && secrets."+email+" || '' }}", "%s must pass the optional Jira email only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-client-id: ${{ "+payloadExpr+"._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_ID || '' }}", "%s must pass the OAuth client ID only for Jira-originated runs", marker)
+					assert.Contains(t, section, "jira-client-secret: ${{ "+payloadExpr+"._normalized_event.source.system == 'jira' && secrets.FULLSEND_JIRA_CLIENT_SECRET || '' }}", "%s must pass the OAuth client secret only for Jira-originated runs", marker)
 				})
 			}
 		})
@@ -868,7 +913,7 @@ func TestJiraSecretsActionWiring(t *testing.T) {
 		"jira-client-id":     "FULLSEND_JIRA_CLIENT_ID",
 		"jira-client-secret": "FULLSEND_JIRA_CLIENT_SECRET",
 	} {
-		assert.Contains(t, with, fmt.Sprintf("          %s: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system == 'jira' && secrets.%s || '' }}", input, secretName),
+		assert.Contains(t, with, fmt.Sprintf("          %s: ${{ matrix.event_payload._normalized_event.source.system == 'jira' && secrets.%s || '' }}", input, secretName),
 			"Run harness agent must pass %s as the %s action input only for Jira events", secretName, input)
 	}
 

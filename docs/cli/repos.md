@@ -575,7 +575,7 @@ flag or environment variable supplies them.
   any write, until `--jira-token` is supplied or `FULLSEND_JIRA_TOKEN` already
   exists. Re-runs, CI jobs, and scripted installs that previously succeeded
   need the flag added, for example
-  `fullsend repos install --jira-token "$JIRA_TOKEN"`. Setting
+  `fullsend repos install --jira-token "$FULLSEND_JIRA_TOKEN"`. Setting
   `poll.enabled: false` also avoids the requirement.
 - **Disabled (`poll.enabled: false`, or `poll`/`poll.enabled` omitted).**
   Install removes the Fullsend-owned Jira poll resources. `FULLSEND_JIRA_TOKEN`
@@ -746,10 +746,12 @@ reports the result of a containment as drift (the published trigger token was
 removed or revoked) until `repos install` publishes a replacement. The
 account lifecycle does not publish a replacement until those checks pass. If a
 Poller role stage fails, a requested trigger-account rotation waits so the
-existing webhook is not left pointing at a revoked token. The installer still
-refreshes the webhook after ordinary account repair in that failure path when
-the account route is active, because repair can replace its token. It does not
-move an account webhook onto an unverified Poller route. The poller,
+existing webhook is not left pointing at a revoked token. When the account
+route is active, the installer still provisions or converges the account's
+webhook in that same run: it creates a missing webhook and its secret from
+scratch, and repairs a stale one, on the trigger account's token. It never
+creates a webhook or trigger on the Poller route while the Poller stage has
+failed. The poller,
 dispatcher, and agent job scripts unset both trigger-token variables before
 running, and `fullsend run` excludes them from harness expansion.
 
@@ -1088,7 +1090,19 @@ an error; polling stays in place) when the default branch has only a wildcard
 protected-branch rule, project service accounts are unavailable,
 `ci_pipeline_variables_minimum_override_role` is not `no_one_allowed`, or the
 default branch differs from the recorded one (run `repos uninstall`, then
-install). A deferral for the override role that is weakened or cannot be
+install). The service-account deferral names the minimum version: the
+trigger-account route needs GitLab 18.11 or later, where project service
+accounts (generally available on Free in 18.11) and protected-branch
+deploy-key push access (on Free since 18.10) exist on every tier. Upgrade an
+older self-managed instance; install does not promote an account or widen
+branch access in their place. GitLab offers no read-only probe for the
+deploy-key push capability, so install detects a missing capability when it
+adds the account's exact-branch deploy-key push entry: a refusal that says the
+feature is absent or gated by tier or license, or a request GitLab accepts but
+does not record, defers with the same upgrade message. The account then never
+becomes ready, so no route is activated and no other access is granted. The
+account, its key and its trigger stay recorded in the ledger for the next run
+or `repos uninstall`. A deferral for the override role that is weakened or cannot be
 read also removes an already published token variable and revokes the
 account's triggers; `repos status` reports the live role. Install fails, before the account is raised
 to Maintainer, when the account owns an SSH key, a pipeline schedule, or a
@@ -1135,12 +1149,22 @@ overrides a dispatch or pre-authorization value such as `CI_PIPELINE_SOURCE`,
 `CI_PIPELINE_SCHEDULE_DESCRIPTION`, `FULLSEND_POLL_MODE`, or an agent input
 bridge, or when either
 inventory cannot be read (group and instance scopes the installing credential
-may not read are skipped). GitLab also requires a protected-branch schedule
-owner to have merge permission. If the Developer trigger account lacks it,
-the schedules stay installer-owned on the Poller route. GitLab Free cannot
-grant merge access to just that account; a project whose protected branch
-allows only Maintainers to merge therefore uses the fallback without widening
-merge access. An exact-name managed schedule left by a previous installer
+may not read are skipped). Schedule ownership is evaluated separately from
+activation ([#9343](https://github.com/fullsend-ai/fullsend/issues/9343)).
+GitLab requires a protected-branch schedule owner to have merge permission,
+but a pipeline the trigger account starts through its trigger token needs only
+push or merge access, which its recorded deploy-key push grant gives it. If
+the Developer trigger account lacks merge permission (or it cannot be
+verified), the schedules stay installer-owned on the Poller route, and
+install reports that without deferring activation or the webhook route.
+GitLab Free cannot grant merge access to just that account; a project whose
+protected branch allows only Maintainers to merge therefore uses the fallback
+without widening merge access. When the gate passes, install reports the
+trigger account's name and user ID, the protected branch, and the deploy key
+in that branch's push-access list. That grant also permits direct pushes to
+the branch through the key, and it grants no merge permission. While
+activation is recorded and the account lacks merge permission, `repos status`
+does not report the installer-owned schedules as drift. An exact-name managed schedule left by a previous installer
 credential remains eligible for adoption or hand-back when its reported owner
 still has project Maintainer access. An unknown or lower-privilege owner
 requires manual reconciliation.
@@ -1149,9 +1173,11 @@ Every converge, rotate, containment or uninstall run first deletes the
 When the gate passes, `repos install` records that variable, bound to the exact
 `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger generation, which activates the
 CI_JOB_TOKEN child-pipeline (`source=pipeline`) dispatch route; install fails
-if recording the activation fails. Install then recreates the managed polling
+if recording the activation fails. When the account also has merge permission
+on the protected default branch, install then recreates the managed polling
 schedules (`fullsend slash poll`, `fullsend event poll`) under the trigger
-account, so scheduled polls run as the account and use that route. After this
+account, so scheduled polls run as the account and use that route; otherwise
+they stay installer-owned and poll through the Poller `api` route. After this
 ownership move, use this release or newer for `repos install`,
 `repos status`, and `repos uninstall`. Once this release writes the
 `trigger_token_digest` or `publication_pending` ledger key, older strict CLI

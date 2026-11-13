@@ -20,6 +20,19 @@ import (
 // Ready is true only when every prerequisite was verified against live
 // project state; otherwise Deferred lists every reason activation must wait.
 //
+// ScheduleOwnerDeferred is the reason the managed polling schedules stay
+// installer-owned, or "" when the trigger account may own them. Schedule
+// ownership is evaluated separately from activation (#9343): GitLab requires a
+// protected-branch schedule owner to have merge permission, while a pipeline
+// the trigger account starts through its trigger token needs only the branch
+// access its deploy-key push grant gives it. A missing merge permission
+// therefore never defers activation; it only keeps the schedules on the
+// installer-owned Poller route.
+//
+// PushGrant, set only on a Ready gate, names the trigger account and the
+// deploy-key push grant through which it reaches the protected default
+// branch, so the caller can report that direct-push capability explicitly.
+//
 // UnverifiedInheritedScopes names the inherited CI/CD variable scopes
 // ("instance" or a group path) the installing credential could not read.
 // They do not defer activation, so a Ready gate can still carry them; they
@@ -27,7 +40,21 @@ import (
 type GitLabTriggerDispatchGate struct {
 	Ready                     bool
 	Deferred                  []string
+	ScheduleOwnerDeferred     string
+	PushGrant                 *GitLabTriggerPushGrant
 	UnverifiedInheritedScopes []string
+}
+
+// GitLabTriggerPushGrant describes the recorded deploy-key push grant through
+// which the trigger account reaches the protected default branch. GitLab
+// admits pipelines the account starts on that branch because the account
+// created the key, and the same grant lets anyone holding the key push
+// directly to the branch. It grants no merge permission.
+type GitLabTriggerPushGrant struct {
+	AccountID   int
+	AccountName string
+	DeployKeyID int
+	Branch      string
 }
 
 // CheckGitLabTriggerDispatchGate is the activation gate that must pass before
@@ -76,11 +103,17 @@ type GitLabTriggerDispatchGate struct {
 //     the shipped before_script and script chain (gitlabJobChainProblem), since
 //     the unrelated-work scans exempt those jobs by name.
 //
+// Whether the trigger account may also own the managed polling schedules is
+// not an activation prerequisite: it is reported in ScheduleOwnerDeferred
+// (gitlabTriggerScheduleMergeAccessProblem) and decides only schedule
+// ownership.
+//
 // A nil api or an empty branch makes the live account checks and the
 // default-branch comparison impossible, so the gate never returns Ready for
 // them: it defers with a reason instead.
 func CheckGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, api GitLabTriggerAccountAPI, owner, repo, branch string, manifest *Manifest) GitLabTriggerDispatchGate {
 	var deferred, unverifiedScopes []string
+	var scheduleOwnerDeferred string
 	if api == nil {
 		deferred = append(deferred, "the trigger account cannot be verified against live project state without the trigger-account API")
 	}
@@ -103,9 +136,9 @@ func CheckGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, ap
 			deferred = append(deferred, reason)
 		}
 		unverifiedScopes = unverified
-		if reason := gitlabTriggerScheduleMergeAccessProblem(ctx, client, owner, repo, branch); reason != "" {
-			deferred = append(deferred, reason)
-		}
+		// Schedule ownership only: a trigger account without merge access
+		// can still start webhook pipelines through its deploy-key grant.
+		scheduleOwnerDeferred = gitlabTriggerScheduleMergeAccessProblem(ctx, client, owner, repo, branch)
 		// Unrelated user jobs must not run in the trigger or agent child
 		// (source=pipeline) pipelines: they would receive the protected
 		// credentials those pipelines carry.
@@ -139,7 +172,35 @@ func CheckGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, ap
 	// completes; the intentionally pending retirement alone is not drift for
 	// this gate.
 	deferred = append(deferred, gitlabRetiredPublishedSafetyProblems(ctx, client, api, owner, repo, branch)...)
-	return GitLabTriggerDispatchGate{Ready: len(deferred) == 0, Deferred: deferred, UnverifiedInheritedScopes: unverifiedScopes}
+	gate := GitLabTriggerDispatchGate{Ready: len(deferred) == 0, Deferred: deferred, ScheduleOwnerDeferred: scheduleOwnerDeferred, UnverifiedInheritedScopes: unverifiedScopes}
+	if gate.Ready {
+		grant, err := gitlabTriggerPushGrant(ctx, client, owner, repo, branch)
+		if err != nil {
+			// The diagnosis above read the same ledger; a failure now means
+			// it changed or became unreadable, so nothing is verified.
+			gate.Ready, gate.Deferred = false, []string{err.Error()}
+			return gate
+		}
+		gate.PushGrant = grant
+	}
+	return gate
+}
+
+// gitlabTriggerPushGrant reads the trigger account's recorded deploy-key push
+// grant on branch from the ledger.
+func gitlabTriggerPushGrant(ctx context.Context, client forge.Client, owner, repo, branch string) (*GitLabTriggerPushGrant, error) {
+	raw, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabTriggerAccount)
+	if err != nil {
+		return nil, fmt.Errorf("could not re-read the trigger account ledger to report its push grant: %w", safeAPIError("reading the trigger account ledger", err))
+	}
+	if !exists {
+		return nil, errors.New("the trigger account ledger disappeared while the activation gate was checked")
+	}
+	st, err := decodeGitLabTriggerAccountState(raw)
+	if err != nil || st.AccountID <= 0 || st.DeployKeyID <= 0 || st.Branch != branch {
+		return nil, errors.New("the trigger account ledger changed while the activation gate was checked")
+	}
+	return &GitLabTriggerPushGrant{AccountID: st.AccountID, AccountName: st.accountName(), DeployKeyID: st.DeployKeyID, Branch: st.Branch}, nil
 }
 
 // gitlabRetiredPublishedSafetyProblems returns the deferral reasons for retired
@@ -186,30 +247,41 @@ func gitlabRetiredPublishedSafetyProblems(ctx context.Context, client forge.Clie
 // GitLab Free cannot add an individual Developer to allowed_to_merge, so when
 // only Maintainers can merge the schedules stay installer-owned on the Poller
 // API route. Existing Developer-role or exact account-user merge grants can
-// enable the move without widening project permissions.
+// enable the move without widening project permissions. The result decides
+// schedule ownership only and never defers activation (#9343): the webhook's
+// trigger pipelines need branch push or merge access, which the deploy-key
+// grant gives the account.
 func gitlabTriggerScheduleMergeAccessProblem(ctx context.Context, client forge.Client, owner, repo, branch string) string {
+	problem, _ := gitlabTriggerScheduleMergeAccess(ctx, client, owner, repo, branch)
+	return problem
+}
+
+// gitlabTriggerScheduleMergeAccess is gitlabTriggerScheduleMergeAccessProblem
+// that also reports whether the protected-branch rule was read, so a problem
+// with verified set means the account positively lacks merge permission.
+func gitlabTriggerScheduleMergeAccess(ctx context.Context, client forge.Client, owner, repo, branch string) (problem string, verified bool) {
 	raw, exists, err := client.GetRepoVariable(ctx, owner, repo, forge.VarGitLabTriggerAccount)
 	if err != nil || !exists {
 		// DiagnoseGitLabTriggerAccount reports the missing or unreadable ledger.
-		return ""
+		return "", false
 	}
 	state, err := decodeGitLabTriggerAccountState(raw)
 	if err != nil || state.AccountID <= 0 || state.Branch != branch {
-		return ""
+		return "", false
 	}
 	rule, err := client.GetProtectedBranch(ctx, owner, repo, branch)
 	if err != nil || rule == nil {
-		return "the protected default branch's merge permissions cannot be verified for the trigger account"
+		return "the protected default branch's merge permissions cannot be verified for the trigger account", false
 	}
 	if roleAllowsPoller(rule.MergeAccessLevels) {
-		return ""
+		return "", true
 	}
 	for _, grant := range rule.MergeAccessLevels {
 		if grant.UserID == state.AccountID {
-			return ""
+			return "", true
 		}
 	}
-	return "the trigger account lacks merge permission on the protected default branch, which GitLab requires for scheduled pipelines; managed schedules stay installer-owned on the Poller route"
+	return "the trigger account lacks merge permission on the protected default branch, which GitLab requires of a protected-branch schedule owner", true
 }
 
 // GitLabScheduleReactivationDeferral returns a reason to keep disabled managed

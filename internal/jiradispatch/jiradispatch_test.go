@@ -183,7 +183,7 @@ func TestGitLabDispatcher_RejectsBadPayloads(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeEventPipelineDispatcher{}
-			err := GitLabDispatcher{Poller: fake}.Dispatch(context.Background(), jirapoll.DispatchRecord{Agent: "triage", EventPayload: tc.payload})
+			err := GitLabDispatcher{Poller: fake}.Dispatch(context.Background(), jirapoll.DispatchRecord{Agent: "triage", EventPayload: json.RawMessage(tc.payload)})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
 			assert.Nil(t, fake.event, "no pipeline dispatch for an invalid payload")

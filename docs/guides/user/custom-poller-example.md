@@ -94,8 +94,6 @@ jobs:
       FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
       FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}
       FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}
-      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
-      JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
 ```
 
 The poller reads the Jira site, project, and query from `tracker.jira` in
@@ -125,13 +123,15 @@ The `matrix` input (a GitHub Actions [matrix strategy](https://docs.github.com/e
       "agent": "agent-name",
       "source_repo": "org/repo",
       "role": "harness",
-      "event_payload": "{...}",
+      "event_payload": { ... },
       "status_repo": "org/repo",
       "status_number": "123"
     }
   ]
 }
 ```
+
+> **Note:** The `event_payload` field must be a structured JSON object matching the output of `fullsend dispatch --output-driver gha-matrix`, not an escaped JSON string literal.
 
 ## Prerequisites
 
@@ -147,12 +147,15 @@ Your external repository needs these variables and secrets configured:
 - `FULLSEND_GCP_WIF_PROVIDER` - GCP Workload Identity Federation (WIF) provider
 - `FULLSEND_GCP_PROJECT_ID` - GCP project ID
 - `OTEL_EXPORTER_OTLP_TRACES_HEADERS` - [OTEL](../../glossary.md#otel-primary-facts) auth headers (optional)
-- `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL` - Scoped Jira API
-  token authentication for the Jira poller and status notifications. For an
-  Atlassian service account OAuth credential, set
-  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` instead.
-- `JIRA_TOKEN` - Jira API token (if using Jira agents)
-- `JIRA_USER_EMAIL` - Jira user email for non-Jira runs that reference it. Jira-sourced runs ignore it and use `FULLSEND_JIRA_EMAIL` (see [Jira connection variables in agent runs](jira-integration.md#jira-connection-variables-in-agent-runs))
+- `FULLSEND_JIRA_TOKEN` - Scoped Jira API token for the Jira poller, status
+  notifications, and Jira agents. For an Atlassian service account OAuth
+  credential, set `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`
+  instead; the two cannot be set together, and the built-in triage and code
+  agents need the token until
+  [#9220](https://github.com/fullsend-ai/fullsend/issues/9220).
+- `FULLSEND_JIRA_EMAIL` - The bot account's email. Set it when the token
+  belongs to a bot account (Basic auth); omit it for a service account's token
+  (Bearer auth). Without it, a bot account's token fails with 401.
 
 ## How It Works
 

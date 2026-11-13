@@ -1798,6 +1798,11 @@ var jiraForgeOrEnum = map[string]bool{
 	"source.system":                      true,
 	"source.raw_type":                    true,
 	"source.raw_action":                  true,
+	// Jira assigns the type id and a Jira admin's issue type scheme
+	// defines the name; toNormalizedEvent also drops the object unless
+	// both are 1–255 code points.
+	"state.issue_type.id":   true,
+	"state.issue_type.name": true,
 }
 
 // TestEncodeJiraEventPayload_ClassifiesEveryStringField is the Jira door's

@@ -421,6 +421,10 @@ type FakeClient struct {
 
 	// Pull request file diffs for ListPullRequestFileDiffs.
 	PRFileDiffs map[string][]PullRequestFileDiff // key: "owner/repo/number"
+	// PRFileDiffModes controls whether diff fixtures report verified mode
+	// metadata. When a key is absent, fixtures retain the historical default
+	// of verified metadata; a false value models a forge mode lookup failure.
+	PRFileDiffModes map[string]bool // key: "owner/repo/number"
 
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
@@ -2116,7 +2120,21 @@ func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo str
 	if f.PRFileDiffs != nil {
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if files, ok := f.PRFileDiffs[key]; ok {
-			return slices.Clone(files), nil
+			cloned := slices.Clone(files)
+			if verified, configured := f.PRFileDiffModes[key]; configured {
+				for i := range cloned {
+					cloned[i].ModesVerified = verified
+				}
+			} else {
+				for i := range cloned {
+					// Fake diffs represent complete fixtures unless a test
+					// explicitly models unavailable forge metadata.
+					if !cloned[i].ModesVerified {
+						cloned[i].ModesVerified = true
+					}
+				}
+			}
+			return cloned, nil
 		}
 	}
 	return nil, nil

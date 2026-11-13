@@ -354,22 +354,49 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 		}
 
 		var diffs []struct {
-			NewPath string `json:"new_path"`
-			Diff    string `json:"diff"`
+			OldPath     string `json:"old_path"`
+			NewPath     string `json:"new_path"`
+			NewFile     bool   `json:"new_file"`
+			RenamedFile bool   `json:"renamed_file"`
+			DeletedFile bool   `json:"deleted_file"`
+			OldMode     string `json:"a_mode"`
+			NewMode     string `json:"b_mode"`
+			Diff        string `json:"diff"`
 		}
 		if err := decodeJSON(resp, &diffs); err != nil {
 			return nil, fmt.Errorf("decode merge request file diffs page %d: %w", page, err)
 		}
 
 		for _, d := range diffs {
+			status := "modified"
+			previousPath := ""
+			switch {
+			case d.NewFile:
+				status = "added"
+			case d.DeletedFile:
+				status = "removed"
+			case d.RenamedFile:
+				status = "renamed"
+				previousPath = d.OldPath
+			}
 			files = append(files, forge.PullRequestFileDiff{
-				Path:  d.NewPath,
+				Path:         d.NewPath,
+				PreviousPath: previousPath,
+				Status:       status,
+				OldMode:      d.OldMode,
+				NewMode:      d.NewMode,
+				ModesVerified: (status == "added" && d.NewMode != "") ||
+					(status == "removed" && d.OldMode != "") ||
+					(status != "added" && status != "removed" && d.OldMode != "" && d.NewMode != ""),
 				Patch: d.Diff,
 			})
 		}
 
 		if len(diffs) < 100 {
 			break
+		}
+		if page == 100 {
+			return files, fmt.Errorf("%w at page 100", forge.ErrDiffListingTruncated)
 		}
 	}
 

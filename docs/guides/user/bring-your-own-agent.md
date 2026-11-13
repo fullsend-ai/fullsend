@@ -964,11 +964,16 @@ support, read with the job's OIDC token, is the expected successor (long-term
 design in [#6359](https://github.com/fullsend-ai/fullsend/issues/6359)), and
 this secret stays as the fallback when your workflow cannot use GitHub OIDC or a
 WIF provider with your secret manager. Integrations fullsend owns, such as the
-inference gateway, keep their own named secrets. If your Jira poller workflow
-already passes `JIRA_TOKEN` and `JIRA_USER_EMAIL` to the reusable workflow
-([Jira integration](jira-integration.md)), declare them in `env.runner`
-(`JIRA_TOKEN: "${JIRA_TOKEN}"`) and your `harness-run` scripts receive them;
-this channel is for every other secret and every other stage. On GitHub, store
+inference gateway, keep their own named secrets. If your repository has the
+Jira secrets `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL`
+([Jira integration](jira-integration.md)), the reusable workflow passes them
+to Jira-sourced runs only. Declare them in `env.runner` of an overlay
+guarded on `event.source.system == "jira"`
+(`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`) and your `harness-run`
+scripts receive them. Do not declare them at the top level: on every other
+run they are unset, so the reference fails the run.
+
+For every other secret and every other stage, use runner secrets. On GitHub, store
 all such tokens in one secret, `FULLSEND_GITHUB_RUNNER_SECRETS`, as a JSON
 object of name → value. The installed shim forwards it, and the reusable
 workflow hands it to each stage's composite action. The action writes it to a
@@ -993,7 +998,7 @@ named in the pull request title.
    ```
 
    The object holds literal values: GitHub never expands a reference such as
-   `${{ secrets.JIRA_TOKEN }}` inside a stored secret, so a token you already
+   `${{ secrets.MY_API_TOKEN }}` inside a stored secret, so a token you already
    keep as its own secret must be copied into the object too. A secret holds one
    value, so adding or rotating a key means setting the whole object again. Keep
    the JSON in a file outside the repository and run
@@ -1016,8 +1021,8 @@ named in the pull request title.
 
    A name the harness does not reference reaches no script. The name may not be
    runner-owned (`GH_TOKEN`, `GITHUB_*`, `FULLSEND_*`, `OTEL_*`, `PATH`, ...) or
-   one the reusable workflow already sets, such as `JIRA_TOKEN` or
-   `JIRA_USER_EMAIL`, so pick your own names, and it may appear only in
+   one fullsend reserves, such as `JIRA_BASE_URL` or `ISSUE_NUMBER`, so pick
+   your own names, and it may appear only in
    `env.runner`. A reference from `env.sandbox`, a provider credential, an
    expanded `host_files` entry, or an overlay guarded by anything other than
    `runtime.forge` or `config` fails the run. The full rules are in the
@@ -1083,17 +1088,17 @@ On GitLab, skip the object. Add each secret as its own masked CI/CD variable
 The rules above (refused names, host side only, overlays) apply to names in the
 GitHub object only. `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
 `FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` are not
-inherited by host-side scripts; declare either value in `env.runner` when a
-trusted script needs it. This is the same host-script rule on GitHub and
+inherited by host-side scripts; declare the ones a trusted script needs in
+`env.runner`. This is the same host-script rule on GitHub and
 GitLab. On every forge, references to these values in `env.sandbox`, expanded
 `host_files`, `FULLSEND_OUTPUT_FILE`, and provider config values resolve
 empty. Provider credential values resolve empty too, except
 `${FULLSEND_JIRA_TOKEN}`, which the provider proxy holds. See
 [Jira integration](jira-integration.md#jira-repository-secrets-in-agent-runs)
-for details. Other CI/CD variables still reach host-side scripts except
-`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`,
-`FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`,
-`FULLSEND_JIRA_CLIENT_SECRET` and the OTLP headers.
+for details. Other CI/CD variables still reach host-side scripts, except the
+Jira credentials (`FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+`FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`), the reserved names
+`JIRA_TOKEN` and `JIRA_USER_EMAIL`, and the OTLP headers.
 
 ### Harness composition with `base`
 
