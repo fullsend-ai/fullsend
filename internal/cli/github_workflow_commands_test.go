@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,10 +19,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/inference/actionsoidc"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/fullsend-ai/fullsend/internal/workflowcmd"
 )
 
 // Synthetic values only: none of these is a real credential.
@@ -31,14 +34,14 @@ const (
 	maskTestWorkflowToken = "synthetic-workflow-token-cccc3333"
 )
 
-// suppressMaskCommands turns suppression on for the test and restores it.
-func suppressMaskCommands(t *testing.T) {
+// suppressWorkflowCommands turns suppression on for the test and restores it.
+func suppressWorkflowCommands(t *testing.T) {
 	t.Helper()
-	githubMaskCommandsSuppressed.Store(true)
-	t.Cleanup(func() { githubMaskCommandsSuppressed.Store(false) })
-	orig := noGitHubMaskCommandsNoticeOnce
-	noGitHubMaskCommandsNoticeOnce = &sync.Once{}
-	t.Cleanup(func() { noGitHubMaskCommandsNoticeOnce = orig })
+	workflowcmd.SetSuppressed(true)
+	t.Cleanup(func() { workflowcmd.SetSuppressed(false) })
+	orig := noGitHubWorkflowCommandsNoticeOnce
+	noGitHubWorkflowCommandsNoticeOnce = &sync.Once{}
+	t.Cleanup(func() { noGitHubWorkflowCommandsNoticeOnce = orig })
 }
 
 // assertRedacted checks that value is registered with the process-wide
@@ -51,7 +54,7 @@ func assertRedacted(t *testing.T, value string) {
 	assert.NotContains(t, scan.Sanitized, value, "value must be registered for in-process redaction")
 }
 
-func TestNoGitHubMaskCommandsEnvEnabled(t *testing.T) {
+func TestNoGitHubWorkflowCommandsEnvEnabled(t *testing.T) {
 	for value, want := range map[string]bool{
 		"":      false,
 		"  ":    false,
@@ -64,8 +67,8 @@ func TestNoGitHubMaskCommandsEnvEnabled(t *testing.T) {
 		"yes":   true,
 	} {
 		t.Run(fmt.Sprintf("%q", value), func(t *testing.T) {
-			t.Setenv(noGitHubMaskCommandsEnv, value)
-			assert.Equal(t, want, noGitHubMaskCommandsEnvEnabled())
+			t.Setenv(noGitHubWorkflowCommandsEnv, value)
+			assert.Equal(t, want, noGitHubWorkflowCommandsEnvEnabled())
 		})
 	}
 }
@@ -74,7 +77,7 @@ func TestMaskActionsValue_DefaultEmitsAddMask(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 	// The environment variable alone does not affect maskActionsValue; only
 	// `fullsend run` reads it.
-	t.Setenv(noGitHubMaskCommandsEnv, "1")
+	t.Setenv(noGitHubWorkflowCommandsEnv, "1")
 	stderr := captureStderr(t, func() { maskActionsValue(maskTestInitialToken) })
 	assert.Equal(t, "::add-mask::"+maskTestInitialToken+"\n", stderr)
 }
@@ -83,7 +86,7 @@ func TestMaskActionsValue_OutsideActionsPrintsNothing(t *testing.T) {
 	for _, suppressed := range []bool{false, true} {
 		t.Run(fmt.Sprintf("suppressed=%v", suppressed), func(t *testing.T) {
 			if suppressed {
-				suppressMaskCommands(t)
+				suppressWorkflowCommands(t)
 			}
 			t.Setenv("GITHUB_ACTIONS", "")
 			assert.Empty(t, captureStderr(t, func() { maskActionsValue(maskTestInitialToken) }))
@@ -101,14 +104,14 @@ func TestMaskActionsValue_OutsideActionsRegistersOnlyWhenSuppressed(t *testing.T
 	scan := security.NewSecretRedactor().Scan("log " + offValue + " here")
 	assert.True(t, scan.Safe, "default mode registers nothing outside Actions")
 
-	suppressMaskCommands(t)
+	suppressWorkflowCommands(t)
 	const onValue = "synthetic-outside-actions-on-value"
 	maskActionsValue(onValue)
 	assertRedacted(t, onValue)
 }
 
 func TestMaskActionsValue_SuppressedWritesNoMaskCommand(t *testing.T) {
-	suppressMaskCommands(t)
+	suppressWorkflowCommands(t)
 	t.Setenv("GITHUB_ACTIONS", "true")
 	const multiLine = "synthetic-line-one-value\nsynthetic-line-two-value"
 	stderr := captureStderr(t, func() {
@@ -120,8 +123,8 @@ func TestMaskActionsValue_SuppressedWritesNoMaskCommand(t *testing.T) {
 	for _, v := range []string{maskTestInitialToken, maskTestRefreshToken, "synthetic-line-one-value", "synthetic-line-two-value"} {
 		assert.NotContains(t, stderr, v)
 	}
-	assert.Equal(t, 1, bytes.Count([]byte(stderr), []byte("mask commands are suppressed")), "one value-free notice per process")
-	assert.Contains(t, stderr, "may bypass that redactor")
+	assert.Equal(t, 1, bytes.Count([]byte(stderr), []byte("workflow commands are suppressed")), "one value-free notice per process")
+	assert.Contains(t, stderr, "bypass that redactor")
 	assertRedacted(t, maskTestInitialToken)
 	assertRedacted(t, maskTestRefreshToken)
 }
@@ -130,7 +133,7 @@ func TestMaskActionsValue_SuppressedWritesNoMaskCommand(t *testing.T) {
 // reaches stderr, the tokens still land in the environment, and the
 // "Agent token minted" diagnostic is still printed.
 func TestMintAgentToken_SuppressedInitialAndRemint(t *testing.T) {
-	suppressMaskCommands(t)
+	suppressWorkflowCommands(t)
 	origMint := statusMintToken
 	t.Cleanup(func() { statusMintToken = origMint })
 	tokens := []string{maskTestInitialToken, maskTestRefreshToken}
@@ -169,13 +172,13 @@ func TestMintAgentToken_SuppressedInitialAndRemint(t *testing.T) {
 		assert.NotContains(t, out.String(), v)
 		assertRedacted(t, v)
 	}
-	assert.Contains(t, stderr, "mask commands are suppressed")
+	assert.Contains(t, stderr, "workflow commands are suppressed")
 	assert.Contains(t, out.String(), "Agent token minted")
 }
 
-// A refreshed OIDC token is not printed while mask commands are suppressed.
+// A refreshed OIDC token is not printed while workflow commands are suppressed.
 func TestRefreshOIDCToken_Suppressed(t *testing.T) {
-	suppressMaskCommands(t)
+	suppressWorkflowCommands(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"value": maskTestRefreshToken})
 	}))
@@ -189,10 +192,10 @@ func TestRefreshOIDCToken_Suppressed(t *testing.T) {
 	assertRedacted(t, maskTestRefreshToken)
 }
 
-// A rotated inference gateway token is not printed while mask commands are
+// A rotated inference gateway token is not printed while workflow commands are
 // suppressed, and the rotation still updates the provider.
 func TestRotateGatewayTokenOnce_Suppressed(t *testing.T) {
-	suppressMaskCommands(t)
+	suppressWorkflowCommands(t)
 	t.Setenv("GITHUB_ACTIONS", "true")
 	stubGatewayOIDC(t, "https://x.actions.githubusercontent.com/t", "req")
 	iat := time.Now().Truncate(time.Second)
@@ -233,7 +236,7 @@ func TestMintTokenCmd_KeepsMaskCommandWithEnvSet(t *testing.T) {
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_URL", oidcServer.URL+"?d=1")
 	t.Setenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "tok")
 	t.Setenv("GITHUB_ACTIONS", "true")
-	t.Setenv(noGitHubMaskCommandsEnv, "1")
+	t.Setenv(noGitHubWorkflowCommandsEnv, "1")
 
 	var stdout bytes.Buffer
 	cmd := newMintTokenCmd()
@@ -243,20 +246,21 @@ func TestMintTokenCmd_KeepsMaskCommandWithEnvSet(t *testing.T) {
 
 	assert.Contains(t, stderr, "::add-mask::"+maskTestInitialToken)
 	assert.Equal(t, maskTestInitialToken, stdout.String())
-	assert.Nil(t, cmd.Flags().Lookup(noGitHubMaskCommandsFlag))
-	assert.Nil(t, newRootCmd().PersistentFlags().Lookup(noGitHubMaskCommandsFlag))
+	assert.Nil(t, cmd.Flags().Lookup(noGitHubWorkflowCommandsFlag))
+	assert.Nil(t, newRootCmd().PersistentFlags().Lookup(noGitHubWorkflowCommandsFlag))
 }
 
-func TestRunCmd_HasNoGitHubMaskCommandsFlag(t *testing.T) {
-	f := newRunCmd().Flags().Lookup(noGitHubMaskCommandsFlag)
+func TestRunCmd_HasNoGitHubWorkflowCommandsFlag(t *testing.T) {
+	f := newRunCmd().Flags().Lookup(noGitHubWorkflowCommandsFlag)
 	require.NotNil(t, f)
 	assert.Equal(t, "false", f.DefValue)
 	assert.Contains(t, f.Usage, "::add-mask::")
-	assert.Contains(t, f.Usage, noGitHubMaskCommandsEnv)
+	assert.Contains(t, f.Usage, noGitHubWorkflowCommandsEnv)
+	assert.Contains(t, f.Usage, "::error::")
 	assert.Contains(t, f.Usage, "bypass")
 }
 
-func TestResolveNoGitHubMaskCommands(t *testing.T) {
+func TestResolveNoGitHubWorkflowCommands(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -264,17 +268,67 @@ func TestResolveNoGitHubMaskCommands(t *testing.T) {
 		want bool
 	}{
 		{"default", nil, "", false},
-		{"flag", []string{"--" + noGitHubMaskCommandsFlag}, "", true},
+		{"flag", []string{"--" + noGitHubWorkflowCommandsFlag}, "", true},
 		{"env", nil, "1", true},
 		{"env false", nil, "false", false},
-		{"explicit false flag beats env", []string{"--" + noGitHubMaskCommandsFlag + "=false"}, "1", false},
+		{"explicit false flag beats env", []string{"--" + noGitHubWorkflowCommandsFlag + "=false"}, "1", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv(noGitHubMaskCommandsEnv, tc.env)
+			t.Setenv(noGitHubWorkflowCommandsEnv, tc.env)
 			cmd := &cobra.Command{Use: "probe"}
-			addNoGitHubMaskCommandsFlag(cmd)
+			addNoGitHubWorkflowCommandsFlag(cmd)
 			require.NoError(t, cmd.ParseFlags(tc.args))
-			assert.Equal(t, tc.want, resolveNoGitHubMaskCommands(cmd))
+			assert.Equal(t, tc.want, resolveNoGitHubWorkflowCommands(cmd))
 		})
 	}
+}
+
+// A pre-script's workflow commands do not reach stdout or stderr while
+// suppressed; its other lines do, and an add-mask value is registered with
+// the redactor.
+func TestRunPreScript_SuppressedDropsWorkflowCommands(t *testing.T) {
+	suppressWorkflowCommands(t)
+	const scriptValue = "synthetic-prescript-mask-value"
+	h := &harness.Harness{PreScript: writePreScript(t,
+		"echo '::notice::synthetic notice'\n"+
+			"echo 'plain stdout line'\n"+
+			"echo '::add-mask::"+scriptValue+"' >&2\n"+
+			"echo '::error title=x::synthetic error' >&2\n"+
+			"echo 'plain stderr line' >&2\n")}
+
+	var stderr string
+	stdout := captureStdout(t, func() {
+		stderr = captureStderr(t, func() {
+			_, err := runPreScript(h, t.TempDir(), "", ui.New(io.Discard))
+			require.NoError(t, err)
+		})
+	})
+	assert.Equal(t, "plain stdout line\n", stdout)
+	assert.Equal(t, "plain stderr line\n", stderr)
+	assertRedacted(t, scriptValue)
+}
+
+func TestRunPreScript_DefaultKeepsWorkflowCommands(t *testing.T) {
+	h := &harness.Harness{PreScript: writePreScript(t, "echo '::notice::synthetic notice' >&2\n")}
+	stderr := captureStderr(t, func() {
+		_, err := runPreScript(h, t.TempDir(), "", ui.New(io.Discard))
+		require.NoError(t, err)
+	})
+	assert.Equal(t, "::notice::synthetic notice\n", stderr)
+}
+
+// The agent-completed heartbeat annotation and the run-info annotation are
+// not written while suppressed.
+func TestRunAnnotations_Suppressed(t *testing.T) {
+	suppressWorkflowCommands(t)
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	var out bytes.Buffer
+	emitRunInfoNotice(&out, true, runInfoFor(aggregateMetrics{Runtime: "pi", Model: "synthetic-model"}, "medium"))
+	assert.Empty(t, out.String())
+
+	done := make(chan struct{})
+	close(done)
+	runHeartbeatTo(&out, ui.New(io.Discard), time.Now(), time.Minute, done)
+	assert.Empty(t, out.String())
 }

@@ -57,6 +57,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/fullsend-ai/fullsend/internal/workflowcmd"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -449,8 +450,8 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			githubMaskCommandsSuppressed.Store(resolveNoGitHubMaskCommands(cmd))
-			defer githubMaskCommandsSuppressed.Store(false)
+			workflowcmd.SetSuppressed(resolveNoGitHubWorkflowCommands(cmd))
+			defer workflowcmd.SetSuppressed(false)
 			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
@@ -477,7 +478,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, opencode, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi, codex, and opencode — codex takes OpenAI ids and gateway/<model> only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
-	addNoGitHubMaskCommandsFlag(cmd)
+	addNoGitHubWorkflowCommandsFlag(cmd)
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
@@ -2312,9 +2313,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if gate.agentExitCode != 0 {
 				postCmd.Env = append(postCmd.Env, fmt.Sprintf("FULLSEND_AGENT_EXIT_CODE=%d", gate.agentExitCode))
 			}
-			postCmd.Stdout = os.Stdout
-			postCmd.Stderr = os.Stderr
-			if err := postCmd.Run(); err != nil {
+			postOut, postErr := workflowcmd.FilterLines(os.Stdout), workflowcmd.FilterLines(os.Stderr)
+			postCmd.Stdout = postOut
+			postCmd.Stderr = postErr
+			err := postCmd.Run()
+			_ = postOut.Flush()
+			_ = postErr.Flush()
+			if err != nil {
 				printer.StepFail("Post-script failed: " + err.Error())
 				if runErr == nil {
 					runErr = fmt.Errorf("post-script %s failed: %w", h.PostScript, err)
@@ -5613,10 +5618,13 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 	// hard-failure diagnostics can recover the script's own message
 	// while still streaming to the Actions log.
 	var stdoutBuf, stderrBuf bytes.Buffer
-	preCmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
-	preCmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+	preOut, preErr := workflowcmd.FilterLines(os.Stdout), workflowcmd.FilterLines(os.Stderr)
+	preCmd.Stdout = io.MultiWriter(preOut, &stdoutBuf)
+	preCmd.Stderr = io.MultiWriter(preErr, &stderrBuf)
 
 	runErr := preCmd.Run()
+	_ = preOut.Flush()
+	_ = preErr.Flush()
 	if runErr != nil {
 		// Check for exit code 78 (neutral/skip).
 		var exitErr *exec.ExitError
@@ -5956,7 +5964,7 @@ func runHeartbeatTo(w io.Writer, printer *ui.Printer, start time.Time, timeout t
 		case <-done:
 			if isCI {
 				elapsed := time.Since(start).Truncate(time.Second)
-				fmt.Fprintf(w, "::notice::Agent completed (%s)\n", elapsed)
+				workflowcmd.Fprintf(w, "::notice::Agent completed (%s)\n", elapsed)
 			}
 			return
 		case <-ticker.C:
@@ -8379,6 +8387,6 @@ func emitRunInfoNotice(w io.Writer, inCI bool, info statuscomment.RunInfo) {
 		return
 	}
 	if footer := statuscomment.BuildRunInfoFooter(&info); footer != "" {
-		fmt.Fprintf(w, "::notice::%s\n", footer)
+		workflowcmd.Fprintf(w, "::notice::%s\n", footer)
 	}
 }

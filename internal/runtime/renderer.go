@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/fullsend-ai/fullsend/internal/workflowcmd"
 )
 
 // EventRenderer renders normalized AgentEvent values to a Printer.
@@ -86,7 +87,7 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		}
 		msg = sanitizeOutput(msg)
 		if r.isCI {
-			fmt.Fprintf(os.Stderr, "::notice::%s\n", msg)
+			workflowcmd.Fprintf(os.Stderr, "::notice::%s\n", msg)
 		}
 		r.printer.ToolProgress(msg)
 	case TokensEvent:
@@ -185,7 +186,7 @@ func (r *EventRenderer) endBlock() {
 func (r *EventRenderer) printProgress(msg string) {
 	r.endBlock()
 	if r.isCI {
-		fmt.Fprintf(os.Stderr, "::notice::%s\n", msg)
+		workflowcmd.Fprintf(os.Stderr, "::notice::%s\n", msg)
 	}
 	r.printer.ToolProgress(msg)
 }
