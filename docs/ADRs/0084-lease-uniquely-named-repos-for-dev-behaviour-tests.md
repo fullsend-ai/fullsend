@@ -110,7 +110,10 @@ pool org. The deploy flag that writes it is marked test-only, and
 `fullsend mint workflow-host` keeps exact entries. The mint enforces the
 gate itself: it refuses a non-empty pattern setting unless it is deployed
 as a behaviour-test preview, and an absent or empty setting adds no pattern
-hosts. The follow-up mint work must implement this check. The probe for an
+hosts. The follow-up mint work must implement this check and test it, along
+with owner and repository boundary matching, malformed patterns, an empty
+setting, rejection outside a preview deploy, and continued enforcement of
+caller enrollment and workflow basenames. The probe for an
 unapproved host moves to a name outside the prefix, so that denial stays
 tested.
 
@@ -182,8 +185,9 @@ gets a live pool.
   check is code in the mint, but the preview marker is still deploy
   configuration, so an operator with deploy access could set it on a
   production mint. A production deploy policy that rejects both the preview
-  marker and any host-pattern setting would close that gap; it is not part of
-  this decision. The exact-entry commands never write the setting.
+  marker and any host-pattern setting, with a negative deployment test, would
+  close that gap. It is not part of this decision and is left to a tracked
+  follow-up. The exact-entry commands never write the setting.
 - The org-scoped provider admits any `bt-` repo with Actions enabled, so
   disabling Actions at release and in the sweep is required, not optional.
   The test inference gateway's admission rule (`pool_regex`) must add the DEV
