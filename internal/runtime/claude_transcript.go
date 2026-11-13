@@ -4,12 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/fullsend-ai/fullsend/internal/workflowcmd"
 )
 
 const (
@@ -132,6 +133,6 @@ func truncateError(msg string) string {
 func emitTranscriptErrors(w io.Writer, summaries []TranscriptError) {
 	for _, s := range summaries {
 		// DisplayMessage sanitizes to prevent GHA command injection.
-		fmt.Fprintf(w, "::error title=Agent Error (%s)::%s\n", sanitizeOutput(s.Source), s.DisplayMessage())
+		workflowcmd.Fprintf(w, "::error title=Agent Error (%s)::%s\n", sanitizeOutput(s.Source), s.DisplayMessage())
 	}
 }

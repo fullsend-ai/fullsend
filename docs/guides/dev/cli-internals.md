@@ -136,6 +136,7 @@ fullsend
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
 │   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 │   ├── --no-post-script                     #   Skip post-script execution
+│   ├── --no-github-workflow-commands        #   Do not write GitHub workflow commands ($FULLSEND_NO_GITHUB_WORKFLOW_COMMANDS)
 │   ├── --debug [filter]                     #   Enable agent runtime debug logging
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth (0 disables)

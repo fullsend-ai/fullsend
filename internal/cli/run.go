@@ -57,6 +57,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/fullsend-ai/fullsend/internal/workflowcmd"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -453,6 +454,8 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
+			workflowcmd.SetSuppressed(resolveNoGitHubWorkflowCommands(cmd))
+			defer workflowcmd.SetSuppressed(false)
 			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
@@ -479,6 +482,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi, codex, opencode, dummy or dummy-playback; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi, codex, and opencode — codex takes OpenAI ids and gateway/<model> only; also $FULLSEND_MODEL)")
 	cmd.Flags().StringVar(&oFlags.effort, "effort", "", "override the harness effort level for this run (low, medium, high, xhigh, max; also $FULLSEND_EFFORT)")
+	addNoGitHubWorkflowCommandsFlag(cmd)
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
@@ -2324,9 +2328,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if gate.agentExitCode != 0 {
 				postCmd.Env = append(postCmd.Env, fmt.Sprintf("FULLSEND_AGENT_EXIT_CODE=%d", gate.agentExitCode))
 			}
-			postCmd.Stdout = os.Stdout
-			postCmd.Stderr = os.Stderr
-			if err := postCmd.Run(); err != nil {
+			postOut, postErr := workflowcmd.FilterLines(os.Stdout), workflowcmd.FilterLines(os.Stderr)
+			postCmd.Stdout = postOut
+			postCmd.Stderr = postErr
+			err := postCmd.Run()
+			_ = postOut.Flush()
+			_ = postErr.Flush()
+			if err != nil {
 				printer.StepFail("Post-script failed: " + err.Error())
 				if runErr == nil {
 					runErr = fmt.Errorf("post-script %s failed: %w", h.PostScript, err)
@@ -5460,18 +5468,6 @@ func dropUnusableCredentialFile(printer *ui.Printer, setEnv func(key, value stri
 	return false
 }
 
-// actionsCommandEscaper escapes a workflow command's data the way the
-// runner unescapes it, so a value holding %25, %0D or %0A (or a raw CR or
-// LF) is masked as written rather than as its unescaped form.
-var actionsCommandEscaper = strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A")
-
-// maskActionsValue asks GitHub Actions to mask a secret in the job log.
-func maskActionsValue(value string) {
-	if value != "" && os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", actionsCommandEscaper.Replace(value))
-	}
-}
-
 // validateExistingGCPCredentialFile checks a credential file prepared by an
 // earlier workflow step before the run relies on it. An external_account
 // file must read its subject token from a file: the sandbox cannot reach a
@@ -5674,10 +5670,13 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 	// hard-failure diagnostics can recover the script's own message
 	// while still streaming to the Actions log.
 	var stdoutBuf, stderrBuf bytes.Buffer
-	preCmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
-	preCmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+	preOut, preErr := workflowcmd.FilterLines(os.Stdout), workflowcmd.FilterLines(os.Stderr)
+	preCmd.Stdout = io.MultiWriter(preOut, &stdoutBuf)
+	preCmd.Stderr = io.MultiWriter(preErr, &stderrBuf)
 
 	runErr := preCmd.Run()
+	_ = preOut.Flush()
+	_ = preErr.Flush()
 	if runErr != nil {
 		// Check for exit code 78 (neutral/skip).
 		var exitErr *exec.ExitError
@@ -5711,7 +5710,7 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 			// Same redaction as the hard-failure detail below: this reason is
 			// derived from incidental stdout, not a value the script author
 			// chose to put in a reason= line, so it gets the same scrub.
-			result.Reason = redactFeedback(lastNonEmptyLine(redactFeedback(stdoutBuf.String(), h.RunnerEnv)), h.RunnerEnv)
+			result.Reason = redactFeedback(lastNonEmptyLine(withoutSuppressedCommands(redactFeedback(stdoutBuf.String(), h.RunnerEnv))), h.RunnerEnv)
 		}
 		if result.Reason != "" {
 			result.Outputs["reason"] = result.Reason
@@ -5765,10 +5764,30 @@ func preScriptFailureDetail(stdout, stderr string) string {
 	if msg := ghaErrorDetail(stdout + "\n" + stderr); msg != "" {
 		return msg
 	}
-	if msg := lastNonEmptyLine(stderr); msg != "" {
+	// The error annotations above come from the raw capture; the fallbacks
+	// skip workflow-command lines the output filter dropped.
+	if msg := lastNonEmptyLine(withoutSuppressedCommands(stderr)); msg != "" {
 		return msg
 	}
-	return lastNonEmptyLine(stdout)
+	return lastNonEmptyLine(withoutSuppressedCommands(stdout))
+}
+
+// withoutSuppressedCommands drops workflow-command lines from s while
+// `fullsend run` suppresses workflow commands, so a line the output filter
+// kept off the stream does not resurface as plain text in a failure detail
+// or skip reason. Otherwise it returns s unchanged.
+func withoutSuppressedCommands(s string) string {
+	if !workflowcmd.Suppressed() {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	kept := lines[:0]
+	for _, l := range lines {
+		if !workflowcmd.IsCommandLine(l) {
+			kept = append(kept, l)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 func ghaErrorDetail(s string) string {
@@ -6017,7 +6036,7 @@ func runHeartbeatTo(w io.Writer, printer *ui.Printer, start time.Time, timeout t
 		case <-done:
 			if isCI {
 				elapsed := time.Since(start).Truncate(time.Second)
-				fmt.Fprintf(w, "::notice::Agent completed (%s)\n", elapsed)
+				workflowcmd.Fprintf(w, "::notice::Agent completed (%s)\n", elapsed)
 			}
 			return
 		case <-ticker.C:
@@ -6982,9 +7001,7 @@ func newStatusGitHubForgeClient(ctx context.Context, mintURL, role, repo string)
 	if !mintTokenPattern.MatchString(result.Token) {
 		return nil, fmt.Errorf("minted status token contains unexpected characters")
 	}
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
-	}
+	maskActionsValue(result.Token)
 	return statusNewForgeClientFn(result.Token), nil
 }
 
@@ -7471,9 +7488,7 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 	}
 
 	// TODO(ADR-0045 R22): use forge platform context instead of raw env check.
-	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
-	}
+	maskActionsValue(result.Token)
 
 	// NOTE: os.Setenv is not goroutine-safe. Minting MUST complete
 	// before any goroutines that read env vars (sandbox streaming,
@@ -7532,7 +7547,7 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 				os.Setenv(workflowTokenEnv, preMint)
 				envVars = append(envVars, workflowTokenEnv)
 				security.RegisterRuntimeSecret(preMint)
-				fmt.Fprintf(os.Stderr, "::add-mask::%s\n", preMint)
+				maskActionsValue(preMint)
 			}
 		}
 	}
@@ -8483,6 +8498,6 @@ func emitRunInfoNotice(w io.Writer, inCI bool, info statuscomment.RunInfo) {
 		return
 	}
 	if footer := statuscomment.BuildRunInfoFooter(&info); footer != "" {
-		fmt.Fprintf(w, "::notice::%s\n", footer)
+		workflowcmd.Fprintf(w, "::notice::%s\n", footer)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/fullsend-ai/fullsend/internal/workflowcmd"
 )
 
 func newTestRenderer(buf *bytes.Buffer) *EventRenderer {
@@ -99,6 +100,32 @@ func TestRendererToolUseEventCI(t *testing.T) {
 
 	if !strings.Contains(stderrBuf.String(), "::notice::") {
 		t.Errorf("expected ::notice:: annotation in CI mode, got: %s", stderrBuf.String())
+	}
+}
+
+func TestRendererToolUseEventCI_WorkflowCommandsSuppressed(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	workflowcmd.SetSuppressed(true)
+	defer workflowcmd.SetSuppressed(false)
+
+	var buf bytes.Buffer
+	oldStderr := os.Stderr
+	stderrR, stderrW, _ := os.Pipe()
+	os.Stderr = stderrW
+	defer func() { os.Stderr = oldStderr }()
+
+	r := newTestRenderer(&buf)
+	r.Handle(ToolUseEvent{Name: "Bash", Summary: "make"})
+
+	stderrW.Close()
+	var stderrBuf bytes.Buffer
+	stderrBuf.ReadFrom(stderrR)
+
+	if stderrBuf.Len() != 0 {
+		t.Errorf("expected no workflow command while suppressed, got: %s", stderrBuf.String())
+	}
+	if !strings.Contains(buf.String(), "Bash") {
+		t.Errorf("tool progress must still reach the console, got: %s", buf.String())
 	}
 }
 
