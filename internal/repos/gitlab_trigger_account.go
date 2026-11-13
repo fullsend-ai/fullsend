@@ -694,6 +694,14 @@ func (op *gitLabTriggerAccountOp) overrideRoleDeferral(ctx context.Context) (str
 	return "", nil
 }
 
+// gitlabTriggerAccountMinVersionAdvice names the oldest GitLab release on
+// which every tier, including Free, offers both mechanisms the trigger
+// account relies on: project service accounts (generally available on Free in
+// 18.11) and deploy-key entries in a protected branch's push-access list (on
+// Free since 18.10). Older instances defer instead of broadening permissions
+// (#9343).
+const gitlabTriggerAccountMinVersionAdvice = "The trigger-account webhook route needs GitLab 18.11 or later, where project service accounts and protected-branch deploy-key push access are available on every tier; upgrade an older instance to enable it; fullsend does not promote an account or widen branch access in its place"
+
 // deferral returns a reason when the project cannot host the trigger account.
 func (op *gitLabTriggerAccountOp) deferral(ctx context.Context) (string, error) {
 	o, r, b := op.opts.Owner, op.opts.Repo, op.opts.Branch
@@ -709,7 +717,7 @@ func (op *gitLabTriggerAccountOp) deferral(ctx context.Context) (string, error) 
 	}
 	if _, err := op.opts.API.ListProjectServiceAccounts(ctx, o, r); err != nil {
 		if serviceAccountsUnavailable(err) {
-			return "project service accounts are unavailable to the installer on this GitLab instance or tier", nil
+			return "project service accounts are unavailable to the installer on this GitLab instance or tier. " + gitlabTriggerAccountMinVersionAdvice, nil
 		}
 		return "", safeAPIError("listing project service accounts", err)
 	}
@@ -1899,6 +1907,13 @@ func (op *gitLabTriggerAccountOp) endBootstrap(ctx context.Context) error {
 func (op *gitLabTriggerAccountOp) ensureGrant(ctx context.Context) error {
 	o, r, b := op.opts.Owner, op.opts.Repo, op.st.Branch
 	if err := op.opts.API.GrantProtectedBranchPushDeployKey(ctx, o, r, b, op.st.DeployKeyID); err != nil {
+		if forge.IsNotSupported(err) {
+			// The instance refuses deploy-key entries in the push-access list.
+			// Fail closed with a recoverable deferral: the trigger account
+			// never becomes ready, so no route is activated, and nothing
+			// broader (a Developer or per-user grant) is granted in its place.
+			return &triggerDeferral{reason: "GitLab rejected the exact-branch deploy-key push grant on " + b + ", so this instance or tier cannot grant the trigger account its narrow push access. " + gitlabTriggerAccountMinVersionAdvice}
+		}
 		return safeAPIError("granting the trigger deploy key push on "+b, err)
 	}
 	entry, err := op.opts.API.ProtectedBranchPushDeployKeyEntryID(ctx, o, r, b, op.st.DeployKeyID)
@@ -1906,7 +1921,10 @@ func (op *gitLabTriggerAccountOp) ensureGrant(ctx context.Context) error {
 		return safeAPIError("reading the trigger deploy key grant on "+b, err)
 	}
 	if entry <= 0 {
-		return fmt.Errorf("the trigger deploy key grant on %q could not be read back", b)
+		// An older GitLab can accept the request and silently ignore the
+		// deploy-key entry, which a read-back exposes. The account must not
+		// become ready without the grant.
+		return &triggerDeferral{reason: "GitLab accepted the deploy-key push grant on " + b + " but did not record it, so this instance cannot grant the trigger account its narrow push access. " + gitlabTriggerAccountMinVersionAdvice}
 	}
 	if entry != op.st.GrantEntryID {
 		op.st.GrantEntryID = entry

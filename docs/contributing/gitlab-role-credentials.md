@@ -1205,7 +1205,12 @@ while the dispatch activation is recorded (`scheduleOwnershipDrift`). For
 that last case the reason tells the operator to re-run install when install
 can adopt the schedule's owner, and otherwise that an administrator must
 remove or reassign the schedule; an owner or schedule list that could not be
-read is reported as unverified. Anything other than
+read is reported as unverified. There is one exception: while the
+protected-branch rule shows the trigger account lacks merge permission,
+verified installer-owned schedules are expected and are not reported as
+drift. The schedule listing and owner checks still run then. A schedule the
+account owns is reported as needing hand-back, and a schedule with an
+unverified or unadoptable owner keeps its diagnostic. Anything other than
 `not-installed`, `deferred`, and `ready` is reported as drift.
 
 GitLab.com Free rejects per-user protected-branch merge grants, but it

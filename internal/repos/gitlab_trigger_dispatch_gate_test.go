@@ -798,18 +798,74 @@ func TestCheckGitLabTriggerDispatchGate_ScheduledPollMustBeAdmitted(t *testing.T
 	assert.Contains(t, strings.Join(gate.Deferred, "\n"), "does not include a runnable poll stage")
 }
 
+// Schedule ownership needs merge access, but the webhook route does not: a
+// Maintainers-only merge rule (the GitLab Free case, where no individual
+// Developer can be added) keeps the schedules installer-owned without
+// deferring activation (#9343).
 func TestCheckGitLabTriggerDispatchGate_ScheduleOwnerRequiresMergeAccess(t *testing.T) {
 	e := readyTriggerDispatchEnv(t)
-	rule := e.state.ProtectedBranchRules[trigOwner+"/"+trigRepo+"/"+trigBranch]
-	rule.MergeAccessLevels = []forge.ProtectedBranchAccess{{AccessLevel: 40}}
-	gate := e.dispatchGate()
-	assert.False(t, gate.Ready)
-	assert.Contains(t, strings.Join(gate.Deferred, "\n"), "managed schedules stay installer-owned on the Poller route")
-
 	state, ok := e.ledger(t)
 	require.True(t, ok)
+	gate := e.dispatchGate()
+	require.True(t, gate.Ready, gate.Deferred)
+	assert.Empty(t, gate.ScheduleOwnerDeferred, "a Developer merge role permits transfer")
+
+	rule := e.state.ProtectedBranchRules[trigOwner+"/"+trigRepo+"/"+trigBranch]
+	rule.MergeAccessLevels = []forge.ProtectedBranchAccess{{AccessLevel: 40}}
+	gate = e.dispatchGate()
+	assert.True(t, gate.Ready, "missing merge access does not defer the webhook route: %v", gate.Deferred)
+	assert.Empty(t, gate.Deferred)
+	assert.Contains(t, gate.ScheduleOwnerDeferred, "lacks merge permission")
+	require.NotNil(t, gate.PushGrant)
+	assert.Equal(t, GitLabTriggerPushGrant{AccountID: state.AccountID, AccountName: state.accountName(), DeployKeyID: state.DeployKeyID, Branch: trigBranch}, *gate.PushGrant)
+	assert.Equal(t, rule.MergeAccessLevels, []forge.ProtectedBranchAccess{{AccessLevel: 40}}, "the gate never widens merge access")
+
 	rule.MergeAccessLevels = append(rule.MergeAccessLevels, forge.ProtectedBranchAccess{UserID: state.AccountID})
-	assert.True(t, e.dispatchGate().Ready, "an existing per-user merge grant permits transfer")
+	gate = e.dispatchGate()
+	assert.True(t, gate.Ready)
+	assert.Empty(t, gate.ScheduleOwnerDeferred, "an existing per-user merge grant permits transfer")
+
+	delete(e.state.ProtectedBranchRules, trigOwner+"/"+trigRepo+"/"+trigBranch)
+	gate = e.dispatchGate()
+	assert.True(t, gate.Ready, gate.Deferred)
+	assert.Contains(t, gate.ScheduleOwnerDeferred, "cannot be verified", "an unreadable rule keeps the schedules installer-owned")
+}
+
+// A deferred gate reports no push grant; the grant is described only for a
+// route that is being activated.
+func TestCheckGitLabTriggerDispatchGate_PushGrantOnlyWhenReady(t *testing.T) {
+	e := readyTriggerDispatchEnv(t)
+	e.state.Repos[0].CIConfigPath = "ci/other.yml"
+	gate := e.dispatchGate()
+	require.False(t, gate.Ready)
+	assert.Nil(t, gate.PushGrant)
+}
+
+func TestGitLabTriggerPushGrant_FailsClosed(t *testing.T) {
+	ctx := context.Background()
+	e := readyTriggerDispatchEnv(t)
+	grant, err := gitlabTriggerPushGrant(ctx, e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	require.NotNil(t, grant)
+
+	_, err = gitlabTriggerPushGrant(ctx, e.state, trigOwner, trigRepo, "develop")
+	assert.ErrorContains(t, err, "ledger changed")
+
+	key := trigOwner + "/" + trigRepo + "/" + forge.VarGitLabTriggerAccount
+	raw := e.state.VariableValues[key]
+	e.state.VariableValues[key] = "{"
+	_, err = gitlabTriggerPushGrant(ctx, e.state, trigOwner, trigRepo, trigBranch)
+	assert.ErrorContains(t, err, "ledger changed")
+	e.state.VariableValues[key] = raw
+
+	e.state.Errors = map[string]error{"GetRepoVariable": errTrigInjected}
+	_, err = gitlabTriggerPushGrant(ctx, e.state, trigOwner, trigRepo, trigBranch)
+	assert.ErrorContains(t, err, "could not re-read the trigger account ledger")
+	e.state.Errors = nil
+
+	delete(e.state.VariableValues, key)
+	_, err = gitlabTriggerPushGrant(ctx, e.state, trigOwner, trigRepo, trigBranch)
+	assert.ErrorContains(t, err, "disappeared")
 }
 
 func TestGitLabManagedIncludeRules_FailsClosedOnAmbiguousIncludes(t *testing.T) {

@@ -923,7 +923,8 @@ for details.
 for the protected-branch dispatch route that
 [#8438](https://github.com/fullsend-ai/fullsend/issues/8438) activates. Once
 install records the dispatch activation, scheduled polling moves onto
-the trigger-only account and dispatches through the child-pipeline route (see
+the trigger-only account and dispatches through the child-pipeline route when
+that account has merge permission on the protected default branch (see
 "Polling schedule ownership" below), and the managed webhook moves onto the
 account's trigger token
 ([#8509](https://github.com/fullsend-ai/fullsend/issues/8509)): a
@@ -936,10 +937,13 @@ trigger account stage, so an account rotation re-points it, and a withdrawn
 activation returns it to a Poller-owned trigger on the Poller `api` route.
 If a Poller role stage fails, install leaves a requested trigger-account
 rotation pending rather than revoking the token still embedded in the webhook.
-While the activation is not recorded (for example where the trigger account
-lacks merge access to the protected default branch and the schedules stay
-installer-owned), the webhook keeps its Poller-owned trigger, and the Poller
-protected-branch merge grant stays in use. `--rotate-gitlab-trigger-token` does
+While the activation is not recorded (the account or the activation gate
+deferred), the webhook keeps its Poller-owned trigger, and the Poller
+protected-branch merge grant stays in use. A trigger account that lacks merge
+access to the protected default branch does not defer the activation or the
+webhook route: only the polling schedules stay installer-owned (see "Polling
+schedule ownership" below,
+[#9343](https://github.com/fullsend-ai/fullsend/issues/9343)). `--rotate-gitlab-trigger-token` does
 not rotate the account's trigger token; use `--rotate-gitlab-trigger-account`. It needs only project Maintainer (or Owner) access: no
 instance administrator and no persistent Maintainer token or private key.
 
@@ -1013,11 +1017,31 @@ reason and resource IDs.
 - **GitLab.com Free:** GitLab refuses the legacy per-user protected-branch
   merge grant for the Poller. Install still prepares the trigger account in
   that case. The Poller access failure is reported once for the repo, and the
-  full dispatch-route stages that follow it stay skipped. Install still
-  refreshes the webhook after ordinary trigger-account repair if the account
-  route is active, because repair can replace its token. It does not move an
-  account webhook onto an unverified Poller route; a requested rotation waits
-  for a successful Poller stage.
+  full dispatch-route stages that follow it stay skipped. If the account route
+  is active, the same install run provisions the account's webhook and webhook
+  secret from scratch, or repairs a stale webhook, on the trigger account's
+  token. Install does not create a webhook or trigger on an unverified Poller
+  route; a requested rotation waits for a successful Poller stage. A
+  replacement Poller is a new identity, so the previous Poller's merge grant
+  never counts for it. Install tries only the narrow per-user merge grant for
+  the new identity and never widens a Developer or other access level to make
+  it work. Where GitLab refuses that grant, the replacement credential is not
+  published, the failure is reported, and polling is a supported fallback only
+  while an already verified Poller holds access; the webhook route does not
+  depend on it. If no Poller is verified, polling is unavailable until the
+  grant is possible (a paid tier, or an administrator-added entry), and install
+  says so rather than treating the project as complete. The trigger account itself needs no merge
+  grant there: it reaches the protected default branch through its deploy-key
+  push grant, which GitLab offers on Free from 18.10. Together with project
+  service accounts (generally available on Free in 18.11), the trigger-account
+  route therefore needs GitLab 18.11 or later. On an older self-managed
+  instance the account defers with a message naming that minimum version;
+  upgrade GitLab rather than promoting an account or widening branch access.
+  Because GitLab has no read-only probe for the deploy-key push capability,
+  install also detects a missing capability when it adds the account's exact
+  deploy-key push entry (a refusal naming a tier, license or missing feature,
+  or a grant GitLab accepts but does not record) and defers with the same
+  upgrade message. The account never becomes ready, so no route is activated.
 - **Dispatch activation gate:** whenever install leaves the trigger account
   ready, including after the Poller grant is refused, it rechecks the
   prerequisites for the child-pipeline route that uses the account's job token and
@@ -1034,7 +1058,14 @@ reason and resource IDs.
   `ci_push_repository_for_job_token_allowed`) must be disabled, because the
   trigger account's deploy key can push to the protected default branch; an
   enabled, unreadable, or unreported setting defers. The trigger account must
-  also be ready on the default branch, verified against live GitLab state. A
+  also be ready on the default branch, verified against live GitLab state.
+  That includes its deploy key being in the exact default-branch rule's
+  push-access list, the key and the trigger token both belonging to the
+  account, and the account staying at Developer. Merge permission for the
+  schedules is not part of the gate. When the gate passes, install reports the
+  account's name and user ID, the branch, and the deploy key, and states that
+  the grant also permits direct pushes to that branch through the key but
+  grants no merge permission. A
   deferral keeps the Poller API dispatch route; install clears any prior
   activation and hands account-owned schedules back to the installer. An
   interrupted run can leave an account-owned schedule using that route until
@@ -1113,10 +1144,12 @@ reason and resource IDs.
   (`CI_JOB_TOKEN`, `source=pipeline`). The account creates them with a
   short-lived token while it stays at Developer, and that token is revoked in
   the same run. GitLab requires that account to have merge permission on the
-  protected default branch. If it lacks that permission, install keeps the
-  schedules installer-owned on the Poller route; it does not widen merge
-  access. On GitLab Free, individual Developer merge grants are unavailable,
-  so a Maintainers-only merge rule uses this fallback. Each new account-owned
+  protected default branch. If it lacks that permission (or it cannot be
+  verified), install keeps the schedules installer-owned on the Poller route
+  and reports `GitLab polling schedules stay installer-owned on the Poller
+  route`; it does not widen merge access, and the activation and the webhook
+  route are not deferred. On GitLab Free, individual Developer merge grants
+  are unavailable, so a Maintainers-only merge rule uses this fallback. Each new account-owned
   schedule uses the managed spec's UTC cron and the protected default branch,
   and the enabled or disabled state of the schedule it replaces. The
   installer-owned originals are deleted only after GitLab reports the new
@@ -1130,7 +1163,10 @@ reason and resource IDs.
   for the replacement generation, the schedules the retired account still owns
   move straight to the replacement account in the same run. While the
   activation is recorded, `repos status` reports any managed schedule the
-  trigger account does not own as drift; re-run install to move it. Install
+  trigger account does not own as drift; re-run install to move it. The
+  exception is a trigger account that the protected default branch rule
+  shows lacks merge permission: its schedules are meant to stay
+  installer-owned, so they are not drift. Install
   refuses a schedule whose owner is not a retired generation or a verified
   installer Maintainer; an administrator must remove or reassign that one first.
   Each move creates
