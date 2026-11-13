@@ -3,6 +3,7 @@ package behaviourtest
 import (
 	"context"
 	"fmt"
+	"os"
 	"strconv"
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
@@ -16,11 +17,19 @@ import (
 	scmgl "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/gitlab"
 )
 
-// installFactoryFor selects the install driver based on ENVIRONMENT:
+// installFactoryFor selects the install driver.
 //
-//	dev   → CF preview mint (ephemeral per run)
+// When BEHAVIOUR_EPHEMERAL=true, the ephemeral-repo + lock-pool driver is
+// used (ADR 0114/0115): unique bt-{run-id}-{uuid8} repos in a lock-selected
+// org, retained and pruned. Otherwise the legacy slot-pool driver is used,
+// selected by ENVIRONMENT:
+//
+//	dev   → CF preview mint (slot pool)
 //	stage → durable CF mint at stage-mint.fullsend.sh
 func installFactoryFor(environment string) install.Factory {
+	if os.Getenv("BEHAVIOUR_EPHEMERAL") == "true" {
+		return install.NewEphemeralCFMint
+	}
 	if environment == "stage" {
 		return install.NewRepoPoolCFMintStage
 	}

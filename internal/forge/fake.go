@@ -532,6 +532,34 @@ func (f *FakeClient) ListOrgRepos(_ context.Context, org string, includePrivate 
 	return result, nil
 }
 
+// ListAllOrgRepos returns every repo the org owns — pre-populated (Repos or
+// OrgRepos[org]) and created (CreatedRepos) — without filtering archived or
+// forks. Implements forge.AllRepoLister.
+func (f *FakeClient) ListAllOrgRepos(_ context.Context, org string) ([]Repository, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListAllOrgRepos"); e != nil {
+		return nil, e
+	}
+
+	source := f.Repos
+	if f.OrgRepos != nil {
+		source = f.OrgRepos[org]
+	}
+	prefix := org + "/"
+	var result []Repository
+	for _, r := range source {
+		result = append(result, r)
+	}
+	for _, r := range f.CreatedRepos {
+		if strings.HasPrefix(r.FullName, prefix) {
+			result = append(result, r)
+		}
+	}
+	return result, nil
+}
+
 func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string, private bool) (*Repository, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

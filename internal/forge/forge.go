@@ -854,6 +854,15 @@ func (r RateLimit) String() string {
 	return fmt.Sprintf("%s reset=%s resource=%s", remaining, reset, resource)
 }
 
+// AllRepoLister is an optional Client capability that lists every
+// repository an org owns, including archived repos and forks (unlike
+// ListOrgRepos, which filters those out). The behaviour-test lock pool's
+// pruning (ADR 0114) uses it to enumerate all ephemeral repos — including
+// fork and host companion repos — for a run.
+type AllRepoLister interface {
+	ListAllOrgRepos(ctx context.Context, org string) ([]Repository, error)
+}
+
 // RateLimitReporter is implemented by clients that track RateLimit.
 // ok is false until the client has seen a response carrying the headers.
 type RateLimitReporter interface {
