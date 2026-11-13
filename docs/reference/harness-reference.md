@@ -112,7 +112,8 @@ overlays:
   env:
     runner:
       GH_TOKEN: "${GH_TOKEN}"
-      JIRA_TOKEN: "${JIRA_TOKEN}"
+      FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"
+      FULLSEND_JIRA_EMAIL: "${FULLSEND_JIRA_EMAIL}"
 - when: 'runtime.forge == "github"'
   pre_script: scripts/pre-gh.sh
   post_script: scripts/post-gh.sh
@@ -208,10 +209,11 @@ declarations, but atop its own allowlisted environment — see above, not the
 process environment.) A few named workflow secrets are **not** inherited from that environment:
 `JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
 `OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
-receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under
-`env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.
+receives one only when the harness declares it, e.g. `FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`
+under `env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.
 Earlier releases passed them to every script unconditionally; a harness whose scripts read
-`JIRA_TOKEN` or `JIRA_USER_EMAIL` without declaring them must add them to `env.runner`. The
+`JIRA_TOKEN` or `JIRA_USER_EMAIL` must declare them in `env.runner`, mapped from the Jira
+repository secrets (for example `JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`). The
 Jira repository secrets `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` follow the same rule (see
 [Jira integration § Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs)).
 `FULLSEND_JIRA_EMAIL` is optional: a `${FULLSEND_JIRA_EMAIL}` reference does not fail validation

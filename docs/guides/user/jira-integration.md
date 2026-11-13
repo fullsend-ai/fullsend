@@ -162,8 +162,9 @@ The poller, `fullsend issues` commands, run-status notifications, and
 `fullsend reconcile-status` use that shared client. They accept either
 `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL`, or
 `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`. The built-in
-triage and code post-scripts still use `JIRA_TOKEN` and `JIRA_USER_EMAIL` to
-write agent results. For how the repository secrets reach Jira-consuming
+triage and code agents use `FULLSEND_JIRA_TOKEN` and optional
+`FULLSEND_JIRA_EMAIL` too, both to write agent results and for the sandbox's
+read-only Jira access. For how the repository secrets reach Jira-consuming
 agent runs, see [Jira repository secrets in agent
 runs](#jira-repository-secrets-in-agent-runs).
 The Jira-aware harness integration is tracked in
@@ -462,12 +463,14 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   reported as a success. For triage this covers label adds and removals,
   component updates, comments, and transitions. For code the step fails even
   though the PR or MR already exists.
-- **Bot loops:** the writes authenticate as `JIRA_USER_EMAIL` / `JIRA_TOKEN`,
-  the same account the poller classifies as `actor.kind: bot`, so they do not
-  dispatch agents again. See [How it works](#how-it-works).
-- **Credentials:** the triage and code harnesses pass `JIRA_USER_EMAIL` and
-  `JIRA_TOKEN` to the runner-side post-scripts only. The sandbox gets the
-  `jira-ro` provider's placeholder, not the real token.
+- **Bot loops:** the writes authenticate with `FULLSEND_JIRA_TOKEN` and
+  optional `FULLSEND_JIRA_EMAIL`, the same account the poller classifies as
+  `actor.kind: bot`, so they do not dispatch agents again. See
+  [How it works](#how-it-works).
+- **Credentials:** the triage and code harnesses map `FULLSEND_JIRA_TOKEN` and
+  `FULLSEND_JIRA_EMAIL` in `env.runner` for the runner-side post-scripts only.
+  The `jira-ro` provider reads `FULLSEND_JIRA_TOKEN` on the host, and the
+  sandbox gets the provider's placeholder, not the real token.
 
 When the code agent makes no PR or MR, or the run fails, nothing beyond the
 run-status update is written to Jira.
@@ -500,9 +503,12 @@ implementation
 | `FULLSEND_JIRA_TOKEN` | Scoped Jira API token for the poller and agent run-status updates; use instead of the client credentials below |
 | `FULLSEND_JIRA_EMAIL` | Optional. Bot user's email for a scoped user token. Omit it for a service-account token |
 | `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Alternative to `FULLSEND_JIRA_TOKEN`: a service account's OAuth 2.0 credential (see [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)) |
-| `JIRA_TOKEN` | Jira API token for built-in triage and code result writes |
-| `JIRA_USER_EMAIL` | Email associated with the token used for built-in agent result writes |
 | `JIRA_BASE_URL` | Jira site URL used by built-in agent result-write scripts. For Jira-sourced runs, `fullsend run` replaces it with `tracker.jira.base_url` and also sets `JIRA_API_URL` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) |
+
+> **Upgrading:** Fullsend and the built-in agents no longer read the
+> `JIRA_TOKEN` and `JIRA_USER_EMAIL` repository secrets. Store the token once,
+> as `FULLSEND_JIRA_TOKEN`, and a bot user's email as `FULLSEND_JIRA_EMAIL`.
+> After you upgrade, you can delete the two old secrets.
 
 The poller and Jira-originated agent workflows use either the token and
 optional email or the OAuth client ID and secret. They take the Jira site and
@@ -514,7 +520,7 @@ writes the selected credentials for repositories whose
 `fullsend run` uses the `FULLSEND_JIRA_*` credentials for Jira status updates.
 It does not pass them to host-side pre/post/validation scripts by default. A
 harness whose scripts call Jira must declare their credentials under
-`env.runner` (for example `JIRA_TOKEN: "${JIRA_TOKEN}"`). The built-in triage
+`env.runner` (for example `FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`). The built-in triage
 and code harnesses do this in their Jira overlays, so their post-scripts can
 write results to the Jira issue. See
 [Harness reference § `env.runner`](../../reference/harness-reference.md#field-details).
@@ -583,15 +589,23 @@ Host-side scripts receive them only when the harness declares them in
   project, and query stay in the effective
   [`tracker.jira` config](../../reference/config-reference.md#trackerjira-connection-and-polling-settings).
 
-> **Planned:** The Jira-aware agents tracked in
-> [agents#1900](https://github.com/fullsend-ai/agents/issues/1900) will consume
-> these credentials through host-side mappings. No current agents-side harness
-> declares `FULLSEND_JIRA_*`; the planned harnesses must declare each value
-> they use under `env.runner`.
+The built-in triage and code harnesses declare `FULLSEND_JIRA_TOKEN` and
+`FULLSEND_JIRA_EMAIL` under `env.runner` in their Jira overlays. They map the
+values to the `JIRA_TOKEN` and `JIRA_USER_EMAIL` names their post-scripts
+read. Their `jira-ro` provider reads `FULLSEND_JIRA_TOKEN` for the sandbox
+(see [Sandbox credentials and network access](#sandbox-credentials-and-network-access)).
 
 ### Sandbox credentials and network access
 
-The fullsend binary ships an OpenShell credential provider (`atlassian-cloud`) and network profile (`fullsend-atlassian-cloud`) that grant sandboxed agents access to Jira Cloud. List the bare name `atlassian-cloud` under a harness's `providers:` and `fullsend run` uses the built-in definition and imports its profile; nothing is written to the `.fullsend` directory:
+To give a sandbox Jira access, use the built-in agents' `jira-ro` provider
+(`providers/jira-ro.yaml` and `profiles/fullsend-jira-ro.yaml` in
+[fullsend-ai/agents](https://github.com/fullsend-ai/agents)). It reads
+`FULLSEND_JIRA_TOKEN` on the host and gives the sandbox only a placeholder.
+Its profile allows the `api.atlassian.com` gateway, so it works with both a
+bot user's token and a service account's token. The built-in triage and code
+agents use it.
+
+The fullsend binary also ships a legacy OpenShell credential provider (`atlassian-cloud`) and network profile (`fullsend-atlassian-cloud`) that grant sandboxed agents access to Jira Cloud. List the bare name `atlassian-cloud` under a harness's `providers:` and `fullsend run` uses the built-in definition and imports its profile; nothing is written to the `.fullsend` directory:
 
 - **Provider** (`atlassian-cloud`) — declares the `atlassian-cloud` credential provider using the `fullsend-atlassian-cloud` profile type. Jira Cloud Basic auth requires a base64-encoded `email:api-token` string; because OpenShell does not yet support composite credential injection, provide a single pre-encoded token (generate with `printf 'you@example.com:your-api-token' | base64`).
 - **Profile** (`fullsend-atlassian-cloud`) — allows outbound HTTPS to `*.atlassian.net:443` with read-write access and endpoint enforcement. Permitted binaries are `curl` and `node`.
@@ -721,8 +735,8 @@ commit or pull request as the rest of the installation. The workflow:
 - hands that matrix to `reusable-dispatch.yml`, which runs the agents;
 - passes the selected Jira credential set to the poll job. For Jira-originated
   runs, it passes the same set to Fullsend's status writer; the values do not
-  enter the runner-secret bundle or sandbox. Agent post-scripts use
-  `JIRA_TOKEN` and `JIRA_USER_EMAIL` for their own Jira writes.
+  enter the runner-secret bundle or sandbox. The built-in agents' harnesses
+  map the same set in `env.runner` for their post-scripts' own Jira writes.
 
 The workflow has no Jira URL, project, or query inputs. The poller reads them
 from the configuration. Both reusable workflows are pinned to the scaffold's
@@ -819,9 +833,10 @@ for issues and merge requests.
   dispatcher unset them.
 - `FULLSEND_JIRA_TOKEN` and, for a bot user, `FULLSEND_JIRA_EMAIL` (or the
   client ID and the masked client secret) are set as protected CI/CD
-  variables for poller and run-status calls.
-- `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and `JIRA_BASE_URL` are set as protected,
-  masked CI/CD variables for the triage and code result-write scripts.
+  variables for poller and run-status calls. The triage and code
+  result-write scripts use the same token and email.
+- `JIRA_BASE_URL` is set as a protected CI/CD variable for the triage and
+  code result-write scripts.
 
 For projects whose effective `tracker.jira.poll.enabled` is `true`,
 `repos install` writes the `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`
@@ -836,7 +851,7 @@ scaffold MR and run `repos install` again. Setting `poll.enabled: false`, or
 omitting it, removes the schedule. See
 [Jira polling](../../cli/repos.md#jira-polling).
 
-`fullsend` does not yet create the `JIRA_*` variables above for you. That
+`fullsend` does not yet create the `JIRA_BASE_URL` variable above for you. That
 setup is tracked in
 [#8906](https://github.com/fullsend-ai/fullsend/issues/8906).
 
@@ -1274,7 +1289,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | `jira: set either FULLSEND_JIRA_TOKEN or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, not both` | Both credential types are set | Keep one. `repos install` removes the other set when you supply new credentials |
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
-| Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. Confirm the poller's `FULLSEND_JIRA_TOKEN` and the agents' `JIRA_USER_EMAIL` / `JIRA_TOKEN` belong to the same account that posts comments and labels. Human follow-up, including `/fs-triage`, still dispatches |
+| Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. The built-in agents post with the poller's own `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`. Confirm that a custom agent which posts comments or labels uses the same credential, not another account's token. Human follow-up, including `/fs-triage`, still dispatches |
 | Your own comments or label changes never dispatch | The poller's `FULLSEND_JIRA_TOKEN` belongs to your own Jira account | The poller classifies its own `/myself` account as `actor.kind: bot`, so that account's comments (including `/fs-triage`) and label changes are filtered with no error. Give the poller a dedicated account; see [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller) |
 | `load project roles for PROJ: ... 401 You cannot edit the configuration of this project` | The poller read Jira project roles without Administer Projects. That happens with no `jira` entry in `.fullsend/config.yaml`, with `labels: project_roles`, or on a slash command when the entry sets no lists | Add a `jira` entry with `write`/`triage` lists so project roles are not read, or grant the poller account the **Administrators** project role. See [Minimum Jira permissions](#minimum-jira-permissions) |
 | `resolve jira list groups: ... get user groups` errors | The `jira` lists name groups, or project-role resolution found a role granted to a group, but the poller account lacks the Browse users and groups global permission | Grant Browse users and groups, or list account IDs instead of groups |

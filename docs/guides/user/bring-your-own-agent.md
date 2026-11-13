@@ -964,11 +964,13 @@ support, read with the job's OIDC token, is the expected successor (long-term
 design in [#6359](https://github.com/fullsend-ai/fullsend/issues/6359)), and
 this secret stays as the fallback when your workflow cannot use GitHub OIDC or a
 WIF provider with your secret manager. Integrations fullsend owns, such as the
-inference gateway, keep their own named secrets. If your Jira poller workflow
-already passes `JIRA_TOKEN` and `JIRA_USER_EMAIL` to the reusable workflow
-([Jira integration](jira-integration.md)), declare them in `env.runner`
-(`JIRA_TOKEN: "${JIRA_TOKEN}"`) and your `harness-run` scripts receive them;
-this channel is for every other secret and every other stage. On GitHub, store
+inference gateway, keep their own named secrets. If your repository has the
+Jira secrets `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL`
+([Jira integration](jira-integration.md)), the reusable workflow passes them
+to Jira-sourced runs. Declare them in `env.runner`
+(`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`) and your `harness-run`
+scripts receive them; this channel is for every other secret and every other
+stage. On GitHub, store
 all such tokens in one secret, `FULLSEND_GITHUB_RUNNER_SECRETS`, as a JSON
 object of name → value. The installed shim forwards it, and the reusable
 workflow hands it to each stage's composite action. The action writes it to a
@@ -993,7 +995,7 @@ named in the pull request title.
    ```
 
    The object holds literal values: GitHub never expands a reference such as
-   `${{ secrets.JIRA_TOKEN }}` inside a stored secret, so a token you already
+   `${{ secrets.MY_API_TOKEN }}` inside a stored secret, so a token you already
    keep as its own secret must be copied into the object too. A secret holds one
    value, so adding or rotating a key means setting the whole object again. Keep
    the JSON in a file outside the repository and run
@@ -1016,8 +1018,8 @@ named in the pull request title.
 
    A name the harness does not reference reaches no script. The name may not be
    runner-owned (`GH_TOKEN`, `GITHUB_*`, `FULLSEND_*`, `OTEL_*`, `PATH`, ...) or
-   one the reusable workflow already sets, such as `JIRA_TOKEN` or
-   `JIRA_USER_EMAIL`, so pick your own names, and it may appear only in
+   one fullsend reserves, such as `JIRA_BASE_URL` or `ISSUE_NUMBER`, so pick
+   your own names, and it may appear only in
    `env.runner`. A reference from `env.sandbox`, a provider credential, an
    expanded `host_files` entry, or an overlay guarded by anything other than
    `runtime.forge` or `config` fails the run. The full rules are in the
