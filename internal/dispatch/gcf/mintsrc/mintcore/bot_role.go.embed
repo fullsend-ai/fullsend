@@ -119,7 +119,7 @@ func (h *Handler) handleBotRole(w http.ResponseWriter, r *http.Request) {
 	claims, oidcErr := h.verifyOIDCRequest(r.Context(), r)
 	if oidcErr != nil {
 		log.Printf("bot-role authentication failed: %v", oidcErr)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
+		writeOIDCAuthError(w, oidcErr)
 		return
 	}
 

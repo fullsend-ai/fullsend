@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"sort"
@@ -34,7 +35,10 @@ type statusAuthResult struct {
 //  3. If everything fails → error.
 //
 // Non-skip errors from validateStatusGitHub produce an immediate 401
-// with no fall-through — the validator positively rejected the request.
+// with no fall-through — the validator positively rejected the request —
+// unless OIDC failed because the signing keys were unavailable: then the
+// returned error matches errOIDCKeysUnavailable and the handler answers
+// 503.
 func (h *Handler) authenticateStatus(ctx context.Context, r *http.Request) (*statusAuthResult, error) {
 	// --- OIDC (always tried first) ---
 	claims, oidcErr := h.verifyOIDCRequest(ctx, r)
@@ -59,6 +63,15 @@ func (h *Handler) authenticateStatus(ctx context.Context, r *http.Request) (*sta
 		log.Printf("GitHub status validator rejected request: %v", ghErr)
 	}
 
+	if errors.Is(oidcErr, errOIDCKeysUnavailable) {
+		// The bearer token is a well-formed OIDC token that could not be
+		// checked because the signing keys were unavailable (a GitHub
+		// user token never gets as far as the key fetch). Only a
+		// successful validator above authenticates the request; here it
+		// is refused with errOIDCKeysUnavailable so the handler answers
+		// 503 and the client retries.
+		return nil, fmt.Errorf("authentication failed: %w", errOIDCKeysUnavailable)
+	}
 	return nil, errors.New("authentication failed")
 }
 

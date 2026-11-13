@@ -528,6 +528,59 @@ func TestMintToken_RetriesOn500(t *testing.T) {
 	}
 }
 
+// The mint answers 503 when it could not fetch GitHub's OIDC signing keys
+// to check the token (#9358). That is retried like any 5xx, and a later
+// success surfaces no error.
+func TestMintToken_RetriesKeyFetch503(t *testing.T) {
+	var attempts int
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "jwt"})
+	}))
+	defer oidcServer.Close()
+
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "OIDC signing key fetch failed; the token was not checked, retry later",
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
+	}))
+	defer mintServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?d=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "tok"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	result, err := MintToken(context.Background(), MintRequest{
+		MintURL: mintServer.URL,
+		Role:    "triage",
+		Repos:   []string{"r"},
+	})
+	if err != nil {
+		t.Fatalf("expected success after a 503, got: %v", err)
+	}
+	if result.Token != "tok" {
+		t.Errorf("token = %q, want %q", result.Token, "tok")
+	}
+	if attempts != 2 {
+		t.Errorf("attempts = %d, want 2", attempts)
+	}
+}
+
 func TestMintToken_RetryRespectsContextCancel(t *testing.T) {
 	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "jwt"})
