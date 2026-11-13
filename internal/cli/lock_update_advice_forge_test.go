@@ -58,10 +58,13 @@ func TestRunAgent_PinMismatchAdviceNamesForge(t *testing.T) {
 }
 
 // TestRunAgent_StaleLockAdviceNamesForge checks that the stale-lock warning
-// advises the shared lock-update command, which names the forge platform for
-// a child harness with no forge: block — without --forge, re-locking composes
-// with platform "" and drops the forge-specific base files (#8988) — so all
-// of run's lock advice comes from the one lockUpdateHint helper. The warning
+// advises the plain lock command — no --update, which would set
+// BypassURLIndex and re-fetch every un-pinned relative base file from
+// upstream where a plain lock re-composes the stale entry from the URL
+// index's cached copies — while still naming the forge platform for a child
+// harness with no forge: block (without --forge, re-locking composes with
+// platform "" and drops the forge-specific base files, #8988), so all of
+// run's lock advice comes from the one lockUpdateHint helper. The warning
 // line ends with the advised command itself: a period after its last argument
 // would be copied with it and break the advice as written.
 func TestRunAgent_StaleLockAdviceNamesForge(t *testing.T) {
@@ -81,7 +84,7 @@ func TestRunAgent_StaleLockAdviceNamesForge(t *testing.T) {
 		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "Harness has changed since lock file was generated")
-	assert.Contains(t, out.String(), "fullsend lock code --update")
+	assert.Contains(t, out.String(), "fullsend lock code")
 	assert.Contains(t, out.String(), "--fullsend-dir")
 	assert.Contains(t, out.String(), "--forge github")
 
@@ -95,9 +98,12 @@ func TestRunAgent_StaleLockAdviceNamesForge(t *testing.T) {
 	}
 	assert.True(t, strings.HasSuffix(warnLine, "--forge github"),
 		"stale-lock warning must end with the advised command, got %q", warnLine)
+	assert.NotContains(t, warnLine, "--update",
+		"stale-lock warning must not advise --update, got %q", warnLine)
 
-	// The advised command, run as written, re-locks and clears the warning.
-	require.NoError(t, s.runLockForge(t, "github", true))
+	// The advised command, run as written (a plain lock — no --update),
+	// re-locks the stale entry and clears the warning.
+	require.NoError(t, s.runLockForge(t, "github", false))
 	var out2 bytes.Buffer
 	err = runAgent(context.Background(), "code", s.dir, "", t.TempDir(), "", nil, false, "", "github", "",
 		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out2), false, runOverrideFlags{})
