@@ -2012,6 +2012,15 @@ content drift, and `repos install` repairs it. Templates fetched for a pin
 that predates this rendering hardcode `fullsend-runner:dev`. Install replaces
 that with the pinned release's image too.
 
+For a release pin or an unset pin, the image already contains the CLI the jobs
+need. The jobs' `before_script` (`.gitlab/ci/scripts/install-fullsend-cli.sh`)
+checks `fullsend --version` and skips the download when the CLI in the image
+reports exactly the pinned release. For an unset pin, the script still looks
+up the latest release tag first, so a cached `latest` image that predates the
+newest release still downloads it. A branch or commit SHA pin always builds the
+CLI from source, because the `dev` image is not built from the pinned commit.
+The private-CA trust step runs in every case.
+
 Tracking `main` (the `dev` image) is an opt-in for fullsend maintainers and
 early testers, selected by pinning `gitlab.fullsend_ref` to `main` or a
 commit SHA. It is **not supported for production**: every runner image change
