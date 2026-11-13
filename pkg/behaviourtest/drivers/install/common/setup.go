@@ -382,10 +382,16 @@ func ParseInferenceStatusWIFProvider(output string) (string, error) {
 // the ephemeral-repo model (ADR 0114). A fresh temp manifest path is used
 // per call for concurrency safety; the empty file is removed first so
 // `repos install` bootstraps a v1 manifest rather than failing on a
-// version-0 empty file. mintURL, fullsendRef, gcpProjectID and wifProvider
-// are appended only when set.
+// version-0 empty file. mintURL, fullsendRef, appSet, gcpProjectID and
+// wifProvider are appended only when set.
+//
+// appSet must match the app set the suite's mint was deployed with: it is
+// written as the repo's FULLSEND_APP_SET, which the dispatch shim uses to
+// recognize the registered role bots (e.g. {app_set}-review[bot]). Omitting
+// it defaults the repo to the production app set and breaks bot-identity
+// authorization such as the review-bot fix path.
 func RunReposInstall(
-	binary, token, target, mintURL, fullsendRef, gcpProjectID, wifProvider string,
+	binary, token, target, mintURL, fullsendRef, appSet, gcpProjectID, wifProvider string,
 	runCLI CLIRunnerFunc,
 	logf func(string, ...any),
 ) error {
@@ -421,6 +427,9 @@ func RunReposInstall(
 	}
 	if fullsendRef != "" {
 		steps = append(steps, []string{"github.fullsend_ref", fullsendRef})
+	}
+	if appSet != "" {
+		steps = append(steps, []string{"github.app_set", appSet})
 	}
 	steps = append(steps,
 		[]string{fmt.Sprintf("github.repos[%q]", target), "{}"},

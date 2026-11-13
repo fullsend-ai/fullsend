@@ -45,8 +45,8 @@ func KeepRepos() bool { return os.Getenv("E2E_KEEP_REPOS") == "true" }
 
 // ephemeralInstall installs fullsend into an ephemeral repo via
 // common.RunReposInstall. It is the default RunReposInstallFn.
-func ephemeralInstall(binary, token, target, mintURL, fullsendRef, gcpProjectID, wifProvider string, runCLI CLIRunnerFunc, logf func(string, ...any)) error {
-	return common.RunReposInstall(binary, token, target, mintURL, fullsendRef, gcpProjectID, wifProvider, runCLI, logf)
+func ephemeralInstall(binary, token, target, mintURL, fullsendRef, appSet, gcpProjectID, wifProvider string, runCLI CLIRunnerFunc, logf func(string, ...any)) error {
+	return common.RunReposInstall(binary, token, target, mintURL, fullsendRef, appSet, gcpProjectID, wifProvider, runCLI, logf)
 }
 
 // ephemeralEnsurer creates ephemeral repos with fullsend installed. Each
@@ -58,6 +58,7 @@ type ephemeralEnsurer struct {
 	token         string
 	binary        string
 	fullsendRef   string
+	appSet        string
 	mintURL       string
 	gcpProjectID  string
 	wifProvider   string
@@ -194,7 +195,7 @@ func (e *ephemeralEnsurer) createRepo(ctx context.Context, org, hint string) (st
 func (e *ephemeralEnsurer) installFullsend(org, repoName string) error {
 	return RunReposInstallFn(
 		e.binary, e.token, org+"/"+repoName,
-		e.mintURL, e.fullsendRef, e.gcpProjectID, e.wifProvider,
+		e.mintURL, e.fullsendRef, e.appSet, e.gcpProjectID, e.wifProvider,
 		e.runCLI, e.logf,
 	)
 }

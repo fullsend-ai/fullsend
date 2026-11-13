@@ -21,6 +21,33 @@ func TestDefaultGitHubSetupOpts_HasVendor(t *testing.T) {
 	assert.Empty(t, opts.ConfigPreset, "default should not set a config preset")
 }
 
+func TestRunReposInstall_SetsAppSetAndManifestFields(t *testing.T) {
+	var calls []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return "", nil
+	}
+
+	err := RunReposInstall("/bin/fullsend", "tok", "fullsend-ai-test/bt-x-allow-1",
+		"https://mint.test", "deadbeef", "fullsend-test", "proj", "projects/1/.../github-oidc",
+		runner, t.Logf)
+	require.NoError(t, err)
+
+	all := strings.Join(calls, "\n")
+	// The app set must be written so the repo's FULLSEND_APP_SET matches the
+	// mint's app set (else bot-identity auth like the review-bot fix breaks).
+	assert.Contains(t, all, "repos set github.app_set fullsend-test")
+	assert.Contains(t, all, "repos set defaults.vendor true")
+	assert.Contains(t, all, "repos set github.mint_url https://mint.test")
+	assert.Contains(t, all, "repos set github.fullsend_ref deadbeef")
+	assert.Contains(t, all, "repos install fullsend-ai-test/bt-x-allow-1")
+	assert.Contains(t, all, "--vertex-project proj")
+	assert.Contains(t, all, "--vertex-wif-provider projects/1/.../github-oidc")
+	// The removed flags must not reappear.
+	assert.NotContains(t, all, "--vendor")
+	assert.NotContains(t, all, "--fullsend-ref")
+}
+
 func TestRunGitHubSetupWithOpts_VendoredMode(t *testing.T) {
 	var capturedArgs []string
 	runner := func(_, _ string, args ...string) (string, error) {

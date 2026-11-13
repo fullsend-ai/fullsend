@@ -102,6 +102,7 @@ func NewEphemeralCFMint(pool PoolConfig) (Driver, error) {
 		token:         token,
 		binary:        pool.Binary,
 		fullsendRef:   common.EnvFullsendRef(),
+		appSet:        envAppSet(),
 		mintURL:       mintURL,
 		gcpProjectID:  pool.GCPProjectID,
 		wifProvider:   wif,
