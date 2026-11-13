@@ -139,7 +139,7 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.review-skip-publish.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
@@ -163,6 +163,18 @@ jobs:
           sparse-checkout: |
             .fullsend/config.yaml
             .fullsend/config.base.yaml
+            .defaults/action.yml
+            .defaults/.github/actions/mint-token/
+            .defaults/.github/actions/prepare-workspace/
+            .defaults/.github/actions/validate-enrollment/
+            .defaults/.github/scripts/review-diff-hash.sh
+            .defaults/internal/scaffold/fullsend-repo/
+            .fullsend/.defaults/action.yml
+            .fullsend/.defaults/.github/actions/mint-token/
+            .fullsend/.defaults/.github/actions/prepare-workspace/
+            .fullsend/.defaults/.github/actions/validate-enrollment/
+            .fullsend/.defaults/.github/scripts/review-diff-hash.sh
+            .fullsend/.defaults/internal/scaffold/fullsend-repo/
             /OWNERS
             /OWNERS_ALIASES
           sparse-checkout-cone-mode: false
@@ -452,6 +464,264 @@ jobs:
           echo "Routed to stage: ${STAGE}"
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
+
+      # Do not mint a write-capable token or mutate skip notes when review is
+      # disabled by repository configuration. The full validation steps below
+      # still enforce the same policy for the final routed stage.
+      - name: Check review deduplication guards
+        id: review-dedup-guard
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize'
+        shell: bash
+        run: |
+          set -euo pipefail
+          allowed=true
+          prevalidated=false
+          kill_switch="false"
+          overlay_ks="null"
+          if [[ -f .fullsend/config.yaml ]]; then
+            if ! overlay_ks=$(yq -o=json '.kill_switch' .fullsend/config.yaml 2>/dev/null); then
+              echo "::warning::Could not read the review kill switch; skipping deduplication"
+              allowed=false
+              overlay_ks="null"
+            fi
+          fi
+          if [[ "${overlay_ks}" != "null" ]]; then
+            kill_switch="${overlay_ks}"
+          elif [[ -f .fullsend/config.base.yaml ]]; then
+            if ! kill_switch=$(yq -o=json '.kill_switch' .fullsend/config.base.yaml 2>/dev/null); then
+              echo "::warning::Could not read the base review kill switch; skipping deduplication"
+              allowed=false
+              kill_switch="false"
+            fi
+          fi
+          kill_switch="${kill_switch,,}"
+          kill_switch="${kill_switch#\"}"
+          kill_switch="${kill_switch%\"}"
+          if [[ "${kill_switch}" == "true" || "${kill_switch}" == "yes" ]]; then
+            echo "::notice::Review kill switch is active; skipping deduplication"
+            allowed=false
+          fi
+
+          if [[ -f .fullsend/config.yaml ]]; then
+            if ! agent_enabled=$(yq -r '.agents[] | select((.name | downcase) == "review") | .enabled' .fullsend/config.yaml 2>/dev/null | tail -1); then
+              echo "::warning::Could not check review agent enablement; skipping deduplication"
+              allowed=false
+            elif [[ "${agent_enabled}" == "false" ]]; then
+              echo "::notice::Review agent is disabled; skipping deduplication"
+              allowed=false
+            fi
+          fi
+          if [[ "${allowed}" == "true" ]]; then
+            prevalidated=true
+          fi
+          echo "allowed=${allowed}" >> "${GITHUB_OUTPUT}"
+          echo "prevalidated=${prevalidated}" >> "${GITHUB_OUTPUT}"
+
+      # The diff check is read-only and must have its canonicalizer before it
+      # runs. Vendored callers already provide it in the caller checkout;
+      # fetch only this script for callers using upstream defaults.
+      - name: Checkout review diff canonicalizer
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .review-diff-defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/scripts/review-diff-hash.sh
+          sparse-checkout-cone-mode: false
+
+      # A synchronize event can be caused by merging the base branch into a
+      # PR without changing the PR's effective diff. Avoid paying for another
+      # full review when the previous review recorded the same complete diff.
+      # Missing or incomplete metadata deliberately fails open.
+      - name: Check unchanged review diff
+        id: review-diff
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.review-dedup-guard.outputs.allowed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "skip=false" >> "${GITHUB_OUTPUT}"
+
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
+
+          if ! pr_before=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '{base_sha: .base.sha, head_sha: .head.sha}'); then
+            echo "::warning::Could not read PR base/head metadata; running review"
+            exit 0
+          fi
+          base_before="$(printf '%s' "${pr_before}" | jq -r '.base_sha // ""')"
+          head_before="$(printf '%s' "${pr_before}" | jq -r '.head_sha // ""')"
+          if [[ -z "${base_before}" || -z "${head_before}" ]]; then
+            echo "::warning::PR base or head tree metadata is incomplete; running review"
+            exit 0
+          fi
+          base_sha="${base_before}"
+          head_sha="${head_before}"
+          if ! merge_base_sha=$(gh api "repos/${SOURCE_REPO}/compare/${base_sha}...${head_sha}" --jq '.merge_base_commit.sha // ""'); then
+            echo "::notice::Could not determine the PR merge base; running review"
+            exit 0
+          fi
+          if [[ -z "${merge_base_sha}" ]]; then
+            echo "::notice::PR compare metadata did not include a merge base; running review"
+            exit 0
+          fi
+
+          if ! file_json=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/files" \
+            --paginate --jq '.[] | {filename, previous_filename: (.previous_filename // ""), status: (.status // ""), patch}'); then
+            echo "::warning::Could not fetch PR file diffs; running review"
+            exit 0
+          fi
+
+          if ! expected_files=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '.changed_files'); then
+            echo "::warning::Could not verify the complete PR file list; running review"
+            exit 0
+          fi
+          if [[ ! "${expected_files}" =~ ^[0-9]+$ || "${expected_files}" -ge 3000 ]]; then
+            echo "::notice::PR file count cannot be proven complete; running review"
+            exit 0
+          fi
+          actual_files=$(printf '%s\n' "${file_json}" | jq -s 'length')
+          if [[ "${actual_files}" != "${expected_files}" ]]; then
+            echo "::notice::PR file list is incomplete (${actual_files}/${expected_files}); running review"
+            exit 0
+          fi
+
+          if ! base_modes=$(gh api "repos/${SOURCE_REPO}/git/trees/${merge_base_sha}?recursive=1" --jq 'if .truncated then error("base tree truncated") else [.tree[] | select(.type == "blob") | {key: .path, value: .mode}] | from_entries end'); then
+            echo "::notice::Could not verify base file modes; running review"
+            exit 0
+          fi
+          if ! head_modes=$(gh api "repos/${SOURCE_REPO}/git/trees/${head_sha}?recursive=1" --jq 'if .truncated then error("head tree truncated") else [.tree[] | select(.type == "blob") | {key: .path, value: .mode}] | from_entries end'); then
+            echo "::notice::Could not verify head file modes; running review"
+            exit 0
+          fi
+
+          base_modes_file=$(mktemp) || {
+            echo "::warning::Could not create a temporary base-mode file; running review"
+            exit 0
+          }
+          head_modes_file=$(mktemp) || {
+            rm -f "${base_modes_file}"
+            echo "::warning::Could not create a temporary head-mode file; running review"
+            exit 0
+          }
+          trap 'rm -f "${base_modes_file}" "${head_modes_file}"' EXIT
+          if ! printf '%s' "${base_modes}" >"${base_modes_file}" || ! printf '%s' "${head_modes}" >"${head_modes_file}"; then
+            echo "::warning::Could not persist file modes for canonicalization; running review"
+            exit 0
+          fi
+          defaults_dir=".defaults"
+          if [[ -f .fullsend/.defaults/action.yml ]]; then
+            defaults_dir=".fullsend/.defaults"
+          elif [[ ! -f .defaults/.github/scripts/review-diff-hash.sh ]]; then
+            defaults_dir=".review-diff-defaults"
+          fi
+          if ! current_hash=$(printf '%s\n' "${file_json}" | "${defaults_dir}/.github/scripts/review-diff-hash.sh" "${base_modes_file}" "${head_modes_file}"); then
+            echo "::warning::Could not canonicalize PR file diffs; running review"
+            exit 0
+          fi
+          if [[ -z "${current_hash}" ]]; then
+            echo "::notice::PR diff is incomplete or empty; running review"
+            exit 0
+          fi
+
+          if ! pr_after=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '{base_sha: .base.sha, head_sha: .head.sha}'); then
+            echo "::warning::Could not verify PR base/head after diff fetch; running review"
+            exit 0
+          fi
+          base_after="$(printf '%s' "${pr_after}" | jq -r '.base_sha // ""')"
+          head_after="$(printf '%s' "${pr_after}" | jq -r '.head_sha // ""')"
+          if [[ -z "${base_after}" || -z "${head_after}" || "${base_before}" != "${base_after}" || "${head_before}" != "${head_after}" ]]; then
+            echo "::notice::PR base or head changed while fetching the diff; running review"
+            exit 0
+          fi
+          current_head_sha="${head_after}"
+          current_base_sha="${base_after}"
+
+          if ! prior_review=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -s -c '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and (.body | contains("<!-- fullsend:review-agent -->"))
+                and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))]
+              | sort_by(.created_at) | last // {}'); then
+            echo "::warning::Could not fetch the previous review; running review"
+            exit 0
+          fi
+          if [[ -z "${prior_review}" || "${prior_review}" == "{}" ]]; then
+            echo "::notice::No app-verified previous review found; running review"
+            exit 0
+          fi
+          prior_body="$(printf '%s' "${prior_review}" | jq -r '.body // ""')"
+          prior_url="$(printf '%s' "${prior_review}" | jq -r '.html_url // ""')"
+
+          prior_section="${prior_body%%<!-- sticky:history-start -->*}"
+          prior_hash="$(printf '%s\n' "${prior_section}" \
+            | sed -nE 's/^<!-- fullsend:review-diff-hash:([0-9a-f]{64}) -->$/\1/p' \
+            | head -1 || true)"
+          if [[ -z "${prior_hash}" ]]; then
+            echo "::notice::Previous review has no complete diff hash; running review"
+            exit 0
+          fi
+          prior_reviewed_head="$(printf '%s\n' "${prior_section}" \
+            | sed -nE 's/^<!-- fullsend:review-head:([0-9a-fA-F]{40,64}) -->$/\1/p' \
+            | head -1 || true)"
+          if [[ -z "${prior_reviewed_head}" ]]; then
+            echo "::notice::Previous review has no verified reviewed HEAD; running review"
+            exit 0
+          fi
+
+          if ! prior_formal_review=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/reviews" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" -s -c '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and ((.submitted_at // "") != ""))]
+              | sort_by(.submitted_at) | last // {}'); then
+            echo "::warning::Could not determine the previous formal review verdict; running review"
+            exit 0
+          fi
+          prior_state="$(printf '%s' "${prior_formal_review}" | jq -r '.state // ""')"
+          prior_commit_sha="$(printf '%s' "${prior_formal_review}" | jq -r '.commit_id // ""')"
+          if [[ "${prior_state}" != "APPROVED" || "${prior_commit_sha}" != "${prior_reviewed_head}" ]]; then
+            echo "::notice::No approved bot review for the reviewed diff; running review"
+            exit 0
+          fi
+
+          if [[ "${current_hash}" == "${prior_hash}" ]]; then
+            if ! final_pr=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" --jq '{base_sha: .base.sha, head_sha: .head.sha}'); then
+              echo "::warning::Could not verify PR base/head before skip; running review"
+              exit 0
+            fi
+            final_base_sha="$(printf '%s' "${final_pr}" | jq -r '.base_sha // ""')"
+            final_head_sha="$(printf '%s' "${final_pr}" | jq -r '.head_sha // ""')"
+            if [[ "${final_base_sha}" != "${current_base_sha}" || "${final_head_sha}" != "${current_head_sha}" ]]; then
+              echo "::notice::PR base or head changed before skip; running review"
+              exit 0
+            fi
+            echo "prior_url=${prior_url}" >> "${GITHUB_OUTPUT}"
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "::notice::PR effective diff changed; running review"
+          fi
 
       # CEL routing (#8726). A repository moves a built-in stage's routing
       # from the bash rules above to a CEL trigger by setting agents[].trigger
@@ -843,6 +1113,123 @@ jobs:
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
 
+      # Only obtain a write-capable review token after final routing has
+      # authorized the review stage. The diff check above remains read-only.
+      - name: Checkout upstream defaults for review skip note
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            internal/scaffold/fullsend-repo/
+          sparse-checkout-cone-mode: false
+
+      - name: Prepare workspace for review skip note
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == ''
+        id: review-token-workspace
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.defaults/.github/actions/prepare-workspace
+        with:
+          source_repo: ${{ github.repository }}
+
+      # Older vendored prepare-workspace actions use the historical
+      # .defaults path internally. Provide that compatibility path while
+      # the action's defaults_root input is adopted by existing callers.
+      - name: Stage nested defaults compatibility path
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        shell: bash
+        run: ln -s .fullsend/.defaults .defaults
+
+      - name: Prepare workspace for review skip note (nested vendor)
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != ''
+        id: review-token-workspace-nested
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.fullsend/.defaults/.github/actions/prepare-workspace
+        with:
+          defaults_root: .fullsend/.defaults
+          source_repo: ${{ github.repository }}
+
+      - name: Mint review token for review skip note
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') == '' && steps.review-token-workspace.outcome == 'success'
+        id: review-token
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace.outputs.repo_name }}
+          level: write
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Mint review token for review skip note (nested vendor)
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true' && hashFiles('.fullsend/.defaults/action.yml') != '' && steps.review-token-workspace-nested.outcome == 'success'
+        id: review-token-nested
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: ./.fullsend/.defaults/.github/actions/mint-token
+        with:
+          role: review
+          repos: ${{ steps.review-token-workspace-nested.outputs.repo_name }}
+          level: write
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Publish review skip note
+        id: review-skip-publish
+        if: github.event_name == 'pull_request_target' && inputs.event_action == 'synchronize' && steps.route.outputs.stage == 'review' && steps.review-diff.outputs.skip == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token || github.token }}
+          REVIEW_TOKEN: ${{ steps.review-token.outputs.token || steps.review-token-nested.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+          REVIEW_PRIOR_URL: ${{ steps.review-diff.outputs.prior_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "skipped=false" >> "${GITHUB_OUTPUT}"
+          if [[ -z "${REVIEW_TOKEN}" ]]; then
+            echo "::notice::Review-App token was unavailable; running the full review"
+            exit 0
+          fi
+          skip_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend skipped this synchronize review because the effective diff is unchanged from the previous approved review${REVIEW_PRIOR_URL:+ (${REVIEW_PRIOR_URL})}. No new review findings were generated."
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
+          if ! status_comment_id="$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -s -r '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and (.body | startswith("<!-- fullsend:review-skip -->"))
+                and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))]
+              | sort_by(.created_at) | last // {} | .id // ""' \
+            | tail -1)"; then
+            echo "::warning::Could not verify an existing review-skip status note; running review"
+            exit 0
+          fi
+          if [[ -n "${status_comment_id}" ]]; then
+            gh api --method PATCH "repos/${SOURCE_REPO}/issues/comments/${status_comment_id}" -f body="${skip_body}" >/dev/null
+          else
+            gh api --method POST "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" -f body="${skip_body}" >/dev/null
+          fi
+          echo "::notice::Skipping review after final routing: synchronize event has the same effective diff as the previous review"
+          echo "skipped=true" >> "${GITHUB_OUTPUT}"
+
       - name: Validate routed stage
         if: steps.route.outputs.stage != ''
         env:
@@ -864,7 +1251,7 @@ jobs:
           fi
 
       - name: Check kill switch
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && (steps.review-dedup-guard.outputs.prevalidated != 'true' || steps.route.outputs.stage != 'review')
         run: |
           set -euo pipefail
           # Mirrors internal/config's IsKillSwitchActive(): if
@@ -953,7 +1340,7 @@ jobs:
 
       - name: Check agent is enabled
         id: agent-check
-        if: steps.route.outputs.stage != ''
+        if: steps.route.outputs.stage != '' && (steps.review-dedup-guard.outputs.prevalidated != 'true' || steps.route.outputs.stage != 'review')
         env:
           STAGE: ${{ steps.route.outputs.stage }}
         run: |
@@ -1372,6 +1759,49 @@ jobs:
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
           FULLSEND_DIR: .fullsend
         run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fetch-prior-review.sh"
+
+      # A previous unchanged-diff run leaves a PR-visible status note. Once
+      # this full review is actually dispatched, that note must not continue
+      # to look like the current verdict. Keep the marker for provenance, but
+      # replace the stale message with an explicit superseded notice.
+      - name: Supersede prior review skip note
+        if: steps.app-token.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          ORG_NAME: ${{ github.repository_owner }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+          REVIEW_HEAD_SHA: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          SHARED_REVIEW_BOT="fullsend-ai-review[bot]"
+          CUSTOM_REVIEW_BOT=""
+          if [[ -n "${FULLSEND_APP_SET}" ]]; then
+            CUSTOM_REVIEW_BOT="${FULLSEND_APP_SET}-review[bot]"
+          fi
+          if [[ ! "${REVIEW_HEAD_SHA}" =~ ^[0-9a-fA-F]{40,64}$ ]]; then
+            REVIEW_HEAD_SHA="unknown head"
+          fi
+          superseded_body="<!-- fullsend:review-skip -->"$'\n'"Fullsend's earlier unchanged-diff skip note was superseded by a full review for commit ${REVIEW_HEAD_SHA}."
+          comment_ids=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUMBER}/comments" \
+            --paginate --jq '.[]' \
+            | jq --arg bot "${REVIEW_BOT}" --arg shared_bot "${SHARED_REVIEW_BOT}" \
+                --arg custom_bot "${CUSTOM_REVIEW_BOT}" --arg client_id "${REVIEW_APP_CLIENT_ID}" -r -s '
+              [.[] | select((.user.login == $bot or .user.login == $shared_bot
+                or ($custom_bot != "" and .user.login == $custom_bot))
+                and (.body | startswith("<!-- fullsend:review-skip -->"))
+                and ($client_id != "" and (.performed_via_github_app.client_id // "") == $client_id))
+              | .id] | .[]' )
+          while IFS= read -r comment_id; do
+            [[ -z "${comment_id}" ]] && continue
+            gh api --method PATCH "repos/${SOURCE_REPO}/issues/comments/${comment_id}" \
+              -f body="${superseded_body}" >/dev/null
+          done <<<"${comment_ids}"
 
       - name: Setup agent environment
         env:
