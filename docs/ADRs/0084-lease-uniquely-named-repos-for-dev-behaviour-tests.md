@@ -79,6 +79,11 @@ choice with real alternatives:
 - **Trust the whole org (`<org>/*`).** This also trusts `e2e-lock`, the GC
   repo and the probe repos, and leaves no name for the "unapproved host"
   denial scenario.
+- **Build pattern support only into test builds of the mint.** A production
+  build then cannot trust a pattern at all. This is rejected because
+  behaviour tests would no longer run the same mint binary as production.
+  The runtime setting, with the enforced gate under Decision, keeps one
+  binary.
 - **Trust a name prefix, in test mints only** (chosen).
 
 ## Decision
@@ -102,7 +107,10 @@ basename gate and every other check still apply.
 
 Only behaviour-test preview mints set this, with `<org>/bt-*` for each DEV
 pool org. The deploy flag that writes it is marked test-only, and
-`fullsend mint workflow-host` keeps exact entries. The probe for an
+`fullsend mint workflow-host` keeps exact entries. The mint enforces the
+gate itself: it refuses a non-empty pattern setting unless it is deployed
+as a behaviour-test preview, and an absent or empty setting adds no pattern
+hosts. The follow-up mint work must implement this check. The probe for an
 unapproved host moves to a name outside the prefix, so that denial stays
 tested.
 
@@ -169,9 +177,11 @@ gets a live pool.
   are behind the 403s in #9154.
 - In the steady state, creates and deletes are not reduced, but deletes move
   off the scenario path into one batched sweep.
-- The mint gains a host-pattern setting that an operator could misuse in
-  production. `mint status` must report it, and the exact-entry commands
-  never write it.
+- The mint gains a host-pattern setting. It refuses the setting outside a
+  behaviour-test preview deploy, and `mint status` must report it. The
+  check is code in the mint, but the preview marker is still deploy
+  configuration, so an operator with deploy access could set it on a
+  production mint. The exact-entry commands never write the setting.
 - The org-scoped provider admits any `bt-` repo with Actions enabled, so
   disabling Actions at release and in the sweep is required, not optional.
   The test inference gateway's name list must switch to the same prefix.
