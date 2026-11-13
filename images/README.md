@@ -195,11 +195,34 @@ The Go toolchain is automated the same way: Renovate bumps `GO_VERSION` in
 refreshes `GO_SHA256_{AMD64,ARM64}` in both files from
 <https://go.dev/dl/?mode=json&include=all>.
 
-The fd pin in `images/sandbox/Containerfile` is automated too: Renovate bumps
-`FD_VERSION`, and `scripts/renovate/update-fd-checksums.sh` (run via
-`postUpgradeTasks`) downloads both linux-musl release tarballs and refreshes
-`FD_SHA256_{AMD64,ARM64}` with their `sha256sum` (fd publishes no checksum
-files).
+Most other checksum-pinned downloads are automated the same way (#9121).
+A Renovate customManager bumps `<NAME>_VERSION`, and a matching
+`scripts/renovate/update-*-checksum(s).sh` script (run via
+`postUpgradeTasks`) downloads the new artifact for each arch. The script
+computes its SHA256, checks it against the checksum the upstream publishes,
+and only then rewrites the `<NAME>_SHA256*` ARGs. On a mismatch or a missing
+asset it exits non-zero and leaves the Containerfile untouched. The scripts
+share `scripts/renovate/lib-checksums.sh` and are tested by
+`scripts/renovate/update-pin-checksums-test.sh`.
+
+| Pin | Containerfile | Checked against |
+|-----|---------------|-----------------|
+| `PI_ANTHROPIC_VERTEX`, `PI_XAI_VERTEX`, `PI_INFERENCE_GATEWAY` | sandbox | SHA256 row in the GitHub release notes |
+| `RIPGREP` | sandbox | release `.tar.gz.sha256` assets |
+| `LYCHEE` | code | release `.tar.gz.sha256` assets |
+| `GH`, `GITLEAKS` (sandbox + runner), `GITSIGN` | runner, sandbox, code | release checksums file |
+| `FD`, `OPENCODE`, `ORT` | sandbox, runner | sha256 digest GitHub records for each release asset (no upstream checksum file) |
+| `GCLOUD` | runner | nothing — Google lists checksums only for the current release on its HTML install page, so the hash is computed from the HTTPS download |
+
+These pins stay manual:
+
+- `TOKENIZERS` (runner) must match the `github.com/daulet/tokenizers`
+  version in `go.mod`. That module is indirect and moves with hugot, so an
+  independent Renovate bump would split the two.
+- `ACLI` (sandbox) is published only on `acli.atlassian.com`, which has no
+  release index Renovate can query.
+- `PROTECTAI_*` (runner) hashes pin model files at a fixed
+  `PROTECTAI_MODEL_REV`.
 
 ## Local builds
 
