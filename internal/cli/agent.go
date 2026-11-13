@@ -63,8 +63,11 @@ func newAgentAddCmd() *cobra.Command {
 
 URL sources are automatically pinned to a specific commit SHA and annotated
 with an integrity hash. The URL prefix is added to allowed_remote_resources
-only when the effective allowlist — the layered list plus fullsend's default
-prefixes — does not already cover it.
+only when the effective allowlist does not already cover it. The effective
+allowlist is the layered list plus fullsend's default prefixes. The prefix
+is appended to the config's own list only: entries the parent chain
+resolves (fullsend's defaults, GITHUB_SERVER_URL-derived prefixes,
+config.base.yaml entries) are never written into config.yaml.
 
 Examples:
   fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml
@@ -348,6 +351,27 @@ func localAgentEntries(cfg config.ConfigReader) []config.AgentEntry {
 	return cfg.AgentEntries()
 }
 
+// localAllowedResources returns the allowlist entries the overlay itself
+// declares (the parent chain's defaults, GITHUB_SERVER_URL-derived entries
+// and base prefixes are not rewritten into config.yaml).
+func localAllowedResources(cfg config.ConfigReader) []string {
+	if local, ok := cfg.(interface{ LocalAllowedRemoteResources() []string }); ok {
+		return local.LocalAllowedRemoteResources()
+	}
+	return cfg.AllowedResources()
+}
+
+// localAllowlistWith returns the overlay's own allowlist plus prefix — the
+// list `agent add` writes. Only this layer's entries are carried, so the
+// parent chain's defaults and base prefixes are never baked into
+// config.yaml by the append.
+func localAllowlistWith(cfg config.ConfigReader, prefix string) []string {
+	local := localAllowedResources(cfg)
+	with := make([]string, 0, len(local)+1)
+	with = append(with, local...)
+	return append(with, prefix)
+}
+
 // upsertAgentSource sets Source for name on a layer's local agent list:
 // on the entry with that name when present, else as a new override-only
 // entry. Mirrors config.UpsertAgentSettings, but for the update path's
@@ -387,9 +411,8 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 
 		prefix := allowlistPrefixForURL(pinnedSource)
 		if prefix != "" && agentAddWritesPrefix(cfg, prefix) {
-			resources := cfg.AllowedResources()
 			printer.StepInfo("Adding " + prefix + " to allowed_remote_resources")
-			cfg.SetAllowedRemoteResources(append(resources, prefix))
+			cfg.SetAllowedRemoteResources(localAllowlistWith(cfg, prefix))
 		}
 	} else {
 		if err := validateLocalPath(absDir, source); err != nil {
@@ -720,14 +743,23 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 	if urlutil.IsURL(removedEntry.Source) {
 		prefix := allowlistPrefixForURL(removedEntry.Source)
 		if prefix != "" && !anyAgentUsesPrefix(agents, prefix) {
-			resources := cfg.AllowedResources()
-			cleaned := make([]string, 0, len(resources))
-			for _, r := range resources {
-				if r != prefix {
-					cleaned = append(cleaned, r)
+			// Clean only the overlay's own list. The resolved value
+			// (AllowedResources) unions the parent chain — fullsend's
+			// default prefixes, the GITHUB_SERVER_URL-derived entries,
+			// any base prefixes — and writing it back would bake all of
+			// them into config.yaml. A prefix the base owns is left to
+			// the base: nothing is written and nothing is announced.
+			local := localAllowedResources(cfg)
+			cleaned := make([]string, 0, len(local))
+			found := false
+			for _, r := range local {
+				if r == prefix {
+					found = true
+					continue
 				}
+				cleaned = append(cleaned, r)
 			}
-			if len(cleaned) < len(resources) {
+			if found {
 				printer.StepInfo("Removed unused prefix from allowed_remote_resources: " + prefix)
 				if len(cleaned) > 0 {
 					cfg.SetAllowedRemoteResources(cleaned)
@@ -948,10 +980,10 @@ func findAgentByName(agents []config.AgentEntry, name string) (int, bool) {
 // prefix into config.yaml: the effective allowlist (the layered chain
 // with fullsend's default prefixes ensured on a non-empty result) does
 // not already cover it, so a default prefix the running commands admit
-// is never written. The end-to-end branch needs a
-// raw.githubusercontent.com source, which the offline test server cannot
-// serve, so the decision is pinned directly by
-// TestAgentAddWritesPrefix_AllowlistOverBaseEmptyList.
+// is never written. The gate needs a default-prefix source, which the
+// offline test server cannot serve, so the decision is pinned directly
+// by TestAgentAddWritesPrefix_AllowlistOverBaseEmptyList; the write it
+// gates is pinned end-to-end by TestAgentAddWritesLocalOnly.
 func agentAddWritesPrefix(cfg config.ConfigReader, prefix string) bool {
 	return !hasAllowlistPrefix(config.EffectiveAllowedResources(cfg), prefix)
 }

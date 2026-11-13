@@ -258,6 +258,18 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 // Marshal writes), as opposed to the merged set from AgentEntries.
 func (c *perRepoConfig) LocalAgentEntries() []AgentEntry { return c.Agents }
 
+// LocalAllowedRemoteResources returns only this layer's own allowlist
+// entries (what Marshal writes), as opposed to the parent-unioned set
+// from AllowedResources: nil means the key is omitted here (the parent
+// chain resolves it), an explicit empty slice is this layer's deny-all,
+// and a non-empty slice is this layer's entries without the parent
+// chain's, fullsend's default prefixes included. The agent add and
+// remove cleanup writes read this, never the union, so parent-chain
+// entries are not baked into the committed overlay; agent remove's
+// deny-all fallback, which writes the default prefixes a remaining
+// agent still uses, is the intentional exception.
+func (c *perRepoConfig) LocalAllowedRemoteResources() []string { return c.AllowedRemoteResources }
+
 // IsKillSwitchActive reports whether the kill switch is engaged.
 // KillSwitch is a *bool: nil falls through to parent, non-nil
 // (including explicit false) is the local decision.
