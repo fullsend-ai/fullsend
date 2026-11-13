@@ -7,9 +7,13 @@
 # (test-repo-NN and names starting with it) do not count; filler names
 # already present are skipped and the numbering fills the gaps; an org at
 # the target gets nothing; NN expands to halfsend-NN; --max caps the run
-# across orgs; a "name already exists" answer is not an error; a rate-limit
+# across orgs; a "name already exists" answer (as real gh reports it: the
+# detail in the JSON body on stdout, only the top-level message on stderr)
+# is skipped and not counted against --max; a rate-limit
 # answer stops the run with a non-zero exit; a permission 403 and a failed
-# listing fail; filler repositories are created private.
+# listing fail; filler repositories are created private; --target and --max
+# with a leading zero are read in base 10; a trailing --target or --max and
+# an org outside the pool are usage errors.
 #
 # Run from the repo root:
 #   bash hack/pad-e2e-org-repos_test.sh
@@ -70,7 +74,10 @@ case "${method} ${path}" in
       echo "gh: Resource not accessible by integration (HTTP 403)" >&2; exit 1
     fi
     if [[ -f "${S}/exists_on_create" ]]; then
-      echo "gh: Repository creation failed. name already exists on this account (HTTP 422)" >&2; exit 1
+      # Real gh: the JSON body goes to stdout, and stderr carries only the
+      # top-level message.
+      echo '{"message":"Repository creation failed.","errors":[{"resource":"Repository","code":"custom","field":"name","message":"name already exists on this account"}],"status":"422"}'
+      echo "gh: Repository creation failed. (HTTP 422)" >&2; exit 1
     fi
     if [[ -f "${S}/ratelimit_after" ]]; then
       made=$(cat "${S}/created" 2>/dev/null || echo 0)
@@ -121,7 +128,9 @@ count_files() {
   for f in "$1"/*; do [[ -e "${f}" ]] && n=$((n + 1)); done
   echo "${n}"
 }
-creates() { grep -c 'POST' "${STATE}/gh.log" 2>/dev/null || true; }
+creates() {
+  if [[ -f "${STATE}/gh.log" ]]; then grep -c 'POST' "${STATE}/gh.log" || true; else echo 0; fi
+}
 
 # --- dry run creates nothing ------------------------------------------------
 fresh_state halfsend-07 test-repo test-repo-fork e2e-lock
@@ -178,14 +187,24 @@ else
   fail "max: rc=${RC} 07=$(count_fillers halfsend-07) 08=$(count_fillers halfsend-08) out=${OUT}"
 fi
 
-# --- name already exists is not an error ------------------------------------
+# --- name already exists is skipped and not counted against --max ----------
 fresh_state halfsend-07
 touch "${STATE}/exists_on_create"
-run_pad --apply --target 2 07
-if [[ ${RC} -eq 0 ]] && grep -q 'already exists' <<< "${OUT}"; then
-  pass "a name-already-exists answer is not an error"
+run_pad --apply --target 2 --max 1 07
+if [[ ${RC} -eq 0 ]] && grep -q 'quota-filler-002 already exists, skipped' <<< "${OUT}" \
+    && grep -q 'created 0 repositories, skipped 2' <<< "${OUT}"; then
+  pass "a name-already-exists answer is skipped and not counted against --max"
 else
   fail "exists: rc=${RC} out=${OUT}"
+fi
+
+# --- leading zeros are base 10 ----------------------------------------------
+fresh_state halfsend-07
+run_pad --apply --target 010 --max 08 07
+if [[ ${RC} -eq 0 && "$(count_fillers halfsend-07)" == 8 ]] && grep -q 'stopped at --max 8' <<< "${OUT}"; then
+  pass "--target and --max with leading zeros are read in base 10"
+else
+  fail "leading zeros: rc=${RC} fillers=$(count_fillers halfsend-07) out=${OUT}"
 fi
 
 # --- rate limit stops the run -----------------------------------------------
@@ -225,6 +244,24 @@ run_pad --apply
 if [[ ${RC} -ne 0 ]]; then pass "no org is a usage error"; else fail "no org: rc=${RC}"; fi
 run_pad --target many 07
 if [[ ${RC} -ne 0 ]]; then pass "a non-numeric target is rejected"; else fail "bad target: rc=${RC}"; fi
+for flag in --target --max; do
+  run_pad 07 "${flag}"
+  if [[ ${RC} -ne 0 ]] && grep -q -- "${flag} needs a value" <<< "${OUT}"; then
+    pass "a trailing ${flag} is a usage error"
+  else
+    fail "trailing ${flag}: rc=${RC} out=${OUT}"
+  fi
+done
+for bad in my-org halfsend-07x ../halfsend-07 7; do
+  run_pad --apply "${bad}"
+  if [[ ${RC} -ne 0 && "$(creates)" == 0 ]] && grep -q 'is not a pool org' <<< "${OUT}"; then
+    pass "org '${bad}' is rejected"
+  else
+    fail "org '${bad}': rc=${RC} out=${OUT}"
+  fi
+done
+run_pad halfsend
+if [[ ${RC} -eq 0 ]]; then pass "the STAGE org halfsend is accepted"; else fail "halfsend: rc=${RC} out=${OUT}"; fi
 
 if (( FAILURES > 0 )); then
   echo "${FAILURES} failure(s)" >&2

@@ -211,7 +211,13 @@ on repo-level foreign grants.
 
 ### Filler repositories for the API limit
 
-GitHub sets an App installation's hourly API limit at 5,000 plus 50 for each repository over 20, capped at 12,500 ([GitHub docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#primary-rate-limit-for-github-app-installations)). Slot repos exist only while leased, so a pool org with only its permanent repos holds the e2e installation token to about 5,000 calls an hour. Empty filler repositories raise the limit ([#9414](https://github.com/fullsend-ai/fullsend/issues/9414)).
+GitHub sets an App installation's hourly API limit at 5,000 plus 50 for
+each repository over 20, capped at 12,500
+([GitHub docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#primary-rate-limit-for-github-app-installations)).
+Slot repos exist only while leased, so a pool org with only its permanent
+repos holds the e2e installation token to about 5,000 calls an hour. Empty
+filler repositories raise the limit
+([#9414](https://github.com/fullsend-ai/fullsend/issues/9414)).
 
 1. Authenticate `gh` as an owner of the pool orgs.
 2. Check what the script would create:
@@ -226,16 +232,31 @@ GitHub sets an App installation's hourly API limit at 5,000 plus 50 for each rep
    hack/pad-e2e-org-repos.sh --apply 07
    ```
 
-4. Wait for the next DEV behaviour run that leases a slot in that org. Its `[driver] per-org quota counters` log lines show `remaining=<n>/<limit>` for each org. Continue only if the limit for that org reads `12500`.
-5. Fill the remaining orgs. Each run creates at most 450 repositories (`--max`), so run it again each hour until every org reports nothing to do:
+4. Wait for the next DEV behaviour run that leases a slot in that org. Its
+   `[driver] per-org quota counters` log lines show
+   `remaining=<n>/<limit>` for each org. Continue only if the limit for
+   that org reads `12500`.
+5. Fill the remaining orgs:
 
    ```bash
    hack/pad-e2e-org-repos.sh --apply 01 02 03 04 05 06 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22
    ```
 
-The script counts every repository except slot repos (`test-repo-NN` and names starting with it) toward `--target` (default 200). It creates the missing ones as private, empty `quota-filler-NNN` repositories, one every 8 seconds (`FILLER_PACE_SECONDS`), to stay under GitHub's content-creation limits. A rate-limit answer stops the run; run it again later to continue. The slot driver and slot GC never touch filler repositories. Do not delete them.
+   Each run creates at most 450 repositories (`--max`), so run it again
+   each hour until every org reports nothing to do.
 
-The e2e app must be installed on **All repositories** (as `hack/setup-new-e2e-org.sh` asks), or the filler repositories do not count toward its limit.
+The script counts every repository except slot repos (`test-repo-NN` and
+names starting with it) toward `--target` (default 200). It creates the
+missing ones as private, empty `quota-filler-NNN` repositories, one every
+8 seconds (`FILLER_PACE_SECONDS`), to stay under GitHub's content-creation
+limits. Names that already exist are skipped. A rate-limit answer stops
+the run; run it again later to continue. It only accepts `halfsend` and
+`halfsend-NN` orgs. The slot driver and slot GC never touch filler
+repositories. Do not delete them.
+
+The e2e app must be installed on **All repositories** (as
+`hack/setup-new-e2e-org.sh` asks), or the filler repositories do not count
+toward its limit.
 
 ### Test actor permissions
 

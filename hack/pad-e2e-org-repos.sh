@@ -92,51 +92,79 @@ count_permanent() {
 }
 
 # create_filler creates one private, empty filler repository. Returns 0 when
-# created or already present, 2 when GitHub rate limits the request, and 1
-# on any other error.
+# created, 3 when the name already exists, 2 when GitHub rate limits the
+# request, and 1 on any other error.
+#
+# No --silent: gh prints only the top-level message ("Repository creation
+# failed.") to stderr, and the "name already exists" detail is in the JSON
+# body it writes to stdout.
 create_filler() {
-  local org="$1" name="$2" err
-  if err=$(gh api -X POST "/orgs/${org}/repos" \
+  local org="$1" name="$2" out
+  if out=$(gh api -X POST "/orgs/${org}/repos" \
       -f name="${name}" -f description="${FILLER_DESCRIPTION}" \
       -F private=true -F has_issues=false -F has_projects=false -F has_wiki=false \
-      --silent 2>&1); then
+      2>&1); then
     return 0
   fi
-  if grep -qiE 'name already exists' <<< "${err}"; then
-    echo "    ${name} already exists" >&2
-    return 0
+  if grep -qiE 'name already exists' <<< "${out}"; then
+    return 3
   fi
-  if grep -qiE 'HTTP 429|rate limit' <<< "${err}"; then
-    echo "    ERROR: GitHub rate limited creating ${org}/${name}: ${err}" >&2
+  if grep -qiE 'HTTP 429|rate limit' <<< "${out}"; then
+    echo "    ERROR: GitHub rate limited creating ${org}/${name}: ${out}" >&2
     return 2
   fi
-  echo "    ERROR: could not create ${org}/${name}: ${err}" >&2
+  echo "    ERROR: could not create ${org}/${name}: ${out}" >&2
   return 1
 }
 
+# usage prints the header comment, up to its first blank line.
+usage() {
+  sed -n '2,/^$/{/^$/d;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
+}
+
+# whole_number prints a validated whole number in base 10, so a leading
+# zero is not read as octal. Returns 1 for anything else.
+whole_number() {
+  [[ "$1" =~ ^[0-9]+$ ]] || return 1
+  echo "$((10#$1))"
+}
+
 main() {
-  local apply=false target=200 max=450 orgs=() arg
+  local apply=false target=200 max=450 orgs=() arg value org
   while [[ $# -gt 0 ]]; do
     arg="$1"
     case "${arg}" in
       --apply) apply=true; shift ;;
-      --target) target="$2"; shift 2 ;;
-      --max) max="$2"; shift 2 ;;
-      -h|--help) sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
+      --target|--max)
+        if [[ $# -lt 2 ]]; then
+          echo "${arg} needs a value" >&2
+          return 1
+        fi
+        if ! value=$(whole_number "$2"); then
+          echo "${arg} must be a whole number, got '$2'" >&2
+          return 1
+        fi
+        if [[ "${arg}" == --target ]]; then target="${value}"; else max="${value}"; fi
+        shift 2 ;;
+      -h|--help) usage; return 0 ;;
       -*) echo "unknown option ${arg}" >&2; return 1 ;;
-      *) orgs+=("$(org_name "${arg}")"); shift ;;
+      *)
+        org=$(org_name "${arg}")
+        # A mistyped argument must not fill an unintended org with
+        # permanent repositories (same check as setup-new-e2e-org.sh).
+        if ! [[ "${org}" =~ ^halfsend(-[0-9]+)?$ ]]; then
+          echo "${arg} is not a pool org (halfsend or halfsend-NN)" >&2
+          return 1
+        fi
+        orgs+=("${org}"); shift ;;
     esac
   done
   if [[ ${#orgs[@]} -eq 0 ]]; then
     echo "usage: hack/pad-e2e-org-repos.sh [--apply] [--target N] [--max N] NN|ORG..." >&2
     return 1
   fi
-  if ! [[ "${target}" =~ ^[0-9]+$ && "${max}" =~ ^[0-9]+$ ]]; then
-    echo "--target and --max must be whole numbers" >&2
-    return 1
-  fi
 
-  local org names permanent fillers name created=0 rc
+  local names permanent fillers name created=0 skipped=0 rc
   for org in "${orgs[@]}"; do
     echo "==> ${org}"
     names=$(list_repo_names "${org}") || return 1
@@ -160,13 +188,14 @@ main() {
       create_filler "${org}" "${name}" || rc=$?
       case "${rc}" in
         0) created=$((created + 1)); echo "    created ${org}/${name}" ;;
+        3) skipped=$((skipped + 1)); echo "    ${org}/${name} already exists, skipped" ;;
         2) echo "==> stopped after ${created} repositories; run again later to continue" >&2; return 1 ;;
         *) return 1 ;;
       esac
       sleep "${FILLER_PACE_SECONDS}"
     done <<< "${fillers}"
   done
-  echo "==> created ${created} repositories"
+  echo "==> created ${created} repositories, skipped ${skipped} that already existed"
 }
 
 # Tests source this file for its function definitions; stop here when
