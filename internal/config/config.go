@@ -937,6 +937,11 @@ func validateNotificationValue(field, val string, allowed []string, description 
 // when the local value is unset. The terminal parent is perRepoDefaults,
 // which returns compiled-in code defaults.
 type perRepoConfig struct {
+	// Imports are pinned remote config layers, resolved before the local
+	// fields in this document. They are kept on the layer for writeback but
+	// do not participate in field accessors.
+	Imports []string `yaml:"imports,omitempty"`
+
 	// omitempty so unset version is not marshaled. This allows the
 	// fallback chain to inherit version from the parent layer.
 	Version string `yaml:"version,omitempty"`
@@ -1075,25 +1080,25 @@ func NewEmptyPerRepoOverlay() PerRepoConfigWriter {
 	}
 }
 
-// ParsePerRepoConfig parses YAML bytes into a PerRepoConfigReader.
+// ParsePerRepoConfig parses YAML bytes into a PerRepoConfigReader,
+// resolving the document's pinned imports before its local values.
 func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
-	var cfg perRepoConfig
-	if err := unmarshalPerRepo(data, &cfg); err != nil {
+	cfg, err := loadStandalonePerRepoConfig(data, nil)
+	if err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
-	cfg.parent = &perRepoDefaults{}
-	return &cfg, nil
+	return cfg, nil
 }
 
-// ParsePerRepoConfigWriter parses YAML bytes into a PerRepoConfigWriter
-// for callers that need to modify the config after parsing.
+// ParsePerRepoConfigWriter parses YAML bytes into a PerRepoConfigWriter,
+// resolving the document's pinned imports before its local values. It is
+// intended for callers that need to modify the config after parsing.
 func ParsePerRepoConfigWriter(data []byte) (PerRepoConfigWriter, error) {
-	var cfg perRepoConfig
-	if err := unmarshalPerRepo(data, &cfg); err != nil {
+	cfg, err := loadStandalonePerRepoConfig(data, nil)
+	if err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
-	cfg.parent = &perRepoDefaults{}
-	return &cfg, nil
+	return cfg, nil
 }
 
 // Marshal serializes the PerRepoConfig to YAML with a descriptive header.
@@ -1116,6 +1121,7 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 // as an empty YAML sequence (e.g. `roles: []`,
 // `allowed_remote_resources: []`).
 type perRepoConfigMarshal struct {
+	Imports                []string                  `yaml:"imports,omitempty"`
 	Version                string                    `yaml:"version,omitempty"`
 	Forge                  string                    `yaml:"forge,omitempty"`
 	Tracker                *TrackingConfig           `yaml:"tracker,omitempty"`
@@ -1142,6 +1148,7 @@ type perRepoConfigMarshal struct {
 // `authorization: []`).
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
+		Imports:             c.Imports,
 		Version:             c.Version,
 		Forge:               c.Forge,
 		Tracker:             c.Tracker,

@@ -34,6 +34,28 @@ code defaults (compiled into fullsend)
 Existing installations without `config.base.yaml` are unaffected — the
 overlay falls through directly to code defaults.
 
+### Remote config imports
+
+Either config file may declare an ordered `imports:` list of pinned remote
+per-repo config documents. Imports expand recursively before the values in
+their containing document. The effective order is:
+
+```text
+compiled defaults
+→ config.base.yaml imports, then config.base.yaml values
+→ config.yaml imports, in listed order
+→ config.yaml values
+```
+
+Each import must use HTTPS, include a 40- or 64-character commit SHA in its URL
+path, and pin the content with `#sha256=<64-hex-character digest>`. A digest
+mismatch, unsupported URL, cycle, or fetch failure stops config loading. The
+same pinned document reached through more than one path is applied once. Each
+imported document is a full config layer, so repository owners should review
+its content and pin with the same care as local config. See
+[Config Reference — `imports`](../../reference/config-reference.md#imports)
+for URL and size limits.
+
 `fullsend github setup --config` commits the preset as `config.base.yaml`
 and writes only explicitly passed persistent setup flags into
 `config.yaml`. Required values such as `inference.project` may come from

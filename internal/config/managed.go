@@ -388,6 +388,7 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 		return nil
 	}
 	out := &perRepoConfig{
+		Imports: cloneStringSlice(src.Imports),
 		Version: src.Version,
 		Forge:   src.Forge,
 		Runtime: src.Runtime,
@@ -445,6 +446,9 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 }
 
 func applyManagedLayer(out, child *perRepoConfig) {
+	if len(child.Imports) > 0 {
+		out.Imports = append(out.Imports, child.Imports...)
+	}
 	if child.Version != "" {
 		out.Version = child.Version
 	}
