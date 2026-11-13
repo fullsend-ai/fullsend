@@ -113,8 +113,9 @@ for actor in "${TEST_WRITE_USER}" "${TEST_TRIAGE_USER}"; do
   fi
 
   # Send or refresh the membership invitation. Acceptance is not
-  # required here: setup-org.sh accepts pending invitations in CI with
-  # the actor PATs, so pending is an acceptable end state.
+  # required here: setup-org.sh accepts pending invitations with the
+  # actor PATs. If the PAT is exported here, accept right away — GitHub
+  # expires pending org invitations after 7 days.
   if [[ "${membership_state}" != "pending" ]]; then
     echo "    Inviting ${actor} as org member..."
     gh api "/orgs/${ORG}/memberships/${actor}" \
@@ -123,13 +124,29 @@ for actor in "${TEST_WRITE_USER}" "${TEST_TRIAGE_USER}"; do
       --silent 2>/dev/null || true
   fi
 
-  membership_state=$(gh api "/orgs/${ORG}/memberships/${actor}" --jq '.state' 2>/dev/null || echo "none")
+  pat_var=""
+  case "${actor}" in
+    "${TEST_TRIAGE_USER}") pat_var="TEST_ACTOR_TRIAGE_PAT" ;;
+    "${TEST_WRITE_USER}")  pat_var="TEST_ACTOR_WRITE_PAT" ;;
+  esac
+
+  if [[ -n "${pat_var:-}" && -n "${!pat_var:-}" ]]; then
+    echo "    Accepting ${actor}'s invitation using ${pat_var}..."
+    GH_TOKEN="${!pat_var}" gh api "/user/memberships/orgs/${ORG}" \
+      -X PATCH \
+      -f state="active" \
+      --silent 2>/dev/null || true
+    membership_state=$(gh api "/orgs/${ORG}/memberships/${actor}" --jq '.state' 2>/dev/null || echo "none")
+  fi
+
   case "${membership_state}" in
     active)
       echo "    OK: ${actor} is an active org member"
       ;;
     pending)
-      echo "    OK: ${actor} has a pending invitation (accepted later by setup-org.sh)"
+      echo "    OK: ${actor} has a pending invitation"
+      echo "    Run setup-org.sh with ${pat_var} exported within 7 days, or GitHub"
+      echo "    will expire the invitation."
       ;;
     *)
       echo "    ERROR: could not invite ${actor} (state: ${membership_state})." >&2

@@ -28,9 +28,12 @@ org-admin `gh` session. The script walks through them, pausing for each:
 2. **Make `botsend` an owner.** If `botsend` is not a member, the script
    sends an admin invitation. Accept it and promote `botsend` to owner.
 3. **Invite the test actors.** The script invites `fstest-write` and
-   `fstest-triage` as org members. The invitations are accepted later by
-   `setup-org.sh` in CI, using the actor PATs stored as repository secrets
-   (`TEST_ACTOR_WRITE_PAT`, `TEST_ACTOR_TRIAGE_PAT`).
+   `fstest-triage` as org members. If the actor PATs
+   (`TEST_ACTOR_WRITE_PAT`, `TEST_ACTOR_TRIAGE_PAT`) are exported, the
+   script accepts the invitations itself. Otherwise, run
+   `setup-org.sh` with the PATs exported within 7 days — GitHub expires
+   pending org invitations after 7 days. A CI step that accepts them
+   from the repository secrets is planned but does not exist yet.
 4. **Install the GitHub Apps.** The script opens the install page for each
    missing app: the six `fullsend-test-*` role apps and `fullsend-ai-e2e`.
    Grant access to "All repositories" and click Install.
@@ -52,8 +55,10 @@ GCP_PROJECT=<mint-project> e2e/org-pool/enroll.sh NN
 
 Set `REGION` to override the mint region (default `us-central1`).
 
-The script enrolls `test-repo` and the behaviour pool slots `test-repo-01`
-… `test-repo-12`. It is idempotent, and the GitHub repositories need not
+The script enrolls only the behaviour pool slots `test-repo-01` …
+`test-repo-12`; it does not enroll the singular `test-repo` (a scratch
+repo, not a behaviour slot). It is idempotent, and the GitHub
+repositories need not
 exist — enroll is an allowlist/WIF update only. Do not enroll `*-fork`
 names or the `*-mint-host` / `*-mint-unapproved` probe hosts. Re-run when
 adding a new pool org or after mint infrastructure changes that drop

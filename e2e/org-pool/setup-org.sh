@@ -78,7 +78,8 @@ echo
 # --- 3b. test actor org membership ---
 # The invitations are sent by setup-manual.sh; accepting them only needs
 # the actor's own PAT, so CI can do it. PATs come from the repository
-# secrets TEST_ACTOR_WRITE_PAT and TEST_ACTOR_TRIAGE_PAT.
+# secrets TEST_ACTOR_WRITE_PAT and TEST_ACTOR_TRIAGE_PAT. No workflow
+# runs this script yet; CI acceptance is planned, not current.
 echo "==> Checking test actor org membership..."
 
 for actor_info in "${TEST_WRITE_USER}:TEST_ACTOR_WRITE_PAT" "${TEST_TRIAGE_USER}:TEST_ACTOR_TRIAGE_PAT"; do
@@ -95,6 +96,8 @@ for actor_info in "${TEST_WRITE_USER}:TEST_ACTOR_WRITE_PAT" "${TEST_TRIAGE_USER}
   if [[ "${membership_state}" != "pending" ]]; then
     echo "    ERROR: ${actor} has no org membership (state: ${membership_state})." >&2
     echo "    Run e2e/org-pool/setup-manual.sh ${ORG} first." >&2
+    echo "    If setup-manual.sh was run more than 7 days ago, the invitation" >&2
+    echo "    likely expired; re-run it to send a new one." >&2
     exit 1
   fi
 

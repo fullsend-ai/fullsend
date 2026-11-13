@@ -266,10 +266,13 @@ all-repository role.
 
 The setup scripts in `e2e/org-pool/` create or verify this
 model idempotently on `halfsend-NN` and on the STAGE org `halfsend`.
-`setup-manual.sh` invites the actors. `setup-org.sh` accepts pending
-invitations with the actor PATs, which CI provides from the repository
-secrets `TEST_ACTOR_WRITE_PAT` and `TEST_ACTOR_TRIAGE_PAT`; run locally,
-export the PATs as shown above. It fails when an actor has no membership
+`setup-manual.sh` invites the actors and accepts the invitations itself
+when the actor PATs are exported. `setup-org.sh` accepts pending
+invitations with the actor PATs; a CI step that provides them from the
+repository secrets `TEST_ACTOR_WRITE_PAT` and `TEST_ACTOR_TRIAGE_PAT` is
+planned but does not exist yet, so run locally with the PATs exported as
+shown above, within 7 days of the invitation — GitHub expires pending
+org invitations after 7 days. It fails when an actor has no membership
 at all.
 
 Accounts and PATs are managed under
