@@ -17,11 +17,15 @@ import (
 )
 
 // maxTreePages is the pagination safety bound for tree-listing endpoints
-// (getTreeMap, ListDirectoryContents, ListRepositoryFiles) and for walking
-// first-parent commit history (resolveRootCommitSHA). Set higher than the
-// entity-listing cap (100 pages) because file trees and commit histories can
-// have orders of magnitude more entries in monorepos.
+// (getTreeEntries, ListDirectoryContents, ListRepositoryFiles). Set higher
+// than the entity-listing cap (100 pages) because file trees can have orders
+// of magnitude more entries in monorepos.
 const maxTreePages = 1000
+
+// maxRootCommitPage bounds the page search in resolveRootCommitSHA. It is far
+// beyond any real first-parent history (100 commits per page) and only stops
+// a misbehaving server that never returns a short or empty page.
+const maxRootCommitPage = 1 << 24
 
 type treeEntry struct {
 	sha  string
@@ -69,19 +73,59 @@ func (c *LiveClient) getDefaultBranch(ctx context.Context, owner, repo string) (
 	return r.DefaultBranch, nil
 }
 
-func (c *LiveClient) getTreeMap(ctx context.Context, owner, repo, ref string) (map[string]treeEntry, error) {
+// getTreeEntries returns the blob entries at ref for the given paths only.
+// Paths absent at ref are omitted. Rather than walking the full recursive
+// tree (one request per 100 entries, which stalls for minutes on large
+// repositories — issue #9401), it lists each distinct parent directory
+// non-recursively, so the request count scales with the number of
+// directories touched, not with repository size. A missing directory or
+// ref (404) contributes no entries.
+func (c *LiveClient) getTreeEntries(ctx context.Context, owner, repo, ref string, paths []string) (map[string]treeEntry, error) {
 	proj := projectPath(owner, repo)
 	result := make(map[string]treeEntry)
 
+	wanted := make(map[string]struct{}, len(paths))
+	seenDirs := make(map[string]struct{})
+	var dirs []string
+	for _, p := range paths {
+		wanted[p] = struct{}{}
+		dir := ""
+		if i := strings.LastIndex(p, "/"); i >= 0 {
+			dir = p[:i]
+		}
+		if _, ok := seenDirs[dir]; ok {
+			continue
+		}
+		seenDirs[dir] = struct{}{}
+		dirs = append(dirs, dir)
+	}
+
+	for _, dir := range dirs {
+		if err := c.collectTreeDirEntries(ctx, proj, ref, dir, wanted, result); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// collectTreeDirEntries lists dir at ref (non-recursively) and records the
+// blob entries whose path is in wanted.
+func (c *LiveClient) collectTreeDirEntries(ctx context.Context, proj, ref, dir string, wanted map[string]struct{}, result map[string]treeEntry) error {
+	params := url.Values{}
+	params.Set("ref", ref)
+	if dir != "" {
+		params.Set("path", dir)
+	}
+	params.Set("per_page", "100")
+
 	for page := 1; page <= maxTreePages; page++ {
-		apiPath := fmt.Sprintf("/projects/%s/repository/tree?ref=%s&recursive=true&per_page=100&page=%d",
-			proj, url.QueryEscape(ref), page)
-		resp, err := c.get(ctx, apiPath)
+		params.Set("page", fmt.Sprintf("%d", page))
+		resp, err := c.get(ctx, fmt.Sprintf("/projects/%s/repository/tree?%s", proj, params.Encode()))
 		if err != nil {
 			if forge.IsNotFound(err) {
-				return result, nil
+				return nil
 			}
-			return nil, err
+			return err
 		}
 
 		nextPage := resp.Header.Get("X-Next-Page")
@@ -93,11 +137,11 @@ func (c *LiveClient) getTreeMap(ctx context.Context, owner, repo, ref string) (m
 			Mode string `json:"mode"`
 		}
 		if err := decodeJSON(resp, &entries); err != nil {
-			return nil, err
+			return err
 		}
 
 		for _, e := range entries {
-			if e.Type == "blob" {
+			if _, ok := wanted[e.Path]; ok && e.Type == "blob" {
 				result[e.Path] = treeEntry{sha: e.ID, mode: e.Mode}
 			}
 		}
@@ -107,7 +151,7 @@ func (c *LiveClient) getTreeMap(ctx context.Context, owner, repo, ref string) (m
 		}
 	}
 
-	return result, nil
+	return nil
 }
 
 func (c *LiveClient) ListOrgRepos(ctx context.Context, org string, includePrivate bool) ([]forge.Repository, error) {
@@ -783,7 +827,7 @@ func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message strin
 		return 0, fmt.Errorf("get default branch: %w", err)
 	}
 
-	existing, err := c.getTreeMap(ctx, owner, repo, branch)
+	existing, err := c.getTreeEntries(ctx, owner, repo, branch, paths)
 	if err != nil {
 		return 0, fmt.Errorf("get tree for delete: %w", err)
 	}
@@ -1015,8 +1059,13 @@ func (c *LiveClient) ForceCommitFileToBranch(ctx context.Context, owner, repo, b
 // base for force-re-root writes). The commits-list endpoint does not
 // support order_by/sort (those belong to other GitLab endpoints); it only
 // supports first_parent plus standard offset pagination. So the root is
-// found by walking first-parent history to its last page and taking that
-// page's last entry.
+// the last entry of the last page of first-parent history.
+//
+// Pages are directly addressable, so the last page is located with an
+// exponential probe (pages 1, 2, 4, ...) until a page past the end is
+// found, then a binary search between the last full page and that page.
+// This costs O(log n) requests instead of walking every page, which on a
+// repository with ~100k commits took hundreds of requests (issue #9401).
 func (c *LiveClient) resolveRootCommitSHA(ctx context.Context, owner, repo string) (string, error) {
 	branch, err := c.getDefaultBranch(ctx, owner, repo)
 	if err != nil {
@@ -1024,8 +1073,9 @@ func (c *LiveClient) resolveRootCommitSHA(ctx context.Context, owner, repo strin
 	}
 	proj := projectPath(owner, repo)
 
-	var root string
-	for page := 1; page <= maxTreePages; page++ {
+	// probe fetches one page and reports its entry count, its last commit
+	// ID, and whether it is the final page of history.
+	probe := func(page int) (count int, last string, final bool, err error) {
 		params := url.Values{}
 		if branch != "" {
 			params.Set("ref_name", branch)
@@ -1035,7 +1085,7 @@ func (c *LiveClient) resolveRootCommitSHA(ctx context.Context, owner, repo strin
 		params.Set("page", fmt.Sprintf("%d", page))
 		resp, err := c.get(ctx, fmt.Sprintf("/projects/%s/repository/commits?%s", proj, params.Encode()))
 		if err != nil {
-			return "", fmt.Errorf("list root commits: %w", err)
+			return 0, "", false, fmt.Errorf("list root commits: %w", err)
 		}
 
 		nextPage := resp.Header.Get("X-Next-Page")
@@ -1044,16 +1094,48 @@ func (c *LiveClient) resolveRootCommitSHA(ctx context.Context, owner, repo strin
 			ID string `json:"id"`
 		}
 		if err := decodeJSON(resp, &commits); err != nil {
-			return "", fmt.Errorf("decode commits: %w", err)
+			return 0, "", false, fmt.Errorf("decode commits: %w", err)
 		}
 		if len(commits) == 0 {
-			break
+			return 0, "", false, nil
 		}
-		root = commits[len(commits)-1].ID
+		return len(commits), commits[len(commits)-1].ID, nextPage == "" || len(commits) < 100, nil
+	}
 
-		if nextPage == "" || len(commits) < 100 {
-			break
+	// full is the highest page known to be full with more history after
+	// it (fullLast is its last commit); past is the lowest page known to
+	// be beyond the end of history (0 while still unknown).
+	full, fullLast, past := 0, "", 0
+	// The loop exits without finding a final page only when the last full
+	// page is immediately followed by an empty one (history ends exactly on
+	// a page boundary) or page 1 is empty; either way fullLast is the root
+	// ("" for an empty history).
+	root := ""
+	found := false
+	for !found && (past == 0 || past-full > 1) {
+		page := full + (past-full)/2
+		if past == 0 {
+			page = max(1, full*2)
 		}
+		if page > maxRootCommitPage {
+			return "", fmt.Errorf("list root commits: first-parent history of %s/%s exceeds %d pages", owner, repo, maxRootCommitPage)
+		}
+		count, last, final, err := probe(page)
+		if err != nil {
+			return "", err
+		}
+		if count == 0 {
+			past = page
+			continue
+		}
+		if final {
+			root, found = last, true
+			continue
+		}
+		full, fullLast = page, last
+	}
+	if !found {
+		root = fullLast
 	}
 
 	if root == "" {
@@ -1116,8 +1198,12 @@ func (c *LiveClient) commitFilesImpl(ctx context.Context, owner, repo, branch, m
 		if opts.startSHA != "" {
 			treeRef = opts.startSHA
 		}
+		paths := make([]string, 0, len(files))
+		for _, f := range files {
+			paths = append(paths, f.Path)
+		}
 		var err error
-		existing, err = c.getTreeMap(ctx, owner, repo, treeRef)
+		existing, err = c.getTreeEntries(ctx, owner, repo, treeRef, paths)
 		if err != nil {
 			return false, fmt.Errorf("get tree: %w", err)
 		}
