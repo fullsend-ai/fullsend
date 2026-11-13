@@ -234,6 +234,7 @@ export default defineConfig({
             { text: "fullsend inference", link: "/cli/inference" },
             { text: "fullsend lint", link: "/cli/lint" },
             { text: "fullsend mint", link: "/cli/mint" },
+            { text: "fullsend push-signed", link: "/cli/push-signed" },
             { text: "fullsend repos", link: "/cli/repos" },
             { text: "fullsend run", link: "/cli/run" },
             { text: "fullsend self-update", link: "/cli/self-update" },
