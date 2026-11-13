@@ -403,10 +403,13 @@ for example `--forge github`, so `fullsend lock` pins them. Without it, the run
 warns that the lock entry does not pin them.
 
 When the lock entry is current (harness SHA256 matches), dependencies are
-resolved from the local cache without network access. If the harness has changed
-or a cached artifact is missing, `fullsend run` falls back to normal network
-resolution and prints a warning suggesting you re-run
-`fullsend lock <agent> --update`.
+resolved from the local cache without network access. If the harness has
+changed, `fullsend run` falls back to normal network resolution and prints a
+warning suggesting you re-run `fullsend lock <agent>` — a plain lock re-composes
+the changed entry from the URL index's cached copies, so it needs no `--update`
+(which would re-resolve every un-pinned base file from its source). If a cached
+artifact is missing, the error names `fullsend lock <agent> --update` instead,
+which re-fetches the missing content.
 
 A current lock entry also pins the files a URL `base:` (or an agent fetched from
 a URL) names by relative path: agent, policy, skills, skill file overrides,
