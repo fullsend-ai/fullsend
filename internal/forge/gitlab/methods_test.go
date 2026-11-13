@@ -856,6 +856,43 @@ func TestListPullRequestReviewThreads_APIError(t *testing.T) {
 	assert.Contains(t, err.Error(), "list discussions for !42 page 1")
 }
 
+func TestResolvePullRequestReviewThread(t *testing.T) {
+	client, mux := setupTest(t)
+
+	var receivedBody map[string]any
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions/disc123", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		readJSONBody(t, r, &receivedBody)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id": "disc123",
+		})
+	})
+
+	err := client.ResolvePullRequestReviewThread(context.Background(), "myorg", "myrepo", 42, "disc123")
+	require.NoError(t, err)
+	assert.Equal(t, true, receivedBody["resolved"])
+}
+
+func TestResolvePullRequestReviewThread_Errors(t *testing.T) {
+	t.Run("missing thread ID", func(t *testing.T) {
+		client, _ := setupTest(t)
+		err := client.ResolvePullRequestReviewThread(context.Background(), "myorg", "myrepo", 42, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "thread ID is required")
+	})
+
+	t.Run("API error", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/42/discussions/disc123", func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Not Found"})
+		})
+
+		err := client.ResolvePullRequestReviewThread(context.Background(), "myorg", "myrepo", 42, "disc123")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "resolve discussion disc123 for !42")
+	})
+}
+
 // ---------------------------------------------------------------------------
 // mr.go tests
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -341,6 +342,196 @@ func TestPostReviewContent_FallbackFailureDoesNotFailCommand(t *testing.T) {
 	assert.Contains(t, comments[0].Body, "Needs changes")
 	assert.Empty(t, fc.CreatedReviews)
 	assert.Contains(t, buf.String(), "Formal review submission failed")
+}
+
+func TestResolveFixedReviewThreads(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRReviewThreads = map[string]forge.ReviewThreadPage{
+		"o/r/1": {
+			Threads: []forge.ReviewThread{
+				{
+					ID:         "thread-fixed",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_fixed1 -->\n**[HIGH]** bug\n\nsome issue",
+						},
+					},
+				},
+				{
+					ID:         "thread-still-active",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_active1 -->\n**[HIGH]** bug\n\nstill happening",
+						},
+					},
+				},
+				{
+					ID:         "thread-human",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "alice",
+							AuthorType: "User",
+							Body:       "<!-- finding:f_human -->\nHuman comment trying to mimic finding",
+						},
+					},
+				},
+				{
+					ID:         "thread-no-marker",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "General bot comment without finding marker",
+						},
+					},
+				},
+				{
+					ID:         "thread-already-resolved",
+					IsResolved: true,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_oldresolved -->\nAlready resolved",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	currentFindings := []ReviewFinding{
+		{
+			ID:          "f_active1",
+			Severity:    "HIGH",
+			Category:    "bug",
+			Description: "still happening",
+		},
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	resolveFixedReviewThreads(context.Background(), fc, "o", "r", 1, currentFindings, false, printer)
+
+	require.Len(t, fc.ResolvedPRReviewThreads, 1)
+	assert.Equal(t, "thread-fixed", fc.ResolvedPRReviewThreads[0].ThreadID)
+	assert.True(t, fc.PRReviewThreads["o/r/1"].Threads[0].IsResolved)
+	assert.False(t, fc.PRReviewThreads["o/r/1"].Threads[1].IsResolved)
+	assert.False(t, fc.PRReviewThreads["o/r/1"].Threads[2].IsResolved)
+	assert.False(t, fc.PRReviewThreads["o/r/1"].Threads[3].IsResolved)
+	assert.Contains(t, buf.String(), "Resolved 1 fixed review thread(s)")
+}
+
+func TestResolveFixedReviewThreads_DryRun(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRReviewThreads = map[string]forge.ReviewThreadPage{
+		"o/r/1": {
+			Threads: []forge.ReviewThread{
+				{
+					ID:         "thread-fixed",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_fixed1 -->\n**[HIGH]** bug",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	resolveFixedReviewThreads(context.Background(), fc, "o", "r", 1, nil, true, printer)
+
+	assert.Empty(t, fc.ResolvedPRReviewThreads)
+	assert.False(t, fc.PRReviewThreads["o/r/1"].Threads[0].IsResolved)
+	assert.Contains(t, buf.String(), "Would resolve review thread thread-fixed")
+}
+
+func TestResolveFixedReviewThreads_ErrNotSupported(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["ListPullRequestReviewThreads"] = forge.ErrNotSupported
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	resolveFixedReviewThreads(context.Background(), fc, "o", "r", 1, nil, false, printer)
+
+	assert.Empty(t, fc.ResolvedPRReviewThreads)
+	assert.NotContains(t, buf.String(), "Failed to list review threads")
+}
+
+func TestResolveFixedReviewThreads_ErrorsLoggedWithoutFailing(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.PRReviewThreads = map[string]forge.ReviewThreadPage{
+		"o/r/1": {
+			Threads: []forge.ReviewThread{
+				{
+					ID:         "thread-fixed",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_fixed1 -->\n**[HIGH]** bug",
+						},
+					},
+				},
+			},
+		},
+	}
+	fc.Errors["ResolvePullRequestReviewThread"] = errors.New("network error")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	resolveFixedReviewThreads(context.Background(), fc, "o", "r", 1, nil, false, printer)
+
+	assert.Contains(t, buf.String(), "Failed to resolve review thread thread-fixed")
+}
+
+func TestPostReviewContent_ResolvesFixedThreads(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "bot"
+	fc.PRReviewThreads = map[string]forge.ReviewThreadPage{
+		"o/r/1": {
+			Threads: []forge.ReviewThread{
+				{
+					ID:         "thread-1",
+					IsResolved: false,
+					Comments: []forge.ReviewThreadComment{
+						{
+							Author:     "bot",
+							AuthorType: "Bot",
+							Body:       "<!-- finding:f_prior -->\n**[MED]** style\n\nfix me",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
+	parsed := ReviewResult{Body: "LGTM now", Action: "approve", HeadSHA: "abc123def456"}
+
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	require.NoError(t, err)
+
+	require.Len(t, fc.ResolvedPRReviewThreads, 1)
+	assert.Equal(t, "thread-1", fc.ResolvedPRReviewThreads[0].ThreadID)
+	assert.True(t, fc.PRReviewThreads["o/r/1"].Threads[0].IsResolved)
+	assert.Contains(t, buf.String(), "Resolved 1 fixed review thread(s)")
 }
 
 func TestCheckStaleHead_CaseInsensitive(t *testing.T) {

@@ -4408,6 +4408,44 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 	return result, nil
 }
 
+// ResolvePullRequestReviewThread resolves a review thread using GitHub's GraphQL API.
+func (c *LiveClient) ResolvePullRequestReviewThread(ctx context.Context, owner, repo string, number int, threadID string) error {
+	if threadID == "" {
+		return errors.New("thread ID is required")
+	}
+
+	const query = `mutation($threadId: ID!) {
+		resolveReviewThread(input: {threadId: $threadId}) {
+			thread {
+				id
+				isResolved
+			}
+		}
+	}`
+	payload := map[string]any{
+		"query": query,
+		"variables": map[string]string{
+			"threadId": threadID,
+		},
+	}
+	resp, err := c.post(ctx, c.graphqlEndpoint(), payload)
+	if err != nil {
+		return fmt.Errorf("resolve review thread %s: %w", threadID, err)
+	}
+	var result struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return fmt.Errorf("decode resolve review thread response: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("resolve review thread %s: %s", threadID, result.Errors[0].Message)
+	}
+	return nil
+}
+
 // githubDiffSide maps GitHub's DiffSide enum (LEFT, RIGHT) to the normalized
 // forge.DiffSide. Unknown or empty values map to nil.
 func githubDiffSide(side string) *forge.DiffSide {

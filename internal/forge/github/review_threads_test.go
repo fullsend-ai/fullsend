@@ -325,3 +325,65 @@ func TestListPullRequestReviewThreads_Errors(t *testing.T) {
 		})
 	}
 }
+
+func TestResolvePullRequestReviewThread(t *testing.T) {
+	var request map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/graphql", r.URL.Path)
+		require.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+		json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"resolveReviewThread": map[string]any{
+					"thread": map[string]any{
+						"id":         "PRRT_kwDOABC123",
+						"isResolved": true,
+					},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.ResolvePullRequestReviewThread(context.Background(), "owner", "repo", 42, "PRRT_kwDOABC123")
+	require.NoError(t, err)
+
+	variables, ok := request["variables"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "PRRT_kwDOABC123", variables["threadId"])
+}
+
+func TestResolvePullRequestReviewThread_Errors(t *testing.T) {
+	t.Run("missing thread ID", func(t *testing.T) {
+		client := New("token")
+		err := client.ResolvePullRequestReviewThread(context.Background(), "o", "r", 1, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "thread ID is required")
+	})
+
+	tests := []struct {
+		name    string
+		status  int
+		body    string
+		wantErr string
+	}{
+		{name: "graphql error", status: http.StatusOK, body: `{"errors":[{"message":"Could not resolve to a node with the global id of 'thread-1'"}]}`, wantErr: "Could not resolve to a node"},
+		{name: "invalid json", status: http.StatusOK, body: `{`, wantErr: "decode resolve review thread response"},
+		{name: "http error", status: http.StatusForbidden, body: `{"message":"denied"}`, wantErr: "resolve review thread thread-1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			err := newTestClient(t, srv).ResolvePullRequestReviewThread(context.Background(), "o", "r", 1, "thread-1")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}

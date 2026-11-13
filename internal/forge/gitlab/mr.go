@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -1019,6 +1020,20 @@ func (c *LiveClient) ListPullRequestReviewThreads(ctx context.Context, owner, re
 	}
 
 	return result, nil
+}
+
+// ResolvePullRequestReviewThread resolves a merge-request discussion thread on GitLab.
+func (c *LiveClient) ResolvePullRequestReviewThread(ctx context.Context, owner, repo string, number int, threadID string) error {
+	if threadID == "" {
+		return errors.New("thread ID is required")
+	}
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d/discussions/%s", projectPath(owner, repo), number, url.PathEscape(threadID))
+	resp, err := c.put(ctx, path, map[string]any{"resolved": true})
+	if err != nil {
+		return fmt.Errorf("resolve discussion %s for !%d: %w", threadID, number, err)
+	}
+	defer resp.Body.Close()
+	return nil
 }
 
 // gitlabActorType fails closed when GitLab does not identify whether an actor
