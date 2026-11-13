@@ -255,7 +255,13 @@ func TestCFMintInstall_Success(t *testing.T) {
 }
 
 func TestCFMintInstall_DeployFailure(t *testing.T) {
+	prev := mintDeployRetryDelay
+	mintDeployRetryDelay = 0
+	t.Cleanup(func() { mintDeployRetryDelay = prev })
+
+	var attempts int
 	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
+		attempts++
 		return "", fmt.Errorf("deploy exploded")
 	})
 
@@ -263,6 +269,27 @@ func TestCFMintInstall_DeployFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Empty(t, mintURL)
 	assert.Contains(t, err.Error(), "deploying CF preview mint for BT")
+	assert.Equal(t, mintDeployMaxAttempts, attempts, "deploy should be retried up to the attempt limit")
+}
+
+func TestCFMintInstall_DeployRetrySucceeds(t *testing.T) {
+	prev := mintDeployRetryDelay
+	mintDeployRetryDelay = 0
+	t.Cleanup(func() { mintDeployRetryDelay = prev })
+
+	var attempts int
+	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
+		attempts++
+		if attempts < 2 {
+			return "", fmt.Errorf("transient CF 10013")
+		}
+		return "Worker deployed at https://bt-abc-bt-mint.example.workers.dev", nil
+	})
+
+	mintURL, err := d.Install(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://bt-abc-bt-mint.example.workers.dev", mintURL)
+	assert.Equal(t, 2, attempts, "a transient failure should be retried and then succeed")
 }
 
 func TestCFMintInstall_NoMintURLInOutput(t *testing.T) {
