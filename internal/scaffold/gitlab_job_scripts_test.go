@@ -457,8 +457,11 @@ func TestInstallFullsendCLIScript_DebugTraceAborts(t *testing.T) {
 }
 
 // runInstallFullsendCLIScript renders install-fullsend-cli.sh with version and
-// sources it with stub git, go, curl, and fullsend binaries first on PATH. The
-// go stub records the GOTOOLCHAIN and GOFLAGS it sees and exits goExit.
+// sources it with stub git, go, curl, fullsend, and uname binaries first on
+// PATH. The go stub records the GOTOOLCHAIN and GOFLAGS it sees and exits
+// goExit. The uname stub prints $UNAME_M_STUB (default x86_64) so the release
+// path does not depend on the host architecture (macOS reports arm64, which
+// the Linux-runner script rejects).
 func runInstallFullsendCLIScript(t *testing.T, version string, goExit int, env ...string) (out, goEnv string, err error) {
 	t.Helper()
 	root := t.TempDir()
@@ -474,6 +477,7 @@ func runInstallFullsendCLIScript(t *testing.T, version string, goExit int, env .
 		"git":      "#!/bin/sh\nexit 0\n",
 		"curl":     "#!/bin/sh\necho 'curl stub: offline' >&2\nexit 22\n",
 		"fullsend": "#!/bin/sh\necho 'fullsend stub'\n",
+		"uname":    "#!/bin/sh\necho \"${UNAME_M_STUB:-x86_64}\"\n",
 		"go": "#!/bin/sh\nprintf 'GOTOOLCHAIN=%s GOFLAGS=%s\\n' \"${GOTOOLCHAIN-unset}\" \"${GOFLAGS-unset}\" > \"$GO_ENV_LOG\"\n" +
 			"exit " + strconv.Itoa(goExit) + "\n",
 	}
@@ -544,6 +548,20 @@ func TestInstallFullsendCLIScript_ReleasePinDoesNotClearSettings(t *testing.T) {
 	assert.NotContains(t, out, "NOTICE")
 	assert.NotContains(t, out, "cleared")
 	assert.Empty(t, goEnv)
+}
+
+func TestInstallFullsendCLIScript_ReleasePinArchitecture(t *testing.T) {
+	// aarch64 maps to a supported arch and proceeds to the (failing) download.
+	out, _, err := runInstallFullsendCLIScript(t, "v0.48.1", 0, "UNAME_M_STUB=aarch64")
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "curl stub: offline")
+	assert.NotContains(t, out, "unsupported architecture")
+
+	// Anything else is rejected before any download is attempted.
+	out, _, err = runInstallFullsendCLIScript(t, "v0.48.1", 0, "UNAME_M_STUB=arm64")
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "ERROR: unsupported architecture: arm64 (supported: x86_64, aarch64)")
+	assert.NotContains(t, out, "curl stub")
 }
 
 func TestRunPollJobScript_DeniesNonSchedulePinnedSource(t *testing.T) {
