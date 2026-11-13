@@ -601,7 +601,12 @@ func repinSourceURL(ctx context.Context, source, explicitSHA, storedRef string, 
 			branch = repo.DefaultBranch
 		}
 		printer.StepStart(fmt.Sprintf("Resolving %s/%s@%s", info.Owner, info.Repo, branch))
-		newSHA, err = forgeClient.GetBranchRef(ctx, info.Owner, info.Repo, branch)
+		if storedRef != "" {
+			// The stored ref may name a branch or a tag.
+			newSHA, err = resolveNamedRef(ctx, forgeClient, info.Owner, info.Repo, branch)
+		} else {
+			newSHA, err = forgeClient.GetBranchRef(ctx, info.Owner, info.Repo, branch)
+		}
 		if err != nil {
 			return "", "", fmt.Errorf("resolving branch ref: %w", err)
 		}
@@ -758,10 +763,6 @@ func pinAgentURL(ctx context.Context, source string, forgeClient forge.Client, p
 
 	isGH := isGitHubURL(cleanURL)
 
-	// fallbackNote explains a fetch failure after falling back to the
-	// default branch, where the requested ref (and so the path) was lost.
-	var fallbackNote string
-
 	sha := info.Ref
 	if !commitSHAPattern.MatchString(sha) {
 		if !isGH {
@@ -772,29 +773,22 @@ func pinAgentURL(ctx context.Context, source string, forgeClient forge.Client, p
 		}
 
 		printer.StepStart(fmt.Sprintf("Resolving %s/%s@%s", info.Owner, info.Repo, sha))
-		branch, branchPath, resolvedSHA, resolveErr := resolveBranchAndPath(ctx, forgeClient, info.Owner, info.Repo, info.Ref, info.Path)
-		if resolveErr == nil {
-			originalRef = branch
-			if branch != info.Ref {
-				printer.StepInfo(fmt.Sprintf("Using branch %q", branch))
-				info.Path = branchPath
+		ref, refPath, resolvedSHA, resolveErr := resolveBranchAndPath(ctx, forgeClient, info.Owner, info.Repo, info.Ref, info.Path)
+		if resolveErr != nil {
+			if forge.IsNotFound(resolveErr) {
+				// The user named this ref explicitly; resolving a different
+				// revision (such as the default branch) would silently pin
+				// something they did not ask for.
+				printer.StepFail(fmt.Sprintf("Ref %q not found", info.Ref))
+				return "", "", fmt.Errorf("ref %q not found as a branch or tag in %s/%s; "+
+					"check the URL or pin it to a commit SHA: %w", info.Ref, info.Owner, info.Repo, resolveErr)
 			}
-		} else {
-			if !forge.IsNotFound(resolveErr) {
-				return "", "", fmt.Errorf("resolving ref %q: %w", branch, resolveErr)
-			}
-			repo, repoErr := forgeClient.GetRepo(ctx, info.Owner, info.Repo)
-			if repoErr != nil {
-				return "", "", fmt.Errorf("looking up repo for ref fallback: %w", repoErr)
-			}
-			printer.StepInfo(fmt.Sprintf("Ref %q not found, falling back to default branch %q", info.Ref, repo.DefaultBranch))
-			originalRef = repo.DefaultBranch
-			fallbackNote = fmt.Sprintf("no branch matching %q was found in %s/%s, so the default branch %q was used; "+
-				"check the URL or pin it to a commit SHA", info.Ref, info.Owner, info.Repo, repo.DefaultBranch)
-			resolvedSHA, resolveErr = forgeClient.GetBranchRef(ctx, info.Owner, info.Repo, repo.DefaultBranch)
-			if resolveErr != nil {
-				return "", "", fmt.Errorf("resolving default branch: %w", resolveErr)
-			}
+			return "", "", fmt.Errorf("resolving ref %q: %w", ref, resolveErr)
+		}
+		originalRef = ref
+		if ref != info.Ref {
+			printer.StepInfo(fmt.Sprintf("Using ref %q", ref))
+			info.Path = refPath
 		}
 		if !commitSHAPattern.MatchString(resolvedSHA) {
 			return "", "", fmt.Errorf("resolved ref is not a valid commit SHA: %q", resolvedSHA)
@@ -812,9 +806,6 @@ func pinAgentURL(ctx context.Context, source string, forgeClient forge.Client, p
 	content, err := fetch.FetchURL(ctx, pinnedURL, fetch.DefaultPolicy)
 	if err != nil {
 		printer.StepFail("Failed to fetch content")
-		if fallbackNote != "" {
-			return "", "", fmt.Errorf("fetching %s: %w (%s)", pinnedURL, err, fallbackNote)
-		}
 		return "", "", fmt.Errorf("fetching %s: %w", pinnedURL, err)
 	}
 	hash := fetch.ComputeSHA256(content)
@@ -827,33 +818,68 @@ func pinAgentURL(ctx context.Context, source string, forgeClient forge.Client, p
 	return pinnedURL + "#sha256=" + hash, originalRef, nil
 }
 
-// resolveBranchAndPath resolves the branch named by a forge URL to a commit
-// SHA. Branch names may contain "/", which makes URLs such as
+// resolveBranchAndPath resolves the branch or tag named by a forge URL to a
+// commit SHA. Ref names may contain "/", which makes URLs such as
 // .../blob/user/feature/dir/agent.yaml ambiguous: URL parsing takes only the
 // first segment ("user") as the ref. When ref is not found, the leading
 // segments of repoPath are appended to it one at a time ("user/feature", ...)
 // and probed, always leaving at least one segment as the file path. Git does
 // not allow one branch name to be a path prefix of another, so at most one
-// candidate can match.
+// branch candidate can match (likewise for tags).
 //
-// It returns the matched branch, the remaining path, and the resolved SHA.
-// On error, branch is the last candidate tried.
-func resolveBranchAndPath(ctx context.Context, forgeClient forge.Client, owner, repo, ref, repoPath string) (branch, path, sha string, err error) {
+// All branch candidates are probed before any tag candidate, so branch URLs
+// resolve exactly as they would without tag support even when a tag shares
+// a prefix with a slash-containing branch name.
+//
+// It returns the matched ref, the remaining path, and the resolved SHA.
+// On error, matched is the last candidate tried.
+func resolveBranchAndPath(ctx context.Context, forgeClient forge.Client, owner, repo, ref, repoPath string) (matched, path, sha string, err error) {
+	resolveBranch := func(name string) (string, error) {
+		return forgeClient.GetBranchRef(ctx, owner, repo, name)
+	}
+	resolveTag := func(name string) (string, error) {
+		return forgeClient.GetRef(ctx, owner, repo, "tags/"+name)
+	}
+	matched, path, sha, err = probeRefCandidates(resolveBranch, ref, repoPath)
+	if err == nil || !forge.IsNotFound(err) {
+		return matched, path, sha, err
+	}
+	return probeRefCandidates(resolveTag, ref, repoPath)
+}
+
+// probeRefCandidates tries ref, then ref extended by successive leading
+// segments of repoPath, against resolve until one is found. It stops at the
+// first non-not-found error and always leaves at least one segment of
+// repoPath as the file path.
+func probeRefCandidates(resolve func(string) (string, error), ref, repoPath string) (matched, path, sha string, err error) {
 	var segments []string
 	if repoPath != "" {
 		segments = strings.Split(repoPath, "/")
 	}
-	branch = ref
+	matched = ref
 	for i := 0; ; i++ {
-		sha, err = forgeClient.GetBranchRef(ctx, owner, repo, branch)
+		sha, err = resolve(matched)
 		if err == nil {
-			return branch, strings.Join(segments[i:], "/"), sha, nil
+			return matched, strings.Join(segments[i:], "/"), sha, nil
 		}
 		if !forge.IsNotFound(err) || i >= len(segments)-1 {
-			return branch, "", "", err
+			return matched, "", "", err
 		}
-		branch += "/" + segments[i]
+		matched += "/" + segments[i]
 	}
+}
+
+// resolveNamedRef resolves a ref name that may be either a branch or a tag
+// to a commit SHA. Branches take precedence over tags of the same name.
+// Annotated tags are dereferenced to their commit by forge.Client.GetRef.
+// A not-found error is returned only when the name matches neither a branch
+// nor a tag; any other error stops resolution immediately.
+func resolveNamedRef(ctx context.Context, forgeClient forge.Client, owner, repo, ref string) (string, error) {
+	sha, err := forgeClient.GetBranchRef(ctx, owner, repo, ref)
+	if err == nil || !forge.IsNotFound(err) {
+		return sha, err
+	}
+	return forgeClient.GetRef(ctx, owner, repo, "tags/"+ref)
 }
 
 func parseAgentSourceURL(source string) (*forge.ForgeURLInfo, error) {
