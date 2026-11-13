@@ -54,10 +54,16 @@ func IsCommandLine(line string) bool {
 	return commandLine.MatchString(strings.TrimRight(line, "\r"))
 }
 
+// shortMaskWarning replaces a dropped `::add-mask::` line whose value the
+// redactor refuses to register (too short). It carries no part of the value.
+const shortMaskWarning = "fullsend: a script's ::add-mask:: value was too short to register for redaction and is not masked while workflow commands are suppressed\n"
+
 // LineFilter is an io.Writer that forwards complete lines to its
 // destination, dropping the lines that are workflow commands while
 // suppression is on. A dropped `::add-mask::` value is registered with the
-// process-wide redactor so fullsend's own redaction still covers it.
+// process-wide redactor so fullsend's own redaction still covers it; a value
+// too short for the redactor is not covered, and a value-free warning is
+// written to the destination instead.
 // Call Flush after the producer is done to forward a final partial line.
 type LineFilter struct {
 	mu  sync.Mutex
@@ -106,8 +112,14 @@ func (f *LineFilter) Flush() error {
 func (f *LineFilter) forward(line string) error {
 	if Suppressed() {
 		if m := commandLine.FindStringSubmatch(strings.TrimRight(line, "\r\n")); m != nil {
-			if m[1] == "add-mask" {
-				security.RegisterRuntimeSecret(maskDataUnescaper.Replace(m[2]))
+			// The runner matches command names case-insensitively.
+			if strings.EqualFold(m[1], "add-mask") {
+				if value := maskDataUnescaper.Replace(m[2]); value != "" && !security.RegisterRuntimeSecret(value) {
+					// The redactor refuses short values and the runner no
+					// longer masks this one: say so without printing it.
+					_, err := io.WriteString(f.dst, shortMaskWarning)
+					return err
+				}
 			}
 			return nil
 		}

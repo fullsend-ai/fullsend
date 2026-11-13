@@ -22,6 +22,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/inference/actionsoidc"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
+	"github.com/fullsend-ai/fullsend/internal/prescript"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/fullsend-ai/fullsend/internal/workflowcmd"
@@ -306,6 +307,53 @@ func TestRunPreScript_SuppressedDropsWorkflowCommands(t *testing.T) {
 	assert.Equal(t, "plain stdout line\n", stdout)
 	assert.Equal(t, "plain stderr line\n", stderr)
 	assertRedacted(t, scriptValue)
+}
+
+// The raw capture buffers still hold dropped command lines; the fallback
+// failure detail and the exit-78 reason must not surface them.
+func TestRunPreScript_SuppressedFallbacksSkipCommandLines(t *testing.T) {
+	suppressWorkflowCommands(t)
+
+	t.Run("hard failure", func(t *testing.T) {
+		h := &harness.Harness{PreScript: writePreScript(t,
+			"echo 'plain failure reason' >&2\n"+
+				"echo '::notice::synthetic notice' >&2\n"+
+				"exit 1\n")}
+		var err error
+		captureStdout(t, func() {
+			captureStderr(t, func() { _, err = runPreScript(h, t.TempDir(), "", ui.New(io.Discard)) })
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "plain failure reason")
+		assert.NotContains(t, err.Error(), "::notice::")
+	})
+
+	t.Run("hard failure keeps error annotation message", func(t *testing.T) {
+		h := &harness.Harness{PreScript: writePreScript(t,
+			"echo '::error::synthetic annotated failure' >&2\n"+
+				"exit 1\n")}
+		var err error
+		captureStdout(t, func() {
+			captureStderr(t, func() { _, err = runPreScript(h, t.TempDir(), "", ui.New(io.Discard)) })
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "synthetic annotated failure")
+	})
+
+	t.Run("neutral exit", func(t *testing.T) {
+		h := &harness.Harness{PreScript: writePreScript(t,
+			"echo 'No work to do'\n"+
+				"echo '::notice::synthetic notice'\n"+
+				"exit 78\n")}
+		var res prescript.Result
+		var err error
+		captureStdout(t, func() {
+			captureStderr(t, func() { res, err = runPreScript(h, t.TempDir(), "", ui.New(io.Discard)) })
+		})
+		require.NoError(t, err)
+		assert.True(t, res.Skipped)
+		assert.Equal(t, "No work to do", res.Reason)
+	})
 }
 
 func TestRunPreScript_DefaultKeepsWorkflowCommands(t *testing.T) {

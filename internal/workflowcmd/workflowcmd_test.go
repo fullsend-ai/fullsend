@@ -81,6 +81,43 @@ func TestLineFilter_DropsCommandsWhenSuppressed(t *testing.T) {
 	assert.False(t, scan.Safe, "a dropped add-mask value is registered for redaction")
 }
 
+// The runner matches command names case-insensitively, so an upper- or
+// mixed-case add-mask is dropped and its (percent-encoded) value registered.
+func TestLineFilter_AddMaskNameIsCaseInsensitive(t *testing.T) {
+	suppress(t)
+	var out bytes.Buffer
+	f := FilterLines(&out)
+	for _, line := range []string{
+		"::ADD-MASK::synthetic-upper-case-secret\n",
+		"::Add-Mask::synthetic-mixed%0Acase-secret\n",
+		"::add-MASK::synthetic-100%25-case-secret\n",
+	} {
+		_, err := f.Write([]byte(line))
+		require.NoError(t, err)
+	}
+	assert.Empty(t, out.String())
+	for _, secret := range []string{
+		"synthetic-upper-case-secret",
+		"synthetic-mixed\ncase-secret",
+		"synthetic-100%-case-secret",
+	} {
+		scan := security.NewSecretRedactor().Scan("log " + secret + " here")
+		assert.False(t, scan.Safe, "%q must be registered for redaction", secret)
+	}
+}
+
+// A masked value the redactor refuses (too short) is not covered anywhere,
+// so the filter writes a warning that carries none of it.
+func TestLineFilter_ShortMaskValueWarns(t *testing.T) {
+	suppress(t)
+	var out bytes.Buffer
+	f := FilterLines(&out)
+	_, err := f.Write([]byte("::add-mask::abc\nplain\n"))
+	require.NoError(t, err)
+	assert.Equal(t, shortMaskWarning+"plain\n", out.String())
+	assert.NotContains(t, out.String(), "abc")
+}
+
 func TestLineFilter_KeepsPartialPlainLine(t *testing.T) {
 	suppress(t)
 	var out bytes.Buffer

@@ -5658,7 +5658,7 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 			// Same redaction as the hard-failure detail below: this reason is
 			// derived from incidental stdout, not a value the script author
 			// chose to put in a reason= line, so it gets the same scrub.
-			result.Reason = redactFeedback(lastNonEmptyLine(redactFeedback(stdoutBuf.String(), h.RunnerEnv)), h.RunnerEnv)
+			result.Reason = redactFeedback(lastNonEmptyLine(withoutSuppressedCommands(redactFeedback(stdoutBuf.String(), h.RunnerEnv))), h.RunnerEnv)
 		}
 		if result.Reason != "" {
 			result.Outputs["reason"] = result.Reason
@@ -5712,10 +5712,30 @@ func preScriptFailureDetail(stdout, stderr string) string {
 	if msg := ghaErrorDetail(stdout + "\n" + stderr); msg != "" {
 		return msg
 	}
-	if msg := lastNonEmptyLine(stderr); msg != "" {
+	// The error annotations above come from the raw capture; the fallbacks
+	// skip workflow-command lines the output filter dropped.
+	if msg := lastNonEmptyLine(withoutSuppressedCommands(stderr)); msg != "" {
 		return msg
 	}
-	return lastNonEmptyLine(stdout)
+	return lastNonEmptyLine(withoutSuppressedCommands(stdout))
+}
+
+// withoutSuppressedCommands drops workflow-command lines from s while
+// `fullsend run` suppresses workflow commands, so a line the output filter
+// kept off the stream does not resurface as plain text in a failure detail
+// or skip reason. Otherwise it returns s unchanged.
+func withoutSuppressedCommands(s string) string {
+	if !workflowcmd.Suppressed() {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	kept := lines[:0]
+	for _, l := range lines {
+		if !workflowcmd.IsCommandLine(l) {
+			kept = append(kept, l)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 func ghaErrorDetail(s string) string {
