@@ -3884,19 +3884,21 @@ func runnerPathRestoreLine() string {
 	return fmt.Sprintf(`export PATH="$%s${PATH:+:$PATH}"`, runnerPathVar)
 }
 
-// runnerPathLines are the first lines of .env: the Fullsend tool-image paths,
-// the sandbox's project toolchain and PATH, then its read-only copy.
-// /sandbox/workspace/bin comes last, after the image's own
-// PATH: host_files can drop files there, so it may add commands (my-tool.sh,
-// and the runner's own fullsend and fullsend-check-output, which exist only
-// there) but not replace one the image provides — python3 and tirith for the
-// security hooks, node for codex and pi, git, find.
+// runnerPathLines are the first lines of .env: Go tools, the sandbox image's
+// project PATH, workspace helpers, and finally the mounted Fullsend tools as
+// a fallback. This lets an agent use the project's Python packages, Node,
+// npm, Git, and other tools while keeping helpers in workspace/bin reachable.
+// Fixed runner commands and hooks use the trusted PATH recorded separately.
 func runnerPathLines() []string {
-	pathExport := "export PATH=" + sandbox.SandboxFullsendToolPath
-	pathExport += ":/usr/local/go/bin"
+	return runnerPathLinesFor(sandbox.SandboxFullsendToolPath)
+}
+
+func runnerPathLinesFor(toolPath string) []string {
+	pathExport := "export PATH=/usr/local/go/bin"
 	pathExport += ":$HOME/go/bin"
 	pathExport += ":$PATH"
 	pathExport += fmt.Sprintf(":%s/bin", sandbox.SandboxWorkspace)
+	pathExport += ":" + toolPath
 	return []string{pathExport, runnerPathCaptureLine()}
 }
 

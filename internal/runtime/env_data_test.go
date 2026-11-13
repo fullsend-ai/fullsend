@@ -695,10 +695,13 @@ func TestEnvDataTrustedPath_MountedOnlyToolLookup(t *testing.T) {
 	}
 	mountedTool := filepath.Join(toolDirs[0], "fullsend-only")
 	require.NoError(t, os.WriteFile(mountedTool, []byte("#!/bin/sh\necho mounted\n"), 0o755))
+	mountedConflict := filepath.Join(toolDirs[1], "conflicting")
+	require.NoError(t, os.WriteFile(mountedConflict, []byte("#!/bin/sh\necho mounted-conflict\n"), 0o755))
 	projectBin := filepath.Join(root, "project", "bin")
 	require.NoError(t, os.MkdirAll(projectBin, 0o755))
-	projectTool := filepath.Join(projectBin, "conflicting")
-	require.NoError(t, os.WriteFile(projectTool, []byte("#!/bin/sh\necho project\n"), 0o755))
+	projectOnlyTool := filepath.Join(projectBin, "project-only")
+	require.NoError(t, os.WriteFile(projectOnlyTool, []byte("#!/bin/sh\necho project\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectBin, "conflicting"), []byte("#!/bin/sh\necho project-conflict\n"), 0o755))
 
 	// Model an agent account that cannot own or rewrite the mounted image.
 	// The real filesystem and executable lookup remain in use.
@@ -714,7 +717,13 @@ func TestEnvDataTrustedPath_MountedOnlyToolLookup(t *testing.T) {
 	cmd.Env = []string{"PATH=" + path}
 	out, err = cmd.Output()
 	require.NoError(t, err)
-	assert.Equal(t, projectTool, strings.TrimSpace(string(out)), "ambient project tools remain reachable after mounted-only tools")
+	assert.Equal(t, mountedConflict, strings.TrimSpace(string(out)), "the trusted PATH prefers mounted tools over conflicting ambient tools")
+
+	cmd = exec.Command("/bin/sh", "-c", protectedRoot+envDataTrustedPathFor(strings.Join(toolDirs, ":"))+` && PATH="$`+envDataTrustedPathVar+`" command -v project-only`)
+	cmd.Env = []string{"PATH=" + path}
+	out, err = cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, projectOnlyTool, strings.TrimSpace(string(out)), "ambient tools remain available after mounted-only tools")
 }
 
 func TestSandboxFullsendToolPathCommandAt_PrefersMountedTool(t *testing.T) {
