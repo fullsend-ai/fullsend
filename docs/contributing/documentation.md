@@ -236,6 +236,15 @@ The `admin` command group's `uninstall`/`analyze`/`enable`/`disable` subcommands
 | ADRs | `docs/ADRs/0060-cross-org-mint-authorization-via-org-variables.md`, `docs/ADRs/0083-repo-level-foreign-allow-list.md` |
 | Go source | `internal/cli/admin.go` |
 
+### `ci`
+
+| Category | Files |
+|----------|-------|
+| CLI reference | `docs/cli/ci.md` |
+| Guides | `docs/guides/dev/cli-internals.md`, `docs/guides/dev/e2e-testing.md` |
+| Contributing | `docs/contributing/ci-workflows.md` |
+| Go source | `internal/cli/ci.go`, `internal/cli/ci_check_e2e_authorization.go`, `internal/e2eauth/check.go` |
+
 ### `github`
 
 | Category | Files |

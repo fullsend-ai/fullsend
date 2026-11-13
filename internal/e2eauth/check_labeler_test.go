@@ -56,6 +56,7 @@ func TestCheck_SameTimestampOkToTestDoesNotRemoveOnAmbiguousLatest(t *testing.T)
 	in := baseInput()
 	in.DryRun = true
 	in.EventAction = "labeled"
+	in.EventLabel = OkToTestLabel
 	in.LabelActorLogin = "triager"
 	in.PRAuthorLogin = "contributor"
 	h.setRole("contributor", "none")

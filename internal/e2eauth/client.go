@@ -9,6 +9,8 @@ import (
 // GitHubGate is the forge surface required for e2e pull-request authorization.
 type GitHubGate interface {
 	GetPullRequestAuthorizationContext(ctx context.Context, owner, repo string, number int) (*forge.PullRequestAuthorizationContext, error)
+	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)
+	GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*forge.IssueComment, error)
 	ListIssueLabelEvents(ctx context.Context, owner, repo string, number int) ([]forge.IssueLabelEvent, error)
 	RemoveIssueLabel(ctx context.Context, owner, repo string, number int, label string) error
 	GetCollaboratorPermissionDetail(ctx context.Context, owner, repo, username string) (forge.GitHubCollaboratorPermissionDetail, error)
@@ -30,6 +32,14 @@ type gateClient struct {
 
 func (g gateClient) GetPullRequestAuthorizationContext(ctx context.Context, owner, repo string, number int) (*forge.PullRequestAuthorizationContext, error) {
 	return g.client.GetPullRequestAuthorizationContext(ctx, owner, repo, number)
+}
+
+func (g gateClient) GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
+	return g.client.GetPullRequestHeadSHA(ctx, owner, repo, number)
+}
+
+func (g gateClient) GetIssueComment(ctx context.Context, owner, repo string, commentID int) (*forge.IssueComment, error) {
+	return g.client.GetIssueComment(ctx, owner, repo, commentID)
 }
 
 func (g gateClient) ListIssueLabelEvents(ctx context.Context, owner, repo string, number int) ([]forge.IssueLabelEvent, error) {

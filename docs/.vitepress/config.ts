@@ -230,6 +230,7 @@ export default defineConfig({
           items: [
             { text: "Overview", link: "/cli/" },
             { text: "fullsend agent", link: "/cli/agent" },
+            { text: "fullsend ci", link: "/cli/ci" },
             { text: "fullsend github", link: "/cli/github" },
             { text: "fullsend inference", link: "/cli/inference" },
             { text: "fullsend lint", link: "/cli/lint" },

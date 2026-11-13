@@ -17,6 +17,7 @@ To update an installed binary later, run [`fullsend self-update`](self-update.md
 | Command group | Description |
 |--------------|-------------|
 | [`fullsend agent`](agent.md) | Generate a custom agent and manage agent registrations — new, add, list, set, update, remove |
+| [`fullsend ci`](ci.md) | CI helpers — `check-e2e-authorization` decides whether a pull request may run credentialed e2e tests |
 | [`fullsend github`](github.md) | Configure GitHub repos — setup and single-value config updates |
 | [`fullsend inference`](inference.md) | Manage inference credentials — GCP Workload Identity Federation for Agent Platform, OpenAI WIF enrolment for GPT on pi or codex, and `gateway status` to check an inference gateway block and its authentication |
 | [`fullsend mint`](mint.md) | Deploy and manage the OIDC token mint service |

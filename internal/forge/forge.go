@@ -708,6 +708,9 @@ type IssueComment struct {
 	Body      string
 	Author    string
 	CreatedAt string
+	// IssueNumber is the issue or pull request number the comment belongs to.
+	// GitHub populates this from the comment's issue_url field.
+	IssueNumber int
 }
 
 // Reaction represents an emoji reaction on an issue, pull request,
