@@ -3338,6 +3338,10 @@ func convergeScaffoldFiles(ctx context.Context,
 		ControlRunnerTags: gitlabControlRunnerTags(cfg.Manifest),
 		Runtime:           resolved.Runtime,
 		VendorBinary:      repairVendor,
+		// The configured token audience is rendered into the GitLab agent
+		// template, so a repaired template must carry it.
+		InferenceWIFAudience:    resolved.DeclaredWIFAudience,
+		InferenceServiceAccount: resolved.DeclaredServiceAccount,
 	}
 
 	// When vendored, the running binary's embedded templates match the
