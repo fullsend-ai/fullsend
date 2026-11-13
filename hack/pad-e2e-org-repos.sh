@@ -9,7 +9,7 @@
 #   --apply  — create the repositories; without it the script only reports
 #              what it would create
 #   --target — permanent repositories the org should hold (default 150,
-#              at most 163 unless --allow-large-target is given)
+#              at most 170 unless --allow-large-target is given)
 #   --max    — most repositories to create in this run, across all orgs
 #              (default 450, under GitHub's 500-an-hour content-creation limit)
 #
@@ -21,16 +21,19 @@
 # 50 each as well; the script does not count them, so an org with many
 # users reaches the cap sooner.
 #
-# Slot repositories (test-repo-NN and names starting with it, including
-# -fork and -mint-host) come and go with leases, so they do not count
-# toward the target. The slot allocator lists an org's repositories, 100 a
-# page, on every claim pass. The 163 ceiling keeps an org under 200 even
-# with all 12 slots holding a base, fork and mint-host repository, so the
-# listing stays at two pages.
+# Slot repositories (test-repo-NN and names starting with it, such as
+# -fork, -mint-host, -mint-unapproved and -url-harness-host) come and go
+# with leases, so they do not count toward the target. The 170 ceiling is
+# the most either reading needs; it is a guard against typos.
+#
+# Padding has a cost: the slot allocator lists an org's repositories, 100 a
+# page, on every claim pass, so a padded org lists in two pages, and in
+# three once it holds 200 repositories. See the guide for the numbers.
 #
 # Filler repositories are private, empty and named quota-filler-NNN. The
-# slot driver and slot GC only touch names derived from the pool layout, so
-# they never touch these. Do not delete them.
+# slot driver and slot GC delete only slot repositories, names derived from
+# them, and their own lock repository, so they never touch these. Do not
+# delete them.
 #
 # Idempotent: existing filler names are skipped and an org already at the
 # target gets nothing. Creation is paced (FILLER_PACE_SECONDS, default 8) to
@@ -39,15 +42,18 @@
 #
 # Before touching an org, the script checks that the fullsend-ai-e2e App is
 # installed there on All repositories, and stops otherwise. That check and
-# the creation need gh authenticated as an owner of the pool org.
+# the creation need gh authenticated as an owner of the pool org. GitHub's
+# docs say classic tokens also need an admin scope to list installations;
+# if the check fails, run gh auth refresh -h github.com -s admin:org.
 
 set -euo pipefail
 
 FILLER_PREFIX="quota-filler-"
 FILLER_DESCRIPTION="Quota filler for the e2e App installation rate limit (fullsend-ai/fullsend#9414). Do not delete."
 FILLER_PACE_SECONDS="${FILLER_PACE_SECONDS:-8}"
-# TARGET_CEILING is 199 minus three repositories for each of 12 slots.
-TARGET_CEILING=163
+# TARGET_CEILING is the most either reading of GitHub's docs needs (170);
+# anything above it is likely a typo.
+TARGET_CEILING=170
 E2E_APP_SLUG="fullsend-ai-e2e"
 
 # org_name turns NN into halfsend-NN and passes a full name through.
@@ -90,7 +96,7 @@ check_e2e_installation() {
   if ! out=$(gh api --paginate "/orgs/${org}/installations" \
       --jq ".installations[] | select(.app_slug == \"${E2E_APP_SLUG}\") | .repository_selection" \
       2>"${errfile}"); then
-    echo "    ERROR: could not list app installations in ${org} (needs an org owner): $(cat "${errfile}")" >&2
+    echo "    ERROR: could not list app installations in ${org} (needs an org owner; a classic token may need gh auth refresh -h github.com -s admin:org): $(cat "${errfile}")" >&2
     rm -f "${errfile}"
     return 1
   fi

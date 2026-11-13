@@ -15,9 +15,12 @@
 # e2e App on selected repositories, a missing App or an unreadable
 # installation list stops before anything is listed or created; filler
 # repositories are created private; the default target is 150, and a
-# target above 163 needs --allow-large-target; --target and --max
+# target above 170 needs --allow-large-target; --target and --max
 # with a leading zero are read in base 10; a trailing --target or --max and
 # an org outside the pool are usage errors.
+#
+# The stub answers with GitHub's JSON response shapes and applies the
+# script's --jq filter with jq, so the filters are tested too.
 #
 # Run from the repo root:
 #   bash hack/pad-e2e-org-repos_test.sh
@@ -56,11 +59,11 @@ S="${STUB_STATE}"
 echo "gh $*" >> "${S}/gh.log"
 [[ "${1:-}" == "api" ]] || { echo "unexpected gh $*" >&2; exit 2; }
 shift
-method=GET path="" name="" private=""
+method=GET path="" name="" private="" filter="."
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -X) method="$2"; shift 2 ;;
-    --jq) shift 2 ;;
+    --jq) filter="$2"; shift 2 ;;
     -f|-F)
       case "$2" in
         name=*) name="${2#name=}" ;;
@@ -76,13 +79,24 @@ org="${path#/orgs/}"; org="${org%%/*}"
 case "${method} ${path}" in
   "GET /orgs/${org}/installations")
     [[ -f "${S}/installations_error" ]] && { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    # The real response shape: an object holding an installations array.
+    # Another App on all repositories checks that the filter picks the e2e
+    # App by slug.
     sel=$(cat "${S}/selection" 2>/dev/null || echo all)
-    [[ "${sel}" != none ]] && echo "${sel}"
+    other='{"app_slug":"some-other-app","repository_selection":"all"}'
+    if [[ "${sel}" == none ]]; then
+      body="{\"total_count\":1,\"installations\":[${other}]}"
+    else
+      body="{\"total_count\":2,\"installations\":[${other},{\"app_slug\":\"fullsend-ai-e2e\",\"repository_selection\":\"${sel}\"}]}"
+    fi
+    jq -r "${filter}" <<< "${body}"
     exit 0 ;;
   "GET /orgs/${org}/repos")
     [[ -f "${S}/list_error" ]] && { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
     [[ -f "${S}/list_warning" ]] && echo "A new release of gh is available: 9.9.9" >&2
-    [[ -d "${S}/${org}" ]] && ls "${S}/${org}"
+    # The real response shape: an array of repository objects.
+    { [[ -d "${S}/${org}" ]] && ls "${S}/${org}"; true; } \
+      | jq -Rn '[inputs | {name: ., private: true}]' | jq -r "${filter}"
     exit 0 ;;
   "POST /orgs/${org}/repos")
     if [[ -f "${S}/forbidden" ]]; then
@@ -290,9 +304,11 @@ for sel in selected none; do
 done
 fresh_state halfsend-07
 touch "${STATE}/installations_error"
-run_pad --target 3 07
-if [[ ${RC} -ne 0 ]] && grep -q 'could not list app installations in halfsend-07' <<< "${OUT}"; then
-  pass "an unreadable installation list fails"
+run_pad --apply --target 3 07
+if [[ ${RC} -ne 0 && "$(creates)" == 0 ]] \
+    && grep -q 'could not list app installations in halfsend-07' <<< "${OUT}" \
+    && ! grep -q -- '--paginate /orgs/halfsend-07/repos' "${STATE}/gh.log"; then
+  pass "an unreadable installation list stops the run before anything is listed or created"
 else
   fail "installations error: rc=${RC} out=${OUT}"
 fi
@@ -300,13 +316,25 @@ fi
 # --- --target ceiling --------------------------------------------------------
 fresh_state halfsend-07
 run_pad --apply --target 1700 07
-if [[ ${RC} -ne 0 && "$(creates)" == 0 ]] && grep -q -- '--target 1700 is above 163' <<< "${OUT}"; then
+if [[ ${RC} -ne 0 && "$(creates)" == 0 ]] && grep -q -- '--target 1700 is above 170' <<< "${OUT}"; then
   pass "a target above the ceiling is rejected"
 else
   fail "ceiling: rc=${RC} creates=$(creates) out=${OUT}"
 fi
-run_pad --target 164 --allow-large-target 07
-if [[ ${RC} -eq 0 ]] && grep -q 'target 164: 164 to create' <<< "${OUT}"; then
+run_pad --target 170 07
+if [[ ${RC} -eq 0 ]] && grep -q 'target 170: 170 to create' <<< "${OUT}"; then
+  pass "a target at the ceiling needs no override"
+else
+  fail "at ceiling: rc=${RC} out=${OUT}"
+fi
+run_pad --target 171 07
+if [[ ${RC} -ne 0 ]] && grep -q -- '--target 171 is above 170' <<< "${OUT}"; then
+  pass "one above the ceiling is rejected"
+else
+  fail "above ceiling: rc=${RC} out=${OUT}"
+fi
+run_pad --target 171 --allow-large-target 07
+if [[ ${RC} -eq 0 ]] && grep -q 'target 171: 171 to create' <<< "${OUT}"; then
   pass "--allow-large-target lifts the ceiling"
 else
   fail "allow large: rc=${RC} out=${OUT}"

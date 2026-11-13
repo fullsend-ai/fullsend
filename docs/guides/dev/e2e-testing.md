@@ -222,8 +222,8 @@ its permanent repos holds the e2e installation token to about 5,000 calls
 an hour. Empty filler repositories raise the limit
 ([#9414](https://github.com/fullsend-ai/fullsend/issues/9414)).
 
-**Risk.** This creates 3,200 to 3,500 empty repositories across 22 orgs only
-to raise an API limit. GitHub's Terms of Service and Acceptable Use
+**Risk.** This creates up to 150 empty repositories in each of 22 orgs
+(3,300 in all, or 3,740 at `--target 170`) only to raise an API limit. GitHub's Terms of Service and Acceptable Use
 Policies let GitHub decide at its discretion what counts as excessive API
 use or bulk automated activity, and remove repositories or suspend apps
 for it. Enforcement could suspend the e2e App or delete the filler
@@ -232,7 +232,14 @@ documents is GitHub Enterprise Cloud, where an App installation gets a
 flat 15,000 calls an hour. Record on #9414 that the risk is accepted, or
 GitHub Support's answer, before step 5.
 
-1. Authenticate `gh` as an owner of the pool orgs.
+1. Authenticate `gh` as an owner of the pool orgs. GitHub's docs say a
+   classic token also needs an admin scope to list an org's App
+   installations. If the script's installation check fails, add it:
+
+   ```bash
+   gh auth refresh -h github.com -s admin:org
+   ```
+
 2. Check what the script would create:
 
    ```bash
@@ -245,16 +252,22 @@ GitHub Support's answer, before step 5.
    hack/pad-e2e-org-repos.sh --apply 07
    ```
 
-4. Wait for the next DEV behaviour run that leases a slot in that org. Its
+4. Wait at least an hour after step 3, then find a DEV behaviour run
+   that leased a slot in that org. GitHub does not say when it
+   recalculates the limit, so an earlier run can still show the old one.
+   Its
    `[driver] per-org quota counters` log lines show
-   `remaining=<n>/<limit>` for each org. The org now holds 150 permanent
+   `remaining=<lowest>/<limit>` for each org. Compare the second number,
+   the limit. The first is the lowest remaining count during the run, so
+   it is lower after the run's own calls. The org now holds 150 permanent
    repositories (the default `--target`), plus any leased slot repos:
-   - `12500` with few slot repos leased: 50 per repository counts every
-     one. Continue with the default.
-   - About `11500` (plus 50 per leased slot repo): only repositories over
-     20 count. Run step 3 again with `--target 163`, and add
-     `--target 163` in step 5. The org then reaches 12,500 once seven
-     slot repos are leased.
+   - A limit of `12500`: 50 per repository counts every one. Continue
+     with the default.
+   - A limit of about `11500` (plus 50 per leased slot repo): only
+     repositories over 20 count. Run step 3 again with `--target 170`,
+     and add `--target 170` in step 5.
+   - A limit of `5000`: GitHub may not have recalculated it yet. Check
+     a later run before going further.
    - Anything else: stop and report it on #9414.
 5. Fill the remaining orgs:
 
@@ -279,14 +292,20 @@ run it again later to continue. The slot driver and slot GC never touch
 filler repositories. Do not delete them.
 
 The default `--target` of 150 is the smallest count that can reach the
-cap. A `--target` above 163 needs `--allow-large-target`, so a typo cannot
-create permanent repositories in bulk. The ceiling has a second purpose:
-the slot allocator lists each org's repositories, 100 a page, on every
-claim pass, and a run waiting for a slot repeats the pass every 15
-seconds. Each of the 12 slots can hold a base, a `-fork` and a
-`-mint-host` repository, so 163 permanent repositories keep an org under
-200 and its listing at two pages. Two pages instead of today's one cost
-each waiting run about 240 more calls an hour per org.
+cap, and 170 is the most either reading needs. A `--target` above 170
+needs `--allow-large-target`, so a typo cannot create permanent
+repositories in bulk.
+
+Padding makes the slot allocator's listing longer. It lists each org's
+repositories, 100 a page, on every claim pass, and a run waiting for a
+slot repeats the pass every 15 seconds. While leased, each slot can also
+hold repositories named after it (`test-repo-NN-` followed by `fork`,
+`mint-host`, `mint-unapproved`, `url-harness-host` or
+`base-harness-host`). A padded org lists in two pages, and in three once
+it holds 200 repositories: 50 slot repositories at `--target 150`, 30 at
+170. With 12 slots that normally takes leftovers from failed cleanups.
+Each extra page costs a waiting run about 240 calls an hour per org,
+against the 7,500 an hour that padding adds.
 
 ### Test actor permissions
 
