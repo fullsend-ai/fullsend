@@ -324,7 +324,7 @@ func TestBuildPoolDriver_CapacitySpansOrgs(t *testing.T) {
 	newMint := func(mintGroup, orgCredential) (mintDriver, func(), error) {
 		return &testCFMintMintDriver{installMintURL: "https://mint.test"}, nil, nil
 	}
-	d, err := buildPoolDriver(testPoolConfig(t, PoolLayout{FirstOrgIndex: 1, OrgCount: 3, SlotsPerOrg: 2}), nil, newMint, playbackSetupOpts(), traceStart{})
+	d, err := buildPoolDriver(testPoolConfig(t, PoolLayout{FirstOrgIndex: 1, OrgCount: 3, SlotsPerOrg: 2}), nil, newMint, playbackInstallOpts(), traceStart{})
 	require.NoError(t, err)
 	assert.Equal(t, 6, d.Capacity())
 	_, isLease := d.(LeaseDriver)
@@ -333,7 +333,7 @@ func TestBuildPoolDriver_CapacitySpansOrgs(t *testing.T) {
 
 func TestBuildPoolDriver_InvalidLayout(t *testing.T) {
 	newMint := func(mintGroup, orgCredential) (mintDriver, func(), error) { return nil, nil, nil }
-	_, err := buildPoolDriver(testPoolConfig(t, PoolLayout{FirstOrgIndex: 1, OrgCount: 1}), nil, newMint, playbackSetupOpts(), traceStart{})
+	_, err := buildPoolDriver(testPoolConfig(t, PoolLayout{FirstOrgIndex: 1, OrgCount: 1}), nil, newMint, playbackInstallOpts(), traceStart{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "slots per org must be positive")
 }

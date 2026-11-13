@@ -120,20 +120,21 @@ func NewRepoPoolCFMintPreviews(pool PoolConfig) (Driver, error) {
 		return md, cleanup, nil
 	}
 
-	// playbackSetupOpts returns normal "dummy"-runtime opts unless
+	// playbackInstallOpts returns normal "dummy"-runtime opts unless
 	// PLAYBACK_RUNTIME is set in the environment, in which case this same
 	// factory backs a playback suite (see NewPlaybackDriver) instead of
 	// the standard behaviour suite.
-	setupOpts := playbackSetupOpts()
-	setupOpts.AppSet = envAppSet()
-	return buildPoolDriver(pool, plan, newMint, setupOpts, traces)
+	installOpts := playbackInstallOpts()
+	installOpts.AppSet = envAppSet()
+	return buildPoolDriver(pool, plan, newMint, installOpts, traces)
 }
 
 // Compile-time check: NewRepoPoolCFMintPreviews satisfies Factory.
 var _ Factory = NewRepoPoolCFMintPreviews
 
 // cfmintMintDriver deploys a CF Worker preview mint and uses the derived
-// preview URL as the mint endpoint for fullsend github setup.
+// preview URL as the mint endpoint declared in each repo's repos.yaml
+// entry for fullsend repos install.
 type cfmintMintDriver struct {
 	client       forge.Client
 	token        string
@@ -351,8 +352,8 @@ func envSuiteName() string {
 }
 
 // envConfigPreset returns the optional config base layer preset path or
-// URL from BEHAVIOUR_CONFIG_PRESET. Empty when unset, so github setup
-// is invoked without --config.
+// URL from BEHAVIOUR_CONFIG_PRESET. Empty when unset, so the generated
+// repos.yaml entry declares no config_base.
 func envConfigPreset() string {
 	return os.Getenv("BEHAVIOUR_CONFIG_PRESET")
 }

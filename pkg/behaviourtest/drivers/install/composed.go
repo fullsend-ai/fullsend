@@ -308,11 +308,11 @@ type groupMintFunc func(group mintGroup, cred orgCredential) (md mintDriver, cle
 // group's mint is newMint's, deployed on the first lease in any of the
 // group's orgs and shared by them (sharedMint), and torn down once at
 // Finalize. Each org gets its own ensurer bound to the org's credential
-// and its group's mint URL, installing with setupOpts (and the playback
-// tracking-issue hook when setupOpts selects the playback runtime).
+// and its group's mint URL, installing with installOpts (and the playback
+// tracking-issue hook when installOpts selects the playback runtime).
 // traces is the already started trace collector (if any): it is
 // attached to the returned driver, or stopped when construction fails.
-func buildPoolDriver(pool PoolConfig, plan *mintPlan, newMint groupMintFunc, setupOpts common.GitHubSetupOpts, traces traceStart) (Driver, error) {
+func buildPoolDriver(pool PoolConfig, plan *mintPlan, newMint groupMintFunc, installOpts common.InstallOpts, traces traceStart) (Driver, error) {
 	logf := poolLogf(pool)
 	if plan == nil {
 		plan = singleMintPlan(pool.Layout)
@@ -365,8 +365,8 @@ func buildPoolDriver(pool PoolConfig, plan *mintPlan, newMint groupMintFunc, set
 			MintURL:      mintURL,
 			GCPProjectID: pool.GCPProjectID,
 		}
-		ens, err := newRepoEnsurerWithOpts(e2eCfg, cred.client, cred.token, pool.Binary, setupOpts, logf,
-			playbackInstallHooks(setupOpts, logf))
+		ens, err := newRepoEnsurerWithOpts(e2eCfg, cred.client, cred.token, pool.Binary, installOpts, logf,
+			playbackInstallHooks(installOpts, logf))
 		if err != nil {
 			if tdErr := md.Teardown(context.WithoutCancel(ctx)); tdErr != nil {
 				logf("[driver] tearing down the mint for %s after ensurer setup failed: %v", org, tdErr)
