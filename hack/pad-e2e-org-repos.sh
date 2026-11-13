@@ -151,8 +151,9 @@ main() {
       *)
         org=$(org_name "${arg}")
         # A mistyped argument must not fill an unintended org with
-        # permanent repositories (same check as setup-new-e2e-org.sh).
-        if ! [[ "${org}" =~ ^halfsend(-[0-9]+)?$ ]]; then
+        # permanent repositories (like setup-new-e2e-org.sh, but exactly two
+        # digits, as the pool layout names them).
+        if ! [[ "${org}" =~ ^halfsend(-[0-9]{2})?$ ]]; then
           echo "${arg} is not a pool org (halfsend or halfsend-NN)" >&2
           return 1
         fi

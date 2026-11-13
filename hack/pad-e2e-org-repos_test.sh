@@ -265,7 +265,7 @@ for flag in --target --max; do
     fail "trailing ${flag}: rc=${RC} out=${OUT}"
   fi
 done
-for bad in my-org halfsend-07x ../halfsend-07 7; do
+for bad in my-org halfsend-07x ../halfsend-07 7 halfsend-7 halfsend-007; do
   run_pad --apply "${bad}"
   if [[ ${RC} -ne 0 && "$(creates)" == 0 ]] && grep -q 'is not a pool org' <<< "${OUT}"; then
     pass "org '${bad}' is rejected"
