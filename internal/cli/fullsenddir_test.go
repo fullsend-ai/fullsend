@@ -304,3 +304,31 @@ func TestAgentNewNextStepsKeepNonDefaultFullsendDir(t *testing.T) {
 		t.Errorf("harness not written: %v", err)
 	}
 }
+
+// TestUnpinnedDepsWarningEscapesControlCharacters: the unpinned-dependencies
+// warning's prose interpolates the agent name and first dependency, so a
+// crafted name with a newline or ANSI escape must not pass through — the
+// whole warning renders them as visible backslash sequences (the command
+// part already escapes its own arguments), so the line cannot be forged.
+func TestUnpinnedDepsWarningEscapesControlCharacters(t *testing.T) {
+	w := unpinnedDepsWarning("agent\x1b[31m", []string{"https://example.com/a\x00b", "https://example.com/c"}, "", "/harness/code.yaml", "")
+	for _, want := range []string{
+		"Lock entry for agent\\e[31m does not pin 2 dependencies (https://example.com/a\\x00b…)",
+		"run fullsend lock --update 'agent\\e[31m'",
+	} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warning missing %q:\n%s", want, w)
+		}
+	}
+	assertNoControlChars(t, w)
+}
+
+// TestUnpinnedDepsWarningGuardsLeadingDashName: a name that starts with '-'
+// is guarded behind "--" in the command part of the warning, exactly as the
+// other lock-update hints guard it.
+func TestUnpinnedDepsWarningGuardsLeadingDashName(t *testing.T) {
+	w := unpinnedDepsWarning("--all.yaml", []string{"https://example.com/a"}, "", "/harness/code.yaml", "")
+	if !strings.Contains(w, "run fullsend lock --update --fullsend-dir '' -- '--all.yaml'") {
+		t.Errorf("warning does not guard the leading-dash name:\n%s", w)
+	}
+}
