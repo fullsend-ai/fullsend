@@ -18,6 +18,10 @@ this hook cannot read blocks, and so does any unexpected error, because Claude
 Code reads a bare exit 1 with no stdout as *non*-blocking, making a traceback
 equivalent to an allow.
 
+A verdict asking for approval is the one case that blocks even when tirith
+cleared the command: requires_approval blocks on an exit 0 and on an
+action=allow or warn alike, because this hook has no one to ask.
+
 analysis_incomplete blocks too. Tirith emits it when it cannot resolve what a
 command will execute, which is the same signal for an unparsed POSIX idiom and
 for a deliberately obfuscated payload, so it cannot be downgraded. The block
@@ -45,11 +49,11 @@ TIRITH_REQUIRED = os.environ.get("TIRITH_REQUIRED", "") == "1"
 SEVERITY_LEVELS = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 
 # Appended when analysis_incomplete alone caused the block, so the agent gets a
-# rewrite instead of "could not analyse". Syntax only: this reaches the caller
-# whose command was just blocked, so it must never name the credential rewrite
-# that clears the sensitive-upload rule. Every rewrite below is asserted not to
-# unblock an attack shape. Mirrors the dialect table in
-# docs/contributing/runtime-implementation.md.
+# rewrite instead of "could not analyse". It carries the syntax rewrites and
+# nothing else: the text reaches the caller whose command was just blocked, so
+# it must never describe a form that gets an upload past this hook. Every
+# rewrite below is asserted not to unblock an attack shape. Mirrors the dialect
+# table in docs/contributing/runtime-implementation.md.
 DIALECT_HINT = (
     " — tirith could not analyse this command, so it is blocked rather than trusted. "
     "Rewrite it in a form tirith parses: "
@@ -84,6 +88,19 @@ def severity_meets_threshold(severity: str, threshold: str) -> bool:
     return sev_level >= thresh_level
 
 
+def one_line(text: str, limit: int = 200) -> str:
+    """Collapse whitespace and drop control characters, then cap the length.
+
+    approval_rule comes from the verdict and lands in a reason the runner
+    renders as one line, so a newline or an escape sequence in it would
+    reformat the block message around the rule name.
+    """
+    printable = "".join(
+        " " if ch.isspace() else ch for ch in text if ch.isprintable() or ch.isspace()
+    )
+    return " ".join(printable.split())[:limit].strip()
+
+
 def approval_block(raw: object, returncode: int) -> str:
     """Return a block reason when tirith asks for approval, else "".
 
@@ -98,7 +115,8 @@ def approval_block(raw: object, returncode: int) -> str:
         return ""
     if requires_approval is True:
         rule = raw.get("approval_rule")
-        named = f" ({rule[:200]})" if isinstance(rule, str) and rule else ""
+        cleaned = one_line(rule) if isinstance(rule, str) else ""
+        named = f" ({cleaned})" if cleaned else ""
         reason = (
             f"Tirith requires approval{named} (exit code {returncode}) — "
             "blocked; this hook cannot collect an approval"
@@ -106,8 +124,9 @@ def approval_block(raw: object, returncode: int) -> str:
         log_finding("tirith_requires_approval", "high", reason, "block")
     else:
         reason = (
-            f"Tirith blocked command (exit code {returncode}): "
-            f"requires_approval is {type(requires_approval).__name__}, expected a bool"
+            f"Tirith requires_approval is {type(requires_approval).__name__}, expected a "
+            f"bool (exit code {returncode}) — blocked; this hook cannot read the approval "
+            "field and so cannot collect an approval"
         )
         log_finding("tirith_malformed_output", "high", reason, "block")
     return reason
