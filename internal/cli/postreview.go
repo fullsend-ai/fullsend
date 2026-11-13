@@ -44,6 +44,9 @@ var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 // cannot inject markup. The resolved-thread fetch matches this form (#7907).
 var findingIDRe = regexp.MustCompile(`^f_[a-zA-Z0-9]+$`)
 
+// findingMarkerRe matches finding ID markers embedded in inline review comments.
+var findingMarkerRe = regexp.MustCompile(`<!-- finding:(f_[a-zA-Z0-9]+) -->`)
+
 // reviewProjectionMarkerPattern is the review-findings-v2 projection marker
 // pattern, including its base64 payload.
 const reviewProjectionMarkerPattern = `<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->`
@@ -409,6 +412,8 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 		}
 	}
 
+	resolveFixedReviewThreads(ctx, client, owner, repo, pr, parsed.Findings, dryRun, printer)
+
 	return postApprovedFollowUpIssues(ctx, owner, repo, pr, parsed, printer)
 }
 
@@ -473,6 +478,70 @@ func pullRequestDiffHashFromDiffs(diffs []forge.PullRequestFileDiff, err error) 
 	}
 	sum := sha256.Sum256(bytes.TrimSuffix(canonicalJSON.Bytes(), []byte("\n")))
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// resolveFixedReviewThreads fetches unresolved review threads and resolves
+// those corresponding to previously reported review agent findings that are
+// no longer present in current findings.
+//
+// Fail-closed safeguards:
+//   - Only threads whose root comment was authored by a bot and stamped with
+//     a valid finding marker (<!-- finding:f_xxx -->) are eligible.
+//   - Human-authored comments, discussions without finding markers, and
+//     threads where the finding is still active remain open.
+func resolveFixedReviewThreads(ctx context.Context, client forge.Client, owner, repo string, pr int, currentFindings []ReviewFinding, dryRun bool, printer *ui.Printer) {
+	page, err := client.ListPullRequestReviewThreads(ctx, owner, repo, pr)
+	if err != nil {
+		if errors.Is(err, forge.ErrNotSupported) {
+			return
+		}
+		printer.StepWarn(fmt.Sprintf("Failed to list review threads for resolution check: %v", err))
+		return
+	}
+
+	activeFindings := make(map[string]struct{}, len(currentFindings))
+	for _, f := range currentFindings {
+		if f.ID != "" && findingIDRe.MatchString(string(f.ID)) {
+			activeFindings[string(f.ID)] = struct{}{}
+		}
+	}
+
+	resolvedCount := 0
+	for _, thread := range page.Threads {
+		if thread.IsResolved || len(thread.Comments) == 0 {
+			continue
+		}
+		root := thread.Comments[0]
+		// Fail closed: only verified bot-authored comments are resolvable.
+		if root.AuthorType != "Bot" {
+			continue
+		}
+		matches := findingMarkerRe.FindStringSubmatch(root.Body)
+		if len(matches) < 2 {
+			continue
+		}
+		findingID := matches[1]
+		// If finding is still reported in current review, keep thread open.
+		if _, stillActive := activeFindings[findingID]; stillActive {
+			continue
+		}
+
+		if dryRun {
+			printer.StepInfo(fmt.Sprintf("Would resolve review thread %s (fixed finding %s)", thread.ID, findingID))
+			resolvedCount++
+			continue
+		}
+
+		if err := client.ResolvePullRequestReviewThread(ctx, owner, repo, pr, thread.ID); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to resolve review thread %s (%s): %v", thread.ID, findingID, err))
+			continue
+		}
+		resolvedCount++
+	}
+
+	if resolvedCount > 0 && !dryRun {
+		printer.StepDone(fmt.Sprintf("Resolved %d fixed review thread(s)", resolvedCount))
+	}
 }
 
 // submitFormalReview minimizes stale reviews by the same user, then
