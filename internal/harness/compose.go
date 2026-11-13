@@ -184,6 +184,15 @@ func (opts ComposeOpts) lockUpdateCommand() string {
 	return opts.LockUpdateCommand
 }
 
+// skipURLIndex reports whether URL resolution must skip the URL index's
+// cached mappings: `fullsend lock --update` re-resolves every URL from its
+// source — but only when fetching is allowed. Offline there is nothing to
+// fetch, so `--update` re-pins from the index cache instead of failing (as
+// on main). Lock pins still win either way.
+func (opts ComposeOpts) skipURLIndex() bool {
+	return opts.BypassURLIndex && !opts.FetchPolicy.Offline
+}
+
 // offlineMissAdvice is the advice a non-locked offline cache miss appends:
 // the command that re-pins, or — under BypassURLIndex (`fullsend lock
 // --update`), which re-resolves from the source — a note that
@@ -1797,8 +1806,9 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 		return fetchBaseFileFromPinnedTree(ctx, field, baseURLDir, relPath, allowedBy, allowlist, opts, depType, treePin, executable)
 	}
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, fileURL)
-	if opts.BypassURLIndex {
-		// --update re-resolves from the source, not the index.
+	if opts.skipURLIndex() {
+		// --update re-resolves from the source, not the index (offline it
+		// re-pins from the cache instead; see skipURLIndex).
 		indexHit = false
 	}
 	lockedHash, locked := opts.lockedFilePin(fileURL)
@@ -1996,8 +2006,9 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 			treeHashes = []string{dirPin}
 		case fileLocked:
 		default:
-			// --update re-resolves from the source, not the index.
-			if !opts.BypassURLIndex {
+			// --update re-resolves from the source, not the index (offline
+			// it re-pins from the cache instead; see skipURLIndex).
+			if !opts.skipURLIndex() {
 				for _, cacheKey := range []string{"scriptdir:" + scriptDirURL, fileURL} {
 					if treeHash, indexHit := urlIndexLookup(opts.WorkspaceRoot, cacheKey); indexHit {
 						treeHashes = append(treeHashes, treeHash)
@@ -2191,8 +2202,9 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 	// locked skill URL resolves to its pinned tree, never to the URL index,
 	// and its pinned tree is served as is (#8979).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, skillFileURL)
-	if opts.BypassURLIndex {
-		// --update re-resolves from the source, not the index.
+	if opts.skipURLIndex() {
+		// --update re-resolves from the source, not the index (offline it
+		// re-pins from the cache instead; see skipURLIndex).
 		indexHit = false
 	}
 	lockedHash, locked := opts.lockedDirPin(skillFileURL)
@@ -2397,8 +2409,9 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 	// A locked directory URL resolves to its pinned tree, never to the URL
 	// index, and its pinned tree is served as is (#8979).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, keyURL)
-	if opts.BypassURLIndex {
-		// --update re-resolves from the source, not the index.
+	if opts.skipURLIndex() {
+		// --update re-resolves from the source, not the index (offline it
+		// re-pins from the cache instead; see skipURLIndex).
 		indexHit = false
 	}
 	lockedHash, locked := opts.lockedDirPin(keyURL)
@@ -2406,7 +2419,7 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 		indexHit = true
 	}
 	indexKey := keyURL
-	if !indexHit && !opts.BypassURLIndex {
+	if !indexHit && !opts.skipURLIndex() {
 		// Indexes written before the plugins key carried pi entries were
 		// keyed on the Claude marker file. Honour those so an offline run
 		// against an existing cache does not fail until it can re-lock.
