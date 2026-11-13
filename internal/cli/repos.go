@@ -33,6 +33,7 @@ The repos subcommand group provides bulk operations for platform administrators
 managing fullsend across many repositories and organizations.`,
 	}
 	cmd.PersistentFlags().String("gitlab-token", "", "GitLab personal or project access token (overrides GITLAB_TOKEN env var)")
+	cmd.PersistentFlags().Bool(reposVerboseFlag, false, "show the underlying API error text (HTTP status and server message, with credentials redacted) instead of withholding it, and log each GitLab API request (method, path, status) to stderr")
 	cmd.AddCommand(newReposInstallCmd())
 	cmd.AddCommand(newReposUninstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
@@ -146,6 +147,9 @@ func newReposStatusCmd() *cobra.Command {
 		Short: "Compare manifest against actual repo state",
 		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against .fullsend/config.base.yaml and managed configuration drift against .fullsend/config.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, restore := reposVerboseContext(cmd, getGitLabToken(cmd))
+			defer restore()
+			cmd.SetContext(ctx)
 			return runReposStatus(cmd, opts)
 		},
 	}
@@ -532,7 +536,10 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.repoFilter = args
 			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposInstall(cmd.Context(), opts)
+			secrets := append([]string{opts.gitlabToken, opts.openAIAPIKey, opts.jiraToken, opts.jiraClientSecret}, roleTokenValues(opts.gitlabRoleTokens)...)
+			ctx, restore := reposVerboseContext(cmd, secrets...)
+			defer restore()
+			return runReposInstall(ctx, opts)
 		},
 	}
 	cmd.SetFlagErrorFunc(removedReposInstallFlagError)
@@ -1505,7 +1512,9 @@ prompt for confirmation unless --yes is set.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposUninstall(cmd.Context(), opts, args)
+			ctx, restore := reposVerboseContext(cmd, opts.gitlabToken)
+			defer restore()
+			return runReposUninstall(ctx, opts, args)
 		},
 	}
 

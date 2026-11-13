@@ -13,6 +13,34 @@ These flags are inherited by all `repos` subcommands:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--gitlab-token` | | GitLab personal or project access token (overrides `GITLAB_TOKEN` env var) |
+| `--verbose` | `false` | Show the underlying API error text (for example the GitLab HTTP status and server message) instead of `(server error text withheld)`, and log each GitLab API request to stderr as `gitlab api: <METHOD> <path> -> <status>` |
+
+### Verbose output
+
+By default, API failures from credential-bearing calls are reported without
+the server's error text (`... request failed (server error text withheld)`),
+because a failure can occur before Fullsend knows which credential values to
+redact. `--verbose` appends the underlying error text instead. Before it is
+shown, the text is scrubbed of the token flags and environment variables
+the command was given (`--gitlab-token`, `GITLAB_TOKEN`,
+`--gitlab-role-token`, `--openai-api-key`, `--jira-token`,
+`--jira-client-secret`), credential values Fullsend generated during the
+run, GitLab, GitHub and other known token shapes (for example `glpat-`,
+`glptt-` and `ghp_` tokens), `token=` URL parameters, URL user info, and hex strings
+of 32 or more characters (which also hides commit SHAs). The request log
+shows only the method, the API path without its query string, and the
+response status (`no response` when the request did not complete); it
+never includes headers or bodies. Only failed calls contribute error text,
+so newly minted credentials in successful responses are never shown.
+
+Even without `--verbose`, an error reporting that a supplied role
+credential's ownership is unresolved is shown in full: it contains recovery
+instructions such as "re-enroll the credential with `--gitlab-role-token`"
+and no server text.
+
+```bash
+fullsend repos install acme/api --verbose
+```
 
 ## Commands
 
