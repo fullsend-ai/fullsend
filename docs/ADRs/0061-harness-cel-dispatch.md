@@ -32,6 +32,11 @@ floor may run before loading harnesses, with a narrow verified label grant for
 its exact transition. Each trusted harness's effective `human_min_role` is
 then enforced before its CEL predicate. Authorization remains a platform gate.
 
+[ADR 0160](0160-queue-jira-work-by-search-so-no-request-expires.md) narrows,
+for the `jira-poll` driver only, which trigger rules are served: a rule the
+driver cannot read stops the poll with an error, and a reaction to a Jira
+issue being closed or reopened is not served.
+
 ## Context
 
 Custom agents should be easy to author and portable across forges. Today, adding

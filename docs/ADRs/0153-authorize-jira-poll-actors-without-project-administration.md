@@ -25,6 +25,11 @@ deprecates running the `jira-poll` driver without an entry and makes the
 entry required. The lists, `labels:` rules and roster loading decided here
 are unchanged.
 
+[ADR 0160](0160-queue-jira-work-by-search-so-no-request-expires.md) extends
+the `labels:` rules: a label that was not added by an edit in the project
+(present when the issue was created, or added before the issue moved in) is
+authorized as a command is, not by Edit Issues.
+
 ## Context
 
 The `jira-poll` input driver

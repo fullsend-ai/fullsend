@@ -41,13 +41,14 @@ and per-repository scope remain current.
 [ADR 0147](0147-evaluate-entity-cel-over-selectively-acquired-data.md) requires
 durable retry or proven rediscovery for provisional entity-source handoffs. The
 `lastCheck` advance-on-schedule rule below remains for legacy event
-reconstruction.
+reconstruction, except in the `jira-poll` driver (ADR 0160, next paragraph).
 
-[ADR 0160](0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)
-refines the candidate selection step below: per-cycle slots are spent only
-on candidates whose Jira `updated` is newer than their checkpoint, and M and
-N become configurable within bounds. The lock protocol and the random pick
-among candidates remain.
+[ADR 0160](0160-queue-jira-work-by-search-so-no-request-expires.md)
+supersedes, for the `jira-poll` driver, the candidate selection (up to M
+results, N picked at random) and the `lastCheck` change detection below: the
+driver finds work by searching for issues that carry a request and no label
+saying it was handled, oldest first. The lock protocol and the dispatch path
+remain current.
 
 ## Context
 
