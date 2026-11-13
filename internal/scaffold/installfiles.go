@@ -181,8 +181,9 @@ func FormatRunnerTags(tags []string) string {
 // tags (v0.42.0) trigger a pre-built binary download from GitHub Releases;
 // commit SHAs trigger a clone-and-build from source. Dev builds (both
 // inputs empty) return "latest" so the before_script resolves the newest
-// release — the before_script always installs the pinned version,
-// overwriting any default binary in the runner image.
+// release. The before_script installs the pinned version unless the runner
+// image's CLI already reports that release, in which case it keeps the
+// image's binary (#9251).
 func ResolveFullsendVersion(upstreamRef, upstreamTag string) string {
 	if upstreamTag != "" {
 		return upstreamTag

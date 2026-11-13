@@ -461,7 +461,11 @@ func TestInstallFullsendCLIScript_DebugTraceAborts(t *testing.T) {
 
 // runInstallFullsendCLIScript renders install-fullsend-cli.sh with version and
 // sources it with stub git, go, curl, and fullsend binaries first on PATH. The
-// go stub records the GOTOOLCHAIN and GOFLAGS it sees and exits goExit.
+// go stub records the GOTOOLCHAIN and GOFLAGS it sees and exits goExit. The
+// fullsend stub reports FULLSEND_STUB_VERSION for --version when that is set,
+// and fails when FULLSEND_STUB_FAIL is set. The curl stub answers the latest
+// release lookup with CURL_STUB_LATEST_TAG when that is set; every other
+// request fails as offline.
 func runInstallFullsendCLIScript(t *testing.T, version string, goExit int, env ...string) (out, goEnv string, err error) {
 	t.Helper()
 	root := t.TempDir()
@@ -474,9 +478,13 @@ func runInstallFullsendCLIScript(t *testing.T, version string, goExit int, env .
 	bin := t.TempDir()
 	goEnvLog := filepath.Join(t.TempDir(), "go-env")
 	stubs := map[string]string{
-		"git":      "#!/bin/sh\nexit 0\n",
-		"curl":     "#!/bin/sh\necho 'curl stub: offline' >&2\nexit 22\n",
-		"fullsend": "#!/bin/sh\necho 'fullsend stub'\n",
+		"git": "#!/bin/sh\nexit 0\n",
+		"curl": "#!/bin/sh\nfor a; do case \"$a\" in */releases/latest) if [ -n \"${CURL_STUB_LATEST_TAG:-}\" ]; then " +
+			"printf '{\"tag_name\":\"%s\"}' \"$CURL_STUB_LATEST_TAG\"; exit 0; fi ;; esac; done\n" +
+			"echo 'curl stub: offline' >&2\nexit 22\n",
+		"fullsend": "#!/bin/sh\nif [ -n \"${FULLSEND_STUB_FAIL:-}\" ]; then exit 127; fi\n" +
+			"if [ \"$1\" = \"--version\" ] && [ -n \"${FULLSEND_STUB_VERSION:-}\" ]; then echo \"fullsend version $FULLSEND_STUB_VERSION\"; exit 0; fi\n" +
+			"echo 'fullsend stub'\n",
 		"go": "#!/bin/sh\nprintf 'GOTOOLCHAIN=%s GOFLAGS=%s\\n' \"${GOTOOLCHAIN-unset}\" \"${GOFLAGS-unset}\" > \"$GO_ENV_LOG\"\n" +
 			"exit " + strconv.Itoa(goExit) + "\n",
 	}
@@ -547,6 +555,62 @@ func TestInstallFullsendCLIScript_ReleasePinDoesNotClearSettings(t *testing.T) {
 	assert.NotContains(t, out, "NOTICE")
 	assert.NotContains(t, out, "cleared")
 	assert.Empty(t, goEnv)
+}
+
+func TestInstallFullsendCLIScript_ReleasePinMatchingImageSkipsDownload(t *testing.T) {
+	// The curl stub fails every download, so success proves none was attempted.
+	out, goEnv, err := runInstallFullsendCLIScript(t, "v0.55.0", 0, "FULLSEND_STUB_VERSION=0.55.0")
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "fullsend CLI v0.55.0 is already installed in the runner image; skipping download")
+	assert.NotContains(t, out, "curl stub: offline")
+	assert.Empty(t, goEnv, "no source build")
+	assert.Contains(t, out, "fullsend version 0.55.0")
+}
+
+func TestInstallFullsendCLIScript_ReleasePinMismatchDownloads(t *testing.T) {
+	for name, env := range map[string][]string{
+		"older release":         {"FULLSEND_STUB_VERSION=0.54.0"},
+		"prerelease of the pin": {"FULLSEND_STUB_VERSION=0.55.0-rc1"},
+		"dev build":             {"FULLSEND_STUB_VERSION=dev-abc1234"},
+		"unparseable output":    nil,
+		"broken binary":         {"FULLSEND_STUB_FAIL=1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, goEnv, err := runInstallFullsendCLIScript(t, "v0.55.0", 0, env...)
+			require.Error(t, err, "stdout/stderr: %s", out)
+			assert.Contains(t, out, "curl stub: offline")
+			assert.NotContains(t, out, "skipping download")
+			assert.Empty(t, goEnv)
+		})
+	}
+}
+
+func TestInstallFullsendCLIScript_LatestMatchingImageSkipsDownload(t *testing.T) {
+	out, goEnv, err := runInstallFullsendCLIScript(t, "latest", 0,
+		"CURL_STUB_LATEST_TAG=v0.55.0", "FULLSEND_STUB_VERSION=0.55.0")
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "fullsend CLI v0.55.0 is already installed in the runner image; skipping download")
+	assert.NotContains(t, out, "curl stub: offline")
+	assert.Empty(t, goEnv)
+}
+
+func TestInstallFullsendCLIScript_LatestWithOutdatedImageDownloads(t *testing.T) {
+	// A cached :latest image that predates the newest release still downloads.
+	out, _, err := runInstallFullsendCLIScript(t, "latest", 0,
+		"CURL_STUB_LATEST_TAG=v0.56.0", "FULLSEND_STUB_VERSION=0.55.0")
+	require.Error(t, err, "stdout/stderr: %s", out)
+	assert.Contains(t, out, "curl stub: offline")
+	assert.NotContains(t, out, "skipping download")
+}
+
+func TestInstallFullsendCLIScript_SourcePinIgnoresImageVersion(t *testing.T) {
+	// A SHA pin always builds from source, even when the image CLI reports
+	// the same string.
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	out, goEnv, err := runInstallFullsendCLIScript(t, sha, 0, "FULLSEND_STUB_VERSION="+sha)
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	assert.NotContains(t, out, "skipping download")
+	assert.Equal(t, "GOTOOLCHAIN=unset GOFLAGS=unset\n", goEnv)
 }
 
 func TestRunPollJobScript_DeniesNonSchedulePinnedSource(t *testing.T) {

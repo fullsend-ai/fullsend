@@ -517,8 +517,9 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   `JIRA_DUPLICATE_TRANSITION`, `JIRA_NOT_PLANNED_TRANSITION`, and
   `JIRA_SPLIT_TRANSITION` in the triage harness's Jira overlay (by default
   `Duplicate`, `Won't Do`, and `Obsolete`). Override them in a harness if your
-  Jira workflow uses different names. Tracker-neutral transition discovery is
-  tracked in [#6704](https://github.com/fullsend-ai/fullsend/issues/6704).
+  Jira workflow uses different names. Custom agents can use the shared
+  [`fullsend issues transition`](issues-commands.md#fullsend-issues-transition)
+  command to discover and apply Jira transitions.
 - **Updates Jira cannot apply:** triage lists them under **Not applied in
   Jira** in its comment instead of dropping them. This covers a label add for
   a label not used anywhere on the Jira site (triage does not create new
@@ -538,12 +539,13 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   `actor.kind: bot`, so they do not dispatch agents again. See
   [How it works](#how-it-works).
 - **Credentials:** the triage and code harnesses map `FULLSEND_JIRA_TOKEN` and
-  `FULLSEND_JIRA_EMAIL` in `env.runner` for the runner-side post-scripts only.
+  `FULLSEND_JIRA_EMAIL` in `env.runner` for runner-side scripts only.
   The `jira-ro` provider reads `FULLSEND_JIRA_TOKEN` on the host, and the
   sandbox gets the provider's placeholder, not the real token.
 
-When the code agent makes no PR or MR, or the run fails, nothing beyond the
-run-status update is written to Jira.
+When the code agent makes no PR or MR, or the run fails, no code-stage result
+is written to Jira. Run-status updates and a configured run label may already
+have been applied.
 
 Custom agents can use `fullsend issues post-comment --tracker jira` to post
 results back to Jira, and `fullsend issues create --tracker jira` to create
@@ -1439,5 +1441,5 @@ However, more pollers against the same Jira project means more API calls per cyc
 - [CEL Triggers Reference](cel-triggers-reference.md) — NormalizedEvent fields and routing rules
 - [Bring Your Own Agent](bring-your-own-agent.md) — adding custom agents
 - [Configuring agent behavior](customizing-agents.md) — harness configuration
-- [Issue commands](issues-commands.md) — `fullsend issues get`, `create`, and `post-comment`, including Jira
+- [Issue commands](issues-commands.md) — `fullsend issues get`, `create`, `post-comment`, and `transition`, including Jira
 - [Enabling fullsend on private repositories](../infrastructure/private-repositories.md#private-jira-projects-need-a-private-repository) — why a private Jira project needs a private repository

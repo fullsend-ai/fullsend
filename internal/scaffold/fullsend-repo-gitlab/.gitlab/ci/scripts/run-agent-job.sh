@@ -1144,6 +1144,14 @@ if [ "${JIRA_DISPATCH}" = "true" ]; then
     exit 1
   fi
   _FS_RUN_EVENT_ARGS=(--event-file "${JIRA_EVENT_FILE}")
+  # Hand the trigger comment to the pre-script the same way the GitHub
+  # code job does: COMMENT_BODY carries the canonical normalized comment
+  # body (see fullsend_payload_comment_body), so /fs-code --force reaches
+  # the Jira pre-script (#9187). Always assign it, so a label event runs
+  # with it empty rather than with an inherited pipeline variable. The
+  # body is untrusted text: never echo it.
+  COMMENT_BODY=$(fullsend_payload_comment_body "${EVENT_PAYLOAD_B64:-}")
+  export COMMENT_BODY
 else
   # GitLab dispatch (#9014): the poller embeds the event's full normalized
   # form when it validates and fits the transport budget. Hand it to
