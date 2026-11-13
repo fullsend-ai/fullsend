@@ -135,7 +135,7 @@ type LeaseVerifier interface {
 	StillOwnsLease(ctx context.Context, org, repo string) (bool, error)
 }
 
-// Driver owns mint/environment lifecycle and test-repo allocation for
+// Driver owns mint/environment lifecycle and test-repo creation for
 // behaviour tests. The suite constructs exactly one Driver via a Factory
 // and threads it through World; scenarios lease a ready repo and
 // release it after cleanup. Finalize tears down suite-scoped resources
@@ -153,10 +153,9 @@ type Driver interface {
 	// unknown name or double-release.
 	DeallocateRepo(ctx context.Context, repoName string) error
 
-	// Finalize always tears down suite-scoped resources (e.g. preview
-	// mint). If leases are still outstanding, it reclaims them (logging
-	// the names), completes teardown, and returns an error so leaked
-	// After-hooks fail CI without stranding resources.
+	// Finalize prunes old runs when the ephemeral repo count exceeds
+	// the keep threshold, then tears down suite-scoped resources (e.g.
+	// preview mint). Respects E2E_KEEP_REPOS.
 	Finalize(ctx context.Context) error
 
 	// Capacity is the max concurrent outstanding allocations (the
@@ -184,14 +183,20 @@ type MintURLReporter interface {
 type CLIRunnerFunc func(binary, token string, args ...string) (string, error)
 
 const (
-	// PerRepoTriageWorkflow is the workflow path for per-repo triage.
-	PerRepoTriageWorkflow = "fullsend.yaml"
+	// TriageWorkflow is the workflow file name for triage.
+	TriageWorkflow = "fullsend.yaml"
+
+	// PerRepoTriageWorkflow is the workflow file used to confirm event delivery.
+	PerRepoTriageWorkflow = TriageWorkflow
 
 	// PerRepoAgentWorkflow is the per-repo shim workflow that runs the agent.
 	PerRepoAgentWorkflow = "fullsend.yaml"
 
-	// PerRepoAgentArtifact is the upload-artifact name for triage output.
-	PerRepoAgentArtifact = "fullsend-triage"
+	// AgentArtifact is the upload-artifact name for triage output.
+	AgentArtifact = "fullsend-triage"
+
+	// PerRepoAgentArtifact is the per-repo triage artifact name.
+	PerRepoAgentArtifact = AgentArtifact
 
 	// DefaultPoolSize is the number of test-repo-NN repos in a pool org.
 	// Drivers use this as the default capacity when no override is set.

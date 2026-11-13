@@ -5,7 +5,7 @@ Feature: Emoji reaction status notifications
   Reactions do not generate GitHub notifications.
 
   Background:
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
 
   Scenario: Triage with reactions enabled posts completion reaction
     Given status notification reactions are enabled

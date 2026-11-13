@@ -36,7 +36,7 @@ func registerBaseDispatchSteps(sc *godog.ScenarioContext) {
 // "base: <baseName>.yaml" before committing.
 func givenCustomHarnessWithLocalBase(w *world.World, name, baseName, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before harness operations")
 	}
 	name = strings.TrimSpace(name)
 	baseName = strings.TrimSpace(baseName)
@@ -72,7 +72,7 @@ func givenCustomHarnessWithLocalBase(w *world.World, name, baseName, doc string)
 // LoadWithBase can fetch the base at dispatch time.
 func givenURLSourcedBaseHarness(w *world.World, name, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before base-harness operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before base-harness operations")
 	}
 	name = strings.TrimSpace(name)
 	doc = strings.TrimSpace(doc)
@@ -141,12 +141,6 @@ func givenURLSourcedBaseHarness(w *world.World, name, doc string) error {
 	}
 	w.URLBaseHarnesses[name] = rawURL
 
-	// Snapshot the current allowed_remote_resources before any modification
-	// so CleanupScenario can restore it when the slot is reused.
-	if err := snapshotAllowedResources(w); err != nil {
-		return fmt.Errorf("snapshotting allowed_remote_resources: %w", err)
-	}
-
 	// Add hosting repo URL prefix to allowed_remote_resources so
 	// LoadWithBase can fetch the base at dispatch time.
 	urlPrefix := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/", hostOwner, hostRepo)
@@ -181,7 +175,7 @@ func givenURLSourcedBaseHarness(w *world.World, name, doc string) error {
 // The base must have been created by "a URL-sourced base harness" step.
 func givenCustomHarnessWithURLBase(w *world.World, name, baseName, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before harness operations")
 	}
 	name = strings.TrimSpace(name)
 	baseName = strings.TrimSpace(baseName)
@@ -222,11 +216,6 @@ func givenCustomHarnessWithURLBase(w *world.World, name, baseName, doc string) e
 // update boilerplate shared by givenCustomHarnessWithLocalBase and
 // givenCustomHarnessWithURLBase.
 func registerLocalAgentConfig(ctx context.Context, w *world.World, name, commitMsg string) error {
-	// Snapshot agents before modification so CleanupScenario can restore.
-	if err := snapshotAgents(w); err != nil {
-		return fmt.Errorf("snapshotting agents: %w", err)
-	}
-
 	cfgPath := path.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(ctx, w.Org, w.RepoName, cfgPath)
 	if err != nil {
@@ -268,7 +257,7 @@ func registerLocalAgentConfig(ctx context.Context, w *world.World, name, commitM
 // not exist.
 func givenURLSourcedCustomHarnessWithURLBase(w *world.World, name, baseName, doc string) error {
 	if w.Org == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before harness operations")
 	}
 	name = strings.TrimSpace(name)
 	baseName = strings.TrimSpace(baseName)

@@ -586,7 +586,7 @@ func TestGivenURLSourcedBaseHarness_InvalidConfigYAML(t *testing.T) {
 
 func TestGivenURLSourcedBaseHarness_CommitAllowlistError(t *testing.T) {
 	stubRawHTTPClient(t)
-	// commitFileRepo targets "repo" (the enrolled repo), so commits to the
+	// commitFileRepo targets "repo" (the test repo), so commits to the
 	// hosting repo ("host") succeed but the allowlist config commit fails.
 	scm := &fakeURLSCM{
 		files: map[string][]byte{

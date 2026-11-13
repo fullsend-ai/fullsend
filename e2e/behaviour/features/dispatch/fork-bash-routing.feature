@@ -7,8 +7,8 @@ Feature: Fork PR bash routing smoke
   platform/actor-authorization.feature.
 
   Background:
-    Given the enrolled test repository
-    And a fork "test-repo-fork" of the enrolled test repository
+    Given a test repository with fullsend installed
+    And a fork "fork" of the test repository
 
   Scenario: Fork PR labeled ready-for-review dispatches review via bash routing
     Given a dummy agent that would:

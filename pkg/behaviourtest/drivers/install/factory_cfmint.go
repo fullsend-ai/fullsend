@@ -1,7 +1,7 @@
-// repopool_cfmint_previews.go implements the RepoPoolCFMintPreviews
-// driver. It deploys a temporary Cloudflare Worker preview mint for
-// behaviour tests and constructs a unified Driver that owns allocation,
-// deallocation, ensure, and teardown.
+// factory_cfmint.go implements the CFMint factory. It deploys a
+// temporary Cloudflare Worker preview mint for behaviour tests and
+// constructs a unified Driver that owns repo creation, deletion, and
+// teardown.
 //
 // The preview mint is self-contained: all configuration (PEMs,
 // allowlists, provenance) is passed at deploy time. Teardown
@@ -129,7 +129,6 @@ func NewRepoPoolCFMintPreviews(pool PoolConfig) (Driver, error) {
 	return buildPoolDriver(pool, plan, newMint, setupOpts, traces)
 }
 
-// Compile-time check: NewRepoPoolCFMintPreviews satisfies Factory.
 var _ Factory = NewRepoPoolCFMintPreviews
 
 // cfmintMintDriver deploys a CF Worker preview mint and uses the derived
@@ -142,15 +141,12 @@ type cfmintMintDriver struct {
 	logf         func(string, ...any)
 	cfg          cfmintConfig
 	workerName   string
-	previewAlias string // set during Install
+	previewAlias string
 	cliRunner    CLIRunnerFunc
 }
 
-// Compile-time check that cfmintMintDriver implements mintDriver.
 var _ mintDriver = (*cfmintMintDriver)(nil)
 
-// newCFMintDriver creates a CF mint driver. Returns an error if the
-// configuration is invalid (missing PEMs, empty suite name).
 func newCFMintDriver(
 	client forge.Client,
 	token, binary, gcpProjectID string,
@@ -190,20 +186,10 @@ func newCFMintDriver(
 	}, nil
 }
 
-// CFMintWorkerName derives the CF Worker script name from a suite name.
-// The name clearly indicates it is the e2e/BT worker for that suite.
 func CFMintWorkerName(suiteName string) string {
 	return suiteName + "-mint"
 }
 
-// ParseCFMintURLFromOutput extracts the mint URL printed by `fullsend
-// mint deploy`. The CLI prints a line like:
-//
-//	Worker deployed at https://<alias>-<worker>.<subdomain>.workers.dev
-//
-// This is the canonical way to obtain the preview URL from a deploy
-// invocation; callers should not re-derive it because the correct
-// workers.dev subdomain is only known at deploy time.
 func ParseCFMintURLFromOutput(output string) string {
 	for _, line := range strings.Split(output, "\n") {
 		line = strings.TrimSpace(line)
@@ -220,9 +206,6 @@ func ParseCFMintURLFromOutput(output string) string {
 	return ""
 }
 
-// GenerateCFMintPreviewAlias creates a unique preview alias for a BT run.
-// Format: bt-<8-hex-chars> (e.g., bt-a1b2c3d4). The alias satisfies
-// the CF preview alias validation: 2-63 lowercase alphanumeric or hyphens.
 func GenerateCFMintPreviewAlias() (string, error) {
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
@@ -295,7 +278,6 @@ func (d *cfmintMintDriver) Install(_ context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("deploying CF preview mint for BT: %w", err)
 	}
-
 	return mintURL, nil
 }
 
@@ -323,9 +305,6 @@ func (d *cfmintMintDriver) deployCFMint(alias string) (string, error) {
 	return mintURL, nil
 }
 
-// teardownPreview tears down the CF preview mint if one was deployed.
-// Returns an error on delete failure so Finalize can join it with any
-// lease-leak error.
 func (d *cfmintMintDriver) teardownPreview() error {
 	if d.previewAlias == "" {
 		return nil
@@ -342,7 +321,6 @@ func (d *cfmintMintDriver) teardownPreview() error {
 
 // --- Env helpers ---
 
-// envSuiteName returns the BT suite name from env or a default.
 func envSuiteName() string {
 	if v := os.Getenv("BEHAVIOUR_SUITE_NAME"); v != "" {
 		return v
@@ -374,8 +352,7 @@ func envAppSet() string {
 }
 
 // envPoolSize returns the pool size from env or DefaultPoolSize.
-// When BEHAVIOUR_POOL_SIZE is set but cannot be parsed as a positive
-// integer, a warning is logged via logf and the default is used.
+// When BEHAVIOUR_POOL_SIZE is invalid, it logs a warning and uses the default.
 func envPoolSize(logf func(string, ...any)) int {
 	if v := os.Getenv("BEHAVIOUR_POOL_SIZE"); v != "" {
 		var n int
@@ -386,6 +363,8 @@ func envPoolSize(logf func(string, ...any)) int {
 	}
 	return DefaultPoolSize
 }
+
+// --- PEM materialization ---
 
 // buildRepoList constructs a comma-separated list of org/test-repo-NN.
 func buildRepoList(org string, poolSize int) string {

@@ -390,46 +390,7 @@ func TestSetupCFMintPEMDir_MaterializesPEMs(t *testing.T) {
 	assert.Equal(t, "fake-pem-data", string(data))
 }
 
-// --- envPoolSize / envSuiteName / envAppSet env helper tests ---
-
-func TestEnvPoolSize_Default(t *testing.T) {
-	// Without BEHAVIOUR_POOL_SIZE set, should return DefaultPoolSize.
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "")
-	assert.Equal(t, DefaultPoolSize, envPoolSize(t.Logf))
-}
-
-func TestEnvPoolSize_Override(t *testing.T) {
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "7")
-	assert.Equal(t, 7, envPoolSize(t.Logf))
-}
-
-func TestEnvPoolSize_InvalidFallsBackToDefault(t *testing.T) {
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "not-a-number")
-	var logged string
-	logf := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
-	assert.Equal(t, DefaultPoolSize, envPoolSize(logf))
-	assert.Contains(t, logged, "not-a-number")
-	assert.Contains(t, logged, "WARNING")
-}
-
-func TestEnvPoolSize_ZeroFallsBackToDefault(t *testing.T) {
-	// Zero is not a valid pool size (must be > 0), so fallback.
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "0")
-	var logged string
-	logf := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
-	assert.Equal(t, DefaultPoolSize, envPoolSize(logf))
-	assert.Contains(t, logged, `"0"`)
-	assert.Contains(t, logged, "WARNING")
-}
-
-func TestEnvPoolSize_NegativeFallsBackToDefault(t *testing.T) {
-	t.Setenv("BEHAVIOUR_POOL_SIZE", "-3")
-	var logged string
-	logf := func(format string, args ...any) { logged = fmt.Sprintf(format, args...) }
-	assert.Equal(t, DefaultPoolSize, envPoolSize(logf))
-	assert.Contains(t, logged, "-3")
-	assert.Contains(t, logged, "WARNING")
-}
+// --- envSuiteName / envAppSet env helper tests ---
 
 func TestEnvSuiteName_Default(t *testing.T) {
 	t.Setenv("BEHAVIOUR_SUITE_NAME", "")
@@ -467,11 +428,9 @@ func TestEnvConfigPreset_URL(t *testing.T) {
 	assert.Equal(t, "https://example.com/preset.yaml", envConfigPreset())
 }
 
-// --- NewRepoPoolCFMintPreviews factory tests ---
+// --- NewCFMintFactory factory tests ---
 
-func TestNewRepoPoolCFMintPreviews_NoPEMs_FailsEarly(t *testing.T) {
-	// When no TEST_*_PEM env vars are set, setupCFMintPEMDir returns "",
-	// and newCFMintDriver rejects the empty pemDir.
+func TestNewCFMintFactory_NoPEMs_FailsEarly(t *testing.T) {
 	for _, envVar := range cfmintPEMRoleEnvVars {
 		t.Setenv(envVar, "")
 	}

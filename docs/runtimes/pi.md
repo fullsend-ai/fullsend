@@ -59,7 +59,7 @@ actually called.
 > calls through the hook adapter, run-scoped provider deleted at the end, expired in place under
 > `--keep-sandbox`), plus the placeholder-generation experiments recorded in the ADR. The WIF path
 > has no live run yet; `features/runtime/pi-openai.feature` stays gated on `runtime-pi-openai`
-> until an OpenAI organization is mapped to the pool repositories.
+> until an OpenAI organization is mapped to the test org's repositories.
 
 > **Any model through an inference gateway (experimental).** A `gateway/<model>` spec sends the
 > model call through an OpenAI/Anthropic-compatible gateway (Praxis, LiteLLM, agentgateway, ...)

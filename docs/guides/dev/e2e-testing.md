@@ -98,7 +98,7 @@ Required repository secrets:
 |--------|---------|
 | `E2E_GCP_WIF_PROVIDER` | GCP WIF provider (inference / auxiliary GCP access) |
 | `E2E_GCP_SERVICE_ACCOUNT` | GCP service account for WIF |
-| `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
+| `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`repos install --inference-project`) |
 | `TEST_CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for CF mint behaviour-test deploys (mapped to env `CLOUDFLARE_ACCOUNT_ID` in the behaviour job) |
 | `TEST_CLOUDFLARE_API_TOKEN` | Test-only Cloudflare API token for Wrangler against Worker `mint-test` (DEV) and `stage-mint` (STAGE) (mapped to env `CLOUDFLARE_API_TOKEN`; distinct from site-deploy `CLOUDFLARE_*`) |
 | `TEST_ACTOR_WRITE_PAT` | Classic PAT for the write-level human-like test actor (`fstest-write`); exposed to the behaviour job under the same env name |
@@ -127,7 +127,7 @@ Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so ru
 
 ### Behaviour tests and per-repo mint enrollment
 
-Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org behaviour repos must be enrolled once by a GCP admin on the hosted mint project.
+Behaviour tests install fullsend via `repos install --fullsend-ref` on ephemeral `bt-{randHex}-{hint}` repos in a single configurable org (`BEHAVIOUR_ORG`, default `fullsend-ai-test`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires wildcard per-repo mint enrollment (`PER_REPO_WIF_REPOS=*`). The install driver does **not** run `mint enroll` — the test org must be enrolled once by a GCP admin on the hosted mint project.
 
 Behaviour tests lease numbered `halfsend-NN/test-repo-01` … `test-repo-12` slots across the pool orgs via the shared slot driver; each claim **creates** the slot repo and installs into it, and the release deletes it (see [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver)). Pre-provisioning numbered repos in the pool org is no longer required — mint enrollment for those names is still pre-provisioned so it is not on the critical path. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo), nor the `*-mint-host` and `*-mint-unapproved` probe hosts of the [GitHub mint scope scenarios](behaviour-testing.md#github-mint-scope-scenarios) (the CF mint drivers list `*-mint-host` as a workflow host only, at deploy time). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
 
@@ -147,10 +147,6 @@ export GCP_PROJECT=it-gcp-konflux-dev-fullsend
 for i in $(seq -w 1 22); do
   go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo" \
     --project="$GCP_PROJECT" --region=us-central1
-  for j in $(seq -w 1 12); do
-    go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
-      --project="$GCP_PROJECT" --region=us-central1
-  done
 done
 ```
 

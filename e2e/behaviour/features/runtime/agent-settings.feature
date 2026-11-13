@@ -11,7 +11,7 @@
 Feature: Per-agent runtime and model on agents: entries in config.yaml
 
   Scenario: an agents: entry selects the runtime for one agent over the repo-wide key
-    Given the enrolled test repository
+    Given a test repository with fullsend installed
     And the repository runtime is "claude"
     And the repository agents are configured with:
       """

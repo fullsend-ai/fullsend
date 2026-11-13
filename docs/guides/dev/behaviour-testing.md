@@ -110,7 +110,7 @@ And the agent will output issues.out with:
 
 ### Runtime steps
 
-Every scenario runs the stage under the dummy runtime selected at install time (`github setup … --runtime dummy`). The runtime layer gets two kinds of coverage without leasing extra repos or adding wall time:
+Every scenario runs the stage under the dummy runtime selected at install time (`repos install … --runtime dummy`). The runtime layer gets two kinds of coverage without creating extra repos or adding wall time:
 
 - **Core (every run):** `Then the run selected the "dummy" runtime` reads the `runtime` field the runner writes into `metrics.json`, proving the repo's `.fullsend/config.yaml` `runtime:` reached backend selection (or `config.base.yaml` when `BEHAVIOUR_CONFIG_PRESET` supplied a preset). Use it in one representative scenario per stage; the artifact is already downloaded for the other assertions.
 - **Runtime-specific (gated):** `Given the repository runtime is "<name>"`
@@ -404,7 +404,7 @@ The procedures in this guide need the following before the first step:
 ## Running locally
 
 ```bash
-# Local: gh auth login or export GH_TOKEN/GITHUB_TOKEN with access to halfsend org pool
+# Local: gh auth login or export GH_TOKEN/GITHUB_TOKEN with access to the test org (BEHAVIOUR_ORG)
 make behaviour-test
 ```
 
@@ -431,7 +431,7 @@ data races under concurrent execution.
 To adjust concurrency:
 
 ```bash
-# Run at default concurrency (12)
+# Run at default concurrency (20)
 make behaviour-test
 
 # Run with explicit concurrency
@@ -1108,7 +1108,7 @@ The three test actor accounts (`fstest-write`, `fstest-triage`, `fstest-outsider
 
 - A new test actor account is added
 - An existing account is granted additional repository or org access
-- The pool-org infrastructure changes (new orgs, new repo naming)
+- The test-org infrastructure changes (org naming, repo patterns)
 
 To verify, check org membership and repository permissions via the GitHub API:
 
@@ -1130,15 +1130,15 @@ See [behaviour-drivers.md](behaviour-drivers.md) for driver configuration and [A
 
 Fork dispatch scenarios test `pull_request_target` harness triggering from cross-fork pull requests.
 
-### Logical fork name → leased base
+### Logical fork name → ephemeral base
 
-Gherkin keeps a stable logical name (for example `"test-repo-fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-fork`** when the scenario has leased a numbered base (for example leased `test-repo-07` → actual fork repo `test-repo-07-fork`). Feature files should keep using `"test-repo-fork"`; do not hard-code `test-repo-NN-fork` in Gherkin.
+Gherkin keeps a stable logical name (for example `"fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-{forkName}`** when the scenario has an ephemeral base (for example `bt-20260906T020406-a1b2c3d4` → actual fork repo `bt-20260906T020406-a1b2c3d4-fork`). Feature files should use `"fork"` as the logical fork name; do not hard-code ephemeral names in Gherkin.
 
-### Pool-org prerequisites
+### Test-org prerequisites
 
-Fork scenarios require the pool org to have:
+Fork scenarios require the test org to have:
 
-- **Permission to create forks** of the leased enrolled base (`test-repo-NN`) under the same org. The `Given a fork` step creates `{leased}-fork` idempotently when missing.
+- **Permission to create forks** of the ephemeral base repo under the same org. The `Given a fork` step creates `{repoName}-fork` idempotently when missing.
 - **The same installation token** must have write access to both the base repo and the fork repo within the org, since the e2e bot commits to the fork and opens cross-fork PRs.
 
 Scenarios that fork as a human-like test actor (`owned by the outsider`) additionally require:
@@ -1154,18 +1154,18 @@ Scenarios that fork as a human-like test actor (`owned by the outsider`) additio
 | Fork branches | Per-scenario | Deleted by `CleanupScenario` (before repo deletion) |
 | Fork PRs | Per-scenario | Closed by `CleanupScenario` |
 
-Fork repos are **ephemeral**: created when the `Given a fork` step runs and deleted by `CleanupScenario` after the scenario completes. Fork PRs are opened against the base repo (not the fork). `CleanupScenario` closes them via `CloseIssue` on the base repo, deletes the head branch on the fork repo, and then deletes the fork repo itself. Do **not** mint-enroll fork names — forks are PR sources only; mint stays on the enrolled base.
+Fork repos are **ephemeral**: created when the `Given a fork` step runs and deleted by `CleanupScenario` after the scenario completes. Fork PRs are opened against the base repo (not the fork). `CleanupScenario` closes them via `CloseIssue` on the base repo, deletes the head branch on the fork repo, and then deletes the fork repo itself. Do **not** mint-enroll fork names — forks are PR sources only; mint stays on the base repo.
 
 A fork **owned by a test actor** lives in that actor's own account, not the pool org. The forge names it, by default after the base repo (for example `fstest-outsider/test-repo-07`), and adds a numeric suffix when the actor already has a repo with that name. The logical fork name in Gherkin is not used. `World.ForkSCM` records the actor's driver, and fork-side operations go through it: branch creation, commits, and the branch and repo deletes in `CleanupScenario`. The e2e installation token has no access to a personal account. The pool's repo ensurer only deletes leftover `{name}-fork` repos inside the org, so a fork whose cleanup failed stays in the actor's account until someone deletes it.
 
 ### Background step usage
 
-Fork scenarios share a common `Background:` block that sets up the enrolled test repository and the fork:
+Fork scenarios share a common `Background:` block that sets up the test repository and the fork:
 
 ```gherkin
 Background:
-  Given the enrolled test repository
-  And a fork "test-repo-fork" of the enrolled test repository
+  Given a test repository with fullsend installed
+  And a fork "fork" of the test repository
 ```
 
 The `Given a fork` step remaps the logical name as above and is idempotent for that actual fork repo. Each scenario then creates its own branch and PR within the fork.
@@ -1250,11 +1250,11 @@ Reference: [`awaitCreation`](../../../pkg/behaviourtest/drivers/install/ensure.g
 
 ### Fork name derivation depends on `World.RepoName`
 
-The `Given a fork` step resolves the fork repo name by replacing the `test-repo` prefix with `World.RepoName`. For example, the logical Gherkin name `"test-repo-fork"` with a leased base `test-repo-07` resolves to `test-repo-07-fork`.
+The `Given a fork` step resolves the fork repo name by appending `-{forkName}` to `World.RepoName`. For example, the logical Gherkin name `"fork"` with an ephemeral base `bt-20260906T020406-a1b2c3d4` resolves to `bt-20260906T020406-a1b2c3d4-fork`.
 
-When modifying repo naming, leasing, or provisioning logic, verify that fork steps still resolve correctly. If `World.RepoName` changes (e.g., because leasing logic changes), fork resolution breaks — scenarios that use `Given a fork` will create or look for the wrong repo.
+When modifying repo naming or provisioning logic, verify that fork steps still resolve correctly. If `World.RepoName` changes (e.g., because naming logic changes), fork resolution breaks — scenarios that use `Given a fork` will create or look for the wrong repo.
 
-Reference: [`resolveForkName`](../../../pkg/behaviourtest/steps/fork.go) — maps logical fork names to actual repo names based on the leased base.
+Reference: [`resolveForkName`](../../../pkg/behaviourtest/steps/fork.go) — maps logical fork names to actual repo names based on the ephemeral base.
 
 ### Fork name uniqueness lags deletion
 
@@ -1264,7 +1264,7 @@ Reference: [`createFork`](../../../pkg/behaviourtest/steps/fork.go) — retries 
 
 ### Actions workflow readiness after repo creation
 
-After creating a repo and committing workflow files via `fullsend github setup`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
+After creating a repo and installing fullsend via `repos install`, GitHub Actions needs time to index the workflow before it can receive dispatch events. Events dispatched before the workflow is indexed are **silently dropped** — no error is returned, but the workflow never runs.
 
 The install driver's internal ensurer handles this by polling `GetWorkflow`
 until the workflow is visible and its state is `active`. Polls back off
@@ -1306,9 +1306,9 @@ URL dispatch scenarios test `FetchAgentHarness` URL resolution for agents whose 
 
 ### Harness-hosting repository
 
-The `Given a harness-hosting repository "<name>"` step creates a public repository in the pool org to host harness YAML files. The repo is:
+The `Given a harness-hosting repository "<name>"` step creates a public repository in the test org to host harness YAML files. The repo is:
 
-- **Ephemeral / per-scenario** — created per-scenario and deleted by `CleanupScenario` (same lifecycle as fork repos). When a leased repo is in use, the logical name is remapped via `resolveHostRepoName` (e.g. `"url-harness-host"` + leased `"test-repo-07"` → `"test-repo-07-url-harness-host"`) so parallel scenarios each get their own isolated hosting repo.
+- **Ephemeral / per-scenario** — created per-scenario and deleted by `CleanupScenario` (same lifecycle as fork repos). When an ephemeral repo is in use, the logical name is remapped via `resolveHostRepoName` (e.g. `"url-harness-host"` + ephemeral `"bt-a1b2c3d4-my-scenario"` → `"bt-a1b2c3d4-my-scenario-url-harness-host"`) so parallel scenarios each get their own isolated hosting repo.
 - **Public** — required for unauthenticated `raw.githubusercontent.com` access. The step calls `EnsureRepoPublic` to detect and fix org policies that force repos private.
 
 ### URL-sourced custom harness
@@ -1331,13 +1331,13 @@ URL dispatch scenarios share a common `Background:` block:
 
 ```gherkin
 Background:
-  Given the enrolled test repository
+  Given a test repository with fullsend installed
   And a harness-hosting repository "url-harness-host"
 ```
 
 ### FetchPolicy and binary freshness
 
-URL-dispatch scenarios require a vendored CLI binary that includes `FetchPolicy`-aware harness dispatch. Production dispatch uses `fetch.DefaultPolicy` (allows `github.com` and `raw.githubusercontent.com`) when `Options.FetchPolicy` is nil — this is what enables URL-sourced agents to resolve `raw.githubusercontent.com` URLs.
+URL-dispatch scenarios require a CLI binary that includes `FetchPolicy`-aware harness dispatch. Production dispatch uses `fetch.DefaultPolicy` (allows `github.com` and `raw.githubusercontent.com`) when `Options.FetchPolicy` is nil — this is what enables URL-sourced agents to resolve `raw.githubusercontent.com` URLs.
 
 The install driver's internal ensurer always re-vendors the CLI binary (`github setup --vendor`) even when a prior install's post-install validation passes. This guarantees leased pool repos run the binary built from the current checkout rather than a stale binary from a previous CI run. Without re-vendoring, pool repos that passed validation would keep a pre-fix binary and silently fail to dispatch URL-sourced agents.
 
@@ -1589,9 +1589,9 @@ suiteRunner := godog.TestSuite{
 
 **Shared public preview mints ([#8681](https://github.com/fullsend-ai/fullsend/issues/8681)):** the DEV driver deploys one public preview mint per mint group instead of one per org, and every mint uses one job-wide status group. `install.RepoLease` gains `MintStatusGroup` and `MintWorkflowHostRepos`, and `World` gains the matching `MintStatusGroup` and `MintWorkflowHostRepos`, set by the enrolled-repository step. See [Repo allocation via the shared slot driver](#repo-allocation-via-the-shared-slot-driver).
 
-**`world.World.Install` removed:** The `Install install.State` field on `World` is removed. Steps use `w.Org` + `w.RepoName` (the allocated repo name) and per-repo constants from the `install` package (`PerRepoTriageWorkflow`, `PerRepoAgentWorkflow`, `PerRepoAgentArtifact`) instead of config indirection through `State`.
+**`world.World.Install` removed:** The `Install install.State` field on `World` is removed. Steps use `w.Org` + `w.RepoName` (the created repo name) and per-repo constants from the `install` package (`TriageWorkflow`, `AgentWorkflow`, `AgentArtifact`) instead of config indirection through `State`.
 
-**`world.World.Ensurer` replaced with `world.World.Driver`:** The `Ensurer` field on `World` is replaced by `Driver install.Driver` (the unified driver). External code that set `w.Ensurer` must set `w.Driver` instead — the driver handles both pool leasing and ensure internally.
+**`world.World.Ensurer` replaced with `world.World.Driver`:** The `Ensurer` field on `World` is replaced by `Driver install.Driver` (the unified driver). External code that set `w.Ensurer` must set `w.Driver` instead — the driver handles repo creation/deletion and ensure internally.
 
 **`steps.Register` signature change:** The function signature changed from `Register(ctx, w)` (where `ctx` was a `*godog.ScenarioContext` and `w` was a `*world.World`) to `Register(sc)` starting in the same release. Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
 

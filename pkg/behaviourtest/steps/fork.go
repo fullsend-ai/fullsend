@@ -95,7 +95,7 @@ const createForkPoll = 2 * time.Second
 // "test-repo-07-fork". See resolveForkName.
 func givenFork(w *world.World, forkName string) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before fork operations")
+		return fmt.Errorf("no repo configured; call 'Given a test repository with fullsend installed' before fork operations")
 	}
 
 	resolved := resolveForkName(w, forkName)
@@ -221,27 +221,12 @@ func awaitForkReady(ctx context.Context, w *world.World, owner, repo string, max
 	)
 }
 
-// resolveForkName maps a logical fork name from a Gherkin feature file to
-// the actual GitHub repository name. When a leased repo is in use
-// (w.LeasedRepoName is set), the logical name's suffix (relative to the
-// default "test-repo" base) is appended to the leased repo name.
+// resolveForkName derives the fork repo name from the ephemeral repo name.
+// The logical name from the Gherkin feature file is used as a suffix:
 //
-// Examples:
-//
-//	"test-repo-fork" + leased "test-repo-07" → "test-repo-07-fork"
-//	"test-repo-fork" + no lease             → "test-repo-fork" (unchanged)
-//	"custom-fork"    + leased "test-repo-07" → "custom-fork"   (no match)
-func resolveForkName(w *world.World, logicalName string) string {
-	if w.LeasedRepoName == "" {
-		return logicalName
-	}
-	const defaultTestRepo = "test-repo"
-	suffix := strings.TrimPrefix(logicalName, defaultTestRepo)
-	if suffix == logicalName {
-		// Logical name doesn't start with the default base — use as-is.
-		return logicalName
-	}
-	return w.RepoName + suffix
+//	w.RepoName="bt-a1b2c3d4-triage" forkName="fork" → "bt-a1b2c3d4-triage-fork"
+func resolveForkName(w *world.World, forkName string) string {
+	return w.RepoName + "-" + forkName
 }
 
 // isNameCollisionError reports whether err looks like GitHub still

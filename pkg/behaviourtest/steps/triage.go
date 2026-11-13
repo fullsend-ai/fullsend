@@ -17,7 +17,13 @@ func registerTriageSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the enrolled test repository$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenEnrolledTestRepository(ctx, world.FromContext(ctx))
 	})
+	sc.Step(`^a test repository with fullsend installed$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenEnrolledTestRepository(ctx, world.FromContext(ctx))
+	})
 	sc.Step(`^an enrolled repository "([^"]+)"$`, func(ctx context.Context, fullName string) (context.Context, error) {
+		return ctx, givenEnrolledRepository(world.FromContext(ctx), fullName)
+	})
+	sc.Step(`^an installed repository "([^"]+)"$`, func(ctx context.Context, fullName string) (context.Context, error) {
 		return ctx, givenEnrolledRepository(world.FromContext(ctx), fullName)
 	})
 	sc.Step(`^an issue with title "([^"]+)" and body containing "([^"]+)"$`, func(ctx context.Context, title, bodyContains string) (context.Context, error) {
