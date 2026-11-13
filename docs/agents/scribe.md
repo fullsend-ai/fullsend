@@ -262,7 +262,11 @@ external harness scripts in `fullsend-ai/agents` query the Jira backlog using
 automatically pass these to `fullsend issues create` as `FULLSEND_JIRA_TOKEN`
 and `FULLSEND_JIRA_EMAIL`. The harness below maps them from the
 `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL` repository secrets;
-there is no `JIRA_TOKEN` or `JIRA_USER_EMAIL` secret. (Note that OAuth
+there is no `JIRA_TOKEN` or `JIRA_USER_EMAIL` secret. Pass the secrets to the
+fullsend action as its `jira-token` and `jira-email` inputs
+(`jira-token: ${{ secrets.FULLSEND_JIRA_TOKEN }}`), not as step `env:`: the
+action sets `FULLSEND_JIRA_TOKEN` from its input and unsets it when the input
+is empty. (Note that OAuth
 credentials are not supported by the scribe harness scripts; a token is
 required).
 

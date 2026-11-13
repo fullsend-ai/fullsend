@@ -967,9 +967,10 @@ WIF provider with your secret manager. Integrations fullsend owns, such as the
 inference gateway, keep their own named secrets. If your repository has the
 Jira secrets `FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL`
 ([Jira integration](jira-integration.md)), the reusable workflow passes them
-to Jira-sourced runs. Declare them in `env.runner`
+to Jira-sourced runs only. Declare them in `env.runner` of an overlay
+guarded on `event.source.system == "jira"`
 (`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`) and your `harness-run`
-scripts receive them; this channel is for every other secret and every other
+scripts receive them; a top-level reference fails every other run; this channel is for every other secret and every other
 stage. On GitHub, store
 all such tokens in one secret, `FULLSEND_GITHUB_RUNNER_SECRETS`, as a JSON
 object of name → value. The installed shim forwards it, and the reusable

@@ -197,6 +197,11 @@ Jira poller and Jira-originated status updates (see
 [Jira polling](../../cli/repos.md#jira-polling)). GitLab requires the client
 secret to meet its masking rules.
 
+The built-in triage and code agents cannot use client credentials yet. Their
+sandbox `jira-ro` provider and result-write scripts need `FULLSEND_JIRA_TOKEN`,
+which cannot be set together with the client credentials. Support for agent
+runs is tracked in [#9220](https://github.com/fullsend-ai/fullsend/issues/9220).
+
 Use the same Jira account for the poller, status notifications, and agent
 result writes. The poller treats only its own account as a bot, so writes from
 another account dispatch agents again. If the token belongs to a person:
@@ -502,13 +507,19 @@ implementation
 |---|---|
 | `FULLSEND_JIRA_TOKEN` | Scoped Jira API token for the poller and agent run-status updates; use instead of the client credentials below |
 | `FULLSEND_JIRA_EMAIL` | Optional. Bot user's email for a scoped user token. Omit it for a service-account token |
-| `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Alternative to `FULLSEND_JIRA_TOKEN`: a service account's OAuth 2.0 credential (see [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)) |
+| `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Alternative to `FULLSEND_JIRA_TOKEN`: a service account's OAuth 2.0 credential (see [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)). Not yet supported by the built-in triage and code agents |
 | `JIRA_BASE_URL` | Jira site URL used by built-in agent result-write scripts. For Jira-sourced runs, `fullsend run` replaces it with `tracker.jira.base_url` and also sets `JIRA_API_URL` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) |
 
 > **Upgrading:** Fullsend and the built-in agents no longer read the
 > `JIRA_TOKEN` and `JIRA_USER_EMAIL` repository secrets. Store the token once,
 > as `FULLSEND_JIRA_TOKEN`, and a bot user's email as `FULLSEND_JIRA_EMAIL`.
-> After you upgrade, you can delete the two old secrets.
+> After you upgrade, you can delete the two old secrets. A harness whose
+> `base:` pins a fullsend-ai/agents commit must move to a version whose
+> `jira-ro` provider reads `FULLSEND_JIRA_TOKEN`. If your repository
+> uses `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`, do not add
+> `FULLSEND_JIRA_TOKEN`: the two cannot be set together, and the built-in
+> Jira agents need a token until
+> [#9220](https://github.com/fullsend-ai/fullsend/issues/9220).
 
 The poller and Jira-originated agent workflows use either the token and
 optional email or the OAuth client ID and secret. They take the Jira site and
