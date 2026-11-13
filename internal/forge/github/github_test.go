@@ -178,6 +178,41 @@ func TestRepoCreatedAt(t *testing.T) {
 	assert.True(t, created.Equal(repo.CreatedAt), "CreateRepo CreatedAt = %v", repo.CreatedAt)
 }
 
+func TestGetRepo_ReportsUpdatedAt(t *testing.T) {
+	updated := time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/myorg/lock-1", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         int64(5),
+			"name":       "lock-1",
+			"full_name":  "myorg/lock-1",
+			"updated_at": updated.Format(time.RFC3339),
+		})
+	}))
+	defer srv.Close()
+
+	repo, err := newTestClient(t, srv).GetRepo(context.Background(), "myorg", "lock-1")
+	require.NoError(t, err)
+	assert.True(t, updated.Equal(repo.UpdatedAt), "GetRepo UpdatedAt = %v", repo.UpdatedAt)
+}
+
+func TestUpdateRepoDescription(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPatch, r.Method)
+		assert.Equal(t, "/repos/myorg/lock-1", r.URL.Path)
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]any{"name": "lock-1"})
+	}))
+	defer srv.Close()
+
+	err := newTestClient(t, srv).UpdateRepoDescription(context.Background(), "myorg", "lock-1", "owner=run-7")
+	require.NoError(t, err)
+	assert.Equal(t, "owner=run-7", gotBody["description"])
+	_, hasPrivate := gotBody["private"]
+	assert.False(t, hasPrivate, "description update must not touch visibility")
+}
+
 // contentsServer is a minimal Contents API for one file that enforces the
 // "sha" precondition the way GitHub does.
 type contentsServer struct {

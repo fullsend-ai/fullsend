@@ -112,6 +112,27 @@ func TestFakeClient_CreateRepo(t *testing.T) {
 	assert.Equal(t, "new-repo", fc.CreatedRepos[0].Name)
 }
 
+func TestFakeClient_UpdateRepoDescription(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	created, err := fc.CreateRepo(ctx, "org", "lock-1", "owner=run-1", false)
+	require.NoError(t, err)
+
+	err = fc.UpdateRepoDescription(ctx, "org", "lock-1", "owner=run-2")
+	require.NoError(t, err)
+
+	got, err := fc.GetRepo(ctx, "org", "lock-1")
+	require.NoError(t, err)
+	assert.Equal(t, "owner=run-2", got.Description)
+	assert.False(t, got.UpdatedAt.Before(created.UpdatedAt),
+		"a description update must not move UpdatedAt backwards (heartbeat bumps it)")
+
+	// Unknown repo is a not-found error.
+	err = fc.UpdateRepoDescription(ctx, "org", "missing", "x")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
 func TestFakeClient_CreateRepo_DuplicateReturnsErrAlreadyExists(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{}
@@ -852,11 +873,12 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 	pack := func(v ...any) []any { return v }
 	return map[string]func(fc *FakeClient) []any{
 		// Client
-		"ListOrgRepos":         func(fc *FakeClient) []any { return pack(fc.ListOrgRepos(ctx, "o", true)) },
-		"GetRepo":              func(fc *FakeClient) []any { return pack(fc.GetRepo(ctx, "o", "r")) },
-		"CreateRepo":           func(fc *FakeClient) []any { return pack(fc.CreateRepo(ctx, "o", "new", "d", false)) },
-		"UpdateRepoVisibility": func(fc *FakeClient) []any { return pack(fc.UpdateRepoVisibility(ctx, "o", "r", true)) },
-		"DeleteRepo":           func(fc *FakeClient) []any { return pack(fc.DeleteRepo(ctx, "o", "gone")) },
+		"ListOrgRepos":          func(fc *FakeClient) []any { return pack(fc.ListOrgRepos(ctx, "o", true)) },
+		"GetRepo":               func(fc *FakeClient) []any { return pack(fc.GetRepo(ctx, "o", "r")) },
+		"CreateRepo":            func(fc *FakeClient) []any { return pack(fc.CreateRepo(ctx, "o", "new", "d", false)) },
+		"UpdateRepoVisibility":  func(fc *FakeClient) []any { return pack(fc.UpdateRepoVisibility(ctx, "o", "r", true)) },
+		"UpdateRepoDescription": func(fc *FakeClient) []any { return pack(fc.UpdateRepoDescription(ctx, "o", "r", "d")) },
+		"DeleteRepo":            func(fc *FakeClient) []any { return pack(fc.DeleteRepo(ctx, "o", "gone")) },
 		"FindExistingFork": func(fc *FakeClient) []any {
 			return pack(fc.FindExistingFork(ctx, "o", "r"))
 		},

@@ -553,6 +553,13 @@ type Repository struct {
 	// CreatedAt is when the repository was created. Populated by the
 	// GitHub CreateRepo and GetRepo; zero when the forge did not report it.
 	CreatedAt time.Time
+	// UpdatedAt is when the repository was last updated (its metadata or
+	// contents). Populated by GetRepo on GitHub (updated_at) and GitLab
+	// (last_activity_at); zero when the forge did not report it. The
+	// behaviour-test lock pool (ADR 0115) uses it as a liveness signal:
+	// a run heartbeats its lock by re-writing the repo description, which
+	// bumps UpdatedAt.
+	UpdatedAt time.Time
 }
 
 // ChangeProposal represents a pull request or merge request.
@@ -1026,6 +1033,12 @@ type Client interface {
 	CreateRepo(ctx context.Context, org, name, description string, private bool) (*Repository, error)
 	// UpdateRepoVisibility sets a repository's visibility to public or private.
 	UpdateRepoVisibility(ctx context.Context, owner, repo string, private bool) error
+	// UpdateRepoDescription sets a repository's description, leaving all
+	// other fields unchanged. The behaviour-test lock pool (ADR 0115)
+	// uses it to heartbeat a held lock (re-writing the same owner token
+	// bumps the repo's UpdatedAt) and is otherwise a thin wrapper over the
+	// forge's repo-update endpoint.
+	UpdateRepoDescription(ctx context.Context, owner, repo, description string) error
 	DeleteRepo(ctx context.Context, owner, repo string) error
 
 	// FindExistingFork checks whether the authenticated user already has

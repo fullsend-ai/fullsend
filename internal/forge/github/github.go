@@ -1189,6 +1189,7 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 		Archived      bool      `json:"archived"`
 		Fork          bool      `json:"fork"`
 		CreatedAt     time.Time `json:"created_at"`
+		UpdatedAt     time.Time `json:"updated_at"`
 	}
 	if err := decodeJSON(resp, &r); err != nil {
 		return nil, fmt.Errorf("decode repo: %w", err)
@@ -1204,6 +1205,7 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 		Archived:      r.Archived,
 		Fork:          r.Fork,
 		CreatedAt:     r.CreatedAt,
+		UpdatedAt:     r.UpdatedAt,
 	}, nil
 }
 
@@ -1212,6 +1214,16 @@ func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo strin
 	body := struct {
 		Private bool `json:"private"`
 	}{Private: private}
+	_, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo), body)
+	return err
+}
+
+// UpdateRepoDescription sets a repository's description, leaving all other
+// fields unchanged.
+func (c *LiveClient) UpdateRepoDescription(ctx context.Context, owner, repo, description string) error {
+	body := struct {
+		Description string `json:"description"`
+	}{Description: description}
 	_, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo), body)
 	return err
 }

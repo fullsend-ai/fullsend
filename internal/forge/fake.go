@@ -564,6 +564,7 @@ func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string
 		DefaultBranch: "main",
 		Private:       private,
 		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 	f.CreatedRepos = append(f.CreatedRepos, r)
 	return &r, nil
@@ -611,6 +612,35 @@ func (f *FakeClient) UpdateRepoVisibility(_ context.Context, owner, repo string,
 	for i := range f.CreatedRepos {
 		if f.CreatedRepos[i].FullName == fullName {
 			f.CreatedRepos[i].Private = private
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
+}
+
+// UpdateRepoDescription sets a repo's description and bumps its UpdatedAt,
+// mirroring a live forge where re-writing the description advances the
+// repo's last-updated timestamp (the lock-pool heartbeat, ADR 0115).
+func (f *FakeClient) UpdateRepoDescription(_ context.Context, owner, repo, description string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateRepoDescription"); e != nil {
+		return e
+	}
+
+	fullName := owner + "/" + repo
+	for i := range f.Repos {
+		if f.Repos[i].FullName == fullName {
+			f.Repos[i].Description = description
+			f.Repos[i].UpdatedAt = time.Now()
+			return nil
+		}
+	}
+	for i := range f.CreatedRepos {
+		if f.CreatedRepos[i].FullName == fullName {
+			f.CreatedRepos[i].Description = description
+			f.CreatedRepos[i].UpdatedAt = time.Now()
 			return nil
 		}
 	}

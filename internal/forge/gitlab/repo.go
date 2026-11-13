@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
@@ -213,14 +214,17 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 	}
 
 	var p struct {
-		ID                int64  `json:"id"`
-		Name              string `json:"name"`
-		PathWithNamespace string `json:"path_with_namespace"`
-		DefaultBranch     string `json:"default_branch"`
-		Visibility        string `json:"visibility"`
-		Archived          bool   `json:"archived"`
-		ForkedFromProject any    `json:"forked_from_project"`
-		CIConfigPath      string `json:"ci_config_path"`
+		ID                int64     `json:"id"`
+		Name              string    `json:"name"`
+		PathWithNamespace string    `json:"path_with_namespace"`
+		Description       string    `json:"description"`
+		DefaultBranch     string    `json:"default_branch"`
+		Visibility        string    `json:"visibility"`
+		Archived          bool      `json:"archived"`
+		ForkedFromProject any       `json:"forked_from_project"`
+		CIConfigPath      string    `json:"ci_config_path"`
+		CreatedAt         time.Time `json:"created_at"`
+		LastActivityAt    time.Time `json:"last_activity_at"`
 	}
 	if err := decodeJSON(resp, &p); err != nil {
 		return nil, fmt.Errorf("decode repo: %w", err)
@@ -230,11 +234,17 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 		ID:            p.ID,
 		Name:          p.Name,
 		FullName:      p.PathWithNamespace,
+		Description:   p.Description,
 		DefaultBranch: p.DefaultBranch,
 		Private:       p.Visibility != "public",
 		Archived:      p.Archived,
 		Fork:          p.ForkedFromProject != nil,
 		CIConfigPath:  p.CIConfigPath,
+		CreatedAt:     p.CreatedAt,
+		// GitLab reports last_activity_at (not an updated_at); it advances
+		// when the project's description or contents change, so it serves
+		// as the lock-pool heartbeat-recency signal (ADR 0115).
+		UpdatedAt: p.LastActivityAt,
 	}, nil
 }
 
@@ -265,15 +275,28 @@ func (c *LiveClient) CreateRepo(ctx context.Context, org, name, description stri
 
 	resp, err := c.post(ctx, "/projects", payload)
 	if err != nil {
+		// A duplicate project name is reported as 400 with a
+		// "has already been taken" message (not 409), so map it to
+		// forge.ErrAlreadyExists for the lock pool's create-to-claim
+		// (ADR 0115), which relies on errors.Is(err, ErrAlreadyExists).
+		var apiErr *APIError
+		if errors.As(err, &apiErr) &&
+			(apiErr.StatusCode == http.StatusBadRequest || apiErr.StatusCode == http.StatusConflict) &&
+			strings.Contains(strings.ToLower(apiErr.Message), "has already been taken") {
+			return nil, fmt.Errorf("create repo %s: %w: %w", name, forge.ErrAlreadyExists, err)
+		}
 		return nil, fmt.Errorf("create repo: %w", err)
 	}
 
 	var p struct {
-		ID                int64  `json:"id"`
-		Name              string `json:"name"`
-		PathWithNamespace string `json:"path_with_namespace"`
-		DefaultBranch     string `json:"default_branch"`
-		Visibility        string `json:"visibility"`
+		ID                int64     `json:"id"`
+		Name              string    `json:"name"`
+		PathWithNamespace string    `json:"path_with_namespace"`
+		Description       string    `json:"description"`
+		DefaultBranch     string    `json:"default_branch"`
+		Visibility        string    `json:"visibility"`
+		CreatedAt         time.Time `json:"created_at"`
+		LastActivityAt    time.Time `json:"last_activity_at"`
 	}
 	if err := decodeJSON(resp, &p); err != nil {
 		return nil, fmt.Errorf("decode create repo response: %w", err)
@@ -283,8 +306,11 @@ func (c *LiveClient) CreateRepo(ctx context.Context, org, name, description stri
 		ID:            p.ID,
 		Name:          p.Name,
 		FullName:      p.PathWithNamespace,
+		Description:   p.Description,
 		DefaultBranch: p.DefaultBranch,
 		Private:       p.Visibility != "public",
+		CreatedAt:     p.CreatedAt,
+		UpdatedAt:     p.LastActivityAt,
 	}, nil
 }
 
@@ -294,6 +320,14 @@ func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo strin
 		visibility = "private"
 	}
 	body := map[string]string{"visibility": visibility}
+	_, err := c.put(ctx, fmt.Sprintf("/projects/%s", projectPath(owner, repo)), body)
+	return err
+}
+
+// UpdateRepoDescription sets a project's description, leaving all other
+// fields unchanged.
+func (c *LiveClient) UpdateRepoDescription(ctx context.Context, owner, repo, description string) error {
+	body := map[string]string{"description": description}
 	_, err := c.put(ctx, fmt.Sprintf("/projects/%s", projectPath(owner, repo)), body)
 	return err
 }

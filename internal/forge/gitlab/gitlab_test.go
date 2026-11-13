@@ -760,6 +760,88 @@ func TestCreateRepo_Public(t *testing.T) {
 	assert.False(t, repo.Private)
 }
 
+func TestCreateRepo_AlreadyTaken(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/groups/org", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"id": 5})
+	})
+	mux.HandleFunc("/api/v4/projects", func(w http.ResponseWriter, r *http.Request) {
+		// GitLab reports a duplicate project name as 400, not 409.
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": map[string]any{"name": []string{"has already been taken"}},
+		})
+	})
+
+	_, err := client.CreateRepo(context.Background(), "org", "lock-1", "owner=run-7", false)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrAlreadyExists,
+		"a taken project name must map to ErrAlreadyExists for the lock pool's create-to-claim")
+}
+
+func TestCreateRepo_RoundTripsTimestampsAndDescription(t *testing.T) {
+	created := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
+	activity := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/groups/org", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"id": 5})
+	})
+	mux.HandleFunc("/api/v4/projects", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "lock-1", "path_with_namespace": "org/lock-1",
+			"default_branch": "main", "visibility": "public",
+			"description":      "owner=run-7",
+			"created_at":       created.Format(time.RFC3339),
+			"last_activity_at": activity.Format(time.RFC3339),
+		})
+	})
+
+	repo, err := client.CreateRepo(context.Background(), "org", "lock-1", "owner=run-7", false)
+	require.NoError(t, err)
+	assert.Equal(t, "owner=run-7", repo.Description)
+	assert.True(t, created.Equal(repo.CreatedAt), "CreatedAt = %v", repo.CreatedAt)
+	assert.True(t, activity.Equal(repo.UpdatedAt), "UpdatedAt = %v", repo.UpdatedAt)
+}
+
+func TestGetRepo_ReportsTimestampsAndDescription(t *testing.T) {
+	created := time.Date(2026, 11, 1, 8, 0, 0, 0, time.UTC)
+	activity := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/org%2Flock-1", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id": 1, "name": "lock-1", "path_with_namespace": "org/lock-1",
+			"default_branch": "main", "visibility": "public",
+			"description":      "owner=run-7",
+			"created_at":       created.Format(time.RFC3339),
+			"last_activity_at": activity.Format(time.RFC3339),
+		})
+	})
+
+	repo, err := client.GetRepo(context.Background(), "org", "lock-1")
+	require.NoError(t, err)
+	assert.Equal(t, "owner=run-7", repo.Description)
+	assert.True(t, created.Equal(repo.CreatedAt), "CreatedAt = %v", repo.CreatedAt)
+	assert.True(t, activity.Equal(repo.UpdatedAt), "UpdatedAt (last_activity_at) = %v", repo.UpdatedAt)
+}
+
+func TestUpdateRepoDescription(t *testing.T) {
+	var gotBody map[string]any
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/org%2Flock-1", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]any{"id": 1, "name": "lock-1"})
+	})
+
+	err := client.UpdateRepoDescription(context.Background(), "org", "lock-1", "owner=run-9")
+	require.NoError(t, err)
+	assert.Equal(t, "owner=run-9", gotBody["description"])
+	_, hasVisibility := gotBody["visibility"]
+	assert.False(t, hasVisibility, "description update must not touch visibility")
+}
+
 func TestDeleteRepo(t *testing.T) {
 	client, mux := setupTest(t)
 	called := false
