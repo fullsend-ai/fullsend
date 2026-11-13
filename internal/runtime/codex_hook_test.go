@@ -94,11 +94,16 @@ func (h *codexAdapterHarness) run(phase string, input map[string]any, scripts ..
 	h.t.Helper()
 	payload, err := json.Marshal(input)
 	require.NoError(h.t, err)
+	return h.runRaw(phase, string(payload), scripts...)
+}
 
+// runRaw is run with stdin passed as is, for payloads that are not an object.
+func (h *codexAdapterHarness) runRaw(phase, stdin string, scripts ...string) codexAdapterResult {
+	h.t.Helper()
 	args := append([]string{h.adapter, phase}, scripts...)
 	cmd := exec.Command(h.python, args...)
 	cmd.Env = append(codexAdapterBaseEnv(), codexHookDigestsEnv+"="+codexHookDigestsValue(h.digests))
-	cmd.Stdin = strings.NewReader(string(payload))
+	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -705,6 +710,9 @@ func TestCodexAdapterPhasesMatchHookPlan(t *testing.T) {
 	src := string(codexHookAdapterPy)
 	assert.Contains(t, src, `PHASE_PRE = "`+string(security.HookPhasePreToolUse)+`"`)
 	assert.Contains(t, src, `PHASE_POST = "`+string(security.HookPhasePostToolUse)+`"`)
+	assert.Contains(t, src, `PHASE_SUBAGENT_STOP = "`+codexSubagentStopEvent+`"`)
+	assert.Contains(t, src, `WITHHELD_NOTICE = "`+codexWithheldNotice+`"`,
+		"the notice the V2 runtime note quotes is the one a blocked child is told to reply with")
 }
 
 func sortedKeys(m map[string]any) []string {
@@ -1768,4 +1776,187 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 			assert.Empty(t, got.stdout, "a deny writes nothing on stdout")
 		})
 	}
+}
+
+// codexSubagentStopInput is the SubagentStop payload codex sends from a
+// thread-spawned child (rust-v0.166.0 hooks/src/schema.rs
+// SubagentStopCommandInput), with message as last_assistant_message.
+func codexSubagentStopInput(message any) map[string]any {
+	return map[string]any{
+		"session_id":             "01a0eea5-cf24-7250-ae7b-df1cd9b70160",
+		"turn_id":                "t1",
+		"transcript_path":        nil,
+		"agent_transcript_path":  nil,
+		"cwd":                    "/sandbox/workspace/repo",
+		"hook_event_name":        "SubagentStop",
+		"model":                  "gpt-5.6-luna",
+		"permission_mode":        "bypassPermissions",
+		"stop_hook_active":       false,
+		"agent_id":               "01a0ee84-2a04-7d03-b84f-ad297f46b50e",
+		"agent_type":             "correctness",
+		"last_assistant_message": message,
+	}
+}
+
+// codexSubagentStopPrompt is the adapter's SUBAGENT_STOP_PROMPT, which every
+// block on the SubagentStop phase ends with.
+const codexSubagentStopPrompt = "fullsend: your final message was withheld by the security chain and was " +
+	"not delivered. Reply with exactly: " + codexWithheldNotice
+
+// assertSubagentStopBlock checks the shape codex continues a child on: exit
+// 2, a non-empty reason that ends with the withheld-notice prompt (an exit 2
+// with an empty stderr is a failed hook, which does not block,
+// hooks/src/events/stop.rs), and nothing on stdout, so no `continue: false`
+// can end the child and deliver it.
+func assertSubagentStopBlock(t *testing.T, got codexAdapterResult, reason string) {
+	t.Helper()
+	assert.Equal(t, 2, got.exitCode, got.stderr)
+	assert.Empty(t, got.stdout, "a SubagentStop block writes nothing on stdout")
+	assert.True(t, strings.HasSuffix(got.stderr, "\n\n"+codexSubagentStopPrompt),
+		"the reason ends with the withheld-notice prompt: %q", got.stderr)
+	assert.Contains(t, got.stderr, reason)
+}
+
+// TestCodexAdapter_SubagentStopGate covers the child-result gate (ADR 0159
+// decision 4): the chain runs on the child's final message as an Agent
+// result; a block continues the child with the withheld-notice prompt, a
+// clean message and an empty one pass, and every failure of the adapter
+// blocks the same way.
+func TestCodexAdapter_SubagentStopGate(t *testing.T) {
+	const flagged = "Findings: none.\nOPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx"
+
+	t.Run("the chain's block continues the child with the prompt", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		h.installPostToolChain()
+		got := h.run("SubagentStop", codexSubagentStopInput(flagged), "posttool_chain.py")
+		assertSubagentStopBlock(t, got, "withheld")
+		assert.NotContains(t, got.stderr, "sk-proj-", "the flagged value must not be echoed back")
+	})
+
+	t.Run("the scripts see the message as an Agent result", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		seen := filepath.Join(h.dir, "seen.json")
+		h.script("block.py", `open(`+pyStr(seen)+`, "w").write(json.dumps(payload))
+print(json.dumps({"decision": "block", "reason": "canary token in the result"}))
+sys.exit(1)`)
+		got := h.run("SubagentStop", codexSubagentStopInput("the result"), "block.py")
+		assertSubagentStopBlock(t, got, "canary token in the result")
+		assert.Equal(t, "canary token in the result\n\n"+codexSubagentStopPrompt, got.stderr, "the script's reason, then the prompt")
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal([]byte(readFileString(t, seen)), &payload))
+		assert.Equal(t, "Agent", payload["tool_name"])
+		assert.Equal(t, "the result", payload["tool_response"])
+		assert.Equal(t, "the result", payload["tool_result"])
+		assert.Equal(t, map[string]any{}, payload["tool_input"])
+		assert.Equal(t, "/sandbox/workspace/repo", payload["cwd"])
+	})
+
+	t.Run("a clean message passes", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		h.installPostToolChain()
+		got := h.run("SubagentStop", codexSubagentStopInput("Correctness: no findings in the diff."), "posttool_chain.py")
+		assert.Equal(t, codexAdapterResult{}, got, "exit 0 with nothing on either stream")
+	})
+
+	t.Run("the withheld notice passes, even when the chain would block", func(t *testing.T) {
+		// The child's reply to the prompt reaches the gate again. The notice
+		// carries no content, so it passes before the chain runs: a
+		// compliant child can finish even when the chain blocks for a
+		// reason that is not the message (here, a script changed on disk).
+		h := newCodexAdapterHarness(t)
+		h.script("allow.py", "sys.exit(0)")
+		require.NoError(t, os.WriteFile(filepath.Join(h.hooksDir, "allow.py"), []byte("import sys\nsys.exit(0)\n"), 0o755))
+		for _, message := range []string{codexWithheldNotice, "\n" + codexWithheldNotice + "\n"} {
+			assert.Equal(t, codexAdapterResult{}, h.run("SubagentStop", codexSubagentStopInput(message), "allow.py"))
+		}
+		// Only ASCII whitespace may pad it: anything else, such as a hidden
+		// separator, goes through the chain, which here blocks.
+		for _, message := range []string{codexWithheldNotice + " and the result", codexWithheldNotice + "\u2028", "\x1c" + codexWithheldNotice} {
+			assertSubagentStopBlock(t, h.run("SubagentStop", codexSubagentStopInput(message), "allow.py"), "changed since the run started")
+		}
+	})
+
+	t.Run("an empty or null message has nothing to screen", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		ran := filepath.Join(h.dir, "ran")
+		h.script("record.py", `open(`+pyStr(ran)+`, "w").close()
+sys.exit(1)`)
+		for name, input := range map[string]map[string]any{
+			"empty": codexSubagentStopInput(""),
+			"null":  codexSubagentStopInput(nil),
+		} {
+			t.Run(name, func(t *testing.T) {
+				got := h.run("SubagentStop", input, "record.py")
+				assert.Equal(t, codexAdapterResult{}, got)
+				assert.NoFileExists(t, ran, "no script runs on an empty message")
+			})
+		}
+	})
+
+	t.Run("an adapter failure blocks with the prompt", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			run  func(t *testing.T, h *codexAdapterHarness) codexAdapterResult
+			want string
+		}{
+			{"a script that crashes", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("crash.py", `raise RuntimeError("boom")`)
+				return h.run("SubagentStop", codexSubagentStopInput("the result"), "crash.py")
+			}, "fullsend: hook crash.py exited 1"},
+			{"a script changed since the run started", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("allow.py", "sys.exit(0)")
+				require.NoError(t, os.WriteFile(filepath.Join(h.hooksDir, "allow.py"), []byte("import sys\nsys.exit(0)\n"), 0o755))
+				return h.run("SubagentStop", codexSubagentStopInput("the result"), "allow.py")
+			}, "changed since the run started"},
+			{"no script on the command line", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				return h.run("SubagentStop", codexSubagentStopInput("the result"))
+			}, "needs <phase> and at least one script"},
+			{"a payload that is not a JSON object", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("allow.py", "sys.exit(0)")
+				return h.runRaw("SubagentStop", "[]", "allow.py")
+			}, "not a JSON object"},
+			{"an empty payload", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("allow.py", "sys.exit(0)")
+				return h.runRaw("SubagentStop", "  ", "allow.py")
+			}, "codex sent an empty SubagentStop payload"},
+			{"a payload without last_assistant_message", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("allow.py", "sys.exit(0)")
+				in := codexSubagentStopInput(nil)
+				delete(in, "last_assistant_message")
+				return h.run("SubagentStop", in, "allow.py")
+			}, "no last_assistant_message string"},
+			{"a last_assistant_message that is not a string", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("allow.py", "sys.exit(0)")
+				return h.run("SubagentStop", codexSubagentStopInput(map[string]any{"text": "the result"}), "allow.py")
+			}, "no last_assistant_message string"},
+			{"the adapter itself crashing", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				// json.loads raises RecursionError on deep nesting, which
+				// parse_json does not catch: the __main__ handler blocks.
+				h.script("allow.py", "sys.exit(0)")
+				return h.runRaw("SubagentStop", strings.Repeat("[", 200000)+strings.Repeat("]", 200000), "allow.py")
+			}, "the codex hook adapter failed (RecursionError)"},
+			{"a reason longer than the adapter's cap", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("block.py", `print(json.dumps({"decision": "block", "reason": "x" * 20000}))
+sys.exit(1)`)
+				got := h.run("SubagentStop", codexSubagentStopInput("the result"), "block.py")
+				assert.Equal(t, 9000+len("\n\n"+codexSubagentStopPrompt), len(got.stderr), "the reason is cut at MAX_TEXT, the prompt never is")
+				return got
+			}, "xxx"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				assertSubagentStopBlock(t, tc.run(t, newCodexAdapterHarness(t)), tc.want)
+			})
+		}
+	})
+
+	t.Run("other phases carry no prompt", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		h.installPostToolChain()
+		input := codexBashInput("cat .env")
+		input["hook_event_name"] = "PostToolUse"
+		input["tool_response"] = flagged
+		got := h.run("PostToolUse", input, "posttool_chain.py")
+		assert.Equal(t, 2, got.exitCode)
+		assert.NotContains(t, got.stderr, codexWithheldNotice, "the prompt is the SubagentStop phase's only")
+	})
 }

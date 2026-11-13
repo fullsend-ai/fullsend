@@ -412,14 +412,12 @@ func parseCodexCatalog(data []byte) (codexCatalog, error) {
 // extended by ADR 0159): the collaboration version the gate takes for the
 // parent Run will launch ("v1" or "v2", else ""), and the one-line reason
 // Bootstrap prints when the parent runs in one context. Bootstrap delegates
-// only a "v1" parent: the reason explains a decline and never decides one. A
-// V2 parent is returned as "v2" with the ADR 0159 reason, and Bootstrap
-// declines it until its child-result delivery path is implemented and
-// verified live (ADR 0159 decision 4). A parent that does not translate is
-// reported by Run with the same error; the gate only declines here. A
-// gateway/ parent is declined whatever its id: children would inherit the
-// gateway provider with bare OpenAI ids it may not serve, and native children
-// have not run on that route.
+// a "v1" or "v2" parent, the latter subject to codexV2ChildModelReason: the
+// reason explains a decline and never decides one. A parent that does not
+// translate is reported by Run with the same error; the gate only declines
+// here. A gateway/ parent is declined whatever its id: children would
+// inherit the gateway provider with bare OpenAI ids it may not serve, and
+// native children have not run on that route.
 func codexParentCollabVersion(catalog codexCatalog, parentModel, agentModel string) (version, reason string) {
 	model, err := translateCodexModel(EffectiveModel(parentModel, agentModel), true)
 	if err != nil {
@@ -432,14 +430,33 @@ func codexParentCollabVersion(catalog codexCatalog, parentModel, agentModel stri
 	if !catalog.has(id) {
 		return "", fmt.Sprintf("parent model %q is not in the bundled catalog of the pinned codex", id)
 	}
-	switch catalog.collabVersion(id) {
-	case "v1":
-		return "v1", ""
-	case "v2":
-		return "v2", fmt.Sprintf("parent model %q selects collaboration \"v2\"; V2 delegation is off until its child-result delivery path is verified live (ADR 0159)", id)
+	if version := catalog.collabVersion(id); version != "" {
+		return version, ""
 	}
 	if catalog[id].Version == "disabled" {
 		return "", fmt.Sprintf("parent model %q has native sub-agents disabled in the bundled catalog", id)
 	}
 	return "", fmt.Sprintf("parent model %q selects collaboration %q, which the runner does not support", id, catalog[id].Version)
+}
+
+// codexV2ChildModelReason is the V2 spawn's backstop (#9085). Codex applies
+// no agents.max_depth under V2 and gives a child of a V2 parent the
+// multi-agent tools only when the child's own model selects V2
+// (collab_tools_enabled, codex-rs/core/src/tools/spec_plan.rs,
+// rust-v0.166.0). With every model the runner binds off V2, a child it
+// starts holds no spawn_agent. A spawn the guard did not screen can still
+// name a model (the schema hides the argument; the handler accepts it) or
+// use a rewritten role file, so for such a spawn depth one still rests on
+// the guard (ADR 0159). It returns the reason Bootstrap prints when the
+// run-level child model or a persona's own model selects V2, else "".
+func codexV2ChildModelReason(catalog codexCatalog, roles []codexRole, defaultModel string) string {
+	if catalog.collabVersion(defaultModel) == "v2" {
+		return fmt.Sprintf("child model %q (the run-level child model) selects collaboration \"v2\", so under a V2 parent its children would keep codex's spawn tool", defaultModel)
+	}
+	for _, role := range roles {
+		if role.Model != "" && catalog.collabVersion(role.Model) == "v2" {
+			return fmt.Sprintf("child model %q (subagents.%s) selects collaboration \"v2\", so under a V2 parent that child would keep codex's spawn tool", role.Model, role.Name)
+		}
+	}
+	return ""
 }

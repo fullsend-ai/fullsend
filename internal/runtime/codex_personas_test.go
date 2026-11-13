@@ -413,12 +413,10 @@ func TestCodexCatalog(t *testing.T) {
 // extended by ADR 0159): the parent model Run will use (the run-level model,
 // else the definition's) must translate to an OpenAI id, whose catalog entry
 // gives a version: V1 when it selects V1 or carries none (codex's multi_agent
-// feature, on by default, supplies V1), V2 when it selects V2. Only a "v1"
-// result delegates; a V2 parent gets "v2" and the ADR 0159 reason, and
-// Bootstrap declines it until its child-result delivery path is implemented
-// and verified live. A disabled, unknown-version or unlisted parent gets no
-// version from the gate and says why in one line, and so does a gateway/
-// parent whatever its id.
+// feature, on by default, supplies V1), V2 when it selects V2, either with
+// no reason. A disabled, unknown-version or unlisted parent gets no version
+// from the gate and says why in one line, and so does a gateway/ parent
+// whatever its id.
 func TestCodexParentCollabVersion(t *testing.T) {
 	t.Parallel()
 	catalog := codexVersionsCatalog(map[string]string{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-x": "v3", "gpt-d": "disabled"})
@@ -431,7 +429,8 @@ func TestCodexParentCollabVersion(t *testing.T) {
 	}{
 		{"definition model, V1", "", "openai/gpt-5.6-luna", "v1", ""},
 		{"run-level model wins", "openai/gpt-5.6-luna", "openai/gpt-5.6-sol", "v1", ""},
-		{"run-level V2 beats a V1 definition", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "v2", `parent model "gpt-5.6-sol" selects collaboration "v2"; V2 delegation is off until its child-result delivery path is verified live (ADR 0159)`},
+		{"run-level V2 beats a V1 definition", "openai/gpt-5.6-sol", "openai/gpt-5.6-luna", "v2", ""},
+		{"definition model, V2", "", "openai/gpt-5.6-sol", "v2", ""},
 		{"no multi-agent version (multi_agent supplies V1)", "", "gpt-5.5", "v1", ""},
 		{"catalog says disabled", "", "openai/gpt-d", "", `parent model "gpt-d" has native sub-agents disabled in the bundled catalog`},
 		{"unknown collaboration version", "", "openai/gpt-x", "", `parent model "gpt-x" selects collaboration "v3", which the runner does not support`},
@@ -454,6 +453,41 @@ func TestCodexParentCollabVersion(t *testing.T) {
 			} else {
 				assert.Contains(t, reason, tt.wantReason)
 			}
+		})
+	}
+}
+
+// TestCodexV2ChildModelReason is the V2 spawn's backstop: a V2 parent
+// delegates only while no child model selects V2, since codex gives a V2
+// child the multi-agent tools exactly when its own model does. The
+// run-level child model serves the default and explore roles and every
+// persona without a model of its own, so it is checked first.
+func TestCodexV2ChildModelReason(t *testing.T) {
+	t.Parallel()
+	catalog := codexVersionsCatalog(map[string]string{"gpt-5.6-luna": "v1", "gpt-5.6-sol": "v2", "gpt-5.5": "", "gpt-d": "disabled"})
+	personas := func(models ...string) []codexRole {
+		roles := []codexRole{{Name: "default"}, {Name: "explore"}}
+		for i, model := range models {
+			roles = append(roles, codexRole{Name: fmt.Sprintf("persona%d", i), Model: model})
+		}
+		return roles
+	}
+	for _, tc := range []struct {
+		name         string
+		roles        []codexRole
+		defaultModel string
+		want         string
+	}{
+		{"V1 run-level model, no persona model", personas(), "gpt-5.6-luna", ""},
+		{"persona models without V2", personas("gpt-5.5", "gpt-5.6-luna", "gpt-d"), "gpt-5.5", ""},
+		{"V2 run-level model", personas(), "gpt-5.6-sol",
+			`child model "gpt-5.6-sol" (the run-level child model) selects collaboration "v2", so under a V2 parent its children would keep codex's spawn tool`},
+		{"a persona's own V2 model", personas("gpt-5.6-luna", "gpt-5.6-sol"), "gpt-5.6-luna",
+			`child model "gpt-5.6-sol" (subagents.persona1) selects collaboration "v2", so under a V2 parent that child would keep codex's spawn tool`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, codexV2ChildModelReason(catalog, tc.roles, tc.defaultModel))
 		})
 	}
 }

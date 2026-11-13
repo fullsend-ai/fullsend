@@ -497,8 +497,19 @@ const codexSpawnGuardMatcher = "^(multi_agent_v1|collaboration)|(spawn|resume)_a
 const codexSpawnGuardMode = "SpawnGuard"
 
 // codexSubagentStopEvent is the codex hook event and adapter phase of the
-// child-result gate (PROTOTYPE, #9085 item 8).
+// child-result gate (ADR 0159 decision 4), which codexHooksJSON renders for
+// a run that delegates from a V2 parent. Codex runs it in a thread-spawned
+// child with last_assistant_message, the text that becomes the child's
+// result, before the parent is notified; a block (exit 2 with a reason)
+// makes the child continue with the reason as its prompt instead of
+// finishing (codex-rs/hooks/src/events/stop.rs, core/src/session/turn.rs,
+// rust-v0.166.0).
 const codexSubagentStopEvent = "SubagentStop"
+
+// codexWithheldNotice is the adapter's WITHHELD_NOTICE: a SubagentStop block
+// tells the child to reply with exactly this, so it is the result the parent
+// receives in place of a flagged one. The V2 runtime note quotes it.
+const codexWithheldNotice = "RESULT WITHHELD BY FULLSEND"
 
 // codexGroupCoversAgent reports whether a hook group's tools include a
 // sub-agent's result on the other runtimes: every tool, or Agent/Task.
@@ -517,7 +528,10 @@ func codexGroupCoversAgent(tools []string) bool {
 //
 // The spawn guard first, then one handler per plan group, so the group's
 // scripts still run in plan order inside one process — the ordering the
-// PostToolUse chain depends on.
+// PostToolUse chain depends on. multiAgentV2 is true for a run that
+// delegates from a V2 parent: a PostToolUse group that covers Agent then
+// also gets a SubagentStop handler with the same scripts
+// (codexSubagentStopEvent).
 //
 // python is the absolute interpreter path Bootstrap resolved, rendered with
 // `-I`: codex spawns a hook through the shell it inherits, *after* the
@@ -533,7 +547,7 @@ func codexGroupCoversAgent(tools []string) bool {
 // well — a shell tool result is `success` regardless of exit code
 // (codex-rs/core/src/tools/context.rs ExecCommandToolOutput). pi maps the
 // phase onto nothing for the same reason.
-func codexHooksJSON(configDir, python string, hooks security.SandboxHookConfig) ([]byte, []string, error) {
+func codexHooksJSON(configDir, python string, hooks security.SandboxHookConfig, multiAgentV2 bool) ([]byte, []string, error) {
 	cfg := codexHooksConfig{
 		Description: "fullsend sandbox tool hooks (generated; see docs/contributing/runtime-implementation.md)",
 		Hooks:       map[string][]codexHookMatcherSet{},
@@ -581,10 +595,10 @@ func codexHooksJSON(configDir, python string, hooks security.SandboxHookConfig) 
 				Timeout: security.HookTimeoutSeconds,
 			}},
 		})
-		// PROTOTYPE (#9085 item 8): the child-result gate. The PostToolUse
-		// scripts that cover Agent also run on SubagentStop, in the child,
-		// on the final message that would become the child's result.
-		if g.Phase == security.HookPhasePostToolUse && codexGroupCoversAgent(g.Tools) {
+		// The child-result gate: the PostToolUse scripts that cover Agent
+		// also run on SubagentStop, in the child, on the final message that
+		// would become the child's result.
+		if multiAgentV2 && g.Phase == security.HookPhasePostToolUse && codexGroupCoversAgent(g.Tools) {
 			cfg.Hooks[codexSubagentStopEvent] = append(cfg.Hooks[codexSubagentStopEvent], codexHookMatcherSet{
 				Hooks: []codexHookEntry{{
 					Type: "command",

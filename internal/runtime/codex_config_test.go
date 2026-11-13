@@ -283,7 +283,7 @@ func TestCodexMatcherFor_ExactAlternationForm(t *testing.T) {
 
 func TestCodexHooksJSON_DefaultPlan(t *testing.T) {
 	cfg := security.SandboxHookConfigFromHarness(&harness.Harness{})
-	data, notes, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg)
+	data, notes, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg, false)
 	require.NoError(t, err)
 
 	var parsed codexHooksConfig
@@ -332,6 +332,52 @@ func TestCodexHooksJSON_DefaultPlan(t *testing.T) {
 	}
 	assert.True(t, sawBashMatcher, "the Bash-scoped groups keep a matcher")
 	assert.True(t, sawNoMatcher, "the all-tools group omits the matcher key")
+
+	assert.NotContains(t, parsed.Hooks, codexSubagentStopEvent, "the child-result gate is part of V2 delegation only")
+}
+
+// TestCodexHooksJSON_V2DelegationAddsTheChildResultGate: for a run that
+// delegates from a V2 parent (ADR 0159 decision 4), one SubagentStop
+// handler with the scripts of the PostToolUse group, which covers Agent,
+// and no matcher (codex matches SubagentStop on agent_type), so every
+// role's final message is screened. Everything else is the default plan's.
+func TestCodexHooksJSON_V2DelegationAddsTheChildResultGate(t *testing.T) {
+	cfg := security.SandboxHookConfigFromHarness(&harness.Harness{})
+	plain, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg, false)
+	require.NoError(t, err)
+	data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg, true)
+	require.NoError(t, err)
+
+	var parsed, base codexHooksConfig
+	require.NoError(t, json.Unmarshal(data, &parsed))
+	require.NoError(t, json.Unmarshal(plain, &base))
+	post := parsed.Hooks[string(security.HookPhasePostToolUse)]
+	stop := parsed.Hooks[codexSubagentStopEvent]
+	require.Len(t, post, 1)
+	require.Len(t, stop, 1)
+	assert.Empty(t, stop[0].Matcher)
+	assert.Equal(t, strings.Replace(post[0].Hooks[0].Command, " PostToolUse ", " SubagentStop ", 1), stop[0].Hooks[0].Command)
+	assert.Equal(t, post[0].Hooks[0].Timeout, stop[0].Hooks[0].Timeout)
+	delete(parsed.Hooks, codexSubagentStopEvent)
+	assert.Equal(t, base, parsed, "the handler is the only difference")
+}
+
+// TestCodexGroupCoversAgent: a group reaches a sub-agent's result when it
+// names every tool, Agent or its alias Task.
+func TestCodexGroupCoversAgent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		tools []string
+		want  bool
+	}{
+		{[]string{security.AllTools}, true},
+		{[]string{"Bash", "Agent"}, true},
+		{[]string{"Task"}, true},
+		{[]string{"Bash", "Edit"}, false},
+		{nil, false},
+	} {
+		assert.Equal(t, tc.want, codexGroupCoversAgent(tc.tools), "%v", tc.tools)
+	}
 }
 
 // TestCodexHooksJSON_NeverAsync is the load-bearing one. codex only lets a
@@ -342,7 +388,7 @@ func TestCodexHooksJSON_DefaultPlan(t *testing.T) {
 // with no signal that they had.
 func TestCodexHooksJSON_NeverAsync(t *testing.T) {
 	cfg := security.SandboxHookConfigFromHarness(&harness.Harness{})
-	data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg)
+	data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg, true)
 	require.NoError(t, err)
 	assert.NotContains(t, string(data), "async")
 
@@ -366,7 +412,7 @@ func TestCodexHooksJSON_NeverAsync(t *testing.T) {
 // hooks at all.
 func TestCodexHooksJSON_ParsesAsCodexHooksFile(t *testing.T) {
 	cfg := security.SandboxHookConfigFromHarness(&harness.Harness{})
-	data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg)
+	data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg, true)
 	require.NoError(t, err)
 
 	var raw map[string]any
@@ -391,7 +437,7 @@ func TestCodexHooksJSON_ParsesAsCodexHooksFile(t *testing.T) {
 // spawn guard as its first PreToolUse group.
 func TestCodexHooksJSON_AllHooksOffKeepsSpawnGuard(t *testing.T) {
 	cfg := codexAllHooksOff()
-	data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg)
+	data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg, true)
 	require.NoError(t, err)
 
 	var parsed codexHooksConfig
@@ -454,7 +500,7 @@ func TestRenderCodexConfig_RequiresRepoDir(t *testing.T) {
 // PreToolUse group, and its matcher's reach.
 func TestCodexHooksJSON_SpawnGuardIsFirst(t *testing.T) {
 	cfg := security.SandboxHookConfigFromHarness(&harness.Harness{})
-	data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg)
+	data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, cfg, false)
 	require.NoError(t, err)
 
 	var parsed codexHooksConfig

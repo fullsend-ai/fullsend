@@ -92,12 +92,18 @@ func TestCodexGolden(t *testing.T) {
 		}},
 		{"hooks-default.json", func(t *testing.T) string {
 			data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython,
-				security.SandboxHookConfigFromHarness(&harness.Harness{}))
+				security.SandboxHookConfigFromHarness(&harness.Harness{}), false)
+			require.NoError(t, err)
+			return string(data)
+		}},
+		{"hooks-delegating-v2.json", func(t *testing.T) string {
+			data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython,
+				security.SandboxHookConfigFromHarness(&harness.Harness{}), true)
 			require.NoError(t, err)
 			return string(data)
 		}},
 		{"hooks-all-off.json", func(t *testing.T) string {
-			data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, codexAllHooksOff())
+			data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, codexAllHooksOff(), false)
 			require.NoError(t, err)
 			return string(data)
 		}},

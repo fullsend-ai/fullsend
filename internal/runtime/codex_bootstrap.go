@@ -66,8 +66,9 @@ type codexHookGroup struct {
 // guard cannot run. No mapped call has that backstop: an allowlist that
 // permits Agent passes them all and the spawn guard is their only name-level
 // check. The V1 spawn still sits under codex's agents.max_depth; the V2 spawn
-// does not (#9085), so V2 admission needs a backstop of its own before
-// Bootstrap accepts a V2 parent. codex joins namespace and name with no
+// does not (#9085); its backstop is that the runner starts a V2 parent's
+// children only on models off V2, which get no multi-agent tools
+// (codexV2ChildModelReason). codex joins namespace and name with no
 // separator (codex-rs/core/src/tools/registry.rs function_hook_tool_name);
 // only the default and multi_agent_v1 namespaces keep the bare spawn_agent.
 var codexAgentToolNames = []string{
@@ -178,14 +179,14 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 	// CLI's catalog: the gate takes the collaboration version from the entry
 	// of the model Run will launch, V1 when the entry selects V1 or carries
 	// no version (codex's multi_agent feature, on by default, supplies V1)
-	// and V2 when it selects V2. Only a V1 parent delegates: the gate reads
-	// the version, not the reason. Bootstrap passes the version on to the
+	// and V2 when it selects V2. A V1 or V2 parent delegates: the gate reads
+	// the version, not the reason. A V2 child's result passes the PostToolUse
+	// chain at SubagentStop before codex delivers it (codexHooksJSON, ADR 0159
+	// decision 4), and a V2 parent delegates only while no child model selects
+	// V2 (codexV2ChildModelReason). Bootstrap passes the version on to the
 	// roles, the developer instructions and the config, which take their V2
-	// forms for an admitted V2 parent. Only the change that adds the checked
-	// child-result delivery path and the backstop the V2 spawn needs (see
-	// codexAgentToolNames) widens the gate to V2, once that path is verified
-	// live (ADR 0159 decision 4). A V2, disabled, unknown-version, unlisted
-	// or gateway/ parent is declined with its own
+	// forms for a V2 parent. A disabled, unknown-version, unlisted or gateway/
+	// parent, and a V2 parent with a V2 child model, is declined with its own
 	// explanation, keeps the multi-agent tools off and runs in one context,
 	// as an agent that does not delegate does.
 	_, securityOn := input.(SandboxHooksBootstrap)
@@ -197,7 +198,7 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		}
 		var reason string
 		collab, reason = codexParentCollabVersion(catalog, input.ParentModel(), def.Model)
-		if delegating = collab == "v1"; !delegating {
+		if delegating = collab == "v1" || collab == "v2"; !delegating {
 			fmt.Fprintf(os.Stderr, "sub-agents: %s, running in one context\n", reason)
 		}
 	}
@@ -211,13 +212,18 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		if err != nil {
 			return err
 		}
+		if reason := codexV2ChildModelReason(catalog, roles, defaultSubagentModel); collab == "v2" && reason != "" {
+			fmt.Fprintf(os.Stderr, "sub-agents: %s, running in one context\n", reason)
+			delegating, roles = false, nil
+		}
 	}
 	// The gateway provider is rendered only when the runner registered an
 	// inference.gateway block for this sandbox (PrepareGatewayRun).
 	gatewayBaseURL := codexGatewayRunFor(sandboxName)
+	multiAgentV2 := delegating && collab == "v2"
 	configTOML, err := renderCodexConfig(cfg, repoInput.RepoDir(),
 		codexDeveloperInstructions(agentName, def, roles, collab), gatewayBaseURL, roles, defaultSubagentModel, childEffort,
-		delegating && collab == "v2")
+		multiAgentV2)
 	if err != nil {
 		return err
 	}
@@ -313,7 +319,7 @@ func (r CodexRuntime) Bootstrap(input BootstrapInput) error {
 		if err != nil {
 			return err
 		}
-		hooksJSON, notes, err := codexHooksJSON(cfg, python, hooks)
+		hooksJSON, notes, err := codexHooksJSON(cfg, python, hooks, multiAgentV2)
 		if err != nil {
 			return err
 		}
@@ -406,8 +412,9 @@ func codexDeveloperInstructions(agentName string, def *piAgentDef, roles []codex
 // skills written for Claude Code's Agent tool (pr-review, retro) take their
 // single-context path deliberately instead of recording a failed dispatch.
 // Every agent the delegation gate declines gets it (tools without Agent,
-// security off, or a V2, disabled, unknown-version, unlisted or gateway/
-// parent); a delegating agent gets codexSubagentNote.
+// security off, a disabled, unknown-version, unlisted or gateway/ parent, or
+// a V2 parent with a V2 child model); a delegating agent gets
+// codexSubagentNote.
 const codexNoSubagentNote = "\n## Runtime note\n\n" +
 	"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). No fullsend sub-agent " +
 	"roster is available. When a skill says to dispatch sub-agents, execute each sub-agent " +
@@ -446,18 +453,16 @@ const codexV2DispatchMarker = "Dispatch follows collaboration V2."
 // codex's native tools and states the policy the spawn guard enforces, so
 // the parent passes the arguments the guard admits and handles a denial
 // without retrying. The first two sentences and the denied-spawn sentence
-// are what the agents repository's pr-review skill will key on once its
-// codex wording lands; change them only together with that skill. roles is
+// are what the agents repository's pr-review skill keys on; change them
+// only together with that skill. roles is
 // the registered roster, sorted by name (codexRoles); version is the
 // collaboration version the gate admitted. The V2 note keeps the keyed
 // sentences, puts codexV2DispatchMarker right after its third sentence,
 // before the dispatch text, and carries V2's spawn arguments and control
-// calls (ADR 0159 decision 5). The "fixed withheld notice" the V2 note
-// names is the text the checked child-result delivery path (ADR 0159
-// decision 4) puts in place of a withheld result; that path is not in the
-// tree, and before the gate admits a V2 parent the notice must be a shared
-// Go const quoted in the note. The child contract is in every role file
-// (codexChildNote, codexChildNoteV2), not here.
+// calls (ADR 0159 decision 5). It quotes codexWithheldNotice, the result a
+// child whose final message the chain blocked is told to give instead. The
+// child contract is in every role file (codexChildNote, codexChildNoteV2),
+// not here.
 func codexSubagentNote(roles []codexRole, version string) string {
 	names := make([]string, len(roles))
 	for i, role := range roles {
@@ -473,7 +478,9 @@ func codexSubagentNote(roles []codexRole, version string) string {
 	if version == "v2" {
 		return head + codexV2DispatchMarker + " " +
 			"When a skill says to dispatch a sub-agent, call `spawn_agent` with `task_name` set to a short " +
-			"name for the task, `agent_type` set to a role listed above — the persona's name, or `explore` " +
+			"name for the task, unique among the children you spawn (lowercase letters, digits and `_` " +
+			"only; `root` is reserved), " +
+			"`agent_type` set to a role listed above — the persona's name, or `explore` " +
 			"where the skill asks for an `Explore` pass (instruction-only; nothing enforces read-only on " +
 			"a child); for a task that names no persona, omit `agent_type` — and `message` carrying that " +
 			"sub-agent's whole context package: a child starts with nothing but that message. Pass " +
@@ -489,7 +496,7 @@ func codexSubagentNote(roles []codexRole, version string) string {
 			"child. Interrupt a child that is over its budget with `interrupt_agent`. An interrupted " +
 			"child sends no result: report a coverage gap for that role. A child whose result reports " +
 			"an error is final for that role. A message whose " +
-			"whole payload is the fixed withheld notice is a withheld result: report a coverage gap for " +
+			"whole payload is `" + codexWithheldNotice + "` is a withheld result: report a coverage gap for " +
 			"that role, and never retry the spawn or read the child's raw rollout. " +
 			denied +
 			codexChunkedReadNote
