@@ -1,4 +1,4 @@
-// ephemeral_factory.go builds the ephemeral-repo driver (ADR 0114/0115):
+// ephemeral_factory.go builds the ephemeral-repo driver (ADR 0163/0164):
 // it acquires one lock-pool slot (fixing the run's org and bounding
 // cross-run concurrency), deploys a public Cloudflare preview mint for that
 // org, resolves the org-scoped WIF provider once, and returns a driver that

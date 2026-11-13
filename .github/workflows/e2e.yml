@@ -64,7 +64,7 @@ on:
         type: boolean
         default: false
       behaviour_ephemeral:
-        description: Use the ephemeral-repo + lock-pool driver (ADR 0114/0115)
+        description: Use the ephemeral-repo + lock-pool driver (ADR 0163/0164)
         required: true
         type: boolean
         default: false
@@ -257,7 +257,7 @@ jobs:
           BEHAVIOUR_CI: githubactions
           BEHAVIOUR_INSTALL_MODE: per-repo
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
-          # Ephemeral-repo + lock-pool driver (ADR 0114/0115). On by a manual
+          # Ephemeral-repo + lock-pool driver (ADR 0163/0164). On by a manual
           # dispatch input, or by the vars.BEHAVIOUR_EPHEMERAL repo variable;
           # otherwise the slot-pool driver runs. Lock-pool membership and N,
           # the fullsend ref to install, and repo retention are external config.

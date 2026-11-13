@@ -1,4 +1,4 @@
-// lockpool.go implements ADR 0115's lock-based pool coordination for
+// lockpool.go implements ADR 0164's lock-based pool coordination for
 // behaviour-test orgs. Each org has N lightweight lock repos
 // (lock-1 … lock-N) that together act as a counting semaphore: a run holds
 // a slot by creating its lock repo (first creator wins; the forge's atomic
@@ -10,10 +10,10 @@
 // heartbeat that re-writes the same token to bump the repo's UpdatedAt.
 // Staleness is judged by liveness (UpdatedAt recency), not a fixed age, so
 // a long-but-healthy run keeps its slot while a crashed run's slot is
-// reclaimed once its heartbeat stops. See ADR 0115 for the full rationale.
+// reclaimed once its heartbeat stops. See ADR 0164 for the full rationale.
 //
 // Lock repos are pure coordination objects, separate from the ephemeral
-// workload repos (ADR 0114); the RunID ties the two together so a held
+// workload repos (ADR 0163); the RunID ties the two together so a held
 // lock maps back to its run's bt-{run-id}-* repos.
 package install
 
@@ -38,7 +38,7 @@ const (
 	lockRepoDescriptionPrefix = "fullsend behaviour test lock owner="
 
 	// DefaultLockSlotsPerOrg is the per-org slot count (N) used when the
-	// environment does not configure one. ADR 0115 derives N from the
+	// environment does not configure one. ADR 0164 derives N from the
 	// rate-limit budget and run duration; 4 matches its GitHub worked
 	// example (12,500/hr cap, ~3,000 calls/run, ~1h runs).
 	DefaultLockSlotsPerOrg = 4
@@ -114,7 +114,7 @@ type OrgSlots struct {
 	Slots int
 }
 
-// LockPoolConfig is the pool's membership and per-org N. Per ADR 0115 this
+// LockPoolConfig is the pool's membership and per-org N. Per ADR 0164 this
 // is external configuration, resolved from the environment.
 type LockPoolConfig struct {
 	Orgs []OrgSlots
@@ -475,7 +475,7 @@ func (h *HeldLock) Release(ctx context.Context) error {
 }
 
 // LockPoolConfigFromEnv resolves the pool's membership and per-org N from
-// the environment (ADR 0115: external configuration). BEHAVIOUR_LOCK_POOL,
+// the environment (ADR 0164: external configuration). BEHAVIOUR_LOCK_POOL,
 // when set, is an "org:N,org2:N2" list. Otherwise the pool is the single
 // defaultOrg with N from BEHAVIOUR_LOCK_SLOTS_PER_ORG (DefaultLockSlotsPerOrg
 // when unset or invalid).

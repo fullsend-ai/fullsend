@@ -668,7 +668,7 @@ func (f *FakeClient) UpdateRepoVisibility(_ context.Context, owner, repo string,
 
 // UpdateRepoDescription sets a repo's description and bumps its UpdatedAt,
 // mirroring a live forge where re-writing the description advances the
-// repo's last-updated timestamp (the lock-pool heartbeat, ADR 0115).
+// repo's last-updated timestamp (the lock-pool heartbeat, ADR 0164).
 func (f *FakeClient) UpdateRepoDescription(_ context.Context, owner, repo, description string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

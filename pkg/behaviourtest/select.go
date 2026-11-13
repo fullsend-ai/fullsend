@@ -20,7 +20,7 @@ import (
 // installFactoryFor selects the install driver.
 //
 // When BEHAVIOUR_EPHEMERAL=true, the ephemeral-repo + lock-pool driver is
-// used (ADR 0114/0115): unique bt-{run-id}-{uuid8} repos in a lock-selected
+// used (ADR 0163/0164): unique bt-{run-id}-{uuid8} repos in a lock-selected
 // org, retained and pruned. Otherwise the legacy slot-pool driver is used,
 // selected by ENVIRONMENT:
 //

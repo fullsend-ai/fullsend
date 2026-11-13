@@ -660,12 +660,12 @@ its report, and releases its repos inside the job's `timeout-minutes: 90`
 The merge queue window is shorter than the job: a retry fits it only when
 attempt 1 plus the failed scenarios finish within 60 minutes.
 
-### Ephemeral repos and the lock pool (ADR 0114/0115)
+### Ephemeral repos and the lock pool (ADR 0163/0164)
 
 A newer repo-lifecycle model, selected by `BEHAVIOUR_EPHEMERAL=true`,
 replaces the reused `test-repo-NN` slot pool with **ephemeral per-scenario
-repos** coordinated by a **lock pool**. It implements ADR 0114
-(ephemeral repo lifecycle) and ADR 0115 (lock-based pool coordination). The
+repos** coordinated by a **lock pool**. It implements ADR 0163
+(ephemeral repo lifecycle) and ADR 0164 (lock-based pool coordination). The
 slot driver above remains the default until this mode is validated live;
 both satisfy the same `install.LeaseDriver` contract, so scenarios are
 unchanged.
@@ -694,7 +694,7 @@ How a run works in this mode:
    still holds a lock**, then releases this run's lock and tears down the
    mint. `E2E_KEEP_REPOS=true` disables pruning.
 
-Configuration (ADR 0115 keeps pool membership and per-org N as external
+Configuration (ADR 0164 keeps pool membership and per-org N as external
 configuration):
 
 | Variable | Meaning |

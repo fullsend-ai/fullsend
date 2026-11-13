@@ -1,15 +1,15 @@
 // ephemeral.go implements the ephemeral-repo behaviour-test driver
-// (ADR 0114) coordinated by the lock pool (ADR 0115).
+// (ADR 0163) coordinated by the lock pool (ADR 0164).
 //
 // Unlike the slot-pool driver (composed.go), which leases reused
 // test-repo-NN slots across many orgs, this driver:
 //
 //   - acquires one lock-pool slot per run, which fixes the run's org and
-//     bounds cross-run concurrency (ADR 0115);
+//     bounds cross-run concurrency (ADR 0164);
 //   - creates a uniquely named ephemeral repo bt-{run-id}-{uuid8} per
 //     scenario in that org, installs fullsend via `repos install
 //     --fullsend-ref` with a shared org-scoped WIF provider, and never
-//     reuses a repo (ADR 0114);
+//     reuses a repo (ADR 0163);
 //   - retains repos after each scenario and batch-prunes the oldest whole
 //     runs at Finalize, skipping any run that still holds a lock.
 //
@@ -35,7 +35,7 @@ import (
 )
 
 // repoKeepThreshold is the GitHub bt-* repo count above which the oldest
-// whole runs are pruned (ADR 0114). Retaining repos raises the org's
+// whole runs are pruned (ADR 0163). Retaining repos raises the org's
 // rate-limit cap, so pruning stops as soon as the count would drop below it.
 // A var so tests can lower it.
 var repoKeepThreshold = 200
@@ -315,7 +315,7 @@ func (d *ephemeralDriver) AllocateLease(ctx context.Context) (RepoLease, error) 
 	}, nil
 }
 
-// DeallocateLease retains the repo (GitHub policy, ADR 0114): it retires the
+// DeallocateLease retains the repo (GitHub policy, ADR 0163): it retires the
 // repo so it cannot invoke the shared org-scoped WIF after its scenario ends,
 // then stops tracking it. Retained repos are batch-pruned at Finalize. A
 // retirement failure is returned rather than swallowed, so the suite does not
@@ -463,7 +463,7 @@ func logAPIConsumption(client forge.Client, org, when string, logf func(string, 
 
 // pruneOldRuns retains the newest bt-* runs and deletes the oldest whole
 // runs once the org's bt-* repo count exceeds repoKeepThreshold, skipping
-// any run that still holds a lock (ADR 0114 × 0115).
+// any run that still holds a lock (ADR 0163 × 0164).
 func (d *ephemeralDriver) pruneOldRuns(ctx context.Context) {
 	lister, ok := d.client.(forge.AllRepoLister)
 	if !ok {
@@ -475,7 +475,7 @@ func (d *ephemeralDriver) pruneOldRuns(ctx context.Context) {
 		// Listing is the single source for both the repos to prune and the
 		// locks that protect them; if it fails we prune nothing, so a
 		// degraded forge can never make an active run's repos look
-		// unprotected (ADR 0114 × 0115).
+		// unprotected (ADR 0163 × 0164).
 		d.logf("[driver] prune: failed to list repos: %v", err)
 		return
 	}

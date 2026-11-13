@@ -579,7 +579,7 @@ func prHeadSHAFromEvent() string {
 // ResolveOrgWIFProvider looks up the org-level Workload Identity Federation
 // provider via `fullsend inference status <org>` and returns the full
 // provider path. The ephemeral-repo model resolves this once per run and
-// reuses it for every repo (ADR 0114), rather than provisioning a per-repo
+// reuses it for every repo (ADR 0163), rather than provisioning a per-repo
 // provider.
 func ResolveOrgWIFProvider(
 	binary, token, org, gcpProjectID string,

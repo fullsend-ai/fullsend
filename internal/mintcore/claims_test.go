@@ -139,7 +139,7 @@ func TestValidateWorkflowRef_BareWildcardHostRejected(t *testing.T) {
 
 func TestValidateWorkflowRef_PrefixGlobHost(t *testing.T) {
 	// A run-scoped prefix host accepts every repo under the prefix but
-	// nothing outside it (ADR 0114 ephemeral mint scoped to one run).
+	// nothing outside it (ADR 0163 ephemeral mint scoped to one run).
 	hosts := map[string]bool{"fullsend-ai-test/bt-abc123-*": true}
 
 	// Repos under the run's prefix are accepted.

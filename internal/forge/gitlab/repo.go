@@ -243,7 +243,7 @@ func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Re
 		CreatedAt:     p.CreatedAt,
 		// GitLab reports last_activity_at (not an updated_at); it advances
 		// when the project's description or contents change, so it serves
-		// as the lock-pool heartbeat-recency signal (ADR 0115).
+		// as the lock-pool heartbeat-recency signal (ADR 0164).
 		UpdatedAt: p.LastActivityAt,
 	}, nil
 }
@@ -278,7 +278,7 @@ func (c *LiveClient) CreateRepo(ctx context.Context, org, name, description stri
 		// A duplicate project name is reported as 400 with a
 		// "has already been taken" message (not 409), so map it to
 		// forge.ErrAlreadyExists for the lock pool's create-to-claim
-		// (ADR 0115), which relies on errors.Is(err, ErrAlreadyExists).
+		// (ADR 0164), which relies on errors.Is(err, ErrAlreadyExists).
 		var apiErr *APIError
 		if errors.As(err, &apiErr) &&
 			(apiErr.StatusCode == http.StatusBadRequest || apiErr.StatusCode == http.StatusConflict) &&
