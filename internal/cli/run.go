@@ -720,7 +720,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// names the harness and succeeds as written. The harness is not
 	// resolved yet, so the hint cannot carry --forge; it is rebuilt
 	// once the harness path is known.
-	composeOpts.LockUpdateCommand = lockUpdateHint(agentName, fullsendDir, "", forgePlatform)
+	composeOpts.LockUpdateCommand = lockUpdateHint(agentName, fullsendDir, "", forgePlatform, true)
 
 	// Resolve the agent source and compose the harness. fullsend prepare
 	// composes through the same function, so the image it warms is the one
