@@ -2,7 +2,8 @@
 # pad-e2e-org-repos_test.sh — tests for hack/pad-e2e-org-repos.sh against a
 # stubbed gh.
 #
-# Covers: a dry run creates nothing and stops where --max would; --apply creates filler repositories
+# Covers: a dry run creates nothing, ends with what it would create (not a
+# "created" summary) and stops where --max would; --apply creates filler repositories
 # until the permanent count reaches the target; slot repositories
 # (test-repo-NN and names starting with it) do not count; filler names
 # already present are skipped and the numbering fills the gaps; an org at
@@ -14,8 +15,8 @@
 # listing fail; a gh warning on stderr is not counted as a repository; an
 # e2e App on selected repositories, a missing App or an unreadable
 # installation list stops before anything is listed or created; filler
-# repositories are created private; the default target is 150, and a
-# target above 170 needs --allow-large-target; --target and --max
+# repositories are created private; the default target is 170, and a
+# target above it needs --allow-large-target; --target and --max
 # with a leading zero are read in base 10; a trailing --target or --max and
 # an org outside the pool are usage errors.
 #
@@ -164,8 +165,10 @@ creates() {
 # --- dry run creates nothing ------------------------------------------------
 fresh_state halfsend-07 test-repo test-repo-fork e2e-lock
 run_pad --target 10 07
-if [[ ${RC} -eq 0 && "$(creates)" == 0 ]] && grep -q 'dry run: would create quota-filler-001 … quota-filler-007' <<< "${OUT}"; then
-  pass "dry run reports the plan and creates nothing"
+if [[ ${RC} -eq 0 && "$(creates)" == 0 ]] && grep -q 'dry run: would create quota-filler-001 … quota-filler-007' <<< "${OUT}" \
+    && grep -q 'dry run: would create 7 repositories; nothing was created' <<< "${OUT}" \
+    && ! grep -q 'created [0-9]* repositories' <<< "${OUT}"; then
+  pass "dry run reports the plan, creates nothing and does not claim a result"
 else
   fail "dry run: rc=${RC} creates=$(creates) out=${OUT}"
 fi
@@ -340,8 +343,8 @@ else
   fail "allow large: rc=${RC} out=${OUT}"
 fi
 run_pad 07
-if [[ ${RC} -eq 0 ]] && grep -q 'target 150: 150 to create' <<< "${OUT}"; then
-  pass "the default target is 150"
+if [[ ${RC} -eq 0 ]] && grep -q 'target 170: 170 to create' <<< "${OUT}"; then
+  pass "the default target is 170"
 else
   fail "default: rc=${RC} out=${OUT}"
 fi

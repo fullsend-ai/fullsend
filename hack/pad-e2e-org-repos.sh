@@ -8,8 +8,8 @@
 #   ORG      — full org name, e.g. halfsend-07
 #   --apply  — create the repositories; without it the script only reports
 #              what it would create
-#   --target — permanent repositories the org should hold (default 150,
-#              at most 170 unless --allow-large-target is given)
+#   --target — permanent repositories the org should hold (default 170,
+#              also the most allowed without --allow-large-target)
 #   --max    — most repositories to create in this run, across all orgs
 #              (default 450, under GitHub's 500-an-hour content-creation limit)
 #
@@ -17,14 +17,14 @@
 # another 50 requests per hour for each repository", on a 5,000 base and up
 # to 12,500. Whether "each repository" means each one over 20 or every one
 # is not settled: 150 repositories reach the cap on the second reading, 170
-# on the first. The guide's one-org check settles it. Org users over 20 add
-# 50 each as well; the script does not count them, so an org with many
-# users reaches the cap sooner.
+# on the first. The default, 170, reaches it on either reading. Org users
+# add 50 each in the same way once there are more than 20; the script does
+# not count them, so an org with many users reaches the cap sooner.
 #
 # Slot repositories (test-repo-NN and names starting with it, such as
 # -fork, -mint-host, -mint-unapproved and -url-harness-host) come and go
-# with leases, so they do not count toward the target. The 170 ceiling is
-# the most either reading needs; it is a guard against typos.
+# with leases, so they do not count toward the target. A target above 170,
+# more than either reading needs, is refused as a likely typo.
 #
 # Padding has a cost: the slot allocator lists an org's repositories, 100 a
 # page, on every claim pass, so a padded org lists in two pages, and in
@@ -179,7 +179,7 @@ whole_number() {
 }
 
 main() {
-  local apply=false target=150 max=450 allow_large=false orgs=() arg value org
+  local apply=false target=170 max=450 allow_large=false orgs=() arg value org
   while [[ $# -gt 0 ]]; do
     arg="$1"
     case "${arg}" in
@@ -266,7 +266,11 @@ main() {
       sleep "${FILLER_PACE_SECONDS}"
     done <<< "${fillers}"
   done
-  echo "==> created ${created} repositories, skipped ${skipped} that already existed"
+  if [[ "${apply}" == true ]]; then
+    echo "==> created ${created} repositories, skipped ${skipped} that already existed"
+  else
+    echo "==> dry run: would create ${planned} repositories; nothing was created"
+  fi
 }
 
 # Tests source this file for its function definitions; stop here when
