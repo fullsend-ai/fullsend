@@ -3536,21 +3536,23 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		Labels  []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
-		State       string `json:"state"`
-		StateReason string `json:"state_reason"`
+		State       string    `json:"state"`
+		StateReason string    `json:"state_reason"`
+		PullRequest *struct{} `json:"pull_request"`
 	}
 	if err := decodeJSON(resp, &result); err != nil {
 		return nil, fmt.Errorf("decode issue #%d: %w", number, err)
 	}
 	return &forge.Issue{
-		ID:          result.ID,
-		Number:      result.Number,
-		Title:       result.Title,
-		Body:        result.Body,
-		URL:         result.HTMLURL,
-		Labels:      labelNames(result.Labels),
-		State:       result.State,
-		StateReason: result.StateReason,
+		ID:            result.ID,
+		Number:        result.Number,
+		Title:         result.Title,
+		Body:          result.Body,
+		URL:           result.HTMLURL,
+		Labels:        labelNames(result.Labels),
+		State:         result.State,
+		StateReason:   result.StateReason,
+		IsPullRequest: result.PullRequest != nil,
 	}, nil
 }
 

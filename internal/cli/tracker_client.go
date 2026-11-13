@@ -182,7 +182,7 @@ func resolveIssueProject(trackerName, project, fullsendDir string, testConfigRea
 // checkJiraTargetProject refuses a Jira project that is neither the
 // repository's primary project (tracker.jira.project) nor listed in
 // tracker.jira.allowed_targets.projects. It guards cross-project issue
-// creation only. Jira project keys are case-insensitive, so the
+// creation and transitions. Jira project keys are case-insensitive, so the
 // comparison is too.
 func checkJiraTargetProject(settings *config.JiraTrackingConfig, project string) error {
 	if strings.EqualFold(project, settings.Project) {

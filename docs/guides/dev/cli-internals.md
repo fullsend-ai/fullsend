@@ -175,12 +175,23 @@ fullsend
 │   │   ├── --keep-history                   #     Append previous content as collapsed history (default true)
 │   │   ├── --only-if-exists                 #     Update an existing marked comment, never create one
 │   │   └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
-│   └── link                                 #   Create a typed link between two issues (Jira only)
-│       ├── --tracker <tracker>              #     Tracker backend; github/gitlab return "not supported"
-│       ├── --from <key>                     #     Source issue key (e.g. PROJ-123)
-│       ├── --to <key>                       #     Target issue key (e.g. PROJ-456)
-│       ├── --type <name>                    #     Link type name (e.g. Blocks), passed through verbatim
-│       └── --fullsend-dir <path>            #     .fullsend config directory (resolves default --tracker)
+│   ├── link                                 #   Create a typed link between two issues (Jira only)
+│   │   ├── --tracker <tracker>              #     Tracker backend; github/gitlab return "not supported"
+│   │   ├── --from <key>                     #     Source issue key (e.g. PROJ-123)
+│   │   ├── --to <key>                       #     Target issue key (e.g. PROJ-456)
+│   │   ├── --type <name>                    #     Link type name (e.g. Blocks), passed through verbatim
+│   │   └── --fullsend-dir <path>            #     .fullsend config directory (resolves default --tracker)
+│   └── transition                           #   Change issue lifecycle state (rejects GitHub PR numbers)
+│       ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
+│       ├── --project <project>              #     owner/repo or an allowed Jira project key
+│       ├── --number <int>                   #     Issue number
+│       ├── --state closed                   #     Portable closure; one selector required
+│       ├── --transition <name>              #     Exact Jira transition name
+│       ├── --status <name>                  #     Exact Jira destination status
+│       ├── --resolution <id-or-name>        #     Jira resolution allowed by the transition
+│       ├── --comment <text>                 #     Optional Markdown explanation
+│       ├── --token <token>                  #     GitHub/GitLab token; Jira uses runner credentials
+│       └── --fullsend-dir <path>            #     Config directory (Jira connection and allowed targets)
 ├── post-review                              # Post sticky PR/MR review comments (formal review is best-effort)
 │   ├── --forge <forge>                      #   Forge backend: github (default) or gitlab
 │   ├── --base-url <url>                     #   Forge instance URL (e.g. https://gitlab.example.com)
@@ -920,7 +931,7 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/inference_openai.go` | ~900 | OpenAI WIF enrolment: request document, reply import, status/exchange |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/github_client.go` | ~130 | GitHub token resolution and authenticated client construction |
-| `internal/cli/issues.go` | ~971 | Issue read/write commands (`fullsend issues get`, `create`, `post-comment`, `link`) |
+| `internal/cli/issues.go` | ~971 | Issue read/write commands (`fullsend issues get`, `create`, `post-comment`, `link`, `transition`; transitions are in `issues_transition.go`) |
 | `internal/cli/tracker_client.go` | ~122 | Tracker client factory (GitHub/GitLab/Jira) |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |
