@@ -243,31 +243,12 @@ func TestGivenTestInferenceGatewayAPIKey_LostLeaseStopsTheWrite(t *testing.T) {
 	assert.Zero(t, client.writes, "no secret is written to a slot this scenario no longer holds")
 }
 
-// guardProbingSecretClient records whether the create's context carried
-// the lease guard, as the GitHub client's own pre-PUT check would.
-type guardProbingSecretClient struct {
-	*forge.FakeClient
-	writes      int
-	guardChecks int
-}
-
-func (c *guardProbingSecretClient) CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error {
-	if guard := forge.RetryGuard(ctx); guard != nil {
-		c.guardChecks++
-		if err := guard(ctx); err != nil {
-			return err
-		}
-	}
-	c.writes++
-	return c.FakeClient.CreateRepoSecret(ctx, owner, repo, name, value)
-}
-
 // A scenario that still holds its lease keeps the behaviour it had: the
 // create runs through the lease guard, the secret is written and the
 // gateway config committed.
 func TestGivenTestInferenceGatewayAPIKey_HeldLeaseWritesSecretAndCommitsConfig(t *testing.T) {
 	const cfgKey = "org/repo/.fullsend/config.yaml"
-	client := &guardProbingSecretClient{FakeClient: forge.NewFakeClient()}
+	client := &guardedSecretClient{FakeClient: forge.NewFakeClient()}
 	client.FileContents[cfgKey] = []byte("runtime: dummy\n")
 	w := &world.World{Org: "org", RepoName: "repo", SCM: scmgh.New(client)}
 	w.LeaseOwned = func(context.Context) (bool, error) { return true, nil }

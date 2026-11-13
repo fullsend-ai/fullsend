@@ -197,7 +197,7 @@ func TestGivenEnrolledTestRepository_NameOnlyLeaseHasNoCheck(t *testing.T) {
 // lost after allocation stops the secret write without any manual
 // LeaseOwned assignment (the After hook installs nothing during steps).
 func TestGivenEnrolledTestRepository_LostLeaseStopsGatewaySecretWrite(t *testing.T) {
-	client := &guardProbingSecretClient{FakeClient: forge.NewFakeClient()}
+	client := &guardedSecretClient{FakeClient: forge.NewFakeClient()}
 	ld := &stillOwnsLeaseDriver{fakeLeaseDriver: &fakeLeaseDriver{lease: orgLease(client)}, owns: false}
 	w := &world.World{Driver: ld, OrgDrivers: func(c forge.Client, token string) (scm.Driver, ci.Driver, error) {
 		return scmgh.New(c), &fakeBranchCI{}, nil
