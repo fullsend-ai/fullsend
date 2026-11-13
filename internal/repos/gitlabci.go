@@ -1766,31 +1766,37 @@ func ruleIfIndex(rules []*yaml.Node, ifCond string) int {
 // isCatchAllNeverRule reports whether a workflow:rules entry is an
 // unconditional deny — `when: never` with no if:, changes:, or exists:
 // clause. GitLab evaluates rules first-match, so every rule after it is
-// unreachable. The when: value is resolved through YAML aliases. A rule with
-// a `<<` merge key is not treated as a catch-all: the merged mapping may
-// supply an if:, changes:, or exists: clause that cannot be seen here, and
-// treating it as unconditional would insert admit rules ahead of a
-// conditional deny the repo intended to apply.
+// unreachable. The rule itself, each key, and the when: value are resolved
+// through YAML aliases. A rule with a `<<` merge key is not treated as a
+// catch-all: the merged mapping may supply an if:, changes:, or exists:
+// clause that cannot be seen here, and treating it as unconditional would
+// insert admit rules ahead of a conditional deny the repo intended to apply.
+// Likewise a key that cannot be classified to a plain name (see
+// classifyTopLevelKey) is not proven to be anything but a condition, so the
+// rule is not treated as a catch-all.
 func isCatchAllNeverRule(rule *yaml.Node) bool {
-	if rule.Kind != yaml.MappingNode {
+	rule = resolveAlias(rule)
+	if rule == nil || rule.Kind != yaml.MappingNode {
 		return false
 	}
-	if findMappingKeyIndex(rule, "<<") >= 0 {
-		return false
-	}
-	whenVal := findMappingValue(rule, "when")
-	if whenVal == nil {
-		return false
-	}
-	if when, ok := isLiteralScalarValue(whenVal); !ok || when != "never" {
-		return false
-	}
-	for _, key := range []string{"if", "changes", "exists"} {
-		if findMappingKeyIndex(rule, key) >= 0 {
+	whenNever := false
+	for i := 0; i+1 < len(rule.Content); i += 2 {
+		name, ok := classifyTopLevelKey(rule.Content[i])
+		if !ok || hasInterpolationSyntax(name) {
 			return false
 		}
+		switch name {
+		case "<<", "if", "changes", "exists":
+			return false
+		case "when":
+			when, literal := isLiteralScalarValue(rule.Content[i+1])
+			if !literal || when != "never" {
+				return false
+			}
+			whenNever = true
+		}
 	}
-	return true
+	return whenNever
 }
 
 // makeRuleNode creates a YAML mapping node for a workflow rule.

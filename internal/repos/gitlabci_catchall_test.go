@@ -184,6 +184,42 @@ func TestMergeGitLabCI_ConditionalNeverIsNotCatchAll(t *testing.T) {
 	assert.Equal(t, triggerDispatcherRuleIf+"|", got[8])
 }
 
+func TestMergeGitLabCI_AliasedRuleCatchAllNever(t *testing.T) {
+	existing := []byte(`.deny: &deny
+  when: never
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - *deny
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+
+	got := workflowRuleSummaries(t, result)
+	require.Len(t, got, 7)
+	assert.Equal(t, triggerDispatcherRuleIf+"|", got[5])
+	assert.Equal(t, "|never", got[6])
+}
+
+func TestMergeGitLabCI_AliasedConditionKeyIsNotCatchAll(t *testing.T) {
+	// The if: key is written through an alias, so the rule is conditional
+	// and admit rules are still appended at the end.
+	existing := []byte(`workflow:
+  name: &condition_key if
+  rules:
+    - *condition_key : $CI_COMMIT_TAG
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "push"
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+
+	got := workflowRuleSummaries(t, result)
+	require.Len(t, got, 7)
+	assert.Equal(t, `$CI_PIPELINE_SOURCE == "push"|`, got[2])
+	assert.Equal(t, triggerDispatcherRuleIf+"|", got[6])
+}
+
 func TestIsCatchAllNeverRule(t *testing.T) {
 	tests := []struct {
 		name string
@@ -200,6 +236,12 @@ func TestIsCatchAllNeverRule(t *testing.T) {
 		{"scalar", "never", false},
 		{"aliased when never", "a: &d never\nwhen: *d", true},
 		{"merge key", "<<: {if: $X}\nwhen: never", false},
+		{"aliased if key", "a: &k if\n*k : $X\nwhen: never", false},
+		{"aliased changes key", "a: &k changes\n*k : [a]\nwhen: never", false},
+		{"aliased merge key", "a: &k <<\n*k : {if: $X}\nwhen: never", false},
+		{"aliased when key", "a: &k when\n*k : never", true},
+		{"unclassifiable key", "? [a]\n: b\nwhen: never", false},
+		{"interpolated key", "$[[ inputs.k ]]: $X\nwhen: never", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
