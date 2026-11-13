@@ -813,7 +813,7 @@ func TestLintCommand_FetchOnlyHarnessRemoteResourcesNotSubset(t *testing.T) {
 	// A harness with no URL references that opts into runtime fetching
 	// (allow_runtime_fetch + allowed_remote_resources) still starts the
 	// fetch service at run time, so lint must check its allowlist against
-	// config.yaml's — not only when HasURLReferences() is true (#7395801).
+	// config.yaml's — not only when HasURLReferences() is true (#9291).
 	dir := t.TempDir()
 	cfg := `version: "1"
 allowed_remote_resources:
