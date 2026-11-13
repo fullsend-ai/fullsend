@@ -1,5 +1,5 @@
 cd '/sandbox/workspace/repo' &&
-{ readonly FULLSEND_TRUSTED_PATH="$(IFS=:; set -f; s=; for d in /opt/fullsend/usr/local/bin:/opt/fullsend/usr/bin:$PATH; do case $d in (/*) ;; (*) continue ;; esac; if ! test -O /; then d="$(cd -P "$d" 2>/dev/null &&
+{ readonly FULLSEND_TRUSTED_PATH="$(IFS=:; set -f; s=; fullsend_path='/opt/fullsend/usr/local/bin:/opt/fullsend/usr/bin'; paths=$fullsend_path${PATH:+:$PATH}; for d in $paths; do case $d in (/*) ;; (*) continue ;; esac; if ! test -O /; then d="$(cd -P "$d" 2>/dev/null &&
 pwd -P)" || continue; case $d in (*:*) continue ;; esac; p=$d; while :; do if test -w "$p" || test -O "$p"; then continue 2; fi; case $p in (/) break ;; esac; p=${p%/*}; p=${p:-/}; done; fi; if test -d "$d"; then printf '%s%s' "$s" "$d"; s=:; fi; done)"; } &&
 { readonly FULLSEND_READLINK="$(IFS=:; set -f; rl=; for d in $FULLSEND_TRUSTED_PATH; do test -f "$d/readlink" &&
 test -x "$d/readlink" || continue; if test -O /; then rl=$d/readlink; break; fi; if test -h "$d/readlink" || test -w "$d/readlink" || test -O "$d/readlink"; then continue; fi; rl=$d/readlink; break; done; test -n "$rl" || echo 'fullsend: no readlink that is a regular file in a PATH directory the agent cannot write' >&2; printf '%s' "$rl")"; } &&

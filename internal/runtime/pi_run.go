@@ -437,6 +437,15 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	// assignment to the pinned name (envDataLoad's extra drop names).
 	// The launch below uses the path, which no function or alias can shadow.
 	parts = append(parts, "&& "+piBinaryPin())
+	if vertex {
+		parts = append(parts, "&& "+piProviderExtensionPin(piVertexExtensionVar, piVertexExtensionPath, piLegacyVertexExtensionPath))
+	}
+	if xaiVertex {
+		parts = append(parts, "&& "+piProviderExtensionPin(piXaiVertexExtensionVar, piXaiVertexExtensionPath, piLegacyXaiVertexExtensionPath))
+	}
+	if gateway {
+		parts = append(parts, "&& "+piProviderExtensionPin(piGatewayExtensionVar, piInferenceGatewayExtensionPath, piLegacyGatewayExtensionPath))
+	}
 	if hooksEnabled {
 		// Before .env: that file is agent-writable and could otherwise
 		// shadow the guard's tools with functions or a PATH entry.
@@ -485,7 +494,7 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	parts = append(parts,
 		// .env is read as data, never sourced (envDataLoad, #8498); that
 		// also drops LD_PRELOAD, LD_LIBRARY_PATH and LD_AUDIT (#7580).
-		"&& "+envDataLoad(envFile, piBinaryVar, piNodeVar, piHookPythonEnv, piHookPathEnv, piChildBinEnv, piChildNodeEnv),
+		"&& "+envDataLoad(envFile, piBinaryVar, piNodeVar, piVertexExtensionVar, piXaiVertexExtensionVar, piGatewayExtensionVar, piHookPythonEnv, piHookPathEnv, piChildBinEnv, piChildNodeEnv),
 		// First thing after the agent-writable .env, on every provider
 		// path: clear the variables that steer the module loaders pi runs
 		// under. JITI_ALIAS alone swaps the file behind an `-e` path
@@ -636,13 +645,13 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	if vertex {
 		// The interim Claude-on-Vertex provider is only needed for the
 		// anthropic-vertex model spec; other providers get pi's built-ins.
-		parts = append(parts, "-e "+shellQuote(piVertexExtensionPath))
+		parts = append(parts, "-e \"$"+piVertexExtensionVar+"\"")
 	}
 	if xaiVertex {
-		parts = append(parts, "-e "+shellQuote(piXaiVertexExtensionPath))
+		parts = append(parts, "-e \"$"+piXaiVertexExtensionVar+"\"")
 	}
 	if gateway {
-		parts = append(parts, "-e "+shellQuote(piInferenceGatewayExtensionPath))
+		parts = append(parts, "-e \"$"+piGatewayExtensionVar+"\"")
 	}
 	// The openai provider needs no -e extension and deliberately no
 	// --api-key: that flag outranks auth.json in pi's resolution order and
@@ -719,6 +728,12 @@ const piManifestSumEnv = "FULLSEND_PI_MANIFEST_SHA256"
 // piBinaryVar holds the absolute path of the pi binary, resolved before
 // .env is read and marked read-only.
 const piBinaryVar = "FULLSEND_PI_BIN"
+
+const (
+	piVertexExtensionVar    = "FULLSEND_PI_VERTEX_EXTENSION"
+	piXaiVertexExtensionVar = "FULLSEND_PI_XAI_VERTEX_EXTENSION"
+	piGatewayExtensionVar   = "FULLSEND_PI_GATEWAY_EXTENSION"
+)
 
 // piNodeVar holds the node that starts pi: pi's CLI is a
 // `#!/usr/bin/env node` script, so binaryPin pins node by the same rule.
@@ -813,6 +828,14 @@ func piLoaderEnvUnset() string {
 // binaryPin for why it holds.
 func piBinaryPin() string {
 	return binaryPin(piBinaryVar, piNodeVar, "pi")
+}
+
+// piProviderExtensionPin prefers the relocated extension path and falls
+// back to the path in the currently published sandbox image. The selected
+// path is read-only before the agent-writable .env is processed.
+func piProviderExtensionPin(variable, primary, legacy string) string {
+	return "if test -d " + shellQuote(primary) + "; then readonly " + variable + "=" + shellQuote(primary) +
+		"; else readonly " + variable + "=" + shellQuote(legacy) + "; fi"
 }
 
 // piPlaceholderPrefix is the namespace of OpenShell gateway placeholders,

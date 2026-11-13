@@ -311,7 +311,7 @@ func TestOpenCodePreflightVersionFailure(t *testing.T) {
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "opencode --version") echo "boom" >&2; exit 1 ;;
+  *"opencode --version"*) echo "boom" >&2; exit 1 ;;
   esac
   exit 0
 fi

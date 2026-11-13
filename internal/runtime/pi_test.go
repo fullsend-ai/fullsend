@@ -36,7 +36,7 @@ func TestPiRuntimeMetadata(t *testing.T) {
 // denied.
 func TestPiExtensionDirsWithinSandboxPolicy(t *testing.T) {
 	t.Parallel()
-	allowedPrefixes := []string{"/usr", "/lib", "/app", "/etc", "/var/log"}
+	allowedPrefixes := []string{"/usr", "/lib", "/app", "/etc", "/var/log", sandbox.SandboxFullsendRoot}
 	for _, extPath := range []string{piVertexExtensionPath, piXaiVertexExtensionPath, piInferenceGatewayExtensionPath} {
 		var matched bool
 		for _, prefix := range allowedPrefixes {

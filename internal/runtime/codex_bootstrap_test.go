@@ -67,7 +67,7 @@ if [ "$2" = "exec" ]; then
     "test -f '/tmp/fs-upload-"*)
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
-    "codex --version") echo "` + versionOutput + `"; exit 0 ;;
+    *"codex --version"*) echo "` + versionOutput + `"; exit 0 ;;
     "codex debug models --bundled") cat "${FULLSEND_TEST_CATALOG:-testdata/codex/models-bundled-0.166.0.json}"; exit 0 ;;
     *"` + hookInterpreterSep + `"*) printf '%s` + hookInterpreterSep + `%s\n' /usr/bin/python3 /usr/local/bin:/usr/bin:/bin; exit 0 ;;
     # What a plain PATH lookup finds in the fleet image; Bootstrap must not use it.
@@ -299,7 +299,7 @@ func TestCodexRuntimeBootstrap_PreflightFailureIsReportedEarly(t *testing.T) {
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "codex --version") echo "codex: command not found" >&2; exit 127 ;;
+    *"codex --version"*) echo "codex: command not found" >&2; exit 127 ;;
   esac
 fi
 exit 0

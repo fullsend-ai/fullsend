@@ -135,7 +135,8 @@ const envDataWritableAncestor = `while :; do if test -w "$p" || test -O "$p"; th
 // only relative and empty entries and missing directories are left out.
 func envDataTrustedPath() string {
 	return `{ readonly ` + envDataTrustedPathVar + `="$(IFS=:; set -f; s=; ` +
-		`for d in ` + sandbox.SandboxFullsendToolPath + `:$PATH; do case $d in (/*) ;; (*) continue ;; esac; if ! test -O /; then ` +
+		`fullsend_path='` + sandbox.SandboxFullsendToolPath + `'; paths=$fullsend_path${PATH:+:$PATH}; ` +
+		`for d in $paths; do case $d in (/*) ;; (*) continue ;; esac; if ! test -O /; then ` +
 		`d="$(cd -P "$d" 2>/dev/null && pwd -P)" || continue; case $d in (*:*) continue ;; esac; p=$d; ` + envDataWritableAncestor + `; fi; ` +
 		`if test -d "$d"; then printf '%s%s' "$s" "$d"; s=:; fi; done)"; }`
 }

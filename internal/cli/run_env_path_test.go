@@ -168,7 +168,7 @@ func TestEnvFilePath_EnvDCannotShadowRunnerPath(t *testing.T) {
 					require.NotEqual(t, -1, sysAt, printed)
 					require.NotEqual(t, -1, binAt, printed)
 					assert.Less(t, sysAt, binAt, "workspace bin comes after the image PATH")
-					assert.True(t, strings.HasPrefix(printed, "PATH=/usr/local/go/bin:"), "runner PATH comes first: %s", printed)
+					assert.True(t, strings.HasPrefix(printed, "PATH="+sandbox.SandboxFullsendToolPath+":/usr/local/go/bin:"), "runner PATH comes first: %s", printed)
 				}
 			})
 		}

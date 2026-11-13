@@ -438,7 +438,7 @@ func TestOpenCodeLaunch_HostileEnvDoesNotExecute(t *testing.T) {
 	trusted := openCodeTrustedEnv{ConfigContent: `{"permission":{"*":"deny"}}`, CredentialsPath: "/runner/adc.json"}
 	script := strings.Join([]string{
 		openCodeBinaryPin(),
-		openCodeUtilityPin(),
+		openCodeTestUtilityPin(),
 		openCodeTrustedEnvPin(trusted),
 		envDataLoadWith(f.envFile, control, openCodeEnvDataDrop),
 		strings.Join(OpenCodeRuntime{}.EnvExports(), " && "),
@@ -502,12 +502,19 @@ func requirePinnedSha256sum(t *testing.T) {
 	t.Skip("no sha256sum in the pinned utility directories")
 }
 
+// Unit tests execute the generated pin on the host, where the sandbox's
+// /opt/fullsend tree is absent. Keep the generated command identical except
+// that its utility search uses the host's standard binary directories.
+func openCodeTestUtilityPin() string {
+	return openCodeUtilityPinFromDirs("/usr/local/bin", "/usr/bin", "/bin")
+}
+
 func TestOpenCodeExitPipeline(t *testing.T) {
 	requirePinnedSha256sum(t)
 	rcFile := filepath.Join(t.TempDir(), "run-rc")
 	transcript := filepath.Join(t.TempDir(), "output.jsonl")
 	shadow := `command() { printf FAKE; }; printf() { :; }; tee() { :; }; cat() { printf 0; }; `
-	command := openCodeUtilityPin() + " && " + shadow + openCodeExitPipeline(
+	command := openCodeTestUtilityPin() + " && " + shadow + openCodeExitPipeline(
 		[]string{"/bin/sh", "-c", shellQuote("command -p printf real-output; exit 7")},
 		rcFile,
 		transcript,
@@ -526,7 +533,7 @@ func TestOpenCodeHooksGuardUsesUnshadowableCommands(t *testing.T) {
 	requirePinnedSha256sum(t)
 	missing := filepath.Join(t.TempDir(), "missing-hooks.ts")
 	shadow := `command() { return 0; }; test() { return 0; }; printf() { return 0; }; sha256sum() { return 0; }; cut() { return 0; }; `
-	cmd := exec.Command("sh", "-c", openCodeUtilityPin()+" && "+shadow+openCodeHooksGuard(missing))
+	cmd := exec.Command("sh", "-c", openCodeTestUtilityPin()+" && "+shadow+openCodeHooksGuard(missing))
 	err := cmd.Run()
 	var exitErr *exec.ExitError
 	require.ErrorAs(t, err, &exitErr)
@@ -638,7 +645,8 @@ func TestOpenCodeTrustedEnvReadCommand(t *testing.T) {
 		"export GOOGLE_APPLICATION_CREDENTIALS=" + shellQuote(want.CredentialsPath) + "\n"
 	require.NoError(t, os.WriteFile(envFile, []byte(content), 0o644))
 
-	cmd := exec.Command("sh", "-c", openCodeTrustedEnvReadCommand(envFile))
+	command := strings.ReplaceAll(openCodeTrustedEnvReadCommand(envFile), openCodeUtilityPin(), openCodeTestUtilityPin())
+	cmd := exec.Command("sh", "-c", command)
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -776,7 +784,7 @@ func TestOpenCodeAgentGuard(t *testing.T) {
 	require.NoError(t, os.WriteFile(agent, []byte("trusted"), 0o644))
 	for content, want := range map[string]int{"trusted": 0, "tampered": openCodeAgentModifiedExit} {
 		require.NoError(t, os.WriteFile(agent, []byte(content), 0o644))
-		cmd := exec.Command("sh", "-c", openCodeUtilityPin()+" && "+openCodeAgentGuard(agent, "trusted"))
+		cmd := exec.Command("sh", "-c", openCodeTestUtilityPin()+" && "+openCodeAgentGuard(agent, "trusted"))
 		cmd.Env = []string{"PATH=/usr/bin:/bin"}
 		err := cmd.Run()
 		got := 0

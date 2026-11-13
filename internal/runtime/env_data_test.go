@@ -15,7 +15,7 @@ import (
 // piEnvLoad, codexEnvLoad and openCodeEnvLoad are the .env reads the pi,
 // codex and OpenCode launches emit where they used to source the file.
 var (
-	piEnvLoad       = envDataLoad(sandbox.SandboxWorkspace+"/.env", piBinaryVar, piNodeVar, piHookPythonEnv, piHookPathEnv, piChildBinEnv, piChildNodeEnv)
+	piEnvLoad       = envDataLoad(sandbox.SandboxWorkspace+"/.env", piBinaryVar, piNodeVar, piVertexExtensionVar, piXaiVertexExtensionVar, piGatewayExtensionVar, piHookPythonEnv, piHookPathEnv, piChildBinEnv, piChildNodeEnv)
 	codexEnvLoad    = envDataLoad(sandbox.SandboxWorkspace+"/.env", codexBinaryVar, codexNodeVar, codexPathVar)
 	openCodeEnvLoad = envDataLoad(sandbox.SandboxWorkspace+"/.env", openCodeEnvDataDrop...)
 )

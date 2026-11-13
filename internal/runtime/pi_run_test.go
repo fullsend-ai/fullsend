@@ -102,7 +102,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 
 	// The guard runs before the agent-writable .env is sourced; the
 	// runner-owned locations are re-pinned right after it.
-	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && `+piEnvLoad+` && `+piLoaderEnvUnset()+` && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_PI_HOOK_PYTHON="$FULLSEND_ENV_PYTHON" && export FULLSEND_PI_HOOK_PATH="$FULLSEND_TRUSTED_PATH" && export FULLSEND_PI_CHILD_BIN="$FULLSEND_PI_BIN" FULLSEND_PI_CHILD_NODE="$FULLSEND_PI_NODE" && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && `+cliLaunch(piBinaryVar, piNodeVar)+` --print --mode json`), cmd)
+	assert.True(t, strings.HasPrefix(cmd, `cd '/sandbox/workspace/repo' && `+piBinaryPin()+` && `+piProviderExtensionPin(piVertexExtensionVar, piVertexExtensionPath, piLegacyVertexExtensionPath)+` && `+piHooksGuard("/sandbox/pi-config/fullsend-hooks.js", "/sandbox/pi-config/fullsend-manifest.json")+` && `+piEnvLoad+` && `+piLoaderEnvUnset()+` && `+strings.Join(PiRuntime{}.EnvExports(), " && ")+` && export FULLSEND_PI_MANIFEST='/sandbox/pi-config/fullsend-manifest.json' && export FULLSEND_PI_HOOK_PYTHON="$FULLSEND_ENV_PYTHON" && export FULLSEND_PI_HOOK_PATH="$FULLSEND_TRUSTED_PATH" && export FULLSEND_PI_CHILD_BIN="$FULLSEND_PI_BIN" FULLSEND_PI_CHILD_NODE="$FULLSEND_PI_NODE" && export FULLSEND_RUNTIME=pi && export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}" && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_OAUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL && export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}" && `+cliLaunch(piBinaryVar, piNodeVar)+` --print --mode json`), cmd)
 	// Gemini on Vertex needs GOOGLE_CLOUD_LOCATION; the fleet exports the
 	// region as CLOUD_ML_REGION, so it is mirrored after .env is sourced.
 	assert.Contains(t, cmd, `&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`)
@@ -110,7 +110,7 @@ func TestBuildPiRunCommand_Basic(t *testing.T) {
 	for _, want := range []string{
 		"--no-approve", "--no-extensions", "--no-prompt-templates", "--no-themes",
 		"--session-dir '/sandbox/pi-config/sessions'",
-		"-e '/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex'",
+		`-e "$` + piVertexExtensionVar + `"`,
 		"-e '/sandbox/pi-config/fullsend-hooks.js'",
 		"--tools 'bash'",
 		"--model 'anthropic-vertex/claude-opus-5-5'",
@@ -160,7 +160,7 @@ func TestBuildPiRunCommand_AgentTool(t *testing.T) {
 	cmd := buildPiRunCommand(params, m, declared, "")
 	assert.Contains(t, cmd, "-e '"+hooksExt+"' -e '"+agentExt+"' -e '"+editExt+"' -e '/sandbox/pi-config/extensions/go-diagnostics'",
 		"load order: hook adapter, Agent extension, edit repair, declared extensions")
-	assert.Contains(t, cmd, "-e '"+piVertexExtensionPath+"' -e '"+hooksExt+"'", "the provider extension still comes first")
+	assert.Contains(t, cmd, `-e "$`+piVertexExtensionVar+`" -e '`+hooksExt+`'`, "the provider extension still comes first")
 	assert.NotContains(t, cmd, "-e '"+piXaiVertexExtensionPath+"'", "the parent loads only its own provider; the child list in the manifest is not the parent's")
 	assert.NotContains(t, cmd, "--tools", "no tools: frontmatter → pi's default set plus the extension's tools")
 	guard := piAgentGuard(agentExt)
@@ -179,7 +179,7 @@ func TestBuildPiRunCommand_AgentTool(t *testing.T) {
 	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.NotContains(t, cmd, hooksExt)
 	assert.Contains(t, cmd, "&& "+guard+" && "+piEditRepairGuard(editExt)+" && "+piEnvLoad)
-	assert.Contains(t, cmd, "-e '"+piVertexExtensionPath+"' -e '"+agentExt+"' -e '"+editExt+"' --model")
+	assert.Contains(t, cmd, `-e "$`+piVertexExtensionVar+`" -e '`+agentExt+`' -e '`+editExt+`' --model`)
 
 	// A declared tools: list naming Agent carries both names into --tools;
 	// it names no edit, so the edit repair is not loaded.
@@ -196,6 +196,23 @@ func TestBuildPiRunCommand_AgentTool(t *testing.T) {
 	assert.Contains(t, cmd, "&& "+piHooksGuard(hooksExt, "/sandbox/pi-config/fullsend-manifest.json")+" && "+piEnvLoad)
 	disabled := &piManifest{AgentName: "triage", Agent: &piAgentManifest{Enabled: false}}
 	assert.NotContains(t, buildPiRunCommand(params, disabled, nil, ""), "fullsend-agent")
+}
+
+func TestPiProviderExtensionPinPrefersRelocatedPath(t *testing.T) {
+	primary := filepath.Join(t.TempDir(), "relocated extension")
+	legacy := filepath.Join(t.TempDir(), "legacy extension")
+	require.NoError(t, os.Mkdir(primary, 0o755))
+	require.NoError(t, os.Mkdir(legacy, 0o755))
+	run := func() string {
+		t.Helper()
+		cmd := exec.Command("sh", "-c", piProviderExtensionPin("PINNED_EXTENSION", primary, legacy)+` && printf '%s' "$PINNED_EXTENSION"`)
+		out, err := cmd.Output()
+		require.NoError(t, err)
+		return string(out)
+	}
+	assert.Equal(t, primary, run(), "the /opt/fullsend image tree is preferred when present")
+	require.NoError(t, os.Remove(primary))
+	assert.Equal(t, legacy, run(), "the published image path remains usable until the image is rebuilt")
 }
 
 // TestPiHooksGuard runs the rendered guard under a real sh: it must exit 97
@@ -495,18 +512,18 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 	cmd := buildPiRunCommand(params, m, nil, "")
 
 	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "normalized model spec")
-	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'", "xai-vertex extension is loaded")
+	assert.Contains(t, cmd, `-e "$`+piXaiVertexExtensionVar+`"`, "xai-vertex extension is loaded")
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY", "XAI_API_KEY is unset")
 	assert.Contains(t, cmd, `&& export XAI_VERTEX_PROJECT_ID="${XAI_VERTEX_PROJECT_ID:-${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}}"`,
 		"project defaults to the fleet's Vertex project but does not override an explicit XAI_VERTEX_PROJECT_ID")
 	assert.NotContains(t, cmd, "unset ANTHROPIC_API_KEY", "anthropic env hygiene does not fire for xai-vertex")
-	assert.NotContains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/anthropic-vertex'", "anthropic-vertex extension is not loaded")
+	assert.NotContains(t, cmd, `-e "$`+piVertexExtensionVar+`"`, "anthropic-vertex extension is not loaded")
 
 	// Long form: xai-vertex/xai/grok-4.6 passes through.
 	params.Model = "xai-vertex/xai/grok-4.6"
 	cmd = buildPiRunCommand(params, m, nil, "")
 	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'")
-	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'")
+	assert.Contains(t, cmd, `-e "$`+piXaiVertexExtensionVar+`"`)
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY")
 
 	// Case variants must all reach the gate. A short form that escapes
@@ -517,7 +534,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 		cmd = buildPiRunCommand(params, m, nil, "")
 		assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "canonical spec for %s", spec)
 		assert.Contains(t, cmd, "&& unset XAI_API_KEY", "XAI_API_KEY unset for %s", spec)
-		assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'", "extension loaded for %s", spec)
+		assert.Contains(t, cmd, `-e "$`+piXaiVertexExtensionVar+`"`, "extension loaded for %s", spec)
 	}
 
 	// unset must run after the agent-writable .env is sourced, or the .env
@@ -847,7 +864,7 @@ func TestBuildPiRunCommand_HarnessOverridesAndFlags(t *testing.T) {
 	assert.NotContains(t, cmd, "--no-builtin-tools")
 	assert.NotContains(t, cmd, "fullsend-hooks.js", "no hook extension when the runner has security disabled")
 	assert.NotContains(t, cmd, "pi hook adapter or manifest missing", "and no hook guard")
-	assert.Contains(t, cmd, "-e '/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex'")
+	assert.Contains(t, cmd, `-e "$`+piVertexExtensionVar+`"`)
 	assert.True(t, strings.HasSuffix(cmd, "'Run the agent task' </dev/null 2>>'/sandbox/workspace/pi-debug.log'"), cmd)
 }
 
