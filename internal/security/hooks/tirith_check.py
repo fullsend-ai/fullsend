@@ -52,9 +52,9 @@ SEVERITY_LEVELS = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 # docs/contributing/runtime-implementation.md.
 DIALECT_HINT = (
     " — tirith could not analyse this command, so it is blocked rather than trusted. "
-    'Rewrite it in a form tirith parses: `test -n "$X"` instead of `[ -n "$X" ]`; '
-    "two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` "
-    "inside `$(( ))`; in a `case`, only the first arm may be a glob. "
+    "Rewrite it in a form tirith parses: "
+    "two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` inside `$(( ))`; "
+    "in a `case`, only the first arm may be a glob. "
     "See docs/contributing/runtime-implementation.md, 'Tirith: accepted shell dialect'."
 )
 

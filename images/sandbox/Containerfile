@@ -479,9 +479,9 @@ RUN apt-get update \
 # Pinned version + sha256 checksum for supply chain safety.
 # Renovate bumps TIRITH_VERSION; postUpgradeTasks runs
 # scripts/renovate/update-tirith-checksums.sh to refresh the SHA256 ARGs.
-ARG TIRITH_VERSION=0.4.2
-ARG TIRITH_SHA256_AMD64=efa6bf414a83dba385d4f13137e8677f850ced9102fe74ebb14c72f31df0dc77
-ARG TIRITH_SHA256_ARM64=c550b1bfb0c8c872ab3421cd6ef756f260f7cf4981a18cedd49f141fa2d77569
+ARG TIRITH_VERSION=0.5.0
+ARG TIRITH_SHA256_AMD64=e2a87b1fbb967e8d37bc9c3c19bcd97f7979c9253e2f600d9293fce4d86d07ce
+ARG TIRITH_SHA256_ARM64=e9f3d685f0a5ba210c67e763749905915a1b34099a1419f9ce87a1ee60b9fc37
 RUN case "$TARGETARCH" in \
       amd64) TI_ARCH="x86_64";  TI_SHA="$TIRITH_SHA256_AMD64" ;; \
       arm64) TI_ARCH="aarch64"; TI_SHA="$TIRITH_SHA256_ARM64" ;; \
