@@ -553,7 +553,11 @@ settings](../reference/harness-reference.md#migrating-proxy-and-certificate-sett
 | `FULLSEND_GITHUB_RUNNER_SECRETS_FILE` | Path to a file holding the object. The composite action writes the `FULLSEND_GITHUB_RUNNER_SECRETS` secret to a mode 0600 file and passes only this path. `fullsend run` deletes the file as soon as it has read it, even when the content is invalid, so for a local run point it at a copy. An empty value means no bundle. |
 | `FULLSEND_GITHUB_RUNNER_SECRETS` | The object inline. Use it for local runs only: in CI the value would stay readable in `/proc/<pid>/environ` for the life of the process. |
 
-Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process. Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
+Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process.
+
+The bundle, and the standalone `JIRA_TOKEN` and OTLP header secrets, can instead be resolved from Vault when the layered config selects a Vault connection through `connections` and `secrets` ([ADR 0155](../ADRs/0155-configure-vault-backed-runner-secrets.md); see [config reference § `connections`](../reference/config-reference.md#connections)). A Vault-supplied bundle replaces the native one, so `fullsend run` does not require the native bundle to be valid then. An explicit Vault selection fails closed rather than falling back to the native value.
+
+Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
 
 ## Related
 

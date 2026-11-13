@@ -658,3 +658,48 @@ func TestManagedConfig_CloneIsDeep(t *testing.T) {
 	list, _ := orig.ExplicitAllowedRemoteResources()
 	assert.Equal(t, []string{"https://a.example.com/"}, list)
 }
+
+func TestMergeManaged_ConnectionsAndSecretsMergeByName(t *testing.T) {
+	var parent ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+connections:
+  vault-a:
+    kind: vault
+    vault_address: https://vault-a.example.com
+    vault_role: role-a
+    vault_audience: aud-a
+secrets:
+  FULLSEND_GITHUB_RUNNER_SECRETS:
+    connection: vault-a
+    vault_secrets:
+      - secret/data/parent
+`), &parent))
+	var child ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+connections:
+  vault-b:
+    kind: vault
+    vault_address: https://vault-b.example.com
+    vault_role: role-b
+    vault_audience: aud-b
+secrets:
+  FULLSEND_GITHUB_RUNNER_SECRETS:
+    connection: vault-b
+    vault_secrets:
+      - secret/data/child
+`), &child))
+
+	merged := MergeManaged(parent.Writer(), child.Writer())
+	require.NotNil(t, merged)
+	conns := merged.ConfigConnections()
+	assert.Contains(t, conns, "vault-a", "parent connection kept")
+	assert.Contains(t, conns, "vault-b", "child connection added")
+	src := merged.ConfigSecrets()["FULLSEND_GITHUB_RUNNER_SECRETS"]
+	assert.Equal(t, "vault-b", src.Connection, "child replaces the whole entry")
+	assert.Equal(t, []string{"secret/data/child"}, src.VaultSecrets)
+
+	body, err := merged.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "vault-a.example.com")
+	assert.Contains(t, string(body), "vault-b.example.com")
+}

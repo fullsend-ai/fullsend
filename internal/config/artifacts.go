@@ -276,6 +276,6 @@ func artifactsRelaxations(current PerRepoConfigReader, candidate PerRepoConfigWr
 	return out
 }
 
-func sortedKeys(m map[string]string) []string {
+func sortedKeys[T any](m map[string]T) []string {
 	return slices.Sorted(maps.Keys(m))
 }

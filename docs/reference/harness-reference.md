@@ -410,7 +410,8 @@ sandbox environment, case-insensitively:
   `FULLSEND_WEBHOOK_SECRET`, `FULLSEND_INFERENCE_GATEWAY_API_KEY`,
   `FULLSEND_OPENAI_API_KEY`, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, the
   runner-secret bundle and its staging path (`FULLSEND_GITHUB_RUNNER_SECRETS`,
-  `FULLSEND_GITHUB_RUNNER_SECRETS_FILE`), and the GitHub Actions OpenID Connect
+  `FULLSEND_GITHUB_RUNNER_SECRETS_FILE`), the GitLab CI ID token a Vault
+  connection authenticates with (`FULLSEND_VAULT_ID_TOKEN`), and the GitHub Actions OpenID Connect
   (OIDC) request pair `ACTIONS_ID_TOKEN_REQUEST_URL` /
   `ACTIONS_ID_TOKEN_REQUEST_TOKEN`. The runner uses this pair to request a
   token proving the job's identity.

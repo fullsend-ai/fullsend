@@ -139,35 +139,86 @@ func runnerSecretNameRefused(name string) bool {
 // before validation so a refused entry's value is hidden too. Errors never
 // quote values.
 func loadRunnerSecrets() (map[string]string, error) {
+	return takeRunnerSecretsBundle().parse()
+}
+
+// nativeRunnerSecrets is the native runner secrets bundle taken out of the
+// process environment but not yet read or validated, so a run can decide
+// whether a Vault connection supplies the bundle instead before the native
+// contents are required to be valid (ADR 0155).
+type nativeRunnerSecrets struct {
+	source string
+	raw    string
+	// present is false when neither variable carries a bundle.
+	present bool
+	// err is a content failure: the native delivery could not be read, or
+	// was set through both channels. parse reports it, and a run whose
+	// bundle comes from Vault ignores it.
+	err error
+	// cleanupErr is a failure to remove the bundle variables from the
+	// environment or to delete the bundle file. It leaves plaintext secrets
+	// behind, so a run fails on it whatever supplies the bundle. parse
+	// reports it ahead of err.
+	cleanupErr error
+}
+
+// takeRunnerSecretsBundle removes both bundle variables from the process
+// environment and deletes the bundle file, as loadRunnerSecrets does, and
+// returns the unparsed bundle. Nothing is validated, masked or registered
+// until parse. Content failures are held until then so they can be ignored
+// when Vault supplies the bundle; cleanup failures are kept apart in
+// cleanupErr because they must never be ignored.
+func takeRunnerSecretsBundle() nativeRunnerSecrets {
 	path, hasFile := os.LookupEnv(runnerSecretsFileEnv)
 	inline, hasInline := os.LookupEnv(runnerSecretsEnv)
 	for _, name := range []string{runnerSecretsFileEnv, runnerSecretsEnv} {
 		if err := os.Unsetenv(name); err != nil {
-			return nil, fmt.Errorf("removing %s from the environment: %w", name, err)
+			return nativeRunnerSecrets{cleanupErr: fmt.Errorf("removing %s from the environment: %w", name, err)}
 		}
 	}
 	// The composite action always sets the path variable; it is empty when
 	// the FULLSEND_GITHUB_RUNNER_SECRETS secret is unset.
 	hasFile = hasFile && strings.TrimSpace(path) != ""
 
-	source, raw := runnerSecretsEnv, inline
 	if hasFile {
-		source = runnerSecretsFileEnv
 		data, readErr := os.ReadFile(path)
 		removeErr := os.Remove(path)
-		if readErr != nil {
-			return nil, fmt.Errorf("reading the %s file: %w", runnerSecretsFileEnv, readErr)
+		// A file that is already gone leaves nothing behind to clean up.
+		var cleanupErr error
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			cleanupErr = fmt.Errorf("deleting the %s file: %w", runnerSecretsFileEnv, removeErr)
 		}
-		if removeErr != nil {
-			return nil, fmt.Errorf("deleting the %s file: %w", runnerSecretsFileEnv, removeErr)
+		switch {
+		case readErr != nil:
+			return nativeRunnerSecrets{cleanupErr: cleanupErr, err: fmt.Errorf("reading the %s file: %w", runnerSecretsFileEnv, readErr)}
+		case hasInline:
+			return nativeRunnerSecrets{cleanupErr: cleanupErr, err: fmt.Errorf("set %s or %s, not both", runnerSecretsFileEnv, runnerSecretsEnv)}
 		}
-		if hasInline {
-			return nil, fmt.Errorf("set %s or %s, not both", runnerSecretsFileEnv, runnerSecretsEnv)
-		}
-		raw = string(data)
-	} else if !hasInline {
+		return nativeRunnerSecrets{source: runnerSecretsFileEnv, raw: string(data), present: true, cleanupErr: cleanupErr}
+	}
+	return nativeRunnerSecrets{source: runnerSecretsEnv, raw: inline, present: hasInline}
+}
+
+// parse validates the taken bundle and returns its name → value map, or
+// the held cleanup or delivery error.
+func (n nativeRunnerSecrets) parse() (map[string]string, error) {
+	if n.cleanupErr != nil {
+		return nil, n.cleanupErr
+	}
+	if n.err != nil {
+		return nil, n.err
+	}
+	if !n.present {
 		return nil, nil
 	}
+	return parseRunnerSecrets(n.source, n.raw)
+}
+
+// parseRunnerSecrets validates a runner secrets bundle read from source
+// (named in errors) and returns its name → value map, or nil for a blank
+// bundle. It masks and registers every value for redaction before
+// validation. Errors never quote values.
+func parseRunnerSecrets(source, raw string) (map[string]string, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}

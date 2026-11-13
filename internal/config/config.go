@@ -988,6 +988,13 @@ type perRepoConfig struct {
 	// overrides of fullsend's pinned alias table (#6882, #6527 item 2).
 	Models *ModelsConfig `yaml:"models,omitempty"`
 
+	// Connections names reusable connections to secret services, and
+	// Secrets selects the connection each registered runner secret uses
+	// (ADR 0155). Both merge by name through the parent chain; a
+	// more-specific layer replaces a whole entry.
+	Connections map[string]SecretConnection `yaml:"connections,omitempty"`
+	Secrets     map[string]SecretSource     `yaml:"secrets,omitempty"`
+
 	// Artifacts limits what the run artifact publishes (ADR 0161).
 	// content overrides the parent layer; by_source merges per key.
 	Artifacts *ArtifactsConfig `yaml:"artifacts,omitempty"`
@@ -1116,22 +1123,24 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 // as an empty YAML sequence (e.g. `roles: []`,
 // `allowed_remote_resources: []`).
 type perRepoConfigMarshal struct {
-	Version                string                    `yaml:"version,omitempty"`
-	Forge                  string                    `yaml:"forge,omitempty"`
-	Tracker                *TrackingConfig           `yaml:"tracker,omitempty"`
-	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
-	Runtime                string                    `yaml:"runtime,omitempty"`
-	KeepHistory            *bool                     `yaml:"keep_history,omitempty"`
-	Roles                  *[]string                 `yaml:"roles,omitempty"`
-	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
-	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
-	Authorization          *[]AuthorizationProvider  `yaml:"authorization,omitempty"`
-	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
-	MintURL                string                    `yaml:"mint_url,omitempty"`
-	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
-	Models                 *ModelsConfig             `yaml:"models,omitempty"`
-	Artifacts              *ArtifactsConfig          `yaml:"artifacts,omitempty"`
-	TraceContext           *TraceContextConfig       `yaml:"trace_context,omitempty"`
+	Version                string                      `yaml:"version,omitempty"`
+	Forge                  string                      `yaml:"forge,omitempty"`
+	Tracker                *TrackingConfig             `yaml:"tracker,omitempty"`
+	KillSwitch             *bool                       `yaml:"kill_switch,omitempty"`
+	Runtime                string                      `yaml:"runtime,omitempty"`
+	KeepHistory            *bool                       `yaml:"keep_history,omitempty"`
+	Roles                  *[]string                   `yaml:"roles,omitempty"`
+	Agents                 []AgentEntry                `yaml:"agents,omitempty"`
+	AllowedRemoteResources *[]string                   `yaml:"allowed_remote_resources,omitempty"`
+	Authorization          *[]AuthorizationProvider    `yaml:"authorization,omitempty"`
+	StatusNotifications    *StatusNotificationConfig   `yaml:"status_notifications,omitempty"`
+	MintURL                string                      `yaml:"mint_url,omitempty"`
+	Inference              *PerRepoInferenceConfig     `yaml:"inference,omitempty"`
+	Models                 *ModelsConfig               `yaml:"models,omitempty"`
+	Connections            map[string]SecretConnection `yaml:"connections,omitempty"`
+	Secrets                map[string]SecretSource     `yaml:"secrets,omitempty"`
+	Artifacts              *ArtifactsConfig            `yaml:"artifacts,omitempty"`
+	TraceContext           *TraceContextConfig         `yaml:"trace_context,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -1152,6 +1161,8 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
 		TraceContext:        c.TraceContextBlock,
+		Connections:         c.Connections,
+		Secrets:             c.Secrets,
 	}
 	// Only emit inference block when at least one field is set locally.
 	if c.Inference != nil && *c.Inference != (PerRepoInferenceConfig{}) {
@@ -1181,6 +1192,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 // effective config.
 func (c *perRepoConfig) Validate() error {
 	if err := c.validateLocalFields(); err != nil {
+		return err
+	}
+	if err := c.ValidateSecretSources(); err != nil {
 		return err
 	}
 	// Agents are validated against the resolved allowlist (including
@@ -1293,6 +1307,11 @@ func (c *perRepoConfig) validateLocalFields() error {
 		}
 	}
 	if err := c.ValidateAuthorization(); err != nil {
+		return err
+	}
+	// Connection references may resolve in another layer, so this checks
+	// only this layer's own entries; Validate checks the merged view.
+	if err := validateSecretSources(c.Connections, c.Secrets, false); err != nil {
 		return err
 	}
 	if err := validateArtifacts(c.Artifacts); err != nil {
