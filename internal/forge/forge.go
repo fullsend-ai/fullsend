@@ -654,6 +654,9 @@ type Annotation struct {
 
 // Issue represents a forge issue.
 type Issue struct {
+	// IsPullRequest identifies pull requests returned by GitHub's issues
+	// endpoint. Populated by GetIssue; issue lifecycle operations must reject them.
+	IsPullRequest bool
 	// Number is the display number: GitHub's per-repo issue number or
 	// GitLab's per-project IID. It is not a stable identity.
 	Number int

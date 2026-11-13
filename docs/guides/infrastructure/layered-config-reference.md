@@ -481,7 +481,7 @@ The `tracker` field is the single, provider-discriminated issue-tracker
 mapping (`github`, `gitlab`, or `jira`; at most one). It replaces the former
 scalar `tracker` field, which is no longer accepted. The provider block that
 is present is the default for `--tracker` on `fullsend issues get`,
-`create`, `post-comment`, and `link` (`link` supports only Jira, so a `github`
+`create`, `post-comment`, `transition`, and `link` (`link` supports only Jira, so a `github`
 or `gitlab` provider makes it fail with a not-supported error unless
 `--tracker jira` is passed); an explicit `--tracker` flag overrides it. When
 no provider block is set, `--tracker` is required on every `fullsend issues`

@@ -7965,3 +7965,26 @@ func TestGetRepoVariableInfo(t *testing.T) {
 		})
 	}
 }
+
+func TestGetIssuePullRequestMarker(t *testing.T) {
+	for _, tt := range []struct {
+		name, payload string
+		want          bool
+	}{
+		{"issue", `{"number":1,"state":"open"}`, false},
+		{"null", `{"number":1,"state":"open","pull_request":null}`, false},
+		{"pull request", `{"number":1,"state":"open","pull_request":{"url":"https://api.github.com/repos/o/r/pulls/1"}}`, true},
+		{"empty marker", `{"number":1,"state":"closed","pull_request":{}}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/repos/o/r/issues/1", r.URL.Path)
+				_, _ = w.Write([]byte(tt.payload))
+			}))
+			defer srv.Close()
+			issue, err := newTestClient(t, srv).GetIssue(context.Background(), "o", "r", 1)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, issue.IsPullRequest)
+		})
+	}
+}

@@ -287,7 +287,7 @@ The `admin` command group's `uninstall`/`analyze`/`enable`/`disable` subcommands
 |----------|-------|
 | CLI reference | _(no dedicated page)_ |
 | Guides | `docs/guides/user/issues-commands.md`, `docs/guides/user/jira-integration.md`, `docs/guides/infrastructure/layered-config-reference.md`, `docs/guides/dev/cli-internals.md` |
-| Go source | `internal/cli/issues.go` |
+| Go source | `internal/cli/issues.go`, `internal/cli/issues_transition.go` |
 
 ## Minor commands
 
