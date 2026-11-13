@@ -178,7 +178,7 @@ func maskingRequired(name string) bool {
 	switch name {
 	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken,
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken,
-		forge.SecretJiraToken:
+		forge.SecretJiraToken, forge.SecretJiraClientSecret:
 		return true
 	}
 	// Custom role credentials (gitlabroles.CustomSecretName).
@@ -924,6 +924,14 @@ func (c *LiveClient) ListWorkflowRunJobs(ctx context.Context, owner, repo string
 			proj, runID, perPage, page)
 		resp, err := c.get(ctx, path)
 		if err != nil {
+			if page == 1 && forge.IsNotFound(err) {
+				// GitLab has been observed to 404 the first page for
+				// pipelines that have not started; the cause is unverified
+				// (#9124). Report the shape only — absence still depends on
+				// the run status. A later-page 404 is a partially readable
+				// listing and never carries the sentinel.
+				return nil, fmt.Errorf("list pipeline jobs page %d: %w: %w", page, forge.ErrJobsListingNotFoundFirstPage, err)
+			}
 			return nil, fmt.Errorf("list pipeline jobs page %d: %w", page, err)
 		}
 		var jobs []glJob
@@ -1041,33 +1049,54 @@ func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo st
 	return result, nil
 }
 
-// GetWorkflowRunLogs concatenates the trace (log output) of all jobs in
-// a pipeline, separated by headers.
+// Trace-size caps for GetWorkflowRunLogs. Package-level vars, not function
+// constants, so tests can lower them through this seam instead of moving
+// ~100 MiB of trace bytes per subtest (docs/contributing/go-code.md,
+// injectable variables).
+var (
+	maxTraceSize     int64 = 10 << 20  // 10 MiB per job
+	maxAggregateSize int64 = 100 << 20 // 100 MiB total across all jobs
+)
+
+// GetWorkflowRunLogs concatenates the trace (log output) of each job in a
+// pipeline that was not skipped, separated by headers; a skipped job never
+// ran, so only its header is written and its trace is not fetched.
 func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error) {
 	jobs, err := c.ListWorkflowRunJobs(ctx, owner, repo, runID)
 	if err != nil {
 		return "", fmt.Errorf("list jobs for logs: %w", err)
 	}
-	const maxTraceSize = 10 << 20      // 10 MiB per job
-	const maxAggregateSize = 100 << 20 // 100 MiB total across all jobs
 
 	var b strings.Builder
 	var totalRead int64
 	for _, j := range jobs {
+		// A skipped job never ran, so it has no trace to fetch: GitLab
+		// answers an empty 200 for a traceless job (lib/api/ci/jobs.rb
+		// serves "body trace || ''" after find_build! and the read
+		// check), so the request would only be wasted — the same skip
+		// the GitHub client carries before its log download.
+		// Checked before the aggregate limit: the limit caps fetched
+		// bytes, not the job listing, so a skipped job's header is
+		// written even once the cap is reached and the snapshot stays
+		// complete for the behaviour reader.
+		if j.Conclusion == "skipped" {
+			fmt.Fprintf(&b, "=== Job %d (%s) [skipped] ===\n", j.ID, j.Name)
+			continue
+		}
 		if totalRead >= maxAggregateSize {
-			fmt.Fprintf(&b, "=== aggregate trace limit (%d bytes) reached, skipping remaining jobs ===\n", maxAggregateSize)
+			fmt.Fprintf(&b, "=== %s (%d bytes) reached, skipping remaining jobs ===\n", forge.LogNoteAggregateTraceLimit, maxAggregateSize)
 			break
 		}
 		tracePath := fmt.Sprintf("/projects/%s/jobs/%d/trace",
 			projectPath(owner, repo), j.ID)
 		resp, err := c.do(ctx, http.MethodGet, tracePath, nil)
 		if err != nil {
-			fmt.Fprintf(&b, "=== Job %d (%s): error fetching trace: %v ===\n", j.ID, j.Name, err)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %v ===\n", j.ID, j.Name, forge.LogNoteErrorFetchingTrace, err)
 			continue
 		}
 		if err := checkStatus(resp, http.StatusOK); err != nil {
 			resp.Body.Close()
-			fmt.Fprintf(&b, "=== Job %d (%s): error fetching trace: %v ===\n", j.ID, j.Name, err)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %v ===\n", j.ID, j.Name, forge.LogNoteErrorFetchingTrace, err)
 			continue
 		}
 		remaining := maxAggregateSize - totalRead
@@ -1077,7 +1106,7 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, remaining+1))
 		resp.Body.Close()
 		if readErr != nil {
-			fmt.Fprintf(&b, "=== Job %d (%s): error reading trace: %v ===\n", j.ID, j.Name, readErr)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %v ===\n", j.ID, j.Name, forge.LogNoteErrorReadingTrace, readErr)
 			continue
 		}
 		truncated := int64(len(data)) > remaining
@@ -1087,7 +1116,7 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 		totalRead += int64(len(data))
 		fmt.Fprintf(&b, "=== Job %d (%s) ===\n%s\n", j.ID, j.Name, string(data))
 		if truncated {
-			fmt.Fprintf(&b, "=== Job %d (%s): trace truncated at %d bytes ===\n", j.ID, j.Name, remaining)
+			fmt.Fprintf(&b, "=== Job %d (%s): %s %d bytes ===\n", j.ID, j.Name, forge.LogNoteTraceTruncated, remaining)
 		}
 	}
 	return b.String(), nil

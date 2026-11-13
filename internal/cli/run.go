@@ -37,6 +37,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
+	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	vertexinference "github.com/fullsend-ai/fullsend/internal/inference/vertex"
@@ -92,6 +93,10 @@ const (
 	// to avoid exceeding command-line or context limits. 10 KiB is enough for
 	// lint/type-check diagnostics without overwhelming the model's context.
 	maxFeedbackBytes = 10 * 1024
+
+	// Fixed feedback keeps sandbox errors and paths out of the prompt.
+	repoRejectedFeedback            = "Repository output was rejected because one or more repository requirements were not met. A plain directory is supported. For a checkout, keep a real root .git directory, avoid shared or redirected Git metadata such as commondir or alternate object stores, and do not introduce new shallow boundaries; if the needed history is missing, fetch full history when possible instead of editing shallow state directly. Downloaded .git/packed-refs must be at most 32 MiB and .git/shallow at most 4 MiB. Inspect the checkout, correct any requirement violation while preserving existing work, then retry."
+	repoValidationUncertainFeedback = "Repository output could not be validated. The checkout may be invalid, or Git, the runner, or the filesystem may have failed. Check the checkout and retry."
 
 	// Run-scoped inference providers resolved from the selected agent.
 	runProviderVertex = "vertex"
@@ -541,6 +546,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	orgCfg, err := loadLockConfig(orgConfigPath)
 	if err != nil {
 		printer.StepFail("Failed to load fullsend config")
+		reportConfigLoadFailure(ctx, agentName, absFullsendDir, forgeFlag, eventFile, sOpts, runnerSecrets, err, printer)
 		return err
 	}
 
@@ -777,10 +783,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// later for profile import and provider resolution.
 	var result resolve.ResolveResult
 
-	if h.HasURLReferences() {
+	// The config-level subset check runs for URL-referencing harnesses (as
+	// before) and for every harness whose runtime fetch service can start
+	// (shouldStartFetchService: an explicit allow_runtime_fetch, URL-dir
+	// resources, or a bare allowed_remote_resources declaration): a harness
+	// whose fetch service starts would otherwise grant its agent fetch
+	// prefixes the organization never allowed (#9291). The service start
+	// below uses the same shouldStartFetchService, so the gate cannot drift
+	// from it.
+	if h.HasURLReferences() || shouldStartFetchService(h) {
 		if orgCfg == nil {
 			var err error
-			orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+			if h.HasURLReferences() {
+				orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+			} else {
+				// A fetch-capable harness without URL references names its
+				// own requirement when the config is missing; an unreadable
+				// or unparsable config keeps its own error instead of being
+				// reported as missing.
+				orgCfg, err = requireOrgConfigFor(orgConfigPath, printer, "runtime fetch requires")
+			}
 			if err != nil {
 				return err
 			}
@@ -790,7 +812,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Remote resource allowlist validation failed")
 			return fmt.Errorf("validating allowed remote resources: %w", err)
 		}
+	}
 
+	if h.HasURLReferences() {
 		// Use a current lock entry for this harness; a stale entry or an
 		// unreadable lock file was reported before composition.
 		usedLock := false
@@ -953,6 +977,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	for k, v := range workItemEnv {
 		setFlagEnv(k, v)
 	}
+	var issueTracking *config.TrackingConfig
+	if orgCfg != nil {
+		issueTracking = orgCfg.IssueTracking()
+	}
+	jiraEnv, err := resolveJiraRunEnv(ctx, sOpts.trackerSource, issueTracking, rFlags.offline, discoverJiraGatewayURL)
+	if err != nil {
+		return err
+	}
+	for k, v := range jiraEnv {
+		setFlagEnv(k, v)
+	}
 
 	// Mint the runtime-stage token before env expansion so provider
 	// credentials and host_files with expand:true capture the sandbox
@@ -1094,6 +1129,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail(err.Error())
 		return fmt.Errorf("%s: %w", runCfg.source, err)
 	}
+	// trace_context is checked the same way (ADR 0154): a malformed block
+	// fails the run before the sandbox exists.
+	if runCfg.perRepo != nil {
+		if err := config.ValidateTraceContext(runCfg.perRepo.TraceContext()); err != nil {
+			printer.StepFail(err.Error())
+			return fmt.Errorf("%s: %w", runCfg.source, err)
+		}
+	}
 	// resolvedModel is the alias-table target when models.aliases remaps
 	// h.Model, h.Model otherwise. It is what the echo and the Claude Code
 	// warning look at; pi still prefixes a bare id with its provider.
@@ -1214,7 +1257,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Runner secret validation failed")
 		return err
 	}
-	if err := h.ValidateRunnerEnvWith(withRunnerSecretLookup(runnerSecrets, lookup)); err != nil {
+	// Sandbox-bound sites expand sandboxDeniedKeys empty instead of failing,
+	// so validation must resolve them there whether or not the host variable
+	// is set (the action unsets FULLSEND_JIRA_TOKEN on non-Jira runs).
+	sandboxLookup := func(key string) (string, bool) {
+		if sandboxDeniedKeys[key] {
+			return "", true
+		}
+		return lookup(key)
+	}
+	if err := h.ValidateRunnerEnvSites(withRunnerSecretLookup(runnerSecrets, lookup), sandboxLookup); err != nil {
 		printer.StepFail("Environment validation failed")
 		return fmt.Errorf("validating env: %w", err)
 	}
@@ -1224,7 +1276,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// seen. Emission happens after ValidateFilesExist, further below.
 	lintDiags := h.Lint()
 	for k, v := range h.RunnerEnv {
-		h.RunnerEnv[k] = os.Expand(v, expander)
+		h.RunnerEnv[k] = expandRunnerEntry(k, v, expander)
 	}
 	// Collect the referenced bundle names before expansion replaces them.
 	usedRunnerSecrets := referencedRunnerSecretNames(h, runnerSecrets)
@@ -1235,17 +1287,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.Env != nil {
 		runnerExpander := withRunnerSecretExpander(runnerSecrets, expander)
 		for k, v := range h.Env.Runner {
-			h.Env.Runner[k] = os.Expand(v, runnerExpander)
+			h.Env.Runner[k] = expandRunnerEntry(k, v, runnerExpander)
 		}
 		for k, v := range h.Env.Sandbox {
-			h.Env.Sandbox[k] = os.Expand(v, expander)
+			h.Env.Sandbox[k] = expandSandboxEnvValue(v, expander)
 		}
 	}
 
 	// Expand ${VAR} references in validation_loop.schema so the path
 	// resolves before ValidateFilesExist stat-checks it.
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
-		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+		h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, expander)
 	}
 
 	if err := h.ValidateFilesExist(); err != nil {
@@ -1289,6 +1341,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			effectiveRunnerEnv[k] = v
 		}
 	}
+	// An optional key such as FULLSEND_JIRA_EMAIL that resolved empty is
+	// omitted, so scripts see it absent rather than empty (#9079).
+	dropEmptyOptionalRunnerEnv(effectiveRunnerEnv)
 	// NOTE: after this point h.RunnerEnv contains the merged effective set
 	// (runner_env + env.runner), not just the declared runner_env entries.
 	h.RunnerEnv = effectiveRunnerEnv
@@ -1419,6 +1474,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var aggMetrics aggregateMetrics
 	var statusFinalizer func()
 	var statusFinalizerOnce sync.Once
+
+	// Label independently of comment settings or status-notifier failures.
+	addJiraRunLabel(ctx, issueTracking, sOpts, printer)
 
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
@@ -2435,6 +2493,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		uploadExcludes = append(uploadExcludes, rel)
 		gitExtraExcludes = append(gitExtraExcludes, rel+"/")
 	}
+	// Freeze the trusted host repository state once, after the pre-script
+	// (which may unshallow the checkout) and immediately before the only
+	// upload. Every later download and validation iteration is reconciled
+	// to it.
+	hostRepositorySnapshot, err := captureRepositorySnapshot(hostRepositoryDir)
+	if err != nil {
+		printer.StepFail("Failed to copy project code")
+		return fmt.Errorf("validating target repository before upload: %w", err)
+	}
 	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir, uploadExcludes...); err != nil {
 		printer.StepFail("Failed to copy project code")
 		return fmt.Errorf("copying project code: %w", err)
@@ -2506,7 +2573,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 8c. Make the target repo read-only if the harness opts in.
 	// Runs after all repo-directory writes (8a, 8a-2) are complete.
 	// Excludes .git/ so git operations (index.lock, etc.) still work.
-	if h.ReadonlyRepo {
+	if h.RepoReadonly() {
 		// -prune skips .git traversal entirely; -not -type l prevents symlink traversal.
 		// chown ensures the sandbox user (run_as_user) owns .git/ after root-owned extraction.
 		chmodCmd := fmt.Sprintf(
@@ -2625,7 +2692,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// no iteration passed inline. This is the #5393 fix: it catches the
 	// case where an iteration produced valid output but its inline
 	// validation was skipped because SafeDownload failed on that same
-	// iteration (extraction failure triggers `continue`, bypassing 9e).
+	// iteration (an extraction failure skips 9e with `continue`; a rejected
+	// repository can also `break`).
 	// The sweep re-validates all completed iteration directories, latest
 	// first, using only the output files (TARGET_REPO_DIR is empty because
 	// hostRepositoryDownloadDir may not correspond to the validated
@@ -2962,6 +3030,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// always treated as fatal for the current iteration's repo state —
 		// we clean up the directory and skip to the next iteration.
 		//
+		// Repository-validation failures instead get feedback-driven retries or
+		// stop the loop; the post-loop sweep still validates this iteration's
+		// output.
+		//
 		// The forceRemoveAll pre-clear guards against a stale destination:
 		// whether "openshell sandbox download" fully replaces a non-empty
 		// destination directory or merges onto it is not verified anywhere
@@ -2985,7 +3057,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
-		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir); err != nil {
+		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir, hostRepositorySnapshot); err != nil {
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				tx.EmitTranscriptErrors(os.Stderr, es)
 			}
@@ -2994,13 +3066,36 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// unsanitized content (sanitizeDownload aborts on first
 				// error, leaving subsequent dangerous symlinks intact).
 				// Clean up to prevent unsanitized content from reaching
-				// validation or the post-script, then continue the retry
-				// loop. Output files (extracted in 9b) are unaffected.
+				// validation or the post-script. Output files (extracted in
+				// 9b) are unaffected.
 				printer.StepWarn(fmt.Sprintf("Failed to extract target repo (cleaning up): %v", err))
 				if rmErr := forceRemoveAll(hostRepositoryDownloadDir); rmErr != nil {
 					printer.StepWarn(fmt.Sprintf("Failed to clean up repo dir after extraction failure: %v", rmErr))
 				}
 				repoExtractedOK = false
+				validationFailed := errors.Is(err, sandbox.ErrRepositoryValidation)
+				rejected := errors.Is(err, sandbox.ErrRepositoryRejected)
+				if validationFailed && !lastIterTimedOut {
+					if feedbackEnabled && iteration < maxIterations {
+						feedback := repoValidationUncertainFeedback
+						if rejected {
+							feedback = repoRejectedFeedback
+						}
+						validationFeedback = writeValidationFeedback(iterDir, []byte(feedback), nil, h.RunnerEnv, printer)
+						printer.StepWarn("Repository validation failed; retrying with validation feedback")
+						printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
+						continue
+					}
+					if feedbackEnabled {
+						printer.StepWarn("Repository validation failed; no iterations remain (the post-loop sweep still validates this iteration's output)")
+						continue
+					}
+					if rejected {
+						printer.StepWarn("Repository output rejected; stopping agent retries (feedback_mode is not append)")
+						break
+					}
+					continue
+				}
 				if lastIterTimedOut {
 					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
 					break
@@ -3022,9 +3117,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
 		// At this point repoExtractedOK is always true: SafeDownload
-		// failure sets it to false and continues (skipping step 9e),
-		// while success sets it to true immediately above. Pass the
-		// repo dir directly.
+		// failure sets it to false and skips step 9e (with `continue`, or
+		// with `break` when the repository is rejected), while success sets
+		// it to true immediately above. Pass the repo dir directly.
 		// Strip OIDC credential vars from the full composed env so keys
 		// injected via h.RunnerEnv are also removed (#5832), and drop
 		// inherited named workflow secrets (#8154).
@@ -3398,9 +3493,60 @@ var providerOnlyKeys = map[string]bool{
 // does not declare it no longer receives it. The parent process keeps them
 // for its own Jira client and trace exporter. The OTLP *_HEADERS variants
 // are matched by isInheritedScriptDenyKey.
+//
+// FULLSEND_JIRA_TOKEN, FULLSEND_JIRA_EMAIL, FULLSEND_JIRA_CLIENT_ID and
+// FULLSEND_JIRA_CLIENT_SECRET are the Jira repository secrets the composite
+// action passes to the fullsend run step from its jira-token, jira-email,
+// jira-client-id and jira-client-secret inputs (#9079, #9176). The parent
+// uses them for Jira status notifications; host-side scripts receive them
+// only when a harness declares them in env.runner.
 var inheritedScriptDenyKeys = map[string]bool{
-	"JIRA_TOKEN":      true,
-	"JIRA_USER_EMAIL": true,
+	"JIRA_TOKEN":            true,
+	"JIRA_USER_EMAIL":       true,
+	jira.TokenEnvVar:        true,
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
+}
+
+// optionalHarnessEnvKeys are host variables a harness ${VAR} reference may
+// name even when they are unset. The action passes FULLSEND_JIRA_EMAIL only
+// when that repository secret exists: an absent email selects
+// service-account Bearer auth, so a harness that declares it in env.runner
+// must not fail validation on a run without it (#9079). The OAuth 2.0
+// client credentials are likewise present only on deployments that use
+// them instead of a token (#9176). An unset key expands empty, and
+// dropEmptyOptionalRunnerEnv then removes the entry so scripts see the
+// variable absent rather than empty.
+var optionalHarnessEnvKeys = map[string]bool{
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
+}
+
+// isOptionalHarnessEnvKey reports whether a harness ${VAR} reference to key
+// resolves even when key is unset: an optionalHarnessEnvKeys entry, or
+// FULLSEND_JIRA_TOKEN on a deployment that authenticates with OAuth 2.0
+// client credentials instead, so one harness can declare both credential
+// types (#9176).
+func isOptionalHarnessEnvKey(key string) bool {
+	if optionalHarnessEnvKeys[key] {
+		return true
+	}
+	return key == jira.TokenEnvVar &&
+		(strings.TrimSpace(os.Getenv(jira.ClientIDEnvVar)) != "" || strings.TrimSpace(os.Getenv(jira.ClientSecretEnvVar)) != "")
+}
+
+// dropEmptyOptionalRunnerEnv removes isOptionalHarnessEnvKey entries whose
+// value is empty or whitespace from runnerEnv, so a host-side script gets
+// no variable rather than an empty one. The shared Jira client trims the
+// credentials the same way before choosing the auth mode.
+func dropEmptyOptionalRunnerEnv(runnerEnv map[string]string) {
+	for k, v := range runnerEnv {
+		if isOptionalHarnessEnvKey(k) && strings.TrimSpace(v) == "" {
+			delete(runnerEnv, k)
+		}
+	}
 }
 
 // isInheritedScriptDenyKey reports whether key must be dropped from the
@@ -3446,12 +3592,51 @@ func harnessEnvExpand(key string) string {
 	return os.Getenv(key)
 }
 
+// sandboxDeniedKeys are host-only credentials that env.runner may declare
+// but no sandbox-bound site (env.sandbox values, expanded host_files content)
+// may expand: the Jira repository secrets the
+// composite action passes to the fullsend run step (#9079). They stay out of
+// harnessExpansionDenied because that map also gates env.runner, where a
+// harness declares them on purpose.
+var sandboxDeniedKeys = map[string]bool{
+	jira.TokenEnvVar:        true,
+	jira.EmailEnvVar:        true,
+	jira.ClientIDEnvVar:     true,
+	jira.ClientSecretEnvVar: true,
+}
+
+// expandSandboxEnvValue expands ${VAR} references in an env.sandbox value
+// with expander, refusing sandboxDeniedKeys (they expand empty).
+func expandSandboxEnvValue(v string, expander func(string) string) string {
+	return os.Expand(v, func(key string) string {
+		if sandboxDeniedKeys[key] {
+			return ""
+		}
+		return expander(key)
+	})
+}
+
+// expandRunnerEntry expands ${VAR} references in a runner_env or env.runner
+// value with expander. FULLSEND_OUTPUT_FILE is the one runner entry that
+// bootstrapEnv exports verbatim into the sandbox, so it is expanded like an
+// env.sandbox value and refuses sandboxDeniedKeys.
+func expandRunnerEntry(key, v string, expander func(string) string) string {
+	if key == "FULLSEND_OUTPUT_FILE" {
+		return expandSandboxEnvValue(v, expander)
+	}
+	return os.Expand(v, expander)
+}
+
 // harnessEnvLookup is the lookup used by ValidateRunnerEnvWith. Denied keys
 // return false so a harness that references them fails validation rather
-// than expanding empty.
+// than expanding empty. Keys isOptionalHarnessEnvKey matches always
+// resolve, to their value or empty.
 func harnessEnvLookup(key string) (string, bool) {
 	if harnessExpansionDenied(key) {
 		return "", false
+	}
+	if isOptionalHarnessEnvKey(key) {
+		return os.Getenv(key), true
 	}
 	return os.LookupEnv(key)
 }
@@ -3504,6 +3689,12 @@ func init() {
 	sandbox.DenyExpansionKeys(denied...)
 	for k := range oidcDenyKeys {
 		reservedSandboxKeys[k] = true
+	}
+	// The Jira repository secrets are host-script-only (#9079): provider
+	// definitions may not expand them in config values (argv) or credential
+	// values, the same as the sandbox-bound harness sites above.
+	for k := range sandboxDeniedKeys {
+		sandbox.DenyExpansionKeys(k)
 	}
 	// Provider-only keys are reserved in the sandbox (env.sandbox cannot
 	// inject them) but must remain expandable in provider credential values,
@@ -4049,7 +4240,7 @@ func safeExpandEnv(s string) string {
 // Fixes #408, #615.
 func shellSafeExpandEnv(text string) string {
 	return os.Expand(text, func(key string) string {
-		if harnessExpansionDenied(key) {
+		if harnessExpansionDenied(key) || sandboxDeniedKeys[key] {
 			return ""
 		}
 		return escapeForDoubleQuotes(os.Getenv(key))
@@ -4076,6 +4267,17 @@ func validationFailMessage(output []byte, execErr error) string {
 		return msg
 	}
 	return execErr.Error()
+}
+
+// redactedValidationFailMessage is validationFailMessage with the
+// redaction a trust boundary needs. The raw capture is redacted before
+// validationFailMessage trims it (#8165): a literal secret with leading
+// or trailing whitespace, printed at the very start or end of the output,
+// would lose that whitespace to the trim and no longer match. The result
+// is redacted again, because the exec error it falls back to was not.
+func redactedValidationFailMessage(output []byte, execErr error, runnerEnv map[string]string) string {
+	redactedOut := []byte(redactFeedback(string(output), runnerEnv))
+	return redactFeedback(validationFailMessage(redactedOut, execErr), runnerEnv)
 }
 
 // feedbackDelimiterOpen and feedbackDelimiterClose fence validation output
@@ -4328,11 +4530,10 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 	// All exact literals are replaced in one pass, longest first, so a
 	// value that is a substring of another never leaves part of the longer
 	// one visible, whichever source each came from. envLiterals covers
-	// RunnerEnv and the provider-only keys kept out of it (#6649);
-	// registered runtime secrets, such as runner secrets referenced under a
-	// key sensitiveEnvKey does not match, join the same pass.
-	type literal struct{ value, mask string }
-	var literals []literal
+	// RunnerEnv, provider-only keys kept out of it (#6649), and Jira
+	// repository secrets; registered runtime secrets, such as runner secrets
+	// referenced under a key sensitiveEnvKey does not match, join the same pass.
+	var literals []secretLiteral
 	seen := map[string]bool{}
 	add := func(value, mask string) {
 		if len(value) < minRedactableSecretLen {
@@ -4346,7 +4547,7 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 			// An eligible original may normalize to a short sensitive value.
 			if value != "" && !seen[value] {
 				seen[value] = true
-				literals = append(literals, literal{value, mask})
+				literals = append(literals, secretLiteral{value, mask})
 			}
 		}
 	}
@@ -4356,28 +4557,116 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 	for _, value := range security.RuntimeSecrets() {
 		add(value, "***")
 	}
-	slices.SortStableFunc(literals, func(a, b literal) int { return cmp.Compare(len(b.value), len(a.value)) })
-	for _, l := range literals {
-		feedback = strings.ReplaceAll(feedback, l.value, l.mask)
-	}
+	slices.SortStableFunc(literals, func(a, b secretLiteral) int { return cmp.Compare(len(b.value), len(a.value)) })
+	feedback, _ = maskSecretLiterals(feedback, literals)
 	return feedback
 }
 
-// replaceEnvSecrets is the literal pass: the value of each sensitive runner
-// env key, and of each providerOnlyKeys entry in the process environment
-// (kept out of RunnerEnv, #6649), when it holds minRedactableSecretLen bytes
-// or more and occurs in text, becomes [REDACTED:<key>]. It returns the keys
-// it replaced. Both sources go in one pass, longer values first, then key
-// order: a value that contains another is replaced whole, whichever source
-// holds it, and the text is the same on every run.
-func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []string) {
-	var replaced []string
-	for _, l := range envLiterals(runnerEnv) {
-		if !strings.Contains(text, l.value) {
-			continue
+// secretLiteral is one exact value the literal pass masks, with the text
+// that replaces it.
+type secretLiteral struct{ value, mask string }
+
+// maskSecretLiterals masks every occurrence of each literal in text and
+// reports, by index, which literals occurred. literals must be sorted
+// longest first.
+//
+// Match ranges are located in the original text before anything is
+// replaced, overlapping ranges are merged, and each merged range is
+// masked once (#8165). Replacing one literal at a time would leave a
+// fragment of two values that overlap in the text without either
+// containing the other: masking the first breaks the second's match. A
+// merged range takes the mask of the longest literal in it (the earliest
+// in literals on a tie), so a value inside a longer one is masked as the
+// longer one. Ranges that only touch are not merged and keep their own
+// masks.
+//
+// The output is unbounded (a script can print 100 MB of one repeated
+// secret), so matches are merged as they are found instead of being
+// collected: each literal keeps one cursor at its next match, and only the
+// range being built is held. Memory beyond the result is O(len(literals)).
+func maskSecretLiterals(text string, literals []secretLiteral) (string, []bool) {
+	found := make([]bool, len(literals))
+	// next[i] is the start of literal i's first match not yet consumed,
+	// or -1 when it has none left.
+	next := make([]int, len(literals))
+	nextMatch := func(i, from int) int {
+		if literals[i].value == "" || from > len(text) {
+			return -1
 		}
-		text = strings.ReplaceAll(text, l.value, "[REDACTED:"+l.key+"]")
-		replaced = append(replaced, l.key)
+		j := strings.Index(text[from:], literals[i].value)
+		if j < 0 {
+			return -1
+		}
+		return from + j
+	}
+	for i := range literals {
+		next[i] = nextMatch(i, 0)
+	}
+	var b strings.Builder
+	last := 0
+	for {
+		first := -1
+		for i, s := range next {
+			if s >= 0 && (first < 0 || s < next[first]) {
+				first = i
+			}
+		}
+		if first < 0 {
+			break
+		}
+		start := next[first]
+		end := start + len(literals[first].value)
+		lit := first
+		// Consume every match that starts inside the range, growing it.
+		// The search resumes one byte past each match start, not past the
+		// match, so a value that overlaps itself in the text ("aaaa" in
+		// "aaaaa") is covered whole. Repeat until a pass leaves the end
+		// where it was: a literal visited early may match inside a range
+		// a later one has since grown.
+		for grew := true; grew; {
+			grew = false
+			for i := range next {
+				for next[i] >= 0 && next[i] < end {
+					found[i] = true
+					if e := next[i] + len(literals[i].value); e > end {
+						end = e
+						grew = true
+					}
+					lit = min(lit, i)
+					next[i] = nextMatch(i, next[i]+1)
+				}
+			}
+		}
+		b.WriteString(text[last:start])
+		b.WriteString(literals[lit].mask)
+		last = end
+	}
+	if last == 0 {
+		return text, found
+	}
+	b.WriteString(text[last:])
+	return b.String(), found
+}
+
+// replaceEnvSecrets is the literal pass: the value of each sensitive runner
+// env key, and of each provider-only or Jira repository secret in the process
+// environment, when it holds minRedactableSecretLen bytes or more and occurs
+// in text, becomes [REDACTED:<key>]. It returns the keys it replaced. All
+// sources go in one pass, longer values first, then key order: a value that
+// contains another is replaced whole, whichever source holds it, and the text
+// is the same on every run.
+func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []string) {
+	envLits := envLiterals(runnerEnv)
+	literals := make([]secretLiteral, len(envLits))
+	for i, l := range envLits {
+		literals[i] = secretLiteral{l.value, "[REDACTED:" + l.key + "]"}
+	}
+	text, found := maskSecretLiterals(text, literals)
+	var replaced []string
+	for i, ok := range found {
+		if ok {
+			replaced = append(replaced, envLits[i].key)
+		}
 	}
 	return text, replaced
 }
@@ -4387,8 +4676,11 @@ func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []stri
 type envLiteral struct{ key, value string }
 
 // envLiterals lists the values replaceEnvSecrets replaces — longer values
-// first, then key order, so a value that contains another is replaced
-// whole whichever source holds it.
+// first, then key order, so a value that contains another is replaced whole
+// whichever source holds it. Jira repository credentials are included from
+// the process environment even when a harness aliases them under a key that
+// is not classified as sensitive; they are also registered with the shared
+// runtime redactor.
 func envLiterals(runnerEnv map[string]string) []envLiteral {
 	var literals []envLiteral
 	for key, value := range runnerEnv {
@@ -4398,6 +4690,12 @@ func envLiterals(runnerEnv map[string]string) []envLiteral {
 	}
 	for key := range providerOnlyKeys {
 		if value := os.Getenv(key); len(value) >= minRedactableSecretLen {
+			literals = append(literals, envLiteral{key, value})
+		}
+	}
+	for _, key := range []string{jira.TokenEnvVar, jira.EmailEnvVar, jira.ClientIDEnvVar, jira.ClientSecretEnvVar} {
+		if value := os.Getenv(key); len(value) >= minRedactableSecretLen {
+			security.RegisterRuntimeSecret(value)
 			literals = append(literals, envLiteral{key, value})
 		}
 	}
@@ -4417,7 +4715,7 @@ func envLiterals(runnerEnv map[string]string) []envLiteral {
 // credentials either. The write is best-effort: failures are logged but do
 // not block the retry loop.
 func writeValidationFeedback(iterDir string, valOut []byte, valErr error, runnerEnv map[string]string, printer *ui.Printer) string {
-	feedback := redactFeedback(validationFailMessage(valOut, valErr), runnerEnv)
+	feedback := redactedValidationFailMessage(valOut, valErr, runnerEnv)
 	feedbackPath := filepath.Join(iterDir, validationFeedbackFile)
 	if err := os.WriteFile(feedbackPath, []byte(feedback), 0o600); err != nil {
 		printer.StepWarn("Failed to write validation feedback: " + err.Error())
@@ -4481,7 +4779,7 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 			}
 			return sweepResult{passed: true, validatedIter: i, repoExtractedOK: repoOK}
 		}
-		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactFeedback(validationFailMessage(valOut, valErr), h.RunnerEnv)))
+		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactedValidationFailMessage(valOut, valErr, h.RunnerEnv)))
 	}
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
 }
@@ -5545,7 +5843,9 @@ func stripControlChars(s string) string {
 // See #5832, #6649.
 //
 // Named workflow secrets (inheritedScriptDenyKeys: JIRA_TOKEN,
-// JIRA_USER_EMAIL, OTEL_EXPORTER_OTLP_*HEADERS) are dropped from the
+// JIRA_USER_EMAIL, FULLSEND_JIRA_TOKEN, FULLSEND_JIRA_EMAIL,
+// FULLSEND_JIRA_CLIENT_ID, FULLSEND_JIRA_CLIENT_SECRET,
+// OTEL_EXPORTER_OTLP_*HEADERS) are dropped from the
 // inherited process environment only; a runnerEnv entry for one of them is
 // kept, so a harness that declares it in env.runner still gets it (#8154).
 //
@@ -6550,7 +6850,11 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 	// instead of the code-hosting forge. This check comes before the
 	// owner/repo parsing because Jira uses project-key addressing.
 	if sOpts.trackerSource == "jira" {
-		return setupStatusNotifierJira(notifyCfg, sOpts, printer)
+		var tracking *config.TrackingConfig
+		if fsCfg != nil {
+			tracking = fsCfg.IssueTracking()
+		}
+		return setupStatusNotifierJira(notifyCfg, tracking, sOpts, printer)
 	}
 
 	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
@@ -6720,9 +7024,10 @@ func setupStatusNotifierGitLab(notifyCfg config.StatusNotificationConfig, owner,
 // setupStatusNotifierJira creates a status notifier for Jira. Unlike the
 // GitHub/GitLab paths, Jira has no commit SHA or CI run ID equivalents, so a
 // synthetic run ID is generated from the current time when no CI run ID is
-// available.
-func setupStatusNotifierJira(notifyCfg config.StatusNotificationConfig, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
-	tc, err := newJiraTrackerClientFromEnv()
+// available. The Jira client is built from the effective tracker.jira
+// config (tracking) and the FULLSEND_JIRA_* credentials.
+func setupStatusNotifierJira(notifyCfg config.StatusNotificationConfig, tracking *config.TrackingConfig, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+	tc, err := newJiraTrackerClientFromConfig(tracking)
 	if err != nil {
 		return nil, err
 	}
@@ -6919,7 +7224,13 @@ type tokenVar struct {
 // the minted token for every role. GITHUB_TOKEN is included so a caller
 // workflow that exports it does not leave the job token in place for tools
 // that read it instead of GH_TOKEN, or for pre/post scripts (#8530).
-var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN"}
+// GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN are included because gh
+// reads those instead of GH_TOKEN/GITHUB_TOKEN for any host other than
+// github.com and *.ghe.com (GitHub Enterprise Server); without them gh on
+// such a host keeps the caller's credential after the mint (#8952). They
+// are set unconditionally, so no host detection is needed; gh ignores them
+// for github.com.
+var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
 
 // roleTokenVars maps canonical role names to the additional env vars they
 // require beyond agentTokenEnvVars. These match the vars declared in
@@ -7121,9 +7432,10 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 // The caller should defer cleanup() to clear tokens from the process env.
 // forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
 // set to "github-app" for GitHub and "pat" for GitLab.
-// The minted token replaces every agentTokenEnvVars name (GH_TOKEN and
-// GITHUB_TOKEN); cleanup restores each to its value before this call, or
-// unsets it if it was unset (#8530).
+// The minted token replaces every agentTokenEnvVars name (GH_TOKEN,
+// GITHUB_TOKEN, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN); cleanup
+// restores each to its value before this call, or unsets it if it was
+// unset (#8530, #8952).
 // On GitHub Actions the pre-mint GH_TOKEN (or, when that is unset or empty,
 // the pre-mint GITHUB_TOKEN) is copied to GH_WORKFLOW_TOKEN for provider
 // credential expansion (#6649) and the runner's ghcr.io image pull (#9019);
@@ -7224,8 +7536,9 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 			}
 		}
 	}
-	// GITHUB_TOKEN is set even when the caller did not export it, so no
-	// tool that reads it instead of GH_TOKEN keeps the job token (#8530).
+	// GITHUB_TOKEN and the enterprise names are set even when the caller
+	// did not export them, so no tool that reads one instead of GH_TOKEN
+	// keeps the job token (#8530), whichever host gh targets (#8952).
 	for _, name := range agentTokenEnvVars {
 		os.Setenv(name, result.Token)
 	}
@@ -8066,6 +8379,45 @@ func forceRemoveAll(path string) error {
 		return nil
 	})
 	return os.RemoveAll(path)
+}
+
+// captureRepositorySnapshot validates and captures the trusted shallow state
+// after the pre-script and before the only upload, so every later download is
+// reconciled to it. A plain input returns a zero snapshot without Git
+// discovery, so a parent checkout is never captured. A materialized checkout
+// records IsCheckout so the downloaded root must remain a checkout.
+func captureRepositorySnapshot(repoDir string) (sandbox.RepositorySnapshot, error) {
+	plain, err := sandbox.ValidateRepositoryRoot(repoDir)
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("validating target repository: %w", err)
+	}
+	if plain {
+		return sandbox.RepositorySnapshot{}, nil
+	}
+	snapshot := sandbox.RepositorySnapshot{IsCheckout: true}
+
+	// Validation proved .git is a real directory that resolves as itself, so
+	// the boundary lives directly there. Resolving it with a Git query would
+	// honor inherited selectors such as GIT_DIR or GIT_COMMON_DIR and could
+	// capture another repository's boundary.
+	shallowPath := filepath.Join(repoDir, ".git", "shallow")
+
+	info, err := os.Stat(shallowPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return snapshot, nil
+	}
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("inspecting git shallow metadata: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("git shallow metadata %s is not a regular file", shallowPath)
+	}
+	data, err := os.ReadFile(shallowPath)
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("reading git shallow metadata %s: %w", shallowPath, err)
+	}
+	snapshot.Shallow = sandbox.ShallowState{Present: true, Data: data}
+	return snapshot, nil
 }
 
 // checkProviderProfileIntegrity validates that every provider references a

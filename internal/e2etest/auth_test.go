@@ -2,12 +2,16 @@ package e2etest
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/url"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/cli"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
@@ -85,6 +89,15 @@ func TestResolveE2EToken_MintTokenError(t *testing.T) {
 
 	_, err := resolveE2EToken(context.Background(), "https://mint.example.com", "test-org")
 	require.Error(t, err)
+	// PR #8801 review: only transient mint failures (deadline, transport,
+	// HTTP 429/5xx) stay infrastructure-marked; the missing-OIDC-env
+	// failure is deterministic harness misconfiguration, like the
+	// mint-URL guard, so it surfaces unmarked and scenario-classified.
+	// The transient classes are pinned in TestIsTransientMintError and
+	// auth_infraclass_ext_test.go; failclass cannot be imported here
+	// because it pulls drivers/install, which imports this package.
+	assert.False(t, behaviourfail.Is(err),
+		"a missing-OIDC-env mint failure is configuration validation and stays unmarked")
 }
 
 func TestRunningInGitHubActions(t *testing.T) {
@@ -163,6 +176,14 @@ func TestTokenForOrg_WithMint(t *testing.T) {
 	_, err := tokenForOrg(context.Background(), cfg, "test-org")
 	// Fails because OIDC env vars are not set, but exercises the mint path.
 	require.Error(t, err)
+	// tokenForOrg surfaces resolveE2EToken's classification unchanged
+	// (the mark decision is made once at the source, never re-wrapped
+	// here): the missing-OIDC-env failure is deterministic configuration
+	// validation, so it stays unmarked and scenario-classified (PR #8801
+	// review). The transient classes stay marked, pinned in
+	// auth_infraclass_ext_test.go.
+	assert.False(t, behaviourfail.Is(err),
+		"tokenForOrg's mint path surfaces resolveE2EToken's unmarked config failure unchanged")
 }
 
 func TestTokenForOrg_WithoutMint(t *testing.T) {
@@ -182,4 +203,100 @@ func TestTokenForOrg_Exported(t *testing.T) {
 	token, err := TokenForOrg(context.Background(), EnvConfig{UseMint: false}, "halfsend-03")
 	require.NoError(t, err)
 	assert.Equal(t, "local-token", token)
+}
+
+// timeoutErr is a minimal net.Error whose transport failed.
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "transport timed out" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return false }
+
+// TestIsTransientMintError pins the mint path's transient boundary
+// (PR #8801 review): a context deadline, a transport failure, or an
+// HTTP 429/5xx from the mint or OIDC endpoints is a retryable
+// environment condition, while deterministic rejections and a cancelled
+// context stay unmarked so a retry cannot mask them.
+func TestIsTransientMintError(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		err  error
+		want bool
+	}{
+		"context deadline": {
+			err:  fmt.Errorf("calling mint service: %w", context.DeadlineExceeded),
+			want: true,
+		},
+		"transport timeout": {
+			err:  fmt.Errorf("calling mint service: requesting token: %w", timeoutErr{}),
+			want: true,
+		},
+		"mint 429": {
+			err:  errors.New("calling mint service: mint returned HTTP 429: rate limited"),
+			want: true,
+		},
+		"mint 500 after retries": {
+			err:  fmt.Errorf("calling mint service: giving up after 5 attempts: mint returned HTTP 500: unavailable"),
+			want: true,
+		},
+		"oidc 503 after retries": {
+			err:  errors.New("fetching OIDC JWT: giving up after 15 attempts: OIDC endpoint returned HTTP 503: unavailable"),
+			want: true,
+		},
+		"mint 403 not enrolled": {
+			err:  errors.New("calling mint service: mint returned HTTP 403: org not enrolled"),
+			want: false,
+		},
+		"mint 401 unauthorized": {
+			err:  errors.New("calling mint service: mint returned HTTP 401: unauthorized"),
+			want: false,
+		},
+		"empty token": {
+			err:  errors.New("calling mint service: mint returned empty token"),
+			want: false,
+		},
+		"non-status text after prefix": {
+			err:  errors.New("calling mint service: mint returned HTTP unavailable: oops"),
+			want: false,
+		},
+		"malformed response": {
+			err:  fmt.Errorf("calling mint service: parsing response: %w", errors.New("bad json")),
+			want: false,
+		},
+		"context cancelled": {
+			err:  fmt.Errorf("calling mint service: %w", context.Canceled),
+			want: false,
+		},
+		"transport-wrapped cancellation": {
+			err: fmt.Errorf("calling mint service: %w", &url.Error{
+				Op:  "Get",
+				URL: "https://mint.example.test/v1/token",
+				Err: context.Canceled,
+			}),
+			want: false,
+		},
+		"malformed mint URL": {
+			err: fmt.Errorf("calling mint service: %w", &url.Error{
+				Op:  "parse",
+				URL: "https://mint example.test/v1/token",
+				Err: errors.New("invalid character \" \" in host name"),
+			}),
+			want: false,
+		},
+		"transport-wrapped connection failure": {
+			err: fmt.Errorf("calling mint service: %w", &url.Error{
+				Op:  "Get",
+				URL: "https://mint.example.test/v1/token",
+				Err: timeoutErr{},
+			}),
+			want: true,
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, isTransientMintError(tc.err))
+		})
+	}
 }

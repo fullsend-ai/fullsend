@@ -24,7 +24,7 @@ func TestExecuteBehaviourOp_AssertJQ(t *testing.T) {
 		Args: ".fullsend/personas.json, " + filter,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "jq -e "+shellQuote(filter)+" "+shellQuote("/sandbox/workspace/.fullsend/personas.json")+" >/dev/null", gotCmd)
+	assert.Equal(t, "jq -e "+shellQuote(filter)+" "+shellQuote("/sandbox/workspace/.fullsend/personas.json")+" >/dev/null", stripHarnessEnv(t, gotCmd))
 }
 
 func TestExecuteBehaviourOp_AssertJQFilterWithCommas(t *testing.T) {

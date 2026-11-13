@@ -30,7 +30,10 @@ fullsend
 │       ├── --mint-url <url>                 #   Mint service URL ($FULLSEND_MINT_URL)
 │       └── --audience <string>              #   OIDC audience (default: fullsend-mint)
 ├── inference                                # Inference credentials (GCP Vertex, OpenAI)
-│   ├── provision    <org|owner/repo>        # Create WIF pool/provider for Agent Platform
+│   ├── provision    <org|owner/repo|group/project> # Create WIF pool/provider for Agent Platform
+│   │   ├── --forge <github|gitlab>          #   Forge whose CI identities the provider trusts (default: github)
+│   │   ├── --gitlab-project-id <id>         #   Numeric GitLab project ID (required with --forge gitlab)
+│   │   └── --gitlab-url <url>               #   GitLab instance URL used as OIDC issuer (--forge gitlab only)
 │   ├── deprovision  <org|owner/repo>        # Remove WIF access for org or repo
 │   ├── status       <org|owner/repo>        # Check WIF health, print config
 │   ├── gateway                              # Inference gateway route (ADR 0137)
@@ -53,6 +56,7 @@ fullsend
 │   └── set          <owner/repo> <key> <value> # Update a config value
 ├── repos                                    # Manage per-repo installations via manifest
 │   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
+│   ├── --verbose                            #   Show scrubbed API error text; log GitLab requests to stderr
 │   ├── install      [repos...]              # Converge declared repos to repos.yaml (provision, repair drift, upgrade); positional args only filter declared entries
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml; must exist)
 │   │   ├── --dry-run                        #   Preview without making changes
@@ -63,8 +67,10 @@ fullsend
 │   │   ├── --vertex-project <id>            #   GCP project ID for Vertex inference (else declared inference.project; never in repos.yaml)
 │   │   ├── --vertex-wif-provider <path>     #   Full WIF provider resource name (else declared inference.wif_provider; skips per-repo derivation)
 │   │   ├── --openai-api-key <key>           #   FULLSEND_OPENAI_API_KEY for openai-api-key repos (CLI-only; never in repos.yaml)
-│   │   ├── --jira-token <token>             #   FULLSEND_JIRA_TOKEN for repos whose tracker.jira.poll.enabled is true (CLI-only; never in repos.yaml)
+│   │   ├── --jira-token <token>             #   FULLSEND_JIRA_TOKEN when no OAuth client credentials are configured (CLI-only; never in repos.yaml)
 │   │   ├── --jira-email <email>             #   FULLSEND_JIRA_EMAIL for repos whose tracker.jira.poll.enabled is true (optional; CLI-only)
+│   │   ├── --jira-client-id <id>            #   FULLSEND_JIRA_CLIENT_ID instead of --jira-token (CLI-only)
+│   │   ├── --jira-client-secret <secret>    #   FULLSEND_JIRA_CLIENT_SECRET instead of --jira-token (CLI-only; never logged)
 │   │   ├── --fullsend-binary <path>         #   Pre-built binary to vendor (requires a selected repo with vendor: true)
 │   │   ├── --fullsend-source <path>         #   Source checkout to vendor from (requires a selected repo with vendor: true)
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
@@ -144,6 +150,9 @@ fullsend
 │   ├── output                               # Scan agent output for leaked secrets
 │   ├── context                              # Scan context files for prompt injection
 │   └── url                                  # Validate URLs against SSRF attacks
+├── self-update                              # Replace the local binary with a verified release
+│   ├── --version <tag>                      #   Release to install (default: latest)
+│   └── --dry-run                            #   Report the update without downloading
 ├── issues                                   # Read and write issue content across trackers
 │   ├── get                                  #   Read issue content (title, type, body, comments, labels, Jira custom fields)
 │   │   ├── --tracker <tracker>              #     Tracker backend: github, gitlab, or jira
@@ -199,6 +208,11 @@ fullsend
 │   ├── --fullsend-dir <path>                #   .fullsend dir (local manifest override + fetch cache)
 │   ├── --offline                            #   Reject network fetches (local or cached manifest)
 │   └── --out-dir <path>                     #   Output dir (default: telemetry directory)
+├── prepare-artifacts                        # Build the run artifact copy CI uploads (ADR 0161)
+│   ├── --output-dir <path>                  #   Run output directory (required; never modified)
+│   ├── --artifact-dir <path>                #   Artifact directory, emptied first (required)
+│   ├── --fullsend-dir <path>                #   Directory holding config.yaml (default: .)
+│   └── --event-file <path>                  #   Normalized event (default: dispatch payload; else native GitHub event → github; else strictest level)
 ├── resolve-mr-source                        # Resolve a GitLab MR's source branch, SHA, and project path
 │   ├── --project <path>                     #   GitLab project path (default: $CI_PROJECT_PATH)
 │   ├── --mr-iid <int>                       #   Merge request IID (required)
@@ -444,6 +458,14 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
+`fullsend self-update` (`internal/selfupdate`) uses the release helpers in
+`internal/binary` (`ResolveLatestReleaseTag`, `FetchReleaseFile`,
+`ChecksumForAsset`, `ExtractFullsendFromTarGz`) for the current OS and
+architecture. Before it trusts `checksums.txt`, it verifies
+`checksums.txt.sigstore.json` with sigstore-go against the identity of the
+release workflow for the exact tag. See
+[`fullsend self-update`](../../cli/self-update.md#signature-verification).
+
 Vendoring commit messages use title + body (upload and stale delete). `admin install` and `github setup` remove stale vendored assets at `.fullsend/bin/fullsend` when `--vendor` is not set. `repos install` removes them for GitHub repositories whose `repos.yaml` settings resolve `vendor: false`. The read-only plan comes from `scaffold.FindStaleVendoredAssets` and `internal/repos/stale_vendored.go`, and install, dry run and `repos status` all use it. The deletions and any caller rewrites go into the scaffold commit. Ownership comes from the embedded `.defaults/` layout plus the explicit historical lists in `internal/scaffold/vendorhistory.go`, never from the manifest alone. On an established install with stale assets, `convergeEstablishedPhases` completes this planning before any variable or secret write and reuses the plan for the scaffold commit.
 
 ---
@@ -572,11 +594,13 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │ Extract output    │ SafeDownload() with sanitization:        │
 │  │                   │ - Remove dangerous symlinks (escape)     │
 │  │                   │ - Remove .git/hooks/ (hook injection)    │
-│  │                   │                                          │
-│  │                   │ With validation_loop: SafeDownload       │
-│  │                   │ failure is non-fatal — clean up repo dir │
-│  │                   │ and continue to next iteration. Output   │
-│  │                   │ files (extracted separately) are kept.   │
+│  │                   │ - Filter ancestry metadata               │
+│  │                   │ With validation_loop: failures clean up  │
+│  │                   │ the repo dir and retry; a validation     │
+│  │                   │ failure may get feedback for another     │
+│  │                   │ iteration; without feedback rejected     │
+│  │                   │ output stops, other failures retry.      │
+│  │                   │ Output files are kept for the sweep.     │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────────────────────────────┐                   │
@@ -591,7 +615,7 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │   if killed at timeout: sweep stray      │                   │
 │  │     processes (agent still runs, #7042)  │                   │
 │  │   extract output                         │                   │
-│  │   SafeDownload repo (non-fatal on fail)  │                   │
+│  │   SafeDownload (validation may retry)    │                   │
 │  │   run validation script                  │                   │
 │  │   if pass → break (early exit)           │                   │
 │  │   if killed at timeout → break (#7042)   │                   │
@@ -663,6 +687,12 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+The `bootstrapEnv()` writes and the `iteration.env` names in this diagram are
+the runner's exports. The full, machine-checkable inventory — what every
+sandbox receives, per gate and per runtime, and what arrives only through
+harness configuration — is the generated [sandbox environment
+contract](../../normative/sandbox-env/v1/README.md).
+
 ### Sandbox Constants
 
 ```go
@@ -691,7 +721,7 @@ details, see [Agent runtimes](../../runtimes.md).
 | `Upload()` | `openshell sandbox upload ...` | Copy files into sandbox |
 | `UploadDir()` | tar -czf + Upload + Exec extract | Copy directory preserving symlinks |
 | `Download()` | `openshell sandbox download ...` | Copy files out of sandbox |
-| `SafeDownload()` | Staged download + sanitize | Retry into a fresh staging directory, remove dangerous symlinks (absolute or repo-escaping) and `.git/hooks/`, then publish the sanitized tree |
+| `SafeDownload()` | Staged download + sanitize | Retry into a fresh staging directory, remove dangerous symlinks (absolute or repo-escaping) and real `.git/hooks/` directories, remove known ancestry overrides, reject redirecting Git layouts and bare-shaped directories, require a valid root `.git` when present, then publish the sanitized tree |
 | `CollectLogs()` | Download logs dir | Extract sandbox logs |
 | `ExtractTranscripts()` | Download transcripts | Extract conversation transcripts |
 | `Delete()` | `openshell sandbox delete` | Destroy container |
@@ -701,6 +731,62 @@ details, see [Agent runtimes](../../runtimes.md).
 After downloading files from the sandbox, `sanitizeDownload()` removes:
 - **Dangerous symlinks** (absolute targets or targets that escape the repo) — Prevents sandbox escape via symlink-to-host-path attacks; relative in-repo symlinks are kept
 - **.git/hooks/** — Prevents hook injection that would execute on the host
+- **Ancestry overrides** — Removes `.git/refs/replace/`, `.git/info/grafts`,
+  and `.git/objects/info/commit-graph*`, and filters replacement refs from
+  `.git/packed-refs`. These are the ancestry paths this walker knows about;
+  the check is not a complete defense against hostile Git configuration.
+
+It rejects downloads with a non-directory root `.git`, `.git/commondir`
+redirects, or alternate object stores configured through
+`.git/objects/info/alternates` or `http-alternates`. A symlinked `.git`
+is rejected wherever the walk treats it as a repository root: the download
+root and the outermost `.git` of a nested checkout. A `.git` nested inside
+another `.git` is not treated as a separate repository root.
+
+The selected target may be a plain directory or a normal, non-bare checkout
+with a real root `.git` directory; a `.git` file (linked worktree or submodule)
+or a symlinked `.git` is unsupported. A target without `.git` is a plain
+directory unless it has the bare or redirected shape: `HEAD` plus either
+`commondir` or both `objects` and `refs`. That shape is detected by presence
+alone, without reading Git metadata. These names can occur in ordinary trees,
+so only the full combination is rejected. Fullsend validates the host target
+after the pre-script and before upload, then sanitizes and validates the
+returned tree after download and before publication, because the agent can
+alter `.git`. A plain target may return either a plain directory or a valid
+checkout; a checkout target must return a valid checkout. Otherwise, the
+download is rejected and the local destination is left unchanged. With a
+`validation_loop` and `feedback_mode: append`, a repository-validation failure
+sends fixed feedback for the next iteration, when one remains. Without
+`append`, directly rejected repository output stops the retries, while other
+validation, transport, and publication failures keep the ordinary
+clean-up-and-retry behavior. A timed-out iteration or the last iteration stops
+retries either way. Extracted output files stay in place for the output-only
+post-loop sweep.
+
+Git metadata outside the target's root `.git/` directory—for example, selected
+through `GIT_DIR` or `--git-dir`—is outside this sanitization guarantee.
+
+Reftable ref storage (`.git/reftable`) is supported when the host Git where
+the Fullsend CLI runs is 2.53 or newer; native Git validates its refs, and
+known ancestry overrides such as replacement refs are still removed. Older
+host Git rejects a reftable input at the pre-upload check and again after
+download. File-based repositories keep their existing compatibility; the
+Git 2.53+ requirement applies to host-side reftable sanitization. The sandbox
+also needs a reftable-capable Git to operate on such a checkout. Native ref
+operations use a temporary Git directory with host-created configuration, so
+downloaded configuration cannot run hooks during sanitization.
+
+Shallow state is handled separately from sanitization. Fullsend snapshots the
+root repository's trusted `.git/shallow` state immediately before upload, then
+restores its exact bytes (or absence) before publication, host validation, and
+the post-script. Returned markers containing boundary commits absent from that
+snapshot are rejected before publication: agent-chosen cutoffs cannot be
+trusted. This includes sandbox `git fetch --depth` or `--deepen` operations
+that introduce a new boundary. Removing entries or unshallowing is allowed,
+but the original trusted marker is restored; fetching objects without changing
+the boundary is also allowed. Restoration does not undo history rewrites or
+recover missing objects. A plain target contributes no trusted marker, so a
+checkout created in the sandbox must not introduce a shallow boundary.
 
 ---
 

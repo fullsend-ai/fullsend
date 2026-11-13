@@ -58,10 +58,11 @@ type TransitionReview struct {
 
 // Actor identifies who triggered the event.
 type Actor struct {
-	ID             string `json:"id"`
-	Kind           string `json:"kind"`
-	Role           string `json:"role"`
-	IsEntityAuthor bool   `json:"is_entity_author"`
+	ID               string `json:"id"`
+	Kind             string `json:"kind"`
+	Role             string `json:"role"`
+	IsEntityAuthor   bool   `json:"is_entity_author"`
+	IsEntityAssignee bool   `json:"is_entity_assignee"`
 }
 
 // RoleLevel returns the numeric level for a normalized role string.

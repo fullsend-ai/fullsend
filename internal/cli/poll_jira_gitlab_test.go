@@ -16,14 +16,14 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
+	"github.com/fullsend-ai/fullsend/internal/jiradispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
 func TestValidateJiraGitLabPollArgs(t *testing.T) {
+	settings := jiraPollSettings{baseURL: "https://acme.atlassian.net", project: "PROJ", jql: `project = "PROJ"`, enabled: true}
 	base := jiraPollGitLabFlags{
-		jiraURL:     "https://acme.atlassian.net",
-		jiraProject: "PROJ",
 		projectPath: "group/sub/project",
 		gitlabURL:   "https://gitlab.com",
 		fullsendDir: ".fullsend",
@@ -50,14 +50,6 @@ func TestValidateJiraGitLabPollArgs(t *testing.T) {
 			wantProject: "top/mid/leaf/project",
 			wantURL:     "https://gitlab.com",
 		},
-		{
-			name:        "JIRA_BASE_URL fallback",
-			mutate:      func(f *jiraPollGitLabFlags) { f.jiraURL = "" },
-			env:         map[string]string{"JIRA_BASE_URL": "https://acme.atlassian.net"},
-			wantProject: "group/sub/project",
-			wantURL:     "https://gitlab.com",
-		},
-		{name: "missing jira URL", mutate: func(f *jiraPollGitLabFlags) { f.jiraURL = "" }, wantErr: "--jira-url or JIRA_BASE_URL"},
 		{name: "target-repo is GitHub only", mutate: func(f *jiraPollGitLabFlags) { f.targetRepo = "acme/platform" }, wantErr: "--target-repo names a GitHub repository"},
 		{name: "missing project", mutate: func(f *jiraPollGitLabFlags) { f.projectPath = "" }, wantErr: "--project or CI_PROJECT_PATH"},
 		{name: "project without namespace", mutate: func(f *jiraPollGitLabFlags) { f.projectPath = "project" }, wantErr: "full GitLab project path"},
@@ -67,7 +59,6 @@ func TestValidateJiraGitLabPollArgs(t *testing.T) {
 		{name: "http GitLab URL", mutate: func(f *jiraPollGitLabFlags) { f.gitlabURL = "http://gitlab.example.com" }, wantErr: "must be an https URL"},
 		{name: "GitLab URL with credentials", mutate: func(f *jiraPollGitLabFlags) { f.gitlabURL = "https://user:pw@gitlab.example.com" }, wantErr: "must be an https URL"},
 		{name: "GitLab URL with query", mutate: func(f *jiraPollGitLabFlags) { f.gitlabURL = "https://gitlab.example.com/?x=1" }, wantErr: "query or fragment"},
-		{name: "missing jira scope", mutate: func(f *jiraPollGitLabFlags) { f.jiraProject = "" }, wantErr: "--jira-project or --jql"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -76,7 +67,7 @@ func TestValidateJiraGitLabPollArgs(t *testing.T) {
 				tt.mutate(&f)
 			}
 			getenv := func(k string) string { return tt.env[k] }
-			args, gitlabURL, err := validateJiraGitLabPollArgs(f, getenv)
+			args, gitlabURL, err := validateJiraGitLabPollArgs(settings, f, getenv)
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)
@@ -85,7 +76,7 @@ func TestValidateJiraGitLabPollArgs(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantProject, args.targetRepo)
 			assert.Equal(t, tt.wantURL, gitlabURL)
-			assert.Equal(t, "https://acme.atlassian.net", args.jiraURL)
+			assert.Equal(t, settings, args.jira)
 			assert.Empty(t, args.outputPath, "--output is optional for GitLab targets")
 		})
 	}
@@ -143,10 +134,8 @@ func TestPollCmd_JiraPollGitLabPreflight(t *testing.T) {
 			cmd.SetArgs([]string{
 				"--input-driver", "jira-poll",
 				"--target-forge", "gitlab",
-				"--jira-url", "https://acme.atlassian.net",
-				"--jira-project", "PROJ",
 				"--project", "group/sub/project",
-				"--fullsend-dir", t.TempDir(),
+				"--fullsend-dir", writeJiraPollConfig(t, enabledJiraPollConfig),
 			})
 			err := cmd.Execute()
 			require.Error(t, err)
@@ -173,18 +162,15 @@ func TestPollCmd_JiraPollGitLabAuthFailure(t *testing.T) {
 	t.Setenv(forge.SecretGitLabPollerToken, "bad-tok")
 	t.Setenv("CI_COMMIT_REF_NAME", "main")
 	t.Setenv("FULLSEND_DISPATCH_SECRET", "secret")
-	t.Setenv("JIRA_TOKEN", "jira-tok")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-tok")
 
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{
 		"--input-driver", "jira-poll",
 		"--target-forge", "gitlab",
-		"--jira-url", "https://acme.atlassian.net",
-		"--jira-project", "PROJ",
 		"--project", "group/sub/project",
 		"--gitlab-url", srv.URL,
-		"--fullsend-dir", t.TempDir(),
+		"--fullsend-dir", writeJiraPollConfig(t, enabledJiraPollConfig),
 	})
 	err := cmd.Execute()
 	require.Error(t, err)
@@ -220,7 +206,7 @@ func jiraDispatchRecord(t *testing.T, projectPath string) jirapoll.DispatchRecor
 
 func TestGitLabJiraDispatcher_ForwardsNormalizedEvent(t *testing.T) {
 	fake := &fakeJiraPipelineDispatcher{}
-	d := gitlabJiraDispatcher{poller: fake}
+	d := jiradispatch.GitLabDispatcher{Poller: fake}
 	require.NoError(t, d.Dispatch(context.Background(), jiraDispatchRecord(t, "group/sub/project")))
 	assert.Equal(t, "triage", fake.stage)
 	require.NotNil(t, fake.event)
@@ -249,7 +235,7 @@ func TestGitLabJiraDispatcher_RejectsBadPayloads(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			fake := &fakeJiraPipelineDispatcher{}
-			err := gitlabJiraDispatcher{poller: fake}.Dispatch(context.Background(), jirapoll.DispatchRecord{Agent: "triage", EventPayload: tc.payload})
+			err := jiradispatch.GitLabDispatcher{Poller: fake}.Dispatch(context.Background(), jirapoll.DispatchRecord{Agent: "triage", EventPayload: tc.payload})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
 			assert.Nil(t, fake.event, "no pipeline dispatch for an invalid payload")

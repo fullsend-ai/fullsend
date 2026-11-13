@@ -65,6 +65,9 @@ func (d *perRepoDefaults) IsOwnersFileAuthEnabled() bool { return false }
 // JiraAuthorization returns nil — no jira authorization provider by default.
 func (d *perRepoDefaults) JiraAuthorization() *AuthorizationProvider { return nil }
 
+// TraceContext returns nil — no trace_context block by default.
+func (d *perRepoDefaults) TraceContext() *TraceContextConfig { return nil }
+
 // ConfigMintURL returns the default mint URL (hosted public mint).
 func (d *perRepoDefaults) ConfigMintURL() string { return DefaultPerRepoMintURL }
 
@@ -114,3 +117,14 @@ func (d *perRepoDefaults) ConfigInferenceGateway() InferenceGatewayConfig {
 // ConfigModelAliases returns the default model aliases (none — fleet
 // defaults are compiled into the runtimes).
 func (d *perRepoDefaults) ConfigModelAliases() map[string]string { return nil }
+
+// ConfigArtifactsContent returns the default run artifact level ("all" —
+// the whole output/ directory, as before ADR 0161).
+func (d *perRepoDefaults) ConfigArtifactsContent() string { return ArtifactContentAll }
+
+// ConfigArtifactsContentSet reports false: the default level is not an
+// explicit choice.
+func (d *perRepoDefaults) ConfigArtifactsContentSet() bool { return false }
+
+// ConfigArtifactsBySource returns the default per-source levels (none).
+func (d *perRepoDefaults) ConfigArtifactsBySource() map[string]string { return nil }

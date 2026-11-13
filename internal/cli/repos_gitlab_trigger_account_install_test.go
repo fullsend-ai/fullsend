@@ -326,6 +326,9 @@ func (e *installEmulation) handle(w http.ResponseWriter, r *http.Request) bool {
 		tahJSON(w, http.StatusOK, []any{})
 	case r.Method == http.MethodGet && p == "/api/v4/projects/fullsend-ai%2Ffullsend/repository/commits/v0.43.0":
 		tahJSON(w, http.StatusOK, map[string]any{"id": strings.Repeat("a", 40)})
+	case r.Method == http.MethodGet && p == "/api/v4/projects/fullsend-ai%2Ffullsend/repository/files/internal%2Fconfig%2Fmanaged-config-schema":
+		// The pinned ref declares the current configuration schema (#9292).
+		tahJSON(w, http.StatusOK, map[string]any{"content": base64.StdEncoding.EncodeToString([]byte("2\n")), "encoding": "base64"})
 	case r.Method == http.MethodGet && strings.HasPrefix(p, tmpl):
 		rel, _ := url.PathUnescape(strings.TrimPrefix(p, tmpl))
 		var found []byte

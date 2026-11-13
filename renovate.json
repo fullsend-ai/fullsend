@@ -4,11 +4,23 @@
   "automergeType": "pr",
   "platformAutomerge": true,
   "prHourlyLimit": 1,
+  "pep621": {
+    "lockFileMaintenance": {
+      "enabled": true,
+      "schedule": ["before 4am on monday"]
+    },
+    "automerge": false
+  },
   "packageRules": [
     {
       "description": "Automerge low-risk updates (patch bumps and pin updates)",
       "matchUpdateTypes": ["patch", "pin"],
       "automerge": true
+    },
+    {
+      "description": "Keep Semgrep dependency updates human-reviewed.",
+      "matchPackageNames": ["semgrep"],
+      "automerge": false
     },
     {
       "description": "Automerge minor GitHub Actions updates (SHA-pinned, low-risk)",
@@ -92,23 +104,150 @@
       "automerge": false
     },
     {
-      "description": "Vendored pi-anthropic-vertex extension (fullsend-ai/pi-anthropic-vertex, #7019): tag pin + manual SHA256 refresh from the release notes.",
+      "description": "Vendored pi-anthropic-vertex extension (fullsend-ai/pi-anthropic-vertex, #7019): tag pin. After a bump, refresh PI_ANTHROPIC_VERTEX_SHA256 from the tag tarball, checked against the SHA256 in the release notes (#9121).",
       "matchPackageNames": ["fullsend-ai/pi-anthropic-vertex"],
-      "automerge": false
+      "automerge": false,
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-pi-anthropic-vertex-checksum.sh"],
+        "fileFilters": ["images/sandbox/Containerfile"],
+        "executionMode": "branch"
+      }
     },
     {
-      "description": "Vendored pi-inference-gateway extension (fullsend-ai/pi-inference-gateway, #8262): tag pin + manual SHA256 refresh from the release notes.",
+      "description": "Vendored pi-xai-vertex extension (fullsend-ai/pi-xai-vertex, #6571): tag pin, not automerged, like the other two pi extensions. After a bump, refresh PI_XAI_VERTEX_SHA256 from the tag tarball, checked against the SHA256 in the release notes (#9121).",
+      "matchPackageNames": ["fullsend-ai/pi-xai-vertex"],
+      "automerge": false,
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-pi-xai-vertex-checksum.sh"],
+        "fileFilters": ["images/sandbox/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "Vendored pi-inference-gateway extension (fullsend-ai/pi-inference-gateway, #8262): tag pin. After a bump, refresh PI_INFERENCE_GATEWAY_SHA256 from the tag tarball, checked against the SHA256 in the release notes (#9121).",
       "matchPackageNames": ["fullsend-ai/pi-inference-gateway"],
-      "automerge": false
+      "automerge": false,
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-pi-inference-gateway-checksum.sh"],
+        "fileFilters": ["images/sandbox/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "After a ripgrep bump, refresh RIPGREP_SHA256_{AMD64,ARM64} in the sandbox Containerfile, checked against the release's .tar.gz.sha256 assets (#9121)",
+      "matchPackageNames": ["BurntSushi/ripgrep"],
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-ripgrep-checksums.sh"],
+        "fileFilters": ["images/sandbox/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "After an fd bump, refresh FD_SHA256_{AMD64,ARM64} in the sandbox Containerfile. fd ships no checksum file, so the download is checked against the digest GitHub records for each release asset (#9121)",
+      "matchPackageNames": ["sharkdp/fd"],
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-fd-checksums.sh"],
+        "fileFilters": ["images/sandbox/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "After a gcloud CLI bump, refresh GCLOUD_SHA256_{AMD64,ARM64} in the runner Containerfile. Google lists checksums only for the current release, on its HTML install page, so the hash is computed from the dl.google.com HTTPS download (#9121)",
+      "matchPackageNames": ["gcr.io/google.com/cloudsdktool/google-cloud-cli"],
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-gcloud-checksums.sh"],
+        "fileFilters": ["images/runner/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "After a gh CLI bump, refresh GH_SHA256_{AMD64,ARM64} in the runner Containerfile, checked against gh_<version>_checksums.txt (#9121)",
+      "matchPackageNames": ["cli/cli"],
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-gh-checksums.sh"],
+        "fileFilters": ["images/runner/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "After a gitleaks bump, refresh GITLEAKS_SHA256_{AMD64,ARM64} in the sandbox and runner Containerfiles, checked against gitleaks_<version>_checksums.txt (#9121)",
+      "matchPackageNames": ["gitleaks/gitleaks"],
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-gitleaks-checksums.sh"],
+        "fileFilters": ["images/sandbox/Containerfile", "images/runner/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "After a gitsign bump, refresh GITSIGN_SHA256_{AMD64,ARM64} in the code Containerfile, checked against the release's checksums.txt (#9121)",
+      "matchPackageNames": ["sigstore/gitsign"],
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-gitsign-checksums.sh"],
+        "fileFilters": ["images/code/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "After a lychee bump, refresh LYCHEE_SHA256_{AMD64,ARM64} in the code Containerfile, checked against the release's .tar.gz.sha256 assets (#9121)",
+      "matchPackageNames": ["lycheeverse/lychee"],
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-lychee-checksums.sh"],
+        "fileFilters": ["images/code/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "OpenCode runtime (#8201): not automerged, for the same reason as pi and codex — a bump must re-verify the stream fixtures under internal/runtime/testdata/opencode. After a bump, refresh OPENCODE_SHA256_{AMD64,ARM64} in the sandbox Containerfile; opencode ships no checksum file, so the download is checked against the digest GitHub records for each release asset (#9121)",
+      "matchPackageNames": ["anomalyco/opencode"],
+      "automerge": false,
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-opencode-checksums.sh"],
+        "fileFilters": ["images/sandbox/Containerfile"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "After an ONNX Runtime bump, refresh ORT_SHA256_{AMD64,ARM64} in the runner Containerfile. ONNX Runtime ships no checksum file, so the download is checked against the digest GitHub records for each release asset (#9121)",
+      "matchPackageNames": ["microsoft/onnxruntime"],
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-ort-checksums.sh"],
+        "fileFilters": ["images/runner/Containerfile"],
+        "executionMode": "branch"
+      }
     },
     {
       "description": "codex minor bumps change the `codex exec --json` wire shape and the hook payloads, so the stream fixtures under internal/runtime/testdata/codex and the hook adapter must be re-verified before a pin move lands, even for patch/pin updates — the same reason pi is not automerged (#6920)",
       "matchPackageNames": ["@openai/codex"],
       "automerge": false
+    },
+    {
+      "description": "ty 0.0.x releases rename and split rules (0.0.98 renamed unresolved-import, #9133; 0.0.100 renamed unresolved-attribute and added missing-union-attribute, #9226), so a pin bump must re-check the ty hook's --ignore list in .pre-commit-config.yaml and the Makefile check target before it lands, even for patch/pin updates.",
+      "matchDatasources": ["pypi"],
+      "matchPackageNames": ["ty"],
+      "automerge": false
+    },
+    {
+      "description": "Keep the npx lint-staged pin in .pre-commit-config.yaml equal to the package-lock.json version, so one PR moves both (#9226). npx uses the local install only on an exact version match.",
+      "matchPackageNames": ["lint-staged"],
+      "groupName": "lint-staged"
+    },
+    {
+      "description": "Keep the ruff-pre-commit rev and the Makefile uvx ruff pin on one version in one PR (#9226).",
+      "matchPackageNames": ["ruff", "astral-sh/ruff-pre-commit"],
+      "groupName": "ruff",
+      "automerge": false
+    },
+    {
+      "description": "Pre-commit hooks are linters and scanners: a patch release can add or rename checks, and the code runs on contributor machines. Review hook rev bumps by hand (#9226).",
+      "matchManagers": ["pre-commit"],
+      "automerge": false
     }
   ],
   "postUpdateOptions": ["gomodTidy"],
   "git-submodules": {
+    "enabled": true
+  },
+  "pre-commit": {
     "enabled": true
   },
   "github-actions": {
@@ -153,7 +292,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the gcloud CLI version pin in the runner image. GCLOUD_SHA256_{AMD64,ARM64} must be refreshed manually from https://cloud.google.com/sdk/docs/install — the runner-image PR build fails on checksum mismatch until they are.",
+      "description": "Track the gcloud CLI version pin in the runner image. GCLOUD_SHA256_{AMD64,ARM64} are updated automatically by postUpgradeTasks (scripts/renovate/update-gcloud-checksums.sh).",
       "managerFilePatterns": ["/^images/runner/Containerfile$/"],
       "matchStrings": [
         "ARG GCLOUD_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
@@ -197,7 +336,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the pi-anthropic-vertex extension tag pinned in the sandbox image (fullsend-ai/pi-anthropic-vertex, #7019). Refresh PI_ANTHROPIC_VERTEX_SHA256 by hand from the release notes \u2014 the image build fails on checksum mismatch until then. The extension's own CI matrix (pinned PI_VERSION + latest pi) is the compatibility check.",
+      "description": "Track the pi-anthropic-vertex extension tag pinned in the sandbox image (fullsend-ai/pi-anthropic-vertex, #7019). PI_ANTHROPIC_VERTEX_SHA256 is updated automatically by postUpgradeTasks (scripts/renovate/update-pi-anthropic-vertex-checksum.sh). The extension's own CI matrix (pinned PI_VERSION + latest pi) is the compatibility check.",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG PI_ANTHROPIC_VERTEX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
@@ -208,7 +347,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the pi-xai-vertex extension tag pinned in the sandbox image (#6571). PI_XAI_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is. Like pi-anthropic-vertex this extension mirrors no pi internals, so there is no sync/compat.json to re-check; confirm its peerDependencies floor still covers PI_VERSION instead (declared only — it installs with --omit=peer, so nothing enforces the floor at build time).",
+      "description": "Track the pi-xai-vertex extension tag pinned in the sandbox image (#6571). PI_XAI_VERTEX_SHA256 is updated automatically by postUpgradeTasks (scripts/renovate/update-pi-xai-vertex-checksum.sh). Like pi-anthropic-vertex this extension mirrors no pi internals, so there is no sync/compat.json to re-check; confirm its peerDependencies floor still covers PI_VERSION instead (declared only — it installs with --omit=peer, so nothing enforces the floor at build time).",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG PI_XAI_VERTEX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
@@ -219,7 +358,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the pi-inference-gateway extension tag pinned in the sandbox image (fullsend-ai/pi-inference-gateway, #8262). PI_INFERENCE_GATEWAY_SHA256 must be refreshed manually from the release notes (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is. Like the Vertex extensions it mirrors no pi internals; the extension's own CI matrix (pinned PI_VERSION + latest pi) is the compatibility check.",
+      "description": "Track the pi-inference-gateway extension tag pinned in the sandbox image (fullsend-ai/pi-inference-gateway, #8262). PI_INFERENCE_GATEWAY_SHA256 is updated automatically by postUpgradeTasks (scripts/renovate/update-pi-inference-gateway-checksum.sh). Like the Vertex extensions it mirrors no pi internals; the extension's own CI matrix (pinned PI_VERSION + latest pi) is the compatibility check.",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG PI_INFERENCE_GATEWAY_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
@@ -230,7 +369,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the ripgrep pin in the sandbox image (pi's grep backend). Not automerged: RIPGREP_SHA256_{AMD64,ARM64} must be refreshed by hand from the release's .tar.gz.sha256 assets; the image build fails on a mismatch until they are.",
+      "description": "Track the ripgrep pin in the sandbox image (pi's grep backend). RIPGREP_SHA256_{AMD64,ARM64} are updated automatically by postUpgradeTasks (scripts/renovate/update-ripgrep-checksums.sh).",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG RIPGREP_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
@@ -240,7 +379,7 @@
     },
     {
       "customType": "regex",
-      "description": "Track the fd pin in the sandbox image (pi's find backend). Not automerged: FD_SHA256_{AMD64,ARM64} must be refreshed by hand (fd publishes no checksum assets, so the value is sha256sum of the release tarball); the image build fails on a mismatch until they are.",
+      "description": "Track the fd pin in the sandbox image (pi's find backend). FD_SHA256_{AMD64,ARM64} are updated automatically by postUpgradeTasks (scripts/renovate/update-fd-checksums.sh).",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG FD_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
@@ -290,6 +429,95 @@
       "depNameTemplate": "sigstore/cosign",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track version-pinned uvx (PyPI) tool fetches in pre-commit hook entries and Makefile targets, e.g. `uvx ty@0.0.99`, `uvx ruff@0.15.7` (#9226). Unpinned fetches pick up each new release the moment it ships.",
+      "managerFilePatterns": ["/^\\.pre-commit-config\\.yaml$/", "/^Makefile$/"],
+      "matchStrings": [
+        "\\buvx\\s+(?<depName>[A-Za-z0-9][A-Za-z0-9._-]*)@(?<currentValue>[^\\s'\"]+)"
+      ],
+      "datasourceTemplate": "pypi",
+      "versioningTemplate": "pep440"
+    },
+    {
+      "customType": "regex",
+      "description": "Track version-pinned npx (npm) tool fetches in pre-commit hook entries and Makefile targets, e.g. `npx lint-staged@16.4.0`; scoped package names are allowed (#9226).",
+      "managerFilePatterns": ["/^\\.pre-commit-config\\.yaml$/", "/^Makefile$/"],
+      "matchStrings": [
+        "\\bnpx\\s+(?<depName>(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*)@(?<currentValue>[^\\s'\"]+)"
+      ],
+      "datasourceTemplate": "npm",
+      "versioningTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the OpenCode runtime pin in the sandbox image (#8201). OPENCODE_SHA256_{AMD64,ARM64} are updated automatically by postUpgradeTasks (scripts/renovate/update-opencode-checksums.sh).",
+      "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
+      "matchStrings": [
+        "ARG OPENCODE_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "anomalyco/opencode",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the gitleaks pin in the sandbox and runner images, which must stay on the same version. GITLEAKS_SHA256_{AMD64,ARM64} in both files are updated automatically by postUpgradeTasks (scripts/renovate/update-gitleaks-checksums.sh).",
+      "managerFilePatterns": [
+        "/^images/sandbox/Containerfile$/",
+        "/^images/runner/Containerfile$/"
+      ],
+      "matchStrings": [
+        "ARG GITLEAKS_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "gitleaks/gitleaks",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the gh CLI pin in the runner image. GH_SHA256_{AMD64,ARM64} are updated automatically by postUpgradeTasks (scripts/renovate/update-gh-checksums.sh).",
+      "managerFilePatterns": ["/^images/runner/Containerfile$/"],
+      "matchStrings": [
+        "ARG GH_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "cli/cli",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the ONNX Runtime pin in the runner image (must stay >= the ORT C API version onnxruntime_go requests; see the Containerfile comment). ORT_SHA256_{AMD64,ARM64} are updated automatically by postUpgradeTasks (scripts/renovate/update-ort-checksums.sh).",
+      "managerFilePatterns": ["/^images/runner/Containerfile$/"],
+      "matchStrings": [
+        "ARG ORT_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "microsoft/onnxruntime",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the lychee pin in the code image. Release tags are lychee-v<version> (the repo also tags lychee-lib-v<version>, which this ignores). LYCHEE_SHA256_{AMD64,ARM64} are updated automatically by postUpgradeTasks (scripts/renovate/update-lychee-checksums.sh).",
+      "managerFilePatterns": ["/^images/code/Containerfile$/"],
+      "matchStrings": [
+        "ARG LYCHEE_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "lycheeverse/lychee",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^lychee-v(?<version>\\d+\\.\\d+\\.\\d+)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track the gitsign pin in the code image. GITSIGN_SHA256_{AMD64,ARM64} are updated automatically by postUpgradeTasks (scripts/renovate/update-gitsign-checksums.sh).",
+      "managerFilePatterns": ["/^images/code/Containerfile$/"],
+      "matchStrings": [
+        "ARG GITSIGN_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "sigstore/gitsign",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>\\d+\\.\\d+\\.\\d+)$"
     }
   ]
 }

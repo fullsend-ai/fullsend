@@ -31,8 +31,10 @@ for filter in "${filters[@]}"; do
     internal/dispatch/gcf/mintsrc/go.mod \
     .github/workflows/e2e.yml \
     .github/workflows/e2e-ok-to-test.yml \
+    .github/workflows/reusable-prioritize.yml \
     .github/actions/check-e2e-authorization/action.yml \
     scripts/check-e2e-authorization.sh \
+    scripts/run-with-infra-retry.sh \
     Makefile; do
     if ! printf '%s\n' "$path" | grep -qE "$filter"; then
       printf 'Expected live-test relevance for %s\n' "$path" >&2

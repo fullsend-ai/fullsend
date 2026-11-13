@@ -94,7 +94,8 @@ func jiraManifest(t *testing.T, raw string) *Manifest {
 func jiraSecretWrites(fc *forge.FakeClient) map[string]string {
 	out := map[string]string{}
 	for _, s := range fc.CreatedSecrets {
-		if s.Name == forge.SecretJiraToken || s.Name == forge.SecretJiraEmail {
+		if s.Name == forge.SecretJiraToken || s.Name == forge.SecretJiraEmail ||
+			s.Name == forge.SecretJiraClientID || s.Name == forge.SecretJiraClientSecret {
 			out[s.Name] = s.Value
 		}
 	}
@@ -404,7 +405,7 @@ func TestConvergeJiraPoll_ReconcilerErrors(t *testing.T) {
 		withJiraPollReconciler(t, ForgeGitHub, rec)
 		enabled := d
 		enabled.jira = jiraPollState{enabled: true, tokenExists: true}
-		actions := convergeJiraPoll(context.Background(), enabled, ConvergeConfig{JiraToken: testJiraToken}, noopProgress)
+		actions := convergeJiraPoll(context.Background(), enabled, ConvergeConfig{JiraToken: testJiraToken}, jiraPollDelivery{}, noopProgress)
 		a, ok := findAction(actions[len(actions)-1:], jiraPollComponent)
 		require.True(t, ok)
 		assert.Equal(t, "error", a.Action)
@@ -414,7 +415,7 @@ func TestConvergeJiraPoll_ReconcilerErrors(t *testing.T) {
 	t.Run("remove", func(t *testing.T) {
 		rec := &fakeJiraPollReconciler{removeErr: errors.New("boom")}
 		withJiraPollReconciler(t, ForgeGitHub, rec)
-		actions := convergeJiraPoll(context.Background(), d, ConvergeConfig{}, noopProgress)
+		actions := convergeJiraPoll(context.Background(), d, ConvergeConfig{}, jiraPollDelivery{}, noopProgress)
 		require.Len(t, actions, 1)
 		assert.Equal(t, "error", actions[0].Action)
 		assert.Contains(t, actions[0].Detail, "failed to remove Jira poll resources")
@@ -423,7 +424,7 @@ func TestConvergeJiraPoll_ReconcilerErrors(t *testing.T) {
 	t.Run("disabled without reconciler", func(t *testing.T) {
 		withJiraPollReconciler(t, ForgeGitHub, nil)
 		delete(jiraPollReconcilers, ForgeGitHub)
-		assert.Empty(t, convergeJiraPoll(context.Background(), d, ConvergeConfig{}, noopProgress))
+		assert.Empty(t, convergeJiraPoll(context.Background(), d, ConvergeConfig{}, jiraPollDelivery{}, noopProgress))
 	})
 }
 
@@ -443,7 +444,7 @@ func TestValidateJiraPollInputs(t *testing.T) {
 	}{
 		{name: "disabled", d: gitlab(jiraPollState{})},
 		{name: "existing usable token", d: gitlab(jiraPollState{enabled: true, tokenExists: true})},
-		{name: "missing token", d: gitlab(jiraPollState{enabled: true}), wantErr: "supply --jira-token on the first Jira-enabled install"},
+		{name: "missing token", d: gitlab(jiraPollState{enabled: true}), wantErr: "supply --jira-token or --jira-client-id and --jira-client-secret"},
 		{name: "defective existing token", d: gitlab(jiraPollState{enabled: true, tokenExists: true, tokenDefect: "unmasked variable"}), wantErr: "cannot be reused (unmasked variable)"},
 		{name: "defective token replaced", d: gitlab(jiraPollState{enabled: true, tokenExists: true, tokenDefect: "unmasked variable"}), token: testJiraToken},
 		{name: "unmaskable token", d: gitlab(jiraPollState{enabled: true}), token: "short", wantErr: "cannot be stored as a masked GitLab CI/CD variable"},
@@ -539,4 +540,255 @@ func TestEffectiveJiraTracking(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "reading the effective configuration")
 	})
+}
+
+const (
+	testJiraClientID     = "jira-oauth-client-id"
+	testJiraClientSecret = "jira-oauth-client-secret-value"
+)
+
+func TestValidateJiraPollInputs_OAuth(t *testing.T) {
+	disc := func(forgeName string, st jiraPollState) convergeDiscovery {
+		st.enabled = true
+		return convergeDiscovery{
+			repo:     ResolvedRepo{Owner: "group", Repo: "project"},
+			resolved: ResolvedConfig{Forge: forgeName},
+			jira:     st,
+		}
+	}
+	gitlab := func(st jiraPollState) convergeDiscovery { return disc(ForgeGitLab, st) }
+	github := func(st jiraPollState) convergeDiscovery { return disc(ForgeGitHub, st) }
+	both := ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: testJiraClientSecret}
+	tests := []struct {
+		name    string
+		d       convergeDiscovery
+		cfg     ConvergeConfig
+		wantErr string
+	}{
+		{name: "fresh client credentials", d: gitlab(jiraPollState{}), cfg: both},
+		{name: "fresh client credentials on GitHub", d: github(jiraPollState{}), cfg: both},
+		{name: "switch from token", d: gitlab(jiraPollState{tokenExists: true, emailExists: true}), cfg: both},
+		{name: "existing client credentials", d: gitlab(jiraPollState{clientIDExists: true, clientSecretExists: true})},
+		{name: "existing client credentials on GitHub", d: github(jiraPollState{clientIDExists: true, clientSecretExists: true})},
+		{name: "rotate secret only", d: gitlab(jiraPollState{clientIDExists: true, clientSecretExists: true}), cfg: ConvergeConfig{JiraClientSecret: testJiraClientSecret}},
+		{name: "token and client flags", d: gitlab(jiraPollState{}), cfg: ConvergeConfig{JiraToken: testJiraToken, JiraClientID: testJiraClientID, JiraClientSecret: testJiraClientSecret}, wantErr: "not both"},
+		{name: "email and client flags", d: gitlab(jiraPollState{}), cfg: ConvergeConfig{JiraEmail: testJiraEmail, JiraClientID: testJiraClientID}, wantErr: "not both"},
+		{name: "both credential sets exist", d: gitlab(jiraPollState{tokenExists: true, clientIDExists: true, clientSecretExists: true}), wantErr: "to select one"},
+		{name: "client ID missing", d: gitlab(jiraPollState{}), cfg: ConvergeConfig{JiraClientSecret: testJiraClientSecret}, wantErr: forge.SecretJiraClientID + " is missing"},
+		{name: "client secret missing", d: gitlab(jiraPollState{}), cfg: ConvergeConfig{JiraClientID: testJiraClientID}, wantErr: forge.SecretJiraClientSecret + " is missing"},
+		{name: "defective existing secret", d: gitlab(jiraPollState{clientIDExists: true, clientSecretExists: true, clientSecretDefect: "unmasked variable"}), wantErr: "cannot be reused (unmasked variable)"},
+		{name: "defective secret replaced", d: gitlab(jiraPollState{clientIDExists: true, clientSecretExists: true, clientSecretDefect: "unmasked variable"}), cfg: ConvergeConfig{JiraClientSecret: testJiraClientSecret}},
+		{name: "file-type client ID rejected", d: gitlab(jiraPollState{clientIDExists: true, clientSecretExists: true, clientIDDefect: "file-type variable"}), cfg: ConvergeConfig{JiraClientSecret: testJiraClientSecret}, wantErr: forge.SecretJiraClientID + " CI/CD variable cannot be reused (file-type variable)"},
+		{name: "file-type client ID replaced", d: gitlab(jiraPollState{clientIDExists: true, clientSecretExists: true, clientIDDefect: "file-type variable"}), cfg: both},
+		{name: "unmaskable secret", d: gitlab(jiraPollState{}), cfg: ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: "short"}, wantErr: "cannot be stored as a masked GitLab CI/CD variable"},
+		{name: "short secret accepted on GitHub", d: github(jiraPollState{}), cfg: ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: "short"}},
+		{name: "token selected over existing client credentials", d: gitlab(jiraPollState{clientIDExists: true, clientSecretExists: true}), cfg: ConvergeConfig{JiraToken: testJiraToken}},
+		{name: "missing token mentions client credentials", d: gitlab(jiraPollState{}), wantErr: "--jira-client-id and --jira-client-secret"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateJiraPollInputs(tt.d, tt.cfg)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			for _, v := range []string{testJiraToken, testJiraClientID, testJiraClientSecret} {
+				assert.NotContains(t, err.Error(), v)
+			}
+		})
+	}
+}
+
+func TestJiraUsesOAuth(t *testing.T) {
+	assert.False(t, jiraUsesOAuth(jiraPollState{}, ConvergeConfig{}))
+	assert.True(t, jiraUsesOAuth(jiraPollState{}, ConvergeConfig{JiraClientSecret: "x"}))
+	assert.False(t, jiraUsesOAuth(jiraPollState{clientIDExists: true}, ConvergeConfig{JiraEmail: "x"}))
+	assert.True(t, jiraUsesOAuth(jiraPollState{clientIDExists: true, clientSecretExists: true}, ConvergeConfig{}))
+	assert.False(t, jiraUsesOAuth(jiraPollState{tokenExists: true, clientIDExists: true}, ConvergeConfig{}))
+}
+
+// gitlabJiraDiscovery returns an enabled GitLab discovery for group/project
+// backed by fc.
+func gitlabJiraDiscovery(fc *forge.FakeClient, st jiraPollState) convergeDiscovery {
+	st.enabled = true
+	return convergeDiscovery{
+		repo: ResolvedRepo{Owner: "group", Repo: "project"},
+		resolved: ResolvedConfig{
+			Owner: "group", Repo: "project", Forge: ForgeGitLab,
+			ForgeConfig: ForgeConfig{Client: fc},
+		},
+		jira: st,
+	}
+}
+
+func TestConvergeJiraPoll_OAuthReplacesToken(t *testing.T) {
+	rec := &fakeJiraPollReconciler{}
+	withJiraPollReconciler(t, ForgeGitLab, rec)
+	fc := forge.NewFakeClient()
+	d := gitlabJiraDiscovery(fc, jiraPollState{tokenExists: true, emailExists: true})
+	cfg := ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: testJiraClientSecret}
+
+	actions := convergeJiraPoll(context.Background(), d, cfg, jiraPollDelivery{}, noopProgress)
+
+	written := map[string]string{}
+	for _, s := range fc.CreatedSecrets {
+		written[s.Name] = s.Value
+	}
+	assert.Equal(t, map[string]string{
+		forge.SecretJiraClientID:     testJiraClientID,
+		forge.SecretJiraClientSecret: testJiraClientSecret,
+	}, written)
+	var deleted []string
+	for _, s := range fc.DeletedSecrets {
+		deleted = append(deleted, s.Name)
+	}
+	assert.ElementsMatch(t, []string{forge.SecretJiraToken, forge.SecretJiraEmail}, deleted)
+	for _, name := range []string{forge.SecretJiraToken, forge.SecretJiraEmail} {
+		a, ok := findAction(actions, "secret:"+name)
+		require.True(t, ok, name)
+		assert.Equal(t, "remove", a.Action)
+	}
+	require.Len(t, rec.ensures, 1)
+	assert.False(t, rec.ensures[0].EmailConfigured, "the email is removed with OAuth client credentials")
+	assert.True(t, rec.ensures[0].OAuthConfigured, "the caller forwards the OAuth client credentials")
+	for _, a := range actions {
+		assert.NotContains(t, a.Detail, testJiraClientSecret)
+	}
+}
+
+func TestConvergeJiraPoll_TokenReplacesOAuth(t *testing.T) {
+	rec := &fakeJiraPollReconciler{}
+	withJiraPollReconciler(t, ForgeGitLab, rec)
+	fc := forge.NewFakeClient()
+	d := gitlabJiraDiscovery(fc, jiraPollState{clientIDExists: true, clientSecretExists: true})
+
+	convergeJiraPoll(context.Background(), d, ConvergeConfig{JiraToken: testJiraToken, JiraEmail: testJiraEmail}, jiraPollDelivery{}, noopProgress)
+
+	var deleted []string
+	for _, s := range fc.DeletedSecrets {
+		deleted = append(deleted, s.Name)
+	}
+	assert.ElementsMatch(t, []string{forge.SecretJiraClientID, forge.SecretJiraClientSecret}, deleted)
+	require.Len(t, rec.ensures, 1)
+	assert.True(t, rec.ensures[0].EmailConfigured)
+	assert.False(t, rec.ensures[0].OAuthConfigured, "a token install must not forward OAuth client credentials")
+}
+
+func TestConvergeJiraPoll_OAuthRepeatInstallPreservesSecrets(t *testing.T) {
+	rec := &fakeJiraPollReconciler{}
+	withJiraPollReconciler(t, ForgeGitLab, rec)
+	fc := forge.NewFakeClient()
+	d := gitlabJiraDiscovery(fc, jiraPollState{clientIDExists: true, clientSecretExists: true})
+
+	actions := convergeJiraPoll(context.Background(), d, ConvergeConfig{}, jiraPollDelivery{}, noopProgress)
+
+	assert.Empty(t, fc.CreatedSecrets)
+	assert.Empty(t, fc.DeletedSecrets)
+	for _, name := range jiraOAuthSecrets {
+		a, ok := findAction(actions, "secret:"+name)
+		require.True(t, ok, name)
+		assert.Equal(t, "none", a.Action)
+	}
+	require.Len(t, rec.ensures, 1)
+}
+
+func TestConvergeJiraPoll_OAuthDryRunWritesNothing(t *testing.T) {
+	rec := &fakeJiraPollReconciler{}
+	withJiraPollReconciler(t, ForgeGitLab, rec)
+	fc := forge.NewFakeClient()
+	d := gitlabJiraDiscovery(fc, jiraPollState{tokenExists: true})
+	cfg := ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: testJiraClientSecret, DryRun: true}
+
+	actions := convergeJiraPoll(context.Background(), d, cfg, jiraPollDelivery{}, noopProgress)
+
+	assert.Empty(t, fc.CreatedSecrets)
+	assert.Empty(t, fc.DeletedSecrets)
+	a, ok := findAction(actions, "secret:"+forge.SecretJiraToken)
+	require.True(t, ok)
+	assert.Equal(t, "remove", a.Action)
+	assert.Contains(t, a.Detail, "would remove")
+	_, ok = findAction(actions, "secret:"+forge.SecretJiraEmail)
+	assert.False(t, ok, "an absent secret is not reported")
+}
+
+func TestConvergeJiraPoll_OAuthRemoveErrorStopsBeforeEnsure(t *testing.T) {
+	rec := &fakeJiraPollReconciler{}
+	withJiraPollReconciler(t, ForgeGitLab, rec)
+	fc := forge.NewFakeClient()
+	fc.Errors["DeleteRepoSecret"] = errors.New("api down " + testJiraClientSecret)
+	d := gitlabJiraDiscovery(fc, jiraPollState{tokenExists: true})
+	cfg := ConvergeConfig{JiraClientID: testJiraClientID, JiraClientSecret: testJiraClientSecret}
+
+	actions := convergeJiraPoll(context.Background(), d, cfg, jiraPollDelivery{}, noopProgress)
+
+	last := actions[len(actions)-1]
+	assert.Equal(t, "secret:"+forge.SecretJiraToken, last.Component)
+	assert.Equal(t, "error", last.Action)
+	assert.NotContains(t, last.Detail, testJiraClientSecret)
+	assert.Empty(t, rec.ensures, "poll resources are not ensured with conflicting credentials")
+}
+
+func TestProbeJiraPollSecrets_OAuth(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Secrets["group/project/"+forge.SecretJiraClientID] = true
+	fc.SecretProtections["group/project/"+forge.SecretJiraClientSecret] = forge.SecretProtection{Exists: true, Masked: false, Protected: true}
+	st, err := probeJiraPollSecrets(context.Background(), fc, "group", "project", ForgeGitLab, jiraPollState{enabled: true})
+	require.NoError(t, err)
+	assert.True(t, st.clientIDExists)
+	assert.True(t, st.clientSecretExists)
+	assert.Equal(t, "unmasked variable", st.clientSecretDefect)
+	assert.Empty(t, st.clientIDDefect)
+	assert.False(t, st.tokenExists)
+}
+
+func TestProbeJiraPollSecrets_ClientIDFileType(t *testing.T) {
+	// An unmasked client ID is reusable; a file-type one is not on GitLab.
+	fc := forge.NewFakeClient()
+	fc.SecretProtections["group/project/"+forge.SecretJiraClientID] = forge.SecretProtection{Exists: true, FileType: true}
+	st, err := probeJiraPollSecrets(context.Background(), fc, "group", "project", ForgeGitLab, jiraPollState{enabled: true})
+	require.NoError(t, err)
+	assert.True(t, st.clientIDExists)
+	assert.Equal(t, "file-type variable", st.clientIDDefect)
+
+	fc = forge.NewFakeClient()
+	fc.SecretProtections["group/project/"+forge.SecretJiraClientID] = forge.SecretProtection{Exists: true}
+	st, err = probeJiraPollSecrets(context.Background(), fc, "group", "project", ForgeGitLab, jiraPollState{enabled: true})
+	require.NoError(t, err)
+	assert.True(t, st.clientIDExists)
+	assert.Empty(t, st.clientIDDefect)
+}
+
+func TestConverge_JiraPoll_UnconsumedOAuthFlagsRejected(t *testing.T) {
+	for flag, set := range map[string]func(*ConvergeConfig){
+		"--jira-client-id":     func(c *ConvergeConfig) { c.JiraClientID = testJiraClientID },
+		"--jira-client-secret": func(c *ConvergeConfig) { c.JiraClientSecret = testJiraClientSecret },
+	} {
+		t.Run(flag, func(t *testing.T) {
+			fc := newFakeClientForBatch("acme/api")
+			cfg := convergeCfgWithDefaults(jiraManifest(t, ""))
+			set(&cfg)
+			_, err := Converge(context.Background(), cfg, newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), flag+" was supplied but no selected repository")
+			assert.NotContains(t, err.Error(), testJiraClientSecret)
+		})
+	}
+}
+
+func TestConverge_JiraPoll_GitHubAcceptsOAuth(t *testing.T) {
+	withJiraPollReconciler(t, ForgeGitHub, &fakeJiraPollReconciler{})
+	fc := newFakeClientForBatch("acme/api")
+	cfg := convergeCfgWithDefaults(jiraManifest(t, jiraPollEnabledConfig))
+	cfg.JiraClientID = testJiraClientID
+	cfg.JiraClientSecret = testJiraClientSecret
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), (&fakeScaffoldCommit{}).fn(), noopProgress)
+	require.NoError(t, err)
+	require.Empty(t, result.Failed(), "results: %+v", result.Results)
+	assert.Equal(t, map[string]string{
+		forge.SecretJiraClientID:     testJiraClientID,
+		forge.SecretJiraClientSecret: testJiraClientSecret,
+	}, jiraSecretWrites(fc))
 }

@@ -12,6 +12,8 @@ Execute an agent locally in a sandbox. `fullsend run` resolves the agent harness
 fullsend run <agent-name> [flags]
 ```
 
+A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration) must have every harness-level `allowed_remote_resources` prefix covered by the config-level allowlist — `config.yaml`'s `allowed_remote_resources` plus the built-in default prefixes (the defaults are included when the list is omitted or non-empty; an explicit `allowed_remote_resources: []` stays deny-all and excludes them); `fullsend run` fails naming an uncovered prefix, and fails closed when no repository config (`config.yaml` or `config.base.yaml`) exists. See the [`allow_runtime_fetch` entry](../reference/harness-reference.md) in the harness reference.
+
 ## Flags
 
 | Flag | Description |
@@ -28,8 +30,19 @@ fullsend run <agent-name> [flags]
 | `--keep-sandbox` | Skip sandbox deletion after the run |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
-| `--offline` | Reject network fetches; only use cached remote resources |
+| `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run stops, because its Jira API gateway address needs a network lookup |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
+
+`--target-repo` accepts a plain directory or a valid checkout with a real root
+`.git` directory. `.git` files (linked worktrees and submodules), symlinked
+`.git` entries, and bare repositories are unsupported. Fullsend validates the
+target after the pre-script and before upload, and sanitizes and validates the
+returned tree before publication; a plain directory may come back as a plain
+directory or a valid checkout, while a checkout must come back as a checkout.
+Reftable ref storage requires Git 2.53 or newer on the host running Fullsend.
+Fullsend rejects a downloaded `.git/packed-refs` larger than 32 MiB and a
+downloaded `.git/shallow` larger than 4 MiB.
+See [SafeDownload](../guides/dev/cli-internals.md#security-sanitizedownload).
 
 ## Plan block
 
@@ -210,6 +223,11 @@ on every runtime (claude, pi, codex, opencode):
 | `FULLSEND_TIMEOUT_MINUTES` | The budget: the harness's `timeout_minutes`, or `30` when it sets none |
 | `FULLSEND_ITERATION_DEADLINE` | Unix time (seconds) at which the running iteration is killed |
 | `TRACEPARENT` | W3C trace context of this iteration's **agent** span (not the run-root span that pre/post scripts receive). Runtimes use it to join fullsend traces. An inbound unsampled parent (`-00`) is preserved so runtime export stays suppressed. Empty when telemetry produced no valid span context. Reserved: an `env.sandbox` entry with this name is dropped. |
+
+The full inventory of what the runner injects into the sandbox — these names
+included — and of the keys it reserves from `env.sandbox` override is
+published as the generated [sandbox environment
+contract](../normative/sandbox-env/v1/README.md).
 
 **Example.** A probe that shows both, and what a kill looks like. The agent prints the variables
 with its own clock, then sleeps past the budget:
@@ -461,7 +479,8 @@ On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's work
 unset or empty it copies the pre-mint `GITHUB_TOKEN` instead. Provider
 credentials may expand `${GH_WORKFLOW_TOKEN}`; every other harness `${}` site refuses it, and
 pre/post/validation child environments never receive it. Outside Actions the variable is not
-derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`, `GITHUB_TOKEN` and
+derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`,
+`GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` and
 `PUSH_TOKEN` still receive the minted App identity.
 
 The runner itself also reads `GH_WORKFLOW_TOKEN` for one purpose besides provider credential
@@ -475,17 +494,29 @@ OpenShell gateway attempts its own unauthenticated pull, so public images keep w
 on other registries the runner adds no credentials. See
 [Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
 
-Every mint sets both `GH_TOKEN` and `GITHUB_TOKEN` to the minted token, even when the caller
-workflow did not export `GITHUB_TOKEN`. When the mint is cleaned up, each one goes back to the value
-it held before that mint, or is unset if it was unset. A caller workflow that exports
-`GITHUB_TOKEN` for its own pre- or post-script therefore gets the minted App token in that
-variable, not the job token.
+Every mint sets `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and
+`GITHUB_ENTERPRISE_TOKEN` to the minted token, even when the caller workflow
+did not export them. `gh` reads `GH_TOKEN` and `GITHUB_TOKEN` for `github.com`
+and `*.ghe.com`, and `GH_ENTERPRISE_TOKEN` and `GITHUB_ENTERPRISE_TOKEN` for
+any other host (GitHub Enterprise Server), so `gh` calls made after the mint
+use the minted token on every host. When the mint is cleaned up, each one goes
+back to the value it held before that mint, or is unset if it was unset. A
+caller workflow that exports any of these variables for its own pre- or
+post-script therefore gets the minted App token in that variable, not the job
+token.
 
 Host-side scripts (pre/post and validation) also no longer inherit `JIRA_TOKEN`,
-`JIRA_USER_EMAIL`, or the OTLP collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
+`JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+`FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`, or the OTLP
+collector headers (`OTEL_EXPORTER_OTLP_HEADERS` and
 `OTEL_EXPORTER_OTLP_*_HEADERS`) from the `fullsend run` process environment. A script
 receives one only when the harness declares it under `env.runner`; see
 [`env.runner`](../reference/harness-reference.md#field-details) in the harness reference.
+`FULLSEND_JIRA_EMAIL` is optional: an `env.runner` reference to it does not fail when it is
+unset, and the entry is omitted rather than passed empty. The OAuth client credentials
+`FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` are optional the same way, and
+`FULLSEND_JIRA_TOKEN` is optional while they are set. See
+[Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs).
 
 Repo-level setup (provider, profile, `~/.npmrc`, code/fix overlays):
 [Private registries and GitHub Packages](../guides/user/customizing-agents.md#private-registries-and-github-packages).

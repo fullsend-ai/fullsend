@@ -909,6 +909,12 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	if child.SandboxTimeoutSeconds == 0 {
 		child.SandboxTimeoutSeconds = base.SandboxTimeoutSeconds
 	}
+	// ReadonlyRepo inherits like the other scalars, so a base that makes the
+	// checkout read-only keeps it read-only (#7360). It is a pointer so that
+	// a child's explicit false is a value that wins, not an unset field.
+	if child.ReadonlyRepo == nil {
+		child.ReadonlyRepo = base.ReadonlyRepo
+	}
 
 	// Skills: base + child with child-overrides-base by skill identity
 	// (declared SKILL.md name, else basename). A child skill whose identity

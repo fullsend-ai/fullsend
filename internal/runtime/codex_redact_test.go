@@ -224,13 +224,19 @@ func TestCodexRedactingWriter_FlushesAtTheLineCap(t *testing.T) {
 
 	var sink bytes.Buffer
 	w := newCodexRedactingWriter(&sink)
-	chunk := bytes.Repeat([]byte("a"), 1<<20)
-	for range 9 {
+	// A small cap keeps the input small; the production cap is covered by
+	// TestProgressLimitsDefaultToProductionSizes.
+	w.maxLine = 8 << 10
+	chunk := bytes.Repeat([]byte("a"), 1<<10)
+	for range 8 {
 		_, err := w.Write(chunk)
 		require.NoError(t, err)
 	}
+	assert.Empty(t, sink.String(), "a partial line under the cap stays buffered")
+	_, err := w.Write(chunk)
+	require.NoError(t, err)
 	assert.NotEmpty(t, sink.String(), "a newline-less stream must not buffer without bound")
-	assert.Greater(t, sink.Len(), codexRedactMaxLine)
+	assert.Greater(t, sink.Len(), w.maxLine)
 }
 
 func TestCodexRedactValue_WalksArrays(t *testing.T) {

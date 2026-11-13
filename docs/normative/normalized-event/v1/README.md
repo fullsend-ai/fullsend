@@ -13,7 +13,8 @@ scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
   `event` bound to a `NormalizedEvent` object. This describes the currently
   shipped event-backed path. [ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md)
   adopts a future entity-first context with required `entity` and nullable
-  `event`; its field-level contract remains follow-up versioned work.
+  `event`; its field-level contract is
+  [Normalized entity v1](../../normalized-entity/v1/README.md).
 - **Authorization:** `fullsend dispatch` enforces the
   [Authorization Contract v1](../../authorization/v1/) as a platform-level gate
   after normalization and **before** CEL evaluation. Harness `trigger`
@@ -41,6 +42,12 @@ and native-webhook input, and **Jira poll** input:
 - `repo` is the target fullsend repository (`owner/repo` for GitHub,
   `group/subgroup/project` for GitLab) for all systems — including Jira poll
   events (see [jira-poll-adapter.md](jira-poll-adapter.md)).
+- For `source.system: jira`, `entity.key` MUST be a Jira work item key
+  (`^[A-Z][A-Z0-9_]+-[1-9][0-9]*$`): the Go `normevent.Validate()` enforces
+  this jira-scoped rule, so a Jira poll event with any other key is skipped
+  before dispatch instead of dispatching and failing downstream
+  (see [jira-poll-adapter.md](jira-poll-adapter.md)). Other source systems
+  keep the schema's looser cross-system `entity.key` shape.
 - The `gha-event` input driver is the production GitHub adapter; `gitlab-poll`
   is the production GitLab poll adapter ([ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md));
   `gitlab-webhook` is the shipped GitLab native-webhook fast-path adapter,
@@ -77,20 +84,41 @@ Breaking changes require `docs/normative/normalized-event/v2/`.
 | **Breaking** (requires v2): remove or rename fields, change field types, remove enum values, add new required top-level fields, tighten patterns that reject previously valid documents | Consumers must migrate |
 | **Non-breaking** (allowed in v1.x schema/README): add optional fields, add new enum values, relax validation, clarify documentation | Existing fixtures and triggers keep working |
 
+One jira-scoped pattern tightening has been accepted in v1: `entity.key` for
+`source.system: jira` must be a Jira work item key (see
+[Scope (v1)](#scope-v1)). Both work-item dispatch routes already refused such
+keys after dispatch (`internal/cli/run_workitem.go`,
+`internal/poll/jira_dispatch.go`), so no previously valid Jira-sourced v1
+document is affected on a shipped workflow. One further consumer reads
+Jira-sourced v1 documents with no downstream key check: `fullsend dispatch
+--input-driver json` (and `--route <agent>` with a JSON event) parses them
+through `input.LoadJSONEvent` → `normevent.ParseJSON` → `Validate`
+(`internal/cli/dispatch.go`, `internal/harnessdispatch/input/json.go`), so a
+key that matched the schema's cross-system pattern but not the work-item
+pattern (e.g. `proj-1`, `PROJ-01`) now fails that command at parse time —
+non-zero where it previously printed a matrix/route decision. That fail-earlier
+is intended: the matrix output could only ever lead to a `fullsend run` that
+refuses the key anyway. The general rule that pattern tightening requires v2
+still holds for shapes consumers accept.
+
 The new optional actor fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
-adapter emits `bot_role` or `role_verified`; otherwise their local validator
-may reject an otherwise valid v1 event. Fullsend controls the supported
+adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise
+their local validator may reject an otherwise valid v1 event. Fullsend controls the supported
 NormalizedEvent producers and consumers, so the bundled validator and other
 supported consumers MUST be updated to this v1 schema before any adapter emits
 the new fields. Older strict schema copies are not a supported
 producer/consumer combination after that rollout. v1 compatibility means that
 existing events without these fields remain valid; it does not require a
 stale `additionalProperties: false` schema to accept newly emitted fields.
-The JSON Schema's cross-field rules are currently stricter than the Go
-`normevent.Validate()` implementation. The adapter migration MUST bring the Go
-validator to parity before emitting the new fields; until then the schema
-remains the normative stricter check.
+The JSON Schema's cross-field rules for the ADR 0107 actor fields are
+currently stricter than the Go `normevent.Validate()` implementation. The
+adapter migration MUST bring the Go validator to parity before emitting the
+new fields; until then the schema remains the normative stricter check for
+those fields. The relationship is per rule, not uniform: for one rule the Go
+validator is stricter — the jira-scoped `entity.key` work-item-key pattern
+(see [Scope (v1)](#scope-v1)) accepts fewer keys than the schema's
+cross-system `entity.key` pattern.
 
 Adding a new `transition.kind` is **non-breaking** — CEL triggers use boolean
 expressions, not exhaustive enum matching.
@@ -185,9 +213,12 @@ cross-field equality.
 
 For `comment_added`, adapters extract `command` and `instruction` from the
 **raw** comment body before applying the 4096-character truncation stored in
-`comment.body` (JSON Schema `maxLength` counts Unicode code points). This keeps
-slash-command routing and fix instructions intact even when the stored body is
-truncated for transport.
+`comment.body` (a `/fs-*` command body is exempt on the GitLab target: the
+Jira source carries it whole past the cap there so the dispatch door can
+measure and refuse it, while the GitHub target keeps the cap for command
+bodies too — its transport has no chunk budget; JSON Schema `maxLength` counts
+Unicode code points). This keeps slash-command routing and
+fix instructions intact even when the stored body is truncated for transport.
 
 This moves instruction extraction from downstream workflow steps (e.g.
 `reusable-fix.yml`) into the input adapter — a behavioral change called out in
@@ -251,13 +282,46 @@ non-label paths. Only the GitHub `gha-event` path of `fullsend dispatch`
 sets the fields today, and only for bot actors on non-label events, so
 triggers that read them must guard with `has()`.
 
+### Entity author and assignee (`actor.is_entity_author`, `actor.is_entity_assignee`)
+
+`actor.is_entity_author` is `true` when the actor authored the work item,
+change proposal or conversation. `actor.is_entity_assignee` is an optional
+additive field with the same semantics on every source system: `true` when
+the actor is one of the entity's current assignees at the time the adapter
+builds the event (with several assignees, any match counts), and `false` when
+the entity has no assignee, the actor is not one, or the assignees cannot be
+determined. Reviewers and requested reviewers are not assignees. An event
+without the field means `false`; the Go `normevent.Actor` type always emits
+it, so a trigger that reads it on an event built by a current adapter needs
+no `has()` guard. The value is a snapshot taken when the event is built. For
+a poll source such as Jira, that is poll time, and the assignee can change
+before the run starts.
+
+| Source | Where assignees come from | Comparison |
+|--------|---------------------------|------------|
+| GitHub (`gha-event`) | `issue.assignees[].login` or `pull_request.assignees[].login` in the webhook payload (the legacy single `assignee` only when the payload has no `assignees` array); no extra API call | Case-insensitive against the actor login (the reviewer for `pull_request_review`) |
+| GitLab (`gitlab-poll`, `gitlab-webhook`) | Issues: `assignees[].id` from the same issue fetch the author check uses. Merge requests: `assignees[].id` from the MR object that supplies the MR author | Numeric user ID against the resolved actor ID |
+| Jira (`jira-poll`) | `fields.assignee`, requested alongside `reporter` in the search fields | The same identifier as `actor.id`: `accountId`, or `name` when `accountId` is unavailable (Data Center/Server), matching the `is_entity_author` fallback |
+
+Both fields are best-effort **routing** facts, not authorization. They can
+only narrow which actor a trigger accepts; the platform role gate
+([Authorization Contract v1](../../authorization/v1/README.md#excluded-fields))
+still runs first and is unchanged. Anyone who can assign issues can assign
+themselves, so a trigger must never treat `is_entity_assignee` as a reason to
+admit an actor the role gate would deny.
+
 ### Fork security (`state.change_proposal.is_fork`)
 
 `is_fork` is `true` when `head_repo` differs from `base_repo` (fork-based
-change proposal). Write-capable agents (code, fix) that push commits or open
-follow-up PRs **must** gate on `!state.change_proposal.is_fork` in harness
-`trigger` expressions or rely on dispatch-level authorization per ADR 0054.
-Read-only agents (triage, review, retro) may run on fork PRs when policy allows.
+change proposal). Agents that push commits or open follow-up PRs **must** gate
+on `!state.change_proposal.is_fork` in harness `trigger` expressions or rely on
+dispatch-level authorization per ADR 0054. Triage and review are observation
+agents. Retro can create issues and comments, so its dispatch authorization
+must be considered separately; GitHub PR-close retro requires the closing or
+merging actor to have write access, including for a completed merge-queue
+merge. GitHub App and bot senders have `role: none`, so their close or merge
+events, including bot automerges through a merge queue, do not start retro. A
+write-authorized user can run `/fs-retro` afterward.
 
 ### Change facts (`state.change_proposal.diff`, `state.change_proposal.linked_work_items`)
 
@@ -295,7 +359,9 @@ until it is listed here. For example `transition.comment` (its `body`,
 `command` and `instruction` all come from the comment text), the action fields
 (`transition.kind`, `source.raw_type`, `source.raw_action`, `entity.kind`),
 `actor.kind` (some adapters infer it from a display name),
-`actor.is_entity_author` (the author makes it true by acting), `state.labels`,
+`actor.is_entity_author` (the author makes it true by acting),
+`actor.is_entity_assignee` (anyone who can assign issues can make it true),
+`state.labels`,
 `base_ref` (the author picks the target branch), `head_*` and the change facts
 are untrusted. A guarded overlay may test `has()` only on objects the schema
 always requires, such as `source`; reading `is_fork` when there is no change
@@ -332,6 +398,14 @@ event.transition.kind == "comment_added"
   && event.transition.comment.command == "/fs-fix"
   && !event.state.change_proposal.is_fork
 
+// Code on /fs-code only from the issue's author or an assignee
+// (narrows the role gate; does not replace it)
+event.entity.kind == "work_item"
+  && event.transition.kind == "comment_added"
+  && has(event.transition.comment.command)
+  && event.transition.comment.command == "/fs-code"
+  && (event.actor.is_entity_author || event.actor.is_entity_assignee)
+
 // Conversation-native agent on Discussion slash command (ADR 0086)
 event.entity.kind == "conversation"
   && event.transition.kind == "comment_added"
@@ -342,6 +416,9 @@ event.entity.kind == "conversation"
 ```
 
 See [`examples/`](examples/) for matching `NormalizedEvent` fixtures. The
+`fs-code-assignee-comment.json`, `gitlab-fs-code-assignee-note.json` and
+`jira-fs-code-assignee-comment.json` fixtures show `actor.is_entity_assignee`
+for each source system; fixtures without the field remain valid. The
 existing top-level fixtures retain the legacy v1 representation; target
 fixtures for ADR 0107 are under
 [`examples/adr-0107/`](examples/adr-0107/).
@@ -453,10 +530,41 @@ two forms:
   `source.system` set to `gitlab` and, for merge request events,
   `state.change_proposal` (including `head_sha` where the poller discovered
   it). `run-agent-job.sh` passes it to `fullsend run --event-file`, so
-  overlays and root-span telemetry see the same fields as on GitHub.
+  overlays and root-span telemetry see the same fields as on GitHub — with
+  two bounds: `state.labels` is truncated to a 1024-byte JSON prefix
+  (entries past the bound are dropped, except fullsend's own control
+  labels, `fullsend-fix` and `fullsend-no-fix`, which the bound keeps
+  so the fix kill switch survives it), and each other attacker-shaped
+  single string the event carries (branch refs, the head_repo/base_repo
+  paths, logins,
+  the label name) to a 258-byte JSON prefix — a same-project MR carries
+  the project's own path in head_repo/base_repo, and it stays cut there
+  even though `repo` travels whole — both like the
+  comment-body bound below, so a trigger or overlay keyed on a value past
+  either bound does not match on this transport. The config-derived
+  `repo`, `entity.url` and `entity.linked_change_proposal.url` travel
+  whole: an install whose config lengths push the complete payload past
+  the chunk budget fails closed there (the comment-only fallback for a
+  note, a refused dispatch for a command) instead of being cut. The label-name bound is
+  stricter than a single `state.labels` entry: `transition.label.name` is
+  cut at 258 JSON bytes while the same label inside `state.labels` can
+  travel whole at up to about 1020 bytes, so for a label longer than 258
+  bytes a trigger keyed on the transition label and one keyed on
+  `state.labels` see different values. A label past the bound is
+  invisible, so a negative-label guard (`!("hold" in event.state.labels)`)
+  is unsafe: any label the forge returns before the guarded one can push it
+  past the bound and make the guard match. The control labels
+  `fullsend-fix` and `fullsend-no-fix` are the exception: the bound
+  keeps them, so the repo's own no-fix gate cannot be pushed out by
+  padding labels. The payload's flat top-level
+  `labels` key is dropped in this form — labels travel only at
+  `_normalized_event.state.labels`.
 - **Comment-only fallback.** Otherwise, for a note event, `_normalized_event`
   is a **partial** map containing only `transition`, with `transition.kind`
   set to `comment_added` and `transition.comment.body` set to the note body.
+  The payload's top-level `labels` key carries the bounded label list in
+  this form (the complete form drops it in favour of
+  `_normalized_event.state.labels`).
   Non-note events then carry no `_normalized_event`. `run-agent-job.sh` passes
   no `--event-file`, and the run behaves as it did before the complete form
   existed.
@@ -466,11 +574,22 @@ as a full NormalizedEvent. Both forms carry the note body at
 `_normalized_event.transition.comment.body`, which `run-agent-job.sh` reads for
 the `/fs-fix` instruction and the retro comment.
 
-A body that starts with `/fs-` is carried untruncated, and dispatch fails closed
-when the payload exceeds the chunk budget. Any other body is bounded to 800
-Unicode code points, with a truncation marker appended when it is cut. In the
-complete form, `transition.comment.command` and `instruction` are derived from
-the transported body, so they always match what `run-agent-job.sh` reads.
+A body that starts with `/fs-` is carried untruncated through this door, and
+dispatch fails closed when the payload exceeds the chunk budget; the
+Jira-sourced GitHub target keeps the 4096-code-point adapter cap for command
+bodies instead, its transport having no chunk budget. Any other body is bounded to 270
+Unicode code points, with a truncation marker appended when it is cut. The
+bound came down from the 800 of earlier releases. The chunk budget is the sum
+of every attacker-controlled field plus the config: an escape-heavy body, a
+full labels bound and maximal — separately bounded — branch refs,
+head_repo/base_repo paths, logins and the label name, with the whole-travelling config-derived
+repo and URLs at a plausible config, must still fit it together; a
+schema-maximal config instead fails closed (the comment-only fallback for a
+note, a refused dispatch for a command).
+`TestBuildEventPayload_WorstCaseFitsTransportBudget` pins that
+worst case. In the complete form,
+`transition.comment.command` and `instruction` are derived from the transported
+body, so they always match what `run-agent-job.sh` reads.
 
 ## GitLab adapter notes
 

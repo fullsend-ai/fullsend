@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -31,6 +32,7 @@ func TestLint_RunnerEnvDeprecated(t *testing.T) {
 	diags := h.Lint()
 	require.Len(t, diags, 1)
 	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.Equal(t, CodeRunnerEnvDeprecated, diags[0].Code)
 	assert.Equal(t, "runner_env", diags[0].Field)
 	assert.Contains(t, diags[0].Message, "deprecated")
 	assert.Contains(t, diags[0].Message, "env.runner")
@@ -47,6 +49,7 @@ func TestLint_RunnerEnvAndEnvBothPresent(t *testing.T) {
 	diags := h.Lint()
 	require.Len(t, diags, 1)
 	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.Equal(t, CodeRunnerEnvDeprecated, diags[0].Code)
 	assert.Contains(t, diags[0].Message, "env.runner takes precedence")
 }
 
@@ -74,6 +77,7 @@ func TestLint_EnvSandboxWithHostFilesEnvOverlap(t *testing.T) {
 	diags := h.Lint()
 	require.Len(t, diags, 1)
 	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.Equal(t, CodeSandboxHostFilesCollision, diags[0].Code)
 	assert.Equal(t, "env.sandbox", diags[0].Field)
 	assert.Contains(t, diags[0].Message, "env.sandbox values take precedence")
 }
@@ -107,6 +111,7 @@ func TestLint_ForgeDeprecationWarning(t *testing.T) {
 		if d.Field == "forge" {
 			found = true
 			assert.Equal(t, SeverityWarning, d.Severity)
+			assert.Equal(t, CodeForgeDeprecated, d.Code)
 			assert.Contains(t, d.Message, "deprecated")
 			assert.Contains(t, d.Message, "overlays")
 		}
@@ -135,6 +140,7 @@ func TestLint_AllowedRemoteResourcesWithoutAllowRuntimeFetch(t *testing.T) {
 	diags := h.Lint()
 	require.Len(t, diags, 1)
 	assert.Equal(t, SeverityWarning, diags[0].Severity)
+	assert.Equal(t, CodeAllowedRemoteImplicitFetch, diags[0].Code)
 	assert.Equal(t, "allowed_remote_resources", diags[0].Field)
 	assert.Contains(t, diags[0].Message, "allow_runtime_fetch: true")
 	assert.Contains(t, diags[0].Message, "deprecated")
@@ -177,6 +183,7 @@ func TestLint_PreflightCheckLooksLikeScriptPath(t *testing.T) {
 	diags := h.Lint()
 	require.Len(t, diags, 1)
 	assert.Equal(t, SeverityError, diags[0].Severity)
+	assert.Equal(t, CodePreflightCheckPath, diags[0].Code)
 	assert.Equal(t, "validation_loop.preflight_check", diags[0].Field)
 	assert.Contains(t, diags[0].Message, "sh -c")
 	assert.Contains(t, diags[0].Message, "pre_script")
@@ -194,6 +201,19 @@ func TestLint_PreflightCheckLiteralCommand(t *testing.T) {
 	}
 
 	assert.Empty(t, h.Lint())
+}
+
+func TestPreflightCheckDiagnostic(t *testing.T) {
+	d := PreflightCheckDiagnostic("validation_loop.preflight_check", "scripts/validate.sh")
+	require.NotNil(t, d)
+	assert.Equal(t, SeverityError, d.Severity)
+	assert.Equal(t, "validation_loop.preflight_check", d.Field)
+	assert.Contains(t, d.Message, "scripts/validate.sh")
+
+	assert.Nil(t, PreflightCheckDiagnostic("validation_loop.preflight_check", "sh scripts/validate.sh"))
+	// A ${VAR} reference never matches the heuristic, which is why run
+	// also checks the expanded value (#8747).
+	assert.Nil(t, PreflightCheckDiagnostic("validation_loop.preflight_check", "${PREFLIGHT_CMD}"))
 }
 
 func TestLint_PreflightCheckPathLikeMatching(t *testing.T) {
@@ -254,6 +274,18 @@ func TestDiagnostic_String(t *testing.T) {
 		d := Diagnostic{Severity: DiagnosticSeverity(99), Field: "x", Message: "msg"}
 		assert.Equal(t, "DiagnosticSeverity(99): x: msg", d.String())
 	})
+
+	t.Run("omits code", func(t *testing.T) {
+		d := Diagnostic{
+			Code:     CodeForgeDeprecated,
+			Severity: SeverityWarning,
+			Field:    "forge",
+			Message:  "forge is deprecated; use overlays",
+		}
+		got := d.String()
+		assert.Equal(t, "warning: forge: forge is deprecated; use overlays", got)
+		assert.NotContains(t, got, CodeForgeDeprecated)
+	})
 }
 
 func TestLint_GithubIssueURLDeprecated(t *testing.T) {
@@ -269,6 +301,7 @@ func TestLint_GithubIssueURLDeprecated(t *testing.T) {
 			if d.Field == "runner_env" && strings.Contains(d.Message, "GITHUB_ISSUE_URL is deprecated") {
 				found = true
 				assert.Equal(t, SeverityWarning, d.Severity)
+				assert.Equal(t, CodeGithubIssueURLDeprecated, d.Code)
 				assert.Contains(t, d.Message, "FULLSEND_WORK_ITEM_URL")
 			}
 		}
@@ -534,4 +567,82 @@ overlays:
 		first[0].Field = "mutated"
 		assert.Equal(t, []string{"env.runner"}, issueURLFields(h.Lint()))
 	})
+}
+
+func TestLint_TriggerInvalidHasCode(t *testing.T) {
+	h := &Harness{
+		Agent:   "agents/test.md",
+		Role:    "test",
+		Trigger: "this is not cel",
+	}
+	diags := h.Lint()
+	require.NotEmpty(t, diags)
+	assert.Equal(t, CodeTriggerInvalid, diags[0].Code)
+	assert.Equal(t, "trigger", diags[0].Field)
+	assert.Equal(t, SeverityError, diags[0].Severity)
+}
+
+func TestLint_MessageChangeDoesNotChangeCode(t *testing.T) {
+	only := (&Harness{
+		Agent:     "agents/test.md",
+		Role:      "test",
+		RunnerEnv: map[string]string{"FOO": "bar"},
+	}).Lint()
+	both := (&Harness{
+		Agent:     "agents/test.md",
+		Role:      "test",
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		Env:       &EnvConfig{Runner: map[string]string{"BAZ": "qux"}},
+	}).Lint()
+	require.Len(t, only, 1)
+	require.Len(t, both, 1)
+	assert.Equal(t, CodeRunnerEnvDeprecated, only[0].Code)
+	assert.Equal(t, only[0].Code, both[0].Code)
+	assert.NotEqual(t, only[0].Message, both[0].Message)
+}
+
+func TestDiagnosticCodeConstantsMatchPattern(t *testing.T) {
+	re := regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
+	codes := []string{
+		CodeRunnerEnvDeprecated,
+		CodeSandboxHostFilesCollision,
+		CodeAllowedRemoteImplicitFetch,
+		CodeForgeDeprecated,
+		CodeTriggerInvalid,
+		CodePreflightCheckPath,
+		CodeGithubIssueURLDeprecated,
+	}
+	seen := map[string]struct{}{}
+	for _, c := range codes {
+		assert.True(t, re.MatchString(c), c)
+		_, dup := seen[c]
+		assert.False(t, dup, "duplicate code %q", c)
+		seen[c] = struct{}{}
+	}
+}
+
+func TestLint_AllRuleDiagnosticsHaveNonEmptyCodes(t *testing.T) {
+	h := &Harness{
+		Agent:                  "agents/test.md",
+		Role:                   "test",
+		RunnerEnv:              map[string]string{"FOO": "bar", "GITHUB_ISSUE_URL": "x"},
+		AllowedRemoteResources: []string{"https://github.com/org/"},
+		Trigger:                "this is not cel",
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/validate.sh",
+			PreflightCheck: "scripts/common-preflight.sh",
+		},
+		hadForgeBeforeResolve: true,
+		Env:                   &EnvConfig{Sandbox: map[string]string{"GH_TOKEN": "t"}},
+		HostFiles: []HostFile{
+			{Src: "env/review.env", Dest: "/sandbox/workspace/.env.d/review.env", Expand: true},
+		},
+	}
+	diags := h.Lint()
+	require.NotEmpty(t, diags)
+	re := regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
+	for _, d := range diags {
+		assert.NotEmpty(t, d.Code, "field %q", d.Field)
+		assert.True(t, re.MatchString(d.Code), "field %q code %q", d.Field, d.Code)
+	}
 }

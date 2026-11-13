@@ -93,6 +93,15 @@ type ConvergeConfig struct {
 	// persisted to the manifest and never logged or reported.
 	JiraToken string
 	JiraEmail string
+	// JiraClientID and JiraClientSecret are written as
+	// FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET instead of
+	// the token, for an Atlassian service account's OAuth 2.0 credential
+	// (#9176). Supplying them removes an existing token and email, and
+	// supplying a token removes existing client credentials. Command-line
+	// input only: never persisted to the manifest
+	// and never logged or reported.
+	JiraClientID     string
+	JiraClientSecret string
 
 	// ReviewAppClientID is the OAuth client ID of the review agent's
 	// GitHub App, pre-resolved by the caller for ReviewAppClientIDAppSet.
@@ -254,6 +263,11 @@ type convergeDiscovery struct {
 	components    []ComponentStatus
 	preset        []byte
 	managedConfig []byte
+	// overlay is the installed .fullsend/config.yaml read once to select
+	// the pinned fullsend_ref's configuration schema (#9292); nil when the
+	// repository follows the running release, in which case the overlay
+	// gates read it themselves.
+	overlay *overlaySnapshot
 	// appSet is the effective FULLSEND_APP_SET value to persist (GitHub
 	// only). When app_set is explicitly configured it is the resolved
 	// value; otherwise it preserves an existing repo variable, falling
@@ -773,6 +787,8 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	cfg.OpenAIAPIKey = strings.TrimSpace(cfg.OpenAIAPIKey)
 	cfg.JiraToken = strings.TrimSpace(cfg.JiraToken)
 	cfg.JiraEmail = strings.TrimSpace(cfg.JiraEmail)
+	cfg.JiraClientID = strings.TrimSpace(cfg.JiraClientID)
+	cfg.JiraClientSecret = strings.TrimSpace(cfg.JiraClientSecret)
 
 	manifest := cfg.Manifest
 	if err := manifest.Validate(); err != nil {
@@ -1124,6 +1140,12 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		if cfg.JiraEmail != "" {
 			return nil, fmt.Errorf("--jira-email was supplied but no selected repository sets tracker.jira.poll.enabled: true")
 		}
+		if cfg.JiraClientID != "" {
+			return nil, fmt.Errorf("--jira-client-id was supplied but no selected repository sets tracker.jira.poll.enabled: true")
+		}
+		if cfg.JiraClientSecret != "" {
+			return nil, fmt.Errorf("--jira-client-secret was supplied but no selected repository sets tracker.jira.poll.enabled: true")
+		}
 	}
 
 	// Phase 2: parallel convergence — apply needed actions.
@@ -1206,6 +1228,29 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		// Render the managed configuration before any writes so a
 		// validation failure fails the repo without applying changes.
 		if d.resolved.ConfigManaged {
+			// Render in the schema the repository's effective
+			// fullsend_ref reads (#9292).
+			// The installed overlay is read for a pinned ref only, as
+			// status does, so a schema-neutral desired config still
+			// resolves the schema when the overlay is schema-dependent.
+			// A read error fails the repo before any write.
+			// That read is kept as a snapshot the overlay gates reuse, so
+			// it adds no forge read.
+			var installedOverlay []byte
+			if pinnedFullsendRef(d.resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag) {
+				data, found, readErr := readManagedConfigOverlayFile(ctx, d.resolved)
+				if readErr != nil {
+					result.Results[i] = ConvergeResult{
+						Owner: d.repo.Owner,
+						Repo:  d.repo.Repo,
+						Error: fmt.Errorf("reading %s: %w", preset.OverlayPath, readErr),
+					}
+					continue
+				}
+				installedOverlay = data
+				d.overlay = &overlaySnapshot{data: data, found: found}
+			}
+			d.resolved.ConfigSchema = selectManagedConfigSchema(ctx, d.resolved, installedOverlay, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
 			body, _, configErr := desiredManagedConfig(d.resolved)
 			if configErr != nil {
 				result.Results[i] = ConvergeResult{
@@ -1222,7 +1267,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			// would fire only after they had changed the repository. A
 			// fresh install is gated before Install in its own path.
 			if workflowPresent(d.components) {
-				if gateErr := checkEstablishedOverlayGate(ctx, d.resolved, body); gateErr != nil {
+				if gateErr := checkEstablishedOverlayGateFrom(ctx, d.resolved, body, d.overlay); gateErr != nil {
 					result.Results[i] = ConvergeResult{
 						Owner: d.repo.Owner,
 						Repo:  d.repo.Repo,
@@ -1314,7 +1359,8 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		}
 
 		// A repository with Jira polling enabled needs a usable Jira token
-		// (existing or supplied) before any write.
+		// or OAuth 2.0 client credentials (existing or supplied) before
+		// any write.
 		if jiraErr := validateJiraPollInputs(d, cfg); jiraErr != nil {
 			result.Results[i] = ConvergeResult{
 				Owner: d.repo.Owner,
@@ -1487,6 +1533,14 @@ func convergeRepo(ctx context.Context,
 			return cr
 		}
 	}
+	if err := checkGitHubJiraPollWorkflow(ctx, d, cfg, refResolver); err != nil {
+		cr.Error = err
+		return cr
+	}
+	if err := checkGitLabJiraOAuthSupport(ctx, d, cfg, refResolver); err != nil {
+		cr.Error = err
+		return cr
+	}
 
 	auth := resolved.InferenceAuth
 	// A pinned scaffold that predates the OpenAI credential mapping cannot
@@ -1589,7 +1643,7 @@ func convergeRepo(ctx context.Context,
 		var configSafetyRejected *ComponentAction
 		var existingUnmanagedConfig []byte
 		if resolved.ConfigManaged {
-			existing, found, readErr := readExistingFile(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo, preset.OverlayPath)
+			existing, found, readErr := d.overlay.readOverlay(ctx, resolved)
 			if readErr != nil {
 				cr.Error = fmt.Errorf("reading existing %s: %w", preset.OverlayPath, readErr)
 				return cr
@@ -1639,6 +1693,7 @@ func convergeRepo(ctx context.Context,
 		// on preview fidelity).
 		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
 		ref, tag, manifestRef := rref.ref, rref.tag, rref.manifestRef
+		jiraRender := scaffold.RenderOptions{UpstreamRef: ref, UpstreamTag: tag}
 
 		vendor := resolved.Vendor
 		if vendor && resolved.Forge == ForgeGitLab {
@@ -1775,7 +1830,7 @@ func convergeRepo(ctx context.Context,
 					dryCleanupErrors = append(dryCleanupErrors, a.Detail)
 				}
 			}
-			dryJira := convergeJiraPoll(ctx, d, cfg, progress)
+			dryJira := convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{render: jiraRender}, progress)
 			cr.Actions = append(cr.Actions, dryJira...)
 			for _, a := range dryJira {
 				if a.Action == "error" {
@@ -1811,9 +1866,23 @@ func convergeRepo(ctx context.Context,
 			}
 		}
 
+		// Jira polling converges when the install commits its scaffold:
+		// its credentials are written after Install has written its own,
+		// and a file-based poll resource joins the same scaffold commit.
+		var jiraActions []ComponentAction
+		scaffoldCommit := installCommit
+		installCommit = func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, installed bool) error {
+			jiraActions = convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{
+				render: jiraRender,
+				stage:  func(f forge.TreeFile) { files = append(files, f) },
+			}, progress)
+			return scaffoldCommit(ctx, owner, repo, files, direct, installed)
+		}
+
 		installResult, installErr := Install(ctx, installCfg, resolved.ForgeConfig.Client, installCommit, progress)
 		if installErr != nil {
 			cr.Error = installErr
+			cr.Actions = append(cr.Actions, jiraActions...)
 			if installResult != nil {
 				cr.WIFProvider = installResult.WIFProvider
 			}
@@ -1834,8 +1903,7 @@ func convergeRepo(ctx context.Context,
 		// earlier run wrote the credentials but failed to complete setup or
 		// to delete the obsolete secrets.
 		cleanup := removeObsoleteInferenceSecrets(ctx, resolved, false, false, installResult.ScaffoldFiles, progress)
-		// Jira polling converges once the installation exists.
-		cleanup = append(cleanup, convergeJiraPoll(ctx, d, cfg, progress)...)
+		cleanup = append(cleanup, jiraActions...)
 		cr.Actions = append(cr.Actions, cleanup...)
 		var cleanupErrors []string
 		for _, a := range cleanup {
@@ -1859,8 +1927,16 @@ func convergeRepo(ctx context.Context,
 	}
 
 	// 2d': Converge Jira polling: credential secrets and the forge's poll
-	// resources, or their removal when polling is disabled (#9076).
-	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, progress)...)
+	// resources, or their removal when polling is disabled (#9076). A
+	// file-based poll resource joins the scaffold commit below (#9109).
+	jiraDelivery := jiraPollDelivery{
+		stage: func(f forge.TreeFile) { allScaffoldFiles = append(allScaffoldFiles, f) },
+	}
+	if d.jira.enabled {
+		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
+		jiraDelivery.render = scaffold.RenderOptions{UpstreamRef: rref.ref, UpstreamTag: rref.tag}
+	}
+	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, jiraDelivery, progress)...)
 
 	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;

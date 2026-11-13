@@ -718,3 +718,73 @@ github:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found in type")
 }
+
+// nestedYAML indents every line of block by n spaces.
+func nestedYAML(block string, n int) string {
+	pad := strings.Repeat(" ", n)
+	return pad + strings.ReplaceAll(strings.TrimRight(block, "\n"), "\n", "\n"+pad) + "\n"
+}
+
+// trace_context belongs to one repository (ADR 0154): defaults.config, a
+// forge section's config and a glob entry may not carry it.
+func TestValidate_TraceContextPlacementRejected(t *testing.T) {
+	k := newTraceKey(1)
+	block := traceBlock(traceInstallA, k)
+	cases := []struct {
+		name, yaml, wantField string
+	}{
+		{"defaults.config", "version: 1\ndefaults:\n  config:\n" + nestedYAML(block, 4) +
+			"github:\n  repos:\n    - name: acme/app\n", "defaults.config"},
+		{"github.config", "version: 1\ngithub:\n  config:\n" + nestedYAML(block, 4) +
+			"  repos:\n    - name: acme/app\n", "github.config"},
+		{"gitlab.config", "version: 1\ngitlab:\n  url: https://gitlab.example.com\n  config:\n" + nestedYAML(block, 4) +
+			"  repos:\n    - name: group/app\n", "gitlab.config"},
+		{"github glob entry", "version: 1\ngithub:\n  repos:\n    - name: acme/*\n      config:\n" + nestedYAML(block, 8),
+			"github.repos[acme/*].config"},
+		{"gitlab glob entry", "version: 1\ngitlab:\n  url: https://gitlab.example.com\n  repos:\n    - name: group/*\n      config:\n" + nestedYAML(block, 8),
+			"gitlab.repos[group/*].config"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var m Manifest
+			require.NoError(t, yaml.Unmarshal([]byte(tc.yaml), &m))
+			err := m.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantField)
+			assert.Contains(t, err.Error(), "trace_context")
+			assertNoTraceValues(t, err.Error(), k)
+		})
+	}
+}
+
+// A preset, or an existing config.base.yaml, can be shared by many
+// repositories, and TraceContext() never falls back to it, so a
+// trace_context there is rejected rather than silently ignored. Both are
+// validated here. The refusal comes before Validate, so it also covers a
+// block that parses but has invalid fields.
+func TestValidatePresetAsPerRepo_TraceContextRejected(t *testing.T) {
+	k := newTraceKey(1)
+	err := validatePresetAsPerRepo([]byte("version: \"1\"\n" + traceBlock(traceInstallA, k)))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trace_context")
+	assertNoTraceValues(t, err.Error(), k)
+
+	err = validatePresetAsPerRepo([]byte("version: \"1\"\ntrace_context: {}\n"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "trace_context belongs to one repository")
+}
+
+// Guard: a concrete repository entry may carry trace_context on either forge.
+func TestValidate_TraceContextInConcreteEntryAccepted(t *testing.T) {
+	block := nestedYAML(traceBlock(traceInstallA, newTraceKey(1), newTraceKey(2)), 8)
+	for name, input := range map[string]string{
+		ForgeGitHub: "version: 1\ngithub:\n  repos:\n    - name: acme/app\n      config:\n" + block,
+		ForgeGitLab: "version: 1\ngitlab:\n  url: https://gitlab.example.com\n  repos:\n    - name: group/app\n      config:\n" + block,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var m Manifest
+			require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+			assert.NoError(t, m.Validate())
+		})
+	}
+}

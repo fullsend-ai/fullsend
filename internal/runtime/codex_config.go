@@ -118,12 +118,13 @@ const codexAuthTimeoutMS = 5000
 // agent (ADR 0126) `enabled = true` with the roster, depth one, four open
 // children and the run-level child model. `[features] multi_agent = false`
 // is not enough to turn the tools off: the model's catalog entry overrides
-// it (verified on 0.157.0, 0.158.0 and 0.159.3).
+// it (verified on 0.157.0, 0.158.0 and 0.159.3; the resolution order is
+// unchanged at 0.166.0).
 //
 // `[features] multi_agent_v2 = false` states codex's default so that the
 // `[agents]` table decides: codex checks this feature first, and when it is
 // on the V2 collaboration tools come back for every model (verified on
-// 0.159.3). On its own the key removes nothing.
+// 0.159.3, unchanged at 0.166.0). On its own the key removes nothing.
 //
 // `[model_providers.fullsend-gateway]` is rendered only when an
 // inference.gateway block applies (codex_gateway.go): a second runner-owned
@@ -382,11 +383,17 @@ type codexHookEntry struct {
 	Timeout int    `json:"timeout,omitempty"`
 }
 
+// codexAgentMatcher is the exact alternation (no regex characters, see
+// codexMatcherFor) that selects every call the adapter reports as Agent.
+var codexAgentMatcher = strings.Join(codexAgentToolNames, "|")
+
 // codexToolMatcher maps a Claude Code tool name from security.HookGroup.Tools
 // onto the matcher token codex selects handlers with. codex's canonical hook
 // tool names are `Bash`, `apply_patch` and `spawn_agent`
-// (codex-rs/core/src/tools/hook_names.rs); an empty string means codex has no
-// such tool.
+// (codex-rs/core/src/tools/hook_names.rs) plus the namespaced multi-agent
+// calls in codexAgentToolNames (codex-rs/core/src/tools/registry.rs
+// function_hook_tool_name, codex-rs/core/src/tools/mod.rs flat_tool_name);
+// an empty string means codex has no such tool.
 //
 // `Write` and `Edit` would in fact also select apply_patch, which carries them
 // as matcher aliases, but the file says what it means and the payload's
@@ -399,8 +406,8 @@ var codexToolMatcher = map[string]string{
 	"Write":     "apply_patch",
 	"Edit":      "apply_patch",
 	"MultiEdit": "apply_patch",
-	"Agent":     "spawn_agent",
-	"Task":      "spawn_agent",
+	"Agent":     codexAgentMatcher,
+	"Task":      codexAgentMatcher,
 	"Read":      "",
 	"Glob":      "",
 	"Grep":      "",

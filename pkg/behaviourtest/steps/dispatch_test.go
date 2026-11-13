@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -366,6 +367,9 @@ func (f *fakeDispatchSCM) CreateIssue(context.Context, string, string, string, s
 func (f *fakeDispatchSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
 	return nil
 }
+func (f *fakeDispatchSCM) EnsureLabel(context.Context, string, string, string) error {
+	return nil
+}
 func (f *fakeDispatchSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
 	return nil, nil
 }
@@ -669,6 +673,9 @@ func TestCommitLocalHarnessResources_CommitsScaffoldProfilesAndProviders(t *test
 }
 
 func TestThenHarnessWorkflowLogsContain(t *testing.T) {
+	// The step retries log fetches that come back unusable, so the poll
+	// window must be short for the fetch-error case below.
+	shrinkHarnessLogPoll(t, 200*time.Millisecond)
 	const logs = "2026-10-31T00:00:00Z subagents: correctness → google-vertex/claude-opus (from frontmatter)\n"
 	completed := &forge.WorkflowRun{ID: 9, Status: "completed", Conclusion: "success"}
 	newWorld := func(run *forge.WorkflowRun, logs string, logsErr error) *world.World {
@@ -680,31 +687,58 @@ func TestThenHarnessWorkflowLogsContain(t *testing.T) {
 		}
 	}
 
-	require.NoError(t, thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: correctness →", true))
-	require.NoError(t, thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: user-experience →", false))
+	require.NoError(t, thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, logs, nil), "pi", "subagents: correctness →", true))
+	require.NoError(t, thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, logs, nil), "pi", "subagents: user-experience →", false))
 
-	err := thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: user-experience →", true)
+	err := thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, logs, nil), "pi", "subagents: user-experience →", true)
 	require.ErrorContains(t, err, `do not contain "subagents: user-experience →"`)
 	assert.NotContains(t, err.Error(), "incomplete")
 
-	err = thenHarnessWorkflowLogsContain(newWorld(completed, logs, nil), "pi", "subagents: correctness →", false)
+	err = thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, logs, nil), "pi", "subagents: correctness →", false)
 	require.ErrorContains(t, err, "unexpectedly contain")
 
 	// A truncated snapshot cannot prove absence, and a miss on one says so.
 	partial := logs + "[log truncated: 1 MiB]\n"
-	err = thenHarnessWorkflowLogsContain(newWorld(completed, partial, nil), "pi", "subagents: user-experience →", false)
+	err = thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, partial, nil), "pi", "subagents: user-experience →", false)
 	require.ErrorContains(t, err, "cannot show")
-	err = thenHarnessWorkflowLogsContain(newWorld(completed, partial, nil), "pi", "subagents: security →", true)
+	err = thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, partial, nil), "pi", "subagents: security →", true)
 	require.ErrorContains(t, err, "snapshot is incomplete")
-	require.NoError(t, thenHarnessWorkflowLogsContain(newWorld(completed, partial, nil), "pi", "subagents: correctness →", true))
+	require.NoError(t, thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, partial, nil), "pi", "subagents: correctness →", true))
 
-	err = thenHarnessWorkflowLogsContain(newWorld(completed, "", fmt.Errorf("HTTP 502")), "pi", "x", true)
+	err = thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, "", fmt.Errorf("HTTP 502")), "pi", "x", true)
 	require.ErrorContains(t, err, "HTTP 502")
+
+	// A window that ends with empty logs and no fetch error proves
+	// neither presence nor absence: the check fails saying the forge
+	// returned no log output, whatever the expected outcome.
+	err = thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, "", nil), "pi", "x", true)
+	require.ErrorContains(t, err, "the forge returned no log output")
+	err = thenHarnessWorkflowLogsContain(context.Background(), newWorld(completed, "", nil), "pi", "x", false)
+	require.ErrorContains(t, err, "the forge returned no log output")
 
 	// No recorded run: the step waits for the harness run first, which
 	// needs a trigger time.
-	err = thenHarnessWorkflowLogsContain(newWorld(nil, logs, nil), "pi", "x", true)
+	err = thenHarnessWorkflowLogsContain(context.Background(), newWorld(nil, logs, nil), "pi", "x", true)
 	require.ErrorContains(t, err, "no workflow trigger time recorded")
+}
+
+// A cancelled scenario is the cause whatever the diagnosis: the contain
+// step keeps its incomplete-snapshot diagnosis and wraps the cancellation,
+// the way the fails-with-log step does (its mirror is
+// TestThenHarnessWorkflowFailsWithLog_CancelKeepsDiagnosis).
+func TestThenHarnessWorkflowLogsContain_CancelKeepsDiagnosis(t *testing.T) {
+	artifacts := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifacts)
+	shrinkHarnessLogPoll(t, time.Minute)
+	harnessLogPollInterval = time.Hour
+	ctx, cancel := context.WithCancel(context.Background())
+	c := &fakeFailedRunLogsCI{run: &forge.WorkflowRun{ID: 7, Status: "completed"}, logs: "setup ok\n[logs unavailable: HTTP 404]\n"}
+	w := &world.World{Org: "org", RepoName: "repo", ScenarioStart: time.Now(), WorkflowRun: &forge.WorkflowRun{ID: 7, Status: "completed"}, CI: c}
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+	err := thenHarnessWorkflowLogsContain(ctx, w, "probe", "needle", true)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.ErrorContains(t, err, "snapshot is incomplete")
+	assert.FileExists(t, filepath.Join(artifacts, "debug-probe-run-7", "workflow-logs.txt"))
 }
 
 func TestGivenFullsendFile(t *testing.T) {

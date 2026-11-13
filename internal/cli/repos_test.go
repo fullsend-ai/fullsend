@@ -274,6 +274,28 @@ func TestPrintStatusTable_WithDrift(t *testing.T) {
 	assert.Contains(t, output, "1 installed, 1 drifted, 0 not installed")
 }
 
+func TestPrintStatusTable_ConfigCompatibility(t *testing.T) {
+	result := &repos.StatusResult{
+		Repos: []repos.RepoStatus{
+			{Owner: "acme", Repo: "ok", Installed: true, ConfigCompatibility: repos.ConfigCompatible, ConfigSchemaRef: "v0.1.0"},
+			{Owner: "acme", Repo: "old", Installed: true, ConfigCompatibility: repos.ConfigIncompatible, ConfigSchemaRef: "v0.1.0", ConfigCompatibilityReason: "uses the tracker mapping"},
+			{Owner: "acme", Repo: "lost", Installed: true, ConfigCompatibility: repos.ConfigUnknown, ConfigSchemaRef: "v9.9.9", ConfigCompatibilityReason: "the ref cannot be resolved"},
+			{Owner: "acme", Repo: "cur", Installed: true, ConfigCompatibility: repos.ConfigIncompatible, ConfigCompatibilityReason: "legacy keys"},
+		},
+	}
+
+	var buf bytes.Buffer
+	cmd := newReposStatusCmd()
+	cmd.SetOut(&buf)
+	printStatusTable(cmd, result)
+
+	output := buf.String()
+	assert.NotContains(t, output, "acme/ok config compatibility")
+	assert.Contains(t, output, "acme/old config compatibility (fullsend_ref v0.1.0): incompatible\n  uses the tracker mapping")
+	assert.Contains(t, output, "acme/lost config compatibility (fullsend_ref v9.9.9): unknown\n  the ref cannot be resolved")
+	assert.Contains(t, output, "acme/cur config compatibility (fullsend_ref running release): incompatible")
+}
+
 func TestPrintStatusTable_GitLabWebhook(t *testing.T) {
 	result := &repos.StatusResult{
 		Repos: []repos.RepoStatus{
@@ -1583,6 +1605,9 @@ github:
               enabled: true
 `)
 	fc := newInstallFakeClient("acme/api")
+	// repos install verifies that the upstream ref it resolves (main here)
+	// contains the reusable Jira poll workflow before writing credentials.
+	fc.FileContentsRef["fullsend-ai/fullsend/.github/workflows/reusable-poll-jira.yml@main"] = []byte("name: Poll Jira\n")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
 		manifest:     manifestPath,
@@ -1605,7 +1630,7 @@ github:
 
 func TestReposInstallCmd_JiraFlags(t *testing.T) {
 	cmd := newReposInstallCmd()
-	for _, name := range []string{"jira-token", "jira-email"} {
+	for _, name := range []string{"jira-token", "jira-email", "jira-client-id", "jira-client-secret"} {
 		f := cmd.Flags().Lookup(name)
 		require.NotNil(t, f, name)
 		assert.Empty(t, f.DefValue, "%s has no default", name)
@@ -2616,7 +2641,9 @@ func TestRunReposInstall_GitLabPinRejectsMissingUpstreamClient(t *testing.T) {
 		})
 	})
 	require.Error(t, err, "a pin cannot silently use embedded GitLab templates without an upstream client")
-	assert.Contains(t, output, "matching pinned GitLab templates require an upstream GitHub client")
+	// The pin's configuration schema (#9292) and its GitLab templates both
+	// need the upstream GitHub client; either check rejects the repo.
+	assert.Contains(t, output, "upstream GitHub client")
 	assert.True(t, factory.requested(repos.ForgeGitLab))
 }
 
@@ -2664,7 +2691,9 @@ func TestRunReposInstall_GitLabFilterSkipsGitHubGlobExpansion(t *testing.T) {
 		})
 	})
 	require.Error(t, err, "a pin cannot silently use embedded GitLab templates without an upstream client")
-	assert.Contains(t, output, "matching pinned GitLab templates require an upstream GitHub client")
+	// The pin's configuration schema (#9292) and its GitLab templates both
+	// need the upstream GitHub client; either check rejects the repo.
+	assert.Contains(t, output, "upstream GitHub client")
 	assert.True(t, factory.requested(repos.ForgeGitLab))
 }
 

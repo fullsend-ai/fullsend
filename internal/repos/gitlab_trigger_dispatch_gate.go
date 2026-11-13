@@ -866,7 +866,7 @@ func gitlabTriggerDispatchOverrideRoleProblem(ctx context.Context, client forge.
 	case err != nil:
 		return "could not read ci_pipeline_variables_minimum_override_role: " + safeAPIError("reading the pipeline-variable override role", err).Error()
 	case role != forge.PipelineVarOverrideNoOneAllowed:
-		return fmt.Sprintf("ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed", displayPipelineVarRole(role))
+		return fmt.Sprintf("ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; to apply the restriction, %s", displayPipelineVarRole(role), gitlabPipelineVarRestrictionHint)
 	}
 	return ""
 }

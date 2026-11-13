@@ -79,6 +79,11 @@ This matters for fullsend because review agents and code agents process forge co
 - **Output scanning** — the existing `SecretRedactor` pipeline should apply to all agent output, not just to content the agent explicitly identifies as sensitive. This is already the design intent (see [ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md)), but the indirect disclosure pattern underscores why output-side scanning is not optional.
 - **Content-aware redaction** — agents processing forge content should redact PII patterns (SSNs, bank accounts, addresses) from their output regardless of whether the input was explicitly marked as sensitive.
 
+The same disclosure boundary arises when an authorized agent reads a private
+tracker while working on a public repository, even without adversarial input.
+See [Private Context in Public Agent Workflows](private-context-public-workflows.md)
+for the log, artifact and publication paths that must preserve that boundary.
+
 ### Disproportionate response via social pressure
 
 A variant that exploits alignment training rather than injecting instructions. Shapira et al. (2026) document agents that, under expressions of urgency or distress from non-owners, escalated corrective actions far beyond what was proportionate — disabling an entire email system to protect one secret, or agreeing to stop serving all users because one person expressed disappointment. The mechanism is not adversarial text but emotional framing that triggers the model's helpfulness and compliance training.
@@ -107,7 +112,7 @@ In fullsend's architecture, this is mitigated by several design decisions: agent
   source arrived through an event or an API ([ADR
   0133](../ADRs/0133-actor-attributed-data-security-boundary.md)).
 - How do we handle the case where legitimate code contains text that looks like prompt injection? (e.g., a test for prompt injection defenses)
-- What's the blast radius if an injection succeeds? How do we limit it? (Credential exposure mitigated by keeping credentials out of sandboxes entirely — see [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); model-provider credentials for runtimes that need one follow the same rule through a run-scoped provider and a placeholder the agent never resolves — see [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) and, for codex, [ADR 0099](../ADRs/0099-codex-agent-runtime.md); an inference gateway that accepts the job's OIDC token keeps reusable provider keys off the forge, though the gateway itself becomes a concentrated risk — see [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md); a gateway that cannot trust forge OIDC can instead take an opt-in API key, which relies on a long-lived secret held by the forge — see [ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md); the Actions workflow token used for GitHub Packages has its *placeholder* bound the same way, resolving only at the two registry hosts; but a value recovered through the registry's error echo is the job's own `GITHUB_TOKEN` and is replayable against whatever hosts the running role's forge profile already allows — read-write for `coder` — see [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md). Tool access limited by `permissions.deny` hard-blocks — see [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md). User secrets reach only host-side scripts that reference them, never the sandbox — see [ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md). Other blast radius dimensions remain open.)
+- What's the blast radius if an injection succeeds? How do we limit it? (Credential exposure mitigated by keeping credentials out of sandboxes entirely — see [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); model-provider credentials for runtimes that need one follow the same rule through a run-scoped provider and a placeholder the agent never resolves — see [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) and, for codex, [ADR 0099](../ADRs/0099-codex-agent-runtime.md); an inference gateway that accepts the job's OIDC token keeps reusable provider keys off the forge, though the gateway itself becomes a concentrated risk — see [ADR 0137](../ADRs/0137-inference-gateway-credential-route.md); a gateway that cannot trust forge OIDC can instead take an opt-in API key, which relies on a long-lived secret held by the forge — see [ADR 0138](../ADRs/0138-inference-gateway-api-key-credential-mode.md); the Actions workflow token used for GitHub Packages has its *placeholder* bound the same way, resolving only at the two registry hosts; but a value recovered through the registry's error echo is the job's own `GITHUB_TOKEN` and is replayable against whatever hosts the running role's forge profile already allows — read-write for `coder` — see [ADR 0114](../ADRs/0114-github-packages-via-host-bound-workflow-token-provider.md). Tool access limited by `permissions.deny` hard-blocks — see [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md). User secrets reach only host-side scripts that reference them, never the sandbox — see [ADR 0136](../ADRs/0136-runner-secrets-through-one-stored-secret.md); selected runner secrets can be sourced from Vault through job WIF without changing that boundary; only trusted configuration defines connections and each secret's source and ordered paths, and PR-head or event-provided config cannot override them. Fullsend validates each interpolated path component and the completed relative KV path before Vault access — see [ADR 0155](../ADRs/0155-configure-vault-backed-runner-secrets.md). Other blast radius dimensions remain open.)
 - Should agents operate on Unicode-normalized text with non-rendering characters stripped, or on raw text with a separate detection pass? ([ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md) decides that model-bound source content is the filtered representation and that raw text is never exposed; strip versus detect-and-preserve remains deferred to the versioned content-filter contract.)
 - How do we handle invisible Unicode in code itself (source files, not just metadata)? Some non-rendering characters are legitimate in string literals for internationalization. What heuristics distinguish malicious use from legitimate use? [ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md) defines the source-content boundary; code-content handling remains open.
 
@@ -187,6 +192,13 @@ It's slow and hard to detect. Each individual change looks fine. The degradation
 ### Grounding drift detection in architectural invariants
 
 Drift becomes detectable when you have a declared baseline to measure against. An organization's architecture documentation — ADRs, per-service architecture docs — provides that baseline. See [architectural-invariants.md](architectural-invariants.md) for a full treatment of how agents can consume and enforce these constraints, both at PR time and through periodic drift detection scans.
+
+The runner's environment surface now has such a baseline: which env
+vars the sandbox receives, per runtime and under documented gates, is
+published as generated, machine-checkable JSON Schemas rather than
+hand-synced descriptions, so content repos can verify env-var
+reachability against a released runner
+([ADR 0146](../ADRs/0146-sandbox-environment-contract-manifest.md)).
 
 Drift from security-relevant invariants (RBAC model, trusted component model, build provenance chain) is a security concern, not just a quality concern.
 
@@ -422,7 +434,24 @@ Agentic DOS requires defenses beyond standard infrastructure hardening (sandbox 
   coalesce rapid-fire events for the same harness and entity into at most one
   newest pending invocation; this bounds queued work, not consecutive runs
   ([ADR 0106](../ADRs/0106-serialize-agent-runs-and-coalesce-subsequent-events.md)).
-- **Tiered response based on actor trust** — write (or, for observation stages, triage) permission is already required before slash-command or issue/PR-open dispatch can trigger an agent ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)), so non-collaborators cannot trigger those paths today. One documented exception: `pull_request_target.closed` → retro is intentionally left ungated, so any PR closer — including an untrusted external author closing their own PR — can trigger retro without a permission check. This is not read-only lifecycle accounting: retro runs with a minted token that has `issues:write` and `pull_requests:write` while contents remains read-only; its post-script can file issues, comment, and apply `ready-for-triage`, which the router dispatches to triage without another actor-authorization check. An untrusted PR closer can therefore force retro inference and indirectly trigger a downstream triage run, leaving a residual DOS/injection surface. On top of the live permission check on gated paths, a reputation-based tier — accounts that are new or have thin contribution history — could still be subject to stricter rate limits or require human approval before triggering agents. This is a starting point, not a complete defense: [Threat 7](#threat-7-coordinated-inauthentic-contributions) specifically games the reputation-building process this control relies on.
+- **Tiered response based on actor trust** — write (or, for observation
+  stages, triage) permission is required before slash-command or issue/PR-open
+  dispatch can trigger an agent ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
+  GitHub PR-close and GitLab MR-close/merge retro dispatch require write-level
+  access because retro can create issues, post comments, and apply labels with
+  its repository token. GitLab also checks Developer membership in the agent
+  job before running retro. Merge-queue events follow the same actor check;
+  the queue does not grant separate authorization.
+  This closes the prior GitHub and GitLab paths where an untrusted PR or MR
+  author could trigger retro by closing their own change. GitHub CEL routing
+  failures also skip the close-event stage. An authorized closer can still
+  cause retro inference and its bounded repository writes. On top of the live
+  permission check on gated paths, a reputation-based tier — accounts that are
+  new or have thin
+  contribution history — could still be subject to stricter rate limits or
+  require human approval before triggering agents. This is a starting point,
+  not a complete defense: [Threat 7](#threat-7-coordinated-inauthentic-contributions)
+  specifically games the reputation-building process this control relies on.
 - **Input size limits** — cap the size of issue descriptions, comments, and referenced content that agents will process. Truncate or reject inputs above a threshold.
 - **Backpressure mechanisms** — when agent queue depth exceeds a threshold, new events should be rejected or deferred rather than queued, with notification to org administrators.
 - **Rate limiting per actor and per repository** — cap the number of agent-triggering events a single user can generate within a time window, and limit concurrent agent runs per repository and per organization. Note: [Threat 2](#threat-2-insider-threat--compromised-credentials) discusses rate limiting for anomaly detection of compromised credentials via behavioral patterns. DOS rate limiting is distinct — it caps event volume from any actor regardless of intent, as a resource protection mechanism rather than a compromise detection signal.
@@ -496,7 +525,17 @@ Content sanitization, input-size limits, and per-actor rate limits remain necess
 
 None of these is a complete answer. They are options with different failure modes.
 
-- **Keep intake open; keep dispatch gated.** The current platform default ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)): anyone can file; observation/mutation dispatch (triage, code, review, fix) requires write or triage permission, and slash commands and issue/PR-open dispatch are gated the same way. One documented exception: `pull_request_target.closed` → retro is intentionally ungated. Retro runs with a minted token that has `issues:write` and `pull_requests:write` while contents remains read-only; its post-script can file issues, comment, and apply `ready-for-triage`, which the router dispatches to triage without an additional actor-authorization check. Any PR closer can therefore force retro inference and indirectly trigger a downstream triage run, a residual DOS/injection surface that the gated paths do not eliminate. Maintainers still spend attention. Drive-by bug reports still arrive.
+- **Keep intake open; keep dispatch gated.** The current platform default
+  ([ADR 0054](../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)):
+  anyone can file; observation/mutation dispatch requires the stage's
+  permission threshold, and slash commands and issue/PR-open dispatch are
+  gated the same way. GitHub PR-close and GitLab MR-close/merge retro now
+  require write-level access because retro can create issues, comment, and
+  apply labels. GitLab also checks Developer membership in the agent job.
+  Merge-queue events follow the same actor check. GitHub CEL routing failures
+  skip that event instead of falling back. Any authorized closer can still cause retro
+  inference and its bounded repository writes. Maintainers still
+  spend attention. Drive-by bug reports still arrive.
 - **Contributor allowlists / attestation for PRs.** Close or ignore PRs from unattested accounts. Variants range from a maintained username file to cryptographic attestation. Trade-off: friction for legitimate first-time contributors; attested accounts are not thereby honest; a campaign that invests in getting attested has passed the gate.
 - **Behavioral and graph screening.** Tooling such as the [Microsoft Agent Governance Toolkit contributor-governance tutorial](https://microsoft.github.io/agent-governance-toolkit/tutorials/46-contributor-governance/) describes signals for repo velocity, cross-repo spray, self-promotion, thin credibility, and coordinated promotion, plus cluster detection across accounts. Trade-off: false positives against prolific good-faith contributors; privacy and bias risk; attackers adapt to published signals; this is identity-level trust, which the rest of the threat model treats as insufficient for *content*.
 - **Reputation signals in triage.** Account age, prior merge count, cross-repo history as a pre-filter before an agent reads the issue. Trade-off: new legitimate reporters look like claws; this is the trust-graduation process claws farm; it sits in tension with treating all content as untrusted regardless of source.

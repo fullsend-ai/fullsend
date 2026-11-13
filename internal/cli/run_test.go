@@ -36,6 +36,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/tracker"
@@ -362,6 +363,43 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 }
 
+func TestRunAgent_FetchOnlyHarnessRemoteResourcesNotSubset(t *testing.T) {
+	// A harness with no URL references that opts into runtime fetching
+	// (allow_runtime_fetch + allowed_remote_resources) still starts the
+	// fetch service, so its allowlist must be checked against
+	// config.yaml's — the subset check must not be gated on
+	// HasURLReferences (#7395801).
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	writePolicyFixture(t, dir)
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nallow_runtime_fetch: true\nallowed_remote_resources:\n  - \"https://disallowed.example.com/\"\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nallowed_remote_resources:\n  - \"https://allowed.example.com/\"\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validating allowed remote resources")
+	assert.Contains(t, err.Error(), `"https://disallowed.example.com/" is not covered by the org allowlist`)
+}
+
 func TestRunAgent_PerRepoConfig(t *testing.T) {
 	useFakeOpenshell(t)
 	dir := t.TempDir()
@@ -394,6 +432,7 @@ func TestRunAgent_PerRepoConfig(t *testing.T) {
 }
 
 func TestTryLoadFullsendConfig_PerRepoFallback(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(
@@ -479,6 +518,7 @@ func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
 }
 
 func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(
@@ -2470,6 +2510,107 @@ func TestSafeExpandEnv_RefusesOIDCVars(t *testing.T) {
 	assert.Equal(t, "/prefix//suffix", safeExpandEnv("/prefix/${FULLSEND_GCP_OIDC_AUTH_FILE}/suffix"))
 }
 
+// TestSandboxDeniedKeys_JiraSecrets verifies that the Jira repository secrets
+// stay declarable in env.runner but expand empty at sandbox-bound sites:
+// env.sandbox values and expanded host_files content (#9079).
+func TestSandboxDeniedKeys_JiraSecrets(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+	t.Setenv("FULLSEND_JIRA_CLIENT_ID", "process-jira-client-id")
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", "process-jira-client-secret")
+
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL", "FULLSEND_JIRA_CLIENT_ID", "FULLSEND_JIRA_CLIENT_SECRET"} {
+		value := os.Getenv(key)
+		assert.True(t, sandboxDeniedKeys[key], key)
+
+		// env.runner may still declare it.
+		assert.Equal(t, value, harnessEnvExpand(key), "env.runner must still resolve %s", key)
+		got, ok := harnessEnvLookup(key)
+		assert.True(t, ok)
+		assert.Equal(t, value, got)
+
+		// Sandbox-bound sites refuse it.
+		assert.Equal(t, "x--y", expandSandboxEnvValue("x-${"+key+"}-y", harnessEnvExpand))
+		assert.NotContains(t, shellSafeExpandEnv("export V=\"${"+key+"}\""), value)
+	}
+
+	t.Setenv("OTHER_VAR", "kept")
+	assert.Equal(t, "kept", expandSandboxEnvValue("${OTHER_VAR}", harnessEnvExpand))
+}
+
+// TestExpandRunnerEntry_OutputFileRefusesJiraSecrets verifies that
+// FULLSEND_OUTPUT_FILE, the runner entry exported verbatim into the sandbox,
+// cannot carry the Jira repository secrets from runner_env or env.runner,
+// while other runner entries still resolve them (#9079).
+func TestExpandRunnerEntry_OutputFileRefusesJiraSecrets(t *testing.T) {
+	t.Setenv("FULLSEND_JIRA_TOKEN", "process-scoped-jira-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "scoped-bot@example.com")
+
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		value := os.Getenv(key)
+		got := expandRunnerEntry("FULLSEND_OUTPUT_FILE", "x-${"+key+"}-y", harnessEnvExpand)
+		assert.Equal(t, "x--y", got)
+		assert.NotContains(t, got, value)
+		assert.Equal(t, value, expandRunnerEntry("SOME_SCRIPT_VAR", "${"+key+"}", harnessEnvExpand),
+			"other runner entries must still resolve %s", key)
+	}
+}
+
+// TestValidateThenExpand_SandboxJiraRefsWithTokenUnset runs validation
+// followed by expansion with the Jira secrets unset (the action unsets
+// FULLSEND_JIRA_TOKEN on non-Jira runs). Sandbox-bound references must
+// resolve empty without a validation error, while an env.runner reference
+// to the unset token still fails (#9079).
+func TestValidateThenExpand_SandboxJiraRefsWithTokenUnset(t *testing.T) {
+	// t.Setenv registers the restore of the original values; unset after it.
+	for _, key := range []string{"FULLSEND_JIRA_TOKEN", "FULLSEND_JIRA_EMAIL"} {
+		t.Setenv(key, "")
+		require.NoError(t, os.Unsetenv(key))
+	}
+
+	sandboxLookup := func(key string) (string, bool) {
+		if sandboxDeniedKeys[key] {
+			return "", true
+		}
+		return harnessEnvLookup(key)
+	}
+	newHarness := func() *harness.Harness {
+		return &harness.Harness{
+			RunnerEnv:      map[string]string{"FULLSEND_OUTPUT_FILE": "out-${FULLSEND_JIRA_TOKEN}.json"},
+			Env:            &harness.EnvConfig{Sandbox: map[string]string{"FOO": "${FULLSEND_JIRA_TOKEN}", "BAR": "${FULLSEND_JIRA_EMAIL}"}},
+			ValidationLoop: &harness.ValidationLoop{Schema: "/schemas/${FULLSEND_JIRA_TOKEN}.json"},
+		}
+	}
+
+	h := newHarness()
+	require.NoError(t, h.ValidateRunnerEnvSites(harnessEnvLookup, sandboxLookup))
+	h.RunnerEnv["FULLSEND_OUTPUT_FILE"] = expandRunnerEntry("FULLSEND_OUTPUT_FILE", h.RunnerEnv["FULLSEND_OUTPUT_FILE"], harnessEnvExpand)
+	for k, v := range h.Env.Sandbox {
+		h.Env.Sandbox[k] = expandSandboxEnvValue(v, harnessEnvExpand)
+	}
+	h.ValidationLoop.Schema = expandSandboxEnvValue(h.ValidationLoop.Schema, harnessEnvExpand)
+	assert.Equal(t, "out-.json", h.RunnerEnv["FULLSEND_OUTPUT_FILE"])
+	assert.Equal(t, map[string]string{"FOO": "", "BAR": ""}, h.Env.Sandbox)
+	assert.Equal(t, "/schemas/.json", h.ValidationLoop.Schema)
+
+	// An ordinary env.runner reference keeps the missing-token error.
+	runnerH := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"FULLSEND_JIRA_TOKEN": "${FULLSEND_JIRA_TOKEN}"}}}
+	err := runnerH.ValidateRunnerEnvSites(harnessEnvLookup, sandboxLookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is not set")
+}
+
+// TestValidationLoopSchemaRefusesJiraSecrets verifies that a schema path
+// cannot carry the Jira repository secrets into a file-validation error.
+func TestValidationLoopSchemaRefusesJiraSecrets(t *testing.T) {
+	const token = "process-scoped-jira-token"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+
+	schema := expandSandboxEnvValue("/missing/${FULLSEND_JIRA_TOKEN}.json", harnessEnvExpand)
+	assert.Equal(t, "/missing/.json", schema)
+	assert.NotContains(t, schema, token)
+}
+
 // TestReservedSandboxKeys_IncludesOIDCVars verifies that OIDC credential vars
 // are in reservedSandboxKeys so env.sandbox cannot inject them (#5832).
 func TestReservedSandboxKeys_IncludesOIDCVars(t *testing.T) {
@@ -3396,6 +3537,37 @@ func TestRedactFeedback_RedactsWorkflowTokenFromProcessEnv(t *testing.T) {
 	assert.Contains(t, out, "[REDACTED:"+workflowTokenEnv+"]")
 	assert.Contains(t, out, "leaked ")
 	assert.Contains(t, out, " here")
+}
+
+func TestRedactFeedback_RedactsJiraSecretsAliasedToNonSensitiveRunnerKeys(t *testing.T) {
+	const token = "jira-token-opaque-redaction-test"
+	const email = "jira-email-redaction-test@example.invalid"
+	t.Setenv("FULLSEND_JIRA_TOKEN", token)
+	t.Setenv("FULLSEND_JIRA_EMAIL", email)
+
+	runnerEnv := map[string]string{
+		"ACCOUNT_ALIAS": email,
+		"BUILD_LABEL":   token,
+	}
+	assert.False(t, sensitiveEnvKey("ACCOUNT_ALIAS"))
+	assert.False(t, sensitiveEnvKey("BUILD_LABEL"))
+
+	literalOut := redactSecretLiterals("token="+token+" email="+email, runnerEnv)
+	assert.Equal(t, "token=[REDACTED:FULLSEND_JIRA_TOKEN] email=[REDACTED:FULLSEND_JIRA_EMAIL]", literalOut)
+	assert.Contains(t, security.RuntimeSecrets(), token)
+	assert.Contains(t, security.RuntimeSecrets(), email)
+
+	const clientSecret = "jira-client-secret-redaction-test"
+	t.Setenv("FULLSEND_JIRA_CLIENT_SECRET", clientSecret)
+	assert.Equal(t, "secret=[REDACTED:FULLSEND_JIRA_CLIENT_SECRET]",
+		redactSecretLiterals("secret="+clientSecret, map[string]string{"BUILD_LABEL": clientSecret}))
+	assert.Contains(t, security.RuntimeSecrets(), clientSecret)
+
+	out := redactFeedback("token="+token+" email="+email, runnerEnv)
+	assert.NotContains(t, out, token)
+	assert.NotContains(t, out, email)
+	assert.Contains(t, out, "token=")
+	assert.Contains(t, out, " email=")
 }
 
 func TestSensitiveEnvKey(t *testing.T) {
@@ -5858,9 +6030,9 @@ func TestSetupStatusNotifier_Jira(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "")
 
 	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.NoError(t, err)
@@ -5869,7 +6041,7 @@ func TestSetupStatusNotifier_Jira(t *testing.T) {
 	assert.False(t, n.HasClientFactory(), "Jira should use a static client, not a factory")
 }
 
-func TestSetupStatusNotifier_Jira_NoBaseURL(t *testing.T) {
+func TestSetupStatusNotifier_Jira_NoJiraConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
 
@@ -5880,12 +6052,14 @@ func TestSetupStatusNotifier_Jira_NoBaseURL(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
+	// A config.yaml without tracker.jira connection settings; no
+	// environment fallback supplies them.
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte("version: \"1\"\n"), 0o600))
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
 
 	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_BASE_URL required")
+	assert.Contains(t, err.Error(), "tracker.jira.base_url")
 }
 
 func TestSetupStatusNotifier_Jira_NoToken(t *testing.T) {
@@ -5899,15 +6073,15 @@ func TestSetupStatusNotifier_Jira_NoToken(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "")
 
 	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_TOKEN required")
+	assert.Contains(t, err.Error(), "FULLSEND_JIRA_TOKEN is required")
 }
 
-func TestSetupStatusNotifier_Jira_NoEmail(t *testing.T) {
+func TestSetupStatusNotifier_Jira_NoEmailUsesServiceAccount(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
 
@@ -5918,13 +6092,15 @@ func TestSetupStatusNotifier_Jira_NoEmail(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "")
+	// FULLSEND_JIRA_EMAIL is optional: without it the token is a
+	// service-account token sent as a Bearer token.
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "")
 
-	_, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "JIRA_USER_EMAIL required")
+	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
 }
 
 func TestParseJiraKey(t *testing.T) {
@@ -5967,9 +6143,9 @@ func TestSetupStatusNotifier_Jira_UsesGitHubRunID(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "bot@example.com")
 	t.Setenv("GITHUB_RUN_ID", "98765")
 
 	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
@@ -5988,9 +6164,9 @@ func TestSetupStatusNotifier_Jira_FallsBackToSyntheticRunID(t *testing.T) {
 		trackerProject: "PROJ",
 	}
 
-	t.Setenv("JIRA_BASE_URL", "https://acme.atlassian.net")
-	t.Setenv("JIRA_TOKEN", "jira-test-token")
-	t.Setenv("JIRA_USER_EMAIL", "bot@example.com")
+	writeJiraTrackerConfigFile(t, tmpDir)
+	t.Setenv("FULLSEND_JIRA_TOKEN", "jira-test-token")
+	t.Setenv("FULLSEND_JIRA_EMAIL", "bot@example.com")
 	t.Setenv("GITHUB_RUN_ID", "") // unset
 
 	n, err := setupStatusNotifier(tmpDir, "code", "", sOpts, printer)
@@ -7326,6 +7502,107 @@ func TestMintAgentToken_NestedRemintRestoresGitHubTokenPerMint(t *testing.T) {
 	assert.Equal(t, "ghp_caller_gh_token", os.Getenv("GH_TOKEN"), "cleanup restores the pre-mint GH_TOKEN")
 	_, githubSet := os.LookupEnv("GITHUB_TOKEN")
 	assert.False(t, githubSet, "cleanup unsets GITHUB_TOKEN that was unset before the first mint")
+}
+
+// TestMintAgentToken_SwapsEnterpriseTokens covers #8952: gh reads
+// GH_ENTERPRISE_TOKEN/GITHUB_ENTERPRISE_TOKEN instead of GH_TOKEN/GITHUB_TOKEN
+// on hosts other than github.com, so the mint must set them too, and cleanup
+// must restore a pre-set value or unset a name that was unset.
+func TestMintAgentToken_SwapsEnterpriseTokens(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const minted = "ghs_enterprise_minted_token"
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: minted, ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "ghp_caller_gh_token")
+	unsetEnvForTest(t, "GITHUB_TOKEN")
+	t.Setenv("GH_ENTERPRISE_TOKEN", "ghp_caller_enterprise_token")
+	unsetEnvForTest(t, "GITHUB_ENTERPRISE_TOKEN")
+
+	printer := ui.New(io.Discard)
+	ok, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		assert.Equal(t, minted, os.Getenv(name), "%s must hold the minted token", name)
+	}
+
+	cleanup()
+	assert.Equal(t, "ghp_caller_gh_token", os.Getenv("GH_TOKEN"), "cleanup restores the pre-mint GH_TOKEN")
+	assert.Equal(t, "ghp_caller_enterprise_token", os.Getenv("GH_ENTERPRISE_TOKEN"), "cleanup restores the pre-mint GH_ENTERPRISE_TOKEN")
+	_, githubSet := os.LookupEnv("GITHUB_TOKEN")
+	assert.False(t, githubSet, "cleanup unsets GITHUB_TOKEN that was unset before the mint")
+	_, enterpriseSet := os.LookupEnv("GITHUB_ENTERPRISE_TOKEN")
+	assert.False(t, enterpriseSet, "cleanup unsets GITHUB_ENTERPRISE_TOKEN that was unset before the mint")
+}
+
+// TestRemintAgentTokenForPostScript_RefreshesEnterpriseTokens covers #8952:
+// after a remint, the enterprise token names hold the refreshed token both
+// in the process env and in a runner_env declaration, so the post-script's
+// gh calls on a GitHub Enterprise Server host use it; the remint's cleanup
+// restores the first mint's token.
+func TestRemintAgentTokenForPostScript_RefreshesEnterpriseTokens(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	const callerToken = "ghp_caller_enterprise_token"
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "ghs_original_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "ghs_refreshed_token", ExpiresAt: "2026-06-15T13:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GH_ENTERPRISE_TOKEN", callerToken)
+	t.Setenv("GITHUB_ENTERPRISE_TOKEN", callerToken)
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	ok, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", "", printer)
+	require.NoError(t, err)
+	require.True(t, ok)
+	defer cleanup()
+
+	declared := &harness.Harness{
+		Role:      "coder",
+		RunnerEnv: map[string]string{"GH_ENTERPRISE_TOKEN": os.Getenv("GH_ENTERPRISE_TOKEN")},
+	}
+	inherited := &harness.Harness{Role: "coder"}
+
+	remintCleanup, remintErr := remintAgentTokenForPostScript(context.Background(), declared, "https://mint.example.com", "", "write", printer)
+	require.NoError(t, remintErr)
+	require.Equal(t, 2, calls)
+	assert.Equal(t, "ghs_refreshed_token", declared.RunnerEnv["GH_ENTERPRISE_TOKEN"], "syncRunnerEnvTokens refreshes a declared GH_ENTERPRISE_TOKEN")
+
+	for name, h := range map[string]*harness.Harness{"declared": declared, "inherited": inherited} {
+		env := postScriptEnv(h, "")
+		for _, key := range []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+			assert.NotContains(t, env, key+"="+callerToken, "%s: the caller's %s must not reach the post-script", name, key)
+			assert.Equal(t, "ghs_refreshed_token", envLast(env, key), "%s: post-script %s is the freshly minted token", name, key)
+		}
+	}
+
+	remintCleanup()
+	assert.Equal(t, "ghs_original_token", os.Getenv("GH_ENTERPRISE_TOKEN"), "remintCleanup restores the first mint's GH_ENTERPRISE_TOKEN")
+	assert.Equal(t, "ghs_original_token", os.Getenv("GITHUB_ENTERPRISE_TOKEN"), "remintCleanup restores the first mint's GITHUB_ENTERPRISE_TOKEN")
+
+	cleanup()
+	assert.Equal(t, callerToken, os.Getenv("GH_ENTERPRISE_TOKEN"), "cleanup restores the pre-mint GH_ENTERPRISE_TOKEN")
+	assert.Equal(t, callerToken, os.Getenv("GITHUB_ENTERPRISE_TOKEN"), "cleanup restores the pre-mint GITHUB_ENTERPRISE_TOKEN")
 }
 
 // TestMintAgentToken_PreservesWorkflowTokenFromGitHubToken covers #8530: on
@@ -9207,7 +9484,7 @@ func TestRunAgent_CancelledReviewFinalizesBeforeSandboxTeardown(t *testing.T) {
 		}
 	}))
 	done := make(chan error, 1)
-	repoDir := t.TempDir()
+	repoDir := newShallowTestRepo(t)
 	go func() {
 		done <- runAgent(ctx, "review", dir, "", repoDir, "", nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{
 			statusRepo:    "org/my-repo",
@@ -9280,7 +9557,7 @@ func TestRunAgent_CancelledReviewLeavesCommentPendingWhenHeadLookupFails(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	repoDir := t.TempDir()
+	repoDir := newShallowTestRepo(t)
 	go func() {
 		done <- runAgent(ctx, "review", dir, "", repoDir, "", nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{
 			statusRepo:    "org/my-repo",
@@ -9318,6 +9595,43 @@ func TestRunAgent_CancelledReviewLeavesCommentPendingWhenHeadLookupFails(t *test
 	assert.Contains(t, comments[0].Body, "fullsend:agent-status:run-42")
 	assert.NotContains(t, comments[0].Body, "fullsend:status:terminal")
 	assert.Empty(t, fc.UpdatedComments, "failed head lookup must not terminalize the comment without guidance")
+}
+
+// A child of a read-only base reaches the read-only step, and a child that
+// says readonly_repo: false skips it (#7360).
+func TestRunAgent_ReadonlyRepoFromBase(t *testing.T) {
+	for _, tc := range []struct {
+		name, child string
+		want        bool
+	}{
+		{"child is silent", "base: review-base.yaml\n", true},
+		{"child says false", "base: review-base.yaml\nreadonly_repo: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useFakeOpenshellProviders(t)
+			t.Setenv("FULLSEND_RUNTIME", "dummy")
+			dir := t.TempDir()
+			for path, content := range map[string]string{
+				"agents/review.md":         "You are a review agent.",
+				"harness/review-base.yaml": "agent: agents/review.md\nrole: review\npolicy: policies/base.yaml\nreadonly_repo: true\n",
+				"harness/review.yaml":      tc.child,
+				"policies/base.yaml":       "version: 1\n",
+				"config.yaml":              "agents:\n  - harness/review.yaml\n",
+			} {
+				file := filepath.Join(dir, path)
+				require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+				require.NoError(t, os.WriteFile(file, []byte(content), 0o644))
+			}
+
+			var buf bytes.Buffer
+			// The run fails later, when the dummy runtime finds no scenario; only the steps before that matter.
+			_ = runAgent(context.Background(), "review", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+
+			out := buf.String()
+			require.Contains(t, out, "Scanning target repo context files", "the run must get past the read-only step")
+			assert.Equal(t, tc.want, strings.Contains(out, "Target repo set to read-only"))
+		})
+	}
 }
 
 func TestBackendFromConfigFile_MissingUsesDefault(t *testing.T) {
@@ -10400,4 +10714,384 @@ func TestBuiltInGitHubReviewCancellationGuidance(t *testing.T) {
 			assert.Equal(t, tt.wantSuperseded, strings.Contains(body, "superseded by a newer commit"), body)
 		})
 	}
+}
+
+// captureGit runs git in dir with inherited GIT_* variables removed and
+// ambient hooks and system config disabled. Inherited GIT_DIR, GIT_WORK_TREE,
+// GIT_INDEX_FILE, or GIT_CONFIG_COUNT would otherwise redirect fixture writes.
+func captureGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			env = append(env, kv)
+		}
+	}
+	cmd.Env = append(env,
+		"HOME="+t.TempDir(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v: %s", args, out)
+	return strings.TrimSpace(string(out))
+}
+
+// captureGitTry runs a fixture Git command and returns its error, for probing
+// optional Git features without failing the test.
+func captureGitTry(t *testing.T, dir string, args ...string) error {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			env = append(env, kv)
+		}
+	}
+	cmd.Env = append(env,
+		"HOME="+t.TempDir(),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	return cmd.Run()
+}
+
+// hostGitAtLeast is a test gate on the host Git version, not production
+// version policy.
+func hostGitAtLeast(t *testing.T, major, minor int) bool {
+	t.Helper()
+	out, err := exec.Command("git", "--version").Output()
+	require.NoError(t, err)
+	fields := strings.Fields(string(out))
+	require.GreaterOrEqual(t, len(fields), 3, "unexpected git version output: %s", out)
+	var gotMajor, gotMinor int
+	_, err = fmt.Sscanf(fields[2], "%d.%d", &gotMajor, &gotMinor)
+	require.NoError(t, err, "unexpected git version output: %s", out)
+	return gotMajor > major || (gotMajor == major && gotMinor >= minor)
+}
+
+// useFakeGitVersion puts a Git wrapper first on PATH that reports version for
+// --version and delegates every other command to the real Git.
+func useFakeGitVersion(t *testing.T, version string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	realGit, err = filepath.Abs(realGit)
+	require.NoError(t, err)
+
+	binDir := t.TempDir()
+	script := fmt.Sprintf(`#!/bin/sh
+for arg in "$@"; do
+  if [ "$arg" = "--version" ]; then
+    echo "git version %s"
+    exit 0
+  fi
+done
+exec %q "$@"
+`, version, realGit)
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+}
+
+// newShallowTestRepo creates a three-commit repository for capture fixtures.
+func newShallowTestRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	captureGit(t, dir, "init", "--quiet", "--initial-branch=main", ".")
+	captureGit(t, dir, "config", "user.name", "Test")
+	captureGit(t, dir, "config", "user.email", "test@example.invalid")
+	captureGit(t, dir, "config", "commit.gpgsign", "false")
+	for _, name := range []string{"one", "two", "three"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name+".txt"), []byte(name+"\n"), 0o644))
+		captureGit(t, dir, "add", name+".txt")
+		captureGit(t, dir, "commit", "--quiet", "-m", name)
+	}
+	return dir
+}
+
+func TestCaptureRepositorySnapshot(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	t.Run("full history has no marker", func(t *testing.T) {
+		snapshot, err := captureRepositorySnapshot(newShallowTestRepo(t))
+		require.NoError(t, err)
+		assert.False(t, snapshot.Shallow.Present)
+		assert.Nil(t, snapshot.Shallow.Data)
+		assert.True(t, snapshot.IsCheckout)
+	})
+
+	t.Run("shallow clone is captured and disappears after unshallow", func(t *testing.T) {
+		src := newShallowTestRepo(t)
+		clone := filepath.Join(t.TempDir(), "clone")
+		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+src, clone)
+
+		want, err := os.ReadFile(filepath.Join(clone, ".git", "shallow"))
+		require.NoError(t, err)
+		snapshot, err := captureRepositorySnapshot(clone)
+		require.NoError(t, err)
+		require.True(t, snapshot.Shallow.Present)
+		assert.Equal(t, want, snapshot.Shallow.Data)
+		assert.True(t, snapshot.IsCheckout)
+		assert.Equal(t, "1", captureGit(t, clone, "rev-list", "--count", "HEAD"))
+
+		// A pre-script may legitimately unshallow the host checkout before
+		// upload; the captured state must then carry no boundary.
+		captureGit(t, clone, "fetch", "--quiet", "--unshallow")
+		snapshot, err = captureRepositorySnapshot(clone)
+		require.NoError(t, err)
+		assert.False(t, snapshot.Shallow.Present)
+		assert.True(t, snapshot.IsCheckout)
+		assert.Equal(t, "3", captureGit(t, clone, "rev-list", "--count", "HEAD"))
+	})
+
+	t.Run("inherited selectors cannot choose the shallow boundary", func(t *testing.T) {
+		decoySrc := newShallowTestRepo(t)
+		require.NoError(t, os.WriteFile(filepath.Join(decoySrc, "decoy.txt"), []byte("decoy\n"), 0o644))
+		captureGit(t, decoySrc, "add", "decoy.txt")
+		captureGit(t, decoySrc, "commit", "--quiet", "-m", "decoy")
+		decoy := filepath.Join(t.TempDir(), "decoy")
+		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+decoySrc, decoy)
+		decoyMarker, err := os.ReadFile(filepath.Join(decoy, ".git", "shallow"))
+		require.NoError(t, err)
+
+		trusted := filepath.Join(t.TempDir(), "trusted")
+		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+newShallowTestRepo(t), trusted)
+		trustedMarker, err := os.ReadFile(filepath.Join(trusted, ".git", "shallow"))
+		require.NoError(t, err)
+		require.NotEqual(t, decoyMarker, trustedMarker,
+			"fixtures must have distinct boundaries for this test to discriminate")
+
+		t.Setenv("GIT_DIR", filepath.Join(decoy, ".git"))
+		t.Setenv("GIT_WORK_TREE", decoy)
+		t.Setenv("GIT_COMMON_DIR", filepath.Join(decoy, ".git"))
+
+		snapshot, err := captureRepositorySnapshot(trusted)
+		require.NoError(t, err)
+		require.True(t, snapshot.Shallow.Present)
+		assert.Equal(t, trustedMarker, snapshot.Shallow.Data,
+			"inherited selectors must not substitute another repository's boundary")
+		assert.True(t, snapshot.IsCheckout)
+
+		// Unshallowing the trusted checkout must clear its boundary even while
+		// the inherited selectors name a shallow repository.
+		captureGit(t, trusted, "fetch", "--quiet", "--unshallow")
+		snapshot, err = captureRepositorySnapshot(trusted)
+		require.NoError(t, err)
+		assert.False(t, snapshot.Shallow.Present)
+		assert.Nil(t, snapshot.Shallow.Data)
+		assert.True(t, snapshot.IsCheckout)
+	})
+
+	t.Run("empty marker is distinct from absence", func(t *testing.T) {
+		repo := newShallowTestRepo(t)
+		require.NoError(t, os.WriteFile(filepath.Join(repo, ".git", "shallow"), nil, 0o644))
+		snapshot, err := captureRepositorySnapshot(repo)
+		require.NoError(t, err)
+		assert.True(t, snapshot.Shallow.Present)
+		assert.Empty(t, snapshot.Shallow.Data)
+		assert.True(t, snapshot.IsCheckout)
+	})
+
+	t.Run("linked worktree gitfile is unsupported", func(t *testing.T) {
+		repo := newShallowTestRepo(t)
+		wt := filepath.Join(t.TempDir(), "wt")
+		captureGit(t, repo, "worktree", "add", "--quiet", wt, "-b", "wt-branch")
+
+		snapshot, err := captureRepositorySnapshot(wt)
+		require.Error(t, err)
+		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
+	})
+
+	t.Run("plain directory without .git is accepted", func(t *testing.T) {
+		snapshot, err := captureRepositorySnapshot(t.TempDir())
+		require.NoError(t, err)
+		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
+	})
+
+	t.Run("plain directory does not capture a parent shallow checkout", func(t *testing.T) {
+		src := newShallowTestRepo(t)
+		parent := filepath.Join(t.TempDir(), "parent")
+		captureGit(t, t.TempDir(), "clone", "--quiet", "--depth=1", "file://"+src, parent)
+		plain := filepath.Join(parent, "plain")
+		require.NoError(t, os.Mkdir(plain, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(plain, "file.txt"), []byte("content\n"), 0o644))
+
+		snapshot, err := captureRepositorySnapshot(plain)
+		require.NoError(t, err)
+		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot,
+			"plain input must not inherit the parent checkout's shallow boundary")
+	})
+
+	t.Run("bare repository root is rejected", func(t *testing.T) {
+		bare := filepath.Join(t.TempDir(), "bare.git")
+		captureGit(t, t.TempDir(), "init", "--quiet", "--bare", bare)
+
+		snapshot, err := captureRepositorySnapshot(bare)
+		require.Error(t, err)
+		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
+	})
+
+	t.Run("broken git metadata fails closed", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.Mkdir(filepath.Join(dir, ".git"), 0o755))
+		_, err := captureRepositorySnapshot(dir)
+		require.Error(t, err)
+	})
+
+	t.Run("non-regular marker is rejected", func(t *testing.T) {
+		repo := newShallowTestRepo(t)
+		require.NoError(t, os.Mkdir(filepath.Join(repo, ".git", "shallow"), 0o755))
+		_, err := captureRepositorySnapshot(repo)
+		require.Error(t, err)
+	})
+
+	t.Run("non-directory repo path fails closed", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "repo")
+		require.NoError(t, os.WriteFile(path, []byte("x\n"), 0o644))
+		_, err := captureRepositorySnapshot(path)
+		require.Error(t, err)
+	})
+
+	t.Run("unreadable marker fails closed", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("root bypasses permission checks")
+		}
+		repo := newShallowTestRepo(t)
+		marker := filepath.Join(repo, ".git", "shallow")
+		require.NoError(t, os.WriteFile(marker, []byte("0123456789012345678901234567890123456789\n"), 0o644))
+		require.NoError(t, os.Chmod(marker, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(marker, 0o644) })
+
+		_, err := captureRepositorySnapshot(repo)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "reading git shallow metadata")
+	})
+}
+
+func TestCaptureRepositorySnapshot_Reftable(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	// Reftable storage is available from Git 2.45; older hosts skip.
+	if err := captureGitTry(t, t.TempDir(), "init", "--quiet", "--ref-format=reftable", "--initial-branch=main", "."); err != nil {
+		t.Skip("git does not support --ref-format=reftable")
+	}
+
+	// newReftableTestRepo creates a two-commit reftable repository with a
+	// replacement ref, so a capture must leave both the ref backend config and
+	// the ordinary ref untouched.
+	newReftableTestRepo := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		captureGit(t, dir, "init", "--quiet", "--initial-branch=main", "--ref-format=reftable", ".")
+		captureGit(t, dir, "config", "user.name", "Test")
+		captureGit(t, dir, "config", "user.email", "test@example.invalid")
+		captureGit(t, dir, "config", "commit.gpgsign", "false")
+		for _, name := range []string{"one", "two"} {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, name+".txt"), []byte(name+"\n"), 0o644))
+			captureGit(t, dir, "add", name+".txt")
+			captureGit(t, dir, "commit", "--quiet", "-m", name)
+		}
+		captureGit(t, dir, "replace", "HEAD~1", "HEAD")
+		return dir
+	}
+
+	t.Run("reftable checkout is captured read-only", func(t *testing.T) {
+		if !hostGitAtLeast(t, 2, 53) {
+			t.Skip("host git predates reftable capture support")
+		}
+		repo := newReftableTestRepo(t)
+		assert.Equal(t, "reftable", captureGit(t, repo, "config", "--local", "--get", "extensions.refStorage"))
+		configBefore, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+		require.NoError(t, err)
+		refsBefore := captureGit(t, repo, "for-each-ref", "refs/replace")
+		require.NotEmpty(t, refsBefore)
+
+		snapshot, err := captureRepositorySnapshot(repo)
+		require.NoError(t, err)
+		assert.False(t, snapshot.Shallow.Present)
+		assert.True(t, snapshot.IsCheckout)
+
+		configAfter, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+		require.NoError(t, err)
+		assert.Equal(t, configBefore, configAfter)
+		assert.Equal(t, refsBefore, captureGit(t, repo, "for-each-ref", "refs/replace"))
+	})
+
+	t.Run("reftable input is rejected when host git reports 2.52", func(t *testing.T) {
+		repo := newReftableTestRepo(t)
+		useFakeGitVersion(t, "2.52.0")
+		configBefore, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+		require.NoError(t, err)
+		refsBefore := captureGit(t, repo, "for-each-ref", "refs/replace")
+
+		snapshot, err := captureRepositorySnapshot(repo)
+		require.Error(t, err)
+		assert.Equal(t, sandbox.RepositorySnapshot{}, snapshot)
+
+		configAfter, err := os.ReadFile(filepath.Join(repo, ".git", "config"))
+		require.NoError(t, err)
+		assert.Equal(t, configBefore, configAfter)
+		assert.Equal(t, refsBefore, captureGit(t, repo, "for-each-ref", "refs/replace"))
+	})
+
+	t.Run("file-based checkout is accepted when host git reports 2.52", func(t *testing.T) {
+		repo := newShallowTestRepo(t)
+		useFakeGitVersion(t, "2.52.0")
+
+		snapshot, err := captureRepositorySnapshot(repo)
+		require.NoError(t, err)
+		assert.False(t, snapshot.Shallow.Present)
+		assert.True(t, snapshot.IsCheckout)
+	})
+}
+
+func TestCaptureGitIgnoresInheritedGitEnv(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	decoy := newShallowTestRepo(t)
+	require.NoError(t, os.WriteFile(filepath.Join(decoy, "decoy.txt"), []byte("decoy\n"), 0o644))
+	captureGit(t, decoy, "add", "decoy.txt")
+	captureGit(t, decoy, "commit", "--quiet", "-s", "-m", "decoy")
+
+	decoyHead := captureGit(t, decoy, "rev-parse", "HEAD")
+	decoyConfigPath := filepath.Join(decoy, ".git", "config")
+	decoyConfig, err := os.ReadFile(decoyConfigPath)
+	require.NoError(t, err)
+	decoyIndexPath := filepath.Join(decoy, ".git", "index")
+	decoyIndex, err := os.ReadFile(decoyIndexPath)
+	require.NoError(t, err)
+
+	decoyGlobal := filepath.Join(t.TempDir(), "global.gitconfig")
+	require.NoError(t, os.WriteFile(decoyGlobal, []byte("[user]\n\tname = Decoy\n"), 0o644))
+
+	t.Setenv("GIT_DIR", filepath.Join(decoy, ".git"))
+	t.Setenv("GIT_WORK_TREE", decoy)
+	t.Setenv("GIT_INDEX_FILE", decoyIndexPath)
+	t.Setenv("GIT_CONFIG_GLOBAL", decoyGlobal)
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "user.name")
+	t.Setenv("GIT_CONFIG_VALUE_0", "Injected")
+
+	repo := newShallowTestRepo(t)
+	_, err = os.Stat(filepath.Join(repo, ".git", "config"))
+	require.NoError(t, err)
+	assert.Equal(t, "3", captureGit(t, repo, "rev-list", "--count", "HEAD"))
+	assert.Equal(t, "Test", captureGit(t, repo, "log", "-1", "--format=%an"))
+
+	decoyConfigAfter, err := os.ReadFile(decoyConfigPath)
+	require.NoError(t, err)
+	assert.Equal(t, decoyConfig, decoyConfigAfter)
+	decoyIndexAfter, err := os.ReadFile(decoyIndexPath)
+	require.NoError(t, err)
+	assert.Equal(t, decoyIndex, decoyIndexAfter)
+	assert.Equal(t, "4", captureGit(t, decoy, "rev-list", "--count", "HEAD"))
+	assert.Equal(t, decoyHead, captureGit(t, decoy, "rev-parse", "HEAD"))
 }

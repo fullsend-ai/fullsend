@@ -515,7 +515,7 @@ Key patterns to note:
 - **`host_files`** copy credentials from the trusted runner into the sandbox. `expand: true` resolves `${VAR}` references before copying.
 - **`validation_loop.schema`** references the JSON schema file directly — the validation script checks agent output against it.
 - **`overlays`** uses CEL `when` expressions to conditionally apply scripts, skills, providers, openshell, host_files, and env vars. Resolution merges all matching entries in order: every entry whose `when` evaluates to true is applied, with later matches taking precedence over earlier ones. The CEL environment exposes `event` (the triggering event), `runtime.forge` (the effective forge platform), and `config` (per-repo config from config.yaml). When running without an event context (e.g., `fullsend run` or `fullsend lock`), `event` is an empty map — use `has(event.source)` to guard event field access: `has(event.source) && event.source.system == "jira"` instead of just `event.source.system == "jira"` to avoid "no such key" errors.
-- **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Harness Field Reference — Referencing resources](../../reference/harness-reference.md#referencing-resources-local-vs-remote)) or copy it locally.
+- **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Harness Field Reference — Referencing resources](../../reference/harness-reference.md#referencing-resources-local-vs-remote)) or copy it locally. The variables it delivers reach the sandbox through harness configuration rather than runner guarantee — they are catalogued as `harness_delivered` in the [sandbox environment contract](../../normative/sandbox-env/v1/README.md).
 
 For the complete list of harness fields, see the [Harness Field Reference](../../reference/harness-reference.md).
 
@@ -1081,9 +1081,18 @@ stay readable in `/proc/<pid>/environ` for the whole run. See
 On GitLab, skip the object. Add each secret as its own masked CI/CD variable
 (for example `JIRA_API_TOKEN`) and reference it from `env.runner` the same way.
 The rules above (refused names, host side only, overlays) apply to names in the
-GitHub object only; GitLab behaves as before, and every CI/CD variable in the
-job except `JIRA_TOKEN`, `JIRA_USER_EMAIL` and the OTLP headers still reaches
-host-side scripts.
+GitHub object only. `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+`FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` are not
+inherited by host-side scripts; declare either value in `env.runner` when a
+trusted script needs it. This is the same host-script rule on GitHub and
+GitLab. On every forge, references to these values in `env.sandbox`, expanded
+`host_files`, `FULLSEND_OUTPUT_FILE`, and provider config or credential values
+resolve empty. See
+[Jira integration](jira-integration.md#jira-repository-secrets-in-agent-runs)
+for details. Other CI/CD variables still reach host-side scripts except
+`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`,
+`FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`,
+`FULLSEND_JIRA_CLIENT_SECRET` and the OTLP headers.
 
 ### Harness composition with `base`
 
@@ -1105,7 +1114,7 @@ Base chains support up to 5 levels (`MaxBaseDepth` in `internal/harness/compose.
 
 > **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes or enabling runtime fetching in the child.
 
-> **Config-level fallback:** Separately from base-harness inheritance, the `allowed_remote_resources` from the repository-local configuration acts as a fallback for all URL resolution. URLs trusted at the config level are accepted even when the child harness omits the field. This is a distinct trust layer from base composition — the config-level list is set by repository administrators, not by base harness authors.
+> **Config-level fallback:** Separately from base-harness inheritance, the `allowed_remote_resources` from the repository-local configuration acts as a fallback for all URL resolution. URLs trusted at the config level are accepted even when the child harness omits the field. It is also the ceiling for the harness-level list: whenever the harness's runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration), every harness-level prefix must be covered by the config-level allowlist (the config-level list plus the built-in default prefixes; an explicit `allowed_remote_resources: []` in the config stays deny-all and excludes the defaults), and `fullsend run`, `fullsend lint` and `fullsend lock` fail naming an uncovered prefix and fail closed without a repository config (`config.yaml` or `config.base.yaml`). This is a distinct trust layer from base composition — the config-level list is set by repository administrators, not by base harness authors.
 
 To configure an existing agent without building from scratch, see [Configuring Agent Behavior](customizing-agents.md#configuration-with-base-composition).
 

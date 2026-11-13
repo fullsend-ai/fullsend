@@ -15,7 +15,7 @@ Playwright or stored sessions.
 
 Before running e2e locally or in CI:
 
-1. **Pool orgs** (`halfsend-01` … `halfsend-12`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
+1. **Pool orgs** (`halfsend-01` … `halfsend-22`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
 2. **Mint** deployed with `e2e` role enrolled and the requesting repository `fullsend-ai/fullsend` enrolled in `PER_REPO_WIF_REPOS` (or the mint explicitly in public mode, `PER_REPO_WIF_REPOS=*`)
 3. **CI only:** pool orgs with `FULLSEND_FOREIGN_E2E_REPOS` authorizing `fullsend-ai/fullsend`
 4. **Local only:** `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN`) with admin access on pool orgs
@@ -76,7 +76,7 @@ Optional environment variables:
 Behaviour tests use the pool orgs (for `ENVIRONMENT=dev`) and install fullsend per-repo via `fullsend github setup`. When `ENVIRONMENT=stage`, the suite uses the `halfsend` org with a durable CF Worker mint instead of a pool org. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
 The behaviour and playback suites lease `(org, test-repo-NN)` slots across the
-pool orgs (`halfsend-01` … `halfsend-12` for DEV, or `halfsend` for STAGE)
+pool orgs (`halfsend-01` … `halfsend-22` for DEV, or `halfsend` for STAGE)
 instead of locking a whole org; see
 [behaviour-testing.md](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver).
 Other e2e tests still acquire an exclusive lock on one pool org — see
@@ -144,7 +144,7 @@ One-time enrollment for all pool orgs (idempotent). Enroll the singular `test-re
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
-for i in $(seq -w 1 12); do
+for i in $(seq -w 1 22); do
   go run ./cmd/fullsend mint enroll "halfsend-${i}/test-repo" \
     --project="$GCP_PROJECT" --region=us-central1
   for j in $(seq -w 1 12); do
@@ -192,7 +192,7 @@ go run ./cmd/fullsend admin foreign list --org halfsend-01
 # expect e2e → fullsend-ai/fullsend
 ```
 
-Existing pool orgs (`halfsend-01` … `halfsend-12`) need a one-time operator pass: install the e2e app (if missing) and run:
+Existing pool orgs (`halfsend-01` … `halfsend-22`) need a one-time operator pass: install the e2e app (if missing) and run:
 
 ```bash
 go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
@@ -309,6 +309,16 @@ a closed team.
 | `halfsend-10` | `halfsend-10/mint-status` |
 | `halfsend-11` | `halfsend-11/mint-status` |
 | `halfsend-12` | `halfsend-12/mint-status` |
+| `halfsend-13` | `halfsend-13/mint-status` |
+| `halfsend-14` | `halfsend-14/mint-status` |
+| `halfsend-15` | `halfsend-15/mint-status` |
+| `halfsend-16` | `halfsend-16/mint-status` |
+| `halfsend-17` | `halfsend-17/mint-status` |
+| `halfsend-18` | `halfsend-18/mint-status` |
+| `halfsend-19` | `halfsend-19/mint-status` |
+| `halfsend-20` | `halfsend-20/mint-status` |
+| `halfsend-21` | `halfsend-21/mint-status` |
+| `halfsend-22` | `halfsend-22/mint-status` |
 
 The STAGE and numbered test mints take these values as
 `--status-github-group=ORG/mint-status`. The behaviour suite's CF mint
@@ -387,9 +397,20 @@ this repository's workflow runs for the
 [busy check](#change-control)). Run it again after any of these
 changes:
 
-- **Pool change:** a new pool org, or a different `DefaultPoolSize`
-  (`pkg/behaviourtest/drivers/install/driver.go`). Edit `POOL_ORGS` or
-  `POOL_REPOS` at the top of the script.
+- **Pool change:** a new pool org (`DevPoolOrgCount` in
+  `pkg/behaviourtest/drivers/install/slotpool.go`), or a different
+  `DefaultPoolSize` (`pkg/behaviourtest/drivers/install/driver.go`).
+  1. Edit `POOL_ORG_COUNT` or `POOL_REPO_COUNT` at the top of the script to
+     match; `hack/setup-e2e-inference-gateway_test.sh` fails while they
+     differ.
+  2. For a new org, add its line to `POOL_ORG_IDS`, with the id from
+     `gh api orgs/<org> --jq .id`. Only the highest-numbered org can be
+     removed: lower the count, drop its line, and deploy before the org is
+     deleted or renamed. Otherwise every run stops at the org id check.
+  3. Run the script with `--dry-run`: the pool regex is a frozen part of the
+     config, so it shows the diff and exits 4.
+  4. Run it with `--allow-frozen-change`, outside a release window and with
+     the maintainers told first.
 - **agentgateway bump:** change `AGW_VERSION`, and `AGW_DIGEST` to the
   release's multi-arch index digest. The version in the config header is
   masked, so a bump passes the frozen-path diff and needs no
@@ -532,6 +553,11 @@ script also waits for release runs, so nothing changes while a release is
 cut. So a run that changes the gateway goes through three checks. A run that
 changes nothing skips them and is still a no-op.
 
+Every setup run, a no-op or `--dry-run` included, checks that each org in
+`POOL_ORG_IDS` still has its pinned id on GitHub before it renders the
+config. A different id or a failed lookup stops the run before any change.
+`--print-config` and `--delete` skip the check.
+
 1. **Frozen-path diff.** Before it changes anything, the script renders the
    new config and compares it with the live config: the config secret
    version that the revision getting the traffic started with. A revision
@@ -543,14 +569,18 @@ changes nothing skips them and is still a no-op.
    about it, but it is not the baseline. If the traffic is split across
    revisions, the script stops before it changes anything. The comparison
    masks only the changes that are allowed:
-   - extra allowlist repositories after the pool list, such as temporary
-     repositories added to the live config by hand;
+   - an exact-name list of extra repositories right after the pool rule,
+     such as temporary repositories added to the live config by hand:
+     `<pool rule> || jwt.repository in ["owner/name"]` in an allow rule, and
+     `default(jwt.repository, "") in ["owner/name"]` in a rate-limit key.
+     These match by name only, without the org id pin, so remove them when
+     the run is done. A changed regex, org id or pool count stays visible;
    - the time-boxed `REAL_KEY_HASH` entry, when it may call exactly one
      real model, and its allow rule on that model;
    - the tokens-per-minute cap, only with `--allow-tpm-change`.
 
    Any other difference refuses the deploy with exit 4 and prints the masked
-   diff. That covers the `echo` and `echo-denied` models, the pool list, the
+   diff. That covers the `echo` and `echo-denied` models, the pool regex, the
    `jwtAuth` and `apiKey` modes, the echo key hash, the requests-per-minute
    cap, the Vertex models, and the real key's rule on `echo` or
    `echo-denied`. To make such a change, pass
@@ -649,12 +679,25 @@ The generated config (print it with `--print-config`):
   `oidc` and `api-key` auth modes. Do not copy it to production. A
   production OIDC gateway should keep the strict `jwtAuth` recommended by
   [ADR 0137](../../ADRs/0137-inference-gateway-credential-route.md).
-- authorises each model with an exact-match list of `jwt.repository` values.
-  The list covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
-  `halfsend-12` and in the STAGE org `halfsend`: 156 repositories. It
-  matches names, so keep the pool orgs registered: whoever owns a pool org
-  name can call the gateway. A model that a configured key may call also
-  admits that key's `apiKey.purpose`.
+- authorises each model with one anchored regular expression on the
+  calling repository's owner id and name,
+  `(jwt.repository_owner_id + "/" + jwt.repository).matches("<regex>")`, and
+  uses the same rule for the pool's rate-limit bucket. The script builds the
+  regex from `POOL_ORG_IDS` and `POOL_REPO_COUNT`:
+  `^(273231846/halfsend|286139071/halfsend-01|...|353053001/halfsend-22)/test-repo-(01|02|...|12)$`.
+  That covers `test-repo-01` to `test-repo-12` in `halfsend-01` to
+  `halfsend-22` and the STAGE org `halfsend`: 276 repositories.
+  - Each org name is paired with its GitHub id. Ids are never reused, so an
+    org re-created under a pool name, after a delete or a rename, is
+    refused.
+  - Each number is an explicit alternative, never `[0-9]{2}` or a range, so
+    `halfsend-23` or `test-repo-13` is refused.
+  - Each rule is about 600 bytes and grows by about 20 bytes per org; the
+    whole config is about 8 KB. The script refuses a rendered config over
+    Secret Manager's 65,536-byte limit for a secret version before it
+    changes anything.
+- admits a configured key's `apiKey.purpose` on each model that key may
+  call.
 - strips `x-api-key` from every request it sends upstream.
 - caps each real model at 60 requests and 200,000 tokens per minute for
   each kind of caller: the pool shares one budget per model, each configured
@@ -723,14 +766,17 @@ script changes no workflow files; the wiring is:
    call, not whether it can be read. To keep fork pull requests away from
    these secrets, add an explicit condition in the base workflow.
 
-CI declares only the gateway capabilities that reach no real model. They
-are part of the `BEHAVIOUR_CAPABILITIES` default in the `Makefile`, which
-`make behaviour-test` and the `behaviour` job use:
+Of the gateway capabilities, CI declares only the ones that reach no real
+model. They are part of the `BEHAVIOUR_CAPABILITIES` default in the
+`Makefile`, which `make behaviour-test` and the `behaviour` job use. The
+default also declares `runner-secret-overlay-guard`, which needs no gateway
+but appears in the on-demand list below:
 
 | Capability | Scenarios | Declared in CI |
 |------------|-----------|----------------|
 | `inference-gateway` | `features/runtime/inference-gateway.feature`: one dummy-runtime scenario covering the placeholder, credential custody on `echo`, egress scope and the `echo-denied` refusal | Yes |
 | `inference-gateway-api-key` | `features/runtime/inference-gateway-api-key.feature` (dummy runtime, echo-only key) | Yes |
+| `runner-secret-overlay-guard` | `features/dispatch/runner-secret-overlay-guard.feature`: the runner-secret overlay guard's allowed and refused scenarios (no gateway) | Yes |
 | `runtime-pi-gateway` | `features/runtime/pi-gateway.feature` (pi through the gateway to a real model, `claude-haiku-5-5`) | No: costs a real model run |
 | `runtime-codex-gateway` | `features/runtime/codex-gateway.feature` (codex through the gateway to a real model, `gpt-oss-120b`, on Responses) | No: costs a real model run |
 | `runtime-claude-gateway` | `features/runtime/claude-gateway.feature` (Claude Code through the gateway to a real model, `claude-haiku-5-5`, in the `oidc` mode) | No: costs a real model run |
@@ -741,7 +787,7 @@ and pass the full capability list. This replaces the `Makefile` default
 rather than adding to it:
 
 ```bash
-BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,runtime-codex-gateway,runtime-claude-gateway,inference-gateway-reseed \
+BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runner-secret-overlay-guard,runtime-pi-gateway,runtime-codex-gateway,runtime-claude-gateway,inference-gateway-reseed \
   make behaviour-test
 ```
 
@@ -772,66 +818,87 @@ checks first and stops without deleting anything when:
 
 ## CI authorization
 
-Pull requests trigger e2e via `pull_request_target` in
-[`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) so fork PRs can
-use repository secrets. Because that exposes credentials to untrusted code, a
-**gate job** runs first (see workflow comments for why it is a separate job).
+Pull requests trigger e2e through
+[`.github/workflows/e2e.yml`](../../../.github/workflows/e2e.yml) without
+`pull_request_target`, which GitHub
+[blocks by default](https://github.blog/changelog/2026-11-02-pull_request_target-blocked-by-default-december-2/)
+on public repositories from 2026-12-02
+([#9245](https://github.com/fullsend-ai/fullsend/issues/9245)). The behaviour and playback suites run PR-head code
+with repository secrets, so a **gate job** authorizes every PR run first (see
+workflow comments for why it is a separate job).
+
+| Path | Trigger | What runs |
+|---|---|---|
+| Same-repository PR | `pull_request` (opened, synchronize, reopened) | The gate authorizes the author, then `behaviour` and `playback` run on the PR head with secrets |
+| Fork PR | `pull_request` | Nothing with secrets: fork `pull_request` runs get no secrets, so `behaviour` and `playback` are skipped |
+| Fork PR after `/ok-to-test <sha>` | `issue_comment` | The gate authorizes the commenter and the sha the comment names, then the suites run on that sha and report checks named `behaviour` and `playback` on it |
+| Merge queue, push to `main`, `workflow_dispatch` | unchanged | No gate |
+
+A same-repository `pull_request` run takes `e2e.yml` from the PR merge ref, not
+from `main`. That widens nothing: only users with write access can push a
+branch to this repository.
 
 ### Who runs automatically
 
-E2E tests run without maintainer action when the PR author has **write
-access or higher** (`write`, `maintain`, or `admin` on the base repo) or is an
-allowed trusted bot. The gate verifies this using the collaborator permission
-API rather than `author_association`, ensuring contributors with read or
-triage roles cannot trigger credentialed CI runs automatically.
+E2E tests run without maintainer action for **same-repository** PRs whose
+author has **write access or higher** (`write`, `maintain`, or `admin` on the
+base repo) or is an allowed trusted bot. The gate verifies this using the
+collaborator permission API rather than `author_association`, ensuring
+contributors with read or triage roles cannot trigger credentialed CI runs
+automatically.
 
-### Who needs `ok-to-test`
+### Who needs `/ok-to-test`
 
-Contributors without write access must have a user with write access (Write
-role or above) apply the **`ok-to-test`** label **after** the latest push. A
-label from anyone else (for example a triage-role user) is removed and does not
-authorize the run. The label must be created once in GitHub repo settings
-(Settings → Labels).
+Every PR from a fork needs a user with write access (Write role or above) to
+review the latest push and comment **`/ok-to-test <sha>`** on the PR, where
+`<sha>` is the commit you reviewed. This includes fork authors who have write
+access themselves: fork `pull_request` runs get no secrets, so the gate can no
+longer authorize them automatically. A user with write access may comment
+`/ok-to-test <sha>` on their own fork PR.
 
-### Stale labels
+`/ok-to-test` from anyone without write access (for example a triage-role
+user) does not authorize the run. The `ok-to-test` label no longer starts e2e.
 
-If new commits are pushed after `ok-to-test` was applied, the label is removed
-automatically and e2e is skipped until a user with write access re-applies it
-after reviewing the latest changes. Freshness compares the label timestamp
-against the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`);
-the live API fallback may over-reject when non-push activity bumped
-`updated_at`.
-Applying the label triggers the **E2E ok-to-test** caller workflow, which
-`workflow_call`s into the main suite.
+### One comment, one commit
 
-The main **E2E Tests** workflow does **not** subscribe to
-`labeled` events. Only `opened` / `synchronize` / `reopened` cancel in-progress
-work in the per-PR concurrency group (code changed). Label events are
-authorization only: they **never** cancel an in-progress suite. If a suite is
-already running when `ok-to-test` is applied, GitHub may queue a second run
-behind it (no expression-only “skip if busy”); that is accepted.
+`/ok-to-test <sha>` authorizes only the commit you name. Use the PR's latest
+commit, the one you reviewed. You can copy it from the PR's **Commits** tab or
+print it:
 
-Other labels (for example `ready-for-review`, `requires-manual-review`, or
-`component/*`) do **not** authorize e2e. They may start the thin ok-to-test
-caller with a skipped `run` job (GitHub cannot filter by label name at `on:`),
-but they do not start skipped checks under the **E2E Tests** workflow name,
-and they never enter the suite concurrency group.
+```bash
+gh pr view 1234 --json headRefOid --jq .headRefOid
+```
+
+Put the command on the first line of the comment, for example
+`/ok-to-test 3f2a9c1d4e5b6a7b8c9d0e1f2a3b4c5d6e7f8a9b`. Use the full
+40-character sha: a short prefix is refused, because the author could prepare
+another commit with the same prefix and push it after your review.
+
+When the workflow runs, the gate reads the PR head. It runs the suites only
+if the head is the commit you named. The suites check out that sha, and the
+`behaviour` and `playback` checks are reported on it. If the head is another
+commit, for example because the author pushed after your review, nothing
+runs. A bare `/ok-to-test` with no sha runs nothing either.
+
+Any later push needs a new `/ok-to-test <sha>` from a user with write access
+after reviewing the new changes.
 
 ### Blocked runs
 
 When the gate **runs** and denies authorization, a sticky PR comment (marker
-`<!-- e2e-gate -->`) explains why and what to do. That is distinct from a
-non-`ok-to-test` label event, where the thin caller skips without invoking the
-gate. Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
+`<!-- e2e-gate -->`) explains why and what to do. A fork PR without
+`/ok-to-test <sha>` gets no comment: its `behaviour` and `playback` checks are
+skipped.
 
 The comment names a reason. What to do next:
 
-| Reason | Label removed? | What to do next |
-|---|---|---|
-| `untrusted_labeler` | Yes, unless someone re-applied it since | The person who applied `ok-to-test` does not have write access (for example a Triage user). Do not re-apply it yourself. Ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](../../../MAINTAINERS.md), to apply it after reviewing the latest push. |
-| `stale_ok_to_test` | Yes | The PR changed after the label was applied, usually by a new push. A user with write access reviews the changes and re-applies `ok-to-test`. |
-| `error` | No | The GitHub API failed during the check. Re-run the workflow. |
-| `unauthorized` | No | The author does not have write access and there is no `ok-to-test` label. Ask a user with write access to review the PR and apply it. If you do have write access, the permission lookup may have failed: re-run the workflow first. |
+| Reason | What to do next |
+|---|---|
+| `untrusted_commenter` | The person who commented `/ok-to-test` does not have write access (for example a Triage user). Do not repeat it yourself. Ask a reviewer on this PR, or a maintainer listed in [MAINTAINERS.md](../../../MAINTAINERS.md), to comment `/ok-to-test <sha>` after reviewing the latest push. |
+| `stale_ok_to_test` | The comment named a commit that is not the PR head, usually because of a push after the review. A user with write access reviews the changes and comments `/ok-to-test <sha>` with the current head sha. |
+| `missing_sha` | The comment did not name a commit on its first line (for example a bare `/ok-to-test`). A user with write access comments `/ok-to-test <sha>` with the full sha of the commit they reviewed. The gate comment shows the current head; review it before naming it. |
+| `error` | The GitHub API failed during the check. Re-run the workflow. |
+| `unauthorized` | The author of a same-repository PR does not have write access. Ask a user with write access to review the PR and comment `/ok-to-test <sha>`. If you do have write access, the permission lookup may have failed: re-run the workflow first. |
 
 Unresolved review threads and reviews that request changes are **not** gate
 inputs: they only block merging, never e2e. To see which role you have, use
@@ -839,14 +906,21 @@ the "How to check" links in [LADDER.md](../../../LADDER.md).
 
 ## CI architecture
 
-1. **PR open/sync** — **E2E Tests** runs the gate then suite jobs (trusted
-   authors authorized immediately)
-2. **`ok-to-test` label** — the thin **E2E ok-to-test** workflow calls the same
-   suite via `workflow_call` (fork / external path)
-3. **Gate** — authorize a write+ / trusted-bot author, or an `ok-to-test`
-   labeled event from a write+ sender (base checkout only; never checks out PR head)
-4. **Behaviour / playback** — checkout PR head SHA, authenticate to GCP via
-   WIF, mint cross-org tokens per pool org, `make behaviour-test` (or
+1. **PR open/sync** — **E2E Tests** runs on `pull_request`. For a
+   same-repository PR the gate authorizes a write+ / trusted-bot author, then
+   the suite jobs run. For a fork PR the gate and suites are skipped.
+2. **`/ok-to-test <sha>` comment** — the **E2E ok-to-test** workflow runs on
+   `issue_comment`. Its authorize job checks the commenter's permission and
+   that the PR head is the named sha, then calls the same suite via `workflow_call` for
+   that sha. Only the authorize/report job holds `checks: write` and
+   `pull-requests: write`; it creates the `behaviour` and `playback` check runs
+   on the head sha and completes them from the suite results, so they match
+   the required checks on `main`.
+3. **Gate** — base checkout only; never checks out PR head
+   ([`scripts/check-e2e-authorization.sh`](../../../scripts/check-e2e-authorization.sh)).
+4. **Behaviour / playback** — `contents: read` and `id-token: write` only;
+   checkout the authorized PR head SHA, authenticate to GCP via WIF, mint
+   cross-org tokens per pool org, `make behaviour-test` (or
    `make playback-test` for the playback job)
 
 Pushes to `main`, merge queue, and `workflow_dispatch` skip the gate and run e2e
@@ -901,7 +975,7 @@ The `fix` role reuses the coder app (`fullsend-test-coder`) and
 ### Installation targets
 
 All six test apps are installed with access to **all repositories** on
-`halfsend-01` through `halfsend-12` and on `halfsend` (used by the STAGE driver).
+`halfsend-01` through `halfsend-22` and on `halfsend` (used by the STAGE driver).
 The production `fullsend-ai-e2e` app is installed on the same organizations for
 cross-org suite control and minting. The other production agent apps are not
 required for the normal behaviour or playback suites and are intentionally not
@@ -939,7 +1013,7 @@ App registration in that setup. Per-repo setup may still request the literal
 **Permission rollout for the coder App:** When adding a permission such as
 `packages:read`, update the `fullsend-test-coder` App registration first. Then
 have the installation owner for each existing pool org (`halfsend-01` through
-`halfsend-12`) Accept the pending permission update. New pool-org installs
+`halfsend-22`) Accept the pending permission update. New pool-org installs
 receive the permission during installation; existing installs may otherwise
 continue using the mint's rollout warning path.
 

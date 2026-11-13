@@ -73,17 +73,33 @@ const (
 // Errors are logged but not returned — log collection is best-effort
 // and must not fail the scenario.
 func saveWorkflowRunLogs(ctx context.Context, w *world.World, label string, run *forge.WorkflowRun) {
+	saveRunLogs(w, label, run, func() (string, error) {
+		return writeWorkflowRunLogs(ctx, w, label, run)
+	})
+}
+
+// saveFetchedWorkflowRunLogs is saveWorkflowRunLogs for logs, or a fetch
+// error, that the caller already got from GetRunLogs, so a step that also
+// reads the logs fetches them once.
+func saveFetchedWorkflowRunLogs(w *world.World, label string, run *forge.WorkflowRun, logs string, fetchErr error) {
+	saveRunLogs(w, label, run, func() (string, error) {
+		return writeFetchedWorkflowRunLogs(w, label, run, logs, fetchErr)
+	})
+}
+
+// saveRunLogs runs write for the two save functions above and logs the outcome.
+func saveRunLogs(w *world.World, label string, run *forge.WorkflowRun, write func() (string, error)) {
 	if run == nil {
 		return
 	}
-	registerRedactionLiterals(w)
+	RegisterRedactionLiterals(w)
 
 	if strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) == "" {
 		logRedacted(w, "save workflow run logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for %s run %d", label, run.ID)
 		return
 	}
 
-	logPath, err := writeWorkflowRunLogs(ctx, w, label, run)
+	logPath, err := write()
 	if err != nil {
 		logRedacted(w, "save workflow run logs: %v", err)
 		return
@@ -103,7 +119,12 @@ func writeWorkflowRunLogs(ctx context.Context, w *world.World, label string, run
 	defer cancel()
 
 	logs, fetchErr := w.CI.GetRunLogs(fetchCtx, w.Org, w.RepoName, run.ID)
+	return writeFetchedWorkflowRunLogs(w, label, run, logs, fetchErr)
+}
 
+// writeFetchedWorkflowRunLogs is writeWorkflowRunLogs for the result of a
+// GetRunLogs call the caller already made.
+func writeFetchedWorkflowRunLogs(w *world.World, label string, run *forge.WorkflowRun, logs string, fetchErr error) (string, error) {
 	// Both forge clients return an empty string and no error when the run
 	// has no jobs to read (for example a run that has not started any job).
 	// Empty output is not a log snapshot: report it as unavailable, with an
@@ -160,36 +181,58 @@ func writeWorkflowRunLogs(ctx context.Context, w *world.World, label string, run
 	return logPath, nil
 }
 
-// partialLogMarkers are the in-band notes the forge clients embed in the
-// text returned by GetRunLogs, without returning an error, when a single
-// job's log (or the whole aggregate) could not be fetched in full.
-var partialLogMarkers = []string{
-	"[failed to fetch logs:",
-	"[logs unavailable:",
-	"[failed to read logs:",
-	"error fetching trace:",
-	"error reading trace:",
-	"aggregate trace limit",
-	// Truncation notes: the GitHub client reads one page of jobs and 1 MiB
-	// of each job's log, the GitLab client 10 MiB of each trace.
-	"[job list truncated:",
-	"[log truncated:",
-	"trace truncated at",
+// partialLogNote is one in-band note the forge clients embed in the text
+// returned by GetRunLogs, without returning an error, when a single job's
+// log (or the whole aggregate) could not be fetched in full.
+type partialLogNote struct {
+	marker string
+	// truncation marks a size or page cap, which a later fetch of the same
+	// run returns again; any other note records a fetch that failed and may
+	// succeed later.
+	truncation bool
+}
+
+// partialLogNotes are the notes partialLogMarker looks for. The GitHub
+// client reads one page of jobs and 1 MiB of each job's log, the GitLab
+// client 10 MiB of each trace and 100 MiB in all. The markers are the
+// forge package's log-note constants — the same literals the clients
+// write — so a client-side rename is caught at compile time here rather
+// than silently turning a fetch failure into "complete" logs.
+var partialLogNotes = []partialLogNote{
+	{marker: forge.LogNoteFailedToFetchLogs},
+	{marker: forge.LogNoteLogsUnavailable},
+	{marker: forge.LogNoteFailedToReadLogs},
+	{marker: forge.LogNoteErrorFetchingTrace},
+	{marker: forge.LogNoteErrorReadingTrace},
+	{marker: forge.LogNoteAggregateTraceLimit, truncation: true},
+	{marker: forge.LogNoteJobListTruncated, truncation: true},
+	{marker: forge.LogNoteLogTruncated, truncation: true},
+	{marker: forge.LogNoteTraceTruncated, truncation: true},
 }
 
 // runLogsComplete reports whether logs, fetched for run, are a complete
 // snapshot: the run has reached a terminal status and no job's log was
-// replaced by a fetch-failure note.
+// replaced by a fetch-failure note or cut at a cap.
 func runLogsComplete(run forge.WorkflowRun, logs string) bool {
-	if run.Status != "completed" {
-		return false
-	}
-	for _, marker := range partialLogMarkers {
-		if strings.Contains(logs, marker) {
-			return false
+	return run.Status == "completed" && partialLogMarker(logs).marker == ""
+}
+
+// partialLogMarker returns the note logs holds, a fetch-failure note before
+// a truncation note, or the zero note when the text carries none.
+func partialLogMarker(logs string) partialLogNote {
+	var found partialLogNote
+	for _, note := range partialLogNotes {
+		if !strings.Contains(logs, note.marker) {
+			continue
+		}
+		if !note.truncation {
+			return note
+		}
+		if found.marker == "" {
+			found = note
 		}
 	}
-	return true
+	return found
 }
 
 // sensitiveEnvSuffixes mark runner environment variables whose values are
@@ -206,14 +249,19 @@ var sensitiveEnvNames = []string{
 	"CLOUDFLARE_ACCOUNT_ID",
 }
 
-// registerRedactionLiterals registers the runner's known credential literals
+// RegisterRedactionLiterals registers the runner's known credential literals
 // — w.Token, the values of sensitive-looking environment variables and the
 // explicitly listed infrastructure identifiers — with the process-wide
 // secret redactor. Prefix and structural patterns
 // cannot recognise an opaque credential, which would otherwise survive in
 // summaries, diagnostics and name-derived directory names. Values the shared
-// redactor declines as too short are masked locally by redactText.
-func registerRedactionLiterals(w *world.World) {
+// redactor declines as too short are masked locally by RedactText.
+//
+// The failure-recording sites — the suite's After hook and the bootstrap
+// recorder — also call this before redacting a message at record time, so
+// the first failure a process records is redacted with the World's literals
+// already registered, not only after debug-log collection has run.
+func RegisterRedactionLiterals(w *world.World) {
 	if w != nil && w.Token != "" {
 		registerSecretForms(w.Token)
 	}
@@ -252,7 +300,7 @@ func registerSecretForms(value string) {
 // minLocalSecretLen is the shortest sensitive literal masked locally. The
 // shared redactor refuses values under 8 bytes because masking them can
 // mangle ordinary text; for a value known to be sensitive, failing open is
-// worse, so redactText masks values of at least this length itself. Shorter
+// worse, so RedactText masks values of at least this length itself. Shorter
 // values would erase single characters or common fragments across every
 // artifact, so they cannot be masked without destroying the diagnostics.
 const minLocalSecretLen = 4
@@ -276,8 +324,34 @@ func registerSecretLiteral(value string) {
 	}
 }
 
-// redactText passes s through the secret redactor.
-func redactText(s string) string {
+// RedactText masks secrets in s with the same redaction the debug-log
+// collection applies to everything it writes: failure messages recorded at
+// record time get the same treatment as the collected artifacts.
+//
+// The guarantee has two parts:
+//
+//   - Pattern-based redaction (security.NewSecretRedactor().Scan) runs
+//     unconditionally and needs no initialization: secrets with a
+//     recognizable shape — token prefixes such as ghp_ or sk_, credential
+//     assignments, private key blocks — are masked whether or not anything
+//     was registered.
+//   - Exact-literal replacement depends on prior registration in the same
+//     process. Literals of at least 8 bytes are registered process-wide
+//     with the shared redactor, whose scan masks them; shorter sensitive
+//     values (down to four bytes) are kept in package-level state guarded
+//     by shortSecretsMu and masked here. RedactText registers nothing
+//     itself: both sets are populated by this package's debug-log
+//     collection — CollectFailureLogs, the workflow-log saving steps and
+//     the mint-status steps register the World token and sensitive runner
+//     environment values before writing artifacts — and by the
+//     failure-recording sites, which call RegisterRedactionLiterals before
+//     redacting a message at record time.
+//
+// Callers cannot assume a stronger guarantee than the tooling provides: in
+// a process where no secrets were registered — a consumer binary that only
+// calls RedactText, for example — both literal sets are empty and an
+// opaque credential that no pattern recognizes passes through unredacted.
+func RedactText(s string) string {
 	if res := security.NewSecretRedactor().Scan(s); res.Sanitized != "" {
 		s = res.Sanitized
 	}
@@ -289,11 +363,11 @@ func redactText(s string) string {
 	return s
 }
 
-// sanitizeConsole neutralizes text that GitHub Actions would interpret when
+// SanitizeConsole neutralizes text that GitHub Actions would interpret when
 // printed to the console: line breaks and other control characters are
 // replaced with spaces so interpolated text cannot start a new line, and the
 // "::" workflow-command delimiter is broken up.
-func sanitizeConsole(s string) string {
+func SanitizeConsole(s string) string {
 	s = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return ' '
@@ -311,7 +385,7 @@ func logRedacted(w *world.World, format string, args ...any) {
 	if w.Logf == nil {
 		return
 	}
-	w.Logf("%s", sanitizeConsole(redactText(fmt.Sprintf(format, args...))))
+	w.Logf("%s", SanitizeConsole(RedactText(fmt.Sprintf(format, args...))))
 }
 
 // CollectFailureLogs is called by the suite's After hook for a failed
@@ -336,10 +410,10 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 	if w == nil {
 		return
 	}
-	registerRedactionLiterals(w)
+	RegisterRedactionLiterals(w)
 	artifactDir := strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR"))
 	if artifactDir == "" {
-		logRedacted(w, "collect failure logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for failed scenario %q", redactText(w.ScenarioName))
+		logRedacted(w, "collect failure logs: BEHAVIOUR_ARTIFACT_DIR unset, skipping log collection for failed scenario %q", RedactText(w.ScenarioName))
 		return
 	}
 
@@ -363,7 +437,7 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 		logRedacted(w, "collect failure logs: %v", err)
 		return
 	}
-	logRedacted(w, "collect failure logs: failure summary for scenario %q saved to %s", redactText(w.ScenarioName), summaryPath)
+	logRedacted(w, "collect failure logs: failure summary for scenario %q saved to %s", RedactText(w.ScenarioName), summaryPath)
 }
 
 // collectScenarioRunLogs saves the logs of the scenario's runs that are
@@ -475,7 +549,7 @@ func inScenarioWindow(run forge.WorkflowRun, begin time.Time) bool {
 // would change the representation of a registered credential and let it
 // evade exact-string matching in the final whole-message scan.
 func describeRun(run forge.WorkflowRun) string {
-	s := fmt.Sprintf("run %d %q (status %q, conclusion %q)", run.ID, redactText(run.Name), redactText(run.Status), redactText(run.Conclusion))
+	s := fmt.Sprintf("run %d %q (status %q, conclusion %q)", run.ID, RedactText(run.Name), RedactText(run.Status), RedactText(run.Conclusion))
 	if run.HTMLURL != "" {
 		s += " " + run.HTMLURL
 	}
@@ -493,7 +567,7 @@ func runLabel(run forge.WorkflowRun) string {
 func pathSlug(s string, maxLen int, fallback string) string {
 	var b strings.Builder
 	dash := false
-	for _, r := range strings.ToLower(redactText(s)) {
+	for _, r := range strings.ToLower(RedactText(s)) {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
 			b.WriteRune(r)
 			dash = false
@@ -549,7 +623,7 @@ func writeRedactedArtifact(path, content string) error {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	tmpName := tmp.Name()
-	_, writeErr := tmp.WriteString(redactText(content))
+	_, writeErr := tmp.WriteString(RedactText(content))
 	closeErr := tmp.Close()
 	if err := errors.Join(writeErr, closeErr); err != nil {
 		_ = os.Remove(tmpName)

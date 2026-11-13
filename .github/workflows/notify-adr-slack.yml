@@ -1,88 +1,41 @@
 name: Notify Slack on ADR merge
 
+# Runs on the push to main that lands a merged PR, not on pull_request_target
+# closed (#9245): GitHub blocks pull_request_target by default from
+# 2026-12-02. One merge-queue push can carry several PRs; the script finds
+# them from the pushed commits and sends one message per PR that changed ADRs.
+
 on:
-  pull_request_target:
-    types: [closed]
+  push:
     branches: [main]
     paths:
       - 'docs/ADRs/**'
 
 permissions:
+  contents: read
   pull-requests: read
 
 jobs:
   notify:
-    if: github.event.pull_request.merged == true
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - name: Identify changed ADRs
-        id: changed
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          REPO: ${{ github.repository }}
-        run: |
-          all_files=$(gh pr diff "$PR_NUMBER" \
-            --repo "$REPO" --name-only)
-          files=$(echo "$all_files" | grep '^docs/ADRs/' || true)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-          if [ -z "$files" ]; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+      - name: Send Slack notification for merged ADR PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # Every commit in the push: a merge-queue push carries each PR's merge commit.
+          COMMIT_SHAS: ${{ toJSON(github.event.commits.*.id) }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          mapfile -t shas < <(jq -r '.[]' <<<"${COMMIT_SHAS}")
+          if [[ ${#shas[@]} -eq 0 ]]; then
+            echo "No commits in this push"
             exit 0
           fi
-
-          summary=""
-          for f in $files; do
-            name=$(basename "$f" .md)
-            summary="${summary}• ${name}\n"
-          done
-
-          {
-            echo "skip=false"
-            echo "file_summary<<EOF"
-            echo -e "$summary"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Send Slack notification
-        if: steps.changed.outputs.skip != 'true'
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          PR_MERGED_BY: ${{ github.event.pull_request.merged_by.login }}
-          FILE_SUMMARY: ${{ steps.changed.outputs.file_summary }}
-        run: |
-          if [ -z "$SLACK_WEBHOOK_URL" ]; then
-            echo "::error::SLACK_WEBHOOK_URL secret is not configured"
-            exit 1
-          fi
-
-          payload=$(jq -n \
-            --arg title "$PR_TITLE" \
-            --arg number "$PR_NUMBER" \
-            --arg url "$PR_URL" \
-            --arg merged_by "$PR_MERGED_BY" \
-            --arg files "$FILE_SUMMARY" \
-            '{
-              blocks: [
-                {
-                  type: "section",
-                  text: {
-                    type: "mrkdwn",
-                    text: ("📋 *ADR updated* — <" + $url + "|#" + $number + " " + $title + ">\nMerged by *" + $merged_by + "*")
-                  }
-                },
-                {
-                  type: "section",
-                  text: {
-                    type: "mrkdwn",
-                    text: ("*Affected ADRs:*\n" + $files)
-                  }
-                }
-              ]
-            }')
-
-          curl -sf -X POST -H 'Content-Type: application/json' \
-            -d "$payload" "$SLACK_WEBHOOK_URL"
+          bash scripts/notify-adr-merge.sh "${REPO}" "${shas[@]}"

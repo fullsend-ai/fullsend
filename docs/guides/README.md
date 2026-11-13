@@ -65,6 +65,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 ### Integrations & observability
 
 - [Jira Integration](user/jira-integration.md) — Connect fullsend to a Jira project so that issue comments and label changes trigger agents
+- [Run artifacts and private data](user/run-artifacts-and-private-data.md) — Limit what a run artifact publishes for runs started from a private tracker (`artifacts` in `config.yaml`)
 - [How to emit traces](user/how-to-emit-traces.md) — Configure a repository or organization to send OpenTelemetry traces to a remote backend
 - [Tracing with MLflow](user/tracing-with-mlflow.md) — MLflow-specific setup: experiment routing, Basic auth encoding, org-level organization, and cost column caveats
 
@@ -72,7 +73,7 @@ Start with the [overview](user/customizing-overview.md) to pick the right approa
 
 Guides for contributors developing and testing fullsend itself.
 
-- [E2E testing](dev/e2e-testing.md) — Local and CI e2e runs, including PR authorization and `ok-to-test`
+- [E2E testing](dev/e2e-testing.md) — Local and CI e2e runs, including PR authorization and `/ok-to-test`
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
 - [Behaviour testing](dev/behaviour-testing.md) — Write Gherkin scenarios for end-to-end agent behaviour
 - [Behaviour test drivers](dev/behaviour-drivers.md) — Implement SCM and CI drivers for behaviour tests

@@ -235,6 +235,12 @@ type TraceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty"` // default: true
 }
 
+// RepoReadonly reports whether the checked-out repository is made read-only
+// in the sandbox (default: false).
+func (h *Harness) RepoReadonly() bool {
+	return BoolDefault(h.ReadonlyRepo, false)
+}
+
 // BoolDefault returns the value of a *bool, or the default if nil.
 func BoolDefault(b *bool, def bool) bool {
 	if b == nil {
@@ -393,7 +399,7 @@ type Harness struct {
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
 	Env                    *EnvConfig              `yaml:"env,omitempty"`
 	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
-	ReadonlyRepo           bool                    `yaml:"readonly_repo,omitempty"`
+	ReadonlyRepo           *bool                   `yaml:"readonly_repo,omitempty"` // nil = unset: inherited from base, else false
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
@@ -852,18 +858,39 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 // validation_loop.preflight_check references are not checked here; the
 // preflight allowlist scan in internal/cli is their single reference gate.
 func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) error {
+	return h.ValidateRunnerEnvSites(lookup, lookup)
+}
+
+// outputFileEnvKey is the runner entry the runner exports verbatim into the
+// sandbox, so it is validated with the sandbox-bound lookup.
+const outputFileEnvKey = "FULLSEND_OUTPUT_FILE"
+
+// ValidateRunnerEnvSites is ValidateRunnerEnvWith with a separate lookup for
+// sandbox-bound sites: Env.Sandbox values, the FULLSEND_OUTPUT_FILE runner
+// entry, and validation_loop.schema. A caller that expands some variables
+// empty at those sites (rather than failing) passes a sandboxLookup that
+// resolves them; every other site uses lookup.
+func (h *Harness) ValidateRunnerEnvSites(lookup, sandboxLookup func(string) (string, bool)) error {
 	references := make(map[string][]string)
-	checkVarRefs := func(source, value string) {
+	check := func(lk func(string) (string, bool), source, value string) {
 		for _, match := range envVarRef.FindAllStringSubmatch(value, -1) {
 			varName := match[1]
-			if _, ok := lookup(varName); !ok {
+			if _, ok := lk(varName); !ok {
 				references[varName] = append(references[varName], source)
 			}
 		}
 	}
+	checkVarRefs := func(source, value string) { check(lookup, source, value) }
+	checkRunnerRefs := func(source, key, value string) {
+		if key == outputFileEnvKey {
+			check(sandboxLookup, source, value)
+			return
+		}
+		check(lookup, source, value)
+	}
 
 	for k, v := range h.RunnerEnv {
-		checkVarRefs(fmt.Sprintf("runner_env[%s]", k), v)
+		checkRunnerRefs(fmt.Sprintf("runner_env[%s]", k), k, v)
 	}
 	for i, hf := range h.HostFiles {
 		if hf.Optional {
@@ -872,7 +899,7 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 		checkVarRefs(fmt.Sprintf("host_files[%d].src", i), hf.Src)
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
-		checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema)
+		check(sandboxLookup, "validation_loop.schema", h.ValidationLoop.Schema)
 	}
 	// validation_loop.preflight_check is deliberately not checked here: its
 	// references are validated by the preflight allowlist scan in
@@ -880,10 +907,10 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 	// field (D9, preflight-check-credential-safety change).
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
-			checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v)
+			checkRunnerRefs(fmt.Sprintf("env.runner[%s]", k), k, v)
 		}
 		for k, v := range h.Env.Sandbox {
-			checkVarRefs(fmt.Sprintf("env.sandbox[%s]", k), v)
+			check(sandboxLookup, fmt.Sprintf("env.sandbox[%s]", k), v)
 		}
 	}
 	if len(references) == 0 {

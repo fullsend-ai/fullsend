@@ -59,7 +59,8 @@ func provisionGitLabPollState(ctx context.Context, client forge.Client, printer 
 // event-discovery poll (at minutes 2,17,32,47). Each schedule has its own
 // resource group so they never cancel each other. Schedules are
 // variable-free: the typed templates select poll mode from the schedule
-// description.
+// description. The Jira poll schedule is left alone: repos install
+// converges it from tracker.jira.poll.enabled (#9108).
 func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, defaultBranch string) error {
 	// Delete existing fullsend schedules to avoid duplicates on re-install.
 	existing, listErr := client.ListPipelineSchedules(ctx, owner, repo)
@@ -67,7 +68,7 @@ func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, prin
 		printer.StepWarn(fmt.Sprintf("Could not list existing schedules — duplicate cleanup skipped: %v", listErr))
 	} else {
 		for _, s := range existing {
-			if strings.HasPrefix(s.Description, "fullsend") {
+			if strings.HasPrefix(s.Description, "fullsend") && s.Description != repos.JiraPollScheduleDescription() {
 				if err := client.DeletePipelineSchedule(ctx, owner, repo, s.ID); err != nil {
 					printer.StepWarn(fmt.Sprintf("Failed to delete existing schedule %q (ID %d): %v", s.Description, s.ID, err))
 				} else {
@@ -331,16 +332,11 @@ func ensureGitLabPipelineVariableOverrideRole(ctx context.Context, client forge.
 // (#8509). Otherwise the trigger token is owned by a fresh Poller service
 // account generation that is verified at Developer before it is published;
 // ineligible repos defer and keep polling (see gitlabTriggerOwnerFor).
-func setupGitLabWebhookFastPath(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, rotate, dryRun bool) error {
+// seen, when non-nil, suppresses deferral lines already printed for this repo.
+func setupGitLabWebhookFastPath(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, rotate, dryRun bool, seen gitlabDeferralsShown) error {
 	repoFullName := owner + "/" + repo
 	res, err := repos.EnsureGitLabWebhookFastPathWithTriggerOwner(ctx, client, gitlabTriggerOwnerFor(client), repos.GitLabBaseURL(client), owner, repo, rotate, dryRun)
-	for _, d := range res.Details {
-		if res.Action == "deferred" {
-			printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
-		} else {
-			printer.StepDone(fmt.Sprintf("[%s] %s", repoFullName, d))
-		}
-	}
+	printGitLabWebhookDetails(printer, repoFullName, res, seen)
 	if err != nil {
 		printer.StepFail(fmt.Sprintf("[%s] GitLab webhook fast-path: %v", repoFullName, err))
 		return err
@@ -353,8 +349,10 @@ func setupGitLabWebhookFastPath(ctx context.Context, client forge.Client, printe
 // matches the dispatch route (#8509): the route was activated or the account
 // rotated, so the webhook must carry the account's current trigger token, or
 // the route was withdrawn, so the webhook returns to a Poller-owned trigger.
-// Dry runs change nothing and skip it.
-func refreshGitLabWebhookTriggerRoute(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool) error {
+// Dry runs change nothing and skip it. seen is passed to
+// setupGitLabWebhookFastPath, so a deferral the earlier webhook step already
+// printed is not repeated.
+func refreshGitLabWebhookTriggerRoute(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool, seen gitlabDeferralsShown) error {
 	if dryRun {
 		return nil
 	}
@@ -365,7 +363,32 @@ func refreshGitLabWebhookTriggerRoute(ctx context.Context, client forge.Client, 
 	if !stale {
 		return nil
 	}
-	return setupGitLabWebhookFastPath(ctx, client, printer, owner, repo, false, false)
+	return setupGitLabWebhookFastPath(ctx, client, printer, owner, repo, false, false, seen)
+}
+
+// gitlabDeferralsShown records the webhook deferral lines already printed for
+// one repository during an install. The webhook step can run twice per
+// install (once directly and once after the trigger-account stage), and a
+// blocker that still holds reports the same deferral both times.
+type gitlabDeferralsShown map[string]struct{}
+
+// printGitLabWebhookDetails prints a webhook fast-path result's details:
+// informational lines for a deferral, done lines otherwise. A deferral line
+// already recorded in seen is skipped; a nil seen prints every line.
+func printGitLabWebhookDetails(printer *ui.Printer, repoFullName string, res repos.GitLabWebhookResult, seen gitlabDeferralsShown) {
+	for _, d := range res.Details {
+		if res.Action != "deferred" {
+			printer.StepDone(fmt.Sprintf("[%s] %s", repoFullName, d))
+			continue
+		}
+		if seen != nil {
+			if _, dup := seen[d]; dup {
+				continue
+			}
+			seen[d] = struct{}{}
+		}
+		printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
+	}
 }
 
 // refreshGitLabWebhookAfterPollerFailure skips Poller-route provisioning after
@@ -378,13 +401,7 @@ func refreshGitLabWebhookAfterPollerFailure(ctx context.Context, client forge.Cl
 	}
 	repoFullName := owner + "/" + repo
 	res, err := repos.EnsureGitLabWebhookAccountRouteAfterPollerFailure(ctx, client, gitlabTriggerOwnerFor(client), repos.GitLabBaseURL(client), owner, repo)
-	for _, d := range res.Details {
-		if res.Action == "deferred" {
-			printer.StepInfo(fmt.Sprintf("[%s] %s", repoFullName, d))
-		} else {
-			printer.StepDone(fmt.Sprintf("[%s] %s", repoFullName, d))
-		}
-	}
+	printGitLabWebhookDetails(printer, repoFullName, res, nil)
 	if err != nil {
 		printer.StepFail(fmt.Sprintf("[%s] GitLab webhook fast-path: %v", repoFullName, err))
 	}

@@ -89,10 +89,13 @@ spec:
 # in this file whether or not a caller supplied any chunks) that only
 # ever reference those variables' values, never interpolate caller
 # content into the script itself. Only 9 chunks (00-08) are declared,
-# not 40: GitLab rejects a configuration that declares more than 20
-# pipeline inputs in total, and the 11 other named dispatch fields
-# already consume 11 of that budget. 9 chunks of up to 1000 base64
-# characters each cover a worst-case truncate(event.NoteBody, 800) note
+# not 40: GitLab limits a pipeline contract to 20 inputs (ADR 0131,
+# https://docs.gitlab.com/ci/inputs/) — the 11 other named dispatch
+# fields plus these 9 chunks use every root input GitLab allows, and
+# repos install's dispatch gate refuses extra root inputs rather than
+# growing the shape (internal/repos/gitlabci.go). 9
+# chunks of up to 1000 base64
+# characters each cover a worst-case truncate(event.NoteBody, 270) note
 # body after JSON escaping and base64 encoding; dispatch() returns an
 # error rather than silently dropping data if a payload ever needs more.
 # See internal/poll/dispatch.go (dispatchInputs / eventPayloadChunks /
@@ -186,6 +189,11 @@ stages:
     # chunk variable's value, so a caller can control what data ends up
     # in the file but never what command runs. Truncate first — each
     # statement only appends.
+    # Remove the artifact directory a previous job left on a runner that
+    # keeps its workspace, before the installer below can fail:
+    # artifacts: uploads fullsend-artifact/ with when: always (ADR 0161).
+    # A fixed command.
+    - rm -rf -- "${CI_PROJECT_DIR:-.}/fullsend-artifact"
     - ': > /tmp/.fs-dispatch-payload.b64'
     - printf %s "${EVENT_PAYLOAD_CHUNK_00:-}" >> /tmp/.fs-dispatch-payload.b64
     - printf %s "${EVENT_PAYLOAD_CHUNK_01:-}" >> /tmp/.fs-dispatch-payload.b64
@@ -200,10 +208,13 @@ stages:
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/install-fullsend-cli.sh"
   script:
     - . "${CI_PROJECT_DIR:-.}/.gitlab/ci/scripts/run-agent-job.sh"
+  # The copy CI uploads, built by run-agent-job.sh from output/
+  # (ADR 0161): config.yaml's artifacts setting decides what it holds,
+  # and it does not exist when the level is none or cannot be resolved.
   artifacts:
     when: always
     paths:
-      - output/
+      - fullsend-artifact/
     expire_in: 1 week
   resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"
   rules:

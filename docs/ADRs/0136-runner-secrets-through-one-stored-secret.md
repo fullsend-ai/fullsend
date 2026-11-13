@@ -110,6 +110,9 @@ that receives a value can still leak it.
   settling #6359, ends the interim role; the stored secret stays as the
   fallback for workflows that cannot use GitHub OIDC or a WIF provider with
   the user's secret manager.
+- [ADR 0155](0155-configure-vault-backed-runner-secrets.md) decides Vault-backed
+  source selection for selected long-lived Fullsend runner secrets. It does not
+  settle the separate custom BYOA secret-handling question tracked in #6359.
 - An OpenShell provider is not that successor: credential drivers keep copies
   of values the gateway is given, without reading existing backend secrets
   ([OpenShell #1931](https://github.com/NVIDIA/OpenShell/issues/1931)), and a
