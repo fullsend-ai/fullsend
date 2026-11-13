@@ -70,11 +70,11 @@ func TestResolveJiraRunEnv_UserEmail(t *testing.T) {
 		email *string
 		want  string
 	}{
-		{name: "set", email: ptrTo("bot@example.com"), want: "bot@example.com"},
-		{name: "trimmed", email: ptrTo("  bot@example.com\n"), want: "bot@example.com"},
+		{name: "set", email: strPtr("bot@example.com"), want: "bot@example.com"},
+		{name: "trimmed", email: strPtr("  bot@example.com\n"), want: "bot@example.com"},
 		{name: "unset", email: nil, want: ""},
-		{name: "empty", email: ptrTo(""), want: ""},
-		{name: "whitespace", email: ptrTo(" \t "), want: ""},
+		{name: "empty", email: strPtr(""), want: ""},
+		{name: "whitespace", email: strPtr(" \t "), want: ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(envJiraUserEmail, "inherited@example.com")
@@ -94,8 +94,6 @@ func TestResolveJiraRunEnv_UserEmail(t *testing.T) {
 		})
 	}
 }
-
-func ptrTo(s string) *string { return &s }
 
 func TestResolveJiraRunEnv_NonJiraSource(t *testing.T) {
 	for _, source := range []string{"github", "gitlab", ""} {

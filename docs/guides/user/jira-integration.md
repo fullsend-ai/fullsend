@@ -586,7 +586,10 @@ Host-side scripts receive them only when the harness declares them in
   `JIRA_TOKEN` the same token as `FULLSEND_JIRA_TOKEN` until your agents
   version reads `${FULLSEND_JIRA_TOKEN}`. With a bot account's token under
   one name and a service account's token under the other, the sandbox picks
-  the wrong auth mode and its Jira reads fail with 401.
+  the wrong auth mode and its Jira reads fail with 401. Before you upgrade
+  with a bot account's token, set `FULLSEND_JIRA_EMAIL` to the value of your
+  `JIRA_USER_EMAIL` secret; without it the email is empty and the sandbox
+  uses Bearer auth.
 - **Residual exposure in the `fullsend run` process.** The action sets both
   values in the initial environment of the process that runs `fullsend run`,
   because the Jira client reads them from the process environment. Other
