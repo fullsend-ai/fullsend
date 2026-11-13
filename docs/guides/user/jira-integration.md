@@ -475,7 +475,10 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   `jira-ro` provider's placeholder, not the real token.
 
 When the code agent makes no PR or MR, or the run fails, nothing beyond the
-run-status update is written to Jira.
+run-status update is written to Jira. The one exception is a same-branch
+rerun that fails because the pull request holds a commit by anyone else. The
+code agent then also comments on the Jira issue to name that commit. See
+[If you rerun without closing the pull request](#if-you-rerun-without-closing-the-pull-request).
 
 Custom agents can use `fullsend issues post-comment --tracker jira` to post
 results back to Jira, and `fullsend issues create --tracker jira` to create
