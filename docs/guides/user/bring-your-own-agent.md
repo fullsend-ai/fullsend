@@ -66,7 +66,7 @@ Next:
      ✓ Agent exited with code 0 (39.2s)
      ...
      • Running post-script: .fullsend/scripts/post-lint-docs.sh
-   post-lint-docs: status=ok, nothing to post (dry run: did not check for an earlier findings comment to replace)
+   post-lint-docs: status=ok, nothing to post (dry run: did not check for an earlier findings comment)
      ✓ Post-script completed (0.3s)
    ```
 

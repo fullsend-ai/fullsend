@@ -174,7 +174,7 @@ fullsend
 │   │   ├── --marker <string>                #     Marker identifying this agent's comments (HTML comment or Jira property)
 │   │   ├── --keep-history                   #     Deprecated: no effect (every result is a new comment)
 │   │   ├── --only-if-exists                 #     Post only when an earlier marked comment exists
-│   │   └── --fullsend-dir <path>            #     .fullsend config directory (resolves keep_history default)
+│   │   └── --fullsend-dir <path>            #     .fullsend config directory
 │   ├── link                                 #   Create a typed link between two issues (Jira only)
 │   │   ├── --tracker <tracker>              #     Tracker backend; github/gitlab return "not supported"
 │   │   ├── --from <key>                     #     Source issue key (e.g. PROJ-123)
@@ -202,7 +202,7 @@ fullsend
 │   ├── --head-sha <sha>                     #   Expected PR HEAD SHA (skips review if HEAD moved)
 │   ├── --dry-run                            #   Print what would be posted without API calls
 │   ├── --keep-history                       #   Deprecated: no effect (every result is a new comment)
-│   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR; resolves keep_history default)
+│   └── --fullsend-dir <path>                #   .fullsend config directory (default: $FULLSEND_DIR)
 ├── fetch-review-threads                      # Fetch PR/MR review threads as JSON
 │   ├── --repo <owner/repo>                   #   Repository in owner/repo format (required)
 │   ├── --pr <int>                            #   Pull request / merge request number (required)
