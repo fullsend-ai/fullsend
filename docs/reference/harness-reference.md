@@ -219,17 +219,22 @@ when the variable is unset, and an `env.runner` entry for it that resolves empty
 the script sees no variable rather than an empty one. `FULLSEND_JIRA_CLIENT_ID` and
 `FULLSEND_JIRA_CLIENT_SECRET` (a service account's OAuth 2.0 credential) are optional the same
 way, and `FULLSEND_JIRA_TOKEN` is optional too while the client credentials are set. A harness can
-therefore declare both credential types. Scripts
+therefore declare both credential types. The Jira repository secrets expand empty in
+`env.sandbox`, expanded `host_files` content, `FULLSEND_OUTPUT_FILE` and provider config values.
+A provider credential value may expand `${FULLSEND_JIRA_TOKEN}`, because credential values reach
+only the provider proxy and never the sandbox; `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`
+and `FULLSEND_JIRA_CLIENT_SECRET` expand empty there too. Scripts
 always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, so bytecode never
 breaks the hash-verified fetch cache.
 
-For a Jira-sourced run, `fullsend run` sets `JIRA_BASE_URL` to `tracker.jira.base_url` and
-`JIRA_API_URL` to the API gateway base `{tracker.jira.api_url}/ex/jira/{cloudId}` before env
-expansion, replacing any inherited `JIRA_BASE_URL`. A `${JIRA_BASE_URL}` or `${JIRA_API_URL}`
-reference in `env.runner`, `env.sandbox`, or a `host_files` entry with `expand: true` resolves to
-these values. A Jira-sourced run stops before the sandbox starts when cloud-ID discovery fails,
+For a Jira-sourced run, `fullsend run` sets `JIRA_BASE_URL` to `tracker.jira.base_url`,
+`JIRA_API_URL` to the API gateway base `{tracker.jira.api_url}/ex/jira/{cloudId}`, and
+`JIRA_USER_EMAIL` to the trimmed `FULLSEND_JIRA_EMAIL` (empty when that is unset or blank) before
+env expansion, replacing any inherited `JIRA_BASE_URL` or `JIRA_USER_EMAIL`. A `${JIRA_BASE_URL}`,
+`${JIRA_API_URL}` or `${JIRA_USER_EMAIL}` reference in `env.runner`, `env.sandbox`, or a
+`host_files` entry with `expand: true` resolves to these values. A Jira-sourced run stops before the sandbox starts when cloud-ID discovery fails,
 when the run is `--offline`, or when the `tracker.jira` connection settings are missing or invalid,
-instead of letting agents fall back to the site URL. A runner secret cannot override either name. Runs from other sources do not get these variables from `fullsend run`, so
+instead of letting agents fall back to the site URL. A runner secret cannot override any of these names. Runs from other sources do not get these variables from `fullsend run`, so
 reference them only in an overlay guarded on `event.source.system == "jira"`: an unset reference
 fails env validation on a GitHub or GitLab run. See
 [Jira integration § Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).

@@ -80,9 +80,13 @@ func resolveWorkItemIdentity(eventMap map[string]any, trackerSource, forgePlatfo
 // scripts and host_files expansions reach the same Jira site and API
 // gateway as fullsend's own client. Agents send REST calls to
 // ${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/...
+//
+// JIRA_USER_EMAIL is the account email that selects Basic or Bearer auth in
+// the sandbox Jira env files; it comes from FULLSEND_JIRA_EMAIL (#9411).
 const (
-	envJiraAPIURL  = "JIRA_API_URL"
-	envJiraBaseURL = "JIRA_BASE_URL"
+	envJiraAPIURL    = "JIRA_API_URL"
+	envJiraBaseURL   = "JIRA_BASE_URL"
+	envJiraUserEmail = "JIRA_USER_EMAIL"
 )
 
 // jiraGatewayDiscoverer resolves the per-site API gateway base URL
@@ -96,14 +100,18 @@ func discoverJiraGatewayURL(ctx context.Context, cfg jira.ScopedConfig) (string,
 	return jira.GatewayBaseURL(ctx, cfg, jiraScopedTestOptions...)
 }
 
-// resolveJiraRunEnv returns the JIRA_BASE_URL and JIRA_API_URL values run
-// exports before harness env expansion. It returns nil for runs that are
-// not Jira-sourced, so GitHub and GitLab runs are unchanged.
+// resolveJiraRunEnv returns the JIRA_BASE_URL, JIRA_API_URL and
+// JIRA_USER_EMAIL values run exports before harness env expansion. It
+// returns nil for runs that are not Jira-sourced, so GitHub and GitLab runs
+// are unchanged.
 //
 // For a Jira-sourced run, JIRA_BASE_URL is tracker.jira.base_url (trailing
 // slashes trimmed) and replaces any inherited value (such as a repository
 // variable or dispatch input), so config is the only source. JIRA_API_URL is
 // the gateway base {api_url}/ex/jira/{cloudId} the shared client uses.
+// JIRA_USER_EMAIL is the trimmed FULLSEND_JIRA_EMAIL, or empty when that is
+// unset or blank, and likewise replaces any inherited value, so the
+// JIRA_USER_EMAIL repository secret is no longer a source (#9411).
 //
 // It fails closed (ADR 0156): a Jira-sourced run stops, rather than falling
 // back to the site URL, when the Jira connection settings are missing or
@@ -112,7 +120,8 @@ func discoverJiraGatewayURL(ctx context.Context, cfg jira.ScopedConfig) (string,
 // failure inside the agent. Errors never include the raw URL, which may
 // embed credentials; discovery errors name only the validated site URL.
 //
-// Both values are URLs, never credentials.
+// The URL values are never credentials, and the email is an account
+// identifier; the Jira token is never exported here.
 func resolveJiraRunEnv(ctx context.Context, trackerSource string, tracking *config.TrackingConfig, offline bool, discover jiraGatewayDiscoverer) (map[string]string, error) {
 	if trackerSource != string(normevent.SystemJira) {
 		return nil, nil
@@ -145,7 +154,11 @@ func resolveJiraRunEnv(ctx context.Context, trackerSource string, tracking *conf
 	if err != nil {
 		return nil, fmt.Errorf("jira-sourced run: could not resolve the Jira API gateway URL for %s: %w", host, err)
 	}
-	return map[string]string{envJiraBaseURL: baseURL, envJiraAPIURL: apiURL}, nil
+	return map[string]string{
+		envJiraBaseURL:   baseURL,
+		envJiraAPIURL:    apiURL,
+		envJiraUserEmail: strings.TrimSpace(os.Getenv(jira.EmailEnvVar)),
+	}, nil
 }
 
 // jiraGatewayDiscoveryTimeout bounds the cloud-ID lookup a Jira-sourced run

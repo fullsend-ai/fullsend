@@ -1086,8 +1086,9 @@ GitHub object only. `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
 inherited by host-side scripts; declare either value in `env.runner` when a
 trusted script needs it. This is the same host-script rule on GitHub and
 GitLab. On every forge, references to these values in `env.sandbox`, expanded
-`host_files`, `FULLSEND_OUTPUT_FILE`, and provider config or credential values
-resolve empty. See
+`host_files`, `FULLSEND_OUTPUT_FILE`, and provider config values resolve
+empty. Provider credential values resolve empty too, except
+`${FULLSEND_JIRA_TOKEN}`, which the provider proxy holds. See
 [Jira integration](jira-integration.md#jira-repository-secrets-in-agent-runs)
 for details. Other CI/CD variables still reach host-side scripts except
 `JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`,
