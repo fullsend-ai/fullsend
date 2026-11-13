@@ -96,6 +96,70 @@ func TestMergeGitLabCI_CatchAllNeverExistingAdmitRuleNotDuplicated(t *testing.T)
 	}, workflowRuleSummaries(t, result))
 }
 
+func TestMergeGitLabCI_AdmitRulesAfterCatchAllAreMoved(t *testing.T) {
+	// The previous installer's output: fullsend's admit rules sit after the
+	// catch-all, where GitLab never reaches them.
+	previous := []byte(`workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - when: never
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	want := []string{
+		debugTraceDenyRuleIf + "|never",
+		`$CI_PIPELINE_SOURCE == "merge_request_event"|`,
+		`$CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"|`,
+		`$CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE|`,
+		childPipelineAgentRuleIf + "|",
+		triggerDispatcherRuleIf + "|",
+		"|never",
+	}
+	result, err := MergeGitLabCI(previous)
+	require.NoError(t, err)
+	assert.Equal(t, want, workflowRuleSummaries(t, result))
+
+	again, err := MergeGitLabCI(result)
+	require.NoError(t, err)
+	assert.Equal(t, string(result), string(again))
+}
+
+func TestMergeGitLabCI_AliasedCatchAllNever(t *testing.T) {
+	existing := []byte(`.deny: &deny never
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - when: *deny
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+
+	got := workflowRuleSummaries(t, result)
+	require.Len(t, got, 7)
+	assert.Equal(t, triggerDispatcherRuleIf+"|", got[5])
+	assert.Equal(t, "|never", got[6])
+}
+
+func TestMergeGitLabCI_MergeKeyNeverIsNotCatchAll(t *testing.T) {
+	// The anchored mapping may supply an if: clause, so the rule is not
+	// proven to be a catch-all and admit rules are appended at the end.
+	existing := []byte(`.deny_policy: &deny_policy
+  if: $CI_COMMIT_TAG
+workflow:
+  rules:
+    - <<: *deny_policy
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "push"
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+
+	got := workflowRuleSummaries(t, result)
+	require.Len(t, got, 7)
+	assert.Equal(t, `$CI_PIPELINE_SOURCE == "push"|`, got[2])
+	assert.Equal(t, triggerDispatcherRuleIf+"|", got[6])
+}
+
 func TestMergeGitLabCI_ConditionalNeverIsNotCatchAll(t *testing.T) {
 	// A when: never rule gated by if:, changes:, or exists: only denies
 	// matching pipelines, so admit rules are still appended at the end.
@@ -134,6 +198,8 @@ func TestIsCatchAllNeverRule(t *testing.T) {
 		{"exists gated", "exists: [a]\nwhen: never", false},
 		{"no when", "variables:\n  X: y", false},
 		{"scalar", "never", false},
+		{"aliased when never", "a: &d never\nwhen: *d", true},
+		{"merge key", "<<: {if: $X}\nwhen: never", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
