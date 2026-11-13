@@ -32,7 +32,33 @@ The fullsend team operates a public hosted community mint service. Install the s
 https://mint.fullsend.sh
 ```
 
-The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repository/org variable in GitHub explicitly. If you are using the hosted community mint, the rest of this guide (deploying, enrolling, troubleshooting) is for platform operators managing self-hosted mints — you do not need to manage mint infrastructure yourself.
+The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL`
+repository/org variable in GitHub explicitly. When `mint_url` is declared
+in `.fullsend/config.yaml` or `config.base.yaml`, dispatch resolves that
+layered value before the variable (see
+[Layered configuration reference](layered-config-reference.md)); the
+variable remains the fallback when both files are silent on `mint_url`.
+If you are using the hosted community mint, the rest of this guide
+(deploying, enrolling, troubleshooting) is for platform operators
+managing self-hosted mints — you do not need to manage mint
+infrastructure yourself.
+
+### Dispatch mint URL migration
+
+If `.fullsend/config.yaml` or `config.base.yaml` declares `mint_url`,
+dispatch uses that endpoint instead of `FULLSEND_MINT_URL`. To retarget a
+repo, change or remove the config field (removing it restores the variable
+fallback). When config declares a value that differs from the workflow
+`FULLSEND_MINT_URL` snapshot (including when that variable is unset),
+dispatch follows config and emits a workflow notice that config overrides
+the variable (no URL or host in the notice).
+
+Config-sourced values must be HTTPS with no userinfo. The resolved URL is
+validated on every run: declared config values must be HTTPS (no userinfo).
+The variable fallback when config is silent on `mint_url` must also be a
+valid URL and may use loopback HTTP (`localhost` / `127.0.0.1`) only on
+that fallback path. Dispatch fails when config is present but `yq` is
+missing, YAML does not parse, or the resolved URL fails validation.
 
 ## Prerequisites
 
@@ -173,7 +199,13 @@ fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems \
 
 The mint URL is stable across redeploys within the same project and region — updating the Cloud Function does not change its URL. Enrolling a new repository in an existing mint only updates `PER_REPO_WIF_REPOS` (and WIF configuration) without redeploying the function. Shared `ROLE_APP_IDS` are managed at deploy/bootstrap time (`mint deploy --pem-dir`) or per-role via `mint add-role` / `remove-role` — not during enrollment. Existing enrolled repos continue working with no changes when new repos are enrolled.
 
-Deploying to a **different region** (e.g., changing `--region` from `us-central1` to `us-east5`) creates a new Cloud Run service with a different URL. All enrolled repos store the mint URL in a repo or org variable (`FULLSEND_MINT_URL`), so changing the region requires updating every enrolled repo's variable. Avoid changing `--region` after initial deployment unless you plan to update all consumers.
+Deploying to a **different region** (e.g., changing `--region` from
+`us-central1` to `us-east5`) creates a new Cloud Run service with a
+different URL. Update every consumer: set `mint_url` in
+`.fullsend/config.yaml` or `config.base.yaml` when dispatch reads config,
+and update `FULLSEND_MINT_URL` when config is silent on `mint_url` (see
+[dispatch mint URL migration](#dispatch-mint-url-migration)). Avoid changing
+`--region` after initial deployment unless you plan to update all consumers.
 
 ### HTTP Strict Transport Security
 

@@ -244,6 +244,13 @@ unset, the accessor falls through to the base layer, then to code defaults.
 unset (`""`) falls through to parent, then to code default
 `DefaultPerRepoMintURL` (the hosted public mint).
 
+**GitHub agent dispatch** uses the same overlay-then-base order, then the
+`FULLSEND_MINT_URL` snapshot from the caller (`inputs.mint_url` on the
+reusable workflow), not `DefaultPerRepoMintURL`. A declared config value
+overrides the variable; the resolver stops there when both files are silent
+on `mint_url`. Validation and failure modes for dispatch runs are listed in
+[Config reference — `mint_url`](../../reference/config-reference.md#mint_url).
+
 **`inference`** groups inference backend settings under a single YAML key
 (`inference:`) using the `PerRepoInferenceConfig` struct. Each subfield
 (`provider`, `project`, `region`, `wif_provider`, `wif_audience`,

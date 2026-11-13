@@ -114,6 +114,8 @@ func TestIsVendoredDefaultsInfra(t *testing.T) {
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/count-fix-commits.jq"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/install-podman.sh"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/pre-fetch-review-body.sh"))
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/resolve-effective-mint-url.sh"))
+	assert.False(t, isVendoredDefaultsInfra(".github/scripts/resolve-effective-mint-url-test.sh"))
 	// The installers source retry-with-backoff.sh, so it must ship with them.
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/install-openshell.sh"))
 	assert.True(t, isVendoredDefaultsInfra(".github/scripts/retry-with-backoff.sh"))

@@ -163,7 +163,7 @@ checkout and passes them in as build args:
 | Go | `go.mod` (`go` line), as `actions/setup-go` does |
 | Python, Node | `python-version` / `node-version` in `.github/workflows/lint.yml` |
 | pip packages | the `uv pip install --system` step in `lint.yml` |
-| lychee, pinact | the download URLs and SHA256s in `lint.yml` |
+| lychee, pinact, yq | the download URLs and SHA256s in `lint.yml` |
 | uv | latest release (`lint.yml` doesn't pin it) |
 
 The image is tagged with a hash of those versions and the `Containerfile`, so
@@ -188,10 +188,12 @@ Python also comes from a different build: uv's python-build-standalone here,
 actions/python-versions in CI. `hack/ci-local/ci-local build-image` rebuilds
 without cache to pick up new patch releases.
 
-On amd64, lychee and pinact are verified against the SHA256s that `lint.yml`
-pins. `lint.yml` pins no arm64 checksums, so on arm64 (Apple silicon) they,
-like Node and uv everywhere, are verified against the publisher's checksum
-file from the same release.
+On amd64, lychee, pinact, and yq are verified against the SHA256s that
+`lint.yml` pins. `lint.yml` pins no arm64 checksums for lychee and pinact, so
+on arm64 (Apple silicon) those two, like Node and uv everywhere, are verified
+against the publisher's checksum file from the same release. yq pins both
+architectures in `lint.yml` because its GitHub checksums file is not a
+standard SHA256 list.
 
 Each version set leaves its own image behind. `hack/ci-local/ci-local clean`
 removes every `ci-local` image except the current one for this checkout (add
