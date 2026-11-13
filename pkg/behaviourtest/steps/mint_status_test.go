@@ -649,3 +649,19 @@ func TestWhenOperatorRunsMintStatus_Preconditions(t *testing.T) {
 	err = whenOperatorRunsMintStatus(context.Background(), w, mintStatusCredentialWrite)
 	assert.ErrorContains(t, err, "running fullsend mint status")
 }
+
+func TestWorkflowHostListCovers(t *testing.T) {
+	// Exact match.
+	assert.True(t, workflowHostListCovers([]string{"org/repo"}, "org/repo"))
+	assert.False(t, workflowHostListCovers([]string{"org/repo"}, "org/other"))
+
+	// Prefix glob (ephemeral run-scoped mint): covers only the run's
+	// allow-marked repos, not a different run or the deny host.
+	hosts := []string{"fullsend-ai-test/bt-abc123-allow-*"}
+	assert.True(t, workflowHostListCovers(hosts, "fullsend-ai-test/bt-abc123-allow-462e3775"))
+	assert.False(t, workflowHostListCovers(hosts, "fullsend-ai-test/bt-abc123-deny-462e3775"))
+	assert.False(t, workflowHostListCovers(hosts, "fullsend-ai-test/bt-def456-allow-462e3775"))
+
+	// Bare "*" covers anything.
+	assert.True(t, workflowHostListCovers([]string{"*"}, "any/repo"))
+}
