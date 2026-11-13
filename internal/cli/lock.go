@@ -312,6 +312,14 @@ func lockOneAgent(ctx context.Context, agentName, fullsendDir, absFullsendDir, f
 		sourceURL = agentSourceDeps[0].URL
 	}
 
+	// --update re-resolves each URL from its source once per invocation,
+	// not once per forge platform: the set of index keys already
+	// re-resolved is shared across the loop's LoadWithBase passes, so a
+	// later platform takes the index entry the first pass wrote instead of
+	// re-fetching every shared URL (and re-hitting the rate-limited tree
+	// fetcher) once per platform.
+	resolvedKeys := make(map[string]bool)
+
 	for _, platform := range forgePlatforms {
 		h, baseDeps, loadErr := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
 			WorkspaceRoot: absFullsendDir,
@@ -329,6 +337,7 @@ func lockOneAgent(ctx context.Context, agentName, fullsendDir, absFullsendDir, f
 			// carries --forge when the user named a platform for a child
 			// with no forge: block (#8988).
 			BypassURLIndex:    update,
+			ResolvedKeys:      resolvedKeys,
 			LockUpdateCommand: lockUpdateHint(agentName, fullsendDir, harnessPath, forgeFlag),
 		})
 		if loadErr != nil {

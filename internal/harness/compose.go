@@ -121,6 +121,16 @@ type ComposeOpts struct {
 	// regardless.
 	BypassURLIndex bool
 
+	// ResolvedKeys, when not nil, is the set of URL index keys this
+	// invocation has already re-resolved from the source, shared across
+	// every pass of lock's per-forge compose loop (lock runs LoadWithBase
+	// once per platform from lockForgePlatforms): BypassURLIndex skips a
+	// key's index entry only until the pass that re-resolved it wrote
+	// the fresh one, so a URL shared by several forge platforms is
+	// fetched once per invocation, not once per platform. nil keeps every
+	// key bypassed on every pass.
+	ResolvedKeys map[string]bool
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
@@ -191,6 +201,26 @@ func (opts ComposeOpts) lockUpdateCommand() string {
 // on main). Lock pins still win either way.
 func (opts ComposeOpts) skipURLIndex() bool {
 	return opts.BypassURLIndex && !opts.FetchPolicy.Offline
+}
+
+// bypassIndexKey reports whether the URL index entry for key must be
+// skipped: `fullsend lock --update` re-resolves from the source, but only
+// until this invocation has re-resolved the key and written the fresh
+// index entry (opts.ResolvedKeys, marked at the urlIndexPut sites) —
+// later forge passes use that entry, so a URL shared by several platforms
+// is fetched once per invocation, not once per platform. Offline there is
+// nothing to fetch (see skipURLIndex).
+func (opts ComposeOpts) bypassIndexKey(key string) bool {
+	return opts.skipURLIndex() && !opts.ResolvedKeys[key]
+}
+
+// markIndexResolved records that key's fresh index entry was just written
+// by this invocation's re-resolve, so later forge passes take the index
+// hit instead of re-fetching. Called only after a successful urlIndexPut.
+func (opts ComposeOpts) markIndexResolved(key string) {
+	if opts.ResolvedKeys != nil {
+		opts.ResolvedKeys[key] = true
+	}
 }
 
 // offlineMissAdvice is the advice a non-locked offline cache miss appends:
@@ -1806,9 +1836,11 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 		return fetchBaseFileFromPinnedTree(ctx, field, baseURLDir, relPath, allowedBy, allowlist, opts, depType, treePin, executable)
 	}
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, fileURL)
-	if opts.skipURLIndex() {
+	if opts.bypassIndexKey(fileURL) {
 		// --update re-resolves from the source, not the index (offline it
-		// re-pins from the cache instead; see skipURLIndex).
+		// re-pins from the cache instead; see skipURLIndex); the fresh
+		// entry this pass writes lets later forge passes take the hit
+		// (bypassIndexKey).
 		indexHit = false
 	}
 	lockedHash, locked := opts.lockedFilePin(fileURL)
@@ -1902,6 +1934,8 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 	if iErr := urlIndexPut(opts.WorkspaceRoot, fileURL, hash); iErr != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: updating URL index: %w", field, iErr)
 	}
+	// The fresh entry is in: later forge passes take the hit (bypassIndexKey).
+	opts.markIndexResolved(fileURL)
 
 	fetchedAt := time.Now().UTC()
 	if aErr := auditBaseFetch(opts, fileURL, hash, allowedBy, false, fetchedAt, depType); aErr != nil {
@@ -2007,12 +2041,15 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 		case fileLocked:
 		default:
 			// --update re-resolves from the source, not the index (offline
-			// it re-pins from the cache instead; see skipURLIndex).
-			if !opts.skipURLIndex() {
-				for _, cacheKey := range []string{"scriptdir:" + scriptDirURL, fileURL} {
-					if treeHash, indexHit := urlIndexLookup(opts.WorkspaceRoot, cacheKey); indexHit {
-						treeHashes = append(treeHashes, treeHash)
-					}
+			// it re-pins from the cache instead; see skipURLIndex); the
+			// fresh entries this pass writes let later forge passes take
+			// the hits (bypassIndexKey).
+			for _, cacheKey := range []string{"scriptdir:" + scriptDirURL, fileURL} {
+				if opts.bypassIndexKey(cacheKey) {
+					continue
+				}
+				if treeHash, indexHit := urlIndexLookup(opts.WorkspaceRoot, cacheKey); indexHit {
+					treeHashes = append(treeHashes, treeHash)
 				}
 			}
 		}
@@ -2169,6 +2206,9 @@ func fetchBaseScriptDirTree(ctx context.Context, field, scriptDirURL, scriptFile
 	if iErr := urlIndexPut(opts.WorkspaceRoot, "scriptdir:"+scriptDirURL, treeHash); iErr != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: updating URL index for script dir: %w", field, iErr)
 	}
+	// The fresh entries are in: later forge passes take the hits (bypassIndexKey).
+	opts.markIndexResolved(scriptFileURL)
+	opts.markIndexResolved("scriptdir:" + scriptDirURL)
 
 	fetchedAt := time.Now().UTC()
 	if aErr := auditBaseFetch(opts, scriptFileURL, treeHash, allowedBy, false, fetchedAt, "script"); aErr != nil {
@@ -2202,9 +2242,11 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 	// locked skill URL resolves to its pinned tree, never to the URL index,
 	// and its pinned tree is served as is (#8979).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, skillFileURL)
-	if opts.skipURLIndex() {
+	if opts.bypassIndexKey(skillFileURL) {
 		// --update re-resolves from the source, not the index (offline it
-		// re-pins from the cache instead; see skipURLIndex).
+		// re-pins from the cache instead; see skipURLIndex); the fresh
+		// entry this pass writes lets later forge passes take the hit
+		// (bypassIndexKey).
 		indexHit = false
 	}
 	lockedHash, locked := opts.lockedDirPin(skillFileURL)
@@ -2336,6 +2378,9 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 	if iErr := urlIndexPut(opts.WorkspaceRoot, "skill:"+skillFileURL, treeHash); iErr != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: updating URL index for skill tree: %w", field, iErr)
 	}
+	// The fresh entries are in: later forge passes take the hits (bypassIndexKey).
+	opts.markIndexResolved(skillFileURL)
+	opts.markIndexResolved("skill:" + skillFileURL)
 
 	fetchedAt := time.Now().UTC()
 	if aErr := auditBaseFetch(opts, skillFileURL, treeHash, allowedBy, false, fetchedAt, "skill"); aErr != nil {
@@ -2409,9 +2454,11 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 	// A locked directory URL resolves to its pinned tree, never to the URL
 	// index, and its pinned tree is served as is (#8979).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, keyURL)
-	if opts.skipURLIndex() {
+	if opts.bypassIndexKey(keyURL) {
 		// --update re-resolves from the source, not the index (offline it
-		// re-pins from the cache instead; see skipURLIndex).
+		// re-pins from the cache instead; see skipURLIndex); the fresh
+		// entry this pass writes lets later forge passes take the hit
+		// (bypassIndexKey).
 		indexHit = false
 	}
 	lockedHash, locked := opts.lockedDirPin(keyURL)
@@ -2419,7 +2466,7 @@ func fetchBaseDir(ctx context.Context, kind baseDirKind, field, baseURLDir, dirP
 		indexHit = true
 	}
 	indexKey := keyURL
-	if !indexHit && !opts.skipURLIndex() {
+	if !indexHit && !opts.bypassIndexKey(keyURL) {
 		// Indexes written before the plugins key carried pi entries were
 		// keyed on the Claude marker file. Honour those so an offline run
 		// against an existing cache does not fail until it can re-lock.
@@ -2546,6 +2593,9 @@ func fetchBaseDirTree(ctx context.Context, kind baseDirKind, field, dirURL, keyU
 	if iErr := urlIndexPut(opts.WorkspaceRoot, kind.label+":"+keyURL, treeHash); iErr != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: updating URL index for %s tree: %w", field, kind.label, iErr)
 	}
+	// The fresh entries are in: later forge passes take the hits (bypassIndexKey).
+	opts.markIndexResolved(keyURL)
+	opts.markIndexResolved(kind.label + ":" + keyURL)
 
 	fetchedAt := time.Now().UTC()
 	if aErr := auditBaseFetch(opts, keyURL, treeHash, allowedBy, false, fetchedAt, kind.label); aErr != nil {

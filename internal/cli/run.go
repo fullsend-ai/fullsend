@@ -743,17 +743,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// leaves them to the URL index (#8979).
 	if lockState.entry != nil && !lockState.stale {
 		if unpinned := unpinnedDeps(baseDeps, lockState.pins); len(unpinned) > 0 {
-			noun := "dependency"
-			if len(unpinned) > 1 {
-				noun = "dependencies"
-			}
 			// Without --forge, lock reads forge keys from the child only
 			// (#8988), so a child with no forge: block needs the platform
 			// named. A child with forge keys is locked for all of them.
-			// A name that starts with '-' is guarded behind "--"
-			// (lockUpdateArgs) so it cannot read as a flag.
-			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run fullsend lock %s to pin them",
-				agentName, len(unpinned), noun, unpinned[0], lockUpdateArgs(agentName, fullsendDir, harnessPath, composeOpts.ForgePlatform)))
+			// The name and first dependency are control-escaped, and a
+			// name that starts with '-' is guarded behind "--", in
+			// unpinnedDepsWarning so a crafted name can neither forge log
+			// lines nor read as a flag.
+			printer.StepWarn(unpinnedDepsWarning(agentName, unpinned, fullsendDir, harnessPath, composeOpts.ForgePlatform))
 		}
 	}
 
