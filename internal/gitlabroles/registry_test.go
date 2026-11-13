@@ -182,6 +182,24 @@ func TestResolveCustomReuseUsesTargetSecret(t *testing.T) {
 	assert.True(t, src.Reused)
 }
 
+func TestRegistryCredentialSharers(t *testing.T) {
+	t.Parallel()
+	reg := mustParseRegistry(t, `{
+		"roles": [
+			{"name": "deployer", "credential": "reuse", "reuse": "coder", "agents": ["deploy"]},
+			{"name": "releaser", "credential": "reuse", "reuse": "deployer", "agents": ["release"]},
+			{"name": "scanner", "credential": "own", "agents": ["scan"]}
+		]
+	}`)
+	assert.Equal(t, []Role{"deployer", "releaser"}, reg.CredentialSharers(RoleCoder))
+	assert.Empty(t, reg.CredentialSharers(RoleAnalyst), "agents of one role are not credential sharers")
+	assert.Empty(t, reg.CredentialSharers(RolePoller))
+	assert.Empty(t, reg.CredentialSharers("scanner"))
+	assert.Empty(t, reg.CredentialSharers("deployer"), "a reusing role does not own a credential")
+	assert.Empty(t, reg.CredentialSharers("unknown"))
+	assert.Empty(t, Registry{}.CredentialSharers(RoleCoder), "zero registry behaves as built-ins")
+}
+
 func TestParseRegistryRejectsBuiltinCollision(t *testing.T) {
 	t.Parallel()
 	_, err := ParseRegistry(`{"roles":[{"name":"coder","credential":"own","agents":["pwn"]}]}`)

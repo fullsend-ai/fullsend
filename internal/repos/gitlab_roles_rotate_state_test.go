@@ -68,7 +68,7 @@ func TestLoadRotationState_Formats(t *testing.T) {
 		{
 			name:    "legacy unversioned blob",
 			raw:     legacyRotationStateBlob,
-			wantErr: "unsupported GitLab role rotation state version 0; this CLI reads only state version 2",
+			wantErr: "unsupported GitLab role rotation state version 0; this CLI reads only state versions 2 and 3",
 		},
 		{
 			name:    "legacy unversioned empty roles",
@@ -88,7 +88,7 @@ func TestLoadRotationState_Formats(t *testing.T) {
 				`"supplied":true,"supplied_distributed":true,"excluded_user_ids":[404,505],` +
 				`"generation_current_user_id":101,"generation_pending_user_id":606,` +
 				`"generation_pending_phase":"elevated","generation_retiring_user_id":707}}}`,
-			wantErr: "unsupported GitLab role rotation state version 1; this CLI reads only state version 2",
+			wantErr: "unsupported GitLab role rotation state version 1; this CLI reads only state versions 2 and 3",
 		},
 		{
 			name: "version 2 legacy fields",
@@ -142,8 +142,36 @@ func TestLoadRotationState_Formats(t *testing.T) {
 		},
 		{
 			name:    "unsupported future version",
-			raw:     `{"version":3,"roles":{}}`,
-			wantErr: "unsupported GitLab role rotation state version 3; upgrade to a CLI release or build that reads state version 2 or later",
+			raw:     `{"version":4,"roles":{}}`,
+			wantErr: "unsupported GitLab role rotation state version 4; upgrade to a CLI release or build that reads state version 4 or later",
+		},
+		{
+			name: "version 3 blob with legacy bot identities",
+			raw: `{"version":3,"roles":{"coder":{"phase":"idle","incoming_id":9,` +
+				`"created_token_ids":[9],"legacy_bot_user_ids":[901]}}}`,
+			want: rotationStateFile{Roles: map[string]rotationRoleState{"coder": {
+				Phase: rotationPhaseIdle, IncomingID: 9, CreatedTokenIDs: []int{9}, LegacyBotUserIDs: []int{901},
+			}}},
+		},
+		{
+			name: "version 3 blob without version 3 fields",
+			raw:  `{"version":3,"roles":{"analyst":{"phase":"idle"}}}`,
+			want: rotationStateFile{Roles: map[string]rotationRoleState{"analyst": {Phase: rotationPhaseIdle}}},
+		},
+		{
+			name:    "version 2 blob carrying a version 3 field",
+			raw:     `{"version":2,"roles":{"coder":{"created_token_ids":[9],"legacy_bot_user_ids":[901]}}}`,
+			wantErr: "invalid GitLab role rotation state coder.legacy_bot_user_ids: field requires state version 3",
+		},
+		{
+			name:    "nonpositive legacy bot identity",
+			raw:     `{"version":3,"roles":{"coder":{"created_token_ids":[9],"legacy_bot_user_ids":[901,0]}}}`,
+			wantErr: "invalid GitLab role rotation state coder.legacy_bot_user_ids: account IDs must be positive",
+		},
+		{
+			name:    "negative version reports the current version",
+			raw:     `{"version":-3,"roles":{}}`,
+			wantErr: "reads state version 3 or later",
 		},
 		{
 			name:    "negative version",
@@ -196,6 +224,17 @@ func TestWriteRotationState_VersionedBytes(t *testing.T) {
 			want: `{"version":2,"roles":{"coder":{"phase":"idle","created_token_ids":[5],"managed_user_id":42,` +
 				`"supplied_user_id":7,"supplied_token_id":8,"supplied":true,"excluded_user_ids":[7]}}}`,
 		},
+		{
+			// Only a document that records a version 3 field is written as
+			// version 3; every other role entry is unchanged.
+			name: "legacy bot identity selects version 3",
+			state: rotationStateFile{Roles: map[string]rotationRoleState{
+				"analyst": {Phase: rotationPhaseIdle},
+				"coder":   {Phase: rotationPhaseIdle, CreatedTokenIDs: []int{5}, LegacyBotUserIDs: []int{501}},
+			}},
+			want: `{"version":3,"roles":{"analyst":{"phase":"idle"},` +
+				`"coder":{"phase":"idle","created_token_ids":[5],"legacy_bot_user_ids":[501]}}}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -223,5 +262,16 @@ func TestRotationState_RoundTrip(t *testing.T) {
 		reloaded, _, err := loadRotationState(ctx, fc, "group", "project")
 		require.NoError(t, err)
 		assert.Equal(t, file, reloaded)
+	})
+
+	t.Run("version 3 blob rewrites byte-for-byte", func(t *testing.T) {
+		t.Parallel()
+		const blob = `{"version":3,"roles":{"coder":{"phase":"idle","created_token_ids":[5],"legacy_bot_user_ids":[501]}}}`
+		fc := provisionClient(t)
+		require.NoError(t, fc.UpdateCIVariable(ctx, "group", "project", forge.VarGitLabRoleRotation, blob, true))
+		file, _, err := loadRotationState(ctx, fc, "group", "project")
+		require.NoError(t, err)
+		require.NoError(t, writeRotationState(ctx, fc, "group", "project", file))
+		assert.Equal(t, blob, fc.VariableValues["group/project/"+forge.VarGitLabRoleRotation])
 	})
 }

@@ -1244,7 +1244,15 @@ install. Never delete a live installer's lease.
 > converge against a project before running this version against it.
 > Dispatch is unaffected: the polling path never reads rotation state.
 
-The current CLI reads and writes only version 2. Version 1 is never written.
+The current CLI reads versions 2 and 3 and writes version 2, except that a
+document recording a legacy project-access-token bot user
+(`legacy_bot_user_ids`,
+[#9063](https://github.com/fullsend-ai/fullsend/issues/9063)) is written as
+version 3. That happens when install or rotation creates a legacy project
+access token because the instance offers no project service accounts. A CLI
+that reads only version 2 rejects such a document before touching any
+credential, so upgrade every CLI that manages a project on such an instance.
+Version 1 is never written.
 CLIs built with the tolerant reader ([#8233](https://github.com/fullsend-ai/fullsend/issues/8233))
 accept version 1 but ignore the ownership fields (`created_token_ids`,
 `supplied_token_id`, `supplied`, `excluded_user_ids`) when they select outgoing
