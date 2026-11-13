@@ -413,11 +413,13 @@ func warnContentCaptureAttrLimit() {
 }
 
 // Setup creates a TracerProvider with file and (optionally) OTLP exporters.
-// On any failure it returns a noop tracer and an empty cleanup func so the
-// run is never affected. The cleanup func shuts down the provider (flushing
-// the OTLP batch processor) and closes the file; it should be called with a
-// context that has enough budget for the OTLP flush (typically
-// context.Background() with a 5s timeout).
+// It returns a noop tracer and an empty cleanup func when OTEL_SDK_DISABLED
+// is true or the telemetry file cannot be opened. A failed OTLP endpoint
+// check, header check or exporter setup prints a warning and keeps the file
+// exporter alone. Either way the run is never affected. The cleanup func
+// shuts down the provider (flushing the OTLP batch processor) and closes the
+// file; it should be called with a context that has enough budget for the
+// OTLP flush (typically context.Background() with a 5s timeout).
 func Setup(dir string, serviceVersion string) (trace.Tracer, func(context.Context)) {
 	InstallOTELRedactingLogger()
 
