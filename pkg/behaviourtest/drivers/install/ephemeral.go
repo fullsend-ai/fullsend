@@ -371,6 +371,7 @@ func (d *ephemeralDriver) Capacity() int { return 1000 }
 // Finalize prunes old runs (unless E2E_KEEP_REPOS), releases the lock slot,
 // and tears down the mint.
 func (d *ephemeralDriver) Finalize(ctx context.Context) error {
+	d.logAPIConsumption("at finalize")
 	if !KeepRepos() {
 		d.pruneOldRuns(ctx)
 	}
@@ -394,6 +395,30 @@ func (d *ephemeralDriver) Finalize(ctx context.Context) error {
 		return fmt.Errorf("Finalize: releasing lock: %w", relErr)
 	default:
 		return mintErr
+	}
+}
+
+// logAPIConsumption reports the run's GitHub API usage against the org's
+// hourly rate-limit budget, so a growing suite's per-run cost (and how close
+// it is to the 12,500/hr cap) is visible. The quota counter's remaining/limit
+// reflects the installation token's server-side consumption — including the
+// `repos install` CLI subprocess, which shares the token but not this
+// client — while APICalls() is the suite-side per-caller breakdown only.
+func (d *ephemeralDriver) logAPIConsumption(when string) {
+	if r, ok := d.client.(forge.APIQuotaReporter); ok {
+		for _, c := range r.APIQuotaCounters() {
+			d.logf("[driver] rate-limit quota %s (org %s): %s", when, d.org, formatAPIQuotaCounter(c))
+		}
+	}
+	if r, ok := d.client.(forge.RateLimitReporter); ok {
+		if rl, seen := r.RateLimit(); seen {
+			d.logf("[driver] rate-limit %s (org %s): %s", when, d.org, rl.String())
+		}
+	}
+	if r, ok := d.client.(forge.APICallReporter); ok {
+		if calls := r.APICalls(); len(calls) > 0 {
+			d.logf("[driver] suite-side API calls %s (org %s): %s", when, d.org, formatAPICalls(calls))
+		}
 	}
 }
 
