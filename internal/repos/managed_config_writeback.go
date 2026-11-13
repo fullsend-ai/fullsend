@@ -548,7 +548,7 @@ func newEntrySuggestion(m *Manifest, p pendingWriteback) RepoEntry {
 		entry = *existing
 	} else if platform := m.PlatformFor(p.rr.Forge); platform != nil {
 		scratch := &PlatformConfig{Repos: slices.Clone(platform.Repos)}
-		if carved, _ := carveOutGlobEntry([]*PlatformConfig{scratch}, name); carved != nil {
+		if carved, _, _ := carveOutGlobEntry([]*PlatformConfig{scratch}, name); carved != nil {
 			entry = *carved
 		}
 	}
