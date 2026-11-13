@@ -493,6 +493,43 @@ func TestOpenCodeCloudLocationExport(t *testing.T) {
 	}
 }
 
+func TestOpenCodeLaunch_DropsExperimentalFlags(t *testing.T) {
+	for _, source := range []string{"inherited", ".env", ".env.d/harness.env", ".fullsend/iteration.env"} {
+		t.Run(source, func(t *testing.T) {
+			f := newEnvDataFixture(t)
+			flags := []string{
+				"OPENCODE_EXPERIMENTAL=true",
+				"OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true",
+				"OPENCODE_EXPERIMENTAL_FUTURE_FLAG=true",
+			}
+			f.write(t, ".env", "export KEPT=yes\n"+strings.Join(envDataControlLines(f.ws), "\n")+"\n")
+			var inherited []string
+			if source == "inherited" {
+				inherited = flags
+			} else {
+				content := "export " + strings.Join(flags, "\nexport ") + "\n"
+				if source == ".env" {
+					content += "export KEPT=yes\n"
+				}
+				f.write(t, source, content)
+			}
+			trusted := openCodeTrustedEnv{ConfigContent: `{"permission":{"task":"allow"}}`}
+			out, stderr, err := f.loadIn(t, "", inherited,
+				openCodeTrustedEnvPin(trusted)+" && "+openCodeTrustedEnvRestore()+" && env -0", openCodeEnvDataDrop...)
+			require.NoError(t, err, stderr)
+			assert.NotContains(t, out, "OPENCODE_EXPERIMENTAL", "experimental flags must not reach OpenCode")
+			assert.Contains(t, out, "KEPT=yes\x00", "ordinary environment exports still apply")
+			assert.Contains(t, out, "OPENCODE_CONFIG_CONTENT="+trusted.ConfigContent+"\x00", "foreground Task permissions stay intact")
+			if source != "inherited" {
+				for _, flag := range flags {
+					name, _, _ := strings.Cut(flag, "=")
+					assert.Contains(t, stderr, name+" is not taken from .env")
+				}
+			}
+		})
+	}
+}
+
 // requirePinnedSha256sum skips tests that run openCodeUtilityPin on hosts
 // (macOS) where the pinned directories have no sha256sum.
 func requirePinnedSha256sum(t *testing.T) {
