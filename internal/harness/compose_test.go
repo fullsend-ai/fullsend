@@ -5391,6 +5391,27 @@ func TestMergeForgeConfigInto_HostFilesOverriddenByChild(t *testing.T) {
 	assert.Equal(t, "env/child.env", child.HostFiles[0].Src)
 }
 
+func TestMergeForgeConfigInto_ImageMountsOverriddenByChild(t *testing.T) {
+	base := &ForgeConfig{
+		ImageMounts: []ImageMount{
+			{Image: "registry.example/base-tools:v1", Dest: "/opt/base-tools"},
+			{Image: "registry.example/base:v1", Dest: "/opt/tools"},
+		},
+	}
+	child := &ForgeConfig{
+		ImageMounts: []ImageMount{
+			{Image: "registry.example/child:v1", Dest: "/opt/tools"},
+		},
+	}
+
+	require.NoError(t, mergeForgeConfigInto(base, child))
+
+	require.Len(t, child.ImageMounts, 2)
+	assert.Equal(t, base.ImageMounts[0], child.ImageMounts[0])
+	assert.Equal(t, "registry.example/child:v1", child.ImageMounts[1].Image)
+	assert.Equal(t, "/opt/tools", child.ImageMounts[1].Dest)
+}
+
 func TestLoadWithBase_URLBase_ForgeSkillPathTraversal(t *testing.T) {
 	baseContent := []byte(`
 agent: agents/remote.md
