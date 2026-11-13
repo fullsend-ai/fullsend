@@ -312,15 +312,20 @@ the run picks the same branch name as before, it replaces the old branch.
 The code agent names its branch `agent/<KEY>-<short-description>`, for
 example `agent/PROJ-123-reject-empty-names`. It writes the description again
 on each run, so you cannot tell in advance whether a rerun reuses the branch.
-With the earlier pull request still open, a rerun ends in one of two ways:
+With the earlier pull request still open, a rerun ends in one of three ways:
 
 | Branch name the rerun picks | What happens |
 |---|---|
 | A different one | The run opens a second pull request and the first stays open. The code agent's comment on the Jira issue then shows only the newer URL |
-| The same one | The run fails when it pushes, and the pull request keeps its earlier commits ([agents#409](https://github.com/fullsend-ai/agents/issues/409)) |
+| The same one, and the pull request holds only the code agent's commits | The run replaces those commits with the new ones. The pull request stays open |
+| The same one, and the pull request holds a commit by anyone else | The run fails when it pushes and the pull request keeps its commits. A comment on the Jira issue names the commit |
 
-Neither is what you want. Use `/fs-fix` on the pull request, or close it
-first.
+"Anyone else" covers a commit by you, a commit by the fix agent (`/fs-fix`),
+a code agent commit you amended, and the merge commit GitHub's **Update
+branch** button adds.
+
+You cannot pick which of these you get. To adjust the pull request, use
+`/fs-fix` on it. To start over, close it before you rerun.
 
 #### If the code agent skips the run
 
