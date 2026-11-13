@@ -276,7 +276,15 @@ Jira poll and the agent-editing commands (`agent set/add/update/remove`)
 all resolve the list through `EffectiveAllowedResources`, which
 ensures fullsend's default prefixes on top of a non-empty result, so a
 first-party agent source covered only by a default prefix resolves with no
-configuration. A resolved empty list (an explicit `[]`) stays deny-all.
+configuration. `perRepoConfig.Validate` validates agents against the
+same effective list, so `github setup` re-runs and `repos install`
+admit the same shapes as the commands above; `config_base` preset
+validation parses the preset standalone (preset list plus the
+defaults, no overlay), so it is stricter than the read for
+overlay-only prefixes and for a preset `[]`, and looser over a runtime
+overlay `[]`; and managed `repos.yaml` validation
+(`ValidateMergedManaged`) checks merged managed agents against it too.
+A resolved empty list (an explicit `[]`) stays deny-all.
 The rendered effective config (`EffectiveYAML`) shows the accessor-level
 list, which may omit the ensured defaults.
 

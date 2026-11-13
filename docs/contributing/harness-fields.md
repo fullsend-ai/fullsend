@@ -270,9 +270,15 @@ agents (harness dispatch, `dispatch --route`, the Jira poll, `agent
 set/add/update/remove`) resolve the same value rather than a
 stricter one; tightening `run`/`lint`/`lock` to respect a base `[]`
 instead would change the behaviour of the family that already worked. A
-base `[]` that must stay authoritative has the managed `repos.yaml` reset,
-which rejects a non-empty list declared below it ([Layered Config
-Reference](../guides/infrastructure/layered-config-reference.md)).
+deny-all that must stay authoritative is declared in a managed
+`repos.yaml` block (`defaults.config`, the forge config or the repo's
+`config`), whose reset rejects a non-empty list declared below it
+([Layered Config
+Reference](../guides/infrastructure/layered-config-reference.md)); a
+`[]` in a `config_base` preset or a hand-edited `config.base.yaml` does
+not stay authoritative over a non-empty `config.yaml` list, because the
+reset compares only the managed blocks and `config.base.yaml` is layered
+in after the check.
 
 ### Mutual exclusion
 

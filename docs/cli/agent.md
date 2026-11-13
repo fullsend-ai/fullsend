@@ -441,7 +441,7 @@ dispatch on each runtime.
 
 ## `agent remove`
 
-Remove an agent from config. If the removed agent was the last one using a given `allowed_remote_resources` prefix, that prefix is also cleaned up.
+Remove an agent from config. If the removed agent was the last one using a given `allowed_remote_resources` prefix, that prefix is also cleaned up. When the cleaned list becomes empty, the local `allowed_remote_resources` key is dropped so the parent chain resolves again; over a chain that resolves to deny-all (a base `[]`), the command instead writes the fullsend default prefixes a remaining agent still uses — which can be host-specific when `GITHUB_SERVER_URL` names a GitHub Enterprise host.
 
 ```bash
 fullsend agent remove triage
