@@ -20,16 +20,30 @@ import (
 // Jira event.
 var jiraDispatchPayloadB64 = base64.StdEncoding.EncodeToString([]byte(`{"type":"jira_comment","_normalized_event":{"repo":"group/sub/project","entity":{"kind":"work_item","id":10042,"key":"PROJ-123","url":"https://acme.atlassian.net/browse/PROJ-123"},"transition":{"kind":"comment_added","comment":{"body":"/fs-triage","command":"/fs-triage"}},"actor":{"id":"acct-1","kind":"human","role":"write"},"state":{"labels":[]},"source":{"system":"jira","raw_type":"comment","raw_action":"created"}}}`))
 
+// jiraLabelPayloadB64 is the EVENT_PAYLOAD_B64 for a Jira label change:
+// a normalized event with no comment.
+var jiraLabelPayloadB64 = base64.StdEncoding.EncodeToString([]byte(`{"type":"jira_changelog","_normalized_event":{"repo":"group/sub/project","entity":{"kind":"work_item","id":10042,"key":"PROJ-123","url":"https://acme.atlassian.net/browse/PROJ-123"},"transition":{"kind":"label_changed","label":{"name":"ready-to-code","action":"added"}},"actor":{"id":"acct-1","kind":"human","role":"write"},"state":{"labels":["ready-to-code"]},"source":{"system":"jira","raw_type":"changelog","raw_action":"updated"}}}`))
+
+// jiraForceCommentPayloadB64 is the EVENT_PAYLOAD_B64 for a Jira
+// "/fs-code --force" comment.
+var jiraForceCommentPayloadB64 = base64.StdEncoding.EncodeToString([]byte(`{"type":"jira_comment","_normalized_event":{"repo":"group/sub/project","entity":{"kind":"work_item","id":10042,"key":"PROJ-123","url":"https://acme.atlassian.net/browse/PROJ-123"},"transition":{"kind":"comment_added","comment":{"body":"/fs-code --force","command":"/fs-code","instruction":"--force"}},"actor":{"id":"acct-1","kind":"human","role":"write"},"state":{"labels":[]},"source":{"system":"jira","raw_type":"comment","raw_action":"created"}}}`))
+
 type jiraAgentJobRun struct {
 	out         string
 	err         error
 	memberCalls int32
+	// commentBody is the COMMENT_BODY the stub fullsend run saw, or
+	// "UNSET" when the variable was not in its environment. The stub
+	// writes it to a file rather than stdout so log assertions can check
+	// the body never reaches the job log.
+	commentBody string
 }
 
 // runAgentJobScriptForJira runs run-agent-job.sh for a Jira work-item
 // dispatch signed over signedEventType, with the job's EVENT_TYPE set to
 // eventType. The stub fullsend binary prints its arguments, the event file
-// it was given, and the GitLab entity variables the harness would see.
+// it was given, and the GitLab entity variables the harness would see, and
+// saves its COMMENT_BODY to a file (see jiraAgentJobRun.commentBody).
 func runAgentJobScriptForJira(t *testing.T, stage, eventType, signedEventType, payloadB64 string) jiraAgentJobRun {
 	t.Helper()
 	root := t.TempDir()
@@ -70,9 +84,11 @@ func runAgentJobScriptForJira(t *testing.T, stage, eventType, signedEventType, p
 	t.Cleanup(srv.Close)
 
 	bin := t.TempDir()
+	commentBodyFile := filepath.Join(t.TempDir(), "comment-body")
 	require.NoError(t, os.WriteFile(filepath.Join(bin, "fullsend"), []byte(
 		"#!/bin/sh\n"+
 			"if [ \"$1\" = \"run\" ]; then\n"+
+			"  printf '%s' \"${COMMENT_BODY-UNSET}\" > \"$STUB_COMMENT_BODY_FILE\"\n"+
 			"  echo FULLSEND_ARGS: \"$@\"\n"+
 			"  while [ $# -gt 0 ]; do\n"+
 			"    if [ \"$1\" = \"--event-file\" ]; then echo \"EVENT_FILE: $(cat \"$2\" | tr -d '\\n ')\"; fi\n"+
@@ -95,6 +111,7 @@ func runAgentJobScriptForJira(t *testing.T, stage, eventType, signedEventType, p
 	cmd.Dir = root
 	cmd.Env = append([]string{
 		"SCRIPT=" + script,
+		"STUB_COMMENT_BODY_FILE=" + commentBodyFile,
 		"PATH=" + bin + ":" + os.Getenv("PATH"),
 		"HOME=" + t.TempDir(),
 		"CI_PROJECT_DIR=" + root,
@@ -118,10 +135,14 @@ func runAgentJobScriptForJira(t *testing.T, stage, eventType, signedEventType, p
 		// Overridable CI/CD variables a Jira dispatch must not inherit.
 		"CI_MERGE_REQUEST_IID=7",
 		"FULLSEND_NOTE_TARGET=merge_requests",
+		"COMMENT_BODY=inherited-pipeline-variable",
 	}, pinTLSEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	run.out = string(out)
 	run.err = err
+	if body, readErr := os.ReadFile(commentBodyFile); readErr == nil {
+		run.commentBody = string(body)
+	}
 	return run
 }
 
@@ -143,6 +164,42 @@ func TestRunAgentJobScript_JiraDispatchRunsWithEventFile(t *testing.T) {
 	assert.Contains(t, run.out, "STUB_ENV FULLSEND_NOTE_TARGET=issues")
 	assert.Contains(t, run.out, "actor authorized by the Jira poller")
 	assert.Zero(t, atomic.LoadInt32(&run.memberCalls), "a Jira dispatch has no GitLab actor to look up")
+}
+
+// TestRunAgentJobScript_JiraDispatchExportsCommentBody checks a Jira
+// dispatch hands fullsend run the trigger comment as COMMENT_BODY, so the
+// code pre-script sees /fs-code --force (#9187), that a label event runs
+// with it empty rather than with an inherited pipeline variable, and that
+// the untrusted body stays out of the job log.
+func TestRunAgentJobScript_JiraDispatchExportsCommentBody(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventType string
+		payload   string
+		want      string
+	}{
+		{name: "comment", eventType: "jira_comment", payload: jiraForceCommentPayloadB64, want: "/fs-code --force"},
+		{name: "label", eventType: "jira_changelog", payload: jiraLabelPayloadB64, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run := runAgentJobScriptForJira(t, "code", tt.eventType, tt.eventType, tt.payload)
+			require.NoError(t, run.err, "stdout/stderr: %s", run.out)
+			assert.Contains(t, run.out, "FULLSEND_ARGS: run code")
+			assert.Equal(t, tt.want, run.commentBody)
+
+			// The stub echoes the event file itself; every other line is
+			// the script's own log.
+			var log strings.Builder
+			for _, line := range strings.Split(run.out, "\n") {
+				if !strings.HasPrefix(line, "EVENT_FILE: ") {
+					log.WriteString(line + "\n")
+				}
+			}
+			assert.NotContains(t, log.String(), "/fs-code --force")
+			assert.NotContains(t, log.String(), "inherited-pipeline-variable")
+		})
+	}
 }
 
 func TestRunAgentJobScript_JiraDispatchFailsClosed(t *testing.T) {
