@@ -79,6 +79,8 @@ agents:
       skills:
         - https://github.com/acme/agent-config/tree/<commit>/skills/security#sha256=<digest>
       env:
+        runner:
+          REVIEW_FINDING_SEVERITY_THRESHOLD: medium
         sandbox:
           REVIEW_FINDING_SEVERITY_THRESHOLD: medium
 ```
