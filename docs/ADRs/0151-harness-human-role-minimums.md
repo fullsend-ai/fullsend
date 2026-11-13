@@ -22,6 +22,11 @@ This decision applies only to CEL/entity routes and migrated v2 model-bound
 admission. Legacy non-CEL, non-entity workflows remain under Authorization v1
 and their existing workflow guards.
 
+[ADR 0170](0170-align-entity-context-snapshot-with-normalized-entity.md) and
+[entity-context-snapshot v2](../normative/entity-context-snapshot/v2/README.md)
+are the versioned snapshot contract that represents the `human_min_role`
+values.
+
 | Earlier ADR | Effect of this decision |
 | --- | --- |
 | [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md) | Apply the harness minimum before CEL on migrated routes. |

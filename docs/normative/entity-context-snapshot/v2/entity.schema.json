@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v2/entity.schema.json",
+  "title": "EntityMetadata",
+  "type": "object",
+  "required": ["kind", "id", "source_id", "source", "key", "number", "title", "state", "author", "created_at", "updated_at", "labels"],
+  "properties": {
+    "kind": { "$ref": "common.schema.json#/$defs/entity_kind" },
+    "id": {
+      "$ref": "common.schema.json#/$defs/canonical_entity_id",
+      "description": "Canonical fullsend entity ID; same value as Normalized entity v1 entity.id."
+    },
+    "source_id": {
+      "$ref": "common.schema.json#/$defs/structural_id",
+      "description": "Immutable provider entity ID; same value as Normalized entity v1 entity.source_id."
+    },
+    "source": { "$ref": "common.schema.json#/$defs/source" },
+    "key": {
+      "type": "string",
+      "pattern": "^([A-Z][A-Z0-9_]+-|[#!])[1-9][0-9]*$",
+      "description": "Contextual human reference: GitHub, Forgejo, and GitLab issue #number; GitLab merge request !IID; Jira issue key."
+    },
+    "number": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Positive numeric component of key; projected into normalized-event v1 entity.id for forge routing."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "state": { "enum": ["open", "closed", "merged"] },
+    "author": {
+      "$ref": "common.schema.json#/$defs/actor_ref",
+      "description": "Source-authenticated creator, as Normalized entity v1 entity.author; role state is in state/actors.json."
+    },
+    "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+    "labels": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true,
+      "description": "Filtered label strings sorted by UTF-8 byte order. The labels scope in index.json states whether the array is complete."
+    },
+    "conversation": {
+      "type": "object",
+      "required": ["category"],
+      "properties": {
+        "category": {
+          "type": "object",
+          "required": ["name"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "id": { "$ref": "common.schema.json#/$defs/github_node_id" },
+            "slug": { "type": "string", "minLength": 1 },
+            "format": { "enum": ["question_answer"] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false,
+      "description": "Required for a conversation and forbidden for other kinds; same names as Normalized entity v1 entity.conversation."
+    }
+  },
+  "allOf": [
+    { "$ref": "common.schema.json#/$defs/entity_identity_rules" },
+    {
+      "if": { "properties": { "kind": { "const": "change_proposal" } }, "required": ["kind"] },
+      "else": { "properties": { "state": { "enum": ["open", "closed"] } } }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "conversation" } }, "required": ["kind"] },
+      "then": { "required": ["conversation"] },
+      "else": { "not": { "required": ["conversation"] } }
+    },
+    {
+      "if": { "properties": { "source": { "properties": { "system": { "const": "jira" } }, "required": ["system"] } }, "required": ["source"] },
+      "then": { "properties": { "key": { "pattern": "^[A-Z][A-Z0-9_]+-[1-9][0-9]*$" } } },
+      "else": {
+        "if": {
+          "properties": {
+            "kind": { "const": "change_proposal" },
+            "source": { "properties": { "system": { "const": "gitlab" } }, "required": ["system"] }
+          },
+          "required": ["kind", "source"]
+        },
+        "then": { "properties": { "key": { "pattern": "^![1-9][0-9]*$" } } },
+        "else": { "properties": { "key": { "pattern": "^#[1-9][0-9]*$" } } }
+      }
+    }
+  ],
+  "additionalProperties": false
+}
