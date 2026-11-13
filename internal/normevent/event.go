@@ -153,10 +153,12 @@ type State struct {
 
 // IssueType is the current work-item type supplied by the tracker.
 // IDs are stable within an instance; names may be customized or renamed.
+// The field names match issue_type in the normalized-entity v1 contract
+// (normentity.IssueType), not the Jira wire format.
 type IssueType struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Subtask bool   `json:"subtask"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsSubtask bool   `json:"is_subtask"`
 }
 
 // ConversationState is conversation-level metadata (ADR 0086).

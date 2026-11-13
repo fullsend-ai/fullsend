@@ -89,7 +89,7 @@ func TestBuildEventPayload_NormalizedEventRoundTrips(t *testing.T) {
 	// Verify the embedded _normalized_event can be re-parsed as a valid
 	// NormalizedEvent — the same path fullsend run takes.
 	ev := mustEvent(t, "ready-to-code-labeled.json")
-	ev.State.IssueType = &normevent.IssueType{ID: "10001", Name: "Bug", Subtask: false}
+	ev.State.IssueType = &normevent.IssueType{ID: "10001", Name: "Bug", IsSubtask: false}
 	payload, err := buildEventPayload(ev)
 	require.NoError(t, err)
 

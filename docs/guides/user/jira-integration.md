@@ -150,7 +150,7 @@ either of these holds:
 ### Route by issue type
 
 Jira events include the issue's current type in `event.state.issue_type`,
-with `id`, `name`, and `subtask` fields. Add a condition to an agent's harness
+with `id`, `name`, and `is_subtask` fields. Add a condition to an agent's harness
 `trigger:` to route by type, for example:
 
 ```yaml
@@ -162,7 +162,7 @@ trigger: >-
 ```
 
 Use `id` for an identifier that survives renames within your Jira instance,
-or `name` for readable rules using your project's type names. `subtask` is a
+or `name` for readable rules using your project's type names. `is_subtask` is a
 boolean. The object is omitted when Jira does not return an issue type, so
 guard access with `has()`. No additional configuration is required.
 

@@ -49,7 +49,7 @@ func TestIssueType_DiscoveryAndCEL(t *testing.T) {
 				if issueType == nil {
 					require.Nil(t, event.State.IssueType)
 				} else {
-					require.Equal(t, &normevent.IssueType{ID: issueType.ID, Name: issueType.Name, Subtask: issueType.Subtask}, event.State.IssueType)
+					require.Equal(t, &normevent.IssueType{ID: issueType.ID, Name: issueType.Name, IsSubtask: issueType.Subtask}, event.State.IssueType)
 				}
 				data, err := json.Marshal(event)
 				require.NoError(t, err)
@@ -58,7 +58,7 @@ func TestIssueType_DiscoveryAndCEL(t *testing.T) {
 				require.Equal(t, event.State.IssueType, restored.State.IssueType)
 				eventMap, err := restored.ToMap()
 				require.NoError(t, err)
-				matched, err := celtrigger.Evaluate(`event.source.system == 'jira' && has(event.state.issue_type) && event.state.issue_type.id == '10001' && event.state.issue_type.name == 'Bug' && !event.state.issue_type.subtask`, eventMap)
+				matched, err := celtrigger.Evaluate(`event.source.system == 'jira' && has(event.state.issue_type) && event.state.issue_type.id == '10001' && event.state.issue_type.name == 'Bug' && !event.state.issue_type.is_subtask`, eventMap)
 				require.NoError(t, err)
 				require.Equal(t, issueType != nil && issueType.ID == "10001", matched)
 			}

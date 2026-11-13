@@ -75,7 +75,7 @@ func TestDispatchJiraEvent_NestedProjectThroughAPIRoute(t *testing.T) {
 	}))
 
 	event := jiraTestEvent("group/sub/project")
-	event.State.IssueType = &normevent.IssueType{ID: "10002", Name: "Subtask", Subtask: true}
+	event.State.IssueType = &normevent.IssueType{ID: "10002", Name: "Subtask", IsSubtask: true}
 	if err := p.DispatchJiraEvent(context.Background(), "triage", event); err != nil {
 		t.Fatalf("DispatchJiraEvent: %v", err)
 	}

@@ -393,12 +393,12 @@
         "issue_type": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["id", "name", "subtask"],
+          "required": ["id", "name", "is_subtask"],
           "description": "Current work-item type from the tracker snapshot; omitted when unavailable.",
           "properties": {
             "id": { "type": "string", "minLength": 1, "maxLength": 255 },
             "name": { "type": "string", "minLength": 1, "maxLength": 255 },
-            "subtask": { "type": "boolean" }
+            "is_subtask": { "type": "boolean" }
           }
         },
         "conversation": {
