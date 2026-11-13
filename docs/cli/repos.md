@@ -428,7 +428,18 @@ Upgrade the scaffold and the poller or webhook dispatcher CLI together:
 
 The reverse skew behaves the same way: a new scaffold paired with an old poller finds no body at the canonical path and drops the instruction.
 
-A `/fs-*` command body is also no longer truncated to 800 characters in transport. The dispatcher refuses to dispatch a command whose payload exceeds the chunk budget instead of running the agent on a shortened instruction. Other bodies, such as bot review notes, keep the 800-character bound and the truncation marker.
+The payload's top-level `labels` key is form-dependent: the complete
+`_normalized_event` form drops it (labels travel only at
+`_normalized_event.state.labels`), while the comment-only fallback carries
+the bounded top-level `labels` list.
+
+A `/fs-*` command body is also no longer truncated to 800 characters in
+transport. The dispatcher refuses to dispatch a command whose payload exceeds
+the chunk budget instead of running the agent on a shortened instruction. Other
+bodies, such as bot review notes, are now bounded to 270 characters (down from
+the 800 of earlier releases), so less of a long review note reaches the agent;
+the `[…truncated]` marker is appended when it is cut (see the normalized event
+spec).
 
 #### `runtime` and `allowed_remote_resources` moved into `config` (breaking)
 

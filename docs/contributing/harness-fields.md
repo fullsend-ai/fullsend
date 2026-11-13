@@ -242,7 +242,7 @@ Overlay `when` expressions are evaluated with:
 
 | Variable | Type | Source |
 |---|---|---|
-| `event` | `normevent.Event` | The triggering event — fields like `source.system`, `entity.kind`, `transition.kind`. The ADR 0107 fields `actor.bot_role` and `actor.role_verified` are present only when an adapter performed a bot-role lookup; guard them with `has()` |
+| `event` | `map[string]any` | The triggering event (the serialized `normevent.Event`) — fields like `source.system`, `entity.kind`, `transition.kind`. The ADR 0107 fields `actor.bot_role` and `actor.role_verified` are present only when an adapter performed a bot-role lookup; guard them with `has()` |
 | `runtime.forge` | `string` | Effective forge platform (precedence: CLI flag > config.forge > CI env vars) |
 | `config` | `map[string]any` | Full per-repo config from `config.yaml` |
 
@@ -262,20 +262,42 @@ This payload provides backwards-compatible legacy forge fields (`issue`,
 GitLab has a second, separate builder: `buildEventPayload` in
 `internal/poll/dispatch.go`, shared by the poller and the webhook dispatcher.
 It emits a minimal payload. Its `_normalized_event` is the complete event when
-that validates and fits the transport budget, and otherwise a partial map that
-carries only `transition.comment.body` (see
-`docs/normative/normalized-event/v1/README.md`). Its unit tests are in
-`internal/poll/dispatch_test.go`, `internal/poll/dispatch_normalized_test.go`
-and `internal/poll/webhook_dispatch_test.go`;
-`run-agent-job.sh` reads the body in
+that validates and fits the transport budget; a missing or invalid normalized
+event falls back to a partial map that carries only `transition.comment.body`
+for any note, command or not, and an over-budget complete form falls back the
+same way for a non-command note (see
+`docs/normative/normalized-event/v1/README.md`); a `/fs-*` command body whose
+complete event does not fit the budget fails the dispatch closed instead of
+falling back.
+In the complete form the
+event's `state.labels` is bounded to a 1024-byte JSON prefix; entries past
+the bound are dropped, except fullsend's own control labels (`fullsend-fix`,
+`fullsend-no-fix`), which the bound keeps so the fix kill switch survives it.
+A non-command comment body is bounded to 270 runes.
+Each other attacker-shaped single string (branch refs, the
+head_repo/base_repo paths, logins, the label name) is bounded to a 258-byte
+JSON prefix — a same-project MR carries the project's own path in
+head_repo/base_repo, and it stays cut there even though `repo` travels
+whole; the
+config-derived `repo`, `entity.url` and
+`entity.linked_change_proposal.url` travel whole, and a config whose
+lengths push the payload past the budget fails closed. Together
+these bounds keep the worst attacker-shaped payload at a plausible config
+inside the transport
+budget (`TestBuildEventPayload_WorstCaseFitsTransportBudget` pins it). Its
+unit tests
+are in `internal/poll/dispatch_test.go`,
+`internal/poll/dispatch_normalized_test.go` and
+`internal/poll/webhook_dispatch_test.go`; `run-agent-job.sh` reads the body in
 `internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/`, and
 `internal/scaffold/gitlab_fix_instruction_test.go` covers that script.
 
 When resolving CEL-guarded overlays via `ResolveOverlays(event, forgePlatform,
-config)`, the runtime passes the deserialized `normevent.Event` directly as
-the `event` variable in the CEL environment (see [CEL environment](#cel-environment)
-above). When adding, modifying, or removing fields in normalized event structures
-or `event_payload`:
+config)`, the runtime passes the normalized event as a map, or an empty map
+when the run has none (so `has()` guards are false and `event == null` never
+matches), as the `event` variable in the CEL environment (see
+[CEL environment](#cel-environment) above). When adding, modifying, or removing
+fields in normalized event structures or `event_payload`:
 
 1. Update `buildEventPayload` in `internal/harnessdispatch/project.go` and its
    unit tests in `internal/harnessdispatch/project_test.go`. If the change

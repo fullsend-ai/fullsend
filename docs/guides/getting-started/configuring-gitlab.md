@@ -94,11 +94,38 @@ most 1000 characters each. All three template layers validate the chunk
 alphabet and length; fixed code reconstructs the payload as data. Variable
 bridges disable expansion, and creator/HMAC authentication precedes caller
 link logging and credential selection. Non-command note bodies, such as bot
-review notes, are bounded to 800 Unicode characters with a truncation marker.
-A `/fs-*` command body is carried untruncated, and the dispatcher fails closed
-before a pipeline is created when a command payload exceeds the nine-chunk
-budget. Other oversized payloads also fail before a pipeline is created. GitLab's 20-input limit leaves no spare root
-inputs: conflicting declarations or excess inputs fail explicitly.
+review notes, are bounded to 270 Unicode characters with a truncation marker,
+the event's `state.labels` to a 1024-byte JSON prefix (fullsend's own
+control labels, `fullsend-fix` and `fullsend-no-fix`, are kept past it),
+and each other
+attacker-shaped single string (branch refs, the head_repo/base_repo paths,
+logins, the label name) to a 258-byte JSON prefix — a same-project MR
+carries the project's own path in head_repo/base_repo, and it stays cut
+there even though `repo` travels whole; the config-derived repo and
+entity URLs travel whole, and a config whose lengths push a payload past
+the budget fails closed (comment-only form for a note, a refused dispatch
+for a command). A `/fs-*` command body is carried
+untruncated, and the dispatcher fails closed before a pipeline is created
+when a command payload exceeds the nine-chunk budget; that refusal is
+permanent, so the poller drops the event with a WARNING log line and advances
+past it — the command is never retried and never runs. The largest `/fs-*`
+command that still dispatches is about 3,000 ASCII characters — fewer when
+the text is escape-heavy, since JSON encoding expands `<`, `>`, and `&`
+sixfold — because the complete event carries the command text twice (as
+`comment.body` and as the re-derived `comment.instruction`); commands
+between that boundary and the roughly 6,550 ASCII characters the
+comment-only fallback used to carry whole are now refused instead of
+dispatched. The webhook dispatcher
+job takes the same refusal differently: its dispatch step fails, and a re-run
+or payload replay re-refuses the event; the refusal is permanent there too.
+A non-command event that would not fit is not refused: it is sent in the
+comment-only form with a WARNING. The nine-chunk budget follows from
+GitLab's 20-input pipeline-contract limit ([ADR
+0131](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md),
+[GitLab CI/CD
+inputs](https://docs.gitlab.com/ci/inputs/)): the dispatch configuration
+declares 11 metadata inputs and 9 payload chunks, using every root input
+GitLab allows, so conflicting declarations or excess inputs fail explicitly.
 
 Compatible user input declarations, jobs, includes, and header settings
 survive merge/uninstall. Declarations referenced directly by surviving user
