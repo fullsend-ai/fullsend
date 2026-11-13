@@ -501,7 +501,7 @@ implementation
 | `FULLSEND_JIRA_TOKEN` | Scoped Jira API token for the poller and agent run-status updates; use instead of the client credentials below |
 | `FULLSEND_JIRA_EMAIL` | Optional. Bot user's email for a scoped user token. Omit it for a service-account token |
 | `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Alternative to `FULLSEND_JIRA_TOKEN`: a service account's OAuth 2.0 credential (see [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)) |
-| `JIRA_TOKEN` | Jira API token for built-in triage and code result writes |
+| `JIRA_TOKEN` | Jira API token the built-in agents' sandbox `jira-ro` provider reads. Use the same token as `FULLSEND_JIRA_TOKEN` |
 | `JIRA_USER_EMAIL` | Email associated with the token used for built-in agent result writes. For Jira-sourced runs, `fullsend run` replaces it with `FULLSEND_JIRA_EMAIL` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) |
 | `JIRA_BASE_URL` | Jira site URL used by built-in agent result-write scripts. For Jira-sourced runs, `fullsend run` replaces it with `tracker.jira.base_url` and also sets `JIRA_API_URL` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) |
 
@@ -579,6 +579,14 @@ Host-side scripts receive them only when the harness declares them in
   which Jira-sourced runs set from `FULLSEND_JIRA_EMAIL`. Host-side scripts
   already require an explicit `env.runner` mapping on both GitHub and GitLab,
   so this change does not introduce a GitLab-specific host-script migration.
+- **Breaking change: `JIRA_USER_EMAIL` on Jira-sourced runs.** `fullsend run`
+  sets `JIRA_USER_EMAIL` from `FULLSEND_JIRA_EMAIL` and no longer reads the
+  `JIRA_USER_EMAIL` repository secret. If your `jira-ro` provider still reads
+  the `JIRA_TOKEN` secret, that token is now paired with the new email. Keep
+  `JIRA_TOKEN` the same token as `FULLSEND_JIRA_TOKEN` until your agents
+  version reads `${FULLSEND_JIRA_TOKEN}`. With a bot account's token under
+  one name and a service account's token under the other, the sandbox picks
+  the wrong auth mode and its Jira reads fail with 401.
 - **Residual exposure in the `fullsend run` process.** The action sets both
   values in the initial environment of the process that runs `fullsend run`,
   because the Jira client reads them from the process environment. Other

@@ -222,7 +222,8 @@ way, and `FULLSEND_JIRA_TOKEN` is optional too while the client credentials are 
 therefore declare both credential types. The Jira repository secrets expand empty in
 `env.sandbox`, expanded `host_files` content, `FULLSEND_OUTPUT_FILE` and provider config values.
 A provider credential value may expand `${FULLSEND_JIRA_TOKEN}`, because credential values reach
-only the provider proxy and never the sandbox; the other three expand empty there too. Scripts
+only the provider proxy and never the sandbox; `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`
+and `FULLSEND_JIRA_CLIENT_SECRET` expand empty there too. Scripts
 always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, so bytecode never
 breaks the hash-verified fetch cache.
 

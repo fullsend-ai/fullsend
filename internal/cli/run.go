@@ -3704,7 +3704,11 @@ func init() {
 	// reach only the provider proxy through the openshell child
 	// environment, never the sandbox, so the jira-ro provider can read the
 	// token without a second, differently named secret (#9411). Config
-	// values still refuse it.
+	// values still refuse it. As with providerOnlyKeys below, expansion is
+	// not scoped by provider type: any provider definition's credential
+	// can reference the token, and its profile decides which hosts the
+	// proxy sends it to. That is safe only because provider and profile
+	// definitions are read from the trusted ref.
 	for k := range sandboxDeniedKeys {
 		if providerCredentialJiraKeys[k] {
 			sandbox.CredentialOnlyExpansionKeys(k)
