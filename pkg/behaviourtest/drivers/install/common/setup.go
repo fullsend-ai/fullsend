@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -373,4 +375,119 @@ func ParseInferenceStatusWIFProvider(output string) (string, error) {
 		return "", fmt.Errorf("expected healthy status, got %q", status.Status)
 	}
 	return status.WIFProvider, nil
+}
+
+// RunReposInstall installs fullsend into an ephemeral behaviour-test repo
+// via `repos install <target> --fullsend-ref`, the no-vendoring path used by
+// the ephemeral-repo model (ADR 0114). A fresh temp manifest path is used
+// per call for concurrency safety; the empty file is removed first so
+// `repos install` bootstraps a v1 manifest rather than failing on a
+// version-0 empty file. mintURL, fullsendRef, gcpProjectID and wifProvider
+// are appended only when set.
+func RunReposInstall(
+	binary, token, target, mintURL, fullsendRef, gcpProjectID, wifProvider string,
+	runCLI CLIRunnerFunc,
+	logf func(string, ...any),
+) error {
+	f, err := os.CreateTemp("", "repos-*.yaml")
+	if err != nil {
+		return fmt.Errorf("creating temp manifest: %w", err)
+	}
+	manifest := f.Name()
+	f.Close()
+	os.Remove(manifest)
+	defer os.Remove(manifest)
+
+	args := []string{
+		"repos", "install", target,
+		"--vendor",
+		"--runtime", "dummy",
+		"--direct",
+		"--forge", "github",
+		"-f", manifest,
+	}
+	if fullsendRef != "" {
+		args = append(args, "--fullsend-ref", fullsendRef)
+	}
+	if mintURL != "" {
+		args = append(args, "--mint-url", mintURL)
+	}
+	if project := strings.TrimSpace(gcpProjectID); project != "" {
+		args = append(args, "--inference-project", project)
+	}
+	if wif := strings.TrimSpace(wifProvider); wif != "" {
+		args = append(args, "--inference-wif-provider", wif)
+	}
+
+	logf("[install] running fullsend %s", strings.Join(args, " "))
+	if _, err := runCLI(binary, token, args...); err != nil {
+		return fmt.Errorf("repos install %s: %w", target, err)
+	}
+	return nil
+}
+
+// EnvFullsendRef resolves the fullsend ref for behaviour tests.
+// Resolution chain: BEHAVIOUR_FULLSEND_REF → PR head SHA from the event
+// payload → GITHUB_HEAD_REF → GITHUB_REF_NAME → "" (defaults to v0).
+func EnvFullsendRef() string {
+	if v := os.Getenv("BEHAVIOUR_FULLSEND_REF"); v != "" {
+		return v
+	}
+	if sha := prHeadSHAFromEvent(); sha != "" {
+		return sha
+	}
+	if v := os.Getenv("GITHUB_HEAD_REF"); v != "" {
+		return v
+	}
+	if v := os.Getenv("GITHUB_REF_NAME"); v != "" {
+		return v
+	}
+	return ""
+}
+
+// prHeadSHAFromEvent extracts the PR head SHA from a GitHub event payload.
+func prHeadSHAFromEvent() string {
+	eventPath := os.Getenv("GITHUB_EVENT_PATH")
+	if eventPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Clean(eventPath))
+	if err != nil {
+		return ""
+	}
+	var event struct {
+		PullRequest struct {
+			Head struct {
+				SHA string `json:"sha"`
+			} `json:"head"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		return ""
+	}
+	return event.PullRequest.Head.SHA
+}
+
+// ResolveOrgWIFProvider looks up the org-level Workload Identity Federation
+// provider via `fullsend inference status <org>` and returns the full
+// provider path. The ephemeral-repo model resolves this once per run and
+// reuses it for every repo (ADR 0114), rather than provisioning a per-repo
+// provider.
+func ResolveOrgWIFProvider(
+	binary, token, org, gcpProjectID string,
+	runCLI CLIRunnerFunc,
+	logf func(string, ...any),
+) (string, error) {
+	statusArgs := []string{"inference", "status", org, "--project", gcpProjectID, "--format", "json"}
+	logf("[install] running fullsend %s", strings.Join(statusArgs, " "))
+	out, err := runCLI(binary, token, statusArgs...)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", org, err)
+	}
+	wifProvider, err := ParseInferenceStatusWIFProvider(out)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", org, err)
+	}
+	logf("[install] org-scoped inference WIF provider: %s", wifProvider)
+	return wifProvider, nil
 }
