@@ -318,7 +318,7 @@ With the earlier pull request still open, a rerun ends in one of three ways:
 |---|---|
 | A different branch name | The run opens a second pull request and the first stays open. The code agent's comment on the Jira issue then shows only the newer URL |
 | The same branch name, and the pull request holds only the code agent's commits | The run replaces those commits with the new ones. The pull request stays open |
-| The same branch name, and the pull request holds a commit by anyone else | The run fails when it pushes, and the pull request keeps its commits. The newest run-status comment on the Jira issue starts with `🤖 Finished Code` and marks the run as failed. The log of the workflow run in GitHub Actions, or of the pipeline in GitLab, names the commit |
+| The same branch name, and the pull request holds a commit by anyone else | The run fails when it pushes, and the pull request keeps its commits. The newest run-status comment on the Jira issue starts with `🤖 Finished Code` and marks the run as failed. Neither the comment nor the run log names the commit yet ([agents#1953](https://github.com/fullsend-ai/agents/issues/1953)), so check the pull request's commit list for a commit that is not the code agent's |
 
 "Anyone else" covers a commit by you, a commit by the fix agent (`/fs-fix`),
 a code agent commit you amended, and a merge commit that brings the pull
