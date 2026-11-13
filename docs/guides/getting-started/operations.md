@@ -302,6 +302,16 @@ gcloud services enable \
 
 See [`status_notifications`](../../reference/config-reference.md#status_notifications) for configuring start/completion comments and reactions.
 
+If an agent cannot start because workflow setup fails, the GitHub fallback posts or
+updates a separate startup-failure comment with the failure category and workflow
+run link. Retries of the same workflow run update that comment, while a later
+workflow run posts a new historical comment. A later successful run does not
+remove the historical failure comment. This fallback applies only to GitHub-originated events; pre-agent
+failures from Jira- and GitLab-originated events are currently not reported by
+this path. It is independent of `status_notifications`; after it posts
+successfully, orphaned status reconciliation is skipped to avoid a duplicate
+notification.
+
 The composite action accepts optional inputs for status notifications and
 review reconciliation:
 
@@ -310,6 +320,11 @@ review reconciliation:
 | `run-url` | URL of the CI/CD run shown in the status comment |
 | `status-repo` | Repository (`owner/repo`) to post status comments on |
 | `status-number` | Issue or PR number for status comments |
+| `failure-repo` | Repository (`owner/repo`) for startup-failure comments; falls back to `status-repo` when unset |
+| `failure-number` | Issue or PR number for startup-failure comments; falls back to `status-number` when unset |
+| `failure-trusted-bots` | Comma-separated GitHub App set names (as in `FULLSEND_APP_SET`); each is expanded to the `<set>-<role>` bot identity for startup-failure comment deduplication (optional) |
+| `failure-token` | Optional token used only for startup-failure reporting; the normal `github_token` remains the workflow token |
+| `source-system` | Originating tracker (`github`, `gitlab`, or `jira`); startup-failure comments are GitHub-only (default: `github`) |
 | `status-comment-id` | ID of the comment that triggered a slash-command run; when set, reactions target that comment instead of the issue/PR |
 | `mint-url` | URL of the token mint service used to obtain fresh tokens for posting comments |
 | `role` | Mint role selected by dispatch, used to reconcile an interrupted run before the agent reports its resolved role (default: empty) |

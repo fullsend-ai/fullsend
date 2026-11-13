@@ -45,6 +45,55 @@ func TestReviewWorkflowKeepsThreadFetchAgentOwned(t *testing.T) {
 	assert.NotContains(t, section, "HUMAN_RESOLVED_FETCH_SCRIPT:")
 }
 
+// TestStartupFailureReportingGuards verifies the workflow conditions that keep
+// policy skips and cancellations from being reported as setup failures.
+func TestStartupFailureReportingGuards(t *testing.T) {
+	dispatch, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	dispatchText := string(dispatch)
+
+	for _, agent := range []string{"triage", "code", "review", "fix", "retro", "prioritize", "harness"} {
+		assert.Contains(t, dispatchText, "Report "+agent+" launch failure")
+	}
+	assert.Contains(t, dispatchText, "Report harness dispatch failure")
+	assert.Contains(t, dispatchText, "steps.dispatch.outcome != 'success'")
+	for _, line := range strings.Split(dispatchText, "\n") {
+		if strings.Contains(line, "if: ${{ failure()") && strings.Contains(line, "steps.run-agent.outcome") {
+			assert.Contains(t, line, "!cancelled()", "startup failure reporters must not run after cancellation")
+		}
+	}
+	assert.Contains(t, dispatchText, "id: fork_guard")
+	assert.Contains(t, dispatchText, "id: eligibility")
+	assert.Contains(t, dispatchText, "steps.fork_guard.outputs.policy_skip != 'true'")
+	assert.Contains(t, dispatchText, "steps.eligibility.outputs.policy_skip != 'true'")
+	assert.Contains(t, dispatchText, "steps.review-body.outputs.policy_skip != 'true'")
+	assert.Contains(t, dispatchText, `FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"`)
+	assert.Contains(t, dispatchText, `FULLSEND_FAILURE_STABLE_MARKER="true"`)
+	assert.GreaterOrEqual(t, strings.Count(dispatchText, `export FULLSEND_FAILURE_ROLE="coder"`), 2,
+		"code and fix reporters must use the shared coder bot role")
+
+	prioritize, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-prioritize.yml"))
+	require.NoError(t, err)
+	prioritizeText := string(prioritize)
+	assert.Contains(t, prioritizeText, "failure-repo: ${{ inputs.source_repo }}")
+	assert.NotContains(t, prioritizeText, "status-repo: ${{ inputs.source_repo }}")
+	section := extractStepSection(t, prioritizeText, "Run prioritize agent")
+	assert.Contains(t, section, "failure-repo:")
+	assert.Contains(t, section, "failure-number:")
+	assert.Contains(t, section, "source-system:")
+	assert.Contains(t, section, "github_token: ${{ github.token }}")
+	assert.Contains(t, section, "failure-token: ${{ steps.app-token.outputs.token || github.token }}")
+
+	for _, agent := range []string{"code", "fix"} {
+		t.Run(agent+" uses coder role for startup reporting", func(t *testing.T) {
+			section := extractStepSection(t, dispatchText, "Run "+agent+" agent")
+			assert.Contains(t, section, "agent: "+agent)
+			assert.Contains(t, section, "role: coder",
+				"the %s composite path must use the coder identity for startup-failure deduplication", agent)
+		})
+	}
+}
+
 type workflowInput struct {
 	Required bool   `yaml:"required"`
 	Type     string `yaml:"type"`
@@ -1672,8 +1721,16 @@ func TestActionReconcileStatusUsesSuppliedRoleFallback(t *testing.T) {
 		"action.yml must declare the optional role supplied by matrix dispatch")
 	assert.Contains(t, s, "SUPPLIED_ROLE: ${{ inputs.role }}",
 		"reconcile step must receive the supplied role")
+	assert.Contains(t, s, "ROLE: ${{ inputs.role || inputs.agent }}",
+		"startup failure reporter must receive a role even when the run step is skipped")
+	assert.Contains(t, s, "FAILURE_REPO: ${{ inputs.failure-repo != '' && inputs.failure-number != '' && inputs.failure-repo || inputs.status-repo }}",
+		"startup failure reporter must select the failure repository and number as a pair")
+	assert.Contains(t, s, "FAILURE_NUMBER: ${{ inputs.failure-repo != '' && inputs.failure-number != '' && inputs.failure-number || inputs.status-number }}",
+		"startup failure reporter must select the failure repository and number as a pair")
 	assert.Contains(t, s, "RESOLVED_ROLE=\"${HARNESS_ROLE:-${SUPPLIED_ROLE:-${AGENT}}}\"",
 		"reconciliation must use the supplied role when an early failure prevents the harness from reporting one")
+	assert.NotContains(t, s, "        GH_TOKEN: ${{ inputs.github_token }}\n        MINT_URL:",
+		"status reconciliation mints its own token and must not receive the workflow token")
 }
 
 func TestActionReconcileStatusSupportsOlderCLIs(t *testing.T) {
@@ -1859,6 +1916,8 @@ func TestReusableDispatchStatusCommentPassthrough(t *testing.T) {
 				"%s agent step must pass status-repo to action.yml", stage)
 			assert.Contains(t, section, "status-number:",
 				"%s agent step must pass status-number to action.yml", stage)
+			assert.Contains(t, section, "source-system:",
+				"%s agent step must pass source-system to action.yml", stage)
 		})
 	}
 
@@ -1871,7 +1930,14 @@ func TestReusableDispatchStatusCommentPassthrough(t *testing.T) {
 			"harness-run agent step must pass status-repo to action.yml")
 		assert.Contains(t, section, "status-number:",
 			"harness-run agent step must pass status-number to action.yml")
+		assert.Contains(t, section, "source-system:",
+			"harness-run agent step must pass source-system to action.yml")
+		assert.Contains(t, section, "github_token: ${{ github.token }}",
+			"harness-run must keep the workflow token as github_token")
+		assert.Contains(t, section, "failure-token: ${{ steps.app-token.outputs.token || github.token }}",
+			"harness-run must pass the minted token only to failure reporting")
 	})
+
 }
 
 // TestShimPerRepoProjectNumberPassthrough validates that the per-repo shim

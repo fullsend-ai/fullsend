@@ -648,6 +648,40 @@ In `enabled` mode, a hard crash or cancellation that happens before the agent
 could post anything at all is also surfaced after the fact: a post-job cleanup
 step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
 
+If workflow setup fails before the agent process starts, the dispatch workflow
+posts a separate "Fullsend agent did not run" comment with the failure category
+and workflow-run link. This startup-failure comment is emitted only for
+GitHub-originated events. Pre-agent failures from Jira- and GitLab-originated
+events are currently not reported by this fallback; tracker-specific
+startup-failure reporting is tracked in [#9256](https://github.com/fullsend-ai/fullsend/issues/9256).
+Retries of the same workflow run update the existing startup-failure comment
+instead of creating duplicates. A later workflow run posts a new comment so
+the historical failure and its workflow-run link are preserved; a later
+successful run does not remove that historical comment.
+
+The standalone prioritize workflow also supplies the status target and, for
+GitHub-originated calls targeting a different repository, mints a
+prioritize-scoped GitHub token only for the startup-failure reporter.
+Same-repository calls use the workflow token and non-GitHub calls do not mint this
+reporting token. The normal `github_token` input remains the workflow token for
+installation, cloning, provider credentials, and `fullsend run`. This enables
+the same startup-failure reporting for cross-repository prioritize calls; if
+minting fails and the target is a different repository, the workflow emits an
+explicit warning because the caller's `GITHUB_TOKEN` cannot write to that
+repository.
+
+Because this fallback runs specifically when the Fullsend CLI may not have been
+installed, it uses the workflow's GitHub comment API directly and does not read
+`status_notifications`. Therefore, a startup-failure comment can still be
+posted when status comments are disabled; this is intentional because the
+comment reports that the requested agent did not run at all.
+
+When the startup-failure fallback has successfully posted, the action skips
+orphaned-status reconciliation. No Fullsend run was started in that case, so
+there is no start comment to reconcile; skipping it also prevents a second,
+misleading "Interrupted" comment. Other status side effects are consequently
+not run for that pre-agent failure.
+
 **Reactions.** Emoji reactions don't generate a GitHub notification, so they
 are a lower-noise way to show that an agent is working and how the run turned
 out. Unlike comments, they default to `disabled`. When `reaction.start` is
