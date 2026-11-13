@@ -178,6 +178,13 @@ type DismissedReviewRecord struct {
 	Message     string
 }
 
+// ResolvedReviewThreadRecord records a ResolvePullRequestReviewThread call.
+type ResolvedReviewThreadRecord struct {
+	Owner, Repo string
+	Number      int
+	ThreadID    string
+}
+
 // BranchSHARecord records a CreateBranchFromSHA call.
 type BranchSHARecord struct {
 	Owner, Repo, Branch, SHA string
@@ -464,6 +471,7 @@ type FakeClient struct {
 	DeletedCommentReactions []int64
 	CreatedReviews          []ReviewRecord
 	DismissedReviews        []DismissedReviewRecord
+	ResolvedPRReviewThreads []ResolvedReviewThreadRecord
 	CommittedFiles          []CommitFilesRecord
 	CommittedFilesToBranch  []CommitFilesToBranchRecord
 	ForceCommittedFiles     []ForceCommitFileToBranchRecord
@@ -2202,6 +2210,33 @@ func (f *FakeClient) ListPullRequestReviewThreads(_ context.Context, owner, repo
 		}
 	}
 	return ReviewThreadPage{}, nil
+}
+
+func (f *FakeClient) ResolvePullRequestReviewThread(_ context.Context, owner, repo string, number int, threadID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ResolvePullRequestReviewThread"); e != nil {
+		return e
+	}
+	f.ResolvedPRReviewThreads = append(f.ResolvedPRReviewThreads, ResolvedReviewThreadRecord{
+		Owner:    owner,
+		Repo:     repo,
+		Number:   number,
+		ThreadID: threadID,
+	})
+	if f.PRReviewThreads != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if page, ok := f.PRReviewThreads[key]; ok {
+			for i := range page.Threads {
+				if page.Threads[i].ID == threadID {
+					page.Threads[i].IsResolved = true
+					break
+				}
+			}
+			f.PRReviewThreads[key] = page
+		}
+	}
+	return nil
 }
 
 // clonePtr returns a pointer to a copy of *p, or nil when p is nil.

@@ -1425,6 +1425,9 @@ type Client interface {
 	// resolution state and comments. It returns ErrNotSupported when the forge
 	// has no equivalent review-thread API.
 	ListPullRequestReviewThreads(ctx context.Context, owner, repo string, number int) (ReviewThreadPage, error)
+	// ResolvePullRequestReviewThread marks an open review thread as resolved.
+	// It returns ErrNotSupported when the forge has no equivalent review-thread API.
+	ResolvePullRequestReviewThread(ctx context.Context, owner, repo string, number int, threadID string) error
 	DismissPullRequestReview(ctx context.Context, owner, repo string, number, reviewID int, message string) error
 
 	// Change proposal merge
