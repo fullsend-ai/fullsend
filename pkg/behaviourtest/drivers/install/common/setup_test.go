@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +31,7 @@ func TestRunReposInstall_SetsAppSetAndManifestFields(t *testing.T) {
 	}
 
 	err := RunReposInstall("/bin/fullsend", "tok", "fullsend-ai-test/bt-x-allow-1",
-		"https://mint.test", "deadbeef", "fullsend-test", "proj", "projects/1/.../github-oidc",
+		"https://mint.test", "deadbeef", "fullsend-test", "", "proj", "projects/1/.../github-oidc",
 		runner, t.Logf)
 	require.NoError(t, err)
 
@@ -38,14 +40,43 @@ func TestRunReposInstall_SetsAppSetAndManifestFields(t *testing.T) {
 	// mint's app set (else bot-identity auth like the review-bot fix breaks).
 	assert.Contains(t, all, "repos set github.app_set fullsend-test")
 	assert.Contains(t, all, "repos set defaults.vendor true")
-	assert.Contains(t, all, "repos set github.mint_url https://mint.test")
 	assert.Contains(t, all, "repos set github.fullsend_ref deadbeef")
+	// mint_url goes in the entry's managed config, not the github section.
+	assert.Contains(t, all, `github.repos["fullsend-ai-test/bt-x-allow-1"].config.mint_url https://mint.test`)
+	// No preset: the dummy runtime is pinned.
+	assert.Contains(t, all, `github.repos["fullsend-ai-test/bt-x-allow-1"].config.runtime dummy`)
+	assert.NotContains(t, all, "config_base")
 	assert.Contains(t, all, "repos install fullsend-ai-test/bt-x-allow-1")
 	assert.Contains(t, all, "--vertex-project proj")
 	assert.Contains(t, all, "--vertex-wif-provider projects/1/.../github-oidc")
 	// The removed flags must not reappear.
 	assert.NotContains(t, all, "--vendor")
 	assert.NotContains(t, all, "--fullsend-ref")
+}
+
+func TestRunReposInstall_ConfigPresetStagedAndRuntimeInherited(t *testing.T) {
+	// A local preset is staged next to the manifest and declared as
+	// config_base; with a preset, config.runtime is left unset so the
+	// preset's runtime is inherited.
+	base := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(base, "preset.yaml"), []byte("runtime: dummy\n"), 0o600))
+	prev := moduleRootFn
+	moduleRootFn = func() (string, error) { return base, nil }
+	t.Cleanup(func() { moduleRootFn = prev })
+
+	var calls []string
+	runner := func(_, _ string, args ...string) (string, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return "", nil
+	}
+	err := RunReposInstall("/bin/fullsend", "tok", "org/bt-x-allow-1",
+		"https://mint.test", "deadbeef", "fullsend-test", "preset.yaml", "", "",
+		runner, t.Logf)
+	require.NoError(t, err)
+
+	all := strings.Join(calls, "\n")
+	assert.Contains(t, all, `github.repos["org/bt-x-allow-1"].config_base {source: config-base.yaml}`)
+	assert.NotContains(t, all, "config.runtime", "a preset must not pin config.runtime")
 }
 
 func TestRunGitHubSetupWithOpts_VendoredMode(t *testing.T) {

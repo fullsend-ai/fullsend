@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -391,25 +392,27 @@ func ParseInferenceStatusWIFProvider(output string) (string, error) {
 // it defaults the repo to the production app set and breaks bot-identity
 // authorization such as the review-bot fix path.
 func RunReposInstall(
-	binary, token, target, mintURL, fullsendRef, appSet, gcpProjectID, wifProvider string,
+	binary, token, target, mintURL, fullsendRef, appSet, configPreset, gcpProjectID, wifProvider string,
 	runCLI CLIRunnerFunc,
 	logf func(string, ...any),
 ) error {
-	f, err := os.CreateTemp("", "repos-*.yaml")
+	// The manifest lives in a fresh temp dir so a local config preset can be
+	// staged next to it: `repos install` only reads local presets from inside
+	// the manifest directory. The dir (manifest + any staged preset) is
+	// removed on return, so every call installs from a fresh manifest.
+	dir, err := os.MkdirTemp("", "fullsend-bt-manifest-")
 	if err != nil {
-		return fmt.Errorf("creating temp manifest: %w", err)
+		return fmt.Errorf("creating manifest dir: %w", err)
 	}
-	manifest := f.Name()
-	f.Close()
-	// Remove the empty file so `repos set` bootstraps a fresh v1 manifest;
-	// an existing empty file parses as version 0 and fails validation.
-	os.Remove(manifest)
-	defer os.Remove(manifest)
+	defer os.RemoveAll(dir)
+	manifest := filepath.Join(dir, "repos.yaml")
+	os.Remove(manifest) // `repos set` bootstraps a v1 manifest; an empty file parses as version 0.
 
 	// repos install is manifest-driven (#8219): vendor, runtime, mint_url,
-	// fullsend_ref, inference.auth and repository membership live in
-	// repos.yaml, not on flags. Build the manifest with `repos set`, then
-	// install. Only credentials and one-run controls stay on the flags.
+	// fullsend_ref, app_set, inference.auth, config_base and repository
+	// membership live in repos.yaml, not on flags. Build the manifest with
+	// `repos set`, then install. Only credentials and one-run controls stay
+	// on the flags.
 	set := func(keyVal ...string) error {
 		args := append([]string{"repos", "set"}, keyVal...)
 		args = append(args, "-f", manifest)
@@ -418,12 +421,11 @@ func RunReposInstall(
 		}
 		return nil
 	}
+	entry := func(suffix string) string { return fmt.Sprintf("github.repos[%q]%s", target, suffix) }
+
 	steps := [][]string{
 		{"defaults.vendor", "true"},
 		{"defaults.inference.auth", "vertex-wif"},
-	}
-	if mintURL != "" {
-		steps = append(steps, []string{"github.mint_url", mintURL})
 	}
 	if fullsendRef != "" {
 		steps = append(steps, []string{"github.fullsend_ref", fullsendRef})
@@ -431,10 +433,28 @@ func RunReposInstall(
 	if appSet != "" {
 		steps = append(steps, []string{"github.app_set", appSet})
 	}
-	steps = append(steps,
-		[]string{fmt.Sprintf("github.repos[%q]", target), "{}"},
-		[]string{fmt.Sprintf("github.repos[%q].config.runtime", target), "dummy"},
-	)
+	steps = append(steps, []string{entry(""), "{}"})
+	// mint_url goes in the entry's managed config (not the entry's mint_url)
+	// so it overrides a config preset's mint_url field by field — the way
+	// `github setup --mint-url` did — rather than tripping the manifest
+	// mint_url conflict check (#8483).
+	if mintURL != "" {
+		steps = append(steps, []string{entry(".config.mint_url"), mintURL})
+	}
+	// Config preset (BEHAVIOUR_CONFIG_PRESET): declare it as config_base.
+	// A local preset is staged next to the manifest and referenced by its
+	// relative name. With a preset and no explicit runtime, config.runtime
+	// is left unset so the preset's runtime is inherited; otherwise the
+	// behaviour suite's "dummy" runtime is pinned.
+	if preset := strings.TrimSpace(configPreset); preset != "" {
+		source, err := stageConfigPreset(dir, preset)
+		if err != nil {
+			return err
+		}
+		steps = append(steps, []string{entry(".config_base"), fmt.Sprintf("{source: %s}", source)})
+	} else {
+		steps = append(steps, []string{entry(".config.runtime"), "dummy"})
+	}
 	for _, s := range steps {
 		if err := set(s...); err != nil {
 			return err
@@ -454,6 +474,46 @@ func RunReposInstall(
 		return fmt.Errorf("repos install %s: %w", target, err)
 	}
 	return nil
+}
+
+// stageConfigPreset returns the config_base.source for a behaviour-test
+// config preset. An HTTPS URL is used as is. A local path (relative paths
+// resolve against the module root) is copied into dir as config-base.yaml,
+// because `repos install` rejects local presets outside the manifest
+// directory, and its relative name is returned. (Ported from #8483.)
+func stageConfigPreset(dir, preset string) (string, error) {
+	const presetFileName = "config-base.yaml"
+	if strings.HasPrefix(strings.ToLower(preset), "https://") {
+		return preset, nil
+	}
+	if strings.Contains(preset, "://") {
+		return "", fmt.Errorf("config preset %q: only local paths and https:// URLs are supported", preset)
+	}
+	path := preset
+	if !filepath.IsAbs(path) {
+		root, err := moduleRootFn()
+		if err != nil {
+			return "", fmt.Errorf("resolving config preset %q: %w", preset, err)
+		}
+		path = filepath.Join(root, path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading config preset: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, presetFileName), data, 0o600); err != nil {
+		return "", fmt.Errorf("copying config preset: %w", err)
+	}
+	return presetFileName, nil
+}
+
+// moduleRootFn returns the module root directory. Overridable in tests.
+var moduleRootFn = func() (string, error) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		return "", fmt.Errorf("finding module root: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // EnvFullsendRef resolves the fullsend ref for behaviour tests.
