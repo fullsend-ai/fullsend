@@ -15,8 +15,8 @@ func TestProjectExecutionRef_PRWithChangeProposal(t *testing.T) {
 	ref, err := ProjectExecutionRef("pr-ping", "triage", ev)
 	require.NoError(t, err)
 	assert.Equal(t, "pr-ping", ref.Agent)
-	assert.Contains(t, ref.EventPayload, `"pull_request"`)
-	assert.Contains(t, ref.EventPayload, `"head"`)
+	assert.Contains(t, string(ref.EventPayload), `"pull_request"`)
+	assert.Contains(t, string(ref.EventPayload), `"head"`)
 	assert.Equal(t, "100", ref.StatusNumber)
 }
 
@@ -25,7 +25,7 @@ func TestProjectExecutionRef_FsFixTriggerSource(t *testing.T) {
 	ref, err := ProjectExecutionRef("fix", "fix", ev)
 	require.NoError(t, err)
 	assert.Equal(t, ev.Actor.ID, ref.TriggerSource)
-	assert.Contains(t, ref.EventPayload, `"comment"`)
+	assert.Contains(t, string(ref.EventPayload), `"comment"`)
 }
 
 func TestProjectExecutionRef_ReviewTriggerSource(t *testing.T) {
@@ -42,7 +42,7 @@ func TestProjectExecutionRef_LinkedChangeProposal(t *testing.T) {
 
 	ref, err := ProjectExecutionRef("fix", "fix", ev)
 	require.NoError(t, err)
-	assert.Contains(t, ref.EventPayload, `"pull_request"`)
+	assert.Contains(t, string(ref.EventPayload), `"pull_request"`)
 }
 
 func TestTriggerSource_NoMatch(t *testing.T) {

@@ -1080,7 +1080,7 @@ Key fields in each dispatch record:
 |---|---|
 | `agent` | Agent to dispatch (e.g., `triage`, `code`) |
 | `event_type` | What triggered the dispatch (e.g., `comment_added`, `label_changed`) |
-| `event_payload` | JSON-encoded [NormalizedEvent](../../normative/normalized-event/v1/) — inspect with `jq -r '.event_payload \| fromjson' dispatches.json` |
+| `event_payload` | Wrapped execution payload object — inspect NormalizedEvent with `jq '.[].event_payload._normalized_event' dispatches.json` |
 | `source_repo` | GitHub repo slug where the agent runs |
 | `status_repo` | GitHub repo slug for status tracking |
 | `status_number` | Entity identifier as a string (Jira numeric issue ID) |
@@ -1102,7 +1102,7 @@ The poll step writes an array of dispatch records to `dispatches.json`. Each rec
 | `agent` | string | Agent to run (e.g., `"triage"`, `"code"`). Determined by CEL trigger evaluation. |
 | `role` | string | Harness role for this agent. |
 | `event_type` | string | Jira event type that triggered the dispatch (e.g., `"comment_added"`, `"label_changed"`, `"opened"`, `"reopened"`, `"edited"`, `"closed"`). |
-| `event_payload` | string | JSON-encoded [NormalizedEvent](../../normative/normalized-event/v1/). Example below. |
+| `event_payload` | object | Wrapped execution payload object (`{issue, comment, _normalized_event}`). Example below. |
 | `source_repo` | string | GitHub repo slug where the agent workflow runs. |
 | `trigger_source` | string | (Optional) Trigger source identifier. |
 | `status_repo` | string | GitHub repo slug for status tracking. |
@@ -1110,44 +1110,53 @@ The poll step writes an array of dispatch records to `dispatches.json`. Each rec
 
 ### `event_payload` example
 
-The `event_payload` field is a JSON-encoded [NormalizedEvent](../../normative/normalized-event/v1/) — the same forge-neutral struct that GitHub and GitLab input drivers produce. An example for a `/fs-triage` comment on `PROJ-101`:
+The `event_payload` field is a structured execution payload object wrapping issue or pull request details, comment information, and the full forge-neutral [NormalizedEvent](../../normative/normalized-event/v1/) under `_normalized_event`. An example for a `/fs-triage` comment on `PROJ-101`:
 
 ```json
 {
-  "repo": "acme/platform",
-  "entity": {
-    "kind": "work_item",
-    "id": 10042,
-    "key": "PROJ-101",
-    "url": "https://myteam.atlassian.net/browse/PROJ-101"
+  "issue": {
+    "number": 10042,
+    "html_url": "https://myteam.atlassian.net/browse/PROJ-101"
   },
-  "transition": {
-    "kind": "comment_added",
-    "comment": {
-      "body": "/fs-triage please triage this bug",
-      "command": "/fs-triage",
-      "instruction": "please triage this bug"
+  "comment": {
+    "body": "/fs-triage please triage this bug"
+  },
+  "_normalized_event": {
+    "repo": "acme/platform",
+    "entity": {
+      "kind": "work_item",
+      "id": 10042,
+      "key": "PROJ-101",
+      "url": "https://myteam.atlassian.net/browse/PROJ-101"
+    },
+    "transition": {
+      "kind": "comment_added",
+      "comment": {
+        "body": "/fs-triage please triage this bug",
+        "command": "/fs-triage",
+        "instruction": "please triage this bug"
+      }
+    },
+    "actor": {
+      "id": "5f7c012e0b2a4c001f3d9876",
+      "kind": "human",
+      "role": "write",
+      "is_entity_author": false,
+      "is_entity_assignee": false
+    },
+    "state": {
+      "labels": ["bug", "fullsend"]
+    },
+    "source": {
+      "system": "jira",
+      "raw_type": "comment",
+      "raw_action": "created"
     }
-  },
-  "actor": {
-    "id": "5f7c012e0b2a4c001f3d9876",
-    "kind": "human",
-    "role": "write",
-    "is_entity_author": false,
-    "is_entity_assignee": false
-  },
-  "state": {
-    "labels": ["bug", "fullsend"]
-  },
-  "source": {
-    "system": "jira",
-    "raw_type": "comment",
-    "raw_action": "created"
   }
 }
 ```
 
-The `entity.key` field is required when `source.system` is `"jira"` — it carries the human-readable Jira key (e.g., `PROJ-101`). See the [NormalizedEvent spec](../../normative/normalized-event/v1/) for the full schema.
+The `_normalized_event.entity.key` field is required when `source.system` is `"jira"` — it carries the human-readable Jira key (e.g., `PROJ-101`). Inspect the embedded normalized event with `jq '.[].event_payload._normalized_event' dispatches.json`. See the [NormalizedEvent spec](../../normative/normalized-event/v1/) for the full schema.
 
 ## Actor role resolution
 
