@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -2822,6 +2823,49 @@ exit 0
 		"the persistent command must be the trailing argument sequence")
 	assert.NotContains(t, args, "-- true",
 		"sandbox create must not use 'true' as the command (breaks OpenShell 0.0.111+)")
+}
+
+func TestCreate_PassesReadOnlyImageMountsToPodmanDriver(t *testing.T) {
+	dir := t.TempDir()
+	argsLog := filepath.Join(dir, "args.log")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = "create" ]; then
+  printf '%%s\n' "$@" >> %s
+  exit 0
+fi
+if [ "$2" = "get" ]; then
+  echo "Phase: Ready"
+  exit 0
+fi
+exit 0
+`, argsLog)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	mounts := []ImageMount{
+		{Source: "registry.example/tools:v1", Target: "/opt/tools"},
+		{Source: "registry.example/config:v2", Target: "/etc/tool"},
+	}
+	require.NoError(t, Create("test-sandbox", nil, "", "", mounts...))
+
+	args, err := os.ReadFile(argsLog)
+	require.NoError(t, err)
+	argv := strings.Split(strings.TrimSpace(string(args)), "\n")
+	index := -1
+	for i, arg := range argv {
+		if arg == "--driver-config-json" {
+			index = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, index, "create should pass Podman driver configuration")
+	require.Less(t, index+1, len(argv))
+	var config podmanDriverConfig
+	require.NoError(t, json.Unmarshal([]byte(argv[index+1]), &config))
+	assert.Equal(t, []podmanImageMount{
+		{Type: "image", Source: "registry.example/tools:v1", Target: "/opt/tools", ReadOnly: true},
+		{Type: "image", Source: "registry.example/config:v2", Target: "/etc/tool", ReadOnly: true},
+	}, config.Podman.Mounts)
 }
 
 // TestCreateOnce_ReadyFallsBackWhenPhaseFieldAbsent covers output-format
