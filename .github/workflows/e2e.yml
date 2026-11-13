@@ -58,6 +58,16 @@ on:
         required: true
         type: boolean
         default: true
+      run_behaviour:
+        description: Run the behaviour suite
+        required: true
+        type: boolean
+        default: false
+      behaviour_ephemeral:
+        description: Use the ephemeral-repo + lock-pool driver (ADR 0114/0115)
+        required: true
+        type: boolean
+        default: false
   workflow_call:
     # Only e2e-ok-to-test.yml calls this, from an authorized /ok-to-test comment.
     inputs:
@@ -141,6 +151,7 @@ jobs:
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'merge_group') ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_behaviour) ||
         (github.event_name == 'pull_request' && needs.gate.outputs.authorized == 'true') ||
         (github.event_name == 'issue_comment' && inputs.head_sha != '')
       )
@@ -246,6 +257,16 @@ jobs:
           BEHAVIOUR_CI: githubactions
           BEHAVIOUR_INSTALL_MODE: per-repo
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
+          # Ephemeral-repo + lock-pool driver (ADR 0114/0115). On by a manual
+          # dispatch input, or by the vars.BEHAVIOUR_EPHEMERAL repo variable;
+          # otherwise the slot-pool driver runs. Lock-pool membership and N,
+          # the fullsend ref to install, and repo retention are external config.
+          BEHAVIOUR_EPHEMERAL: ${{ (github.event_name == 'workflow_dispatch' && inputs.behaviour_ephemeral) && 'true' || vars.BEHAVIOUR_EPHEMERAL }}
+          BEHAVIOUR_ORG: ${{ vars.BEHAVIOUR_ORG }}
+          BEHAVIOUR_LOCK_POOL: ${{ vars.BEHAVIOUR_LOCK_POOL }}
+          BEHAVIOUR_LOCK_SLOTS_PER_ORG: ${{ vars.BEHAVIOUR_LOCK_SLOTS_PER_ORG }}
+          BEHAVIOUR_FULLSEND_REF: ${{ github.head_ref || github.ref_name }}
+          E2E_KEEP_REPOS: ${{ (github.event_name == 'workflow_dispatch' && inputs.behaviour_ephemeral) && 'true' || vars.E2E_KEEP_REPOS }}
           # Refuse the infra retry after a 40m attempt 1, so attempt 2 (up to
           # its own 45m -timeout) still finishes inside timeout-minutes.
           INFRA_RETRY_MAX_ATTEMPT1_SECONDS: "2400"
