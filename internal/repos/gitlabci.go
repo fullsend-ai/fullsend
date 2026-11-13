@@ -1668,8 +1668,12 @@ func removeRuleByIf(rules []*yaml.Node, ifCond string) []*yaml.Node {
 // with the wrong when: or the wrong position does not count as already
 // present (see debugTraceDenyRuleSatisfied) and is replaced rather than
 // left in place, so the merged list never carries a duplicate if:
-// condition for the same guard. Other missing rules are appended as
-// before, deduplicated by if: alone.
+// condition for the same guard. Other missing rules are deduplicated by
+// if: alone and appended — ahead of the first catch-all `when: never`
+// rule when one exists (see isCatchAllNeverRule), since GitLab stops at
+// that rule and any admit rule placed after it is unreachable. The
+// catch-all itself is left in place so uninstall restores the original
+// rules list.
 func mergeWorkflowRules(workflow *yaml.Node) {
 	rulesVal := findMappingValue(workflow, "rules")
 	if rulesVal == nil {
@@ -1717,7 +1721,42 @@ func mergeWorkflowRules(workflow *yaml.Node) {
 		}
 		appendMissing = append(appendMissing, makeRuleNode(r))
 	}
-	rulesVal.Content = append(prepend, append(rulesVal.Content, appendMissing...)...)
+
+	// Insert admit rules ahead of the first catch-all `when: never`, or
+	// at the end when there is none.
+	insertAt := len(rulesVal.Content)
+	for i, item := range rulesVal.Content {
+		if isCatchAllNeverRule(item) {
+			insertAt = i
+			break
+		}
+	}
+	merged := make([]*yaml.Node, 0, len(prepend)+len(rulesVal.Content)+len(appendMissing))
+	merged = append(merged, prepend...)
+	merged = append(merged, rulesVal.Content[:insertAt]...)
+	merged = append(merged, appendMissing...)
+	merged = append(merged, rulesVal.Content[insertAt:]...)
+	rulesVal.Content = merged
+}
+
+// isCatchAllNeverRule reports whether a workflow:rules entry is an
+// unconditional deny — `when: never` with no if:, changes:, or exists:
+// clause. GitLab evaluates rules first-match, so every rule after it is
+// unreachable.
+func isCatchAllNeverRule(rule *yaml.Node) bool {
+	if rule.Kind != yaml.MappingNode {
+		return false
+	}
+	whenVal := findMappingValue(rule, "when")
+	if whenVal == nil || whenVal.Value != "never" {
+		return false
+	}
+	for _, key := range []string{"if", "changes", "exists"} {
+		if findMappingKeyIndex(rule, key) >= 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // makeRuleNode creates a YAML mapping node for a workflow rule.
