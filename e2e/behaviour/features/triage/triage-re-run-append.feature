@@ -27,5 +27,5 @@ Feature: Re-running triage appends a new comment
     And the write actor posts "/fs-triage" on the issue
     Then the triage agent completes successfully
     And the issue has 2 comments containing "<!-- fullsend:triage-agent -->"
-    And the last comment on the issue contains "Re-triage on the second run"
+    And the last comment on the issue containing "<!-- fullsend:triage-agent -->" contains "Re-triage on the second run"
     And a comment on the issue other than the last contains "This issue is ready for implementation."
