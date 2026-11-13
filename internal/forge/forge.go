@@ -176,6 +176,10 @@ const (
 	SecretJiraClientID     = "FULLSEND_JIRA_CLIENT_ID"
 	SecretJiraClientSecret = "FULLSEND_JIRA_CLIENT_SECRET"
 
+	// SecretTraceSigningKey is the trace-context signing key (ADR 0154).
+	// config.TraceSigningKeySecret is the same literal.
+	SecretTraceSigningKey = "FULLSEND_TRACE_SIGNING_KEY"
+
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"
 	VarLegacySA             = "FULLSEND_SA"

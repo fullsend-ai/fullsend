@@ -29,7 +29,10 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 // whose effective tracker.jira.poll.enabled is true. Install deliberately
 // keeps them while polling is disabled, but teardown must not leave a
 // long-lived Jira credential behind.
-var uninstallSecrets = append(managedInferenceSecrets(), jiraManagedSecrets...)
+//
+// It also deletes the trace signing key (FULLSEND_TRACE_SIGNING_KEY,
+// ADR 0154), so a torn-down repository keeps no private key.
+var uninstallSecrets = slices.Concat(managedInferenceSecrets(), jiraManagedSecrets, []string{forge.SecretTraceSigningKey})
 
 // jiraManagedSecrets are the Jira polling credentials written by install
 // (convergeJiraPoll) outside installSecretsForForge.
@@ -79,8 +82,8 @@ var gitlabUninstallVars = []string{
 // wildcard-scoped variable, which is the one Fullsend creates.
 //
 // It also includes the Jira polling credentials, which GitLab injects into
-// every protected-branch job while they exist.
-var gitlabUninstallSecrets = slices.Concat(managedInferenceSecrets(), []string{forge.SecretTriggerToken, forge.SecretWebhookSecret}, jiraManagedSecrets)
+// every protected-branch job while they exist, and the trace signing key.
+var gitlabUninstallSecrets = slices.Concat(managedInferenceSecrets(), []string{forge.SecretTriggerToken, forge.SecretWebhookSecret}, jiraManagedSecrets, []string{forge.SecretTraceSigningKey})
 
 // gitlabScaffoldPaths is the full set of files uninstall removes. It is
 // a superset of the current install set: fullsend-dispatch.yml is no
@@ -602,10 +605,11 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		defer innerWg.Done()
 		for _, name := range forgeSecrets {
 			if delErr := client.DeleteRepoSecret(ctx, owner, repo, name); delErr != nil {
-				if name == forge.SecretTriggerToken || name == forge.SecretWebhookSecret {
-					// The webhook credentials are not known to any redactor
-					// at this point, so an error echoing one must not reach
-					// uninstall output; withhold the server text.
+				if name == forge.SecretTriggerToken || name == forge.SecretWebhookSecret || name == forge.SecretTraceSigningKey {
+					// The webhook credentials and the trace signing key are
+					// not known to any redactor at this point, so an error
+					// echoing one must not reach uninstall output; withhold
+					// the server text.
 					secretErr = safeAPIError("deleting secret "+name, delErr)
 				} else {
 					secretErr = fmt.Errorf("deleting secret %s: %w", name, delErr)

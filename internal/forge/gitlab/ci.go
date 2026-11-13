@@ -171,14 +171,14 @@ func (c *LiveClient) updateRepoSecret(ctx context.Context, owner, repo, name, va
 	return fmt.Errorf("update repo secret %s: %w", name, err)
 }
 
-// maskingRequired reports whether a secret holds a bearer credential that
-// must never be stored unmasked, so a server-side masking rejection is an
-// error rather than a reason to retry with masked=false.
+// maskingRequired reports whether a secret holds a bearer credential or a
+// signing key that must never be stored unmasked, so a server-side masking
+// rejection is an error rather than a reason to retry with masked=false.
 func maskingRequired(name string) bool {
 	switch name {
 	case forge.SecretOpenAIAPIKey, forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken,
 		forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken,
-		forge.SecretJiraToken, forge.SecretJiraClientSecret:
+		forge.SecretJiraToken, forge.SecretJiraClientSecret, forge.SecretTraceSigningKey:
 		return true
 	}
 	// Custom role credentials (gitlabroles.CustomSecretName).
