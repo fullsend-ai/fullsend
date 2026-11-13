@@ -72,6 +72,18 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 	// creating: an oversized single result would otherwise fail the post.
 	markedBody = TruncateBody(markedBody, cfg.maxSize())
 
+	// A trusted leading line carries the projection payload the next
+	// run's prior-review fetch reads back, so the size cap must never
+	// cut it (nor the runner marker before it): TruncateBody cuts at a
+	// byte offset with no line awareness, and a projection line posted
+	// partial would break that fetch. Refuse to post instead.
+	if cfg.TrustedLeadingLine != nil {
+		if first, _, _ := strings.Cut(body, "\n"); cfg.TrustedLeadingLine.MatchString(first) &&
+			!strings.HasPrefix(markedBody, cfg.Marker+"\n"+first) {
+			return "", fmt.Errorf("comment body exceeds the %d-byte size cap without room for the trusted leading line intact; refusing to post a partial marker line", cfg.maxSize())
+		}
+	}
+
 	printer.StepStart("Posting comment")
 
 	if cfg.DryRun {
