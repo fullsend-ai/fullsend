@@ -140,6 +140,12 @@ func TestExtractRepoSlug(t *testing.T) {
 			expected:          "team/sub/service",
 		},
 		{
+			name:              "Configured self-hosted GitLab host with path prefix strips prefix",
+			rawURL:            "https://example.com/gitlab/group/repo/-/merge_requests/1",
+			allowedGitLabHost: "https://example.com/gitlab",
+			expected:          "group/repo",
+		},
+		{
 			name:     "SSH git@ format GitHub",
 			rawURL:   "git@github.com:my-org/pay-backend.git",
 			expected: "my-org/pay-backend",
@@ -280,6 +286,16 @@ func TestExtractRepoSlug(t *testing.T) {
 	assert.Equal(t, "", hostFromURL(""))
 	assert.Equal(t, "", hostFromURL("://bad"))
 	assert.Equal(t, "code.internal.corp", hostFromURL("https://Code.Internal.Corp:8443/team/repo"))
+
+	h, p := parseGitLabInstance("https://Example.COM:8443/gitlab/")
+	assert.Equal(t, "example.com", h)
+	assert.Equal(t, "gitlab", p)
+	host, slug := extractRepoHostAndSlug("https://example.com/gitlab/group/repo/-/merge_requests/1", "https://example.com/gitlab")
+	assert.Equal(t, "example.com", host)
+	assert.Equal(t, "group/repo", slug)
+	hostOutside, slugOutside := extractRepoHostAndSlug("https://example.com/other/repo/-/merge_requests/1", "https://example.com/gitlab")
+	assert.Equal(t, "", hostOutside)
+	assert.Equal(t, "", slugOutside)
 }
 
 func runDiscoverForCandidates(ctx context.Context, mc *mockClient, opts Options, candidates []jira.Issue) ([]jira.Issue, error) {
@@ -339,6 +355,70 @@ func TestFilterRouting(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, routed, 1)
 		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("AttachedLinkMatch_ConfiguredGitLabWithPathPrefix", func(t *testing.T) {
+		t.Parallel()
+		mc := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{
+				"PROJ-1": {
+					{Object: jira.RemoteLinkObject{URL: "https://example.com/gitlab/group/repo/-/merge_requests/1"}},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:  "group/repo",
+			TargetForge: TargetForgeGitLab,
+			GitLabURL:   "https://example.com/gitlab",
+		}, []jira.Issue{{Key: "PROJ-1"}})
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("SameSlugDifferentHost_Skipped", func(t *testing.T) {
+		t.Parallel()
+		mcGitLabOnly := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{
+				"PROJ-1": {
+					{Object: jira.RemoteLinkObject{URL: "https://gitlab.com/acme/backend/-/merge_requests/1"}},
+				},
+			},
+		}
+		routedGH, err := runDiscoverForCandidates(ctx, mcGitLabOnly, Options{
+			TargetRepo: "acme/backend",
+		}, []jira.Issue{{Key: "PROJ-1"}})
+		require.NoError(t, err)
+		assert.Empty(t, routedGH)
+
+		mcSpoofGitLab := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{
+				"PROJ-2": {
+					{Object: jira.RemoteLinkObject{URL: "https://gitlab.attacker.example/acme/backend"}},
+				},
+			},
+		}
+		routedSpoofGH, err := runDiscoverForCandidates(ctx, mcSpoofGitLab, Options{
+			TargetRepo: "acme/backend",
+		}, []jira.Issue{{Key: "PROJ-2"}})
+		require.NoError(t, err)
+		assert.Empty(t, routedSpoofGH)
+
+		mcGitHubAndSpoof := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{
+				"PROJ-3": {
+					{Object: jira.RemoteLinkObject{URL: "https://github.com/acme/backend/pull/1"}},
+					{Object: jira.RemoteLinkObject{URL: "https://gitlab.attacker.example/acme/backend"}},
+				},
+			},
+		}
+		routedGL, err := runDiscoverForCandidates(ctx, mcGitHubAndSpoof, Options{
+			TargetRepo:  "acme/backend",
+			TargetForge: TargetForgeGitLab,
+			GitLabURL:   "https://gitlab.com",
+		}, []jira.Issue{{Key: "PROJ-3"}})
+		require.NoError(t, err)
+		assert.Empty(t, routedGL)
 	})
 
 	t.Run("AttachedLinkMismatch_Skipped", func(t *testing.T) {
@@ -671,9 +751,11 @@ func TestIsRoutingAbortError(t *testing.T) {
 	t.Parallel()
 	assert.True(t, isRoutingAbortError(context.DeadlineExceeded))
 	assert.True(t, isRoutingAbortError(context.Canceled))
+	assert.True(t, isRoutingAbortError(&jira.APIError{StatusCode: http.StatusUnauthorized}))
+	assert.True(t, isRoutingAbortError(&jira.APIError{StatusCode: http.StatusForbidden}))
 	assert.True(t, isRoutingAbortError(&jira.APIError{StatusCode: http.StatusTooManyRequests}))
 	assert.True(t, isRoutingAbortError(&jira.APIError{StatusCode: http.StatusBadGateway}))
-	assert.False(t, isRoutingAbortError(&jira.APIError{StatusCode: http.StatusForbidden}))
+	assert.False(t, isRoutingAbortError(&jira.APIError{StatusCode: http.StatusNotFound}))
 	assert.False(t, isRoutingAbortError(fmt.Errorf("transient network error")))
 }
 

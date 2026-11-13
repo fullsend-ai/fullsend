@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -44,6 +45,11 @@ type LiveClient struct {
 	// on the next request.
 	cloudSem chan struct{}
 	cloudID  string
+
+	// remoteLinksDisabled records that /remotelink returned HTTP 403
+	// (e.g. remote issue linking disabled on the site) so remaining
+	// lookups on this client skip redundant HTTP calls.
+	remoteLinksDisabled atomic.Bool
 }
 
 // Option configures the Jira client.
@@ -1044,20 +1050,23 @@ func (c *LiveClient) GetMyself(ctx context.Context) (*User, error) {
 
 // ListRemoteLinks returns the external web links attached to an issue via
 // GET /rest/api/3/issue/{issueIdOrKey}/remotelink. If Jira returns HTTP 403
-// (or 404 on some deployments) because issue linking is disabled on the site,
-// a warning is logged and an empty slice and nil error are returned so routing
-// can fall back to components/defaults.
+// (for example because issue linking is disabled on the site), a warning is
+// logged, the disabled state is cached on this client to skip remaining lookups,
+// and an empty slice and nil error are returned so routing can fall back to
+// components/defaults.
 func (c *LiveClient) ListRemoteLinks(ctx context.Context, issueIDOrKey string) ([]RemoteLink, error) {
+	if c.remoteLinksDisabled.Load() {
+		return []RemoteLink{}, nil
+	}
 	var links []RemoteLink
 	path := "/issue/" + url.PathEscape(issueIDOrKey) + "/remotelink"
 	if err := c.do(ctx, http.MethodGet, path, nil, &links); err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusForbidden || apiErr.StatusCode == http.StatusNotFound) {
-			msg := strings.ToLower(apiErr.Message)
-			if strings.Contains(msg, "linking") && strings.Contains(msg, "disabled") {
-				log.Printf("WARNING: remote issue linking is disabled on Jira for %s (HTTP %d); treating remote links as empty", issueIDOrKey, apiErr.StatusCode)
-				return []RemoteLink{}, nil
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
+			if c.remoteLinksDisabled.CompareAndSwap(false, true) {
+				log.Printf("WARNING: remote issue linking is unavailable on Jira for %s (HTTP 403); skipping remote-link lookups and treating remote links as empty", issueIDOrKey)
 			}
+			return []RemoteLink{}, nil
 		}
 		return nil, fmt.Errorf("list remote links for %s: %w", issueIDOrKey, err)
 	}

@@ -47,16 +47,24 @@ var (
 	}
 )
 
-func hostFromURL(rawURL string) string {
+func parseGitLabInstance(rawURL string) (host, pathPrefix string) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
-		return ""
+		return "", ""
+	}
+	if !strings.Contains(rawURL, "://") {
+		rawURL = "https://" + rawURL
 	}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	return strings.ToLower(parsed.Hostname())
+	return strings.ToLower(parsed.Hostname()), strings.Trim(parsed.Path, "/")
+}
+
+func hostFromURL(rawURL string) string {
+	host, _ := parseGitLabInstance(rawURL)
+	return host
 }
 
 func splitNonEmptyPathSegments(path string) ([]string, bool) {
@@ -76,13 +84,22 @@ func extractRepoSlug(rawURL string) string {
 }
 
 // extractRepoSlugWithAllowedHost extracts and normalizes the repository slug
-// from a git repository URL, additionally treating allowedGitLabHost (for
+// from a git repository URL, additionally treating allowedGitLabURL (for
 // example, Options.GitLabURL) as a known GitLab instance. Returns an empty
 // string if the URL does not identify a repository link.
-func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabHost string) string {
+func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabURL string) string {
+	_, slug := extractRepoHostAndSlug(rawURL, allowedGitLabURL)
+	return slug
+}
+
+// extractRepoHostAndSlug extracts the normalized host and repository slug
+// from a git repository URL, additionally treating allowedGitLabURL (for
+// example, Options.GitLabURL, including any sub-path prefix) as a known GitLab
+// instance. Returns ("", "") if the URL does not identify a repository link.
+func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
-		return ""
+		return "", ""
 	}
 
 	var host, path string
@@ -91,7 +108,7 @@ func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabHost string) string {
 	if strings.HasPrefix(rawURL, "git@") {
 		parts := strings.SplitN(rawURL, ":", 2)
 		if len(parts) != 2 {
-			return ""
+			return "", ""
 		}
 		host = strings.TrimPrefix(parts[0], "git@")
 		path = parts[1]
@@ -99,14 +116,14 @@ func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabHost string) string {
 	} else {
 		parsed, err := url.Parse(rawURL)
 		if err != nil {
-			return ""
+			return "", ""
 		}
 		switch parsed.Scheme {
 		case "http", "https":
 		case "ssh":
 			isSSH = true
 		default:
-			return ""
+			return "", ""
 		}
 		host = parsed.Host
 		path = parsed.Path
@@ -117,10 +134,10 @@ func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabHost string) string {
 		host = h
 	}
 	if host == "" || path == "" {
-		return ""
+		return "", ""
 	}
 
-	allowedHost := strings.ToLower(strings.TrimSpace(allowedGitLabHost))
+	allowedHost, allowedPrefix := parseGitLabInstance(allowedGitLabURL)
 	isGitHub := host == "github.com"
 	isBitbucket := host == "bitbucket.org"
 	isGitLab := host == "gitlab.com" ||
@@ -133,13 +150,24 @@ func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabHost string) string {
 		// whose path explicitly ends with .git so arbitrary site links like
 		// docs.example.com/download/tool.git are ignored.
 		if !isSSH && !(strings.HasPrefix(host, "git.") && strings.HasSuffix(path, ".git")) {
-			return ""
+			return "", ""
 		}
 	}
 
 	path = strings.Trim(path, "/")
 	if path == "" {
-		return ""
+		return "", ""
+	}
+
+	if allowedHost != "" && host == allowedHost && allowedPrefix != "" && !isSSH {
+		if strings.EqualFold(path, allowedPrefix) {
+			return "", ""
+		}
+		if len(path) > len(allowedPrefix) && strings.EqualFold(path[:len(allowedPrefix)], allowedPrefix) && path[len(allowedPrefix)] == '/' {
+			path = path[len(allowedPrefix)+1:]
+		} else {
+			return "", ""
+		}
 	}
 
 	if isGitHub || isBitbucket {
@@ -147,19 +175,19 @@ func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabHost string) string {
 		path = strings.Trim(path, "/")
 		parts, ok := splitNonEmptyPathSegments(path)
 		if !ok || len(parts) < 2 {
-			return ""
+			return "", ""
 		}
 		first := strings.ToLower(parts[0])
 		if isGitHub {
 			if _, reserved := githubReservedFirstSegments[first]; reserved {
-				return ""
+				return "", ""
 			}
 		} else {
 			if _, reserved := bitbucketReservedFirstSegments[first]; reserved {
-				return ""
+				return "", ""
 			}
 		}
-		return strings.ToLower(parts[0] + "/" + parts[1])
+		return host, strings.ToLower(parts[0] + "/" + parts[1])
 	}
 
 	if isGitLab {
@@ -173,7 +201,7 @@ func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabHost string) string {
 			path = strings.Trim(path, "/")
 			segs, ok := splitNonEmptyPathSegments(path)
 			if !ok {
-				return ""
+				return "", ""
 			}
 			for i := 2; i < len(segs); i++ {
 				if _, isUI := gitlabLegacyUIRoutes[strings.ToLower(segs[i])]; isUI {
@@ -187,12 +215,12 @@ func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabHost string) string {
 		path = strings.Trim(path, "/")
 		parts, ok := splitNonEmptyPathSegments(path)
 		if !ok || len(parts) < 2 {
-			return ""
+			return "", ""
 		}
 		if _, reserved := gitlabReservedFirstSegments[strings.ToLower(parts[0])]; reserved {
-			return ""
+			return "", ""
 		}
-		return strings.ToLower(strings.Join(parts, "/"))
+		return host, strings.ToLower(strings.Join(parts, "/"))
 	}
 
 	// Generic git host: strip "/-/" UI marker if present and preserve full group path.
@@ -203,9 +231,18 @@ func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabHost string) string {
 	path = strings.Trim(path, "/")
 	parts, ok := splitNonEmptyPathSegments(path)
 	if !ok || len(parts) < 2 {
-		return ""
+		return "", ""
 	}
-	return strings.ToLower(strings.Join(parts, "/"))
+	return host, strings.ToLower(strings.Join(parts, "/"))
+}
+
+type repoLink struct {
+	host string
+	slug string
+}
+
+func (r repoLink) String() string {
+	return r.host + "/" + r.slug
 }
 
 const routingBatchConcurrency = 8
@@ -216,14 +253,17 @@ func isRoutingAbortError(err error) bool {
 	}
 	var apiErr *jira.APIError
 	if errors.As(err, &apiErr) {
-		return apiErr.StatusCode == http.StatusTooManyRequests || apiErr.StatusCode >= 500
+		return apiErr.StatusCode == http.StatusUnauthorized ||
+			apiErr.StatusCode == http.StatusForbidden ||
+			apiErr.StatusCode == http.StatusTooManyRequests ||
+			apiErr.StatusCode >= 500
 	}
 	return false
 }
 
 // filterRoutingPage evaluates repository routing for one page of candidates in
 // bounded batches of up to routingBatchConcurrency, stopping early once needed
-// (>0) routed candidates are collected, ctx expires, or a rate-limit/5xx
+// (>0) routed candidates are collected, ctx expires, or a fatal/rate-limit/5xx
 // lookup error occurs. It returns the routed issues, number of candidates
 // attempted, count of candidates dropped due to lookup errors, and whether
 // further candidate scanning in this cycle should stop.
@@ -233,7 +273,13 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 	}
 
 	targetRepo := strings.ToLower(strings.TrimSpace(p.opts.TargetRepo))
-	allowedGitLabHost := hostFromURL(p.opts.GitLabURL)
+	targetHost := "github.com"
+	if p.opts.TargetForge == TargetForgeGitLab {
+		targetHost, _ = parseGitLabInstance(p.opts.GitLabURL)
+		if targetHost == "" {
+			targetHost = "gitlab.com"
+		}
+	}
 
 	type linkResult struct {
 		links []jira.RemoteLink
@@ -296,10 +342,10 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 				continue
 			}
 
-			var attachedRepos []string
+			var attachedRepos []repoLink
 			for _, link := range res.links {
-				if slug := extractRepoSlugWithAllowedHost(link.Object.URL, allowedGitLabHost); slug != "" {
-					attachedRepos = append(attachedRepos, slug)
+				if host, slug := extractRepoHostAndSlug(link.Object.URL, p.opts.GitLabURL); slug != "" {
+					attachedRepos = append(attachedRepos, repoLink{host: host, slug: slug})
 				}
 			}
 
@@ -307,7 +353,7 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 			if len(attachedRepos) > 0 {
 				matched := false
 				for _, r := range attachedRepos {
-					if r == targetRepo {
+					if r.host == targetHost && r.slug == targetRepo {
 						matched = true
 						break
 					}

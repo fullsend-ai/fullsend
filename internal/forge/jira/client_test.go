@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -1435,21 +1436,30 @@ func TestListRemoteLinks_LinkingDisabled(t *testing.T) {
 	assert.Empty(t, links)
 }
 
-func TestListRemoteLinks_ForbiddenPermissionError(t *testing.T) {
+func TestListRemoteLinks_Empty403BodyAndCachesDisabledState(t *testing.T) {
 	t.Parallel()
 	client, mux := setupTest(t)
 	ctx := context.Background()
 
+	var hits atomic.Int32
 	mux.HandleFunc("/rest/api/3/issue/PROJ-45/remotelink", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(t, w, http.StatusForbidden, map[string]any{
-			"errorMessages": []string{"You do not have permission to view this issue."},
-		})
+		hits.Add(1)
+		w.WriteHeader(http.StatusForbidden)
+	})
+	mux.HandleFunc("/rest/api/3/issue/PROJ-46/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusForbidden)
 	})
 
-	_, err := client.ListRemoteLinks(ctx, "PROJ-45")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "list remote links for PROJ-45")
-	assert.ErrorIs(t, err, forge.ErrForbidden)
+	links, err := client.ListRemoteLinks(ctx, "PROJ-45")
+	require.NoError(t, err)
+	assert.Empty(t, links)
+	assert.Equal(t, int32(1), hits.Load())
+
+	links2, err := client.ListRemoteLinks(ctx, "PROJ-46")
+	require.NoError(t, err)
+	assert.Empty(t, links2)
+	assert.Equal(t, int32(1), hits.Load(), "subsequent ListRemoteLinks calls should skip HTTP after HTTP 403")
 }
 
 func TestListRemoteLinks_Error(t *testing.T) {
