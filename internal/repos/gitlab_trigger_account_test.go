@@ -1224,6 +1224,7 @@ func TestConvergeGitLabTriggerAccount_WeakOverrideRoleDefersBeforeCreatingAnythi
 			require.NoError(t, err)
 			assert.False(t, res.Ready)
 			assert.Contains(t, res.Deferred, "not no_one_allowed")
+			assert.Contains(t, res.Deferred, gitlabPipelineVarRestrictionHint, "the deferral says where to apply the restriction")
 			assert.Zero(t, e.f.calls["CreateProjectServiceAccount"])
 			assert.Zero(t, e.f.calls["CreateProjectDeployKey"])
 			assert.Zero(t, e.f.calls["CreatePipelineTriggerToken"])

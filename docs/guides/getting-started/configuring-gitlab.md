@@ -59,8 +59,10 @@ GitHub repositories use a different command (`fullsend github setup`). See
 
 `ci_pipeline_variables_minimum_override_role` is a GitLab project setting,
 not a `.fullsend` configuration field. Before installing typed-input jobs,
-an administrator must set it to `no_one_allowed`; fullsend reads it back
-and refuses delivery if it is weaker, unsupported, or unreadable. Setting
+an administrator must set it to `no_one_allowed` (**Settings > CI/CD >
+Variables > Minimum role to use pipeline variables**, set to **No one
+allowed**); fullsend reads it back and refuses delivery if it is weaker,
+unsupported, or unreadable. Setting
 `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` does not bypass this
 pre-delivery check. A failed setting change must leave the new jobs undelivered,
 not runnable under an unsafe policy.
