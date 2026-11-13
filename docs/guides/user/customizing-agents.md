@@ -693,6 +693,21 @@ or an older shim, must provide a mint URL and grant the job `id-token: write`;
 without them the lookup fails and every bot actor is denied. See
 [ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md).
 
+A denied bot does not fail the dispatch run: the command still exits 0 and
+no agent job starts. So that the denial does not go unnoticed, `fullsend
+dispatch` adds a warning annotation to the run summary page and a line to
+the job summary. The annotation names the bot, the repository, and one of
+three reasons. Each reason needs a different fix:
+
+- **Fullsend bot has no registered role**: register the bot with the mint
+  if it should run agents.
+- **Fullsend bot-role lookup failed**: the mint lookup returned an error.
+  This is usually transient, so re-run the workflow or check that the mint
+  is available.
+- **Fullsend bot-role configuration unresolved**: the lookup never reached
+  the mint. No mint URL was set, `config.yaml` failed to load, or the job
+  lacks `id-token: write`. Fix the repository's Fullsend setup.
+
 GitLab uses its own stage router, which applies the same triage and write
 split to slash commands. The GitLab agent job also requires the event actor
 to hold Developer access or higher for every stage except prioritize,
