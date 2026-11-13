@@ -17,6 +17,17 @@ var _ GitHubExtensions = (*FakeClient)(nil)
 var _ GitLabExtensions = (*FakeClient)(nil)
 var _ ProjectLeaser = (*FakeClient)(nil)
 
+// fakeUpstreamAnyRefFiles returns the files NewFakeClient serves at every
+// ref: the upstream fullsend-ai/fullsend repository declares the current
+// per-repo configuration schema unless a test overrides it (#9292). Kept
+// equal to config.ManagedConfigSchemaDeclarationPath and
+// config.ManagedConfigSchemaVersion by a test in internal/repos.
+func fakeUpstreamAnyRefFiles() map[string][]byte {
+	return map[string][]byte{
+		"fullsend-ai/fullsend/internal/config/managed-config-schema": []byte("2\n"),
+	}
+}
+
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
@@ -30,6 +41,7 @@ func NewFakeClient() *FakeClient {
 		Errors:                   make(map[string]error),
 		DirContents:              make(map[string][]DirectoryEntry),
 		FileContentsRef:          make(map[string][]byte),
+		FileContentsAnyRef:       fakeUpstreamAnyRefFiles(),
 		BranchRefs:               make(map[string]string),
 		ExistingBranches:         make(map[string]bool),
 		Refs:                     make(map[string]string),
@@ -329,6 +341,9 @@ type FakeClient struct {
 
 	// File contents at specific refs for GetFileContentAtRef.
 	FileContentsRef map[string][]byte // key: "owner/repo/path@ref"
+	// FileContentsAnyRef is served by GetFileContentAtRef for a path at any
+	// ref absent from FileContentsRef. key: "owner/repo/path"
+	FileContentsAnyRef map[string][]byte
 
 	// ForceReachableCommits maps "owner/repo/branch" to the number of
 	// commits reachable on that branch after force-re-root writes.
@@ -920,6 +935,9 @@ func (f *FakeClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 
 	key := fmt.Sprintf("%s/%s/%s@%s", owner, repo, path, ref)
 	content, ok := f.FileContentsRef[key]
+	if !ok {
+		content, ok = f.FileContentsAnyRef[fmt.Sprintf("%s/%s/%s", owner, repo, path)]
+	}
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 	}

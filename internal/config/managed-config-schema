@@ -1,0 +1,6 @@
+# Per-repo configuration schema version of this source tree (#9292).
+# `fullsend repos` reads this file at a repository's pinned fullsend_ref to
+# render .fullsend/config.yaml in the shape that ref reads. Increment it, and
+# config.ManagedConfigSchemaVersion with a renderer for the previous version,
+# whenever a per-repo configuration change is not readable by older releases.
+2

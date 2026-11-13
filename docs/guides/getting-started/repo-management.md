@@ -454,7 +454,10 @@ drop, or that changes only through the base layer, is visible first. A
 markerless file that is malformed or not a per-repo configuration is
 reported by `repos status` as an error instead. Once
 a file carries the marker, `repos install`
-writes the canonical sparse `.fullsend/config.yaml`, `repos status`
+writes the canonical sparse `.fullsend/config.yaml` (for an explicitly pinned
+`fullsend_ref`, rendered in the configuration schema that ref reads, and left
+unchanged with an error when that schema cannot be determined; see
+[Configuration schema of a pinned ref](../../cli/repos.md#configuration-schema-of-a-pinned-ref)), `repos status`
 reports any whole-file difference (including a single-key change) as
 drift, and convergence rewrites the file deterministically — unless the
 candidate would become less restrictive than the current effective
@@ -739,6 +742,15 @@ a token value. Every state except `not-installed`, `deferred`, and `ready` is
 drift. The managed `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET`
 variables are not reported as orphans; any other unrecognised `FULLSEND_`
 variable still is.
+
+For repos with a managed `.fullsend/config.yaml` and an explicitly pinned
+`fullsend_ref`, status also checks the installed file against the
+configuration schema that ref reads. It reports
+`config compatibility (fullsend_ref <ref>)` as `incompatible` when the ref
+cannot read the installed file, or as `unknown` (and the file as drift
+rather than current) when the schema cannot be determined. `--json` output
+carries `config_compatibility`, `config_compatibility_reason` and
+`config_schema_ref`. See [`repos status` output](../../cli/repos.md#output).
 
 For GitLab repos, status also reports the webhook fast path as a
 `gitlab_webhook` object with a `state`, the booleans `webhook_present`,

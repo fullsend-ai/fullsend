@@ -311,6 +311,20 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 		}
 	}
 
+	// Managed configuration that the effective fullsend_ref may not read
+	// (#9292).
+	for _, s := range result.Repos {
+		if s.ConfigCompatibility != repos.ConfigIncompatible && s.ConfigCompatibility != repos.ConfigUnknown {
+			continue
+		}
+		ref := s.ConfigSchemaRef
+		if ref == "" {
+			ref = "running release"
+		}
+		fmt.Fprintf(out, "\n%s config compatibility (fullsend_ref %s): %s\n", s.Owner+"/"+s.Repo, ref, s.ConfigCompatibility)
+		fmt.Fprintf(out, "  %s\n", s.ConfigCompatibilityReason)
+	}
+
 	for _, s := range result.Repos {
 		if !showGitLabRoleStatus(s) {
 			continue
