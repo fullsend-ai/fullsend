@@ -58,6 +58,16 @@ on:
         required: true
         type: boolean
         default: true
+      run_behaviour:
+        description: Run the behaviour suite
+        required: true
+        type: boolean
+        default: false
+      behaviour_ephemeral:
+        description: Use the ephemeral-repo + lock-pool driver (ADR 0163/0164)
+        required: true
+        type: boolean
+        default: false
   workflow_call:
     # Only e2e-ok-to-test.yml calls this, from an authorized /ok-to-test comment.
     inputs:
@@ -141,6 +151,7 @@ jobs:
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         (github.event_name == 'merge_group') ||
+        (github.event_name == 'workflow_dispatch' && inputs.run_behaviour) ||
         (github.event_name == 'pull_request' && needs.gate.outputs.authorized == 'true') ||
         (github.event_name == 'issue_comment' && inputs.head_sha != '')
       )
@@ -246,6 +257,18 @@ jobs:
           BEHAVIOUR_CI: githubactions
           BEHAVIOUR_INSTALL_MODE: per-repo
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
+          # Ephemeral-repo + lock-pool driver (ADR 0163/0164). On by a manual
+          # dispatch input, or by the vars.BEHAVIOUR_EPHEMERAL repo variable;
+          # otherwise the slot-pool driver runs. Lock-pool membership and N,
+          # the fullsend ref to install, and repo retention are external config.
+          BEHAVIOUR_EPHEMERAL: ${{ (github.event_name == 'workflow_dispatch' && inputs.behaviour_ephemeral) && 'true' || vars.BEHAVIOUR_EPHEMERAL }}
+          BEHAVIOUR_ORG: ${{ vars.BEHAVIOUR_ORG }}
+          BEHAVIOUR_LOCK_POOL: ${{ vars.BEHAVIOUR_LOCK_POOL }}
+          BEHAVIOUR_LOCK_SLOTS_PER_ORG: ${{ vars.BEHAVIOUR_LOCK_SLOTS_PER_ORG }}
+          # A commit SHA, not a branch name: the repos.yaml fullsend_ref field
+          # rejects '/', so branch refs like agent/foo are invalid there.
+          BEHAVIOUR_FULLSEND_REF: ${{ github.event.pull_request.head.sha || github.sha }}
+          E2E_KEEP_REPOS: ${{ (github.event_name == 'workflow_dispatch' && inputs.behaviour_ephemeral) && 'true' || vars.E2E_KEEP_REPOS }}
           # Refuse the infra retry after a 40m attempt 1, so attempt 2 (up to
           # its own 45m -timeout) still finishes inside timeout-minutes.
           INFRA_RETRY_MAX_ATTEMPT1_SECONDS: "2400"
@@ -278,7 +301,12 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Base-branch script only — PR head must not control artifact redaction (#5221).
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          # On manual dispatch the selected branch is not trusted for the redaction
+          # script, so use the default branch (matches the playback job below).
+          ref: >-
+            ${{ github.event_name == 'workflow_dispatch' && github.event.repository.default_branch
+                || github.event_name == 'pull_request' && github.event.pull_request.base.sha
+                || github.sha }}
           sparse-checkout: scripts/redact-behaviour-artifacts.sh
           path: base-scripts
           persist-credentials: false

@@ -361,6 +361,10 @@ type FakeClient struct {
 	// Refs for GetRef.
 	Refs map[string]string // key: "owner/repo/refPath" → commit SHA
 
+	// ActionsDisabled records repos ("owner/repo") that DisableActions was
+	// called on.
+	ActionsDisabled map[string]bool
+
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
 
@@ -532,6 +536,50 @@ func (f *FakeClient) ListOrgRepos(_ context.Context, org string, includePrivate 
 	return result, nil
 }
 
+// ListAllOrgRepos returns every repo the org owns — pre-populated (Repos or
+// OrgRepos[org]) and created (CreatedRepos) — without filtering archived or
+// forks. Implements forge.AllRepoLister.
+func (f *FakeClient) ListAllOrgRepos(_ context.Context, org string) ([]Repository, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListAllOrgRepos"); e != nil {
+		return nil, e
+	}
+
+	source := f.Repos
+	if f.OrgRepos != nil {
+		source = f.OrgRepos[org]
+	}
+	prefix := org + "/"
+	var result []Repository
+	for _, r := range source {
+		result = append(result, r)
+	}
+	for _, r := range f.CreatedRepos {
+		if strings.HasPrefix(r.FullName, prefix) {
+			result = append(result, r)
+		}
+	}
+	return result, nil
+}
+
+// DisableActions records that Actions were disabled on org/repo, for
+// forge.ActionsDisabler.
+func (f *FakeClient) DisableActions(_ context.Context, org, repo string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DisableActions"); e != nil {
+		return e
+	}
+	if f.ActionsDisabled == nil {
+		f.ActionsDisabled = map[string]bool{}
+	}
+	f.ActionsDisabled[org+"/"+repo] = true
+	return nil
+}
+
 func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string, private bool) (*Repository, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -564,6 +612,7 @@ func (f *FakeClient) CreateRepo(_ context.Context, org, name, description string
 		DefaultBranch: "main",
 		Private:       private,
 		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
 	}
 	f.CreatedRepos = append(f.CreatedRepos, r)
 	return &r, nil
@@ -611,6 +660,35 @@ func (f *FakeClient) UpdateRepoVisibility(_ context.Context, owner, repo string,
 	for i := range f.CreatedRepos {
 		if f.CreatedRepos[i].FullName == fullName {
 			f.CreatedRepos[i].Private = private
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
+}
+
+// UpdateRepoDescription sets a repo's description and bumps its UpdatedAt,
+// mirroring a live forge where re-writing the description advances the
+// repo's last-updated timestamp (the lock-pool heartbeat, ADR 0164).
+func (f *FakeClient) UpdateRepoDescription(_ context.Context, owner, repo, description string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateRepoDescription"); e != nil {
+		return e
+	}
+
+	fullName := owner + "/" + repo
+	for i := range f.Repos {
+		if f.Repos[i].FullName == fullName {
+			f.Repos[i].Description = description
+			f.Repos[i].UpdatedAt = time.Now()
+			return nil
+		}
+	}
+	for i := range f.CreatedRepos {
+		if f.CreatedRepos[i].FullName == fullName {
+			f.CreatedRepos[i].Description = description
+			f.CreatedRepos[i].UpdatedAt = time.Now()
 			return nil
 		}
 	}

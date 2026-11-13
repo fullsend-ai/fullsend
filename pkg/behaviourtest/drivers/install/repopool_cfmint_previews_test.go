@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -255,7 +256,13 @@ func TestCFMintInstall_Success(t *testing.T) {
 }
 
 func TestCFMintInstall_DeployFailure(t *testing.T) {
+	prev := mintDeployRetryDelay
+	mintDeployRetryDelay = 0
+	t.Cleanup(func() { mintDeployRetryDelay = prev })
+
+	var attempts int
 	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
+		attempts++
 		return "", fmt.Errorf("deploy exploded")
 	})
 
@@ -263,6 +270,45 @@ func TestCFMintInstall_DeployFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Empty(t, mintURL)
 	assert.Contains(t, err.Error(), "deploying CF preview mint for BT")
+	assert.Equal(t, mintDeployMaxAttempts, attempts, "deploy should be retried up to the attempt limit")
+}
+
+func TestCFMintInstall_DeployRetrySucceeds(t *testing.T) {
+	prev := mintDeployRetryDelay
+	mintDeployRetryDelay = 0
+	t.Cleanup(func() { mintDeployRetryDelay = prev })
+
+	var attempts int
+	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
+		attempts++
+		if attempts < 2 {
+			return "", fmt.Errorf("transient CF 10013")
+		}
+		return "Worker deployed at https://bt-abc-bt-mint.example.workers.dev", nil
+	})
+
+	mintURL, err := d.Install(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://bt-abc-bt-mint.example.workers.dev", mintURL)
+	assert.Equal(t, 2, attempts, "a transient failure should be retried and then succeed")
+}
+
+func TestCFMintInstall_ContextCancelledDuringRetry(t *testing.T) {
+	prev := mintDeployRetryDelay
+	mintDeployRetryDelay = time.Hour // force the retry wait to block on ctx
+	t.Cleanup(func() { mintDeployRetryDelay = prev })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var attempts int
+	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
+		attempts++
+		cancel() // cancel after the first failed attempt
+		return "", fmt.Errorf("transient CF error")
+	})
+
+	_, err := d.Install(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, attempts, "a cancelled context must stop the retry before the next attempt")
 }
 
 func TestCFMintInstall_NoMintURLInOutput(t *testing.T) {

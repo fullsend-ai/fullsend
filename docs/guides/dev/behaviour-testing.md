@@ -660,6 +660,55 @@ its report, and releases its repos inside the job's `timeout-minutes: 90`
 The merge queue window is shorter than the job: a retry fits it only when
 attempt 1 plus the failed scenarios finish within 60 minutes.
 
+### Ephemeral repos and the lock pool (ADR 0163/0164)
+
+A newer repo-lifecycle model, selected by `BEHAVIOUR_EPHEMERAL=true`,
+replaces the reused `test-repo-NN` slot pool with **ephemeral per-scenario
+repos** coordinated by a **lock pool**. It implements ADR 0163
+(ephemeral repo lifecycle) and ADR 0164 (lock-based pool coordination). The
+slot driver above remains the default until this mode is validated live;
+both satisfy the same `install.LeaseDriver` contract, so scenarios are
+unchanged.
+
+How a run works in this mode:
+
+1. The run generates one time-ordered `RunID` (a UUIDv7 rendered as 32 hex
+   chars) and **acquires one lock slot** from the lock pool — a counting
+   semaphore of `lock-1 … lock-N` repos per org. Creating the lock repo is
+   the atomic claim; the `RunID` is written as its description (the owner
+   token). The org whose slot is won is the run's org. A heartbeat rewrites
+   the token to bump `updated_at`; stale slots (crashed runs) are reclaimed
+   by liveness, not a fixed timeout.
+2. A public preview mint is deployed for that org and the org-scoped WIF
+   provider is resolved **once** and reused for every repo.
+3. Each `AllocateLease` **creates a unique `bt-{RunID}-allow-{uuid8}` repo**
+   (the `allow` marker scopes the mint's trusted workflow hosts to this run;
+   see below),
+   installs fullsend via `repos install --fullsend-ref` (no vendoring), and
+   verifies git readiness, workflow indexing, and event delivery. No repo is
+   reused.
+4. `DeallocateLease` **retains** the repo (GitHub) after stripping its
+   variables so it cannot invoke the shared WIF once its scenario ends.
+5. `Finalize` **batch-prunes** the oldest whole runs once the org's `bt-*`
+   repo count exceeds the keep threshold (200), **skipping any run that
+   still holds a lock**, then releases this run's lock and tears down the
+   mint. `E2E_KEEP_REPOS=true` disables pruning.
+
+Configuration (ADR 0164 keeps pool membership and per-org N as external
+configuration):
+
+| Variable | Meaning |
+|---|---|
+| `BEHAVIOUR_EPHEMERAL` | `true` selects the ephemeral + lock-pool driver. |
+| `BEHAVIOUR_ORG` | The single org for the default (single-org) lock pool. Defaults to `fullsend-ai-test`. |
+| `BEHAVIOUR_LOCK_POOL` | Multi-org pool as `org:N,org2:N2,…` (overrides the single-org default). |
+| `BEHAVIOUR_LOCK_SLOTS_PER_ORG` | Per-org slot count `N` for the single-org default (default 4). |
+| `BEHAVIOUR_FULLSEND_REF` | The fullsend ref to install (else resolved from the CI event / `GITHUB_*`). |
+| `E2E_KEEP_REPOS` | `true` retains all repos (no pruning), for debugging. |
+
+GitLab support for this model is deferred to a follow-up; the mode is
+GitHub-complete.
+
 ### Repo allocation via the shared slot driver
 
 `RunSuite` and `RunPlaybackSuite` build one shared install driver (`install.Factory` over an `install.PoolConfig`) for the environment's pool. On `dev` the pool is the derived orgs `halfsend-01` … `halfsend-22`, and on `stage` it is the single unsuffixed `halfsend` org, each with `test-repo-01` … `test-repo-NN` slots (`install.PoolLayoutForEnvironment`; `BEHAVIOUR_POOL_SIZE` sets the slots per org). The driver resolves one installation token per org (`e2etest.TokenForOrg`, minted once per org and kept for the run, since a token outlives a 45-minute `go test` attempt; the infra-retry's fresh process mints its own). It builds one forge client per org from that token. The `Given the enrolled test repository` step calls `install.LeaseDriver.AllocateLease(ctx)`, which:

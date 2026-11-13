@@ -122,6 +122,47 @@ func TestValidateWorkflowRef_DefaultHost(t *testing.T) {
 	assert.Contains(t, err.Error(), "does not reference an allowed workflow host repo")
 }
 
+func TestValidateWorkflowRef_BareWildcardHostRejected(t *testing.T) {
+	// A bare "*" workflow-host entry is NOT a match-any wildcard: an entry
+	// must name a concrete prefix, so WORKFLOW_HOST_REPOS stays an explicit
+	// allowlist and never degrades to "trust every repo on the forge". Only
+	// run-scoped prefix globs (org/bt-<run-id>-allow-*) are honored.
+	wildcard := map[string]bool{"*": true}
+
+	err := ValidateWorkflowRef(
+		"any-org/any-repo/.github/workflows/mint-probe.yml@refs/heads/main",
+		wildcard, []string{"mint-probe.yml"},
+	)
+	require.Error(t, err, "a bare \"*\" host entry must not accept arbitrary hosts")
+	assert.Contains(t, err.Error(), "does not reference an allowed workflow host repo")
+}
+
+func TestValidateWorkflowRef_PrefixGlobHost(t *testing.T) {
+	// A run-scoped prefix host accepts every repo under the prefix but
+	// nothing outside it (ADR 0163 ephemeral mint scoped to one run).
+	hosts := map[string]bool{"fullsend-ai-test/bt-abc123-*": true}
+
+	// Repos under the run's prefix are accepted.
+	for _, ref := range []string{
+		"fullsend-ai-test/bt-abc123-5d5d5d5d/.github/workflows/mint-probe.yml@refs/heads/main",
+		"fullsend-ai-test/bt-abc123-5d5d5d5d-mint-host/.github/workflows/mint-probe.yml@refs/heads/main",
+	} {
+		assert.NoError(t, ValidateWorkflowRef(ref, hosts, []string{"*"}), "ref %q should be admitted", ref)
+	}
+
+	// A repo outside the prefix is denied — a different run, a different
+	// org, or a host not carrying the run prefix.
+	for _, ref := range []string{
+		"fullsend-ai-test/bt-def456-5d5d5d5d/.github/workflows/mint-probe.yml@refs/heads/main",
+		"fullsend-ai-test/mint-unapproved-5d5d5d5d/.github/workflows/mint-probe.yml@refs/heads/main",
+		"other-org/bt-abc123-5d5d5d5d/.github/workflows/mint-probe.yml@refs/heads/main",
+	} {
+		err := ValidateWorkflowRef(ref, hosts, []string{"*"})
+		require.Error(t, err, "ref %q should be denied", ref)
+		assert.Contains(t, err.Error(), "does not reference an allowed workflow host repo")
+	}
+}
+
 func TestValidateWorkflowRef_UpstreamAcceptedWithoutHosts(t *testing.T) {
 	// Upstream is always accepted, even when the host map is empty.
 	err := ValidateWorkflowRef(

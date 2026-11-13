@@ -178,6 +178,41 @@ func TestRepoCreatedAt(t *testing.T) {
 	assert.True(t, created.Equal(repo.CreatedAt), "CreateRepo CreatedAt = %v", repo.CreatedAt)
 }
 
+func TestGetRepo_ReportsUpdatedAt(t *testing.T) {
+	updated := time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/myorg/lock-1", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         int64(5),
+			"name":       "lock-1",
+			"full_name":  "myorg/lock-1",
+			"updated_at": updated.Format(time.RFC3339),
+		})
+	}))
+	defer srv.Close()
+
+	repo, err := newTestClient(t, srv).GetRepo(context.Background(), "myorg", "lock-1")
+	require.NoError(t, err)
+	assert.True(t, updated.Equal(repo.UpdatedAt), "GetRepo UpdatedAt = %v", repo.UpdatedAt)
+}
+
+func TestUpdateRepoDescription(t *testing.T) {
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPatch, r.Method)
+		assert.Equal(t, "/repos/myorg/lock-1", r.URL.Path)
+		json.NewDecoder(r.Body).Decode(&gotBody)
+		json.NewEncoder(w).Encode(map[string]any{"name": "lock-1"})
+	}))
+	defer srv.Close()
+
+	err := newTestClient(t, srv).UpdateRepoDescription(context.Background(), "myorg", "lock-1", "owner=run-7")
+	require.NoError(t, err)
+	assert.Equal(t, "owner=run-7", gotBody["description"])
+	_, hasPrivate := gotBody["private"]
+	assert.False(t, hasPrivate, "description update must not touch visibility")
+}
+
 // contentsServer is a minimal Contents API for one file that enforces the
 // "sha" precondition the way GitHub does.
 type contentsServer struct {
@@ -7964,4 +7999,89 @@ func TestGetRepoVariableInfo(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFetchRateLimit(t *testing.T) {
+	resetUnix := time.Now().Add(42 * time.Minute).Truncate(time.Second).Unix()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/rate_limit", r.URL.Path)
+		w.Header().Set("X-RateLimit-Limit", "9000")
+		w.Header().Set("X-RateLimit-Remaining", "8765")
+		w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", resetUnix))
+		w.Header().Set("X-RateLimit-Resource", "core")
+		json.NewEncoder(w).Encode(map[string]any{
+			"resources": map[string]any{
+				"core": map[string]any{"limit": 9000, "remaining": 8765, "reset": resetUnix},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	rl, err := client.FetchRateLimit(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 9000, rl.Limit)
+	assert.Equal(t, 8765, rl.Remaining)
+	assert.Equal(t, "core", rl.Resource)
+	assert.Equal(t, resetUnix, rl.Reset.Unix())
+
+	// The fetch also seeds RateLimit() from the response headers.
+	seen, ok := client.RateLimit()
+	require.True(t, ok)
+	assert.Equal(t, 8765, seen.Remaining)
+
+	// The baseline call is counted under its own caller label so it does
+	// not inflate another caller's tally.
+	assert.Equal(t, int64(1), client.APICalls()["ratelimit-baseline"])
+}
+
+func TestFetchRateLimit_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, "not json")
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).FetchRateLimit(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decoding rate limit")
+}
+
+func TestFetchRateLimit_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).FetchRateLimit(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching rate limit")
+}
+
+func TestDisableActions(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		gotBody = string(b)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	err := newTestClient(t, srv).DisableActions(context.Background(), "acme", "api")
+	require.NoError(t, err)
+	assert.Equal(t, "PUT", gotMethod)
+	assert.Equal(t, "/repos/acme/api/actions/permissions", gotPath)
+	assert.Contains(t, gotBody, `"enabled":false`)
+}
+
+func TestDisableActions_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	err := newTestClient(t, srv).DisableActions(context.Background(), "acme", "api")
+	require.Error(t, err)
 }

@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -373,4 +376,226 @@ func ParseInferenceStatusWIFProvider(output string) (string, error) {
 		return "", fmt.Errorf("expected healthy status, got %q", status.Status)
 	}
 	return status.WIFProvider, nil
+}
+
+// ReposInstallOpts configures a single behaviour-test `repos install`. Binary,
+// Token and Target are required; the remaining fields are optional and written
+// into the manifest only when set. Bundling them in a struct keeps the many
+// string parameters from being silently transposable at the call site.
+//
+// AppSet must match the app set the suite's mint was deployed with: it is
+// written as the repo's FULLSEND_APP_SET, which the dispatch shim uses to
+// recognize the registered role bots (e.g. {app_set}-review[bot]). Omitting it
+// defaults the repo to the production app set and breaks bot-identity
+// authorization such as the review-bot fix path.
+type ReposInstallOpts struct {
+	Binary       string // path to the fullsend binary
+	Token        string // forge token for the install
+	Target       string // org/repo to install into
+	MintURL      string // token mint URL (entry config.mint_url)
+	FullsendRef  string // github.fullsend_ref
+	AppSet       string // github.app_set (FULLSEND_APP_SET)
+	ConfigPreset string // BEHAVIOUR_CONFIG_PRESET path or URL (config_base)
+	GCPProjectID string // --vertex-project
+	WIFProvider  string // --vertex-wif-provider
+}
+
+// RunReposInstall installs fullsend into an ephemeral behaviour-test repo
+// via `repos install <target> --fullsend-ref`, the no-vendoring path used by
+// the ephemeral-repo model. A fresh temp manifest path is used per call for
+// concurrency safety; the empty file is removed first so `repos install`
+// bootstraps a v1 manifest rather than failing on a version-0 empty file. The
+// optional ReposInstallOpts fields are written only when set.
+func RunReposInstall(
+	opts ReposInstallOpts,
+	runCLI CLIRunnerFunc,
+	logf func(string, ...any),
+) error {
+	binary, token, target := opts.Binary, opts.Token, opts.Target
+	mintURL, fullsendRef, appSet := opts.MintURL, opts.FullsendRef, opts.AppSet
+	configPreset, gcpProjectID, wifProvider := opts.ConfigPreset, opts.GCPProjectID, opts.WIFProvider
+	// The manifest lives in a fresh temp dir so a local config preset can be
+	// staged next to it: `repos install` only reads local presets from inside
+	// the manifest directory. The dir (manifest + any staged preset) is
+	// removed on return, so every call installs from a fresh manifest.
+	dir, err := os.MkdirTemp("", "fullsend-bt-manifest-")
+	if err != nil {
+		return fmt.Errorf("creating manifest dir: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	manifest := filepath.Join(dir, "repos.yaml")
+	os.Remove(manifest) // `repos set` bootstraps a v1 manifest; an empty file parses as version 0.
+
+	// repos install is manifest-driven (#8219): vendor, runtime, mint_url,
+	// fullsend_ref, app_set, inference.auth, config_base and repository
+	// membership live in repos.yaml, not on flags. Build the manifest with
+	// `repos set`, then install. Only credentials and one-run controls stay
+	// on the flags.
+	set := func(keyVal ...string) error {
+		args := append([]string{"repos", "set"}, keyVal...)
+		args = append(args, "-f", manifest)
+		if _, err := runCLI(binary, token, args...); err != nil {
+			return fmt.Errorf("repos set %s: %w", keyVal[0], err)
+		}
+		return nil
+	}
+	entry := func(suffix string) string { return fmt.Sprintf("github.repos[%q]%s", target, suffix) }
+
+	steps := [][]string{
+		{"defaults.vendor", "true"},
+		{"defaults.inference.auth", "vertex-wif"},
+	}
+	if fullsendRef != "" {
+		steps = append(steps, []string{"github.fullsend_ref", fullsendRef})
+	}
+	if appSet != "" {
+		steps = append(steps, []string{"github.app_set", appSet})
+	}
+	steps = append(steps, []string{entry(""), "{}"})
+	// mint_url goes in the entry's managed config (not the entry's mint_url)
+	// so it overrides a config preset's mint_url field by field — the way
+	// `github setup --mint-url` did — rather than tripping the manifest
+	// mint_url conflict check (#8483).
+	if mintURL != "" {
+		steps = append(steps, []string{entry(".config.mint_url"), mintURL})
+	}
+	// Config preset (BEHAVIOUR_CONFIG_PRESET): declare it as config_base.
+	// A local preset is staged next to the manifest and referenced by its
+	// relative name. With a preset and no explicit runtime, config.runtime
+	// is left unset so the preset's runtime is inherited; otherwise the
+	// behaviour suite's "dummy" runtime is pinned.
+	if preset := strings.TrimSpace(configPreset); preset != "" {
+		source, err := stageConfigPreset(dir, preset)
+		if err != nil {
+			return err
+		}
+		steps = append(steps, []string{entry(".config_base"), fmt.Sprintf("{source: %s}", source)})
+	} else {
+		steps = append(steps, []string{entry(".config.runtime"), "dummy"})
+	}
+	for _, s := range steps {
+		if err := set(s...); err != nil {
+			return err
+		}
+	}
+
+	args := []string{"repos", "install", target, "-f", manifest, "--direct"}
+	if project := strings.TrimSpace(gcpProjectID); project != "" {
+		args = append(args, "--vertex-project", project)
+	}
+	if wif := strings.TrimSpace(wifProvider); wif != "" {
+		args = append(args, "--vertex-wif-provider", wif)
+	}
+
+	logf("[install] running fullsend %s", strings.Join(args, " "))
+	if _, err := runCLI(binary, token, args...); err != nil {
+		return fmt.Errorf("repos install %s: %w", target, err)
+	}
+	return nil
+}
+
+// stageConfigPreset returns the config_base.source for a behaviour-test
+// config preset. An HTTPS URL is used as is. A local path (relative paths
+// resolve against the module root) is copied into dir as config-base.yaml,
+// because `repos install` rejects local presets outside the manifest
+// directory, and its relative name is returned. (Ported from #8483.)
+func stageConfigPreset(dir, preset string) (string, error) {
+	const presetFileName = "config-base.yaml"
+	if strings.HasPrefix(strings.ToLower(preset), "https://") {
+		return preset, nil
+	}
+	if strings.Contains(preset, "://") {
+		return "", fmt.Errorf("config preset %q: only local paths and https:// URLs are supported", preset)
+	}
+	path := preset
+	if !filepath.IsAbs(path) {
+		root, err := moduleRootFn()
+		if err != nil {
+			return "", fmt.Errorf("resolving config preset %q: %w", preset, err)
+		}
+		path = filepath.Join(root, path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading config preset: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, presetFileName), data, 0o600); err != nil {
+		return "", fmt.Errorf("copying config preset: %w", err)
+	}
+	return presetFileName, nil
+}
+
+// moduleRootFn returns the module root directory. Overridable in tests.
+var moduleRootFn = func() (string, error) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		return "", fmt.Errorf("finding module root: %w", err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// EnvFullsendRef resolves the fullsend ref for behaviour tests.
+// Resolution chain: BEHAVIOUR_FULLSEND_REF → PR head SHA from the event
+// payload → GITHUB_HEAD_REF → GITHUB_REF_NAME → "" (defaults to v0).
+func EnvFullsendRef() string {
+	if v := os.Getenv("BEHAVIOUR_FULLSEND_REF"); v != "" {
+		return v
+	}
+	if sha := prHeadSHAFromEvent(); sha != "" {
+		return sha
+	}
+	if v := os.Getenv("GITHUB_HEAD_REF"); v != "" {
+		return v
+	}
+	if v := os.Getenv("GITHUB_REF_NAME"); v != "" {
+		return v
+	}
+	return ""
+}
+
+// prHeadSHAFromEvent extracts the PR head SHA from a GitHub event payload.
+func prHeadSHAFromEvent() string {
+	eventPath := os.Getenv("GITHUB_EVENT_PATH")
+	if eventPath == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Clean(eventPath))
+	if err != nil {
+		return ""
+	}
+	var event struct {
+		PullRequest struct {
+			Head struct {
+				SHA string `json:"sha"`
+			} `json:"head"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal(data, &event); err != nil {
+		return ""
+	}
+	return event.PullRequest.Head.SHA
+}
+
+// ResolveOrgWIFProvider looks up the org-level Workload Identity Federation
+// provider via `fullsend inference status <org>` and returns the full
+// provider path. The ephemeral-repo model resolves this once per run and
+// reuses it for every repo (ADR 0163), rather than provisioning a per-repo
+// provider.
+func ResolveOrgWIFProvider(
+	binary, token, org, gcpProjectID string,
+	runCLI CLIRunnerFunc,
+	logf func(string, ...any),
+) (string, error) {
+	statusArgs := []string{"inference", "status", org, "--project", gcpProjectID, "--format", "json"}
+	logf("[install] running fullsend %s", strings.Join(statusArgs, " "))
+	out, err := runCLI(binary, token, statusArgs...)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", org, err)
+	}
+	wifProvider, err := ParseInferenceStatusWIFProvider(out)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", org, err)
+	}
+	logf("[install] org-scoped inference WIF provider: %s", wifProvider)
+	return wifProvider, nil
 }

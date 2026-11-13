@@ -556,10 +556,29 @@ func mintStatusFacts(r mintStatusReport, mintURL, ownHost string, wantHosts []st
 			}
 		}
 	}
-	if !reported[own] {
+	if !workflowHostListCovers(r.WorkflowHostRepos, own) {
 		problems = append(problems, fmt.Sprintf("workflow host repos %v do not include %s", r.WorkflowHostRepos, ownHost))
 	}
 	return problems
+}
+
+// workflowHostListCovers reports whether own (a lowercased owner/repo) is
+// covered by the reported workflow-host list. A reported entry ending in "*"
+// is a prefix glob, matching the mint's ValidateWorkflowRef semantics: the
+// ephemeral mint scopes its hosts to a run prefix (bt-{run-id}-allow-*)
+// rather than enumerating each repo.
+func workflowHostListCovers(hosts []string, own string) bool {
+	for _, h := range hosts {
+		lh := strings.ToLower(h)
+		if strings.HasSuffix(lh, "*") {
+			if strings.HasPrefix(own, strings.TrimSuffix(lh, "*")) {
+				return true
+			}
+		} else if lh == own {
+			return true
+		}
+	}
+	return false
 }
 
 // mintStatusOwnHost is the scenario's own workflow host: its leased

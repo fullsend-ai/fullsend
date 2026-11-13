@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -284,14 +285,14 @@ func CFMintTeardownArgs(previewAlias, workerName string) []string {
 	}
 }
 
-func (d *cfmintMintDriver) Install(_ context.Context) (string, error) {
+func (d *cfmintMintDriver) Install(ctx context.Context) (string, error) {
 	alias, err := GenerateCFMintPreviewAlias()
 	if err != nil {
 		return "", err
 	}
 	d.previewAlias = alias
 
-	mintURL, err := d.deployCFMint(alias)
+	mintURL, err := d.deployCFMint(ctx, alias)
 	if err != nil {
 		return "", fmt.Errorf("deploying CF preview mint for BT: %w", err)
 	}
@@ -303,16 +304,46 @@ func (d *cfmintMintDriver) Teardown(_ context.Context) error {
 	return d.teardownPreview()
 }
 
+// mintDeployMaxAttempts and mintDeployRetryDelay bound the retry of the
+// preview-mint deploy. The deploy is a `wrangler versions upload`, which
+// occasionally fails with a transient Cloudflare API error (e.g. code
+// 10013 "An unknown error has occurred") that aborts the whole suite at
+// bootstrap; re-uploading the same preview alias is idempotent, so a few
+// backed-off retries recover it. Vars so tests can shorten/disable them.
+var (
+	mintDeployMaxAttempts = 3
+	mintDeployRetryDelay  = 5 * time.Second
+)
+
 // deployCFMint deploys a Cloudflare Worker preview mint and returns the
 // deploy-reported preview URL (which includes the account's workers.dev
-// subdomain).
-func (d *cfmintMintDriver) deployCFMint(alias string) (string, error) {
+// subdomain). The upload is retried on failure (idempotent per alias) to
+// ride out transient Cloudflare API errors.
+func (d *cfmintMintDriver) deployCFMint(ctx context.Context, alias string) (string, error) {
 	args := CFMintDeployArgs(alias, d.workerName, d.cfg)
 
 	d.logf("[cfmint] deploying preview mint: fullsend %s", strings.Join(args, " "))
-	output, err := d.cliRunner(d.binary, d.token, args...)
+	var output string
+	var err error
+	delay := mintDeployRetryDelay
+	for attempt := 1; attempt <= mintDeployMaxAttempts; attempt++ {
+		output, err = d.cliRunner(d.binary, d.token, args...)
+		if err == nil {
+			break
+		}
+		if attempt < mintDeployMaxAttempts {
+			d.logf("[cfmint] mint deploy attempt %d/%d failed (retrying in %s): %v",
+				attempt, mintDeployMaxAttempts, delay, err)
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(delay):
+			}
+			delay *= 2
+		}
+	}
 	if err != nil {
-		return "", fmt.Errorf("mint deploy --platform=cloudflare --preview=%s: %w", alias, err)
+		return "", fmt.Errorf("mint deploy --platform=cloudflare --preview=%s (after %d attempts): %w", alias, mintDeployMaxAttempts, err)
 	}
 
 	mintURL := ParseCFMintURLFromOutput(output)
