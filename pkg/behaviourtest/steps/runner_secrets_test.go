@@ -238,20 +238,23 @@ func TestThenHarnessWorkflowFailsWithLog_FetchProblemIsNamed(t *testing.T) {
 	}{
 		{"fetch error", "", errors.New("api down"), "its logs could not be fetched", false},
 		{"empty logs", "  \n", nil, "the forge returned no log output", false},
-		// Each fetch-failure note, as the forge clients write it, is retried.
-		{"job log unavailable", "setup ok\n[logs unavailable: HTTP 404]\n", nil, `they are incomplete (they hold "[logs unavailable:")`, false},
-		{"job log fetch failed", "setup ok\n[failed to fetch logs: boom]\n", nil, `they are incomplete (they hold "[failed to fetch logs:")`, false},
-		{"job log read failed", "setup ok\n[failed to read logs: EOF]\n", nil, `they are incomplete (they hold "[failed to read logs:")`, false},
-		{"trace fetch failed", "=== Job 1 (x): error fetching trace: boom ===\n", nil, `they are incomplete (they hold "error fetching trace:")`, false},
-		{"trace read failed", "=== Job 1 (x): error reading trace: EOF ===\n", nil, `they are incomplete (they hold "error reading trace:")`, false},
+		// Each fetch-failure note, as the forge clients write it, is
+		// retried. The markers come from the forge package's constants —
+		// the same literals the clients write — so this table cannot
+		// drift from them.
+		{"job log unavailable", "setup ok\n" + forge.LogNoteLogsUnavailable + " HTTP 404]\n", nil, `they are incomplete (they hold "` + forge.LogNoteLogsUnavailable + `")`, false},
+		{"job log fetch failed", "setup ok\n" + forge.LogNoteFailedToFetchLogs + " boom]\n", nil, `they are incomplete (they hold "` + forge.LogNoteFailedToFetchLogs + `")`, false},
+		{"job log read failed", "setup ok\n" + forge.LogNoteFailedToReadLogs + " EOF]\n", nil, `they are incomplete (they hold "` + forge.LogNoteFailedToReadLogs + `")`, false},
+		{"trace fetch failed", "=== Job 1 (x): " + forge.LogNoteErrorFetchingTrace + " boom ===\n", nil, `they are incomplete (they hold "` + forge.LogNoteErrorFetchingTrace + `")`, false},
+		{"trace read failed", "=== Job 1 (x): " + forge.LogNoteErrorReadingTrace + " EOF ===\n", nil, `they are incomplete (they hold "` + forge.LogNoteErrorReadingTrace + `")`, false},
 		// Each truncation note, as the forge clients write it, is final.
-		{"job log truncated", "setup ok\n[log truncated: job 1 exceeds 1048576 bytes]\n", nil, `they are incomplete (they hold "[log truncated:")`, true},
-		{"job list truncated", "setup ok\n[job list truncated: 100 of 120 jobs included]\n", nil, `they are incomplete (they hold "[job list truncated:")`, true},
-		{"trace truncated", "=== Job 1 (x): trace truncated at 10 bytes ===\n", nil, `they are incomplete (they hold "trace truncated at")`, true},
-		{"aggregate trace limit", "=== aggregate trace limit (1 bytes) reached, skipping remaining jobs ===\n", nil, `they are incomplete (they hold "aggregate trace limit")`, true},
+		{"job log truncated", "setup ok\n" + forge.LogNoteLogTruncated + " job 1 exceeds 1048576 bytes]\n", nil, `they are incomplete (they hold "` + forge.LogNoteLogTruncated + `")`, true},
+		{"job list truncated", "setup ok\n" + forge.LogNoteJobListTruncated + " 100 of 120 jobs included]\n", nil, `they are incomplete (they hold "` + forge.LogNoteJobListTruncated + `")`, true},
+		{"trace truncated", "=== Job 1 (x): " + forge.LogNoteTraceTruncated + " 10 bytes ===\n", nil, `they are incomplete (they hold "` + forge.LogNoteTraceTruncated + `")`, true},
+		{"aggregate trace limit", "=== " + forge.LogNoteAggregateTraceLimit + " (1 bytes) reached, skipping remaining jobs ===\n", nil, `they are incomplete (they hold "` + forge.LogNoteAggregateTraceLimit + `")`, true},
 		// A fetch-failure note decides over a truncation note in the same
 		// logs: the failed job's log may arrive on a later fetch.
-		{"failed and truncated", "[log truncated: job 1 exceeds 1048576 bytes]\n[logs unavailable: HTTP 404]\n", nil, `they are incomplete (they hold "[logs unavailable:")`, false},
+		{"failed and truncated", forge.LogNoteLogTruncated + " job 1 exceeds 1048576 bytes]\n" + forge.LogNoteLogsUnavailable + " HTTP 404]\n", nil, `they are incomplete (they hold "` + forge.LogNoteLogsUnavailable + `")`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

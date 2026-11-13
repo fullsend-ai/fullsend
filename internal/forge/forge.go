@@ -34,6 +34,31 @@ const PerRepoGuardVar = "FULLSEND_PER_REPO_INSTALL"
 // silently diverge.
 const ChangesRequestedMarker = "<!-- fullsend:changes-requested -->"
 
+// Log-note markers the forge clients embed in the text returned by
+// GetWorkflowRunLogs (the behaviour-test ci.Driver exposes the same
+// call as GetRunLogs), in band and without an error, when a single job's log (or
+// the whole aggregate) could not be fetched in full. The GitHub and
+// GitLab clients write these prefixes and pkg/behaviourtest/steps
+// matches them (partialLogNotes) to tell a fetch failure or size cap
+// from a complete snapshot, so the markers live in this package — the
+// one both the writers and the reader import — to keep them from
+// drifting apart: a renamed marker is a compile error, not a silent
+// misdiagnosis of a run's logs.
+const (
+	// GitHub job-log notes.
+	LogNoteFailedToFetchLogs = "[failed to fetch logs:" // a job's logs could not be fetched
+	LogNoteLogsUnavailable   = "[logs unavailable:"     // the log endpoint answered non-200
+	LogNoteFailedToReadLogs  = "[failed to read logs:"  // the fetched body could not be read
+	LogNoteJobListTruncated  = "[job list truncated:"   // only one page of jobs was read
+	LogNoteLogTruncated      = "[log truncated:"        // a job log was cut at the byte cap
+
+	// GitLab trace notes.
+	LogNoteErrorFetchingTrace  = "error fetching trace:" // a job's trace could not be fetched
+	LogNoteErrorReadingTrace   = "error reading trace:"  // the fetched trace could not be read
+	LogNoteAggregateTraceLimit = "aggregate trace limit" // the aggregate byte cap was reached
+	LogNoteTraceTruncated      = "trace truncated at"    // a trace was cut at the remaining budget
+)
+
 // Repo management variable and secret names.
 //
 // These constants cover every FULLSEND_* name used by repos install,
@@ -1430,8 +1455,8 @@ type Client interface {
 	ListRepositoryArtifacts(ctx context.Context, owner, repo string, perPage int) ([]RepositoryArtifact, error)
 
 	// GetWorkflowRunLogs downloads the logs for a workflow run as plain text.
-	// On GitHub, this fetches the log of each job in the run that was not
-	// skipped.
+	// It fetches the log of each job in the run that was not skipped; a
+	// skipped job never ran and has no log to fetch.
 	GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
 
 	// GetWorkflowRunAnnotations returns annotations (::notice::, ::warning::,
