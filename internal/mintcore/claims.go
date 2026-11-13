@@ -121,8 +121,24 @@ func ValidateWorkflowRef(ref string, workflowHostRepos map[string]bool, allowedW
 		matched = true
 	}
 
+	// A "*" workflow-host entry accepts any host, mirroring the "*"
+	// allowed-workflow-files wildcard below. Used by the public preview
+	// test mint (ADR 0114 ephemeral repos), whose caller repos are created
+	// per scenario and so cannot be enumerated in WORKFLOW_HOST_REPOS. The
+	// host part cannot be stripped by prefix, so the workflow path is
+	// recovered by locating the ".github/workflows/" segment.
+	if !matched && workflowHostRepos["*"] {
+		if i := strings.Index(lowerRef, "/.github/workflows/"); i >= 0 {
+			relPath = lowerRef[i+1:]
+			matched = true
+		}
+	}
+
 	if !matched {
 		for host := range workflowHostRepos {
+			if host == "*" {
+				continue
+			}
 			hostPrefix := strings.ToLower(host) + "/"
 			if strings.HasPrefix(lowerRef, hostPrefix) {
 				relPath = strings.TrimPrefix(lowerRef, hostPrefix)
