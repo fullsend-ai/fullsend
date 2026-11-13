@@ -2190,6 +2190,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// budget (agentTimedOut) and exited non-zero. See #5075, #7042.
 	var lastIterElapsed time.Duration
 	var lastIterTimedOut bool
+	// lastIterBgStopped names the transcripts whose background sub-agent
+	// the CLI stopped at its own exit in the most recent iteration, when
+	// that iteration failed validation (#9149).
+	var lastIterBgStopped []string
 
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
@@ -2967,6 +2971,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
 		lastIterTimedOut = iterationTimedOutUnlessBehavioral(lastExitCode, lastIterElapsed, timeout, agentExitReason)
+		lastIterBgStopped = nil
 		if lastIterTimedOut {
 			// The exec ended at the budget but the agent's processes did
 			// not (OpenShell has no per-exec kill). Terminate them before
@@ -3143,6 +3148,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if feedbackEnabled {
 			validationFeedback = feedback
 		}
+		lastIterBgStopped = backgroundStopCause(tx, lastExitCode, lastIterTimedOut, iterTranscriptDir, agentStart)
+		if len(lastIterBgStopped) > 0 {
+			printer.StepWarn("The agent CLI exited 0 and the iteration failed validation; interrupted background sub-agent transcripts found, so a pending sub-agent may have been stopped at CLI exit: " + strings.Join(lastIterBgStopped, ", "))
+		}
 
 		// A killed iteration is not retried: the next one would replay the
 		// same run with the same budget; the sweep still checks its output (#7042).
@@ -3249,7 +3258,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.Blank()
 
-	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, lastExitCode, agentExitReason, runCount, lastIterElapsed, timeout)
+	return runTerminalError(h.ValidationLoop != nil, validationPassed, lastIterTimedOut, lastExitCode, agentExitReason, runCount, lastIterElapsed, timeout, lastIterBgStopped)
 }
 
 func bootstrapCommon(sandboxName, fullsendBinary string, h *harness.Harness) error {
@@ -3981,11 +3990,17 @@ func timeoutNoRetryMessage(elapsed, timeout time.Duration) string {
 // already 1 for an exit 0 with a transcript-reported error (#2786). A
 // behavioral limit exit (exitReason, #6877) does not fail a run without a
 // loop, so the post-script still runs and can report the interruption.
-func runTerminalError(hasLoop, validationPassed, timedOut bool, exitCode int, exitReason string, runCount int, elapsed, timeout time.Duration) error {
+//
+// bgStopped names the last iteration's transcripts whose background
+// sub-agent the runtime's CLI stopped when it exited on its own (#9149); a
+// failed validation names that cause rather than the bare count.
+func runTerminalError(hasLoop, validationPassed, timedOut bool, exitCode int, exitReason string, runCount int, elapsed, timeout time.Duration, bgStopped []string) error {
 	timeoutErr := fmt.Errorf("agent timed out after %s without completing (timeout: %s)", elapsed.Round(time.Second), timeout)
 	switch {
 	case hasLoop && !validationPassed && timedOut:
 		return timeoutErr
+	case hasLoop && !validationPassed && len(bgStopped) > 0:
+		return fmt.Errorf("validation failed after %d iteration(s): interrupted background sub-agent transcripts found, possibly stopped at CLI teardown (%s)", runCount, strings.Join(bgStopped, ", "))
 	case hasLoop && !validationPassed:
 		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
 	case !hasLoop && timedOut:
@@ -3994,6 +4009,19 @@ func runTerminalError(hasLoop, validationPassed, timedOut bool, exitCode int, ex
 		return &agentFailedError{exitCode: exitCode}
 	}
 	return nil
+}
+
+// backgroundStopCause names the transcripts in transcriptDir whose
+// background sub-agent the runtime's CLI stopped when it exited on its own
+// after since (#9149). Only a clean exit (code 0, not killed at the budget)
+// is checked: a runner kill stops sub-agents too, and is reported as such.
+// It is nil for a runtime without BackgroundStopDetector.
+func backgroundStopCause(tx agentruntime.TranscriptHandler, exitCode int, timedOut bool, transcriptDir string, since time.Time) []string {
+	d, ok := tx.(agentruntime.BackgroundStopDetector)
+	if !ok || exitCode != 0 || timedOut {
+		return nil
+	}
+	return d.StoppedBackgroundSubagents(transcriptDir, since)
 }
 
 // agentFailedError ends a run without a validation_loop whose agent failed

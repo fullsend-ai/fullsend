@@ -176,6 +176,30 @@ func TestBuildRunCommand_ClearsLoaderEnv(t *testing.T) {
 	}
 }
 
+// TestBuildRunCommand_BgWaitCeilingAfterEnv executes the launch with an env
+// file that shortens Claude Code's background-wait ceiling; the claude that
+// runs sees the runner's 0 (no cap) instead (#9149).
+func TestBuildRunCommand_BgWaitCeilingAfterEnv(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	realDir := filepath.Join(tmp, "real")
+	require.NoError(t, os.MkdirAll(realDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(realDir, "claude"),
+		[]byte("#!/bin/sh\necho REAL-CLAUDE\nenv\n"), 0o755))
+	envFile := filepath.Join(tmp, ".env")
+	require.NoError(t, os.WriteFile(envFile, []byte("export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=1000\n"), 0o644))
+
+	cmd := strings.Replace(testRunCommand("agent", "", tmp, nil, ""), sandbox.SandboxWorkspace+"/.env", envFile, 1)
+	c := exec.Command("/bin/sh", "-c", protectedDirsShell(t, realDir)+cmd)
+	c.Env = []string{"PATH=" + realDir + ":/usr/bin:/bin", "HOME=" + tmp, "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=600000"}
+	out, err := c.CombinedOutput()
+	require.NoError(t, err, string(out))
+	assert.Contains(t, string(out), "REAL-CLAUDE")
+	assert.Contains(t, string(out), "\nCLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0\n")
+	assert.NotContains(t, string(out), "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=1000")
+	assert.NotContains(t, string(out), "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=600000")
+}
+
 // TestBinaryPin executes the shared pin used by the claude, codex, pi and
 // OpenCode launches: it pins an absolute path that no function of the same
 // name can stand in for, and a failed cd before it is reported as the cd

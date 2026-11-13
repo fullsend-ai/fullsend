@@ -630,6 +630,11 @@ func (ClaudeRuntime) EmitTranscriptErrors(w io.Writer, summaries []TranscriptErr
 	emitTranscriptErrors(w, summaries)
 }
 
+// StoppedBackgroundSubagents implements BackgroundStopDetector.
+func (ClaudeRuntime) StoppedBackgroundSubagents(transcriptDir string, since time.Time) []string {
+	return stoppedBackgroundSubagents(transcriptDir, since)
+}
+
 // reservedPluginDestNames are basenames bootstrapPlugins and
 // buildPluginConfigs create directly under configDir/plugins/ — two
 // marketplace-scaffolding directories plus the two shared registration
@@ -788,10 +793,28 @@ func claudeModelID(name string, aliases map[string]string) string {
 
 // claudeNonessentialTrafficEnv turns off Claude Code's nonessential traffic
 // to Anthropic; every run sets it (claudeRunnerSettings, buildRunCommand).
+// claudeNonessentialSettings is the no-hooks --settings document; it also pins
+// claudeBgWaitCeilingEnv to "0" so that path matches claudeRunnerSettings.
 const (
 	claudeNonessentialTrafficEnv = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
-	claudeNonessentialSettings   = `{"env":{"` + claudeNonessentialTrafficEnv + `":"1"}}`
+	claudeNonessentialSettings   = `{"env":{"` + claudeNonessentialTrafficEnv + `":"1","` + claudeBgWaitCeilingEnv + `":"0"}}`
 )
+
+// claudeBgWaitCeilingExport lifts the cap Claude Code puts on how long a
+// --print run waits, after the main agent's last turn, for background
+// sub-agents still running (600s by default). At the cap Claude Code stops
+// them, drops the partial result and exits 0, a clock the runner does not
+// own (#9149). 0 waits without a cap, so the iteration's timeout_minutes
+// stays the only clock on sub-agents, as on codex. The launch exports it
+// after .env on every route, so neither .env nor env.sandbox (written into
+// .env) can shorten it.
+const claudeBgWaitCeilingExport = "export " + claudeBgWaitCeilingEnv + "=0"
+
+// claudeBgWaitCeilingEnv names the variable claudeBgWaitCeilingExport sets.
+// claudeRunnerSettings and claudeNonessentialSettings pin it to "0" in the
+// settings document as well, so a repository settings file's env block cannot
+// restore the default ceiling.
+const claudeBgWaitCeilingEnv = "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"
 
 // buildRunCommand renders the in-sandbox command line. When sandbox hooks are
 // enabled (params.HooksSettingsPath set), the launch refuses to start claude
@@ -828,6 +851,7 @@ func buildRunCommandWithDigests(params RunParams, hookDigests claudeHookDigests)
 		// The gateway route already exports it in claudeGatewayPostEnv.
 		postEnv += " && export " + claudeNonessentialTrafficEnv + "=1"
 	}
+	postEnv += " && " + claudeBgWaitCeilingExport
 	if params.HooksSettingsPath != "" {
 		// The hook settings, re-asserted after the agent-writable .env from
 		// what Bootstrap recorded; a name the runner has no value for is
@@ -859,9 +883,9 @@ func buildRunCommandWithDigests(params RunParams, hookDigests claudeHookDigests)
 	} else if params.HooksSettingsPath != "" {
 		parts = append(parts, fmt.Sprintf("--settings '%s'", strings.ReplaceAll(params.HooksSettingsPath, "'", "'\\''")))
 	} else {
-		// No hooks document: --settings still pins the variable above the
+		// No hooks document: --settings still pins the variables above the
 		// repository's settings files, which would otherwise win over the
-		// exported value.
+		// exported values.
 		parts = append(parts, "--settings "+shellQuote(claudeNonessentialSettings))
 	}
 
@@ -1038,6 +1062,9 @@ func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig, ex
 //   - env sets claudeNonessentialTrafficEnv to "1": Claude Code treats a
 //     harness's own ANTHROPIC_BASE_URL as the Claude API, where metrics,
 //     /feedback and surveys default on.
+//   - env sets claudeBgWaitCeilingEnv to "0": the launch exports it, and a
+//     settings file's env block would otherwise restore the default ceiling
+//     inside Claude Code (#9149).
 //   - disableAllHooks is false, so no other file can switch off the hooks
 //     this document wires.
 //
@@ -1067,6 +1094,7 @@ func claudeRunnerSettings(securityEnv []hookEnvPair, extra map[string]any) map[s
 		env[key] = ""
 	}
 	env[claudeNonessentialTrafficEnv] = "1"
+	env[claudeBgWaitCeilingEnv] = "0"
 	out["env"] = env
 	out["disableAllHooks"] = false
 	return out
@@ -1210,7 +1238,7 @@ func agentDestName(agentName, agentPath string) string {
 
 // LaunchEnvExports implements LaunchEnvExporter: the environment names
 // buildRunCommand sets beyond EnvExports. Nonessential traffic is always
-// disabled; the rest are set only when an inference gateway is registered
+// disabled and the background-wait ceiling is always lifted; the rest are set only when an inference gateway is registered
 // for the run (claudeGatewayPostEnv), with the credential variable chosen
 // by the block's auth mode, and are recorded flat anyway: runtime_specific
 // asks whether the runtime can set the name, not whether every
@@ -1219,6 +1247,7 @@ func agentDestName(agentName, agentPath string) string {
 func (ClaudeRuntime) LaunchEnvExports() []string {
 	return []string{
 		claudeNonessentialTrafficEnv,
+		claudeBgWaitCeilingEnv,
 		claudeGatewayBaseURLEnv,
 		"ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN",
@@ -1228,9 +1257,10 @@ func (ClaudeRuntime) LaunchEnvExports() []string {
 
 // Ensure ClaudeRuntime implements Runtime and TranscriptHandler.
 var (
-	_ Runtime           = ClaudeRuntime{}
-	_ TranscriptHandler = ClaudeRuntime{}
-	_ DebugLogNamer     = ClaudeRuntime{}
-	_ ContextBridger    = ClaudeRuntime{}
-	_ LaunchEnvExporter = ClaudeRuntime{}
+	_ Runtime                = ClaudeRuntime{}
+	_ TranscriptHandler      = ClaudeRuntime{}
+	_ DebugLogNamer          = ClaudeRuntime{}
+	_ ContextBridger         = ClaudeRuntime{}
+	_ LaunchEnvExporter      = ClaudeRuntime{}
+	_ BackgroundStopDetector = ClaudeRuntime{}
 )
