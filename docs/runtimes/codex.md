@@ -224,10 +224,12 @@ catalog ([ADR 0159](../ADRs/0159-codex-subagents-on-collaboration-v2.md)).
 On V2 a child's result reaches the parent as a message rather than as a tool
 result, so a `SubagentStop` hook runs the PostToolUse chain on the child's
 final message, as an `Agent` result, before Codex delivers it. When the chain
-blocks, the child does not finish: it continues with a prompt to reply with
-exactly `RESULT WITHHELD BY FULLSEND`, and its next final message passes the
-same check before Codex delivers it. The V2 parent's runtime note treats that
-notice as a coverage gap for that role. Three limits remain:
+blocks, the child does not finish: it continues with a fixed prompt to reply
+with exactly `RESULT WITHHELD BY FULLSEND`, which does not say what was
+flagged (the reason goes to the findings log), and for the rest of that turn
+only that exact notice passes, so the child cannot reword a flagged result
+until one gets through. The V2 parent's runtime note treats that notice as a
+coverage gap for that role. Three limits remain:
 
 - The gate fails open when the hook process itself fails (an exit other than 0
   or 2, a timeout, or a failure to start), like every Codex hook, and a child
@@ -235,7 +237,7 @@ notice as a coverage gap for that role. Three limits remain:
   script that fails inside the gate is a block, not a pass.
 - An errored child's result is the provider's error text, and no hook runs on
   it.
-- A child that keeps producing flagged text keeps running, and spending
+- A child that never replies with the notice keeps running, and spending
   tokens, until the parent interrupts it or the run ends.
 
 Codex applies no `agents.max_depth` on V2, and gives a child of a V2 parent

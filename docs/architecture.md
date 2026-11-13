@@ -380,11 +380,11 @@ flowchart TB
   spawn the hook did not screen can still name a model or use a rewritten role
   file, and for it depth one rests on the hook. A V2 child's final message
   passes the ADR 0100 PostToolUse chain at `SubagentStop`, before Codex
-  delivers it; a block makes the child continue, told to reply with a fixed
-  withheld notice, and its next final message is checked the same way. That
-  gate fails open when its hook process fails, an errored child's provider
-  error text is not screened, and a child that keeps producing flagged text
-  runs, and spends tokens, until the parent interrupts it or the run ends. V2
+  delivers it; a block makes the child continue, told only to reply with a
+  fixed withheld notice, and nothing else passes for the rest of its turn.
+  That gate fails open when its hook process fails, an errored child's error
+  text is not screened, and a child that never replies with the notice runs,
+  and spends tokens, until the parent interrupts it or the run ends. V2
   delegation is experimental until a live review and retro run verifies the
   gate. Aggregate spawn/admission reconciliation remains after-the-fact
   detection: unused admissions or missing/altered child session logs can hide

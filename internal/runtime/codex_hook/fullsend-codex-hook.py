@@ -134,10 +134,12 @@ PHASE_POST = "PostToolUse"
 # The child-result gate (ADR 0159 decision 4). codex runs SubagentStop in a
 # thread-spawned child with the final message that would become the child's
 # result, before the parent is notified. A block (exit 2 + reason) makes the
-# child continue with the reason as its prompt instead of finishing, so a
-# flagged result is never delivered: the prompt asks for WITHHELD_NOTICE,
-# which the parent then receives as the result. WITHHELD_NOTICE is the Go
-# side's codexWithheldNotice, which the V2 runtime note quotes.
+# child continue with the reason as its prompt instead of finishing. On this
+# phase that reason is always SUBAGENT_STOP_PROMPT, which asks for
+# WITHHELD_NOTICE and does not say what was flagged, and after a block only
+# the notice passes, so a flagged result is never delivered: the parent
+# receives the notice instead. WITHHELD_NOTICE is the Go side's
+# codexWithheldNotice, which the V2 runtime note quotes.
 PHASE_SUBAGENT_STOP = "SubagentStop"
 WITHHELD_NOTICE = "RESULT WITHHELD BY FULLSEND"
 SUBAGENT_STOP_PROMPT = (
@@ -462,9 +464,11 @@ def log_finding(name: str, severity: str, detail: str, action: str) -> None:
             os.close(fd)
 
 
-# Appended to every block reason on SubagentStop (set in main()), where the
-# reason is the continuation prompt the child reads.
-_BLOCK_SUFFIX = ""
+# Sent in place of every block reason on SubagentStop (set in main()), where
+# stderr is the continuation prompt the child reads: a child told which stage
+# fired could reword its result until one passed. Every call site records
+# the reason in the findings log first.
+_BLOCK_PROMPT = ""
 
 
 def block(reason: str) -> None:
@@ -512,7 +516,7 @@ def block(reason: str) -> None:
     # by signal, which codex does not treat as a block.
     signal.setitimer(signal.ITIMER_REAL, 0)
     text = (reason or "").strip() or "fullsend hook blocked this tool call"
-    truncated = text[:MAX_TEXT] + _BLOCK_SUFFIX
+    truncated = _BLOCK_PROMPT or text[:MAX_TEXT]
     with contextlib.suppress(BaseException):
         data = truncated.encode("utf-8", "replace")
         while data:
@@ -985,11 +989,17 @@ def run_subagent_stop(scripts: list[str], hook_input: dict[str, Any]) -> None:
 
     The message is presented to the scripts as an Agent tool result, the shape
     the other runtimes give a sub-agent's answer. Every block in the chain
-    leaves through block() (exit 2 + reason, with SUBAGENT_STOP_PROMPT
-    appended), which SubagentStop reads as "continue the child"
-    (codex-rs/hooks/src/events/stop.rs), so the flagged text is not delivered.
-    `continue: false` is never emitted: codex would end the child and deliver
-    the flagged message.
+    leaves through block() (exit 2 with SUBAGENT_STOP_PROMPT in place of the
+    reason, which goes to the findings log), which SubagentStop reads as
+    "continue the child" (codex-rs/hooks/src/events/stop.rs), so the flagged
+    text is not delivered. `continue: false` is never emitted: codex would end
+    the child and deliver the flagged message.
+
+    After a block codex sets stop_hook_active for the rest of the child's
+    turn (core/src/session/turn.rs), and only fullsend renders stop handlers,
+    so the flag means this gate already blocked: from then on only the exact
+    withheld notice passes and the chain does not run, so a child cannot
+    reword a flagged result until one gets through.
 
     codex always sends last_assistant_message, a string or null
     (hooks/src/schema.rs SubagentStopCommandInput): null or "" has nothing
@@ -1001,6 +1011,15 @@ def run_subagent_stop(scripts: list[str], hook_input: dict[str, Any]) -> None:
     through the chain, whose unicode stage screens hidden characters.
     """
     message = hook_input.get("last_assistant_message")
+    if hook_input.get("stop_hook_active") is True:
+        if isinstance(message, str) and message.strip(" \t\r\n") == WITHHELD_NOTICE:
+            sys.exit(0)
+        reason = (
+            "fullsend: after a SubagentStop block the child's next final message "
+            "was not the withheld notice, so it was withheld"
+        )
+        log_finding("codex_subagent_stop_retry_block", "critical", reason, "block")
+        block(reason)
     if "last_assistant_message" in hook_input and message in (None, ""):
         sys.exit(0)
     if not isinstance(message, str):
@@ -1025,8 +1044,8 @@ def main() -> None:
     if phase == PHASE_SUBAGENT_STOP:
         # Every block on this phase, a misconfiguration, a bad payload or a
         # crash included, continues the child with the withheld-notice prompt.
-        global _BLOCK_SUFFIX
-        _BLOCK_SUFFIX = "\n\n" + SUBAGENT_STOP_PROMPT
+        global _BLOCK_PROMPT
+        _BLOCK_PROMPT = SUBAGENT_STOP_PROMPT
     if phase != MODE_SPAWN_GUARD and len(sys.argv) < 3:
         # Misconfiguration, not a tool decision. Fail closed on the phase that
         # can block and stay quiet on the one that cannot.

@@ -508,7 +508,10 @@ const codexSubagentStopEvent = "SubagentStop"
 
 // codexWithheldNotice is the adapter's WITHHELD_NOTICE: a SubagentStop block
 // tells the child to reply with exactly this, so it is the result the parent
-// receives in place of a flagged one. The V2 runtime note quotes it.
+// receives in place of a flagged one. The V2 runtime note quotes it, and the
+// V2 review and retro rules in the agents repository must list this exact
+// text as a final result with no content: a change here needs the same
+// change there.
 const codexWithheldNotice = "RESULT WITHHELD BY FULLSEND"
 
 // codexGroupCoversAgent reports whether a hook group's tools include a
