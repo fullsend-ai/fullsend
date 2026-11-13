@@ -2147,6 +2147,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
 	finalizeSandboxSpan(sandboxSpan, nil)
+	if len(h.ImageMounts) > 0 {
+		printer.StepStart("Checking image mount filesystem policy")
+		policy, err := sandbox.EffectivePolicy(ctx, sandboxName)
+		if err == nil {
+			err = checkImageMountPolicyAccess(policy, h.Policy, h.ImageMounts)
+		}
+		if err != nil {
+			printer.StepFail("Image mount filesystem policy check failed")
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
+			return err
+		}
+		printer.StepDone("Image mount filesystem access is allowed")
+	}
 	for _, mount := range h.ImageMounts {
 		if mount.Dest != sandbox.SandboxFullsendRoot {
 			continue

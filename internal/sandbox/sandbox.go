@@ -1467,9 +1467,7 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 		if lastErr == nil {
 			return nil
 		}
-
-		// Keep the failed sandbox in place for inspection and stop.
-		if keep {
+		if keep && !errors.Is(lastErr, errUnsupportedImageMountConfiguration) {
 			return fmt.Errorf("sandbox creation failed (sandbox kept, not retried): %w", lastErr)
 		}
 
@@ -1482,6 +1480,26 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 				fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
 			}
 			return lastErr
+		}
+		if errors.Is(lastErr, errUnsupportedImageMountConfiguration) {
+			detail := lastErr.Error()
+			var configErr *imageMountConfigurationError
+			if errors.As(lastErr, &configErr) {
+				detail = configErr.detail
+			}
+			diagnostic := fmt.Errorf("%w: %s. Image mounts require the Podman backend, allow_driver_config = true, and resource_admission.enabled = false. For this action's generated local gateway, set allow-image-mounts: true; for any other gateway, ask its operator to verify these settings. `openshell gateway info --output json` does not report the effective settings", errUnsupportedImageMountConfiguration, detail)
+			if keep {
+				if errors.As(lastErr, &configErr) && configErr.sandboxExists {
+					return fmt.Errorf("sandbox creation failed (sandbox kept, not retried): %w", diagnostic)
+				}
+				return diagnostic
+			}
+			if errors.As(lastErr, &configErr) && configErr.sandboxExists {
+				if delErr := Delete(name); delErr != nil {
+					fmt.Fprintf(os.Stderr, "  Warning: cleanup of sandbox %s failed: %v\n", name, delErr)
+				}
+			}
+			return diagnostic
 		}
 
 		if delErr := Delete(name); delErr != nil {
@@ -1620,7 +1638,11 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 
 	if err != nil {
 		check := exec.CommandContext(ctx, "openshell", "sandbox", "get", name)
-		if checkErr := check.Run(); checkErr != nil {
+		checkErr := check.Run()
+		if len(imageMounts) > 0 && unsupportedImageMountConfiguration(createOutput) {
+			return &imageMountConfigurationError{detail: createOutput, sandboxExists: checkErr == nil}
+		}
+		if checkErr != nil {
 			// Wrap err too: when openshell cannot execute at all the
 			// combined output is empty and it is the only diagnostic.
 			return fmt.Errorf("sandbox create failed: %w (output: %s)", err, createOutput)
@@ -1726,6 +1748,43 @@ func collectCreateFailureLogs(name string) (supervisorLogs, gatewayLogs, contain
 // gateway-level setting, not a per-sandbox override. CreateWithRetry
 // classifies it as non-retryable and returns immediately.
 var errPolicyGlobal = errors.New("sandbox policy source is global, not sandbox-level")
+
+var errUnsupportedImageMountConfiguration = errors.New("OpenShell rejected image-mount driver configuration")
+
+type imageMountConfigurationError struct {
+	detail        string
+	sandboxExists bool
+}
+
+func (e *imageMountConfigurationError) Error() string {
+	return fmt.Sprintf("%s: %s", errUnsupportedImageMountConfiguration, e.detail)
+}
+
+func (e *imageMountConfigurationError) Unwrap() error {
+	return errUnsupportedImageMountConfiguration
+}
+
+// unsupportedImageMountConfiguration recognizes stable OpenShell create
+// failures that cannot be fixed by retrying the same driver config.
+func unsupportedImageMountConfiguration(output string) bool {
+	message := strings.ToLower(output)
+	if strings.Contains(message, "allow_driver_config") {
+		return true
+	}
+	unsupported := []string{"disabled", "not allowed", "unsupported", "rejected", "requires", "denied", "not supported", "does not support", "doesn't support"}
+	for _, marker := range unsupported {
+		if strings.Contains(message, "driver config") && strings.Contains(message, marker) {
+			return true
+		}
+		if strings.Contains(message, "resource admission") && strings.Contains(message, marker) {
+			return true
+		}
+		if strings.Contains(message, "mount") && strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
 
 // ErrProviderNotFound is returned by DeleteProvider when the gateway has no
 // provider of that name — already gone, which callers treat as done.

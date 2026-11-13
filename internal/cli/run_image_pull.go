@@ -60,10 +60,16 @@ func isGHCRImage(image string) bool {
 // image and the warning below is the only trace.
 //
 // It runs only on GitHub Actions, for ghcr.io sandbox and image_mounts images,
-// when GH_WORKFLOW_TOKEN is set. Failures are warnings: the gateway still attempts its own
-// unauthenticated pull, which keeps public images working as before.
+// when GH_WORKFLOW_TOKEN is set and the gateway is local. For a remote gateway,
+// the runner's Podman store is unrelated to the gateway's image store.
+// Failures are warnings: the gateway still attempts its own pull, which keeps
+// public images working as before.
 func prePullGHCRImage(ctx context.Context, image string, printer *ui.Printer) {
 	if os.Getenv("GITHUB_ACTIONS") != "true" || !isGHCRImage(image) {
+		return
+	}
+	if os.Getenv("OPENSHELL_GATEWAY_ENDPOINT") != "" {
+		printer.StepWarn("skipping runner-local pull for " + image + " because the OpenShell gateway is remote; private images need gateway-host registry authentication or an image already cached there (public images can still be pulled by the gateway)")
 		return
 	}
 	token := os.Getenv(workflowTokenEnv)

@@ -531,17 +531,53 @@ image_mounts:
 ```
 
 Fullsend mounts the image read-only. Its OCI `ENV`, user, working directory
-and entrypoint do not apply. The sandbox policy must include `/opt/fullsend`
-in `filesystem_policy.read_only`. The OpenShell Podman gateway must enable
-`allow_driver_config` and disable resource admission. The `fullsend-sandbox`
-package publishes a matching mount-ready `fullsend-sandbox-tools` image; use
-that image rather than mounting the ordinary sandbox image, whose
-`/opt/fullsend/usr` compatibility link would point back into the sandbox.
-The mount image should use the same
-OpenShell sandbox base, or a Linux image with compatible system libraries and
-Python/Node runtimes. The local Podman backend supports this PoC; other
-backends may reject the mount. For merge behavior and destination rules, see
-the [harness merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays).
+and entrypoint do not apply. The effective sandbox policy must grant access to
+each mount destination through `filesystem_policy.read_only` or
+`filesystem_policy.read_write`; an allowed ancestor also grants access. Earlier
+scaffolds and custom policies are not changed automatically. Add `/opt/fullsend`
+or an allowed ancestor to the policy used by the harness. Fullsend checks the
+effective policy after sandbox creation and before bootstrap, then reports the
+policy and mount path when access is missing.
+
+Image mounts use OpenShell's Podman driver configuration. The local gateway
+created by this action keeps mounts disabled by default. Set
+`allow-image-mounts: true` on the action to enable `allow_driver_config` and
+disable resource admission for that local Podman gateway. Disabling admission
+removes its label checks for external attachments, so use this opt-in only when
+trusted workflows control the harness. For a remote gateway, its operator must
+configure those same settings under `[openshell.drivers.podman]` and
+`[openshell.drivers.podman.resource_admission]`; the action leaves remote
+configuration untouched. OpenShell 0.1.4 `gateway info --output json` reports
+compute-driver names and versions but not these effective settings. A rejected
+mount reports the required settings; other backends may not support image
+mounts. Set the action input for a local gateway:
+
+```yaml
+with:
+  allow-image-mounts: true
+```
+
+For a remote Podman gateway, its operator configures:
+```toml
+[openshell.drivers.podman]
+allow_driver_config = true
+
+[openshell.drivers.podman.resource_admission]
+enabled = false
+```
+
+On a local gateway, Fullsend can pre-pull private GHCR images with the workflow
+token. For a remote gateway it skips runner-local Podman pulls because that
+image store is separate. Private images then need registry authentication or a
+cached copy on the gateway host; public images can still be pulled there.
+Fullsend does not send the workflow token to the gateway or sandbox.
+
+The `fullsend-sandbox` package publishes a matching mount-ready
+`fullsend-sandbox-tools` image; use that image rather than mounting the ordinary
+sandbox image, whose `/opt/fullsend/usr` compatibility link would point back
+into the sandbox. The mount image should use the same OpenShell sandbox base, or
+a Linux image with compatible system libraries and Python/Node runtimes. For
+merge behavior and destination rules, see the [harness merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays).
 Distinct image mount destinations cannot contain one another (for example,
 `/opt/fullsend` and `/opt/fullsend/org-tools`) or overlap a `host_files`
 destination. A child can still replace an inherited image mount at the exact
