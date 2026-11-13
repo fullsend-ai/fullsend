@@ -428,7 +428,8 @@ Use `--update` to force re-resolution even if the lock entry appears current.
 It re-resolves the URLs the lock entry records, and the files the base names
 by relative path, from their sources, so a file that changed upstream is
 recorded even on the cache that wrote the lock (the URL cache index is not
-consulted for `--update`). A base's own `#sha256=` pin still wins: to move a
+consulted for `--update`). With `--offline`, `--update` re-pins from the cache
+and does not see upstream changes. A base's own `#sha256=` pin still wins: to move a
 base itself, change the pinned SHA in the harness file.
 A current entry is also not composed, so `fullsend lock` does not check it for
 reserved `env.sandbox` keys; see
