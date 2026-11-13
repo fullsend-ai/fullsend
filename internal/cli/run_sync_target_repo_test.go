@@ -395,6 +395,7 @@ func TestIsExcludedPath(t *testing.T) {
 }
 
 func TestRunAgent_SyncTargetRepo_SkippedOnPreflightFailure(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"exit 1\"\n  max_iterations: 2\n")
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
@@ -926,7 +927,8 @@ func TestRunAgent_SyncTargetRepo_EndToEndSafeDownloadPreservesStrippedSymlinks(t
 	t.Setenv("FULLSEND_SYNC_TARGET_REPO", "")
 
 	repoDir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, ".git", "objects"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, ".git", "refs"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "app.go"), []byte("package main // v1\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "stale.txt"), []byte("remove me"), 0o644))
@@ -935,6 +937,9 @@ func TestRunAgent_SyncTargetRepo_EndToEndSafeDownloadPreservesStrippedSymlinks(t
 	// Sandbox download staging source includes modified app.go, added.txt,
 	// omits stale.txt, and includes abs-link (which sanitizeDownload strips).
 	sandboxRepo := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(sandboxRepo, ".git", "objects"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(sandboxRepo, ".git", "refs"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sandboxRepo, ".git", "HEAD"), []byte("ref: refs/heads/sandbox\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(sandboxRepo, "app.go"), []byte("package main // v2\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(sandboxRepo, "added.txt"), []byte("from sandbox\n"), 0o644))
 	require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(sandboxRepo, "abs-link")))
