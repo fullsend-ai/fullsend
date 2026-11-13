@@ -285,14 +285,14 @@ func CFMintTeardownArgs(previewAlias, workerName string) []string {
 	}
 }
 
-func (d *cfmintMintDriver) Install(_ context.Context) (string, error) {
+func (d *cfmintMintDriver) Install(ctx context.Context) (string, error) {
 	alias, err := GenerateCFMintPreviewAlias()
 	if err != nil {
 		return "", err
 	}
 	d.previewAlias = alias
 
-	mintURL, err := d.deployCFMint(alias)
+	mintURL, err := d.deployCFMint(ctx, alias)
 	if err != nil {
 		return "", fmt.Errorf("deploying CF preview mint for BT: %w", err)
 	}
@@ -319,7 +319,7 @@ var (
 // deploy-reported preview URL (which includes the account's workers.dev
 // subdomain). The upload is retried on failure (idempotent per alias) to
 // ride out transient Cloudflare API errors.
-func (d *cfmintMintDriver) deployCFMint(alias string) (string, error) {
+func (d *cfmintMintDriver) deployCFMint(ctx context.Context, alias string) (string, error) {
 	args := CFMintDeployArgs(alias, d.workerName, d.cfg)
 
 	d.logf("[cfmint] deploying preview mint: fullsend %s", strings.Join(args, " "))
@@ -334,7 +334,11 @@ func (d *cfmintMintDriver) deployCFMint(alias string) (string, error) {
 		if attempt < mintDeployMaxAttempts {
 			d.logf("[cfmint] mint deploy attempt %d/%d failed (retrying in %s): %v",
 				attempt, mintDeployMaxAttempts, delay, err)
-			time.Sleep(delay)
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(delay):
+			}
 			delay *= 2
 		}
 	}

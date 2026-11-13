@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -290,6 +291,24 @@ func TestCFMintInstall_DeployRetrySucceeds(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://bt-abc-bt-mint.example.workers.dev", mintURL)
 	assert.Equal(t, 2, attempts, "a transient failure should be retried and then succeed")
+}
+
+func TestCFMintInstall_ContextCancelledDuringRetry(t *testing.T) {
+	prev := mintDeployRetryDelay
+	mintDeployRetryDelay = time.Hour // force the retry wait to block on ctx
+	t.Cleanup(func() { mintDeployRetryDelay = prev })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var attempts int
+	d := newTestCFMintDriver(func(_, _ string, _ ...string) (string, error) {
+		attempts++
+		cancel() // cancel after the first failed attempt
+		return "", fmt.Errorf("transient CF error")
+	})
+
+	_, err := d.Install(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, attempts, "a cancelled context must stop the retry before the next attempt")
 }
 
 func TestCFMintInstall_NoMintURLInOutput(t *testing.T) {
