@@ -11,7 +11,10 @@
 # detail in the JSON body on stdout, only the top-level message on stderr)
 # is skipped and not counted against --max; a rate-limit
 # answer stops the run with a non-zero exit; a permission 403 and a failed
-# listing fail; filler repositories are created private; --target and --max
+# listing fail; a gh warning on stderr is not counted as a repository; an
+# e2e App on selected repositories, a missing App or an unreadable
+# installation list stops before anything is listed or created; filler
+# repositories are created private; --target and --max
 # with a leading zero are read in base 10; a trailing --target or --max and
 # an org outside the pool are usage errors.
 #
@@ -37,6 +40,11 @@ trap 'rm -rf "${SHIM_DIR}" "${STATE}"' EXIT
 # ${S}/<org>/<name>         repository exists
 # ${S}/<org>/.private/<name> repository was created private
 # ${S}/list_error           listing repositories fails with HTTP 500
+# ${S}/list_warning         listing repositories succeeds but gh also
+#                           prints a warning on stderr
+# ${S}/selection            the e2e App's repository_selection (default
+#                           all; "none" means the App is not installed)
+# ${S}/installations_error  listing app installations fails with HTTP 404
 # ${S}/exists_on_create     every create answers "name already exists"
 # ${S}/ratelimit_after      create answers a secondary rate limit once this
 #                           many repositories have been created
@@ -65,8 +73,14 @@ while [[ $# -gt 0 ]]; do
 done
 org="${path#/orgs/}"; org="${org%%/*}"
 case "${method} ${path}" in
+  "GET /orgs/${org}/installations")
+    [[ -f "${S}/installations_error" ]] && { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+    sel=$(cat "${S}/selection" 2>/dev/null || echo all)
+    [[ "${sel}" != none ]] && echo "${sel}"
+    exit 0 ;;
   "GET /orgs/${org}/repos")
     [[ -f "${S}/list_error" ]] && { echo "gh: Server Error (HTTP 500)" >&2; exit 1; }
+    [[ -f "${S}/list_warning" ]] && echo "A new release of gh is available: 9.9.9" >&2
     [[ -d "${S}/${org}" ]] && ls "${S}/${org}"
     exit 0 ;;
   "POST /orgs/${org}/repos")
@@ -249,6 +263,37 @@ if [[ ${RC} -ne 0 && "$(creates)" == 0 ]] && grep -q 'could not list repositorie
   pass "a failed listing fails without creating anything"
 else
   fail "list error: rc=${RC} creates=$(creates) out=${OUT}"
+fi
+
+# --- a gh warning on stderr is not a repository ------------------------------
+fresh_state halfsend-07 test-repo
+touch "${STATE}/list_warning"
+run_pad --apply --target 3 07
+if [[ ${RC} -eq 0 && "$(count_fillers halfsend-07)" == 2 ]] && grep -q '1 permanent repositories' <<< "${OUT}"; then
+  pass "a gh warning on stderr is not counted as a repository"
+else
+  fail "warning: rc=${RC} fillers=$(count_fillers halfsend-07) out=${OUT}"
+fi
+
+# --- the e2e App must cover All repositories ---------------------------------
+for sel in selected none; do
+  fresh_state halfsend-07
+  echo "${sel}" > "${STATE}/selection"
+  run_pad --apply --target 3 07
+  if [[ ${RC} -ne 0 && "$(creates)" == 0 ]] && grep -q 'not All repositories' <<< "${OUT}" \
+      && ! grep -q -- '--paginate /orgs/halfsend-07/repos' "${STATE}/gh.log"; then
+    pass "an e2e App on '${sel}' stops the run before anything is listed or created"
+  else
+    fail "selection ${sel}: rc=${RC} creates=$(creates) out=${OUT}"
+  fi
+done
+fresh_state halfsend-07
+touch "${STATE}/installations_error"
+run_pad --target 3 07
+if [[ ${RC} -ne 0 ]] && grep -q 'could not list app installations in halfsend-07' <<< "${OUT}"; then
+  pass "an unreadable installation list fails"
+else
+  fail "installations error: rc=${RC} out=${OUT}"
 fi
 
 # --- usage errors -----------------------------------------------------------

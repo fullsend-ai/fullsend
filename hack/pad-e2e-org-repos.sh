@@ -7,14 +7,16 @@
 #   ORG      — full org name, e.g. halfsend-07
 #   --apply  — create the repositories; without it the script only reports
 #              what it would create
-#   --target — permanent repositories the org should hold (default 200)
+#   --target — permanent repositories the org should hold (default 170)
 #   --max    — most repositories to create in this run, across all orgs
 #              (default 450, under GitHub's 500-an-hour content-creation limit)
 #
 # GitHub sets an App installation's hourly limit at 5,000 plus 50 for each
-# repository over 20, capped at 12,500, so about 170 repositories reach the
-# cap. Slot repositories (test-repo-NN and names starting with it) come and
-# go with leases, so they do not count toward the target.
+# repository over 20, capped at 12,500, so 170 repositories reach the cap.
+# Slot repositories (test-repo-NN and names starting with it) come and go
+# with leases, so they do not count toward the target. The default keeps an
+# org under 200 repositories with its slots leased, so the slot allocator's
+# per-pass listing of the org stays at two pages of 100.
 #
 # Filler repositories are private, empty and named quota-filler-NNN. The
 # slot driver and slot GC only touch names derived from the pool layout, so
@@ -22,17 +24,19 @@
 #
 # Idempotent: existing filler names are skipped and an org already at the
 # target gets nothing. Creation is paced (FILLER_PACE_SECONDS, default 8) to
-# stay under 80 a minute and 500 an hour. A rate-limit error stops the run; run it
-# again later to continue where it stopped.
+# stay under 80 a minute and 500 an hour. A rate-limit error stops the run;
+# run it again later to continue where it stopped.
 #
-# Requires gh authenticated as an owner of the pool org (or a member allowed
-# to create repositories).
+# Before touching an org, the script checks that the fullsend-ai-e2e App is
+# installed there on All repositories, and stops otherwise. That check and
+# the creation need gh authenticated as an owner of the pool org.
 
 set -euo pipefail
 
 FILLER_PREFIX="quota-filler-"
 FILLER_DESCRIPTION="Quota filler for the e2e App installation rate limit (fullsend-ai/fullsend#9414). Do not delete."
 FILLER_PACE_SECONDS="${FILLER_PACE_SECONDS:-8}"
+E2E_APP_SLUG="fullsend-ai-e2e"
 
 # org_name turns NN into halfsend-NN and passes a full name through.
 org_name() {
@@ -49,14 +53,41 @@ is_slot_repo() {
 }
 
 # list_repo_names prints every repository name in org, one per line.
-# Errors go to stderr and return 1.
+# Only gh's stdout is captured, so a warning on stderr cannot be counted as
+# a repository; stderr is shown only when the call fails.
 list_repo_names() {
-  local org="$1" out
-  if ! out=$(gh api --paginate "/orgs/${org}/repos?type=all&per_page=100" --jq '.[].name' 2>&1); then
-    echo "    ERROR: could not list repositories in ${org}: ${out}" >&2
+  local org="$1" out errfile
+  errfile=$(mktemp)
+  if ! out=$(gh api --paginate "/orgs/${org}/repos?type=all&per_page=100" --jq '.[].name' 2>"${errfile}"); then
+    echo "    ERROR: could not list repositories in ${org}: $(cat "${errfile}")" >&2
+    rm -f "${errfile}"
     return 1
   fi
+  rm -f "${errfile}"
   [[ -n "${out}" ]] && echo "${out}"
+  return 0
+}
+
+# check_e2e_installation fails unless the e2e App is installed in org on
+# All repositories. On selected repositories the filler repositories would
+# not count toward its limit, and they are meant to stay. Listing an org's
+# installations needs an org owner.
+check_e2e_installation() {
+  local org="$1" out errfile selection
+  errfile=$(mktemp)
+  if ! out=$(gh api --paginate "/orgs/${org}/installations" \
+      --jq ".installations[] | select(.app_slug == \"${E2E_APP_SLUG}\") | .repository_selection" \
+      2>"${errfile}"); then
+    echo "    ERROR: could not list app installations in ${org} (needs an org owner): $(cat "${errfile}")" >&2
+    rm -f "${errfile}"
+    return 1
+  fi
+  rm -f "${errfile}"
+  selection=$(head -1 <<< "${out}")
+  if [[ "${selection}" != all ]]; then
+    echo "    ERROR: ${E2E_APP_SLUG} in ${org} is installed on '${selection:-nothing}', not All repositories; filler repositories would not raise its limit" >&2
+    return 1
+  fi
   return 0
 }
 
@@ -130,7 +161,7 @@ whole_number() {
 }
 
 main() {
-  local apply=false target=200 max=450 orgs=() arg value org
+  local apply=false target=170 max=450 orgs=() arg value org
   while [[ $# -gt 0 ]]; do
     arg="$1"
     case "${arg}" in
@@ -168,6 +199,7 @@ main() {
   local names permanent fillers name created=0 skipped=0 planned=0 rc
   for org in "${orgs[@]}"; do
     echo "==> ${org}"
+    check_e2e_installation "${org}" || return 1
     names=$(list_repo_names "${org}") || return 1
     permanent=$(count_permanent <<< "${names}")
     fillers=$(plan_fillers "${target}" <<< "${names}")

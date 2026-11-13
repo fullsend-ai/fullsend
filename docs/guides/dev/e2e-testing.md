@@ -219,6 +219,16 @@ repos holds the e2e installation token to about 5,000 calls an hour. Empty
 filler repositories raise the limit
 ([#9414](https://github.com/fullsend-ai/fullsend/issues/9414)).
 
+**Risk.** This creates about 3,600 empty repositories across 22 orgs only
+to raise an API limit. GitHub's Terms of Service and Acceptable Use
+Policies let GitHub decide at its discretion what counts as excessive API
+use or bulk automated activity, and remove repositories or suspend apps
+for it. Enforcement could suspend the e2e App or delete the filler
+repositories, which would stop the DEV pool. The alternative GitHub
+documents is GitHub Enterprise Cloud, where an App installation gets a
+flat 15,000 calls an hour. Record on #9414 that the risk is accepted, or
+GitHub Support's answer, before step 5.
+
 1. Authenticate `gh` as an owner of the pool orgs.
 2. Check what the script would create:
 
@@ -245,18 +255,26 @@ filler repositories raise the limit
    Each run creates at most 450 repositories (`--max`), so run it again
    each hour until every org reports nothing to do.
 
-The script counts every repository except slot repos (`test-repo-NN` and
-names starting with it) toward `--target` (default 200). It creates the
-missing ones as private, empty `quota-filler-NNN` repositories, one every
-8 seconds (`FILLER_PACE_SECONDS`), to stay under GitHub's content-creation
-limits. Names that already exist are skipped. A rate-limit answer stops
-the run; run it again later to continue. It only accepts `halfsend` and
-`halfsend-NN` orgs. The slot driver and slot GC never touch filler
-repositories. Do not delete them.
+Before touching an org, the script checks that `fullsend-ai-e2e` is
+installed there on **All repositories**, and stops otherwise: on selected
+repositories the filler repositories would not count toward its limit. It
+only accepts `halfsend` and `halfsend-NN` orgs.
 
-The e2e app must be installed on **All repositories** (as
-`hack/setup-new-e2e-org.sh` asks), or the filler repositories do not count
-toward its limit.
+The script counts every repository except slot repos (`test-repo-NN` and
+names starting with it) toward `--target`. It creates the missing ones as
+private, empty `quota-filler-NNN` repositories, one every 8 seconds
+(`FILLER_PACE_SECONDS`), to stay under GitHub's content-creation limits.
+Names that already exist are skipped. A rate-limit answer stops the run;
+run it again later to continue. The slot driver and slot GC never touch
+filler repositories. Do not delete them.
+
+The default `--target` of 170 is the smallest count that reaches the cap.
+It has a cost: the slot allocator lists each org's repositories, 100 a
+page, on every claim pass, and a run waiting for a slot repeats the pass
+every 15 seconds. At 170 permanent repositories plus leased slots an org
+lists in two pages instead of one, so each waiting run spends about 240
+more calls an hour per org. A larger target would push orgs to three
+pages.
 
 ### Test actor permissions
 
