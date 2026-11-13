@@ -490,6 +490,10 @@ func TestOpenCodeCloudLocationExport(t *testing.T) {
 	}
 }
 
+func TestOpenCodeUtilityPin_IncludesSystemBinFallback(t *testing.T) {
+	assert.Contains(t, openCodeUtilityPin(), "'/bin'", "production utility lookup retains the legacy /bin fallback")
+}
+
 // requirePinnedSha256sum skips tests that run openCodeUtilityPin on hosts
 // (macOS) where the pinned directories have no sha256sum.
 func requirePinnedSha256sum(t *testing.T) {

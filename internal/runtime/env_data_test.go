@@ -684,6 +684,62 @@ func TestEnvDataTrustedPath_RootDropsRelativeEntries(t *testing.T) {
 	assert.Equal(t, "/usr/bin:/bin", string(out))
 }
 
+func TestEnvDataTrustedPath_MountedOnlyToolLookup(t *testing.T) {
+	root := t.TempDir()
+	toolDirs := []string{
+		filepath.Join(root, "fullsend", "usr", "local", "bin"),
+		filepath.Join(root, "fullsend", "usr", "bin"),
+	}
+	for _, dir := range toolDirs {
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+	}
+	mountedTool := filepath.Join(toolDirs[0], "fullsend-only")
+	require.NoError(t, os.WriteFile(mountedTool, []byte("#!/bin/sh\necho mounted\n"), 0o755))
+	projectBin := filepath.Join(root, "project", "bin")
+	require.NoError(t, os.MkdirAll(projectBin, 0o755))
+	projectTool := filepath.Join(projectBin, "conflicting")
+	require.NoError(t, os.WriteFile(projectTool, []byte("#!/bin/sh\necho project\n"), 0o755))
+
+	// Model an agent account that cannot own or rewrite the mounted image.
+	// The real filesystem and executable lookup remain in use.
+	protectedRoot := `test() { if [ "$1" = -O ] && [ "$2" = / ]; then return 0; fi; command test "$@"; }; `
+	path := strings.Join([]string{projectBin, os.Getenv("PATH")}, string(os.PathListSeparator))
+	cmd := exec.Command("/bin/sh", "-c", protectedRoot+envDataTrustedPathFor(strings.Join(toolDirs, ":"))+` && PATH="$`+envDataTrustedPathVar+`" command -v fullsend-only`)
+	cmd.Env = []string{"PATH=" + path}
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, mountedTool, strings.TrimSpace(string(out)))
+
+	cmd = exec.Command("/bin/sh", "-c", protectedRoot+envDataTrustedPathFor(strings.Join(toolDirs, ":"))+` && PATH="$`+envDataTrustedPathVar+`" command -v conflicting`)
+	cmd.Env = []string{"PATH=" + path}
+	out, err = cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, projectTool, strings.TrimSpace(string(out)), "ambient project tools remain reachable after mounted-only tools")
+}
+
+func TestSandboxFullsendToolPathCommandAt_PrefersMountedTool(t *testing.T) {
+	root := t.TempDir()
+	mountedBin := filepath.Join(root, "mounted")
+	projectBin := filepath.Join(root, "project")
+	for _, dir := range []string{mountedBin, projectBin} {
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+	}
+	for dir, output := range map[string]string{mountedBin: "mounted", projectBin: "project"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "codex"), []byte("#!/bin/sh\necho "+output+"\n"), 0o755))
+	}
+	cmd := exec.Command("/bin/sh", "-c", sandboxFullsendToolPathCommandAt(mountedBin, "codex"))
+	cmd.Env = []string{"PATH=" + projectBin + ":/usr/bin:/bin"}
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, "mounted\n", string(out))
+
+	cmd = exec.Command("/bin/sh", "-c", sandboxFullsendToolPathCommandAt(mountedBin, "codex"))
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	out, err = cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, "mounted\n", string(out), "the command is found when only the mounted image provides it")
+}
+
 // The fragment pins python3 before reading .env and runs it isolated. The
 // trusted PATH it pins with is the one the launch's CLI pin recorded, so
 // the fragment itself never records it again (a second `readonly` of the

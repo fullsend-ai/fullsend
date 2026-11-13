@@ -311,6 +311,7 @@ func openCodeUtilityPin() string {
 		sandbox.SandboxFullsendBinDir,
 		"/usr/local/bin",
 		"/usr/bin",
+		"/bin",
 	)
 }
 

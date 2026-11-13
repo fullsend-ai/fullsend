@@ -96,7 +96,11 @@ func EnvDataControlLines() []string {
 // sandboxFullsendToolPathCommand runs a fixed runner command with the
 // mounted Fullsend tool image ahead of the sandbox's ambient PATH.
 func sandboxFullsendToolPathCommand(command string) string {
-	return "PATH=" + shellQuote(sandbox.SandboxFullsendToolPath) + `${PATH:+:$PATH} ` + command
+	return sandboxFullsendToolPathCommandAt(sandbox.SandboxFullsendToolPath, command)
+}
+
+func sandboxFullsendToolPathCommandAt(toolPath, command string) string {
+	return "PATH=" + shellQuote(toolPath) + `${PATH:+:$PATH} ` + command
 }
 
 func envDataControlLines(workspace string) []string {
@@ -134,8 +138,12 @@ const envDataWritableAncestor = `while :; do if test -w "$p" || test -O "$p"; th
 // the launch runs as the owner of / (root), nothing could be protected, so
 // only relative and empty entries and missing directories are left out.
 func envDataTrustedPath() string {
+	return envDataTrustedPathFor(sandbox.SandboxFullsendToolPath)
+}
+
+func envDataTrustedPathFor(toolPath string) string {
 	return `{ readonly ` + envDataTrustedPathVar + `="$(IFS=:; set -f; s=; ` +
-		`fullsend_path='` + sandbox.SandboxFullsendToolPath + `'; paths=$fullsend_path${PATH:+:$PATH}; ` +
+		`fullsend_path=` + shellQuote(toolPath) + `; paths=$fullsend_path${PATH:+:$PATH}; ` +
 		`for d in $paths; do case $d in (/*) ;; (*) continue ;; esac; if ! test -O /; then ` +
 		`d="$(cd -P "$d" 2>/dev/null && pwd -P)" || continue; case $d in (*:*) continue ;; esac; p=$d; ` + envDataWritableAncestor + `; fi; ` +
 		`if test -d "$d"; then printf '%s%s' "$s" "$d"; s=:; fi; done)"; }`

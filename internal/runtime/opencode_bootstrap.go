@@ -406,10 +406,11 @@ func openCodeBashAllowlistWarning(allowlist []string) string {
 // loaded as mode "primary". It catches a silent fallback to the default agent
 // (*:allow) from a frontmatter parse failure or mode:subagent.
 func openCodeVerifyAgent(sandboxName, agentName string, r OpenCodeRuntime) error {
-	cmd := fmt.Sprintf("cd %s && OPENCODE_CONFIG_DIR=%s opencode debug agent %s 2>/dev/null",
+	cmd := fmt.Sprintf("cd %s && %s 2>/dev/null",
 		shellQuote(r.WorkspaceDir()),
-		shellQuote(r.ConfigDir()),
-		shellQuote(openCodeValidatedArg(agentName)))
+		sandboxFullsendToolPathCommand(fmt.Sprintf("OPENCODE_CONFIG_DIR=%s opencode debug agent %s",
+			shellQuote(r.ConfigDir()),
+			shellQuote(openCodeValidatedArg(agentName)))))
 	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("verifying opencode agent %q: %w", agentName, err)

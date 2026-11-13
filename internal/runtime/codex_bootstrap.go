@@ -547,7 +547,8 @@ func codexPreflightVersion(sandboxName string) (string, error) {
 // image, reported before any iteration.
 func codexPreflightCatalog(sandboxName string) (codexCatalog, error) {
 	const cmd = "codex debug models --bundled"
-	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 30*time.Second)
+	toolPathCmd := sandboxFullsendToolPathCommand(cmd)
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, toolPathCmd, 30*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("codex preflight: %w", err)
 	}
