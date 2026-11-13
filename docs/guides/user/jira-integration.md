@@ -5,15 +5,16 @@
 Connect fullsend to a Jira project so that Jira issue activity — comments, label changes — triggers the same agents that run on GitHub and GitLab.
 
 > [!WARNING]
-> **Connect a private Jira project only to a private repository.** A public
-> repository can expose private Jira data through its workflow artifacts.
+> **Connect a private Jira project to a private repository.** A public
+> repository can expose private Jira data through its workflow artifacts,
+> pull requests, commits, and logs.
 >
 > An agent run that starts from a Jira issue reads the issue's title,
-> description, comments, and other fields, including custom fields. Every run
-> uploads its whole `output/` directory as a workflow artifact. That artifact
-> holds JSONL files that record what the agent read: the raw conversation
-> stream (`output.jsonl`), the agent transcripts (`transcripts/*.jsonl`), and,
-> when content capture is on, `run-telemetry.jsonl`.
+> description, comments, and other fields, including custom fields. By
+> default, the run artifact holds JSONL files that record what the agent
+> read: the raw conversation stream (`output.jsonl`), the agent transcripts
+> (`transcripts/*.jsonl`), and, when content capture is on,
+> `run-telemetry.jsonl`.
 >
 > - On a public GitHub repository, any signed-in GitHub user can download the
 >   artifact until it expires.
@@ -21,10 +22,13 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 > - The output scan masks secret values. It does not remove customer names,
 >   personal data, or other private text.
 > - Agents can also quote Jira text in pull requests, commits, and workflow
->   logs on the code host.
+>   logs on the code host. No artifact setting covers these.
 >
-> Fullsend has no setting that narrows the artifact today. See [Private Jira
-> projects need a private
+> To keep the conversation out of the artifact, set
+> `artifacts.by_source.jira: metadata` or `none`. See [Public repos and
+> private data](#public-repos-and-private-data) and [Run artifacts and
+> private data](run-artifacts-and-private-data.md). For the wider risk, see
+> [Private Jira projects need a private
 > repository](../infrastructure/private-repositories.md#private-jira-projects-need-a-private-repository).
 
 ## Setup overview
@@ -505,8 +509,10 @@ implementation
 ## Prerequisites
 
 - A GitHub repo with fullsend installed (`fullsend github setup` completed).
-  If the Jira project is private, the repo must be private too. See the
-  [warning at the top of this guide](#jira-integration).
+  If the Jira project is private, use a private repo. If the repo is public,
+  also set `artifacts.by_source.jira`. See the
+  [warning at the top of this guide](#jira-integration) and
+  [Public repos and private data](#public-repos-and-private-data).
 - A Jira Cloud instance. **Jira Data Center is not currently supported** — the client is hard-wired to Cloud-only APIs (REST v3, cursor-based search pagination, `groupId`-based group lookup), so requests against a Data Center instance will fail. Tracked as future work.
 - A Jira API token ([Create API token](https://id.atlassian.com/manage-profile/security/api-tokens))
   for a [dedicated non-human account](#use-a-dedicated-account-for-the-poller)

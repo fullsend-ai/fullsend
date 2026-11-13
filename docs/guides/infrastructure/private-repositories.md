@@ -16,15 +16,16 @@ Fullsend treats all repositories the same at the infrastructure level — the sa
 
 ## Private Jira projects need a private repository
 
-If you connect fullsend to a private Jira project, install it only in a
-private repository. The repository's visibility, not the Jira project's,
-decides who can read what an agent run produces.
+If you connect fullsend to a private Jira project, prefer a private
+repository. The repository's visibility, not the Jira project's, decides who
+can read what an agent run produces.
 
 The [Jira integration](../user/jira-integration.md) runs agents in the
 repository where fullsend is installed. A run that starts from a Jira issue
 reads that issue's title, description, comments, and other fields, including
-custom fields. Every run uploads its whole `output/` directory as a workflow
-artifact. These JSONL files in the artifact record what the agent read:
+custom fields. By default (`artifacts` level `all`), the run artifact holds
+the run's `output/` directory. These JSONL files in the artifact record what
+the agent read:
 
 | File | Contents |
 |------|----------|
@@ -36,13 +37,17 @@ On a public GitHub repository, any signed-in GitHub user can download this
 artifact until it expires. A public GitLab project can expose its job
 artifacts in the same way. The output scan masks secret values, but it does
 not remove customer names, personal data, or other private business text.
-Agents can also quote Jira text in pull requests, commits, and workflow logs.
 
-Fullsend has no setting today that narrows what the artifact holds.
-[ADR 0161](../../ADRs/0161-repo-config-limits-run-artifact-content.md) records
-the decision to add a per-source limit, but until it ships, a private
-repository is the only way to keep Jira text out of public artifacts. The
-broader risk of private content crossing into public places is tracked in
+To keep the raw conversation out of the uploaded artifact, set
+`artifacts.by_source.jira: metadata` (or `none`) in `.fullsend/config.yaml`.
+See [Run artifacts and private data](../user/run-artifacts-and-private-data.md)
+for the levels and how to check the result. The setting is defined by
+[ADR 0161](../../ADRs/0161-repo-config-limits-run-artifact-content.md).
+
+That setting does not cover everything. Agents can also quote Jira text in
+pull requests, commits, and workflow logs on the code host. If that text must
+stay confidential, use a private repository. The broader risk of private
+content crossing into public places is tracked in
 [#1189](https://github.com/fullsend-ai/fullsend/issues/1189).
 
 ## Which agents are safe to enable by default
