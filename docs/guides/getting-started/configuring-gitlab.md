@@ -731,6 +731,23 @@ install grants and verifies its protected-default-branch pipeline access. A
 failed grant revokes the unpublished replacement and preserves the installed legacy
 credential. Interrupted replacement resumes through ordinary rotation state.
 
+GitLab.com Free refuses per-user protected-branch merge grants. When the
+default branch lets only Maintainers merge, install cannot give a new Poller
+credential pipeline access, so it revokes the credential and reports that
+poller pipeline access on the protected branch could not be granted. The
+report names the branch. The Analyst and Coder credentials are not affected.
+On that tier, Poller provisioning requires the default branch's role-based
+**Allowed to merge** setting to include Developers. Read the warning under
+[Letting the Poller start pipelines on the default branch](#letting-the-poller-start-pipelines-on-the-default-branch)
+before you change it. The report includes these steps:
+
+1. Open the project in GitLab under **Settings → Repository → Protected
+   branches**.
+2. Select the default branch named in the message.
+3. Set **Allowed to merge** to **Developers + Maintainers**. This lets every
+   project Developer merge to the branch.
+4. Re-run `fullsend repos install`.
+
 An installed role credential that rotation state does not record (for example,
 one installed before rotation state existed) is left untouched, and install
 reports it instead of migrating it. To re-adopt it, remove that role's
