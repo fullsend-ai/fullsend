@@ -56,7 +56,7 @@ fullsend is pinned to — the source of truth is
 in the fullsend repo at your release tag (also printed on fullsend workflow runs).
 
 ```bash
-export OPENSHELL_VERSION=0.1.4  # check the pin file for the current version
+export OPENSHELL_VERSION=0.1.8  # check the pin file for the current version
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
 openshell --version
 ```
@@ -74,7 +74,7 @@ version = 2
 compute_driver = "podman"
 
 [openshell.drivers.podman]
-supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.1.4"  # match your openshell --version
+supervisor_image = "ghcr.io/nvidia/openshell/supervisor:0.1.8"  # match your openshell --version
 health_check_interval_secs = 10
 ```
 
