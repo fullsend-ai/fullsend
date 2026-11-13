@@ -53,7 +53,7 @@ func TestOpenCodeNativeHooks(t *testing.T) {
 	for _, scenario := range []string{"pre-block", "rewrite", "post-block", "nested", "ls-only",
 		"bash-patterns", "native-bash-patterns", "trusted-bash-patterns", "native-trusted-bash-patterns",
 		"error-rewrite", "error-canary", "error-scanner-failure", "nested-error", "repo-config-isolation",
-		"bash-failed-verification", "trusted-file-patterns", "nested-trusted-bash", "relative-paths"} {
+		"bash-failed-verification", "trusted-file-patterns", "nested-trusted-bash", "relative-paths", "stdin-prompt"} {
 		t.Run(scenario, func(t *testing.T) {
 			runOpenCodeHookProbe(t, binary, gotVersion, scenario, openCodeHookProbeDeadline(scenario))
 		})
@@ -91,6 +91,7 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	}
 	configDir := filepath.Join(dir, "config")
 	configIsolation := scenario == "repo-config-isolation"
+	stdinPrompt := scenario == "stdin-prompt"
 	failedVerification := scenario == "bash-failed-verification"
 	filePatterns := scenario == "trusted-file-patterns"
 	nestedPolicy := scenario == "nested-trusted-bash"
@@ -286,6 +287,9 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		require.NoError(t, os.WriteFile(filepath.Join(work, ".opencode", "opencode.json"), poisonConfig, 0o600))
 		steps["root"] = []openCodeProbeCall{stepsForAllowedProbe(), probeCall("rewrite")}
 	}
+	if stdinPrompt {
+		steps["root"] = []openCodeProbeCall{stepsForAllowedProbe(), probeCall("rewrite")}
+	}
 	if failedVerification {
 		steps["root"] = []openCodeProbeCall{stepsForAllowedProbe(), {name: "bash", args: map[string]any{
 			"command": "scan-secrets file.go", "description": "probe-failed-verification",
@@ -400,8 +404,22 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		// V2 otherwise starts a persistent background service.
 		args = append(args, "--standalone")
 	}
-	args = append(args, "FULLSEND_NATIVE_HOOK_PARENT: execute the scripted probe.")
+	prompt := "FULLSEND_NATIVE_HOOK_PARENT: execute the scripted probe."
+	if stdinPrompt {
+		prompt += "\n" + strings.Repeat("Validation failed: '$HOME' $(touch prompt-injection)\n", 220) + "\n"
+	} else {
+		args = append(args, prompt)
+	}
 	cmd := exec.CommandContext(ctx, binary, args...)
+	if stdinPrompt {
+		promptPath := filepath.Join(dir, "prompt.txt")
+		require.NoError(t, os.WriteFile(promptPath, []byte(prompt), 0o600))
+		launch := []string{shellQuote(binary)}
+		for _, arg := range args {
+			launch = append(launch, shellQuote(arg))
+		}
+		cmd = exec.CommandContext(ctx, "/bin/sh", "-c", openCodeUtilityPin()+" && "+openCodePromptGuard(promptPath, prompt)+" && exec "+strings.Join(launch, " ")+" <"+shellQuote(promptPath))
+	}
 	if configIsolation {
 		// Exercise the runner's .env drop/restore and SDK cache-restore path
 		// before starting the real pinned runtime.
@@ -445,6 +463,12 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 		actualCounts[kind] = n
 	}
 	mu.Unlock()
+	if stdinPrompt {
+		encoded, err := json.Marshal(prompt)
+		require.NoError(t, err)
+		assert.Contains(t, string(captured), string(encoded), "native stdin must preserve the complete feedback prompt, including trailing newlines")
+		assert.NoFileExists(t, filepath.Join(work, "prompt-injection"))
+	}
 	for kind, calls := range steps {
 		want := len(calls) + 1
 		if stopBeforeSend || (scenario == "nested" && kind == "child") {
@@ -607,6 +631,9 @@ func runOpenCodeHookProbe(t *testing.T, binary, version, scenario string, deadli
 	kinds := []string{scenario}
 	if configIsolation {
 		assert.NoFileExists(t, filepath.Join(work, "poison-loaded"), "repository dotenv must not inject a plugin")
+		kinds = []string{"rewrite"}
+	}
+	if stdinPrompt {
 		kinds = []string{"rewrite"}
 	}
 	if scenario == "nested" {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -767,8 +768,70 @@ func TestBuildOpenCodeRunCommand_PromptOverride(t *testing.T) {
 		Prompt:        "Previous attempt failed: retry with the fix.",
 	}
 	cmd := buildOpenCodeRunCommand(params, "fix", openCodeTrustedEnv{})
-	assert.Contains(t, cmd, shellQuote("Previous attempt failed: retry with the fix."))
+	assert.NotContains(t, cmd, params.Prompt)
+	assert.Contains(t, cmd, "<"+shellQuote(sandbox.SandboxWorkspace+"/"+openCodePromptFile))
+	assert.Contains(t, cmd, openCodePromptGuard(sandbox.SandboxWorkspace+"/"+openCodePromptFile, params.Prompt))
+	assert.NotContains(t, cmd, "</dev/null")
 	assert.NotContains(t, cmd, shellQuote(DefaultAgentPrompt))
+}
+
+func TestBuildOpenCodeRunCommand_CommandSize(t *testing.T) {
+	t.Setenv(openCodeProviderEnv, "")
+	hooks := security.SandboxHookConfig{}
+	policy := openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", sandbox.SandboxWorkspace, &piAgentDef{
+		BashAllowlist: []string{"git", "go", "make", "jq", "python3"},
+	}, nil)
+	policy.Groups = security.HookPlan(hooks)
+	for file, content := range security.HookFiles(hooks) {
+		policy.Digests[file] = codexAssetSHA256(content)
+	}
+	policy.Python, policy.ShellHome = "/usr/bin/python3", "/sandbox"
+	policy.Env = map[string]string{
+		"PATH":             "/usr/bin:/bin",
+		"EGRESS_ALLOWLIST": "api.github.com,github.com,registry.npmjs.org,proxy.golang.org,sum.golang.org,storage.googleapis.com,example.com,api.example.com,registry.example.com",
+	}
+	policy.Activation = &openCodeHookActivation{Path: sandbox.SandboxWorkspace + "/" + openCodeHookActivationFile, Token: strings.Repeat("a", 64)}
+	trusted := openCodeTrustedEnv{
+		ConfigContent:   `{"permission":{"*":"deny","bash":"allow","read":"allow","task":"allow"}}`,
+		CredentialsPath: "/runner/adc.json", AgentPath: OpenCodeRuntime{}.openCodeAgentPath("fix"),
+		AgentDefinition: strings.Repeat("Agent instructions.\n", 2048), Hooks: policy,
+	}
+	for _, prompt := range []string{"", strings.Repeat("validation failed\n", 640), strings.Repeat("'", 10*1024) + "\nretry\n"} {
+		cmd := buildOpenCodeRunCommand(RunParams{RepoDir: sandbox.SandboxWorkspace + "/repo", Model: "opus", Prompt: prompt}, "fix", trusted)
+		assert.Less(t, len(cmd), 32*1024, "command with %d prompt bytes is %d bytes", len(prompt), len(cmd))
+		assert.Equal(t, 2, strings.Count(cmd, "refusing to run unhooked"), "both hook guards must remain")
+		t.Logf("prompt=%d bytes, command=%d bytes", len(prompt), len(cmd))
+	}
+}
+
+func TestOpenCodePromptGuard(t *testing.T) {
+	requirePinnedSha256sum(t)
+	prompt := "retry '$HOME' $(touch must-not-execute)\n\n"
+	promptPath := filepath.Join(t.TempDir(), "prompt.txt")
+	for _, state := range []string{"valid", "modified", "missing"} {
+		t.Run(state, func(t *testing.T) {
+			if state != "missing" {
+				content := prompt
+				if state == "modified" {
+					content += "tampered"
+				}
+				require.NoError(t, os.WriteFile(promptPath, []byte(content), 0o600))
+			} else {
+				require.NoError(t, os.Remove(promptPath))
+			}
+			cmd := exec.Command("/bin/sh", "-c", openCodeUtilityPin()+" && "+openCodePromptGuard(promptPath, prompt)+" && \"$"+openCodeCatVar+"\" <"+shellQuote(promptPath))
+			out, err := cmd.Output()
+			if state == "valid" {
+				require.NoError(t, err)
+				assert.Equal(t, prompt, string(out), "stdin transport preserves shell syntax and trailing newlines as data")
+			} else {
+				var exitErr *exec.ExitError
+				require.ErrorAs(t, err, &exitErr)
+				assert.Equal(t, openCodeAgentModifiedExit, exitErr.ExitCode())
+				assert.Empty(t, out, "changed or missing prompts must prevent invocation")
+			}
+		})
+	}
 }
 
 func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {

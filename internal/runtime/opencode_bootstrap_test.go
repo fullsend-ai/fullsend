@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -575,6 +576,37 @@ func TestOpenCodeRuntimeRun_RestoreFailurePreventsLaunch(t *testing.T) {
 			calls, err := os.ReadFile(logPath)
 			require.NoError(t, err)
 			assert.NotContains(t, string(calls), "--format json", "restore failure must prevent model invocation")
+		})
+	}
+}
+
+func TestOpenCodeRuntimeRun_UploadsRetryPrompt(t *testing.T) {
+	for _, failUpload := range []bool{false, true} {
+		t.Run(fmt.Sprintf("upload_failure=%t", failUpload), func(t *testing.T) {
+			work := t.TempDir()
+			logPath, store := filepath.Join(work, "calls.log"), filepath.Join(work, "store")
+			fakeOpenshellOpenCode(t, logPath, store)
+			recordOpenCodeTrustedEnv("sb", openCodeTrustedEnv{
+				Hooks: openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", sandbox.SandboxWorkspace, &piAgentDef{}, nil),
+			})
+			if failUpload {
+				t.Setenv("FULLSEND_OPENCODE_TEST_FAIL", openCodePromptFile)
+			}
+			prompt := "Previous attempt failed: '$HOME' $(touch marker)\n\n"
+			params := RunParams{SandboxName: "sb", AgentBaseName: "fix", RepoDir: "/repo", Prompt: prompt, Timeout: 30 * time.Second, OnEvent: func(AgentEvent) {}}
+			_, err := OpenCodeRuntime{}.Run(t.Context(), params, ui.New(&strings.Builder{}), time.Now(), &RunMetrics{})
+			calls, readErr := os.ReadFile(logPath)
+			require.NoError(t, readErr)
+			if failUpload {
+				require.ErrorContains(t, err, "uploading retry prompt")
+				assert.NotContains(t, string(calls), "--format json", "upload failure must prevent model invocation")
+			} else {
+				require.NoError(t, err)
+				promptPath := sandbox.SandboxWorkspace + "/" + openCodePromptFile
+				assert.Equal(t, prompt, string(storedUpload(t, store, promptPath)))
+				assert.Contains(t, string(calls), "<"+shellQuote(promptPath))
+				assert.NotContains(t, string(calls), prompt, "feedback must not be in an exec argument")
+			}
 		})
 	}
 }
