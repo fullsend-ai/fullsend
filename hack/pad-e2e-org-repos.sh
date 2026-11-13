@@ -164,7 +164,7 @@ main() {
     return 1
   fi
 
-  local names permanent fillers name created=0 skipped=0 rc
+  local names permanent fillers name created=0 skipped=0 planned=0 rc
   for org in "${orgs[@]}"; do
     echo "==> ${org}"
     names=$(list_repo_names "${org}") || return 1
@@ -176,7 +176,21 @@ main() {
     fi
     echo "    ${permanent} permanent repositories, target ${target}: $(wc -l <<< "${fillers}" | tr -d ' ') to create"
     if [[ "${apply}" != true ]]; then
+      # Preview what --apply would do, including where --max stops it.
+      # planned counts across orgs like created does in an --apply run.
+      local budget=$((max - planned)) total
+      total=$(wc -l <<< "${fillers}" | tr -d ' ')
+      if (( budget <= 0 )); then
+        echo "==> dry run: --max ${max} reached; an --apply run would stop here"
+        return 0
+      fi
+      (( total > budget )) && fillers=$(head -n "${budget}" <<< "${fillers}")
+      planned=$((planned + $(wc -l <<< "${fillers}" | tr -d ' ')))
       echo "    dry run: would create $(head -1 <<< "${fillers}") … $(tail -1 <<< "${fillers}")"
+      if (( total > budget )); then
+        echo "==> dry run: --max ${max} reached; an --apply run would stop here"
+        return 0
+      fi
       continue
     fi
     while IFS= read -r name; do

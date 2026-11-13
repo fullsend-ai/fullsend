@@ -2,7 +2,7 @@
 # pad-e2e-org-repos_test.sh — tests for hack/pad-e2e-org-repos.sh against a
 # stubbed gh.
 #
-# Covers: a dry run creates nothing; --apply creates filler repositories
+# Covers: a dry run creates nothing and stops where --max would; --apply creates filler repositories
 # until the permanent count reaches the target; slot repositories
 # (test-repo-NN and names starting with it) do not count; filler names
 # already present are skipped and the numbering fills the gaps; an org at
@@ -139,6 +139,19 @@ if [[ ${RC} -eq 0 && "$(creates)" == 0 ]] && grep -q 'dry run: would create quot
   pass "dry run reports the plan and creates nothing"
 else
   fail "dry run: rc=${RC} creates=$(creates) out=${OUT}"
+fi
+
+# --- dry run honours --max across orgs --------------------------------------
+fresh_state halfsend-07
+mkdir -p "${STATE}/halfsend-08" "${STATE}/halfsend-09"
+run_pad --target 3 --max 4 07 08 09
+if [[ ${RC} -eq 0 && "$(creates)" == 0 ]] \
+    && grep -q 'would create quota-filler-001 … quota-filler-003' <<< "${OUT}" \
+    && grep -q 'would create quota-filler-001 … quota-filler-001' <<< "${OUT}" \
+    && grep -q -- '--max 4 reached' <<< "${OUT}" && ! grep -q 'halfsend-09' <<< "${OUT}"; then
+  pass "a dry run stops where --max would stop an --apply run"
+else
+  fail "dry run max: rc=${RC} creates=$(creates) out=${OUT}"
 fi
 
 # --- apply reaches the target; slot repos do not count ----------------------
