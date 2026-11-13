@@ -181,7 +181,11 @@ gets a live pool.
   behaviour-test preview deploy, and `mint status` must report it. The
   check is code in the mint, but the preview marker is still deploy
   configuration, so an operator with deploy access could set it on a
-  production mint. The exact-entry commands never write the setting.
+  production mint. A production deploy policy that rejects both the preview
+  marker and any host-pattern setting would close that gap; it is not part of
+  this decision. The exact-entry commands never write the setting.
 - The org-scoped provider admits any `bt-` repo with Actions enabled, so
   disabling Actions at release and in the sweep is required, not optional.
-  The test inference gateway's name list must switch to the same prefix.
+  The test inference gateway's admission rule (`pool_regex`) must add the DEV
+  `bt-` prefix. It keeps the existing `test-repo-NN` rule for STAGE and the
+  retained DEV slots, and the pinned org-ID checks stay unchanged.
