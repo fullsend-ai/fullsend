@@ -5259,6 +5259,104 @@ func TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote(t *testing.T) {
 	assert.NotContains(t, logs, "[logs unavailable:")
 }
 
+// TestGetWorkflowRunLogs_FetchErrorIsMarked verifies that a job whose log
+// request fails at the transport level is reported with the shared
+// failed-to-fetch note, so callers can tell the snapshot is incomplete.
+func TestGetWorkflowRunLogs_FetchErrorIsMarked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 1,
+				"jobs":        []map[string]any{{"id": 1, "name": "build", "status": "completed", "conclusion": "failure"}},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			// Kill the connection mid-request so c.do itself errors.
+			hj, ok := w.(http.Hijacker)
+			if !assert.True(t, ok) {
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if !assert.NoError(t, err) {
+				return
+			}
+			conn.Close()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "[failed to fetch logs:")
+}
+
+// TestGetWorkflowRunLogs_UnavailableIsMarked verifies that a job log
+// endpoint answering non-200 is reported with the shared
+// logs-unavailable note rather than an empty log.
+func TestGetWorkflowRunLogs_UnavailableIsMarked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 1,
+				"jobs":        []map[string]any{{"id": 1, "name": "build", "status": "completed", "conclusion": "failure"}},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "[logs unavailable: HTTP 404]")
+}
+
+// TestGetWorkflowRunLogs_ReadErrorIsMarked verifies that a job log body
+// that cannot be read in full is reported with the shared
+// failed-to-read note, so callers can tell the snapshot is incomplete.
+func TestGetWorkflowRunLogs_ReadErrorIsMarked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/repo/actions/runs/42/jobs":
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 1,
+				"jobs":        []map[string]any{{"id": 1, "name": "build", "status": "completed", "conclusion": "failure"}},
+			})
+		case "/repos/org/repo/actions/jobs/1/logs":
+			// Promise more body than is written, then close, so the
+			// client's read fails (the TestGetCached_ReadErrorNamesPath
+			// pattern).
+			w.Header().Set("Content-Length", "1000")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("partial log"))
+			hj, ok := w.(http.Hijacker)
+			if !assert.True(t, ok) {
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if !assert.NoError(t, err) {
+				return
+			}
+			conn.Close()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "[failed to read logs:")
+}
+
 // TestListWorkflowRunJobs_EscapesPathComponents is a regression test
 // (#7996 review): owner and repo were interpolated into the request URL
 // without escaping, so a delimiter-containing value (e.g. "#") could alter
@@ -7864,6 +7962,29 @@ func TestGetRepoVariableInfo(t *testing.T) {
 			if exists {
 				assert.Equal(t, "identifier", v.Value)
 			}
+		})
+	}
+}
+
+func TestGetIssuePullRequestMarker(t *testing.T) {
+	for _, tt := range []struct {
+		name, payload string
+		want          bool
+	}{
+		{"issue", `{"number":1,"state":"open"}`, false},
+		{"null", `{"number":1,"state":"open","pull_request":null}`, false},
+		{"pull request", `{"number":1,"state":"open","pull_request":{"url":"https://api.github.com/repos/o/r/pulls/1"}}`, true},
+		{"empty marker", `{"number":1,"state":"closed","pull_request":{}}`, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/repos/o/r/issues/1", r.URL.Path)
+				_, _ = w.Write([]byte(tt.payload))
+			}))
+			defer srv.Close()
+			issue, err := newTestClient(t, srv).GetIssue(context.Background(), "o", "r", 1)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, issue.IsPullRequest)
 		})
 	}
 }

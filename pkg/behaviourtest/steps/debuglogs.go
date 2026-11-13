@@ -192,19 +192,22 @@ type partialLogNote struct {
 	truncation bool
 }
 
-// partialLogMarkers are the notes partialLogMarker looks for. The GitHub
+// partialLogNotes are the notes partialLogMarker looks for. The GitHub
 // client reads one page of jobs and 1 MiB of each job's log, the GitLab
-// client 10 MiB of each trace and 100 MiB in all.
-var partialLogMarkers = []partialLogNote{
-	{marker: "[failed to fetch logs:"},
-	{marker: "[logs unavailable:"},
-	{marker: "[failed to read logs:"},
-	{marker: "error fetching trace:"},
-	{marker: "error reading trace:"},
-	{marker: "aggregate trace limit", truncation: true},
-	{marker: "[job list truncated:", truncation: true},
-	{marker: "[log truncated:", truncation: true},
-	{marker: "trace truncated at", truncation: true},
+// client 10 MiB of each trace and 100 MiB in all. The markers are the
+// forge package's log-note constants — the same literals the clients
+// write — so a client-side rename is caught at compile time here rather
+// than silently turning a fetch failure into "complete" logs.
+var partialLogNotes = []partialLogNote{
+	{marker: forge.LogNoteFailedToFetchLogs},
+	{marker: forge.LogNoteLogsUnavailable},
+	{marker: forge.LogNoteFailedToReadLogs},
+	{marker: forge.LogNoteErrorFetchingTrace},
+	{marker: forge.LogNoteErrorReadingTrace},
+	{marker: forge.LogNoteAggregateTraceLimit, truncation: true},
+	{marker: forge.LogNoteJobListTruncated, truncation: true},
+	{marker: forge.LogNoteLogTruncated, truncation: true},
+	{marker: forge.LogNoteTraceTruncated, truncation: true},
 }
 
 // runLogsComplete reports whether logs, fetched for run, are a complete
@@ -218,7 +221,7 @@ func runLogsComplete(run forge.WorkflowRun, logs string) bool {
 // a truncation note, or the zero note when the text carries none.
 func partialLogMarker(logs string) partialLogNote {
 	var found partialLogNote
-	for _, note := range partialLogMarkers {
+	for _, note := range partialLogNotes {
 		if !strings.Contains(logs, note.marker) {
 			continue
 		}

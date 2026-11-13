@@ -49,8 +49,12 @@ func TestRunIssuesTransition(t *testing.T) {
 			f := &transitionTracker{}
 			var out bytes.Buffer
 			cfg := &issuesTransitionConfig{trackerName: name, project: "owner/repo", number: 618, opts: tracker.TransitionOptions{State: "closed"}, comment: "Completed", testClient: f, testWriter: &out}
+			if name == "jira" {
+				cfg.project = "PROJ"
+				cfg.testConfigReader = jiraCreateConfig(t, "PROJ")
+			}
 			require.NoError(t, runIssuesTransition(context.Background(), cfg))
-			assert.Equal(t, "owner/repo", f.project)
+			assert.Equal(t, cfg.project, f.project)
 			assert.Equal(t, 618, f.number)
 			assert.Equal(t, tracker.Body("Completed"), f.opts.Comment)
 			assert.Contains(t, out.String(), `"changed":true`)
@@ -99,9 +103,46 @@ func TestRunIssuesTransitionJSONContract(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			cfg := &issuesTransitionConfig{trackerName: "jira", project: "PROJ", number: 1, opts: tracker.TransitionOptions{State: "closed"}, testClient: &transitionTracker{result: &tt.result}, testWriter: &out}
+			cfg := &issuesTransitionConfig{trackerName: "jira", project: "PROJ", number: 1, opts: tracker.TransitionOptions{State: "closed"}, testClient: &transitionTracker{result: &tt.result}, testWriter: &out, testConfigReader: jiraCreateConfig(t, "PROJ")}
 			require.NoError(t, runIssuesTransition(context.Background(), cfg))
 			assert.JSONEq(t, tt.want, out.String())
+		})
+	}
+}
+
+func TestRunIssuesTransitionJiraProjectAuthorization(t *testing.T) {
+	for _, tt := range []struct {
+		name, project string
+		allowed       []string
+		denied        bool
+	}{
+		{name: "default"},
+		{name: "primary", project: "PROJ"},
+		{name: "primary case insensitive", project: "proj"},
+		{name: "allowed target", project: "OTHER", allowed: []string{"OTHER"}},
+		{name: "allowed case insensitive", project: "other", allowed: []string{"OTHER"}},
+		{name: "denied", project: "OTHER", denied: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &transitionTracker{}
+			var out bytes.Buffer
+			cfg := &issuesTransitionConfig{trackerName: "jira", project: tt.project, number: 1, opts: tracker.TransitionOptions{State: "closed"}, testClient: f, testWriter: &out, testConfigReader: jiraCreateConfig(t, "PROJ", tt.allowed...)}
+			err := runIssuesTransition(context.Background(), cfg)
+			if tt.denied {
+				require.ErrorContains(t, err, "allowed_targets")
+				assert.Empty(t, f.project)
+				assert.Empty(t, out.String())
+				// Authorization must also precede constructing the authenticated client.
+				cfg.testClient = nil
+				require.ErrorContains(t, runIssuesTransition(context.Background(), cfg), "allowed_targets")
+			} else {
+				require.NoError(t, err)
+				want := tt.project
+				if want == "" {
+					want = "PROJ"
+				}
+				assert.Equal(t, want, f.project)
+			}
 		})
 	}
 }

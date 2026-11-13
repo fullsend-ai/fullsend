@@ -3462,6 +3462,13 @@ var oidcDenyKeys = map[string]bool{
 	"FULLSEND_TRIGGER_TOKEN":                true,
 	"FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN": true,
 	"FULLSEND_WEBHOOK_SECRET":               true,
+	// The trace-context signing seed (ADR 0154). On GitLab a protected,
+	// wildcard-scoped CI/CD variable reaches every job on a protected ref.
+	// No run reads the seed, and fullsend's GitLab jobs unset it on their
+	// first before_script line; listing it here keeps a harness from
+	// expanding it and strips it from host-side scripts if it is ever
+	// present.
+	forge.SecretTraceSigningKey: true,
 	// The runner secrets bundle and its file path (ADR 0136).
 	// loadRunnerSecrets unsets both at start-up; listing them here keeps a
 	// harness from expanding the whole bundle and strips them from child
@@ -3605,6 +3612,13 @@ var sandboxDeniedKeys = map[string]bool{
 	jira.ClientSecretEnvVar: true,
 }
 
+// providerCredentialJiraKeys are the sandboxDeniedKeys that provider
+// credential values may still expand (#9411). Every sandbox-bound harness
+// site and provider config value keeps refusing them.
+var providerCredentialJiraKeys = map[string]bool{
+	jira.TokenEnvVar: true,
+}
+
 // expandSandboxEnvValue expands ${VAR} references in an env.sandbox value
 // with expander, refusing sandboxDeniedKeys (they expand empty).
 func expandSandboxEnvValue(v string, expander func(string) string) string {
@@ -3692,8 +3706,21 @@ func init() {
 	}
 	// The Jira repository secrets are host-script-only (#9079): provider
 	// definitions may not expand them in config values (argv) or credential
-	// values, the same as the sandbox-bound harness sites above.
+	// values, the same as the sandbox-bound harness sites above. The one
+	// exception is FULLSEND_JIRA_TOKEN in provider credential values: they
+	// reach only the provider proxy through the openshell child
+	// environment, never the sandbox, so the jira-ro provider can read the
+	// token without a second, differently named secret (#9411). Config
+	// values still refuse it. As with providerOnlyKeys below, expansion is
+	// not scoped by provider type: any provider definition's credential
+	// can reference the token, and its profile decides which hosts the
+	// proxy sends it to. That is safe only because provider and profile
+	// definitions are read from the trusted ref.
 	for k := range sandboxDeniedKeys {
+		if providerCredentialJiraKeys[k] {
+			sandbox.CredentialOnlyExpansionKeys(k)
+			continue
+		}
 		sandbox.DenyExpansionKeys(k)
 	}
 	// Provider-only keys are reserved in the sandbox (env.sandbox cannot

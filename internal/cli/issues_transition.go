@@ -46,7 +46,7 @@ when the workflow requires it. A required resolution is selected automatically
 only when Jira offers exactly one valid allowed value and no default. No arbitrary
 workflow action or resolution is chosen.
 
-An optional --comment is submitted with the Jira transition, or after closing
+An optional --comment is sent in the same request as the Jira transition, or after closing
 on GitHub/GitLab. A comment failure on a forge leaves the issue closed and
 returns an error. Inspect the issue after an uncertain failure before retrying.`,
 		Args: cobra.NoArgs,
@@ -83,6 +83,16 @@ func runIssuesTransition(ctx context.Context, cfg *issuesTransitionConfig) error
 	if err != nil {
 		return err
 	}
+	if name == trackerJira {
+		settings, err := loadJiraTrackingSettings(cfg.fullsendDir, cfg.testConfigReader)
+		if err != nil {
+			return err
+		}
+		if err := checkJiraTargetProject(settings, project); err != nil {
+			return err
+		}
+	}
+
 	tc := cfg.testClient
 	if tc == nil {
 		tc, err = newConfiguredTrackerClient(name, cfg.token, cfg.fullsendDir, cfg.testConfigReader)

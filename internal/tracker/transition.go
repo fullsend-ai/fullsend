@@ -73,6 +73,9 @@ func (c *ForgeClient) TransitionIssue(ctx context.Context, project string, numbe
 	if err != nil {
 		return nil, wrapNotFound(err)
 	}
+	if issue.IsPullRequest {
+		return nil, fmt.Errorf("%s#%d is a pull request, not an issue; refusing to transition it", project, number)
+	}
 	changed := !strings.EqualFold(issue.State, "closed")
 	if changed {
 		if err := c.forge.CloseIssue(ctx, owner, repo, number); err != nil {

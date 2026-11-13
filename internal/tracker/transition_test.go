@@ -130,6 +130,7 @@ func TestJiraTransitionAlreadyClosed(t *testing.T) {
 type transitionForge struct {
 	forge.Client
 	state                        string
+	isPullRequest                bool
 	getErr, closeErr, commentErr error
 	closes, comments             int
 	project                      string
@@ -139,7 +140,7 @@ type transitionForge struct {
 func (f *transitionForge) GetIssue(_ context.Context, owner, repo string, number int) (*forge.Issue, error) {
 	f.project = owner + "/" + repo
 	f.number = number
-	return &forge.Issue{State: f.state}, f.getErr
+	return &forge.Issue{State: f.state, IsPullRequest: f.isPullRequest}, f.getErr
 }
 func (f *transitionForge) CloseIssue(context.Context, string, string, int) error {
 	f.closes++
@@ -267,6 +268,21 @@ func TestJiraRequiredFieldsValidatedByServer(t *testing.T) {
 				assert.Empty(t, f.fields)
 				assert.Equal(t, "Ready", f.comment)
 				assert.Empty(t, f.Comments)
+			})
+		}
+	}
+}
+
+func TestForgeTransitionRejectsPullRequests(t *testing.T) {
+	for _, state := range []string{"open", "closed"} {
+		for _, comment := range []Body{"", "Completed"} {
+			t.Run(state+"/"+string(comment), func(t *testing.T) {
+				f := &transitionForge{state: state, isPullRequest: true}
+				result, err := NewForgeClient(f).TransitionIssue(context.Background(), "owner/repo", 1, TransitionOptions{State: "closed", Comment: comment})
+				require.ErrorContains(t, err, "pull request, not an issue")
+				assert.Nil(t, result)
+				assert.Zero(t, f.closes)
+				assert.Zero(t, f.comments)
 			})
 		}
 	}

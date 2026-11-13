@@ -436,7 +436,8 @@ The `fullsend issues` commands (`get`, `create`, `post-comment`, `link`, `transi
 Jira connection only from these settings, with no flag or environment
 fallback: `base_url` and `project` must be set, and Jira API calls fail
 without them. `project` is the default `--project` of the issues commands.
-`fullsend issues create` refuses any other Jira project unless it is listed
+`fullsend issues create` and `fullsend issues transition` refuse any other Jira
+project unless it is listed
 in `allowed_targets.projects`. See
 [Issue commands](../guides/user/issues-commands.md#jira-connection-settings).
 

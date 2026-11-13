@@ -567,6 +567,7 @@ func TestWebhookPrimitives_DoNotLogSecrets(t *testing.T) {
 func TestSecretConstants_AreMaskedNames(t *testing.T) {
 	assert.Equal(t, "FULLSEND_TRIGGER_TOKEN", forge.SecretTriggerToken)
 	assert.Equal(t, "FULLSEND_WEBHOOK_SECRET", forge.SecretWebhookSecret)
+	assert.Equal(t, "FULLSEND_TRACE_SIGNING_KEY", forge.SecretTraceSigningKey)
 	assert.True(t, strings.HasPrefix(forge.SecretTriggerToken, "FULLSEND_"))
 	assert.True(t, strings.HasPrefix(forge.SecretWebhookSecret, "FULLSEND_"))
 }

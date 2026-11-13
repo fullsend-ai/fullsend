@@ -1310,3 +1310,58 @@ func TestLogRedacted_NeutralizesWorkflowCommands(t *testing.T) {
 	assert.NotContains(t, logged[0], "::")
 	assert.Contains(t, logged[0], "injected")
 }
+
+// sharedLogNotes maps each log-note constant to the note text the forge
+// clients wrote before the constants existed: sharing where the text lives
+// must not change the text itself.
+var sharedLogNotes = map[string]string{
+	"LogNoteFailedToFetchLogs":   "[failed to fetch logs:",
+	"LogNoteLogsUnavailable":     "[logs unavailable:",
+	"LogNoteFailedToReadLogs":    "[failed to read logs:",
+	"LogNoteJobListTruncated":    "[job list truncated:",
+	"LogNoteLogTruncated":        "[log truncated:",
+	"LogNoteErrorFetchingTrace":  "error fetching trace:",
+	"LogNoteErrorReadingTrace":   "error reading trace:",
+	"LogNoteAggregateTraceLimit": "aggregate trace limit",
+	"LogNoteTraceTruncated":      "trace truncated at",
+}
+
+// TestLogNoteMarkersAreSharedWithForge keeps the log-note markers one
+// definition. The GitHub and GitLab clients embed these notes in band, and
+// without an error, when a job's log (or the whole aggregate) could not be
+// fetched in full, and partialLogMarker matches them to tell a failed fetch
+// from a complete snapshot. The markers live as constants in internal/forge,
+// the one package both the writers and this reader import, so a rename is a
+// compile error. This test pins their values and checks that the reader
+// matches exactly the shared set, by comparing values, not source text.
+func TestLogNoteMarkersAreSharedWithForge(t *testing.T) {
+	constants := map[string]string{
+		"LogNoteFailedToFetchLogs":   forge.LogNoteFailedToFetchLogs,
+		"LogNoteLogsUnavailable":     forge.LogNoteLogsUnavailable,
+		"LogNoteFailedToReadLogs":    forge.LogNoteFailedToReadLogs,
+		"LogNoteJobListTruncated":    forge.LogNoteJobListTruncated,
+		"LogNoteLogTruncated":        forge.LogNoteLogTruncated,
+		"LogNoteErrorFetchingTrace":  forge.LogNoteErrorFetchingTrace,
+		"LogNoteErrorReadingTrace":   forge.LogNoteErrorReadingTrace,
+		"LogNoteAggregateTraceLimit": forge.LogNoteAggregateTraceLimit,
+		"LogNoteTraceTruncated":      forge.LogNoteTraceTruncated,
+	}
+	require.Len(t, constants, len(sharedLogNotes))
+
+	// Each constant keeps the text the clients have always written.
+	for name, text := range sharedLogNotes {
+		assert.Equal(t, text, constants[name], "forge.%s", name)
+	}
+
+	// The reader looks for exactly the shared notes, no more and no fewer.
+	want := map[string]bool{}
+	for _, text := range sharedLogNotes {
+		want[text] = true
+	}
+	got := map[string]bool{}
+	for _, note := range partialLogNotes {
+		got[note.marker] = true
+	}
+	assert.Equal(t, want, got, "partialLogNotes matches the shared log notes")
+	assert.Len(t, partialLogNotes, len(sharedLogNotes), "partialLogNotes lists each shared note once")
+}

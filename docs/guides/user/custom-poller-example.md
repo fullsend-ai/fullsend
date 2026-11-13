@@ -152,7 +152,7 @@ Your external repository needs these variables and secrets configured:
   Atlassian service account OAuth credential, set
   `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` instead.
 - `JIRA_TOKEN` - Jira API token (if using Jira agents)
-- `JIRA_USER_EMAIL` - Jira user email (if using Jira agents)
+- `JIRA_USER_EMAIL` - Jira user email for non-Jira runs that reference it. Jira-sourced runs ignore it and use `FULLSEND_JIRA_EMAIL` (see [Jira connection variables in agent runs](jira-integration.md#jira-connection-variables-in-agent-runs))
 
 ## How It Works
 

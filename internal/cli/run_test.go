@@ -2759,6 +2759,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"FULLSEND_TRIGGER_TOKEN",
 		"FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN",
 		"FULLSEND_WEBHOOK_SECRET",
+		// So must the trace-context signing seed (ADR 0154).
+		"FULLSEND_TRACE_SIGNING_KEY",
 		// The runner secrets bundle must never be expandable as a whole (ADR 0136).
 		"FULLSEND_GITHUB_RUNNER_SECRETS",
 		// Nor may a harness or script learn where the bundle file was staged.
@@ -2771,14 +2773,15 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 	assert.False(t, oidcDenyKeys[workflowTokenEnv], "GH_WORKFLOW_TOKEN must stay expandable by provider credentials (#6649)")
 }
 
-// TestGitLabWebhookCredentials_RunnerOnly checks each webhook fast-path
-// credential independently: neither may reach host-side scripts, validation
-// commands, harness ${VAR} expansion, or sandbox injection, even if GitLab
-// injected the protected variable into the runner process.
-func TestGitLabWebhookCredentials_RunnerOnly(t *testing.T) {
-	for _, key := range []string{forge.SecretTriggerToken, forge.SecretGitLabTriggerAccountToken, forge.SecretWebhookSecret} {
+// TestGitLabProtectedCredentials_RunnerOnly checks each webhook fast-path
+// credential and the trace-context signing seed independently: none may reach
+// host-side scripts, validation commands, harness ${VAR} expansion, or sandbox
+// injection, even if GitLab injected the protected variable into the runner
+// process.
+func TestGitLabProtectedCredentials_RunnerOnly(t *testing.T) {
+	for _, key := range []string{forge.SecretTriggerToken, forge.SecretGitLabTriggerAccountToken, forge.SecretWebhookSecret, forge.SecretTraceSigningKey} {
 		t.Run(key, func(t *testing.T) {
-			const value = "webhook-credential-value"
+			const value = "protected-credential-value"
 			t.Setenv(key, value)
 
 			assert.True(t, oidcDenyKeys[key])
