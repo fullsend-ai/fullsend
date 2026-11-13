@@ -134,6 +134,41 @@ func lockForgeArg(harnessPath, forgePlatform string) string {
 	return ""
 }
 
+// escapeHintDisplay renders s for a printed hint's prose (outside the
+// quoted arguments): every control character becomes a visible backslash
+// sequence — the same treatment escapeHintArg gives hint arguments — so a
+// crafted name or dependency identifier cannot forge log lines, while
+// quotes are left as they are, since the prose is not shell syntax.
+func escapeHintDisplay(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if esc, ok := hintControlEscapes[r]; ok {
+			b.WriteString(esc)
+		} else if isHintControl(r) {
+			fmt.Fprintf(&b, `\x%02x`, r)
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// unpinnedDepsWarning renders run's warning for a current lock entry that
+// does not pin every base dependency: the display-only agent name and
+// first dependency are control-escaped (escapeHintDisplay) so a crafted
+// name cannot forge log lines in the prose, and the command part is the
+// shared lock-update argument form (lockUpdateArgs), whose own name is
+// escaped and dash-guarded.
+func unpinnedDepsWarning(agentName string, unpinned []string, fullsendDir, harnessPath, forgePlatform string) string {
+	noun := "dependency"
+	if len(unpinned) > 1 {
+		noun = "dependencies"
+	}
+	return fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run fullsend lock %s to pin them",
+		escapeHintDisplay(agentName), len(unpinned), noun, escapeHintDisplay(unpinned[0]),
+		lockUpdateArgs(agentName, fullsendDir, harnessPath, forgePlatform))
+}
+
 // lockUpdateHint returns the lock-update command the run, lint and lock
 // advice prints: it names the harness and succeeds as written, and carries
 // --forge when the re-lock needs the platform named (lockForgeArg). A name
