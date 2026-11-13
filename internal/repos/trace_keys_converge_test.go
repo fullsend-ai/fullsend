@@ -197,15 +197,13 @@ func requireNoSeed(t *testing.T, reported []string, seed string) {
 	}
 }
 
-// traceActions returns the actions of the trace key step, as "component
+// traceActions returns every action on FULLSEND_TRACE_SIGNING_KEY or
+// FULLSEND_TRACE_SIGNING_KEY_ID, orphan reports included, as "component
 // action detail".
 func traceActions(result *ConvergeBatchResult) []string {
 	var out []string
 	for _, r := range result.Results {
 		for _, a := range r.Actions {
-			if a.Action == "orphan" {
-				continue
-			}
 			if a.Component == "secret:"+forge.SecretTraceSigningKey || a.Component == "var:"+forge.VarTraceSigningKeyID {
 				out = append(out, a.Component+" "+a.Action+" "+a.Detail)
 			}
@@ -300,6 +298,8 @@ func TestTraceKeys_FreshThenReinstall(t *testing.T) {
 		requireNoSeed(t, reported, seed)
 		require.Equal(t, 1, len(result.Results))
 		assert.True(t, result.Results[0].AlreadyCurrent, "the second run is already current:\n%s", strings.Join(reported, "\n"))
+		assert.Empty(t, traceActions(result), "the second run reports no trace action, and no orphan "+forge.VarTraceSigningKeyID)
+		assert.Zero(t, countLines(progress.all(), "Orphan variable "+forge.VarTraceSigningKeyID), "the key ID variable is managed")
 		assert.Zero(t, client.committed(), "the second run commits nothing")
 		assert.Equal(t, 1, traceVarRecords(fc.DeletedVariables), "the second run deletes no variable")
 		assert.Equal(t, 1, len(traceSecretWrites(fc)), "the second run writes no seed")
@@ -547,8 +547,9 @@ func TestConverge_TraceKeyRereadComparesPresenceAndValue(t *testing.T) {
 
 // The real uninstall keeps the repos.yaml entry, as repos uninstall
 // --uninstall-only does, and on GitHub the committed .fullsend/config.yaml;
-// it deletes the seed. The next install keeps the installation, retains
-// the old active key and writes a new key before its commit.
+// it deletes the seed and the key ID variable. The next install keeps the
+// installation, retains the old active key and writes a new key before its
+// commit.
 func TestTraceKeys_UninstallOnlyThenInstall(t *testing.T) {
 	old := newTraceKey(1)
 	fc, cfg := traceFixture(t, true, "acme/api")
@@ -560,6 +561,8 @@ func TestTraceKeys_UninstallOnlyThenInstall(t *testing.T) {
 	require.Len(t, results, 1)
 	require.True(t, results[0].Success, "uninstall: %v", results[0].Error)
 	assert.False(t, fc.Secrets["acme/api/"+forge.SecretTraceSigningKey], "uninstall deletes the seed")
+	_, kept := keyIDVar(fc)
+	assert.False(t, kept, "uninstall deletes the key ID variable")
 
 	progress := &progressLog{}
 	plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest}, newTestClientFactory(fc), progress.fn)

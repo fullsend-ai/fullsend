@@ -17,10 +17,10 @@ import (
 // The cache never observes a write it did not make, so it is only correct
 // for a window in which nothing writes to the forge. `repos install` uses
 // one for its read-only configuration preflights (ownership, install
-// defaults, proposed safety, effective infrastructure) and discards it
-// before the manifest is written; convergence keeps reading current state
-// through the original clients. Successful reads and not-found answers are
-// cached; any other error is returned uncached.
+// defaults, trace signing keys, proposed safety, effective infrastructure)
+// and discards it before the manifest is written; convergence keeps
+// reading current state through the original clients. Successful reads and
+// not-found answers are cached; any other error is returned uncached.
 func NewPreflightReadCache(clients ForgeClientFactory) ForgeClientFactory {
 	return &preflightReadCache{clients: clients, byForge: make(map[string]*cachingReadClient)}
 }
