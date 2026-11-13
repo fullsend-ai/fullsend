@@ -3,9 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -381,7 +386,7 @@ func TestIsExcludedPath(t *testing.T) {
 	assert.False(t, isExcludedPath("src/git.go", excludes))
 }
 
-func TestRunAgent_SyncTargetRepo_SkippedOnFailure(t *testing.T) {
+func TestRunAgent_SyncTargetRepo_SkippedOnPreflightFailure(t *testing.T) {
 	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"exit 1\"\n  max_iterations: 2\n")
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
@@ -390,7 +395,7 @@ func TestRunAgent_SyncTargetRepo_SkippedOnFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "initial.txt"), []byte("initial"), 0o644))
 
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags,
-		statusOpts{}, ui.New(&buf), false, runOverrideFlags{syncTargetRepo: true})
+		statusOpts{}, ui.New(&buf), false, runOverrideFlags{syncTargetRepo: true, syncTargetRepoSet: true})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "validation_loop.preflight_check failed")
 
@@ -599,4 +604,387 @@ func TestRunOverrides_EnvFileEnablesSyncTargetRepo(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, overridesFlag.syncTargetRepo)
 	assert.Equal(t, "--sync-target-repo flag", overridesFlag.syncTargetRepoSource)
+}
+
+func TestSyncTargetRepoDirWithManifest_PreservesStrippedSymlinksAndHostOnlyFiles(t *testing.T) {
+	repoDir := t.TempDir()
+	srcDir := t.TempDir()
+
+	// Initial host state before upload.
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "tracked.txt"), []byte("v1"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "deleted.txt"), []byte("gone"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "deleteddir"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "deleteddir", "old.txt"), []byte("old"), 0o644))
+	require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(repoDir, "abs-link")))
+	require.NoError(t, os.Symlink("nonexistent-target", filepath.Join(repoDir, "dangling-link")))
+	require.NoError(t, os.Symlink("../../outside", filepath.Join(repoDir, "escaping-link")))
+
+	manifest, err := recordTargetRepoManifest(repoDir)
+	require.NoError(t, err)
+	assert.True(t, manifest["tracked.txt"])
+	assert.True(t, manifest["deleted.txt"])
+	assert.True(t, manifest["deleteddir/old.txt"])
+
+	// Simulate files created on the host after sandbox upload started (absent from manifest).
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "host-only.txt"), []byte("keep-host"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "deleteddir", "host-only-nested.txt"), []byte("keep-nested"), 0o644))
+
+	// Sanitized sandbox download updates tracked.txt, adds added.txt, omits deleted* and stripped symlinks.
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "tracked.txt"), []byte("v2"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "added.txt"), []byte("new"), 0o644))
+
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, repoDir, []string{".git"}, manifest))
+
+	data, err := os.ReadFile(filepath.Join(repoDir, "tracked.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "v2", string(data))
+
+	data, err = os.ReadFile(filepath.Join(repoDir, "added.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "new", string(data))
+
+	_, err = os.Lstat(filepath.Join(repoDir, "deleted.txt"))
+	assert.True(t, os.IsNotExist(err), "pre-existing deleted file should be pruned")
+	_, err = os.Lstat(filepath.Join(repoDir, "deleteddir", "old.txt"))
+	assert.True(t, os.IsNotExist(err), "pre-existing file inside deleted directory should be pruned")
+
+	// Dangerous/dangling symlinks and post-upload host-only files must survive.
+	target, err := os.Readlink(filepath.Join(repoDir, "abs-link"))
+	require.NoError(t, err)
+	assert.Equal(t, "/etc/passwd", target)
+
+	target, err = os.Readlink(filepath.Join(repoDir, "dangling-link"))
+	require.NoError(t, err)
+	assert.Equal(t, "nonexistent-target", target)
+
+	target, err = os.Readlink(filepath.Join(repoDir, "escaping-link"))
+	require.NoError(t, err)
+	assert.Equal(t, "../../outside", target)
+
+	data, err = os.ReadFile(filepath.Join(repoDir, "host-only.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "keep-host", string(data))
+
+	data, err = os.ReadFile(filepath.Join(repoDir, "deleteddir", "host-only-nested.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "keep-nested", string(data))
+}
+
+func TestSyncTargetRepoDirWithManifest_ReadonlyRepoRestoresDirModes(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	t.Cleanup(func() {
+		_ = os.Chmod(srcDir, 0o755)
+		_ = os.Chmod(filepath.Join(srcDir, "rodir"), 0o755)
+		_ = os.Chmod(dstDir, 0o755)
+		_ = os.Chmod(filepath.Join(dstDir, "rodir"), 0o755)
+		_ = os.Chmod(filepath.Join(dstDir, "prunedir"), 0o755)
+	})
+
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "rodir"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "rodir", "new.txt"), []byte("readonly-content"), 0o444))
+	require.NoError(t, os.Chmod(filepath.Join(srcDir, "rodir"), 0o555))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "rodir"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "rodir", "stale.txt"), []byte("stale"), 0o444))
+	require.NoError(t, os.Chmod(filepath.Join(dstDir, "rodir"), 0o555))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "prunedir"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "prunedir", "old.txt"), []byte("old"), 0o444))
+	require.NoError(t, os.Chmod(filepath.Join(dstDir, "prunedir"), 0o555))
+
+	require.NoError(t, os.Chmod(dstDir, 0o555))
+
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, nil))
+
+	rootInfo, err := os.Stat(dstDir)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o555), rootInfo.Mode().Perm())
+
+	roDirInfo, err := os.Stat(filepath.Join(dstDir, "rodir"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o555), roDirInfo.Mode().Perm())
+
+	data, err := os.ReadFile(filepath.Join(dstDir, "rodir", "new.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "readonly-content", string(data))
+
+	_, err = os.Lstat(filepath.Join(dstDir, "rodir", "stale.txt"))
+	assert.True(t, os.IsNotExist(err))
+	_, err = os.Lstat(filepath.Join(dstDir, "prunedir"))
+	assert.True(t, os.IsNotExist(err), "empty read-only directory should be pruned")
+}
+
+func TestSyncTargetRepoDirWithManifest_UnchangedPreservesInodeModTimeAndSymlink(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	past := time.Date(2024, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	srcFile := filepath.Join(srcDir, "same.txt")
+	dstFile := filepath.Join(dstDir, "same.txt")
+	require.NoError(t, os.WriteFile(srcFile, []byte("identical"), 0o644))
+	require.NoError(t, os.WriteFile(dstFile, []byte("identical"), 0o644))
+	require.NoError(t, os.Chtimes(dstFile, past, past))
+
+	srcPermFile := filepath.Join(srcDir, "perm.txt")
+	dstPermFile := filepath.Join(dstDir, "perm.txt")
+	require.NoError(t, os.WriteFile(srcPermFile, []byte("same-bytes"), 0o755))
+	require.NoError(t, os.WriteFile(dstPermFile, []byte("same-bytes"), 0o644))
+
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "target.txt"), []byte("t"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "target.txt"), []byte("t"), 0o644))
+	require.NoError(t, os.Symlink("target.txt", filepath.Join(srcDir, "same-link")))
+	dstLink := filepath.Join(dstDir, "same-link")
+	require.NoError(t, os.Symlink("target.txt", dstLink))
+
+	origFileInfo, err := os.Stat(dstFile)
+	require.NoError(t, err)
+	origPermInfo, err := os.Stat(dstPermFile)
+	require.NoError(t, err)
+	origLinkInfo, err := os.Lstat(dstLink)
+	require.NoError(t, err)
+
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, nil))
+
+	newFileInfo, err := os.Stat(dstFile)
+	require.NoError(t, err)
+	assert.Equal(t, origFileInfo.Sys().(*syscall.Stat_t).Ino, newFileInfo.Sys().(*syscall.Stat_t).Ino, "unchanged regular file inode must be preserved")
+	assert.True(t, newFileInfo.ModTime().Equal(past), "unchanged regular file mtime must be preserved")
+
+	newPermInfo, err := os.Stat(dstPermFile)
+	require.NoError(t, err)
+	assert.Equal(t, origPermInfo.Sys().(*syscall.Stat_t).Ino, newPermInfo.Sys().(*syscall.Stat_t).Ino, "permission-only change must update mode without replacing inode")
+	assert.Equal(t, os.FileMode(0o755), newPermInfo.Mode().Perm())
+
+	newLinkInfo, err := os.Lstat(dstLink)
+	require.NoError(t, err)
+	assert.Equal(t, origLinkInfo.Sys().(*syscall.Stat_t).Ino, newLinkInfo.Sys().(*syscall.Stat_t).Ino, "unchanged symlink must not be replaced")
+}
+
+func TestDoInjectClaudeMDPointer_ReturnsInjectionSuccess(t *testing.T) {
+	var buf bytes.Buffer
+	var cmds []string
+	ok := doInjectClaudeMDPointer("sb", "/workspace/repo", ui.New(&buf), func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		cmds = append(cmds, cmd)
+		return "", "", 0, nil
+	})
+	assert.True(t, ok)
+	assert.Len(t, cmds, 2)
+
+	buf.Reset()
+	cmds = nil
+	ok = doInjectClaudeMDPointer("sb", "/workspace/repo", ui.New(&buf), func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		cmds = append(cmds, cmd)
+		return "", "permission denied", 1, errors.New("exit 1")
+	})
+	assert.False(t, ok)
+	assert.Len(t, cmds, 1)
+	assert.Contains(t, buf.String(), "Could not inject CLAUDE.md")
+}
+
+func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
+	cases := []struct {
+		name            string
+		syncEnabled     bool
+		repoExtractedOK bool
+		hasLoop         bool
+		validationPass  bool
+		timedOut        bool
+		transcriptErr   bool
+		exitCode        int
+		exitReason      string
+		validatedIter   int
+		runCount        int
+		wantSync        bool
+		wantReason      string
+	}{
+		{name: "disabled", syncEnabled: false, wantSync: false, wantReason: ""},
+		{name: "transcript error", syncEnabled: true, repoExtractedOK: true, transcriptErr: true, wantSync: false, wantReason: "transcript error"},
+		{name: "loop timeout", syncEnabled: true, repoExtractedOK: true, hasLoop: true, timedOut: true, wantSync: false, wantReason: "timed out"},
+		{name: "loop validation failed", syncEnabled: true, repoExtractedOK: true, hasLoop: true, validationPass: false, wantSync: false, wantReason: "validation did not pass"},
+		{name: "loop validated earlier iteration", syncEnabled: true, repoExtractedOK: true, hasLoop: true, validationPass: true, validatedIter: 1, runCount: 2, wantSync: false, wantReason: "validated iteration 1 is not the last downloaded iteration 2"},
+		{name: "no loop timeout", syncEnabled: true, repoExtractedOK: true, timedOut: true, wantSync: false, wantReason: "timed out"},
+		{name: "no loop non-zero exit", syncEnabled: true, repoExtractedOK: true, exitCode: 2, wantSync: false, wantReason: "agent exited with code 2"},
+		{name: "no loop behavioral subtype still syncs", syncEnabled: true, repoExtractedOK: true, exitCode: 1, exitReason: "error_max_turns", wantSync: true},
+		{name: "loop passed non-zero exit still syncs", syncEnabled: true, repoExtractedOK: true, hasLoop: true, validationPass: true, exitCode: 1, validatedIter: 1, runCount: 1, wantSync: true},
+		{name: "extraction failed", syncEnabled: true, repoExtractedOK: false, wantSync: false, wantReason: "repository extraction failed"},
+		{name: "loop success on last iter", syncEnabled: true, repoExtractedOK: true, hasLoop: true, validationPass: true, validatedIter: 2, runCount: 2, wantSync: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotSync, gotReason := syncTargetRepoSkipReason(tc.syncEnabled, tc.repoExtractedOK, tc.hasLoop, tc.validationPass, tc.timedOut, tc.transcriptErr, tc.exitCode, tc.exitReason, tc.validatedIter, tc.runCount)
+			assert.Equal(t, tc.wantSync, gotSync)
+			assert.Equal(t, tc.wantReason, gotReason)
+		})
+	}
+
+	var buf bytes.Buffer
+	called := false
+	status := runTargetRepoSync(true, true, true, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", nil, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]bool) error {
+		called = true
+		return nil
+	})
+	assert.False(t, called)
+	assert.Equal(t, "skipped (validation did not pass)", status)
+	assert.Contains(t, buf.String(), "Skipping target repository synchronization: validation did not pass")
+
+	buf.Reset()
+	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", []string{"AGENTS.md"}, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]bool) error {
+		return errors.New("boom")
+	})
+	assert.Equal(t, "failed (boom)", status)
+	assert.Contains(t, buf.String(), "Target repository synchronization failed: boom")
+
+	buf.Reset()
+	var gotExcludes []string
+	var gotManifest map[string]bool
+	manifest := map[string]bool{"a.txt": true}
+	targetDir := t.TempDir()
+	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", targetDir, filepath.Join(targetDir, "output"), []string{"AGENTS.md", "CLAUDE.md"}, manifest, ui.New(&buf), func(_, _ string, excludes []string, preRun map[string]bool) error {
+		gotExcludes = excludes
+		gotManifest = preRun
+		return nil
+	})
+	assert.Equal(t, "synchronized to "+targetDir, status)
+	assert.Equal(t, []string{".git", "output", "AGENTS.md", "CLAUDE.md"}, gotExcludes)
+	assert.Equal(t, manifest, gotManifest)
+}
+
+func setupDummySyncRunHarness(t *testing.T, postScriptMarker string) string {
+	t.Helper()
+	dir := t.TempDir()
+	postScript := fmt.Sprintf("#!/bin/sh\n: > %q\n", postScriptMarker)
+	files := map[string]string{
+		"agents/code.md":                  "You are a code agent.",
+		"harness/code.yaml":               "agent: agents/code.md\nrole: code\npolicy: policies/base.yaml\npost_script: scripts/post.sh\n",
+		"policies/base.yaml":              "version: 1\n",
+		"config.yaml":                     "agents:\n  - harness/code.yaml\n",
+		"behaviour/current-scenario.yaml": "ops:\n  - op: read_file\n    args: agent-run-marker\n",
+		"scripts/post.sh":                 postScript,
+	}
+	for rel, content := range files {
+		p := filepath.Join(dir, rel)
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		mode := os.FileMode(0o644)
+		if strings.HasSuffix(rel, ".sh") {
+			mode = 0o755
+		}
+		require.NoError(t, os.WriteFile(p, []byte(content), mode))
+	}
+	return dir
+}
+
+func installOpenshellDownloadWrapper(t *testing.T, repoBase, sandboxRepoDir string) {
+	t.Helper()
+	useFakeOpenshellProviders(t)
+	realStub, err := filepath.Abs(filepath.Join("testdata", "providers-stub", "openshell"))
+	require.NoError(t, err)
+
+	wrapperDir := t.TempDir()
+	wrapperScript := fmt.Sprintf(`#!/bin/sh
+if [ "$1" = "sandbox" ] && [ "$2" = "download" ]; then
+  case "$4" in
+    */%s|*/%s/)
+      mkdir -p "$5"
+      cp -a %q/. "$5"/
+      exit 0
+      ;;
+  esac
+  mkdir -p "$5"
+  exit 0
+fi
+exec %q "$@"
+`, repoBase, repoBase, sandboxRepoDir, realStub)
+	require.NoError(t, os.WriteFile(filepath.Join(wrapperDir, "openshell"), []byte(wrapperScript), 0o755))
+	t.Setenv("PATH", wrapperDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+}
+
+func TestRunAgent_SyncTargetRepo_EndToEndSafeDownloadPreservesStrippedSymlinks(t *testing.T) {
+	t.Setenv("FULLSEND_RUNTIME", "dummy")
+	t.Setenv("FULLSEND_SYNC_TARGET_REPO", "")
+
+	repoDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "app.go"), []byte("package main // v1\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "stale.txt"), []byte("remove me"), 0o644))
+	require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(repoDir, "abs-link")))
+
+	// Sandbox download staging source includes modified app.go, added.txt,
+	// omits stale.txt, and includes abs-link (which sanitizeDownload strips).
+	sandboxRepo := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(sandboxRepo, "app.go"), []byte("package main // v2\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(sandboxRepo, "added.txt"), []byte("from sandbox\n"), 0o644))
+	require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(sandboxRepo, "abs-link")))
+
+	installOpenshellDownloadWrapper(t, filepath.Base(repoDir), sandboxRepo)
+
+	postMarker := filepath.Join(t.TempDir(), "post-ran")
+	dir := setupDummySyncRunHarness(t, postMarker)
+	outputDir := filepath.Join(t.TempDir(), "output")
+	var buf bytes.Buffer
+
+	err := runAgent(context.Background(), "code", dir, outputDir, repoDir, fakeSandboxBinary(t), nil, false, "", "", "",
+		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&buf), false, runOverrideFlags{syncTargetRepo: true, syncTargetRepoSet: true})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(filepath.Join(repoDir, "app.go"))
+	require.NoError(t, err)
+	assert.Equal(t, "package main // v2\n", string(data))
+
+	data, err = os.ReadFile(filepath.Join(repoDir, "added.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "from sandbox\n", string(data))
+
+	_, err = os.Lstat(filepath.Join(repoDir, "stale.txt"))
+	assert.True(t, os.IsNotExist(err), "stale file deleted in sandbox should be pruned")
+
+	linkTarget, err := os.Readlink(filepath.Join(repoDir, "abs-link"))
+	require.NoError(t, err, "absolute symlink stripped by SafeDownload must be preserved on host")
+	assert.Equal(t, "/etc/passwd", linkTarget)
+
+	gitHead, err := os.ReadFile(filepath.Join(repoDir, ".git", "HEAD"))
+	require.NoError(t, err)
+	assert.Equal(t, "ref: refs/heads/main\n", string(gitHead))
+
+	assert.Contains(t, buf.String(), "Target repo sync:")
+	assert.Contains(t, buf.String(), "synchronized to "+repoDir)
+	_, err = os.Stat(postMarker)
+	assert.NoError(t, err, "post_script must execute after successful sync")
+}
+
+func TestRunAgent_SyncTargetRepo_SyncFailureStillRunsPostScript(t *testing.T) {
+	t.Setenv("FULLSEND_RUNTIME", "dummy")
+	t.Setenv("FULLSEND_SYNC_TARGET_REPO", "")
+
+	repoDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "app.go"), []byte("v1"), 0o644))
+	sandboxRepo := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(sandboxRepo, "app.go"), []byte("v2"), 0o644))
+
+	installOpenshellDownloadWrapper(t, filepath.Base(repoDir), sandboxRepo)
+
+	origSyncFn := syncTargetRepoDirFn
+	t.Cleanup(func() {
+		syncTargetRepoDirFn = origSyncFn
+	})
+	syncTargetRepoDirFn = func(_, _ string, _ []string, _ map[string]bool) error {
+		return errors.New("disk full")
+	}
+
+	postMarker := filepath.Join(t.TempDir(), "post-ran")
+	dir := setupDummySyncRunHarness(t, postMarker)
+	outputDir := filepath.Join(t.TempDir(), "output")
+	var buf bytes.Buffer
+
+	err := runAgent(context.Background(), "code", dir, outputDir, repoDir, fakeSandboxBinary(t), nil, false, "", "", "",
+		resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&buf), false, runOverrideFlags{syncTargetRepo: true, syncTargetRepoSet: true})
+	require.NoError(t, err, "sync failure after completed run must warn rather than aborting post_script")
+
+	assert.Contains(t, buf.String(), "Target repository synchronization failed: disk full")
+	assert.Contains(t, buf.String(), "failed (disk full)")
+	_, err = os.Stat(postMarker)
+	assert.NoError(t, err, "post_script must still run when target repo sync fails")
 }

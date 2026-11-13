@@ -2454,6 +2454,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// top-level directory from the tarball and git exclude so host telemetry
 	// is not uploaded or committed. GHA keeps output as a sibling, so Rel
 	// fails IsLocal and nothing is excluded.
+	var preRunSyncManifest map[string]bool
+	if overrides.syncTargetRepo {
+		var manifestErr error
+		preRunSyncManifest, manifestErr = recordTargetRepoManifest(hostRepositoryDir)
+		if manifestErr != nil {
+			printer.StepWarn("Could not snapshot target repo manifest before upload: " + manifestErr.Error())
+		}
+	}
+
 	copyStart := time.Now()
 	printer.StepStart("Copying project code into sandbox")
 	var uploadExcludes []string
@@ -2499,8 +2508,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Without this bridge file, agents are effectively context-blind in
 	// repos that only have AGENTS.md. Runtimes opt in via ContextBridger.
 	if agentruntime.WantsClaudeMDBridge(rt) && agentsMDAvailable && !hasClaudeMD(hostRepositoryDir) {
-		injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer)
-		runnerInjectedSyncExcludes = append(runnerInjectedSyncExcludes, "CLAUDE.md")
+		if injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer) {
+			runnerInjectedSyncExcludes = append(runnerInjectedSyncExcludes, "CLAUDE.md")
+		}
 	}
 
 	// 8a.2. Copy AGENTS.md to where a runtime that does not read it from
@@ -3170,20 +3180,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 9g. Synchronize sandbox changes to target repository if requested.
-	if shouldSyncTargetRepo(overrides.syncTargetRepo, repoExtractedOK, h.ValidationLoop != nil, validationPassed, lastIterTimedOut, transcriptErrorOverride, lastExitCode) {
-		syncStart := time.Now()
-		printer.StepStart("Synchronizing sandbox changes to target repository")
-		syncExcludes := []string{".git"}
-		if rel, ok := syncOutputExcludeRel(hostRepositoryDir, outputBase); ok {
-			syncExcludes = append(syncExcludes, rel)
-		}
-		syncExcludes = append(syncExcludes, runnerInjectedSyncExcludes...)
-		if err := syncTargetRepoDir(hostRepositoryDownloadDir, hostRepositoryDir, syncExcludes); err != nil {
-			printer.StepFail("Target repository synchronization failed: " + err.Error())
-			return fmt.Errorf("syncing target repository: %w", err)
-		}
-		printer.StepDone(fmt.Sprintf("Target repository synchronized to %s (%.1fs)", hostRepositoryDir, time.Since(syncStart).Seconds()))
-	}
+	syncStatus := runTargetRepoSync(
+		overrides.syncTargetRepo,
+		repoExtractedOK,
+		h.ValidationLoop != nil,
+		validationPassed,
+		lastIterTimedOut,
+		transcriptErrorOverride,
+		lastExitCode,
+		agentExitReason,
+		validatedIterNum,
+		runCount,
+		hostRepositoryDownloadDir,
+		hostRepositoryDir,
+		outputBase,
+		runnerInjectedSyncExcludes,
+		preRunSyncManifest,
+		printer,
+		syncTargetRepoDirFn,
+	)
 
 	// 10. Print results.
 	printer.Blank()
@@ -3204,12 +3219,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.KeyValue("Validation", "failed")
 		}
 	}
-	if overrides.syncTargetRepo {
-		if shouldSyncTargetRepo(true, repoExtractedOK, h.ValidationLoop != nil, validationPassed, lastIterTimedOut, transcriptErrorOverride, lastExitCode) {
-			printer.KeyValue("Target repo sync", fmt.Sprintf("synchronized to %s", hostRepositoryDir))
-		} else {
-			printer.KeyValue("Target repo sync", "skipped (run or validation failed)")
-		}
+	if syncStatus != "" {
+		printer.KeyValue("Target repo sync", syncStatus)
 	}
 	printer.Blank()
 
@@ -6241,25 +6252,162 @@ func syncOutputExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
 	return filepath.Clean(rel), true
 }
 
+// syncTargetRepoDirFn is a package seam so tests can inject sync failures
+// without modifying the host filesystem permissions or failing upstream steps.
+var syncTargetRepoDirFn = syncTargetRepoDirWithManifest
+
 // shouldSyncTargetRepo returns whether sandbox changes should be synchronized
 // back to the host repository. Synchronization is strictly gated: the user must
 // have enabled it, repository extraction must have succeeded, validation must
 // have passed (if configured), and neither timeouts, transcript errors, nor
 // non-zero exit codes must have occurred.
 func shouldSyncTargetRepo(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool, exitCode int) bool {
-	if !syncEnabled || !repoExtractedOK || timedOut || transcriptErr || exitCode != 0 {
-		return false
+	ok, _ := syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr, exitCode, "", 0, 0)
+	return ok
+}
+
+// syncTargetRepoSkipReason evaluates whether target repo sync should proceed,
+// aligning its terminal outcome check with runTerminalError and returning a
+// human-readable skip reason when synchronization is bypassed.
+func syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool, exitCode int, exitReason string, validatedIter, runCount int) (bool, string) {
+	if !syncEnabled {
+		return false, ""
 	}
-	if hasValidationLoop && !validationPassed {
-		return false
+	if transcriptErr {
+		return false, "transcript error"
 	}
-	return true
+	if hasValidationLoop {
+		if !validationPassed {
+			if timedOut {
+				return false, "timed out"
+			}
+			return false, "validation did not pass"
+		}
+		if validatedIter > 0 && validatedIter != runCount {
+			return false, fmt.Sprintf("validated iteration %d is not the last downloaded iteration %d", validatedIter, runCount)
+		}
+	} else {
+		if timedOut {
+			return false, "timed out"
+		}
+		if exitCode != 0 && !(exitCode > 0 && isBehavioralExitSubtype(exitReason)) {
+			return false, fmt.Sprintf("agent exited with code %d", exitCode)
+		}
+	}
+	if !repoExtractedOK {
+		return false, "repository extraction failed"
+	}
+	return true, ""
+}
+
+// runTargetRepoSync executes step 9g synchronization when requested and gated
+// OK, returning the status string for the Results summary. Sync errors emit a
+// warning instead of returning an error so the post-script gate is unaffected.
+func runTargetRepoSync(
+	syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool,
+	exitCode int, exitReason string, validatedIter, runCount int,
+	downloadDir, targetDir, outputBase string,
+	runnerInjectedExcludes []string, preRunManifest map[string]bool,
+	printer *ui.Printer,
+	syncFn func(srcDir, dstDir string, excludes []string, preRunManifest map[string]bool) error,
+) string {
+	if !syncEnabled {
+		return ""
+	}
+	shouldSync, skipReason := syncTargetRepoSkipReason(syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr, exitCode, exitReason, validatedIter, runCount)
+	if !shouldSync {
+		printer.StepWarn("Skipping target repository synchronization: " + skipReason)
+		return fmt.Sprintf("skipped (%s)", skipReason)
+	}
+
+	syncStart := time.Now()
+	printer.StepStart("Synchronizing sandbox changes to target repository")
+	syncExcludes := []string{".git"}
+	if rel, ok := syncOutputExcludeRel(targetDir, outputBase); ok {
+		syncExcludes = append(syncExcludes, rel)
+	}
+	syncExcludes = append(syncExcludes, runnerInjectedExcludes...)
+	if err := syncFn(downloadDir, targetDir, syncExcludes, preRunManifest); err != nil {
+		printer.StepWarn("Target repository synchronization failed: " + err.Error())
+		return fmt.Sprintf("failed (%v)", err)
+	}
+	printer.StepDone(fmt.Sprintf("Target repository synchronized to %s (%.1fs)", targetDir, time.Since(syncStart).Seconds()))
+	return fmt.Sprintf("synchronized to %s", targetDir)
+}
+
+// recordTargetRepoManifest snapshots all relative paths inside repoDir (excluding
+// any .git subtree) before sandbox upload so the prune pass can avoid deleting
+// host-only files created while the agent was running.
+func recordTargetRepoManifest(repoDir string) (map[string]bool, error) {
+	absRepo, err := filepath.Abs(repoDir)
+	if err != nil {
+		return nil, err
+	}
+	manifest := make(map[string]bool)
+	err = filepath.WalkDir(absRepo, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.Name() == ".git" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, err := filepath.Rel(absRepo, path)
+		if err != nil {
+			return err
+		}
+		if rel != "." {
+			manifest[rel] = true
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return manifest, nil
+}
+
+// wouldSanitizeStripSymlink reports whether linkPath would have been removed by
+// sandbox.sanitizeDownload (unreadable link, absolute target, dangling/looping
+// target, or target resolving outside absRootResolved).
+func wouldSanitizeStripSymlink(linkPath, absRootResolved string) bool {
+	target, readErr := os.Readlink(linkPath)
+	if readErr != nil || filepath.IsAbs(target) {
+		return true
+	}
+	rawPath := filepath.Dir(linkPath) + string(filepath.Separator) + target
+	resolved, evalErr := filepath.EvalSymlinks(rawPath)
+	if evalErr != nil {
+		return true
+	}
+	return !strings.HasPrefix(resolved+string(filepath.Separator), absRootResolved+string(filepath.Separator))
 }
 
 // syncTargetRepoDir synchronizes files from srcDir into dstDir, mirroring additions,
 // modifications, and deletions, while strictly preserving paths matching excludes
 // (such as ".git" at any depth, runner-injected files, and nested output directories).
 func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
+	return syncTargetRepoDirWithManifest(srcDir, dstDir, excludes, nil)
+}
+
+type dirPermEntry struct {
+	path string
+	perm os.FileMode
+}
+
+type pruneDirEntry struct {
+	path     string
+	origPerm os.FileMode
+	chmodded bool
+}
+
+// syncTargetRepoDirWithManifest mirrors additions, modifications, and deletions from
+// srcDir into dstDir. When preRunManifest is non-nil, entries absent from both srcDir
+// and preRunManifest (such as host-only files created during an agent run) are preserved,
+// and symlinks that sanitizeDownload strips are never pruned.
+func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, preRunManifest map[string]bool) error {
 	absSrc, err := filepath.Abs(srcDir)
 	if err != nil {
 		return fmt.Errorf("resolving source directory: %w", err)
@@ -6274,6 +6422,20 @@ func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
 
 	if err := os.MkdirAll(absDst, 0o755); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
+	}
+	if fi, statErr := os.Stat(absDst); statErr == nil && fi.Mode().Perm()&0o200 == 0 {
+		origRootPerm := fi.Mode().Perm()
+		if err := os.Chmod(absDst, origRootPerm|0o700); err != nil {
+			return fmt.Errorf("ensuring destination directory is writable: %w", err)
+		}
+		defer func() {
+			_ = os.Chmod(absDst, origRootPerm)
+		}()
+	}
+
+	absDstResolved := absDst
+	if resolved, evalErr := filepath.EvalSymlinks(absDst); evalErr == nil {
+		absDstResolved = resolved
 	}
 
 	// Pre-scan absDst for any nested .git entries (submodules, nested git repos, gitlinks)
@@ -6295,6 +6457,10 @@ func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
 		}
 		return nil
 	})
+
+	// Track directory permissions separately so read-only modes (e.g. readonly_repo)
+	// are applied only after child writes and prunes finish.
+	var dirPerms []dirPermEntry
 
 	// 1. Copy / update all files from srcDir to dstDir (skipping excludes).
 	err = filepath.WalkDir(absSrc, func(path string, d os.DirEntry, walkErr error) error {
@@ -6322,6 +6488,11 @@ func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
 			if readErr != nil {
 				return readErr
 			}
+			if fi, statErr := os.Lstat(targetPath); statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
+				if curTarget, curErr := os.Readlink(targetPath); curErr == nil && curTarget == target {
+					return nil
+				}
+			}
 			if isAncestorOfExcludedPath(rel, allExcludes) {
 				return fmt.Errorf("cannot replace ancestor of excluded path %q with symlink", rel)
 			}
@@ -6345,7 +6516,15 @@ func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
 			if err != nil {
 				return err
 			}
-			return os.MkdirAll(targetPath, info.Mode().Perm())
+			perm := info.Mode().Perm()
+			if err := os.MkdirAll(targetPath, perm|0o700); err != nil {
+				return err
+			}
+			if err := os.Chmod(targetPath, perm|0o700); err != nil {
+				return err
+			}
+			dirPerms = append(dirPerms, dirPermEntry{path: targetPath, perm: perm})
+			return nil
 		}
 
 		if fi, statErr := os.Lstat(targetPath); statErr == nil && !fi.Mode().IsRegular() {
@@ -6364,6 +6543,16 @@ func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
 		if err != nil {
 			return err
 		}
+		if fi, statErr := os.Lstat(targetPath); statErr == nil && fi.Mode().IsRegular() && fi.Size() == info.Size() {
+			if dstData, dstErr := os.ReadFile(targetPath); dstErr == nil && bytes.Equal(data, dstData) {
+				if fi.Mode().Perm() != info.Mode().Perm() {
+					if err := os.Chmod(targetPath, info.Mode().Perm()); err != nil {
+						return err
+					}
+				}
+				return nil
+			}
+		}
 		if err := writeAtomicFile(targetPath, data, info.Mode().Perm()); err != nil {
 			return err
 		}
@@ -6374,7 +6563,9 @@ func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
 		return fmt.Errorf("copying files to target repository: %w", err)
 	}
 
-	// 2. Prune files from dstDir that do not exist in srcDir (skipping excludes).
+	// 2. Prune files from dstDir that do not exist in srcDir (skipping excludes,
+	// sanitizer-stripped symlinks, and host-only entries created after upload).
+	var dirsToPrune []pruneDirEntry
 	err = filepath.WalkDir(absDst, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if os.IsNotExist(walkErr) {
@@ -6401,11 +6592,25 @@ func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
 			if isAncestorOfExcludedPath(rel, allExcludes) {
 				return nil
 			}
-			if err := os.RemoveAll(path); err != nil {
-				return err
+			if d.Type()&os.ModeSymlink != 0 && wouldSanitizeStripSymlink(path, absDstResolved) {
+				return nil
+			}
+			if preRunManifest != nil && !preRunManifest[rel] {
+				return nil
 			}
 			if d.IsDir() {
-				return filepath.SkipDir
+				entry := pruneDirEntry{path: path}
+				if info, infoErr := d.Info(); infoErr == nil && info.Mode().Perm()&0o200 == 0 {
+					entry.origPerm = info.Mode().Perm()
+					if chmodErr := os.Chmod(path, entry.origPerm|0o700); chmodErr == nil {
+						entry.chmodded = true
+					}
+				}
+				dirsToPrune = append(dirsToPrune, entry)
+				return nil
+			}
+			if err := os.Remove(path); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -6414,11 +6619,32 @@ func syncTargetRepoDir(srcDir, dstDir string, excludes []string) error {
 		return fmt.Errorf("pruning deleted files from target repository: %w", err)
 	}
 
+	// Remove empty pruned directories deepest-first, leaving any directory that
+	// still holds protected descendants (excludes, stripped symlinks, host-only files).
+	for i := len(dirsToPrune) - 1; i >= 0; i-- {
+		dp := dirsToPrune[i]
+		entries, readErr := os.ReadDir(dp.path)
+		if readErr == nil && len(entries) == 0 {
+			if rmErr := os.Remove(dp.path); rmErr != nil {
+				return fmt.Errorf("pruning deleted files from target repository: %w", rmErr)
+			}
+		} else if dp.chmodded {
+			_ = os.Chmod(dp.path, dp.origPerm)
+		}
+	}
+
+	// 3. Apply final directory permissions deepest-first (supports readonly_repo).
+	for i := len(dirPerms) - 1; i >= 0; i-- {
+		if err := os.Chmod(dirPerms[i].path, dirPerms[i].perm); err != nil {
+			return fmt.Errorf("restoring directory permissions: %w", err)
+		}
+	}
+
 	return nil
 }
 
 // writeAtomicFile writes data to targetPath atomically by writing to a temporary file
-// in the same directory, fsyncing, setting permissions, and renaming over targetPath.
+// in the same directory, setting permissions, and renaming over targetPath.
 // This breaks existing hardlinks to prevent modifying inodes outside dstDir.
 func writeAtomicFile(targetPath string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(targetPath)
@@ -6438,10 +6664,6 @@ func writeAtomicFile(targetPath string, data []byte, perm os.FileMode) error {
 	}()
 
 	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -6539,23 +6761,25 @@ const claudeMDPointerContent = "Project rules and instructions live in [AGENTS.m
 type sandboxExecFunc func(sandboxName, command string, timeout time.Duration) (stdout, stderr string, exitCode int, err error)
 
 // injectClaudeMDPointer writes a minimal CLAUDE.md bridge file directly
-// inside the sandbox and excludes it from git tracking.
-func injectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer) {
-	doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer, sandbox.Exec)
+// inside the sandbox and excludes it from git tracking. It reports whether the
+// file was written so callers only exclude it from sync when injection succeeded.
+func injectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer) bool {
+	return doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer, sandbox.Exec)
 }
 
 // doInjectClaudeMDPointer is the testable core of injectClaudeMDPointer.
-func doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer, execFn sandboxExecFunc) {
+func doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer, execFn sandboxExecFunc) bool {
 	writeCmd := fmt.Sprintf("printf '%%s' %q > %s/CLAUDE.md", claudeMDPointerContent, remoteRepositoryDir)
 	if _, _, _, err := execFn(sandboxName, writeCmd, 5*time.Second); err != nil {
 		printer.StepWarn("Could not inject CLAUDE.md: " + err.Error())
-		return
+		return false
 	}
 	excludeCmd := fmt.Sprintf("echo 'CLAUDE.md' >> %s/.git/info/exclude", remoteRepositoryDir)
 	if _, _, _, err := execFn(sandboxName, excludeCmd, 5*time.Second); err != nil {
 		printer.StepWarn("Could not add CLAUDE.md to git exclude: " + err.Error())
 	}
 	printer.StepDone("Injected CLAUDE.md pointer to AGENTS.md (target repo has none)")
+	return true
 }
 
 // agentsMDHomeMaxBytes matches codex's default project_doc_max_bytes, so

@@ -544,10 +544,13 @@ When running locally or in CI pipelines (such as GitLab CI), downstream jobs or 
 By default, `fullsend run` downloads the modified repository from the sandbox into a temporary directory (`/tmp/fs-*`) and deletes it on exit unless `--keep-sandbox` is set.
 
 Passing `--sync-target-repo` (or setting `FULLSEND_SYNC_TARGET_REPO=true`):
-- Safely copies additions, edits, and deletions from the sanitized sandbox download back to the `--target-repo` directory using atomic file writes to prevent modifying shared hardlink inodes outside the target repository.
+- Writes new and modified regular files from the sanitized sandbox download back to `--target-repo` using atomic file replacement (`writeAtomicFile`) to avoid mutating shared hardlink inodes outside the target repository, while skipping unchanged regular files and unchanged symlinks so their existing inodes and modification times are preserved.
+- Prunes deleted paths against a pre-run manifest of `--target-repo` captured before sandbox upload, preserving symlinks stripped during `SafeDownload` sanitization (such as absolute or repo-escaping symlinks) as well as host-only files created directly in `--target-repo` after the run started.
 - Strictly protects `.git/` metadata at any depth (including root Git metadata, submodules, and nested repositories) and configured output directories from being modified or pruned.
-- Automatically excludes runner-injected files (such as `AGENTS.md` and `CLAUDE.md`) and uncommitted agent working directories (such as `.agentready/` and `.fullsend-workspace/`) when they were not present in the host checkout before the run.
-- Only executes if the agent run, transcript, and validation loop succeed without timeout, preventing broken or partially written iterations from polluting your working tree.
+- Supports `readonly_repo: true` checkouts by temporarily granting owner write permission (`0o700 | perm`) on read-only target directories while writing or pruning and restoring the original directory modes once synchronization completes.
+- Automatically excludes runner-injected files (such as `AGENTS.md` and `CLAUDE.md` when actually injected for the run) and uncommitted agent working directories (such as `.agentready/` and `.fullsend-workspace/`) when they were not present in the host checkout before the run.
+- Only executes when the run is eligible to finalize cleanly: no transcript error override, zero agent exit code (or an allowed behavioral exit subtype such as `error_max_turns` when no validation loop is configured), a passing validation loop on the final downloaded iteration, and successful repository extraction.
+- If synchronization fails after an otherwise eligible run, `fullsend run` logs a warning and still allows configured `post_script` hooks to execute rather than aborting teardown; partially copied changes or concurrent edits made on the host while the sandbox ran are not transactionally rolled back.
 
 ## Related
 
