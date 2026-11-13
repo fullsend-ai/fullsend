@@ -26,6 +26,12 @@
 > `agents:` entry in `config.yaml` carry a `harness:` block, a harness layer
 > built on the agent's harness and merged by the `base:` composition rules
 > below. The ADR lists the few fields it does not take.
+> [ADR 0155](../ADRs/0155-subagent-entries-may-source-or-disable-personas.md)
+> makes `subagents` a harness field, set as `agents[].harness.subagents` or in
+> a custom harness file. Its `source` and `enabled: false` compile into
+> `skills:` file overrides. No overlay can set `subagents.*.source` or
+> `subagents.*.enabled`; `subagents.*.model` and `subagents.default` stay
+> unguarded model settings.
 
 ## Field classification
 
