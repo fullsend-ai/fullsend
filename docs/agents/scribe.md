@@ -260,8 +260,11 @@ Issue creation delegates to `fullsend issues create --tracker jira`. The
 external harness scripts in `fullsend-ai/agents` query the Jira backlog using
 `JIRA_BASE_URL` and `JIRA_TOKEN` (with optional `JIRA_USER_EMAIL`), and
 automatically pass these to `fullsend issues create` as `FULLSEND_JIRA_TOKEN`
-and `FULLSEND_JIRA_EMAIL`. (Note that OAuth credentials are not supported by the
-scribe harness scripts; token authentication via `JIRA_TOKEN` is required).
+and `FULLSEND_JIRA_EMAIL`. The harness below maps them from the
+`FULLSEND_JIRA_TOKEN` and optional `FULLSEND_JIRA_EMAIL` repository secrets;
+there is no `JIRA_TOKEN` or `JIRA_USER_EMAIL` secret. (Note that OAuth
+credentials are not supported by the scribe harness scripts; a token is
+required).
 
 Set `FULLSEND_TRACKER=jira` and configure Jira variables in runner environment
 variables. Extend the harness with `base:` composition in
@@ -275,8 +278,10 @@ env:
     SCRIBE_JIRA_PROJECT: PROJ
     SCRIBE_JIRA_ISSUE_TYPE: Task
     JIRA_BASE_URL: ${JIRA_BASE_URL}
-    JIRA_TOKEN: ${JIRA_TOKEN}
-    JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
+    JIRA_TOKEN: ${FULLSEND_JIRA_TOKEN}
+    # Bot user only. Omit this line for a service-account token, which
+    # uses Bearer auth.
+    JIRA_USER_EMAIL: ${FULLSEND_JIRA_EMAIL}
 ```
 
 If `scribe` was previously registered from a remote URL, remove it first from
@@ -297,8 +302,8 @@ fullsend agent add scribe.yaml --name scribe
 | `SCRIBE_JIRA_LABELS` | No | `meeting-notes` | Comma-separated allowlist of labels scribe may apply to Jira issues |
 | `JIRA_BASE_URL` | Yes (Jira) | `-` | Jira Cloud instance URL (`https://<site>.atlassian.net`) |
 | `JIRA_API_URL` | No | `JIRA_BASE_URL` | Target REST API gateway URL, read by external harness scripts |
-| `JIRA_TOKEN` | Yes (Jira) | `-` | Jira API token (passed to CLI as `FULLSEND_JIRA_TOKEN`) |
-| `JIRA_USER_EMAIL` | No | `none` | Email address for Basic auth; omit for service account Bearer auth (passed to CLI as `FULLSEND_JIRA_EMAIL`) |
+| `FULLSEND_JIRA_TOKEN` | Yes (Jira) | `-` | Jira API token, set as a repository secret. The harness above maps it to `JIRA_TOKEN` for the scripts |
+| `FULLSEND_JIRA_EMAIL` | No | `none` | Bot-user email for Basic auth, set as a repository secret; omit for service account Bearer auth. The harness above maps it to `JIRA_USER_EMAIL` for the scripts |
 
 In Jira mode:
 - Only new issues are created. Comments on existing Jira issues are not

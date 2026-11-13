@@ -249,8 +249,9 @@ These rules make a run fail before `pre_script` starts:
   `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
   runner-infrastructure names (`HOME`, `SHELL`, `BASH_ENV`, `ENV`,
   `TRACEPARENT`), and every name the reusable workflow sets on the `fullsend
-  run` step, such as the named `JIRA_TOKEN`, `JIRA_USER_EMAIL` and
-  `JIRA_BASE_URL` on `harness-run`. An `env.runner` key with one of those names
+  run` step, such as `JIRA_BASE_URL` on `harness-run`, plus `JIRA_TOKEN` and
+  `JIRA_USER_EMAIL`, which fullsend reserves for the Jira sandbox provider and
+  email. An `env.runner` key with one of those names
   may not receive a value from the object either. `GH_ENTERPRISE_TOKEN` is
   refused because the mint now owns it; a repository that stores an enterprise
   credential under that name must store it under a different name and
