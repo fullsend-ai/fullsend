@@ -11,6 +11,7 @@ import (
 	messages "github.com/cucumber/messages/go/v34"
 
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/failclass"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -22,7 +23,7 @@ import (
 // enrolled test repository"), and the After hook deallocates on cleanup.
 func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
-		return beforeScenario(ctx, tagNames(scenario.Tags), template, scenario.Name)
+		return beforeScenario(ctx, tagNames(scenario.Tags), template, scenario.Name, scenario.Uri)
 	})
 	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
 		return afterScenario(ctx, template.Driver, err)
@@ -38,7 +39,10 @@ func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 // the PlaybackDriver via SetRepoHint so the driver can correlate its
 // per-repo bookkeeping back to the scenario that is running; for the
 // standard pool-based Driver, SetRepoHint is a no-op.
-func beforeScenario(ctx context.Context, tags []string, template *world.World, name string) (context.Context, error) {
+//
+// uri is the scenario's feature file as godog names it; failure records
+// carry it so a retried run can rerun only the failed scenarios.
+func beforeScenario(ctx context.Context, tags []string, template *world.World, name, uri string) (context.Context, error) {
 	tagErr := SkipErrorForTagNames(tags, template)
 	if errors.Is(tagErr, godog.ErrSkip) {
 		return ctx, tagErr
@@ -49,6 +53,7 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 	w := template.Clone()
 	resetScenarioWorld(w)
 	w.ScenarioName = name
+	w.ScenarioURI = featureFile(uri)
 
 	if pd, ok := w.Driver.(*install.PlaybackDriver); ok {
 		pd.SetRepoHint(name)
@@ -61,6 +66,12 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 // afterScenario runs scenario cleanup and deallocates the repo if one was
 // allocated. Deallocation errors are surfaced as test failures rather than
 // panicking the godog runner.
+//
+// Every non-skip failure the hook sees — the scenario's own error, or a
+// deallocation error that fails an otherwise passing scenario — is first
+// recorded on the run's shared failure recorder with its classification
+// and a redacted message, and logs one labelled line, via
+// recordScenarioFailure.
 //
 // Order: for a failed scenario, CollectFailureLogs first saves the logs
 // of the repository's workflow runs that in-scenario collection did not
@@ -86,8 +97,11 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 // itself before deleting the slot repo.
 //
 // driver.DeallocateRepo is deferred so the lease is returned even if
-// steps.CleanupScenario panics. Named return values allow the deferred
-// closure to surface a deallocation error when no scenario error exists.
+// steps.CleanupScenario panics. A deallocation failure is always
+// recorded: with no scenario error it becomes the scenario's error,
+// and beside a scenario error it is recorded separately, so a
+// scenario-classified teardown failure keeps the run non-retryable
+// (#8036's no-masking contract).
 func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error) (_ context.Context, retErr error) {
 	retErr = scenarioErr
 	w := world.FromContext(ctx)
@@ -108,21 +122,57 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 				if w.Logf != nil {
 					w.Logf("deallocating repo: %v", deallocErr)
 				}
+				deallocFailure := fmt.Errorf("deallocating repo: %w", deallocErr)
 				if retErr == nil {
-					retErr = fmt.Errorf("deallocating repo: %w", deallocErr)
+					retErr = deallocFailure
 					// The scenario passed, so no failure summary was written
 					// above; the deallocation failure turns it into a failed
 					// scenario, which must leave the same artifact.
+					recordScenarioFailure(w, retErr)
 					steps.CollectFailureLogs(ctx, w, retErr)
+				} else {
+					// The scenario's own failure was recorded above. Record
+					// the teardown failure too: when it classifies as
+					// scenario it must keep the whole run non-retryable, so
+					// an infrastructure retry cannot mask it.
+					recordScenarioFailure(w, deallocFailure)
 				}
 			}
 		}()
 	}
 	if scenarioErr != nil && !errors.Is(scenarioErr, godog.ErrSkip) {
+		recordScenarioFailure(w, scenarioErr)
 		steps.CollectFailureLogs(ctx, w, scenarioErr)
 	}
 	steps.CleanupScenario(w)
 	return ctx, retErr
+}
+
+// recordScenarioFailure records one classified failure for a failed
+// scenario on the run's shared recorder (World.Failures) and logs a
+// single labelled [failure-class] line, so the suite's console output
+// and the failure-class report agree on the same per-failure record.
+//
+// The World's credential literals are registered before the message is
+// redacted, so the very first failure a process records — before any
+// debug-log collection has registered anything — still masks an opaque
+// token that no pattern recognizes.
+//
+// Every call site labels the source "scenario": a deallocation failure
+// fails the scenario it tore down, and its recorded message
+// ("deallocating repo: ...") names the origin, so no third source label
+// is needed beside "scenario" and "bootstrap". The recorder is
+// nil-receiver-safe, so Worlds built without one record nothing; a nil
+// Logf suppresses only the console line. The scenario name is redacted
+// in the log line because it is forge-supplied text.
+func recordScenarioFailure(w *world.World, err error) {
+	steps.RegisterRedactionLiterals(w)
+	class := failclass.Classify(err)
+	scenario := steps.RedactText(w.ScenarioName)
+	w.Failures.RecordScenarioFailure(w.ScenarioURI, scenario, class, steps.RedactText(err.Error()))
+	if w.Logf != nil {
+		w.Logf("[failure-class] scenario %q: %s", scenario, class)
+	}
 }
 
 // leaseOwnership returns the check scenario cleanup uses to confirm the
@@ -147,10 +197,27 @@ func leaseOwnership(driver install.Driver, org, name string) func(context.Contex
 	return nil
 }
 
+// featureFile strips the ":line" suffix godog adds to a scenario's URI
+// when the run selected it by "path:line" (as an infra retry does), so
+// failure records always name the plain feature file.
+func featureFile(uri string) string {
+	i := strings.LastIndexByte(uri, ':')
+	if i < 0 || i == len(uri)-1 {
+		return uri
+	}
+	for _, r := range uri[i+1:] {
+		if r < '0' || r > '9' {
+			return uri
+		}
+	}
+	return uri[:i]
+}
+
 func resetScenarioWorld(w *world.World) {
 	w.ScenarioStart = time.Now()
 	w.ScenarioBegin = w.ScenarioStart
 	w.ScenarioName = ""
+	w.ScenarioURI = ""
 	w.SavedLogRunIDs = nil
 	w.DummyOps = nil
 	w.IssueNumber = 0
@@ -198,6 +265,7 @@ func resetScenarioWorld(w *world.World) {
 	w.JiraPollCLIOutput = ""
 	w.JiraPollCLIExitCode = 0
 	w.JiraPollCLIOutputPath = ""
+	w.JiraTransport = nil
 	w.PlaybackEntries = nil
 	w.PlaybackCommitted = false
 	w.ConsumedHarnessRunIDs = nil

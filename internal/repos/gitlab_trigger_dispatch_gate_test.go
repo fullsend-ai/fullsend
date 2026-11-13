@@ -329,6 +329,9 @@ func TestCheckGitLabTriggerDispatchGate_OverrideRoleMustBeNoOneAllowed(t *testin
 			assert.False(t, gate.Ready)
 			require.NotEmpty(t, gate.Deferred)
 			assert.Contains(t, gate.Deferred[0], tc.want)
+			if tc.err == nil {
+				assert.Contains(t, gate.Deferred[0], gitlabPipelineVarRestrictionHint, "a weaker setting says where to apply the restriction")
+			}
 			assert.Equal(t, tc.role, e.state.PipelineVarOverrideRoles[trigOwner+"/"+trigRepo], "the gate must not change the setting")
 			assert.True(t, e.sinkPresent(), "the gate only reads; containment belongs to install")
 		})

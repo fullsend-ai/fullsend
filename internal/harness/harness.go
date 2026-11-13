@@ -235,6 +235,12 @@ type TraceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty"` // default: true
 }
 
+// RepoReadonly reports whether the checked-out repository is made read-only
+// in the sandbox (default: false).
+func (h *Harness) RepoReadonly() bool {
+	return BoolDefault(h.ReadonlyRepo, false)
+}
+
 // BoolDefault returns the value of a *bool, or the default if nil.
 func BoolDefault(b *bool, def bool) bool {
 	if b == nil {
@@ -393,7 +399,7 @@ type Harness struct {
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
 	Env                    *EnvConfig              `yaml:"env,omitempty"`
 	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
-	ReadonlyRepo           bool                    `yaml:"readonly_repo,omitempty"`
+	ReadonlyRepo           *bool                   `yaml:"readonly_repo,omitempty"` // nil = unset: inherited from base, else false
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`

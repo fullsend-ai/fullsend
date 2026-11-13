@@ -20,6 +20,11 @@ import (
 // value is an error.
 const GitLabPipelineVarRestrictionEnv = "FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION"
 
+// gitlabPipelineVarRestrictionHint tells an operator where the GitLab UI
+// exposes ci_pipeline_variables_minimum_override_role, so messages that
+// report a weaker setting also say how to apply no_one_allowed.
+const gitlabPipelineVarRestrictionHint = `in GitLab, go to Settings > CI/CD > Variables and set "Minimum role to use pipeline variables" to "No one allowed"`
+
 // requireGitLabPipelineVariableRestriction is the activation gate for typed
 // dispatch. Unsupported settings are not evidence that overrides are disabled.
 func requireGitLabPipelineVariableRestriction(ctx context.Context, client forge.Client, owner, repo string, dryRun bool) error {
@@ -45,7 +50,7 @@ func requireGitLabRestrictionBeforeDelivery(ctx context.Context, client forge.Cl
 		return fmt.Errorf("verifying GitLab restriction before scaffold delivery: %w", err)
 	}
 	if role != forge.PipelineVarOverrideNoOneAllowed {
-		return fmt.Errorf("refusing to deliver runnable typed GitLab jobs: ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; apply the restriction before retrying installation", displayPipelineVarRole(role))
+		return fmt.Errorf("refusing to deliver runnable typed GitLab jobs: ci_pipeline_variables_minimum_override_role is %s, not no_one_allowed; to apply the restriction, %s, then retry the installation", displayPipelineVarRole(role), gitlabPipelineVarRestrictionHint)
 	}
 	return nil
 }

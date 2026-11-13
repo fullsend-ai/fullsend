@@ -67,8 +67,23 @@ func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
 	switch event.Type {
 	case "comment_added":
 		cmd, instruction := extractCommand(event.CommentBody)
+		// A /fs-* command body is carried untruncated only on the
+		// GitLab target, whose dispatch door measures the complete
+		// body and fails closed when it exceeds the transport budget
+		// (the GitLab door measures the raw note body the same way,
+		// dispatch.go). The GitHub target has no fail-closed budget
+		// door: its records travel whole through dispatches.json into
+		// the reusable-poll-jira matrix output, so every body —
+		// command or not — keeps the schema's 4096-code-point adapter
+		// cap there, keeping the transported event inside the schema's
+		// machine-readable comment.body maxLength and the matrix
+		// output bounded as before this bound existed.
+		body := event.CommentBody
+		if cmd == "" || p.opts.TargetForge != TargetForgeGitLab {
+			body = truncate(event.CommentBody, 4096)
+		}
 		ne.Transition.Comment = &normevent.Comment{
-			Body:        truncate(event.CommentBody, 4096),
+			Body:        body,
 			Command:     cmd,
 			Instruction: truncate(instruction, 4096),
 		}

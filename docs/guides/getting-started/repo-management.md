@@ -315,8 +315,10 @@ repositories it can also supply `inference.wif_audience` and
 `repos.yaml` can also declare a sparse managed `.fullsend/config.yaml` in
 `defaults.config`, `github.config`, `gitlab.config`, and each repository
 entry's `config`. Every section uses the same schema as per-repo
-`config.yaml`, including `runtime` and `allowed_remote_resources`, and
-each is sparse: declare only the values you want to set.
+`config.yaml`, including `runtime` and `allowed_remote_resources`, except
+`trace_context`, which only a concrete repository entry accepts (see
+[Config Reference — `trace_context`](../../reference/config-reference.md#trace_context)).
+Each section is sparse: declare only the values you want to set.
 
 ```yaml
 version: 1
@@ -452,7 +454,10 @@ drop, or that changes only through the base layer, is visible first. A
 markerless file that is malformed or not a per-repo configuration is
 reported by `repos status` as an error instead. Once
 a file carries the marker, `repos install`
-writes the canonical sparse `.fullsend/config.yaml`, `repos status`
+writes the canonical sparse `.fullsend/config.yaml` (for an explicitly pinned
+`fullsend_ref`, rendered in the configuration schema that ref reads, and left
+unchanged with an error when that schema cannot be determined; see
+[Configuration schema of a pinned ref](../../cli/repos.md#configuration-schema-of-a-pinned-ref)), `repos status`
 reports any whole-file difference (including a single-key change) as
 drift, and convergence rewrites the file deterministically — unless the
 candidate would become less restrictive than the current effective
@@ -489,10 +494,10 @@ non-per-repo file, or a read error, fails with a clear error and is never
 replaced. `.fullsend/config.base.yaml` is managed as described under
 [Configuration presets](#configuration-presets).
 
-When the manifest is read-only (an HTTPS URL, or a local file without write
-permission), install fails before attempting any manifest write and prints
-the exact entry to add to its source, including for a glob-covered
-repository whose first-install `tracker` default needs an explicit
+When the manifest is read-only (an HTTPS URL, a pipe or FIFO such as `<(cmd)`,
+or a local file without write permission), install fails before attempting any
+manifest write and prints the exact entry to add to its source, including for a
+glob-covered repository whose first-install `tracker` default needs an explicit
 entry. `--dry-run`, live install and `repos status` agree.
 
 ```bash
@@ -531,10 +536,10 @@ types, and migration from the removed `repos set-default`.
 
 ### Manifest paths and URLs
 
-The `-f`/`--manifest` flag accepts either a local file path or an HTTPS
-URL. Remote manifests are fetched with a 30-second timeout and a 1 MB
-size limit. Most `repos` subcommands support this — see the
-[CLI reference](../../cli/repos.md) for details.
+The `-f`/`--manifest` flag accepts either a local file path or an HTTPS URL.
+Most `repos` subcommands support this — see the
+[CLI reference](../../cli/repos.md) for details. Remote manifests are fetched
+with a 30-second timeout. A manifest, local or remote, can be at most 1 MB.
 
 ```bash
 fullsend repos status -f https://example.com/manifests/repos.yaml
@@ -737,6 +742,15 @@ a token value. Every state except `not-installed`, `deferred`, and `ready` is
 drift. The managed `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET`
 variables are not reported as orphans; any other unrecognised `FULLSEND_`
 variable still is.
+
+For repos with a managed `.fullsend/config.yaml` and an explicitly pinned
+`fullsend_ref`, status also checks the installed file against the
+configuration schema that ref reads. It reports
+`config compatibility (fullsend_ref <ref>)` as `incompatible` when the ref
+cannot read the installed file, or as `unknown` (and the file as drift
+rather than current) when the schema cannot be determined. `--json` output
+carries `config_compatibility`, `config_compatibility_reason` and
+`config_schema_ref`. See [`repos status` output](../../cli/repos.md#output).
 
 For GitLab repos, status also reports the webhook fast path as a
 `gitlab_webhook` object with a `state`, the booleans `webhook_present`,
@@ -950,6 +964,22 @@ detect downgrades. If the ancestry check fails (e.g., API error), the
 upgrade proceeds rather than blocking — graceful degradation.
 
 ## Troubleshooting
+
+### Errors that say "server error text withheld"
+
+By default, `fullsend repos` reports a failed credential-bearing API call
+without the server's response, for example:
+
+```
+GitLab Poller membership reconciliation failed: resolving the GitLab Poller identity: request failed (server error text withheld)
+```
+
+Re-run the command with `--verbose` to see the scrubbed HTTP status and
+server message, and a stderr log line for each GitLab API request
+(method, path and status). This shows which call failed. Known credentials
+and token-shaped values are redacted; see
+[Verbose output](../../cli/repos.md#verbose-output) for what is shown and
+what is redacted.
 
 ### Unknown field errors in repos.yaml
 

@@ -74,6 +74,12 @@ These splits suggest that "memory" may not be one feature. It may be several fee
 - **Memory must be attributable.** Future agents and human reviewers should be able to see where a remembered fact came from: which run, which role, which issue or PR, and whether it was system-derived or agent-authored.
 - **Memory must decay.** Some lessons become wrong. A useful memory system needs a way to expire, supersede, or promote entries.
 
+Scope also covers audience. A run that reads private context can record
+lessons, summaries or evidence that a later run repeats in a public
+repository. [Private Context in Public Agent Workflows](private-context-public-workflows.md)
+examines that publication boundary for retro, fix and other agents that
+consume evidence from earlier runs.
+
 ## Relationship to other problem areas
 
 - **[Security Threat Model](security-threat-model.md)** — Memory is a persistence mechanism, so it expands the prompt-injection surface. The key risk is poisoned context moving from one agent run to another.

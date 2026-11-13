@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -32,6 +33,7 @@ The repos subcommand group provides bulk operations for platform administrators
 managing fullsend across many repositories and organizations.`,
 	}
 	cmd.PersistentFlags().String("gitlab-token", "", "GitLab personal or project access token (overrides GITLAB_TOKEN env var)")
+	cmd.PersistentFlags().Bool(reposVerboseFlag, false, "show the underlying API error text (HTTP status and server message, with credentials redacted) instead of withholding it, and log each GitLab API request (method, path, status) to stderr")
 	cmd.AddCommand(newReposInstallCmd())
 	cmd.AddCommand(newReposUninstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
@@ -145,6 +147,9 @@ func newReposStatusCmd() *cobra.Command {
 		Short: "Compare manifest against actual repo state",
 		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against .fullsend/config.base.yaml and managed configuration drift against .fullsend/config.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, restore := reposVerboseContext(cmd, getGitLabToken(cmd))
+			defer restore()
+			cmd.SetContext(ctx)
 			return runReposStatus(cmd, opts)
 		},
 	}
@@ -308,6 +313,20 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 				fmt.Fprintf(out, "  %s\n", line)
 			}
 		}
+	}
+
+	// Managed configuration that the effective fullsend_ref may not read
+	// (#9292).
+	for _, s := range result.Repos {
+		if s.ConfigCompatibility != repos.ConfigIncompatible && s.ConfigCompatibility != repos.ConfigUnknown {
+			continue
+		}
+		ref := s.ConfigSchemaRef
+		if ref == "" {
+			ref = "running release"
+		}
+		fmt.Fprintf(out, "\n%s config compatibility (fullsend_ref %s): %s\n", s.Owner+"/"+s.Repo, ref, s.ConfigCompatibility)
+		fmt.Fprintf(out, "  %s\n", s.ConfigCompatibilityReason)
 	}
 
 	for _, s := range result.Repos {
@@ -517,7 +536,10 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.repoFilter = args
 			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposInstall(cmd.Context(), opts)
+			secrets := append([]string{opts.gitlabToken, opts.openAIAPIKey, opts.jiraToken, opts.jiraClientSecret}, roleTokenValues(opts.gitlabRoleTokens)...)
+			ctx, restore := reposVerboseContext(cmd, secrets...)
+			defer restore()
+			return runReposInstall(ctx, opts)
 		},
 	}
 	cmd.SetFlagErrorFunc(removedReposInstallFlagError)
@@ -808,7 +830,29 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
 		return fmt.Errorf("effective infrastructure preflight: %w", err)
 	}
+	// A dry run reports the size refusal that the write below gives.
+	if manifestChanged && opts.dryRun && opts.manifest != "" {
+		if err := repos.CheckManifestSize(opts.manifest, manifest); err != nil {
+			return fmt.Errorf("checking the manifest size: %w", err)
+		}
+	}
 	if manifestChanged && !opts.dryRun && opts.manifest != "" {
+		// Another install that uses the same file may have rewritten it since
+		// this run loaded it; writing now would drop its edits, such as a
+		// first-install tracker default it recorded. manifestChanged is set
+		// only for a writable manifest (each edit above refuses a read-only one
+		// or, like the legacy conversion, leaves it unwritten), so the file
+		// here is a local regular file. The comparison and the write are not
+		// atomic: a write that lands between them is overwritten. Lock the
+		// file if that window matters.
+		current, readErr := os.ReadFile(opts.manifest)
+		if readErr != nil {
+			return fmt.Errorf("writing manifest: reading %s again before writing it: %w", opts.manifest, readErr)
+		}
+		if !bytes.Equal(current, manifest.LoadedBytes()) {
+			return fmt.Errorf("writing manifest: %s changed after this run loaded it, as when another repos install that uses the same file runs at the same time; "+
+				"this run stopped before writing it: run install again once the other install has finished", opts.manifest)
+		}
 		if err := repos.WriteManifest(opts.manifest, manifest); err != nil {
 			return fmt.Errorf("writing manifest: %w", err)
 		}
@@ -1468,7 +1512,9 @@ prompt for confirmation unless --yes is set.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposUninstall(cmd.Context(), opts, args)
+			ctx, restore := reposVerboseContext(cmd, opts.gitlabToken)
+			defer restore()
+			return runReposUninstall(ctx, opts, args)
 		},
 	}
 
@@ -1523,6 +1569,13 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	if len(concreteRepos) == 0 {
 		printer.StepInfo("All matched entries are glob patterns — no concrete repos to uninstall")
 		return nil
+	}
+	// The manifest edit follows the teardown, so a read-only manifest is
+	// refused before anything is torn down, as install refuses one.
+	if !opts.manifestOnly && !opts.uninstallOnly && repos.ManifestReadOnly(manifest, opts.manifest) {
+		return fmt.Errorf("manifest %s is read-only and the uninstall must remove %s from it; no changes were made. "+
+			"Run with --uninstall-only to tear down without editing the manifest, then remove each torn-down entry from its source",
+			opts.manifest, strings.Join(concreteRepos, ", "))
 	}
 
 	action := "uninstall and remove from manifest"

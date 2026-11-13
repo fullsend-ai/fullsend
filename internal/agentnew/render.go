@@ -148,7 +148,6 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 		Effort:         opts.Effort,
 		PostScript:     "scripts/post-" + opts.Name + ".sh",
 		TimeoutMinutes: opts.TimeoutMinutes,
-		ReadonlyRepo:   role.ReadonlyRepo,
 		Trigger:        opts.Trigger,
 		Env: &harness.EnvConfig{
 			Runner: map[string]string{
@@ -158,6 +157,10 @@ func buildHarness(opts Options, role Role) (*harness.Harness, error) {
 			},
 			Sandbox: sandboxEnv,
 		},
+	}
+	// Set only when true, so other roles get no readonly_repo line.
+	if role.ReadonlyRepo {
+		h.ReadonlyRepo = &role.ReadonlyRepo
 	}
 	if opts.ValidationLoop {
 		h.ValidationLoop = &harness.ValidationLoop{

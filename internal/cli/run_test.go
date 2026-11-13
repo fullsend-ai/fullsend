@@ -9597,6 +9597,43 @@ func TestRunAgent_CancelledReviewLeavesCommentPendingWhenHeadLookupFails(t *test
 	assert.Empty(t, fc.UpdatedComments, "failed head lookup must not terminalize the comment without guidance")
 }
 
+// A child of a read-only base reaches the read-only step, and a child that
+// says readonly_repo: false skips it (#7360).
+func TestRunAgent_ReadonlyRepoFromBase(t *testing.T) {
+	for _, tc := range []struct {
+		name, child string
+		want        bool
+	}{
+		{"child is silent", "base: review-base.yaml\n", true},
+		{"child says false", "base: review-base.yaml\nreadonly_repo: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useFakeOpenshellProviders(t)
+			t.Setenv("FULLSEND_RUNTIME", "dummy")
+			dir := t.TempDir()
+			for path, content := range map[string]string{
+				"agents/review.md":         "You are a review agent.",
+				"harness/review-base.yaml": "agent: agents/review.md\nrole: review\npolicy: policies/base.yaml\nreadonly_repo: true\n",
+				"harness/review.yaml":      tc.child,
+				"policies/base.yaml":       "version: 1\n",
+				"config.yaml":              "agents:\n  - harness/review.yaml\n",
+			} {
+				file := filepath.Join(dir, path)
+				require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+				require.NoError(t, os.WriteFile(file, []byte(content), 0o644))
+			}
+
+			var buf bytes.Buffer
+			// The run fails later, when the dummy runtime finds no scenario; only the steps before that matter.
+			_ = runAgent(context.Background(), "review", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+
+			out := buf.String()
+			require.Contains(t, out, "Scanning target repo context files", "the run must get past the read-only step")
+			assert.Equal(t, tc.want, strings.Contains(out, "Target repo set to read-only"))
+		})
+	}
+}
+
 func TestBackendFromConfigFile_MissingUsesDefault(t *testing.T) {
 	t.Parallel()
 

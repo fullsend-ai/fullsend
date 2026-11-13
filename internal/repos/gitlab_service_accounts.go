@@ -462,7 +462,7 @@ func (c ServiceAccountTokenClient) CreateProjectAccessToken(ctx context.Context,
 		cleanupCtx, cancel := gitlabCleanupContext(ctx)
 		defer cancel()
 		revokeErr := c.SA.RevokeServiceAccountPAT(cleanupCtx, owner, repo, sa.ID, tok.ID)
-		return nil, errors.Join(safeAPIError("validating the replacement service-account credential", verifyErr), safeAPIError("revoking the invalid replacement credential", revokeErr))
+		return nil, errors.Join(safeAPIError("validating the replacement service-account credential", verifyErr), revokeCleanupError("revoking the invalid replacement credential", revokeErr))
 	}
 	return tok, nil
 }
@@ -607,7 +607,7 @@ func (c ServiceAccountTokenClient) legacyCreate(ctx context.Context, owner, repo
 	if verifyErr != nil {
 		cleanupCtx, cancel := gitlabCleanupContext(ctx)
 		defer cancel()
-		return nil, errors.Join(safeAPIError("validating the replacement legacy credential", verifyErr), safeAPIError("revoking the invalid legacy replacement credential", c.Legacy.RevokeProjectAccessToken(cleanupCtx, owner, repo, tok.ID)))
+		return nil, errors.Join(safeAPIError("validating the replacement legacy credential", verifyErr), revokeCleanupError("revoking the invalid legacy replacement credential", c.Legacy.RevokeProjectAccessToken(cleanupCtx, owner, repo, tok.ID)))
 	}
 	return tok, nil
 }

@@ -214,9 +214,12 @@ cross-field equality.
 
 For `comment_added`, adapters extract `command` and `instruction` from the
 **raw** comment body before applying the 4096-character truncation stored in
-`comment.body` (JSON Schema `maxLength` counts Unicode code points). This keeps
-slash-command routing and fix instructions intact even when the stored body is
-truncated for transport.
+`comment.body` (a `/fs-*` command body is exempt on the GitLab target: the
+Jira source carries it whole past the cap there so the dispatch door can
+measure and refuse it, while the GitHub target keeps the cap for command
+bodies too — its transport has no chunk budget; JSON Schema `maxLength` counts
+Unicode code points). This keeps slash-command routing and
+fix instructions intact even when the stored body is truncated for transport.
 
 This moves instruction extraction from downstream workflow steps (e.g.
 `reusable-fix.yml`) into the input adapter — a behavioral change called out in
@@ -528,10 +531,41 @@ two forms:
   `source.system` set to `gitlab` and, for merge request events,
   `state.change_proposal` (including `head_sha` where the poller discovered
   it). `run-agent-job.sh` passes it to `fullsend run --event-file`, so
-  overlays and root-span telemetry see the same fields as on GitHub.
+  overlays and root-span telemetry see the same fields as on GitHub — with
+  two bounds: `state.labels` is truncated to a 1024-byte JSON prefix
+  (entries past the bound are dropped, except fullsend's own control
+  labels, `fullsend-fix` and `fullsend-no-fix`, which the bound keeps
+  so the fix kill switch survives it), and each other attacker-shaped
+  single string the event carries (branch refs, the head_repo/base_repo
+  paths, logins,
+  the label name) to a 258-byte JSON prefix — a same-project MR carries
+  the project's own path in head_repo/base_repo, and it stays cut there
+  even though `repo` travels whole — both like the
+  comment-body bound below, so a trigger or overlay keyed on a value past
+  either bound does not match on this transport. The config-derived
+  `repo`, `entity.url` and `entity.linked_change_proposal.url` travel
+  whole: an install whose config lengths push the complete payload past
+  the chunk budget fails closed there (the comment-only fallback for a
+  note, a refused dispatch for a command) instead of being cut. The label-name bound is
+  stricter than a single `state.labels` entry: `transition.label.name` is
+  cut at 258 JSON bytes while the same label inside `state.labels` can
+  travel whole at up to about 1020 bytes, so for a label longer than 258
+  bytes a trigger keyed on the transition label and one keyed on
+  `state.labels` see different values. A label past the bound is
+  invisible, so a negative-label guard (`!("hold" in event.state.labels)`)
+  is unsafe: any label the forge returns before the guarded one can push it
+  past the bound and make the guard match. The control labels
+  `fullsend-fix` and `fullsend-no-fix` are the exception: the bound
+  keeps them, so the repo's own no-fix gate cannot be pushed out by
+  padding labels. The payload's flat top-level
+  `labels` key is dropped in this form — labels travel only at
+  `_normalized_event.state.labels`.
 - **Comment-only fallback.** Otherwise, for a note event, `_normalized_event`
   is a **partial** map containing only `transition`, with `transition.kind`
   set to `comment_added` and `transition.comment.body` set to the note body.
+  The payload's top-level `labels` key carries the bounded label list in
+  this form (the complete form drops it in favour of
+  `_normalized_event.state.labels`).
   Non-note events then carry no `_normalized_event`. `run-agent-job.sh` passes
   no `--event-file`, and the run behaves as it did before the complete form
   existed.
@@ -541,11 +575,22 @@ as a full NormalizedEvent. Both forms carry the note body at
 `_normalized_event.transition.comment.body`, which `run-agent-job.sh` reads for
 the `/fs-fix` instruction and the retro comment.
 
-A body that starts with `/fs-` is carried untruncated, and dispatch fails closed
-when the payload exceeds the chunk budget. Any other body is bounded to 800
-Unicode code points, with a truncation marker appended when it is cut. In the
-complete form, `transition.comment.command` and `instruction` are derived from
-the transported body, so they always match what `run-agent-job.sh` reads.
+A body that starts with `/fs-` is carried untruncated through this door, and
+dispatch fails closed when the payload exceeds the chunk budget; the
+Jira-sourced GitHub target keeps the 4096-code-point adapter cap for command
+bodies instead, its transport having no chunk budget. Any other body is bounded to 270
+Unicode code points, with a truncation marker appended when it is cut. The
+bound came down from the 800 of earlier releases. The chunk budget is the sum
+of every attacker-controlled field plus the config: an escape-heavy body, a
+full labels bound and maximal — separately bounded — branch refs,
+head_repo/base_repo paths, logins and the label name, with the whole-travelling config-derived
+repo and URLs at a plausible config, must still fit it together; a
+schema-maximal config instead fails closed (the comment-only fallback for a
+note, a refused dispatch for a command).
+`TestBuildEventPayload_WorstCaseFitsTransportBudget` pins that
+worst case. In the complete form,
+`transition.comment.command` and `instruction` are derived from the transported
+body, so they always match what `run-agent-job.sh` reads.
 
 ## GitLab adapter notes
 

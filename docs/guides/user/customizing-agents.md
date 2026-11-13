@@ -121,6 +121,11 @@ Setting `validation_loop.preflight_check` swaps the dependency probe. It runs in
 Any harness field can be overridden. See the [field merge rules](../../reference/harness-reference.md#field-merge-rules-for-base-and-overlays) for how each field type combines with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
+- **`readonly_repo` inherits from the base** — leaving it out, or setting it
+  to `null`, means inherit. An explicit `readonly_repo: false` turns off a
+  read-only base. An inherited `true` needs an image with a `sandbox` user.
+  See the
+  [harness reference § `readonly_repo`](../../reference/harness-reference.md#field-details).
 - **Add skills** — your entries are merged with the base's by skill identity (declared `SKILL.md` name when on disk, otherwise directory basename); a matching child skill overrides the base entry. Nested forge skills that share a leaf directory name are kept alongside each other. **Add plugins or host_files** — your entries are concatenated with the base's, base first.
 - **Override files inside a skill** — repeat the skill's entry in map form
   with [per-file overrides](customizing-with-skills.md#overriding-single-files-in-a-skill);

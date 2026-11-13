@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/randutil"
@@ -215,6 +216,21 @@ func (p *Poller) Run(ctx context.Context) error {
 		for i := range pending {
 			for _, record := range pending[i].records {
 				if err := p.opts.Dispatcher.Dispatch(ctx, record); err != nil {
+					if errors.Is(err, dispatch.ErrTransportBudget) {
+						// The refusal is deterministic — the same
+						// record re-marshals to the same oversized
+						// payload — so a retry can never succeed: the
+						// refused record never holds the issue's
+						// checkpoint back. The checkpoint still waits
+						// for the issue's other records: a sibling
+						// record that fails ordinarily keeps the
+						// checkpoint (see dispatchFailed below), and
+						// the next cycle re-detects — and re-refuses —
+						// the refused record until that sibling
+						// succeeds.
+						log.Printf("WARNING: dispatching %s for %s: %v (the refused record never holds back lastCheck, which advances once the issue's other records dispatch; the transport-budget refusal is permanent)", record.Agent, pending[i].issueKey, err)
+						continue
+					}
 					log.Printf("WARNING: dispatching %s for %s: %v (lastCheck not advanced; the issue is retried next cycle)", record.Agent, pending[i].issueKey, err)
 					pending[i].dispatchFailed = true
 					dispatchErrors++
@@ -572,6 +588,20 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 			log.Printf("WARNING: skipping event %s for issue %s: %v (Jira issue id %q)", event.Key(), event.IssueKey, err, event.IssueID)
 			p.eventsInvalid++
 			continue
+		}
+
+		// On the GitLab target, bound state.labels before trigger
+		// matching with the same bound the dispatch door applies when
+		// encoding (dispatch.LogBoundTransportLabels): a trigger keyed on a
+		// label past the bound must not launch an agent whose
+		// transported event lacks that label — the silent
+		// trigger/payload mismatch the transport bounds exist to
+		// prevent. The GitHub target is unchanged: its transport
+		// carries the event unbounded, so matching on the full label
+		// set stays correct there.
+		if p.opts.TargetForge == TargetForgeGitLab {
+			where := fmt.Sprintf("%s event on %s", event.Type, event.IssueKey)
+			ne.State.Labels = dispatch.LogBoundTransportLabels(where, ne.State.Labels)
 		}
 
 		if p.matcher != nil {

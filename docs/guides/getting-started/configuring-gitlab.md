@@ -59,8 +59,10 @@ GitHub repositories use a different command (`fullsend github setup`). See
 
 `ci_pipeline_variables_minimum_override_role` is a GitLab project setting,
 not a `.fullsend` configuration field. Before installing typed-input jobs,
-an administrator must set it to `no_one_allowed`; fullsend reads it back
-and refuses delivery if it is weaker, unsupported, or unreadable. Setting
+an administrator must set it to `no_one_allowed` (**Settings > CI/CD >
+Variables > Minimum role to use pipeline variables**, set to **No one
+allowed**); fullsend reads it back and refuses delivery if it is weaker,
+unsupported, or unreadable. Setting
 `FULLSEND_GITLAB_PIPELINE_VAR_RESTRICTION=enforced` does not bypass this
 pre-delivery check. A failed setting change must leave the new jobs undelivered,
 not runnable under an unsafe policy.
@@ -94,11 +96,38 @@ most 1000 characters each. All three template layers validate the chunk
 alphabet and length; fixed code reconstructs the payload as data. Variable
 bridges disable expansion, and creator/HMAC authentication precedes caller
 link logging and credential selection. Non-command note bodies, such as bot
-review notes, are bounded to 800 Unicode characters with a truncation marker.
-A `/fs-*` command body is carried untruncated, and the dispatcher fails closed
-before a pipeline is created when a command payload exceeds the nine-chunk
-budget. Other oversized payloads also fail before a pipeline is created. GitLab's 20-input limit leaves no spare root
-inputs: conflicting declarations or excess inputs fail explicitly.
+review notes, are bounded to 270 Unicode characters with a truncation marker,
+the event's `state.labels` to a 1024-byte JSON prefix (fullsend's own
+control labels, `fullsend-fix` and `fullsend-no-fix`, are kept past it),
+and each other
+attacker-shaped single string (branch refs, the head_repo/base_repo paths,
+logins, the label name) to a 258-byte JSON prefix — a same-project MR
+carries the project's own path in head_repo/base_repo, and it stays cut
+there even though `repo` travels whole; the config-derived repo and
+entity URLs travel whole, and a config whose lengths push a payload past
+the budget fails closed (comment-only form for a note, a refused dispatch
+for a command). A `/fs-*` command body is carried
+untruncated, and the dispatcher fails closed before a pipeline is created
+when a command payload exceeds the nine-chunk budget; that refusal is
+permanent, so the poller drops the event with a WARNING log line and advances
+past it — the command is never retried and never runs. The largest `/fs-*`
+command that still dispatches is about 3,000 ASCII characters — fewer when
+the text is escape-heavy, since JSON encoding expands `<`, `>`, and `&`
+sixfold — because the complete event carries the command text twice (as
+`comment.body` and as the re-derived `comment.instruction`); commands
+between that boundary and the roughly 6,550 ASCII characters the
+comment-only fallback used to carry whole are now refused instead of
+dispatched. The webhook dispatcher
+job takes the same refusal differently: its dispatch step fails, and a re-run
+or payload replay re-refuses the event; the refusal is permanent there too.
+A non-command event that would not fit is not refused: it is sent in the
+comment-only form with a WARNING. The nine-chunk budget follows from
+GitLab's 20-input pipeline-contract limit ([ADR
+0131](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md),
+[GitLab CI/CD
+inputs](https://docs.gitlab.com/ci/inputs/)): the dispatch configuration
+declares 11 metadata inputs and 9 payload chunks, using every root input
+GitLab allows, so conflicting declarations or excess inputs fail explicitly.
 
 Compatible user input declarations, jobs, includes, and header settings
 survive merge/uninstall. Declarations referenced directly by surviving user
@@ -702,6 +731,23 @@ install grants and verifies its protected-default-branch pipeline access. A
 failed grant revokes the unpublished replacement and preserves the installed legacy
 credential. Interrupted replacement resumes through ordinary rotation state.
 
+GitLab.com Free refuses per-user protected-branch merge grants. When the
+default branch lets only Maintainers merge, install cannot give a new Poller
+credential pipeline access, so it revokes the credential and reports that
+poller pipeline access on the protected branch could not be granted. The
+report names the branch. The Analyst and Coder credentials are not affected.
+On that tier, Poller provisioning requires the default branch's role-based
+**Allowed to merge** setting to include Developers. Read the warning under
+[Letting the Poller start pipelines on the default branch](#letting-the-poller-start-pipelines-on-the-default-branch)
+before you change it. The report includes these steps:
+
+1. Open the project in GitLab under **Settings → Repository → Protected
+   branches**.
+2. Select the default branch named in the message.
+3. Set **Allowed to merge** to **Developers + Maintainers**. This lets every
+   project Developer merge to the branch.
+4. Re-run `fullsend repos install`.
+
 An installed role credential that rotation state does not record (for example,
 one installed before rotation state existed) is left untouched, and install
 reports it instead of migrating it. To re-adopt it, remove that role's
@@ -975,7 +1021,8 @@ reason and resource IDs.
 - **Dispatch activation gate:** whenever install leaves the trigger account
   ready, including after the Poller grant is refused, it rechecks the
   prerequisites for the child-pipeline route that uses the account's job token and
-  reports either `GitLab trigger dispatch activation deferred: <reasons>` or
+  reports either `GitLab trigger dispatch activation deferred`, followed by
+  one line per unmet prerequisite, or
   `GitLab trigger dispatch prerequisites verified`. The check only reads:
   every managed polling schedule (`fullsend slash poll`, `fullsend event poll`)
   must carry no pipeline variables (legacy schedules still set

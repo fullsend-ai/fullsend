@@ -20,14 +20,20 @@
 // Age bound: slotReclaimAge is slotJobTimeLimit plus slotReclaimMargin. A
 // slot repository is created by a claim and deleted by its Release, so it
 // never outlives the process that claimed it. That process is the behaviour
-// or playback suite, which `go test -timeout 45m` (Makefile) and the CI
-// jobs' `timeout-minutes: 45` (.github/workflows/e2e.yml) forcibly stop: the
-// first panics the test binary and the second kills the runner. A Godog
-// context deadline alone would not stop a step, so it is not the bound.
-// The margin covers requests still in flight when a job is killed and clock
-// skew between GitHub's creation time and the runner clock.
-// TestSlotReclaimAgeCoversJobLimits fails if either limit is raised past
-// slotJobTimeLimit.
+// or playback suite, which `go test -timeout 45m` (Makefile) panics, bounding
+// every claiming process — and so every claimed repository's life — at
+// slotJobTimeLimit past the claim. The CI jobs' `timeout-minutes: 90`
+// (.github/workflows/e2e.yml) exceeds that bound because the infra-retry
+// wrapper (scripts/run-with-infra-retry.sh) re-runs an infrastructure-
+// classified failed suite once, as a second sequential `go test` process
+// after the first exits: each attempt keeps its own `-timeout`, and a job
+// kill can only shorten a process, never extend a slot repository past the
+// per-attempt bound. A Godog context deadline alone would not stop a step,
+// so it is not the bound. The margin covers requests still in flight when a
+// job is killed and clock skew between GitHub's creation time and the
+// runner clock. TestSlotReclaimAgeCoversJobLimits fails if the per-attempt
+// -timeout is raised past slotJobTimeLimit, or a job budget past the two
+// attempts it may run.
 //
 // Coordination: each org has one collector at a time across all suites.
 // The collector lease is the file slotGCLeasePath in the persistent
