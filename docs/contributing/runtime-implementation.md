@@ -333,7 +333,7 @@ Gaps against the rules are tracked in
 | Component | On malformed / oversized input (> 10 × 1024 × 1024 characters, text-mode stdin) | On its own error |
 |-----------|-------------------------------------------|------------------|
 | Blocking scripts (all PreToolUse, standalone `canary_posttool.py`) | fail **closed** — block | block |
-| `tirith_check.py` | block. Once tirith has run and exited non-zero, anything the hook cannot read blocks too — a non-list `findings`, a non-string `action` or `severity`, or any unexpected exception — regardless of `TIRITH_REQUIRED`, so a bumped pin that changes the output schema fails closed. `analysis_incomplete` blocks as well; the reason names the [accepted shell dialect](#tirith-accepted-shell-dialect) | fails **open** when the `tirith` binary is missing, times out or errors — unless `TIRITH_REQUIRED=1` (`appendHookEnv` writes it when Tirith is enabled; adapters must make sure it reaches the script) |
+| `tirith_check.py` | block. Once tirith has run and exited non-zero, anything the hook cannot read blocks too — a non-list `findings`, a non-string `action` or `severity`, or any unexpected exception — regardless of `TIRITH_REQUIRED`, so a bumped pin that changes the output schema fails closed. A `requires_approval` that is not `false` blocks whatever the exit code, an exit 0 included, because the hook cannot collect an approval. `analysis_incomplete` blocks as well; the reason names the [accepted shell dialect](#tirith-accepted-shell-dialect) | fails **open** when the `tirith` binary is missing, times out or errors — unless `TIRITH_REQUIRED=1` (`appendHookEnv` writes it when Tirith is enabled; adapters must make sure it reaches the script) |
 | Sanitizing scripts / each `posttool_chain.py` sanitizer stage | fail **open** — pass through unchanged (exit 0; the unicode hook logs an `input_truncated` finding) | pass through; recorded in `findings.jsonl` as `<stage>_stage_error` |
 | `posttool_chain.py` canary stage | fails **closed** whenever `FULLSEND_CANARY_TOKEN` is set: input the driver cannot read blocks (`exit 1`, `continue: false`) instead of skipping detection; with no canary token configured it stays fail-open | a scan that raises is treated as a hit; a hit whose redaction cannot be verified clean withholds the output entirely; `exit 1` is unconditional |
 
@@ -352,7 +352,7 @@ Run the time-check snippet the code and fix agents document straight through the
 ```console
 $ echo '{"tool_name": "Bash", "tool_input": {"command": "if [ -n \"${TIMEOUT_SECONDS:-}\" ]; then echo yes; fi"}}' \
     | python3 internal/security/hooks/tirith_check.py; echo "exit=$?"
-{"decision": "block", "reason": "Tirith [HIGH] analysis_incomplete: Nested executable body could not be resolved \u2014 tirith could not analyse this command, so it is blocked rather than trusted. Rewrite it in a form tirith parses: `test -n \"$X\"` instead of `[ -n \"$X\" ]` or `[[ ... ]]`; two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` inside `$(( ))`; in a `case`, only the first arm may be a glob. See docs/contributing/runtime-implementation.md, 'Tirith: accepted shell dialect'."}exit=1
+{"decision": "block", "reason": "Tirith [HIGH] analysis_incomplete: Nested executable body could not be resolved \u2014 tirith could not analyse this command, so it is blocked rather than trusted. Rewrite it in a form tirith parses: `test -n \"$X\"` instead of `[ -n \"$X\" ]`; two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` inside `$(( ))`; in a `case`, only the first arm may be a glob. See docs/contributing/runtime-implementation.md, 'Tirith: accepted shell dialect'."}exit=1
 ```
 
 The reply is one line with no trailing newline, which is why `exit=1` is glued to it. Apply the rewrite it asks for and the command passes:
@@ -367,7 +367,7 @@ exit=0
 
 | Blocked | Write instead | What tirith cannot resolve |
 |---------|---------------|----------------------------|
-| `[ -n "$X" ]`, `[[ -d .git ]]`, and any `if`/`while` built on them | `test -n "$X"`, `test -d .git` | the bracket form, in every position |
+| `[ -n "$X" ]`, `[ -d .git ]`, and any `if`/`while` built on them | `test -n "$X"`, `test -d .git` | the single-bracket form, in every position. `[[ ... ]]` passes |
 | `ELAPSED=$(( $(date +%s) - AGENT_START ))` | `NOW=$(date +%s); ELAPSED=$(( NOW - AGENT_START ))` | a `$( )` substitution inside `$(( ))` |
 | `case "$X" in a) echo a;; *) echo b;; esac` | all-literal arms, or `if`/`elif` | any glob arm (`*)`, `z*)`, `?)`) after the first. A lone or leading catch-all is fine |
 | `curl -H "Authorization: Bearer $TOKEN" https://host/…` | `curl -K creds.cfg https://host/…`, header in the config file | a variable expanded inside a header argument |
@@ -407,6 +407,7 @@ Two traps when reproducing by hand:
 | Variable | Read by | Behaviour |
 |----------|---------|-----------|
 | `TIRITH_FAIL_ON`, `TIRITH_REQUIRED` | `tirith_check.py` | written by `appendHookEnv`; `TIRITH_REQUIRED=1` turns the fail-open into fail-closed |
+| `TIRITH_OFFLINE` | `tirith` | always set to `1` by `tirith_check.py` in the `tirith` subprocess environment, so package lookups and the threat-database refresh make no network calls; not read from `.env` |
 | `FULLSEND_EGRESS_ALLOWLIST` | `ssrf_pretool.py` | comma-separated `host:port` entries; supports exact hostnames and leading-wildcard patterns (e.g. `*.example.com:443`) matched by domain-anchored suffix comparison — bare `*`, mid-string globs, and single-label TLD wildcards (e.g. `*.com`) are rejected with a warning on stderr; the rejection check requires >= 2 dots in the full pattern (e.g. `*.com` has 1 dot and is rejected, `*.example.com` has 2 and is accepted), so multi-label public suffixes (e.g. `*.co.uk`, `*.github.io`) also have 2 dots, pass the check, and are accepted — this is an accepted residual risk since the allowlist is operator-controlled config, not attacker input, and the L7 proxy remains the primary SSRF enforcement boundary; on DNS failure the hook defers to the L7 proxy for allowlisted hosts instead of failing closed; if DNS succeeds but resolves to a blocked IP, the allowlist is not consulted |
 | `OPENSHELL_SANDBOX` | `ssrf_pretool.py` | set by OpenShell, not `appendHookEnv`. When non-empty and `policy.local` resolves to `198.18.0.1` (policy DNS is answering), a host name whose every DNS answer is in `198.18.0.0/15` is allowed, and the supervisor enforces the real destination on connect. IP literals in any spelling, blocked hostnames, `policy.local` and the host-gateway names are still checked. Clearing the variable only turns this off |
 | `FULLSEND_TOOL_ALLOWLIST` | `tool_allowlist_pretool.py` | fail-closed when unset |

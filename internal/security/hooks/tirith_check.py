@@ -52,8 +52,8 @@ SEVERITY_LEVELS = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 # docs/contributing/runtime-implementation.md.
 DIALECT_HINT = (
     " — tirith could not analyse this command, so it is blocked rather than trusted. "
-    'Rewrite it in a form tirith parses: `test -n "$X"` instead of `[ -n "$X" ]` or '
-    "`[[ ... ]]`; two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` "
+    'Rewrite it in a form tirith parses: `test -n "$X"` instead of `[ -n "$X" ]`; '
+    "two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` "
     "inside `$(( ))`; in a `case`, only the first arm may be a glob. "
     "See docs/contributing/runtime-implementation.md, 'Tirith: accepted shell dialect'."
 )
@@ -84,6 +84,35 @@ def severity_meets_threshold(severity: str, threshold: str) -> bool:
     return sev_level >= thresh_level
 
 
+def approval_block(raw: object, returncode: int) -> str:
+    """Return a block reason when tirith asks for approval, else "".
+
+    A policy approval rule sets requires_approval, possibly on an exit 0 or an
+    action=warn. This hook has no one to ask, so the request is a block. Any
+    value other than an absent key or false blocks too: it is unreadable.
+    """
+    if not isinstance(raw, dict):
+        return ""
+    requires_approval = raw.get("requires_approval", False)
+    if requires_approval is False:
+        return ""
+    if requires_approval is True:
+        rule = raw.get("approval_rule")
+        named = f" ({rule[:200]})" if isinstance(rule, str) and rule else ""
+        reason = (
+            f"Tirith requires approval{named} (exit code {returncode}) — "
+            "blocked; this hook cannot collect an approval"
+        )
+        log_finding("tirith_requires_approval", "high", reason, "block")
+    else:
+        reason = (
+            f"Tirith blocked command (exit code {returncode}): "
+            f"requires_approval is {type(requires_approval).__name__}, expected a bool"
+        )
+        log_finding("tirith_malformed_output", "high", reason, "block")
+    return reason
+
+
 def check_command(command: str) -> tuple[bool, str]:
     """Run tirith check on a command. Returns (should_block, reason)."""
     try:
@@ -95,6 +124,13 @@ def check_command(command: str) -> tuple[bool, str]:
             # fail-open handler below, discarding a real threat report.
             errors="replace",
             timeout=5,
+            # Keeps package lookups (OSV, deps.dev) and the background
+            # threat-database refresh off the network: in the sandbox they go
+            # to the egress proxy and add hundreds of ms to install checks.
+            # The variable, not --offline: tirith exits 2 with no output on an
+            # unknown option, so a flag would break every check on a binary
+            # that lacks it.
+            env={**os.environ, "TIRITH_OFFLINE": "1"},
         )
     except FileNotFoundError:
         if TIRITH_REQUIRED:
@@ -117,7 +153,13 @@ def check_command(command: str) -> tuple[bool, str]:
         return False, ""
 
     if result.returncode == 0:
-        return False, ""
+        # An allow may still carry requires_approval. Output that is absent or
+        # unreadable stays an allow here, as it was before tirith had the field.
+        try:
+            reason = approval_block(json.loads(result.stdout), result.returncode)
+        except json.JSONDecodeError:
+            reason = ""
+        return bool(reason), reason
 
     # Parse tirith JSON output.
     # v0.3.x returns {"action": "block", "findings": [...], ...}
@@ -209,6 +251,10 @@ def check_command(command: str) -> tuple[bool, str]:
         if only_analysis_incomplete:
             block_reason += DIALECT_HINT
         return True, block_reason
+
+    reason = approval_block(raw, result.returncode)
+    if reason:
+        return True, reason
 
     # v0.3.x: honour the top-level action field even when no individual
     # finding met the severity threshold.
