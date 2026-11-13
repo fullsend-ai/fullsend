@@ -82,8 +82,8 @@ func NewEphemeralCFMint(pool PoolConfig) (Driver, error) {
 	}
 	client := pool.NewClient(token)
 
-	// Deploy a public preview mint for the org.
-	mintURL, mint, err := deployEphemeralMint(ctx, pool, org, token, client, logf)
+	// Deploy a public preview mint for the org, scoped to this run's repos.
+	mintURL, mint, err := deployEphemeralMint(ctx, pool, org, runID, token, client, logf)
 	if err != nil {
 		_ = held.Release(ctx)
 		return nil, fmt.Errorf("ephemeral factory: %w", err)
@@ -133,9 +133,13 @@ var _ Factory = NewEphemeralCFMint
 
 // deployEphemeralMint deploys a public CF preview mint for org and returns
 // its URL and the mint driver (for teardown at Finalize). The mint is
-// public (PER_REPO_WIF_REPOS=*) with workflow hosts "*", so any ephemeral
-// repo may be a caller and workflow host without per-repo enrollment.
-func deployEphemeralMint(ctx context.Context, pool PoolConfig, org, token string, client forge.Client, logf func(string, ...any)) (string, mintDriver, error) {
+// public (PER_REPO_WIF_REPOS=*), but its workflow-host allowlist is scoped
+// to this run's repos (org/bt-{run-id}-*): the ephemeral repos a run creates
+// (shim, fork, host companions) all share that prefix, so they are trusted
+// workflow hosts, while repos from other runs or outside the prefix are not.
+// This is tighter than a bare "*" (which would trust every repo on GitHub)
+// and still needs no per-scenario enrollment.
+func deployEphemeralMint(ctx context.Context, pool PoolConfig, org string, runID RunID, token string, client forge.Client, logf func(string, ...any)) (string, mintDriver, error) {
 	pemDir, err := setupCFMintPEMDir()
 	if err != nil {
 		return "", nil, fmt.Errorf("materializing PEMs: %w", err)
@@ -149,7 +153,7 @@ func deployEphemeralMint(ctx context.Context, pool PoolConfig, org, token string
 	cfg := cfmintConfig{
 		pemDir:            pemDir,
 		suiteName:         envSuiteName(),
-		workflowHostRepos: "*",
+		workflowHostRepos: ephemeralWorkflowHostPrefix(org, runID),
 		appSet:            envAppSet(),
 		statusGitHubGroup: mintStatusGitHubGroup(org),
 	}

@@ -92,6 +92,15 @@ func ephemeralRepoName(runID RunID) string {
 	return fmt.Sprintf("bt-%s-%s", runID, strings.ReplaceAll(uuid.New().String(), "-", "")[:8])
 }
 
+// ephemeralWorkflowHostPrefix is the run-scoped WORKFLOW_HOST_REPOS value
+// for the ephemeral mint: a prefix glob matching exactly this run's repos
+// (org/bt-{run-id}-*). Every repo a run creates shares the bt-{run-id}-
+// prefix, so all are trusted workflow hosts, while repos from other runs or
+// outside the prefix are not — tighter than a bare "*".
+func ephemeralWorkflowHostPrefix(org string, runID RunID) string {
+	return fmt.Sprintf("%s/bt-%s-*", org, runID)
+}
+
 // createRepo creates and provisions one ephemeral repo, returning its name.
 // The name is returned even on later-stage failures so the caller can track
 // it for cleanup/prune.
