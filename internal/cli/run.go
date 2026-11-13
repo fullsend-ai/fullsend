@@ -750,9 +750,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// Without --forge, lock reads forge keys from the child only
 			// (#8988), so a child with no forge: block needs the platform
 			// named. A child with forge keys is locked for all of them.
-			forgeArg := lockForgeArg(harnessPath, composeOpts.ForgePlatform)
-			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run fullsend lock --update%s %s%s to pin them",
-				agentName, len(unpinned), noun, unpinned[0], forgeArg, shellQuoteArg(agentName), fullsendDirArg(fullsendDir)))
+			// A name that starts with '-' is guarded behind "--"
+			// (lockUpdateArgs) so it cannot read as a flag.
+			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run fullsend lock %s to pin them",
+				agentName, len(unpinned), noun, unpinned[0], lockUpdateArgs(agentName, fullsendDir, harnessPath, composeOpts.ForgePlatform)))
 		}
 	}
 

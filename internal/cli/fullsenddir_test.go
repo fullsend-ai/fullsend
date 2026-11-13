@@ -151,6 +151,111 @@ func TestShellQuoteArg(t *testing.T) {
 	}
 }
 
+// assertNoControlChars fails when s carries a control character that could
+// forge log lines or alter how a printed hint looks.
+func assertNoControlChars(t *testing.T, s string) {
+	t.Helper()
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			t.Errorf("printed hint %q carries control character %q", s, r)
+		}
+	}
+}
+
+// TestShellQuoteArgEscapesControlCharacters: a crafted agent name with
+// newlines, carriage returns or ANSI escapes must not pass them through to
+// the printed hint — they are rendered as visible backslash sequences
+// inside the quotes, so the hint cannot forge log lines or alter how the
+// command looks.
+func TestShellQuoteArgEscapesControlCharacters(t *testing.T) {
+	cases := map[string]string{
+		"a\nb":       `'a\nb'`,
+		"a\rb":       `'a\rb'`,
+		"a\x1b[31mb": `'a\e[31mb'`,
+		"a\x00b":     `'a\x00b'`,
+		"a\x7fb":     `'a\x7fb'`,
+		"a\u009bb":   `'a\x9bb'`,
+		"a'b\nc":     `'a'\''b\nc'`,
+		"café":       `'café'`,
+	}
+	for in, want := range cases {
+		got := shellQuoteArg(in)
+		if got != want {
+			t.Errorf("shellQuoteArg(%q) = %q, want %q", in, got, want)
+		}
+		assertNoControlChars(t, got)
+	}
+}
+
+// TestShellQuoteArgQuotesLeadingDash: a name that starts with '-' is never
+// printed bare, so it cannot read as a flag in the hint.
+func TestShellQuoteArgQuotesLeadingDash(t *testing.T) {
+	cases := map[string]string{
+		"-all":           "'-all'",
+		"-x/y":           "'-x/y'",
+		"--fullsend-dir": "'--fullsend-dir'",
+	}
+	for in, want := range cases {
+		if got := shellQuoteArg(in); got != want {
+			t.Errorf("shellQuoteArg(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// a dash anywhere but the first rune is still shell-safe and stays bare
+	if got := shellQuoteArg("code-review"); got != "code-review" {
+		t.Errorf("shellQuoteArg(\"code-review\") = %q, want it bare", got)
+	}
+}
+
+// TestFullsendDirArgEscapesControlCharacters: a crafted --fullsend-dir value
+// gets the same treatment as an agent name — quotes escaped, control
+// characters visible — so it cannot forge the printed hint either.
+func TestFullsendDirArgEscapesControlCharacters(t *testing.T) {
+	got := fullsendDirArg("/dir\nwith-esc\x1b[2k/.fullsend")
+	if want := " --fullsend-dir '/dir\\nwith-esc\\e[2k/.fullsend'"; got != want {
+		t.Errorf("fullsendDirArg() = %q, want %q", got, want)
+	}
+	assertNoControlChars(t, got)
+}
+
+// TestLockUpdateHintGuardsLeadingDashName: a name that starts with '-' is
+// printed behind the "--" end-of-options marker with every flag before it,
+// because the CLI's own flag parser would read a quoted "-x" as a flag
+// anyway; a normal name keeps the short form users type.
+func TestLockUpdateHintGuardsLeadingDashName(t *testing.T) {
+	cases := []struct {
+		name, dir, want string
+	}{
+		{"code", ".fullsend", "fullsend lock code --update"},
+		{"-all", ".fullsend", "fullsend lock --update -- '-all'"},
+		{"-all", "/tmp/d", "fullsend lock --update --fullsend-dir '/tmp/d' -- '-all'"},
+	}
+	for _, c := range cases {
+		if got := lockUpdateHint(c.name, c.dir, "", ""); got != c.want {
+			t.Errorf("lockUpdateHint(%q, %q) = %q, want %q", c.name, c.dir, got, c.want)
+		}
+	}
+}
+
+// TestLockUpdateArgsGuardsLeadingDashName: run's unpinned-dependencies hint
+// prints the flags before the name; a leading-dash name goes behind "--"
+// there too, with the --fullsend-dir flag moved before the guard so it
+// still parses as a flag.
+func TestLockUpdateArgsGuardsLeadingDashName(t *testing.T) {
+	cases := []struct {
+		name, dir, want string
+	}{
+		{"code", ".fullsend", "--update code"},
+		{"code", "/tmp/d", "--update code --fullsend-dir '/tmp/d'"},
+		{"-all", ".fullsend", "--update -- '-all'"},
+		{"-all", "/tmp/d", "--update --fullsend-dir '/tmp/d' -- '-all'"},
+	}
+	for _, c := range cases {
+		if got := lockUpdateArgs(c.name, c.dir, "", ""); got != c.want {
+			t.Errorf("lockUpdateArgs(%q, %q) = %q, want %q", c.name, c.dir, got, c.want)
+		}
+	}
+}
+
 // TestAgentNewNextStepsOmitDefaultFullsendDir: with the default directory the
 // printed commands are the short form users type, without --fullsend-dir.
 func TestAgentNewNextStepsOmitDefaultFullsendDir(t *testing.T) {
