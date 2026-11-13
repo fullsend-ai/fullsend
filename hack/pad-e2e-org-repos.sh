@@ -2,21 +2,31 @@
 # pad-e2e-org-repos — add empty filler repositories to a pool org so the
 # e2e App installation's hourly API limit rises to its 12,500 cap (#9414).
 #
-# Usage: hack/pad-e2e-org-repos.sh [--apply] [--target N] [--max N] NN|ORG...
+# Usage: hack/pad-e2e-org-repos.sh [--apply] [--target N] [--allow-large-target]
+#                                   [--max N] NN|ORG...
 #   NN       — org number, e.g. 07 (halfsend-07)
 #   ORG      — full org name, e.g. halfsend-07
 #   --apply  — create the repositories; without it the script only reports
 #              what it would create
-#   --target — permanent repositories the org should hold (default 170)
+#   --target — permanent repositories the org should hold (default 150,
+#              at most 163 unless --allow-large-target is given)
 #   --max    — most repositories to create in this run, across all orgs
 #              (default 450, under GitHub's 500-an-hour content-creation limit)
 #
-# GitHub sets an App installation's hourly limit at 5,000 plus 50 for each
-# repository over 20, capped at 12,500, so 170 repositories reach the cap.
-# Slot repositories (test-repo-NN and names starting with it) come and go
-# with leases, so they do not count toward the target. The default keeps an
-# org under 200 repositories with its slots leased, so the slot allocator's
-# per-pass listing of the org stays at two pages of 100.
+# GitHub's docs: "Installations that have more than 20 repositories receive
+# another 50 requests per hour for each repository", on a 5,000 base and up
+# to 12,500. Whether "each repository" means each one over 20 or every one
+# is not settled: 150 repositories reach the cap on the second reading, 170
+# on the first. The guide's one-org check settles it. Org users over 20 add
+# 50 each as well; the script does not count them, so an org with many
+# users reaches the cap sooner.
+#
+# Slot repositories (test-repo-NN and names starting with it, including
+# -fork and -mint-host) come and go with leases, so they do not count
+# toward the target. The slot allocator lists an org's repositories, 100 a
+# page, on every claim pass. The 163 ceiling keeps an org under 200 even
+# with all 12 slots holding a base, fork and mint-host repository, so the
+# listing stays at two pages.
 #
 # Filler repositories are private, empty and named quota-filler-NNN. The
 # slot driver and slot GC only touch names derived from the pool layout, so
@@ -36,6 +46,8 @@ set -euo pipefail
 FILLER_PREFIX="quota-filler-"
 FILLER_DESCRIPTION="Quota filler for the e2e App installation rate limit (fullsend-ai/fullsend#9414). Do not delete."
 FILLER_PACE_SECONDS="${FILLER_PACE_SECONDS:-8}"
+# TARGET_CEILING is 199 minus three repositories for each of 12 slots.
+TARGET_CEILING=163
 E2E_APP_SLUG="fullsend-ai-e2e"
 
 # org_name turns NN into halfsend-NN and passes a full name through.
@@ -161,11 +173,12 @@ whole_number() {
 }
 
 main() {
-  local apply=false target=170 max=450 orgs=() arg value org
+  local apply=false target=150 max=450 allow_large=false orgs=() arg value org
   while [[ $# -gt 0 ]]; do
     arg="$1"
     case "${arg}" in
       --apply) apply=true; shift ;;
+      --allow-large-target) allow_large=true; shift ;;
       --target|--max)
         if [[ $# -lt 2 ]]; then
           echo "${arg} needs a value" >&2
@@ -192,7 +205,12 @@ main() {
     esac
   done
   if [[ ${#orgs[@]} -eq 0 ]]; then
-    echo "usage: hack/pad-e2e-org-repos.sh [--apply] [--target N] [--max N] NN|ORG..." >&2
+    echo "usage: hack/pad-e2e-org-repos.sh [--apply] [--target N] [--allow-large-target] [--max N] NN|ORG..." >&2
+    return 1
+  fi
+  # A mistyped target would create permanent repositories in bulk.
+  if (( target > TARGET_CEILING )) && [[ "${allow_large}" != true ]]; then
+    echo "--target ${target} is above ${TARGET_CEILING}; pass --allow-large-target if that is intended" >&2
     return 1
   fi
 

@@ -14,7 +14,8 @@
 # listing fail; a gh warning on stderr is not counted as a repository; an
 # e2e App on selected repositories, a missing App or an unreadable
 # installation list stops before anything is listed or created; filler
-# repositories are created private; --target and --max
+# repositories are created private; the default target is 150, and a
+# target above 163 needs --allow-large-target; --target and --max
 # with a leading zero are read in base 10; a trailing --target or --max and
 # an org outside the pool are usage errors.
 #
@@ -294,6 +295,27 @@ if [[ ${RC} -ne 0 ]] && grep -q 'could not list app installations in halfsend-07
   pass "an unreadable installation list fails"
 else
   fail "installations error: rc=${RC} out=${OUT}"
+fi
+
+# --- --target ceiling --------------------------------------------------------
+fresh_state halfsend-07
+run_pad --apply --target 1700 07
+if [[ ${RC} -ne 0 && "$(creates)" == 0 ]] && grep -q -- '--target 1700 is above 163' <<< "${OUT}"; then
+  pass "a target above the ceiling is rejected"
+else
+  fail "ceiling: rc=${RC} creates=$(creates) out=${OUT}"
+fi
+run_pad --target 164 --allow-large-target 07
+if [[ ${RC} -eq 0 ]] && grep -q 'target 164: 164 to create' <<< "${OUT}"; then
+  pass "--allow-large-target lifts the ceiling"
+else
+  fail "allow large: rc=${RC} out=${OUT}"
+fi
+run_pad 07
+if [[ ${RC} -eq 0 ]] && grep -q 'target 150: 150 to create' <<< "${OUT}"; then
+  pass "the default target is 150"
+else
+  fail "default: rc=${RC} out=${OUT}"
 fi
 
 # --- usage errors -----------------------------------------------------------

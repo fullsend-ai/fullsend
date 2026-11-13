@@ -211,15 +211,18 @@ on repo-level foreign grants.
 
 ### Filler repositories for the API limit
 
-GitHub sets an App installation's hourly API limit at 5,000 plus 50 for
-each repository over 20, capped at 12,500
-([GitHub docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#primary-rate-limit-for-github-app-installations)).
-Slot repos exist only while leased, so a pool org with only its permanent
-repos holds the e2e installation token to about 5,000 calls an hour. Empty
-filler repositories raise the limit
+An App installation's hourly API limit starts at 5,000 and goes up to
+12,500. [GitHub's docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#primary-rate-limit-for-github-app-installations)
+say that "installations that have more than 20 repositories receive
+another 50 requests per hour for each repository", and the same for each
+org user over 20. It is not settled whether "each repository" means each
+one over 20 (170 repositories reach the cap) or every one (150 do); step
+4 settles it. Slot repos exist only while leased, so a pool org with only
+its permanent repos holds the e2e installation token to about 5,000 calls
+an hour. Empty filler repositories raise the limit
 ([#9414](https://github.com/fullsend-ai/fullsend/issues/9414)).
 
-**Risk.** This creates about 3,600 empty repositories across 22 orgs only
+**Risk.** This creates 3,200 to 3,500 empty repositories across 22 orgs only
 to raise an API limit. GitHub's Terms of Service and Acceptable Use
 Policies let GitHub decide at its discretion what counts as excessive API
 use or bulk automated activity, and remove repositories or suspend apps
@@ -244,8 +247,15 @@ GitHub Support's answer, before step 5.
 
 4. Wait for the next DEV behaviour run that leases a slot in that org. Its
    `[driver] per-org quota counters` log lines show
-   `remaining=<n>/<limit>` for each org. Continue only if the limit for
-   that org reads `12500`.
+   `remaining=<n>/<limit>` for each org. The org now holds 150 permanent
+   repositories (the default `--target`), plus any leased slot repos:
+   - `12500` with few slot repos leased: 50 per repository counts every
+     one. Continue with the default.
+   - About `11500` (plus 50 per leased slot repo): only repositories over
+     20 count. Run step 3 again with `--target 163`, and add
+     `--target 163` in step 5. The org then reaches 12,500 once seven
+     slot repos are leased.
+   - Anything else: stop and report it on #9414.
 5. Fill the remaining orgs:
 
    ```bash
@@ -268,13 +278,15 @@ Names that already exist are skipped. A rate-limit answer stops the run;
 run it again later to continue. The slot driver and slot GC never touch
 filler repositories. Do not delete them.
 
-The default `--target` of 170 is the smallest count that reaches the cap.
-It has a cost: the slot allocator lists each org's repositories, 100 a
-page, on every claim pass, and a run waiting for a slot repeats the pass
-every 15 seconds. At 170 permanent repositories plus leased slots an org
-lists in two pages instead of one, so each waiting run spends about 240
-more calls an hour per org. A larger target would push orgs to three
-pages.
+The default `--target` of 150 is the smallest count that can reach the
+cap. A `--target` above 163 needs `--allow-large-target`, so a typo cannot
+create permanent repositories in bulk. The ceiling has a second purpose:
+the slot allocator lists each org's repositories, 100 a page, on every
+claim pass, and a run waiting for a slot repeats the pass every 15
+seconds. Each of the 12 slots can hold a base, a `-fork` and a
+`-mint-host` repository, so 163 permanent repositories keep an org under
+200 and its listing at two pages. Two pages instead of today's one cost
+each waiting run about 240 more calls an hour per org.
 
 ### Test actor permissions
 
