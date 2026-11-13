@@ -395,28 +395,49 @@ func RunReposInstall(
 	}
 	manifest := f.Name()
 	f.Close()
+	// Remove the empty file so `repos set` bootstraps a fresh v1 manifest;
+	// an existing empty file parses as version 0 and fails validation.
 	os.Remove(manifest)
 	defer os.Remove(manifest)
 
-	args := []string{
-		"repos", "install", target,
-		"--vendor",
-		"--runtime", "dummy",
-		"--direct",
-		"--forge", "github",
-		"-f", manifest,
+	// repos install is manifest-driven (#8219): vendor, runtime, mint_url,
+	// fullsend_ref, inference.auth and repository membership live in
+	// repos.yaml, not on flags. Build the manifest with `repos set`, then
+	// install. Only credentials and one-run controls stay on the flags.
+	set := func(keyVal ...string) error {
+		args := append([]string{"repos", "set"}, keyVal...)
+		args = append(args, "-f", manifest)
+		if _, err := runCLI(binary, token, args...); err != nil {
+			return fmt.Errorf("repos set %s: %w", keyVal[0], err)
+		}
+		return nil
 	}
-	if fullsendRef != "" {
-		args = append(args, "--fullsend-ref", fullsendRef)
+	steps := [][]string{
+		{"defaults.vendor", "true"},
+		{"defaults.inference.auth", "vertex-wif"},
 	}
 	if mintURL != "" {
-		args = append(args, "--mint-url", mintURL)
+		steps = append(steps, []string{"github.mint_url", mintURL})
 	}
+	if fullsendRef != "" {
+		steps = append(steps, []string{"github.fullsend_ref", fullsendRef})
+	}
+	steps = append(steps,
+		[]string{fmt.Sprintf("github.repos[%q]", target), "{}"},
+		[]string{fmt.Sprintf("github.repos[%q].config.runtime", target), "dummy"},
+	)
+	for _, s := range steps {
+		if err := set(s...); err != nil {
+			return err
+		}
+	}
+
+	args := []string{"repos", "install", target, "-f", manifest, "--direct"}
 	if project := strings.TrimSpace(gcpProjectID); project != "" {
-		args = append(args, "--inference-project", project)
+		args = append(args, "--vertex-project", project)
 	}
 	if wif := strings.TrimSpace(wifProvider); wif != "" {
-		args = append(args, "--inference-wif-provider", wif)
+		args = append(args, "--vertex-wif-provider", wif)
 	}
 
 	logf("[install] running fullsend %s", strings.Join(args, " "))
