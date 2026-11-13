@@ -508,15 +508,6 @@ func parseRaw(data []byte) (*Harness, error) {
 	if err := yaml.Unmarshal(data, &h); err != nil {
 		return nil, fmt.Errorf("parsing harness YAML: %w", err)
 	}
-	h.ImageMounts = mergeImageMounts(nil, h.ImageMounts)
-	for _, fc := range h.Forge {
-		if fc != nil {
-			fc.ImageMounts = mergeImageMounts(nil, fc.ImageMounts)
-		}
-	}
-	for i := range h.Overlays {
-		h.Overlays[i].ImageMounts = mergeImageMounts(nil, h.Overlays[i].ImageMounts)
-	}
 	if err := validateSchemaVersion(h.SchemaVersion); err != nil {
 		return nil, fmt.Errorf("parsing harness YAML: %w", err)
 	}

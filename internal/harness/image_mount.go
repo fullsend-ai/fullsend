@@ -24,7 +24,37 @@ func mergeImageMounts(base, child []ImageMount) []ImageMount {
 	return merged
 }
 
+func (h *Harness) normalizeImageMounts() {
+	if h.ImageMounts != nil {
+		h.ImageMounts = mergeImageMounts(nil, h.ImageMounts)
+	}
+	for _, config := range h.Forge {
+		if config != nil && config.ImageMounts != nil {
+			config.ImageMounts = mergeImageMounts(nil, config.ImageMounts)
+		}
+	}
+	for i := range h.Overlays {
+		if h.Overlays[i].ImageMounts != nil {
+			h.Overlays[i].ImageMounts = mergeImageMounts(nil, h.Overlays[i].ImageMounts)
+		}
+	}
+}
+
+func reservedImageMountPaths() []string {
+	paths := []string{reservedHostFileBinDir, "/sandbox/opencode-config"}
+	paths = append(paths, reservedHostFileExact...)
+	paths = append(paths, reservedHostFileDirs...)
+	return paths
+}
+
 func validateImageMounts(mounts []ImageMount, hostFiles []HostFile, field string) error {
+	hostFilesField := "host_files"
+	if strings.HasSuffix(field, "image_mounts") {
+		prefix := strings.TrimSuffix(field, "image_mounts")
+		if prefix != "" {
+			hostFilesField = prefix + "host_files"
+		}
+	}
 	for i, mount := range mounts {
 		prefix := fmt.Sprintf("%s[%d]", field, i)
 		if mount.Image == "" || strings.TrimSpace(mount.Image) != mount.Image || strings.Contains(mount.Image, "${") || strings.IndexFunc(mount.Image, unicode.IsSpace) >= 0 || strings.Contains(mount.Image, "://") {
@@ -47,9 +77,14 @@ func validateImageMounts(mounts []ImageMount, hostFiles []HostFile, field string
 		if mount.Dest == "/" {
 			return fmt.Errorf("%s.dest must not replace the container root", prefix)
 		}
+		for _, reserved := range reservedImageMountPaths() {
+			if pathsOverlap(mount.Dest, reserved) {
+				return fmt.Errorf("%s.dest %q overlaps runner-owned path %q", prefix, mount.Dest, reserved)
+			}
+		}
 		for j, hostFile := range hostFiles {
 			if pathsOverlap(mount.Dest, hostFile.Dest) {
-				return fmt.Errorf("%s.dest %q overlaps host_files[%d].dest %q", prefix, mount.Dest, j, hostFile.Dest)
+				return fmt.Errorf("%s.dest %q overlaps %s[%d].dest %q", prefix, mount.Dest, hostFilesField, j, hostFile.Dest)
 			}
 		}
 		for j := 0; j < i; j++ {

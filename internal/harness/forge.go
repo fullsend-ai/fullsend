@@ -295,6 +295,7 @@ func (h *Harness) validateOverlays() error {
 // runtime.forge == "github") that fails on key access when event is empty
 // does not prevent a broader fallback overlay from matching.
 func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, config map[string]any) error {
+	h.normalizeImageMounts()
 	// Record GITHUB_ISSUE_URL diagnostics before the overlays are consumed
 	// so Lint() still sees non-matching entries (#8742).
 	h.captureDeprecatedIssueURL()
@@ -346,6 +347,7 @@ func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, co
 // call sees nil and is a no-op, which is correct because the forge map
 // was already validated before merging.
 func (h *Harness) ResolveForge(platform string) error {
+	h.normalizeImageMounts()
 	// Record GITHUB_ISSUE_URL diagnostics before the forge map is consumed
 	// so Lint() still sees non-matching forge variants (#8742).
 	h.captureDeprecatedIssueURL()
