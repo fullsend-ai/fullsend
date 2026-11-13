@@ -50,21 +50,72 @@ func fullsendDirArg(dir string) string {
 	if filepath.Clean(dir) == defaultFullsendDir {
 		return ""
 	}
-	return " --fullsend-dir '" + strings.ReplaceAll(dir, "'", `'\''`) + "'"
+	return " --fullsend-dir '" + escapeHintArg(dir) + "'"
 }
 
 // shellQuoteArg quotes a printed command hint's argument: bare when every
 // rune is shell-safe (letters, digits, '-', '_', '.', '/'), otherwise
 // wrapped in single quotes with embedded quotes escaped, so a hint naming
 // an agent whose file has a space or shell metacharacter in it stays one
-// argument when the hint is copied as written.
+// argument when the hint is copied as written. Control characters are
+// never passed through (escapeHintArg), so a crafted name cannot forge
+// log lines or alter how the printed command looks, and a name that
+// starts with '-' is always quoted — the hint builders guard it behind
+// the "--" end-of-options marker — so it cannot read as a flag.
 func shellQuoteArg(s string) string {
+	if strings.HasPrefix(s, "-") {
+		return "'" + escapeHintArg(s) + "'"
+	}
 	for _, r := range s {
 		if !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_./", r) {
-			return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+			return "'" + escapeHintArg(s) + "'"
 		}
 	}
 	return s
+}
+
+// isHintControl reports whether r is a control character a printed hint
+// must not carry literally: the C0 controls (newline, carriage return,
+// tab, escape, …), DEL, and the C1-range ANSI escapes all travel through
+// single quotes and could forge log lines or alter how the command looks.
+func isHintControl(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// hintControlEscapes names the control characters that get a readable
+// backslash sequence; the others render as \xNN.
+var hintControlEscapes = map[rune]string{
+	'\a': `\a`,
+	'\b': `\b`,
+	'\t': `\t`,
+	'\n': `\n`,
+	'\v': `\v`,
+	'\f': `\f`,
+	'\r': `\r`,
+	0x1b: `\e`,
+}
+
+// escapeHintArg prepares s for the inside of a printed hint's single
+// quotes: embedded quotes become '\” so the argument stays quoted, and
+// every control character becomes a visible backslash sequence so the
+// printed line cannot be forged or visually altered.
+func escapeHintArg(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\'':
+			b.WriteString(`'\''`)
+		default:
+			if esc, ok := hintControlEscapes[r]; ok {
+				b.WriteString(esc)
+			} else if isHintControl(r) {
+				fmt.Fprintf(&b, `\x%02x`, r)
+			} else {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return b.String()
 }
 
 // lockForgeArg renders the --forge argument a printed lock-update hint
@@ -85,7 +136,28 @@ func lockForgeArg(harnessPath, forgePlatform string) string {
 
 // lockUpdateHint returns the lock-update command the run, lint and lock
 // advice prints: it names the harness and succeeds as written, and carries
-// --forge when the re-lock needs the platform named (lockForgeArg).
+// --forge when the re-lock needs the platform named (lockForgeArg). A name
+// that starts with '-' is printed behind the "--" end-of-options marker,
+// with every flag before it: quoted or not, the CLI's own flag parser
+// would read such a name as a flag, so the guard is the only rendering
+// that succeeds as written.
 func lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform string) string {
-	return fmt.Sprintf("fullsend lock %s --update%s%s", shellQuoteArg(agentName), fullsendDirArg(fullsendDir), lockForgeArg(harnessPath, forgePlatform))
+	dir, forge := fullsendDirArg(fullsendDir), lockForgeArg(harnessPath, forgePlatform)
+	if strings.HasPrefix(agentName, "-") {
+		return fmt.Sprintf("fullsend lock --update%s%s -- %s", dir, forge, shellQuoteArg(agentName))
+	}
+	return fmt.Sprintf("fullsend lock %s --update%s%s", shellQuoteArg(agentName), dir, forge)
+}
+
+// lockUpdateArgs renders the argument part of the advised lock-update
+// command for hints that print the flags before the name (run's
+// unpinned-dependencies advice): "--update<forge> <name><dir>", and the
+// same "--"-guarded form as lockUpdateHint for a name that starts with
+// '-', so it cannot read as a flag.
+func lockUpdateArgs(agentName, fullsendDir, harnessPath, forgePlatform string) string {
+	dir, forge := fullsendDirArg(fullsendDir), lockForgeArg(harnessPath, forgePlatform)
+	if strings.HasPrefix(agentName, "-") {
+		return fmt.Sprintf("--update%s%s -- %s", dir, forge, shellQuoteArg(agentName))
+	}
+	return fmt.Sprintf("--update%s %s%s", forge, shellQuoteArg(agentName), dir)
 }
