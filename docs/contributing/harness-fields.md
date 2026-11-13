@@ -48,8 +48,14 @@ These fields can appear at the harness top level (as defaults) and inside
 | `providers`        | Providers may need forge-specific entries (e.g., different API endpoints per platform); concatenated (top-level + forge) |
 | `openshell`        | OpenShell profiles may need forge-specific configuration; `profiles` concatenated (top-level + forge) |
 | `host_files`       | Host files may need forge-specific entries (e.g., different credential files per platform); deduplicated by `dest` path (child wins) |
-| `image_mounts`     | Additional OCI images may provide forge-specific sandbox tools; deduplicated by `dest` path (child wins) |
+| `image_mounts`     | Additional OCI images may provide forge-specific sandbox tools; deduplicated by `dest` path (later entry wins while retaining the first destination's position) |
 | `env`              | Env config (`runner` and `sandbox` sub-maps) may need forge-specific entries (e.g., different token names per forge); sub-maps merged independently, forge/child keys win (ADR-0055) |
+
+Image mount destinations must be clean absolute non-root paths and may not
+overlap runner-owned paths, `host_files` destinations, or other distinct image
+mount destinations. Validation runs on top-level, forge, overlay, and final
+composed values; same-destination entries are deduplicated before the final
+overlap check, with the later value winning at the first entry's position.
 
 ### Fields that stay at top level only
 

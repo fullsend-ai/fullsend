@@ -522,7 +522,7 @@ For the complete list of harness fields, see the [Harness Field Reference](../..
 #### Mount the Fullsend runtime tools
 
 Use `image_mounts` when your sandbox image needs Fullsend's pinned runtime
-tools from a separate OCI image:
+tools from a separate Open Container Initiative (OCI) image:
 
 ```yaml
 image_mounts:
@@ -566,6 +566,9 @@ allow_driver_config = true
 enabled = false
 ```
 
+For remote gateway installation and endpoint setup, see
+[Runners that use a remote OpenShell gateway](../infrastructure/advanced-setup.md#runners-that-use-a-remote-openshell-gateway).
+
 On a local gateway, Fullsend can pre-pull private GHCR images with the workflow
 token. For a remote gateway it skips runner-local Podman pulls because that
 image store is separate. Private images then need registry authentication or a
@@ -582,6 +585,9 @@ Distinct image mount destinations cannot contain one another (for example,
 `/opt/fullsend` and `/opt/fullsend/org-tools`) or overlap a `host_files`
 destination. A child can still replace an inherited image mount at the exact
 same destination.
+
+This support was introduced by PR #9396; add the first supported release
+version here when it is cut.
 
 ### Agent definitions
 

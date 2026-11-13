@@ -535,9 +535,9 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │  └── security hooks                      │                   │
 │  │                                          │                   │
 │  │  bootstrapEnv() writes:                  │                   │
-│  │  ├── PATH=/opt/fullsend/...:             │                   │
-│  │  │     /usr/local/go/bin:$HOME/go/bin:   │                   │
-│  │  │     $PATH:/sandbox/workspace/bin      │                   │
+│  │  ├── PATH=/usr/local/go/bin:$HOME/go/bin │                   │
+│  │  │     :<image PATH>:/sandbox/workspace/ │                   │
+│  │  │     bin:/opt/fullsend/...             │                   │
 │  │  ├── readonly FULLSEND_RUNNER_PATH       │                   │
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
@@ -685,6 +685,10 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
+
+The agent-facing PATH keeps Go paths first, then the sandbox image's project
+tools, workspace helpers, and mounted Fullsend tools as a fallback. Runner
+commands and hooks use the separately captured trusted PATH.
 
 The `bootstrapEnv()` writes and the `iteration.env` names in this diagram are
 the runner's exports. The full, machine-checkable inventory — what every

@@ -1,14 +1,24 @@
 # Sandbox Image Topology
 
-Fullsend agents run inside sandboxed containers. Two images exist in a
-parent-child hierarchy; which image an agent uses depends on whether it
-needs a compiled-language toolchain.
+Fullsend agents run inside sandboxed containers. The regular sandbox image
+supports agents that need general tools; the code image adds a compiled-language
+toolchain. A separate tools image exposes Fullsend's pinned runtime tools for
+read-only mounting into a development image.
 
 ```
 ghcr.io/nvidia/openshell-community/sandboxes/base   (upstream)
   +-- fullsend-sandbox                                (base sandbox)
-        +-- fullsend-code                             (extends base with Go)
+  |     +-- fullsend-code                             (extends base with Go)
+  +-- fullsend-sandbox-tools                          (mount-only tool root)
 ```
+
+`fullsend-sandbox-tools` is built from the same pinned tool stages as
+`fullsend-sandbox`, with the compatibility link removed so its root can be
+mounted at `/opt/fullsend`. It is not a sandbox `image:` replacement: add it
+as an `image_mounts` entry and grant the destination read-only access in the
+effective sandbox policy. The mount uses the sandbox's ABI and libraries, so
+the development image must be compatible with the tools image. See the
+[runtime tool image contract](runtime-implementation.md#fullsend-tool-image-mount-contract).
 
 | Image | Agents | Run frequency | Key additions over parent |
 |-------|--------|---------------|--------------------------|

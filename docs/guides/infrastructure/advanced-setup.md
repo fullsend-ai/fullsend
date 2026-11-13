@@ -120,6 +120,32 @@ output. It skips the install when `python3` can already import the package. On
 a container image whose Python is an externally managed environment, the
 action retries the install with `--break-system-packages`.
 
+#### Image mounts on OpenShell gateways
+
+Harness `image_mounts` use OpenShell's Podman driver configuration. For a
+local gateway started by the action, image mounts are disabled by default;
+set `allow-image-mounts: true` on the action to enable driver configuration
+and disable resource admission for that local gateway. This opt-in also
+disables resource-admission label checks for external attachments, so use it
+only when trusted workflows control the harness.
+
+For a remote gateway, the operator must set these values in the gateway
+configuration. The action does not modify remote gateway settings:
+
+```toml
+[openshell.drivers.podman]
+allow_driver_config = true
+
+[openshell.drivers.podman.resource_admission]
+enabled = false
+```
+
+OpenShell 0.1.4 `gateway info --output json` reports compute-driver names and
+versions, not these effective settings. A rejected mount reports the required
+configuration. This support was introduced by PR #9396; add the first
+supported release version here when it is cut. See also the
+[user guide to mounting Fullsend tools](../user/bring-your-own-agent.md#mount-the-fullsend-runtime-tools).
+
 ### Custom app sets
 
 By default, the installer creates GitHub Apps with the `fullsend-ai` prefix (e.g., `fullsend-ai-fullsend`, `fullsend-ai-coder`, `fullsend-ai-review`). Organizations that need their own set of apps — for example, to use org-specific permissions or to register multiple app sets on the same mint — can pass `--app-set` to override the prefix.

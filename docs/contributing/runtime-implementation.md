@@ -478,10 +478,15 @@ the same runner paths work when no tool image is mounted. Its
 image for a mount because the OCI root is placed at `/opt/fullsend`. The
 Claude and Codex links in `/usr/local/bin` are relative so they still resolve
 inside the mounted image. The generated base policy allows `/opt/fullsend`
-read-only; custom policies must do the same. The current harness PoC passes
-Podman image mount configuration to OpenShell, so it is intended for the local
-Podman backend. The gateway must enable `allow_driver_config` and disable
-resource admission for Podman image mounts.
+read-only; custom policies must allow the mount path through
+`filesystem_policy.read_only` or `filesystem_policy.read_write`. Before
+bootstrap, Fullsend checks that the effective policy allows the mount path or
+an ancestor. The harness uses OpenShell's Podman image mount configuration.
+The action leaves local image mounts disabled unless
+`allow-image-mounts: true` is set; a remote gateway operator must enable
+`allow_driver_config` and disable resource admission. See
+[gateway setup](../guides/infrastructure/advanced-setup.md#image-mounts-on-openshell-gateways)
+and the [user guide](../guides/user/bring-your-own-agent.md#mount-the-fullsend-runtime-tools).
 
 ### Vendored dependency checklist
 

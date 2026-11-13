@@ -39,10 +39,13 @@ Use the same OpenShell base image for both images or verify compatible
 architecture, ELF loader, glibc, Python and Node runtimes. Mounted executables
 run in the sandbox environment rather than a separate root filesystem. The
 prelaunch check runs `/opt/fullsend/usr/bin/node --version` before repository
-setup. The harness PoC targets
-OpenShell's Podman backend; the sandbox policy must allow `/opt/fullsend`
-read-only, and the gateway must enable `allow_driver_config` and disable
-resource admission for image mounts.
+setup. The harness supports OpenShell's Podman backend; the effective sandbox
+filesystem policy must allow `/opt/fullsend` or an ancestor, and Fullsend checks
+that access before bootstrap. Image mounts are disabled by default on a local
+action gateway; opt in with `allow-image-mounts: true`. A remote gateway's
+operator must enable `allow_driver_config` and disable resource admission, as
+described in [advanced setup](../docs/guides/infrastructure/advanced-setup.md#image-mounts-on-openshell-gateways).
+The action does not change remote settings or forward registry credentials.
 
 ## Runner image
 
