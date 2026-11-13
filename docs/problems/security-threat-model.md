@@ -138,6 +138,11 @@ Agents amplify authority. If a compromised account can trigger agent actions, th
   verified platform invocation and human-reviewed policy and harness revisions
   that authorized it (see
   [ADR 0098](../ADRs/0098-entity-first-harness-evaluation.md))
+- **Shared read credentials retain scope boundaries** —
+  [ADR 0071](../ADRs/0071-share-github-api-cache-with-read-only-mint-tokens.md)
+  permits token reuse only for identical read permissions and repository
+  scope after independently authorizing each caller; the mint records both
+  the requesting role and actual issuer, and write tokens remain unshared.
 - **Human input admission and harness scope** — the target platform requires
   verified `triage` authority for ordinary human event actors,
   decision-relevant entity facts, and model-bound records, then enforces each
