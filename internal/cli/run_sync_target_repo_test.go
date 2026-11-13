@@ -629,9 +629,9 @@ func TestSyncTargetRepoDirWithManifest_PreservesStrippedSymlinksAndHostOnlyFiles
 
 	manifest, err := recordTargetRepoManifest(repoDir)
 	require.NoError(t, err)
-	assert.True(t, manifest["tracked.txt"])
-	assert.True(t, manifest["deleted.txt"])
-	assert.True(t, manifest["deleteddir/old.txt"])
+	assert.NotEmpty(t, manifest["tracked.txt"])
+	assert.NotEmpty(t, manifest["deleted.txt"])
+	assert.NotEmpty(t, manifest["deleteddir/old.txt"])
 
 	// Simulate files created on the host after sandbox upload started (absent from manifest).
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "host-only.txt"), []byte("keep-host"), 0o644))
@@ -832,7 +832,7 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 
 	var buf bytes.Buffer
 	called := false
-	status := runTargetRepoSync(true, true, true, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", nil, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]bool) error {
+	status := runTargetRepoSync(true, true, true, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", nil, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string) error {
 		called = true
 		return nil
 	})
@@ -841,7 +841,7 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 	assert.Contains(t, buf.String(), "Skipping target repository synchronization: validation did not pass")
 
 	buf.Reset()
-	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", []string{"AGENTS.md"}, map[string]bool{}, ui.New(&buf), func(_, _ string, _ []string, _ map[string]bool) error {
+	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", []string{"AGENTS.md"}, map[string]string{}, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string) error {
 		return errors.New("boom")
 	})
 	assert.Equal(t, "failed (boom)", status)
@@ -849,7 +849,7 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 
 	buf.Reset()
 	called = false
-	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", nil, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]bool) error {
+	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", nil, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string) error {
 		called = true
 		return nil
 	})
@@ -859,10 +859,10 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 
 	buf.Reset()
 	var gotExcludes []string
-	var gotManifest map[string]bool
-	manifest := map[string]bool{"a.txt": true}
+	var gotManifest map[string]string
+	manifest := map[string]string{"a.txt": "sha256:test"}
 	targetDir := t.TempDir()
-	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", targetDir, filepath.Join(targetDir, "output"), []string{"AGENTS.md", "CLAUDE.md"}, manifest, ui.New(&buf), func(_, _ string, excludes []string, preRun map[string]bool) error {
+	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", targetDir, filepath.Join(targetDir, "output"), []string{"AGENTS.md", "CLAUDE.md"}, manifest, ui.New(&buf), func(_, _ string, excludes []string, preRun map[string]string) error {
 		gotExcludes = excludes
 		gotManifest = preRun
 		return nil
@@ -990,7 +990,7 @@ func TestRunAgent_SyncTargetRepo_SyncFailureStillRunsPostScript(t *testing.T) {
 	t.Cleanup(func() {
 		syncTargetRepoDirFn = origSyncFn
 	})
-	syncTargetRepoDirFn = func(_, _ string, _ []string, _ map[string]bool) error {
+	syncTargetRepoDirFn = func(_, _ string, _ []string, _ map[string]string) error {
 		return errors.New("disk full")
 	}
 
@@ -1117,4 +1117,246 @@ func TestRunOverrides_InvalidSyncTargetRepo(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "FULLSEND_SYNC_TARGET_REPO")
 	assert.Contains(t, err.Error(), `"yes"`)
+}
+
+func TestSyncTargetRepoDirWithManifest_CaseInsensitiveGitAndExcludes(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Host contains lowercase .git and nested submodule, plus an output dir.
+	require.NoError(t, os.MkdirAll(filepath.Join(dstDir, ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, ".git", "config"), []byte("[core]\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "sub", ".Git", "hooks"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "sub", ".Git", "hooks", "pre-commit"), []byte("host-hook"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "out"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "out", "log.txt"), []byte("host-log"), 0o644))
+
+	manifest, err := recordTargetRepoManifest(dstDir)
+	require.NoError(t, err)
+	assert.Empty(t, manifest[".git"])
+	assert.Empty(t, manifest[filepath.Join("sub", ".Git")])
+
+	// Source contains uppercase .GIT/config, mixed-case sub/.Git/hooks/pre-commit, and OUT/log.txt.
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, ".GIT"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, ".GIT", "config"), []byte("evil-fsmonitor"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "sub", ".Git", "hooks"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "sub", ".Git", "hooks", "pre-commit"), []byte("evil-hook"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "OUT"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "OUT", "log.txt"), []byte("overwrite-out"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "ok.txt"), []byte("synced"), 0o644))
+
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git", "out"}, manifest))
+
+	_, err = os.Lstat(filepath.Join(dstDir, ".GIT"))
+	assert.True(t, os.IsNotExist(err), ".GIT directory must not be copied")
+	assert.True(t, isExcludedPath(filepath.Join(".GIT", "config"), []string{".git"}))
+	assert.True(t, isExcludedPath(filepath.Join("sub", ".Git", "hooks", "pre-commit"), []string{".git"}))
+	assert.True(t, isAncestorOfExcludedPath("SUB", []string{"sub/.Git"}))
+
+	cfgData, err := os.ReadFile(filepath.Join(dstDir, ".git", "config"))
+	require.NoError(t, err)
+	assert.Equal(t, "[core]\n", string(cfgData))
+
+	hookData, err := os.ReadFile(filepath.Join(dstDir, "sub", ".Git", "hooks", "pre-commit"))
+	require.NoError(t, err)
+	assert.Equal(t, "host-hook", string(hookData))
+
+	outData, err := os.ReadFile(filepath.Join(dstDir, "out", "log.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "host-log", string(outData))
+
+	okData, err := os.ReadFile(filepath.Join(dstDir, "ok.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "synced", string(okData))
+}
+
+func TestSyncTargetRepoDirWithManifest_RefusesDirReplacementWithHostOnlyChild(t *testing.T) {
+	t.Run("dir-to-symlink", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := t.TempDir()
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "victim"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "victim", "old.txt"), []byte("old"), 0o644))
+		manifest, err := recordTargetRepoManifest(dstDir)
+		require.NoError(t, err)
+
+		// Host-only file added after snapshot inside directory that sandbox replaces with a symlink.
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "victim", "host-only.txt"), []byte("keep"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "target.txt"), []byte("target"), 0o644))
+		require.NoError(t, os.Symlink("target.txt", filepath.Join(srcDir, "victim")))
+
+		err = syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "victim")
+
+		data, rErr := os.ReadFile(filepath.Join(dstDir, "victim", "host-only.txt"))
+		require.NoError(t, rErr)
+		assert.Equal(t, "keep", string(data))
+	})
+
+	t.Run("dir-to-file", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := t.TempDir()
+
+		require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "build"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "build", "old.txt"), []byte("old"), 0o644))
+		manifest, err := recordTargetRepoManifest(dstDir)
+		require.NoError(t, err)
+
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "build", "host-only.txt"), []byte("keep"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "build"), []byte("file-now"), 0o644))
+
+		err = syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "build")
+
+		data, rErr := os.ReadFile(filepath.Join(dstDir, "build", "host-only.txt"))
+		require.NoError(t, rErr)
+		assert.Equal(t, "keep", string(data))
+	})
+}
+
+func TestSyncTargetRepoDirWithManifest_SkipsUnsafeSourceSymlinks(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	manifest, err := recordTargetRepoManifest(dstDir)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "real.txt"), []byte("ok"), 0o644))
+	require.NoError(t, os.Symlink("real.txt", filepath.Join(srcDir, "safe-link")))
+	require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(srcDir, "abs-link")))
+	require.NoError(t, os.Symlink("../../outside", filepath.Join(srcDir, "escape-link")))
+
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest))
+
+	target, err := os.Readlink(filepath.Join(dstDir, "safe-link"))
+	require.NoError(t, err)
+	assert.Equal(t, "real.txt", target)
+
+	_, err = os.Lstat(filepath.Join(dstDir, "abs-link"))
+	assert.True(t, os.IsNotExist(err), "absolute source symlink must be skipped during sync")
+	_, err = os.Lstat(filepath.Join(dstDir, "escape-link"))
+	assert.True(t, os.IsNotExist(err), "repo-escaping source symlink must be skipped during sync")
+}
+
+func TestSyncTargetRepoDirWithManifest_ProtectsConcurrentHostEditsAndDeletions(t *testing.T) {
+	t.Run("concurrent-edit-refused", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := t.TempDir()
+
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "notes.txt"), []byte("initial"), 0o644))
+		manifest, err := recordTargetRepoManifest(dstDir)
+		require.NoError(t, err)
+
+		// Developer edits notes.txt on host while agent writes a conflicting copy.
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "notes.txt"), []byte("host-edit"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "notes.txt"), []byte("agent-edit"), 0o644))
+
+		err = syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "notes.txt")
+
+		data, rErr := os.ReadFile(filepath.Join(dstDir, "notes.txt"))
+		require.NoError(t, rErr)
+		assert.Equal(t, "host-edit", string(data))
+	})
+
+	t.Run("concurrent-host-deletion-preserved-when-sandbox-unchanged", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := t.TempDir()
+
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "obsolete.txt"), []byte("same"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "host-modified.txt"), []byte("v1"), 0o644))
+		manifest, err := recordTargetRepoManifest(dstDir)
+		require.NoError(t, err)
+
+		// Host deletes obsolete.txt and edits host-modified.txt; sandbox left obsolete.txt untouched and removed host-modified.txt.
+		require.NoError(t, os.Remove(filepath.Join(dstDir, "obsolete.txt")))
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "host-modified.txt"), []byte("host-v2"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "obsolete.txt"), []byte("same"), 0o644))
+
+		require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest))
+
+		_, statErr := os.Lstat(filepath.Join(dstDir, "obsolete.txt"))
+		assert.True(t, os.IsNotExist(statErr), "host deletion should be preserved when sandbox file was unchanged")
+
+		data, rErr := os.ReadFile(filepath.Join(dstDir, "host-modified.txt"))
+		require.NoError(t, rErr)
+		assert.Equal(t, "host-v2", string(data), "concurrently modified host file must not be pruned")
+	})
+}
+
+func TestSyncTargetRepoDirWithManifest_PermissionClamping(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "secret.txt"), []byte("old"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "script.sh"), []byte("#!/bin/sh"), 0o644))
+	manifest, err := recordTargetRepoManifest(dstDir)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "secret.txt"), []byte("new"), 0o666))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "script.sh"), []byte("#!/bin/sh\necho x"), 0o777))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "created-ro.txt"), []byte("x"), 0o666))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "created-exec.sh"), []byte("#!/bin/sh"), 0o777))
+	// os.WriteFile applies process umask; explicitly set 0666/0777 in srcDir to simulate wide agent chmods.
+	require.NoError(t, os.Chmod(filepath.Join(srcDir, "secret.txt"), 0o666))
+	require.NoError(t, os.Chmod(filepath.Join(srcDir, "script.sh"), 0o777))
+	require.NoError(t, os.Chmod(filepath.Join(srcDir, "created-ro.txt"), 0o666))
+	require.NoError(t, os.Chmod(filepath.Join(srcDir, "created-exec.sh"), 0o777))
+
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest))
+
+	secInfo, err := os.Stat(filepath.Join(dstDir, "secret.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), secInfo.Mode().Perm(), "existing 0600 file must not widen to 0666")
+
+	scrInfo, err := os.Stat(filepath.Join(dstDir, "script.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), scrInfo.Mode().Perm(), "existing 0644 file must keep non-exec bits and gain exec")
+
+	newRoInfo, err := os.Stat(filepath.Join(dstDir, "created-ro.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), newRoInfo.Mode().Perm(), "new file must have group/world write bits masked")
+
+	newExecInfo, err := os.Stat(filepath.Join(dstDir, "created-exec.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), newExecInfo.Mode().Perm(), "new executable file must have group/world write bits masked")
+}
+
+func TestSyncTargetRepoDirWithManifest_RestoresReadOnlyDirsOnMidWalkError(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	t.Cleanup(func() {
+		_ = os.Chmod(dstDir, 0o755)
+		_ = os.Chmod(filepath.Join(dstDir, "rodir"), 0o755)
+		_ = os.Chmod(filepath.Join(dstDir, "rodir", "sub"), 0o755)
+	})
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dstDir, "rodir", "sub", ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "rodir", "sub", ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+	require.NoError(t, os.Chmod(filepath.Join(dstDir, "rodir", "sub"), 0o555))
+	require.NoError(t, os.Chmod(filepath.Join(dstDir, "rodir"), 0o555))
+	require.NoError(t, os.Chmod(dstDir, 0o555))
+
+	manifest, err := recordTargetRepoManifest(dstDir)
+	require.NoError(t, err)
+
+	// Sandbox attempts to replace rodir/sub (ancestor of nested .git) with a regular file -> fails mid-walk.
+	require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "rodir"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "rodir", "sub"), []byte("conflict"), 0o644))
+
+	err = syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ancestor of excluded path")
+
+	rootInfo, statErr := os.Stat(dstDir)
+	require.NoError(t, statErr)
+	assert.Equal(t, os.FileMode(0o555), rootInfo.Mode().Perm())
+
+	roDirInfo, statErr := os.Stat(filepath.Join(dstDir, "rodir"))
+	require.NoError(t, statErr)
+	assert.Equal(t, os.FileMode(0o555), roDirInfo.Mode().Perm(), "deferred cleanup must restore read-only directory on error")
 }

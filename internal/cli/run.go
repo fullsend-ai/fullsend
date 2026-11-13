@@ -2458,7 +2458,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// top-level directory from the tarball and git exclude so host telemetry
 	// is not uploaded or committed. GHA keeps output as a sibling, so Rel
 	// fails IsLocal and nothing is excluded.
-	var preRunSyncManifest map[string]bool
+	var preRunSyncManifest map[string]string
 	var preRunSyncManifestErr error
 	if overrides.syncTargetRepo {
 		preRunSyncManifest, preRunSyncManifestErr = recordTargetRepoManifest(hostRepositoryDir)
@@ -6319,9 +6319,9 @@ func runTargetRepoSync(
 	syncEnabled, repoExtractedOK, hasValidationLoop, validationPassed, timedOut, transcriptErr bool,
 	exitCode int, exitReason string, validatedIter, runCount int,
 	downloadDir, targetDir, outputBase string,
-	runnerInjectedExcludes []string, preRunManifest map[string]bool,
+	runnerInjectedExcludes []string, preRunManifest map[string]string,
 	printer *ui.Printer,
-	syncFn func(srcDir, dstDir string, excludes []string, preRunManifest map[string]bool) error,
+	syncFn func(srcDir, dstDir string, excludes []string, preRunManifest map[string]string) error,
 ) string {
 	if !syncEnabled {
 		return ""
@@ -6353,19 +6353,19 @@ func runTargetRepoSync(
 }
 
 // recordTargetRepoManifest snapshots all relative paths inside repoDir (excluding
-// any .git subtree) before sandbox upload so the prune pass can avoid deleting
-// host-only files created while the agent was running.
-func recordTargetRepoManifest(repoDir string) (map[string]bool, error) {
+// any .git subtree, matched case-insensitively) before sandbox upload so sync
+// can detect deletions, preserve host-only entries, and avoid overwriting concurrent host edits.
+func recordTargetRepoManifest(repoDir string) (map[string]string, error) {
 	absRepo, err := filepath.Abs(repoDir)
 	if err != nil {
 		return nil, err
 	}
-	manifest := make(map[string]bool)
+	manifest := make(map[string]string)
 	err = filepath.WalkDir(absRepo, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if d.Name() == ".git" {
+		if strings.EqualFold(d.Name(), ".git") {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -6376,7 +6376,15 @@ func recordTargetRepoManifest(repoDir string) (map[string]bool, error) {
 			return err
 		}
 		if rel != "." {
-			manifest[rel] = true
+			info, infoErr := d.Info()
+			if infoErr != nil {
+				return infoErr
+			}
+			digest, digestErr := computeHostEntryDigest(path, info)
+			if digestErr != nil {
+				return digestErr
+			}
+			manifest[rel] = digest
 		}
 		return nil
 	})
@@ -6384,6 +6392,136 @@ func recordTargetRepoManifest(repoDir string) (map[string]bool, error) {
 		return nil, err
 	}
 	return manifest, nil
+}
+
+func sha256HexBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+func computeHostEntryDigest(path string, info os.FileInfo) (string, error) {
+	if info.IsDir() {
+		return "dir", nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		return "symlink:" + target, nil
+	}
+	if info.Mode().IsRegular() {
+		f, err := os.Open(path)
+		if err != nil {
+			return "", err
+		}
+		defer f.Close()
+		h := sha256.New()
+		if _, err := io.Copy(h, f); err != nil {
+			return "", err
+		}
+		return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+	}
+	return "other", nil
+}
+
+func hasConcurrentHostEdit(targetPath, rel string, dstInfo os.FileInfo, preRunManifest map[string]string) (bool, error) {
+	if preRunManifest == nil {
+		return false, nil
+	}
+	recorded, ok := preRunManifest[rel]
+	if !ok {
+		return true, nil
+	}
+	curDigest, err := computeHostEntryDigest(targetPath, dstInfo)
+	if err != nil {
+		return false, err
+	}
+	return curDigest != recorded, nil
+}
+
+func checkCanReplaceHostTarget(targetPath, rel string, preRunManifest map[string]string) error {
+	fi, err := os.Lstat(targetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if fi.IsDir() {
+		if preRunManifest != nil {
+			return filepath.WalkDir(targetPath, func(subPath string, d os.DirEntry, walkErr error) error {
+				if walkErr != nil {
+					if os.IsNotExist(walkErr) {
+						return nil
+					}
+					return walkErr
+				}
+				if subPath == targetPath {
+					return nil
+				}
+				sub, relErr := filepath.Rel(targetPath, subPath)
+				if relErr != nil {
+					return relErr
+				}
+				subRel := filepath.Join(rel, sub)
+				info, infoErr := d.Info()
+				if infoErr != nil {
+					if os.IsNotExist(infoErr) {
+						return nil
+					}
+					return infoErr
+				}
+				changed, chkErr := hasConcurrentHostEdit(subPath, subRel, info, preRunManifest)
+				if chkErr != nil {
+					return chkErr
+				}
+				if changed {
+					return fmt.Errorf("refusing to replace directory %q containing host-only or concurrently modified entry %q", rel, subRel)
+				}
+				return nil
+			})
+		}
+		return nil
+	}
+	changed, err := hasConcurrentHostEdit(targetPath, rel, fi, preRunManifest)
+	if err != nil {
+		return err
+	}
+	if changed {
+		return fmt.Errorf("refusing to replace concurrently modified host entry %q", rel)
+	}
+	return nil
+}
+
+func checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel string) error {
+	probe := targetPath
+	var suffix []string
+	for {
+		resolved, err := filepath.EvalSymlinks(probe)
+		if err == nil {
+			resolvedPath := resolved
+			if len(suffix) > 0 {
+				resolvedPath = filepath.Join(append([]string{resolved}, suffix...)...)
+			}
+			relFromRoot, relErr := filepath.Rel(absDstResolved, resolvedPath)
+			if relErr == nil && relFromRoot != "." && relFromRoot != ".." && !strings.HasPrefix(relFromRoot, ".."+string(filepath.Separator)) {
+				if hasGitPathSegment(relFromRoot) {
+					return fmt.Errorf("refusing to access resolved path inside protected .git directory for %q", rel)
+				}
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return nil
+		}
+		parent := filepath.Dir(probe)
+		if parent == probe {
+			return nil
+		}
+		suffix = append([]string{filepath.Base(probe)}, suffix...)
+		probe = parent
+	}
 }
 
 // wouldSanitizeStripSymlink reports whether linkPath would have been removed by
@@ -6425,10 +6563,14 @@ type pruneDirEntry struct {
 // and preRunManifest (such as host-only files created during an agent run) are preserved,
 // and symlinks that sanitizeDownload strips are never pruned. When preRunManifest is nil,
 // pruning is disabled (fail-closed) so no host entries are deleted.
-func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, preRunManifest map[string]bool) error {
+func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, preRunManifest map[string]string) error {
 	absSrc, err := filepath.Abs(srcDir)
 	if err != nil {
 		return fmt.Errorf("resolving source directory: %w", err)
+	}
+	absSrcResolved := absSrc
+	if resolved, evalErr := filepath.EvalSymlinks(absSrc); evalErr == nil {
+		absSrcResolved = resolved
 	}
 	absDst, err := filepath.Abs(dstDir)
 	if err != nil {
@@ -6466,9 +6608,9 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 		if walkErr != nil {
 			return nil
 		}
-		if d.Name() == ".git" {
+		if strings.EqualFold(d.Name(), ".git") {
 			rel, rerr := filepath.Rel(absDst, path)
-			if rerr == nil && rel != "." && rel != ".git" {
+			if rerr == nil && rel != "." && !strings.EqualFold(rel, ".git") {
 				allExcludes = append(allExcludes, rel)
 			}
 			if d.IsDir() {
@@ -6479,8 +6621,34 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 	})
 
 	// Track directory permissions separately so pre-existing read-only host directories
-	// (or new directories in a read-only host root) are restored only after child writes and prunes finish.
+	// (or new directories in a read-only host root) and chmodded prune dirs are restored
+	// deepest-first on all return paths (including mid-walk errors).
 	var dirPerms []dirPermEntry
+	var dirsToPrune []pruneDirEntry
+	defer func() {
+		var pending []dirPermEntry
+		pending = append(pending, dirPerms...)
+		for _, dp := range dirsToPrune {
+			if dp.chmodded {
+				pending = append(pending, dirPermEntry{path: dp.path, perm: dp.origPerm})
+			}
+		}
+		if len(pending) == 0 {
+			return
+		}
+		sep := string(filepath.Separator)
+		sort.SliceStable(pending, func(i, j int) bool {
+			di := strings.Count(pending[i].path, sep)
+			dj := strings.Count(pending[j].path, sep)
+			if di != dj {
+				return di > dj
+			}
+			return len(pending[i].path) > len(pending[j].path)
+		})
+		for _, entry := range pending {
+			_ = os.Chmod(entry.path, entry.perm)
+		}
+	}()
 
 	// 1. Copy / update all files from srcDir to dstDir (skipping excludes).
 	err = filepath.WalkDir(absSrc, func(path string, d os.DirEntry, walkErr error) error {
@@ -6504,6 +6672,15 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 		targetPath := filepath.Join(absDst, rel)
 
 		if d.Type()&os.ModeSymlink != 0 {
+			if isAncestorOfExcludedPath(rel, allExcludes) {
+				return fmt.Errorf("cannot replace ancestor of excluded path %q with symlink", rel)
+			}
+			if wouldSanitizeStripSymlink(path, absSrcResolved) {
+				return nil
+			}
+			if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
+				return err
+			}
 			target, readErr := os.Readlink(path)
 			if readErr != nil {
 				return readErr
@@ -6513,10 +6690,12 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 					return nil
 				}
 			}
-			if isAncestorOfExcludedPath(rel, allExcludes) {
-				return fmt.Errorf("cannot replace ancestor of excluded path %q with symlink", rel)
+			if err := checkCanReplaceHostTarget(targetPath, rel, preRunManifest); err != nil {
+				return err
 			}
-			_ = os.RemoveAll(targetPath)
+			if err := os.RemoveAll(targetPath); err != nil && !os.IsNotExist(err) {
+				return err
+			}
 			if err := os.Symlink(target, targetPath); err != nil {
 				return err
 			}
@@ -6524,6 +6703,9 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 		}
 
 		if d.IsDir() {
+			if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
+				return err
+			}
 			if fi, statErr := os.Lstat(targetPath); statErr == nil {
 				if fi.IsDir() {
 					origPerm := fi.Mode().Perm()
@@ -6537,6 +6719,9 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 				}
 				if isAncestorOfExcludedPath(rel, allExcludes) {
 					return fmt.Errorf("cannot replace ancestor of excluded path %q with directory", rel)
+				}
+				if err := checkCanReplaceHostTarget(targetPath, rel, preRunManifest); err != nil {
+					return err
 				}
 				if err := os.Remove(targetPath); err != nil {
 					return err
@@ -6562,10 +6747,16 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 			return nil
 		}
 
+		if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
+			return err
+		}
 		dstInfo, dstStatErr := os.Lstat(targetPath)
 		if dstStatErr == nil && !dstInfo.Mode().IsRegular() {
 			if isAncestorOfExcludedPath(rel, allExcludes) {
 				return fmt.Errorf("cannot replace ancestor of excluded path %q with file", rel)
+			}
+			if err := checkCanReplaceHostTarget(targetPath, rel, preRunManifest); err != nil {
+				return err
 			}
 			if err := os.RemoveAll(targetPath); err != nil {
 				return err
@@ -6582,18 +6773,32 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 		}
 		wantPerm := info.Mode().Perm()
 		if dstStatErr == nil && dstInfo.Mode().IsRegular() {
-			if dstInfo.Mode().Perm()&0o200 != 0 && wantPerm&0o200 == 0 {
-				// Sandbox files may have write bits stripped by readonly_repo; keep the
-				// host file's non-exec bits while propagating executable-bit changes.
-				wantPerm = (dstInfo.Mode().Perm() &^ 0o111) | (wantPerm & 0o111)
+			// Git only tracks the executable bit; always keep the existing host file's
+			// non-exec permissions while propagating executable-bit changes from sandbox.
+			wantPerm = (dstInfo.Mode().Perm() &^ 0o111) | (wantPerm & 0o111)
+		} else {
+			wantPerm &^= 0o022
+			if !rootReadOnly && wantPerm&0o200 == 0 {
+				wantPerm |= 0o200
 			}
-		} else if !rootReadOnly && wantPerm&0o200 == 0 {
-			wantPerm |= 0o200
+		}
+		if os.IsNotExist(dstStatErr) && preRunManifest != nil {
+			if recorded, ok := preRunManifest[rel]; ok && strings.HasPrefix(recorded, "sha256:") {
+				if "sha256:"+sha256HexBytes(data) == recorded {
+					// Sandbox copy is unchanged since upload while the user deleted the host file; preserve the host deletion.
+					return nil
+				}
+			}
 		}
 		if dstStatErr == nil && dstInfo.Mode().IsRegular() && dstInfo.Size() == info.Size() {
 			if dstData, dstErr := os.ReadFile(targetPath); dstErr == nil && bytes.Equal(data, dstData) {
 				if dstInfo.Mode().Perm() == wantPerm {
 					return nil
+				}
+				if changed, chkErr := hasConcurrentHostEdit(targetPath, rel, dstInfo, preRunManifest); chkErr != nil {
+					return chkErr
+				} else if changed {
+					return fmt.Errorf("refusing to overwrite concurrently modified host file %q", rel)
 				}
 				if !hasMultipleLinks(dstInfo) {
 					if err := os.Chmod(targetPath, wantPerm); err != nil {
@@ -6601,6 +6806,13 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 					}
 					return nil
 				}
+			}
+		}
+		if dstStatErr == nil && dstInfo.Mode().IsRegular() {
+			if changed, chkErr := hasConcurrentHostEdit(targetPath, rel, dstInfo, preRunManifest); chkErr != nil {
+				return chkErr
+			} else if changed {
+				return fmt.Errorf("refusing to overwrite concurrently modified host file %q", rel)
 			}
 		}
 		if err := writeAtomicFile(targetPath, data, wantPerm); err != nil {
@@ -6614,10 +6826,9 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 	}
 
 	// 2. Prune files from dstDir that do not exist in srcDir (skipping excludes,
-	// sanitizer-stripped symlinks, and host-only entries created after upload).
+	// sanitizer-stripped symlinks, and host-only or concurrently modified entries).
 	// Fail closed if preRunManifest is nil so a snapshot failure never deletes host files.
 	if preRunManifest != nil {
-		var dirsToPrune []pruneDirEntry
 		err = filepath.WalkDir(absDst, func(path string, d os.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				if os.IsNotExist(walkErr) {
@@ -6647,8 +6858,14 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 				if d.Type()&os.ModeSymlink != 0 && wouldSanitizeStripSymlink(path, absDstResolved) {
 					return nil
 				}
-				if !preRunManifest[rel] {
+				if _, ok := preRunManifest[rel]; !ok {
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
 					return nil
+				}
+				if err := checkPathNotUnderResolvedGit(absDstResolved, path, rel); err != nil {
+					return err
 				}
 				if d.IsDir() {
 					entry := pruneDirEntry{path: path}
@@ -6660,6 +6877,11 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 					}
 					dirsToPrune = append(dirsToPrune, entry)
 					return nil
+				}
+				if info, infoErr := d.Info(); infoErr == nil {
+					if changed, chkErr := hasConcurrentHostEdit(path, rel, info, preRunManifest); chkErr == nil && changed {
+						return nil
+					}
 				}
 				if err := os.Remove(path); err != nil {
 					return err
@@ -6680,8 +6902,10 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 				if rmErr := os.Remove(dp.path); rmErr != nil {
 					return fmt.Errorf("pruning deleted files from target repository: %w", rmErr)
 				}
+				dirsToPrune[i].chmodded = false
 			} else if dp.chmodded {
 				_ = os.Chmod(dp.path, dp.origPerm)
+				dirsToPrune[i].chmodded = false
 			}
 		}
 	}
@@ -6692,6 +6916,7 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 			return fmt.Errorf("restoring directory permissions: %w", err)
 		}
 	}
+	dirPerms = nil
 
 	return nil
 }
@@ -6734,17 +6959,40 @@ func writeAtomicFile(targetPath string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
-func isExcludedPath(relPath string, excludes []string) bool {
+func hasGitPathSegment(relPath string) bool {
 	relClean := filepath.Clean(relPath)
-	// Match any path segment named ".git" (submodules, nested git repos, root .git)
 	for _, part := range strings.Split(relClean, string(filepath.Separator)) {
-		if part == ".git" {
+		if strings.EqualFold(part, ".git") {
 			return true
 		}
 	}
+	return false
+}
+
+func hasPathPrefixFold(path, prefix string) (equal bool, strictPrefix bool) {
+	pClean := filepath.Clean(path)
+	xClean := filepath.Clean(prefix)
+	pSegs := strings.Split(pClean, string(filepath.Separator))
+	xSegs := strings.Split(xClean, string(filepath.Separator))
+	if len(pSegs) < len(xSegs) {
+		return false, false
+	}
+	for i := range xSegs {
+		if !strings.EqualFold(pSegs[i], xSegs[i]) {
+			return false, false
+		}
+	}
+	return len(pSegs) == len(xSegs), len(pSegs) > len(xSegs)
+}
+
+func isExcludedPath(relPath string, excludes []string) bool {
+	// Match any path segment named ".git" case-insensitively (submodules, nested git repos, root .git)
+	if hasGitPathSegment(relPath) {
+		return true
+	}
 	for _, ex := range excludes {
-		exClean := filepath.Clean(ex)
-		if relClean == exClean || strings.HasPrefix(relClean, exClean+string(filepath.Separator)) {
+		eq, sub := hasPathPrefixFold(relPath, ex)
+		if eq || sub {
 			return true
 		}
 	}
@@ -6752,10 +7000,9 @@ func isExcludedPath(relPath string, excludes []string) bool {
 }
 
 func isAncestorOfExcludedPath(relPath string, excludes []string) bool {
-	relClean := filepath.Clean(relPath)
 	for _, ex := range excludes {
-		exClean := filepath.Clean(ex)
-		if strings.HasPrefix(exClean, relClean+string(filepath.Separator)) {
+		_, strict := hasPathPrefixFold(ex, relPath)
+		if strict {
 			return true
 		}
 	}
