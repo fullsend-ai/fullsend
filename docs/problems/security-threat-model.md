@@ -63,7 +63,7 @@ The attack surface is the same as for visible prompt injection — PR descriptio
   under the actor-attributed admission and filtering boundary of [ADR 0133](../ADRs/0133-actor-attributed-data-security-boundary.md).
 - **Separation of data and instructions** — agent prompts should clearly delineate between "system instructions" and "untrusted input being analyzed"
 - **Multi-agent verification** — a reviewing agent's decision is checked by a separate security agent that specifically looks for injection patterns
-- **Principle of least privilege** — agents should have the minimum permissions needed. A reviewing agent doesn't need merge authority.
+- **Principle of least privilege** — agents should have the minimum permissions needed. A reviewing agent doesn't need merge authority. The chosen per-agent role approval and per-stage mint-level model records grants in repository config ([ADR 0163](../ADRs/0163-require-per-agent-mint-level-approval.md)).
 - **Human-in-the-loop for untrusted sources** — PRs from non-org-members could require higher scrutiny or human approval regardless
 - **Canary/tripwire patterns** — embed known-good test cases that should never change; if they do, something is wrong
 - **Immutable agent configuration** — agent system prompts and rules must not be modifiable through the same channels agents process (PRs, issues, comments)
