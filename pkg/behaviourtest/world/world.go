@@ -239,6 +239,13 @@ type World struct {
 	GatewayConfigOverridden bool
 	GatewayConfigOriginal   []byte
 
+	// ConfigImportsOverridden records that this scenario added pinned
+	// imports to config.yaml. ConfigImportsOriginal holds the complete
+	// pre-scenario file so cleanup can remove the imports and any test-only
+	// config changes before the repository slot is reused.
+	ConfigImportsOverridden bool
+	ConfigImportsOriginal   []byte
+
 	// GatewayAPIKeySecretSet records that this scenario set the enrolled
 	// repo's FULLSEND_INFERENCE_GATEWAY_API_KEY secret to the test key.
 	// CleanupScenario deletes it before the leased repo is deallocated.

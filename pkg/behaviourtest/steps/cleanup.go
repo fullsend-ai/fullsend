@@ -410,6 +410,17 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- Config import cleanup ---
+	// Restore the exact pre-scenario config after the field-specific cleanup
+	// above, so neither the pinned import nor test-only overrides persist.
+	if w.ConfigImportsOverridden {
+		if err := guardedCleanupRetry(w, "restore config after import scenario", func() error {
+			return RestoreConfigImports(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: restore config after import scenario: %v", err)
+		}
+	}
+
 	// --- Dummy script cleanup ---
 	if len(w.DummyOps) > 0 {
 		if w.Org == "" || w.RepoName == "" {
@@ -423,6 +434,24 @@ func CleanupScenario(w *world.World) {
 			}
 		}
 	}
+}
+
+// RestoreConfigImports restores the config.yaml bytes captured before an
+// import scenario and clears its snapshot after a successful commit.
+func RestoreConfigImports(w *world.World) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before config operations")
+	}
+	if !w.ConfigImportsOverridden {
+		return nil
+	}
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	if err := commitVerified(w, cfgPath, "behaviour: restore config after import scenario", w.ConfigImportsOriginal); err != nil {
+		return fmt.Errorf("restoring config: %w", err)
+	}
+	w.ConfigImportsOverridden = false
+	w.ConfigImportsOriginal = nil
+	return nil
 }
 
 // shouldRemoveArtifactDir reports whether cleanup may delete artifactDir.
