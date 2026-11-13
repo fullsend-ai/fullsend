@@ -65,10 +65,13 @@ func verifyLease(w *world.World) error {
 // forge client re-verifies it after every retry wait (a rate-limit wait
 // can outlast the lease), immediately before the mutating request of a
 // multi-step commit (after its preparatory reads, on the first attempt
-// too) and does not replay a non-idempotent request after an ambiguous
-// failure, so a replayed write never lands on a replacement holder's
-// resources; reads keep their retries, each resend re-verified by the
-// guard. Without ownership tracking it is a plain background context.
+// too) and does not replay a request that is not safe to replay
+// (anything other than GET/HEAD) after an ambiguous failure, so a
+// replayed write never lands on a replacement holder's resources — the
+// risk is the target, not the method: a resend could land on a
+// name-based target that was replaced in the meantime; reads keep their
+// retries, each resend re-verified by the guard. Without ownership
+// tracking it is a plain background context.
 func mutationCtx(w *world.World) context.Context {
 	ctx := context.Background()
 	if w.LeaseOwned == nil {
