@@ -11,7 +11,14 @@ The remaining prerequisites are forge-specific:
 **GitHub:**
 
 - **GitHub access** — repository admin for the target repository
-- **GitHub token** — the CLI uses `GH_TOKEN`, then `GITHUB_TOKEN`, then `gh auth token`. Either authenticate `gh` with the required scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference)), or create a fine-grained PAT scoped to the target repository and `export GH_TOKEN=...`; see [Configuring GitHub](configuring-github.md#prerequisites) for the required permissions. Prefer `export GH_TOKEN` over `gh auth login --with-token`, which replaces your stored `gh` login with the repo-scoped token.
+- **GitHub token** — the CLI uses `GH_TOKEN`, then `GITHUB_TOKEN`, then
+  `gh auth token`. Either authenticate `gh` with the required scopes (see
+  [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference)),
+  or create a fine-grained PAT scoped to the target repository and
+  `export GH_TOKEN=...`; see
+  [Configuring GitHub](configuring-github.md#prerequisites) for the required
+  permissions. Prefer `export GH_TOKEN` over `gh auth login --with-token`,
+  which replaces your stored `gh` login with the repo-scoped token.
 
 **GitLab:** none of the GitHub-specific prerequisites above apply — GitLab
 does not use `gh`. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
