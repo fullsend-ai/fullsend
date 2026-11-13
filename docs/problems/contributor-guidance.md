@@ -42,6 +42,8 @@ Every contribution guideline, every architecture decision record, every CODEOWNE
 1. **Humans** who learn contribution norms through word of mouth, mentorship, and institutional knowledge
 2. **AI agents** (like Claude, GitHub Copilot, or Cursor) that only have access to what's written down in the repository
 
+Because agents follow written rules rather than absorbed norms, those rules also shape what agents leave behind — including the commit history (see [commit-hygiene.md](commit-hygiene.md)).
+
 These audiences have different needs:
 
 | Audience | How they learn | What they need in documentation |
