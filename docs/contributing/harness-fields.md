@@ -327,6 +327,16 @@ are in `internal/poll/dispatch_test.go`,
 `internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/`, and
 `internal/scaffold/gitlab_fix_instruction_test.go` covers that script.
 
+The GitHub built-in stage jobs have a third builder, living in workflow YAML:
+the `Route` job of `.github/workflows/reusable-dispatch.yml` builds the
+`event_payload` it hands those jobs from the raw GitHub event, then embeds the
+same complete `NormalizedEvent` as `_normalized_event` by running
+`fullsend dispatch --print-event` on the event (bot-role resolution included),
+and each stage job writes that payload to
+`.fullsend/dispatch/event-payload.json` before invoking the agent action (see
+`docs/normative/normalized-event/v1/README.md`); the printed form is pinned to
+`buildEventPayload`'s map by the tests in `internal/cli/dispatch_test.go`.
+
 When resolving CEL-guarded overlays via `ResolveOverlays(event, forgePlatform,
 config)`, the runtime passes the normalized event as a map, or an empty map
 when the run has none (so `has()` guards are false and `event == null` never

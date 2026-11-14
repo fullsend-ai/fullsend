@@ -28,6 +28,7 @@ func newDispatchCmd() *cobra.Command {
 		eventAction  string
 		forgeToken   string
 		route        string
+		printEvent   bool
 	)
 
 	cmd := &cobra.Command{
@@ -44,6 +45,7 @@ func newDispatchCmd() *cobra.Command {
 				eventAction:  eventAction,
 				forgeToken:   forgeToken,
 				route:        route,
+				printEvent:   printEvent,
 			})
 		},
 	}
@@ -57,6 +59,7 @@ func newDispatchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&eventAction, "event-action", "", "GitHub event action")
 	cmd.Flags().StringVar(&forgeToken, "forge-token", "", "Forge API token (default: GH_TOKEN, GITHUB_TOKEN, or gh auth token)")
 	cmd.Flags().StringVar(&route, "route", "", "Decide routing for one built-in agent with a CEL route (prioritize, retro, review or triage) and print one JSON line with decision run, skip or bash; --output-driver is ignored")
+	cmd.Flags().BoolVar(&printEvent, "print-event", false, "Print the loaded event's complete normalized form as one JSON object and exit — the form buildEventPayload embeds as _normalized_event; --output-driver is ignored")
 
 	return cmd
 }
@@ -73,12 +76,22 @@ type dispatchOpts struct {
 	// route, when set, names a built-in agent (routableAgents) to decide
 	// routing for instead of producing a dispatch matrix.
 	route string
+	// printEvent, when set, prints the loaded event's complete normalized
+	// form (the map buildEventPayload embeds as _normalized_event) and
+	// exits, so workflow callers that build event payloads outside the
+	// harness matrix — the route job of reusable-dispatch.yml for the
+	// built-in stage jobs — can embed the same normalized event (#6748,
+	// AISDLC-505).
+	printEvent bool
 }
 
 func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	route := strings.ToLower(strings.TrimSpace(opts.route))
 	if _, ok := routableAgents[route]; opts.route != "" && !ok {
 		return fmt.Errorf("unsupported --route agent %q (supported: %s)", opts.route, routableAgentNames())
+	}
+	if opts.printEvent && opts.route != "" {
+		return fmt.Errorf("--print-event cannot be combined with --route")
 	}
 
 	inDriver := opts.inputDriver
@@ -122,6 +135,20 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	// the bot instead of failing the command.
 	if inDriver == "gha-event" {
 		applyBotRoleLookup(ctx, event, newDispatchBotRoleResolverFn(opts.configDir), printer)
+	}
+
+	// --print-event stops here: the printed event carries the same
+	// bot-role resolution the harness dispatch path applies, so a payload
+	// embedding it cannot smuggle an unresolved bot past a trigger that
+	// keys on actor.bot_role. The JSON is the same form buildEventPayload
+	// embeds as _normalized_event (ToMap round-trips the same marshal).
+	if opts.printEvent {
+		data, err := json.Marshal(event)
+		if err != nil {
+			return fmt.Errorf("marshaling normalized event: %w", err)
+		}
+		_, err = fmt.Fprintln(os.Stdout, string(data))
+		return err
 	}
 
 	if route != "" {
