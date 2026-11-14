@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -268,3 +270,104 @@ func TestRouteBuiltinAgent_FallbackCompanionsOnConfiguredHost(t *testing.T) {
 	assert.Contains(t, joined, "/contents/agents/review.md")
 	assert.Contains(t, joined, "/contents/skills/issue-labels")
 }
+
+// TestDispatchRouteOpts_ConfiguredHostClient checks the client `fullsend
+// dispatch --route` hands the route. With a token resolved, it must not be
+// the authenticated client runDispatch builds for event lookups (which
+// follows GITHUB_API_URL on its own): a GITHUB_API_URL that GITHUB_SERVER_URL
+// does not confirm receives no request and no token, while an agreeing pair
+// routes the fallback's ref lookup and reads there with the token.
+func TestDispatchRouteOpts_ConfiguredHostClient(t *testing.T) {
+	commentOnly := strings.TrimPrefix(routeTestCommentOnlyTrigger, "trigger: >\n")
+	sha := strings.Repeat("e5f6a7b8", 5)
+	newHost := func(t *testing.T) *agentsRepoHostServer {
+		t.Helper()
+		return newAgentsRepoHostServer(t, sha, map[string][]byte{
+			"harness/review.yaml": []byte("agent: agents/review.md\nrole: code\n"),
+			"agents/review.md":    []byte("# review\n"),
+		})
+	}
+	buildOpts := func(t *testing.T, srv *agentsRepoHostServer) routeOpts {
+		t.Helper()
+		dir := writeRouteFixture(t, routeFixture{
+			allowlist: []string{srv.URL + "/fullsend-ai/agents/raw/"},
+			agents:    []config.AgentEntry{{Name: "review", Trigger: commentOnly}},
+		})
+		return newDispatchRouteOpts(
+			dispatchOpts{configDir: dir, forgeToken: "route-token"},
+			"review", routeEvent(t, routeTriageReviewComment), nil, ui.New(io.Discard))
+	}
+
+	for _, tc := range []struct {
+		name   string
+		server string
+	}{
+		{name: "GITHUB_API_URL alone", server: ""},
+		{name: "GITHUB_SERVER_URL disagrees", server: "https://ghe.example.com"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newHost(t)
+			t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+			old := githubServerBaseURLFn
+			githubServerBaseURLFn = func() string { return tc.server }
+			t.Cleanup(func() { githubServerBaseURLFn = old })
+
+			opts := buildOpts(t, srv)
+			client, ok := opts.forgeClient.(*gh.LiveClient)
+			require.True(t, ok)
+			assert.Equal(t, "https://api.github.com", client.BaseURL())
+
+			// Route for real, with requests to api.github.com refused
+			// locally so the test never reaches the network. The old wiring
+			// sent the ref lookup, with the token, to the test server.
+			blockGitHubComTransport(t)
+			_, _ = routeBuiltinAgent(context.Background(), opts)
+			paths, auth := srv.requests()
+			assert.Empty(t, paths, "GITHUB_API_URL alone must not receive the route's requests")
+			assert.Empty(t, auth, "GITHUB_API_URL alone must not receive the token")
+		})
+	}
+
+	t.Run("server and API agree", func(t *testing.T) {
+		srv := newHost(t)
+		useConfiguredGitHubHost(t, srv.URL)
+
+		opts := buildOpts(t, srv)
+		client, ok := opts.forgeClient.(*gh.LiveClient)
+		require.True(t, ok)
+		assert.Equal(t, srv.URL+"/api/v3", client.BaseURL())
+
+		got, err := routeBuiltinAgent(context.Background(), opts)
+		require.NoError(t, err)
+		assert.Equal(t, "actor not authorized", got.Reason,
+			"the fallback harness loaded from the configured host, so its role: denied the triage actor")
+		paths, auth := srv.requests()
+		assert.Contains(t, paths, "/api/v3/repos/fullsend-ai/agents/git/ref/heads/main")
+		require.NotEmpty(t, auth)
+		for _, a := range auth {
+			assert.Contains(t, a, "route-token")
+		}
+	})
+}
+
+// blockGitHubComTransport makes requests to api.github.com fail locally for
+// the rest of the test, so a route that addresses github.com never reaches
+// the network; every other host goes through the original transport. The
+// LiveClient's http.Client has no Transport of its own, so it uses
+// http.DefaultTransport. Not for use from parallel tests.
+func blockGitHubComTransport(t *testing.T) {
+	t.Helper()
+	orig := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if strings.EqualFold(r.URL.Hostname(), "api.github.com") {
+			return nil, errors.New("api.github.com blocked in test")
+		}
+		return orig.RoundTrip(r)
+	})
+	t.Cleanup(func() { http.DefaultTransport = orig })
+}
+
+// roundTripFunc adapts a function to http.RoundTripper.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

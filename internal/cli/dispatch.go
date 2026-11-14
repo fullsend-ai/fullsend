@@ -92,6 +92,33 @@ func newDispatchFetchPolicy(forgeToken string) fetch.FetchPolicy {
 	return withAgentsRepoHostAllowed(fetch.DefaultPolicy, newConfiguredHostGitHubClient(token))
 }
 
+// newDispatchRouteOpts returns the options `fullsend dispatch --route`
+// routes with. The route gets its own agents-repo client from
+// newConfiguredHostGitHubClient rather than the authenticated client
+// runDispatch uses for event and bot-role lookups: that one follows
+// GITHUB_API_URL on its own, and the route sends the token in the
+// fallback's ref lookup, so it stays on api.github.com unless
+// GITHUB_SERVER_URL and GITHUB_API_URL name the same instance. The token
+// is optional, as fullsend-ai/agents is public.
+func newDispatchRouteOpts(opts dispatchOpts, route string, event *normevent.Event, fetchPolicy *fetch.FetchPolicy, printer *ui.Printer) routeOpts {
+	token, err := resolveGitHubToken(opts.forgeToken)
+	if err != nil {
+		token = ""
+	}
+	client := newConfiguredHostGitHubClient(token)
+	if testAfterFunc != nil {
+		client = client.WithAfterFunc(testAfterFunc)
+	}
+	return routeOpts{
+		agent:       route,
+		configDir:   opts.configDir,
+		event:       event,
+		forgeClient: client,
+		fetchPolicy: fetchPolicy,
+		printer:     printer,
+	}
+}
+
 func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	route := strings.ToLower(strings.TrimSpace(opts.route))
 	if _, ok := routableAgents[route]; opts.route != "" && !ok {
@@ -151,14 +178,7 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	}
 
 	if route != "" {
-		decision, err := routeBuiltinAgent(ctx, routeOpts{
-			agent:       route,
-			configDir:   opts.configDir,
-			event:       event,
-			forgeClient: client,
-			fetchPolicy: &dispatchFetchPolicy,
-			printer:     printer,
-		})
+		decision, err := routeBuiltinAgent(ctx, newDispatchRouteOpts(opts, route, event, &dispatchFetchPolicy, printer))
 		if err != nil {
 			return err
 		}
