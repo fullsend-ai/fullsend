@@ -63,12 +63,21 @@ func TestNewDispatchFetchPolicy(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 
 	t.Run("github.com keeps the default domains", func(t *testing.T) {
+		t.Setenv("GITHUB_SERVER_URL", "")
 		t.Setenv("GITHUB_API_URL", "")
 		policy := newDispatchFetchPolicy("")
 		assert.Equal(t, fetch.DefaultPolicy.AllowedDomains, policy.AllowedDomains)
 	})
 
+	t.Run("an API URL alone admits nothing", func(t *testing.T) {
+		t.Setenv("GITHUB_SERVER_URL", "")
+		t.Setenv("GITHUB_API_URL", "https://ghe.example.com/api/v3")
+		policy := newDispatchFetchPolicy("")
+		assert.Equal(t, fetch.DefaultPolicy.AllowedDomains, policy.AllowedDomains)
+	})
+
 	t.Run("the configured host is admitted", func(t *testing.T) {
+		t.Setenv("GITHUB_SERVER_URL", "https://ghe.example.com")
 		t.Setenv("GITHUB_API_URL", "https://ghe.example.com/api/v3")
 		policy := newDispatchFetchPolicy("")
 		assert.Equal(t, append([]string{}, fetch.DefaultPolicy.AllowedDomains...), policy.AllowedDomains[:len(fetch.DefaultPolicy.AllowedDomains)])
@@ -214,7 +223,7 @@ func TestRouteBuiltinAgent_FallbackCompanionsOnConfiguredHost(t *testing.T) {
 		"skills/issue-labels/SKILL.md":   []byte("# issue labels\n"),
 		"skills/issue-labels/labels.txt": []byte("bug\ndocumentation\n"),
 	})
-	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	useConfiguredGitHubHost(t, srv.URL)
 
 	// A fresh config dir per case: the fetch cache lives under it, so the
 	// second case starts cold and its requests are attributable.

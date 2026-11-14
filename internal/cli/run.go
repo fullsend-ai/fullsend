@@ -170,11 +170,17 @@ var defaultAgentsRepoKnownAgents = func() map[string]bool {
 var statusMintToken = mintclient.MintToken
 
 // statusNewForgeClientFn constructs the GitHub client for status comments.
-// It addresses the configured GitHub host (GITHUB_API_URL), so a run on a
-// host other than github.com posts its status there.
+// It stays on api.github.com unless GITHUB_SERVER_URL names another GitHub
+// instance and GITHUB_API_URL is that instance's API (statusGitHubAPIURL),
+// so a run on such a host posts its status there while the write-scoped
+// token can never be redirected by GITHUB_API_URL alone.
 // Override in tests to capture status writes without calling GitHub.
 var statusNewForgeClientFn = func(token string) forge.Client {
-	return newGitHubLiveClient(token, "")
+	client := gh.New(token)
+	if base := statusGitHubAPIURL(); base != "" {
+		client = client.WithBaseURL(base)
+	}
+	return client
 }
 
 // agentWorkingDirExcludes lists fullsend-reserved directory patterns that
@@ -671,8 +677,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// fallback. Always create a GitHub client for the agents-repo fallback —
 	// fullsend-ai/agents is public, so unauthenticated requests work when no
 	// GitHub token is available (e.g., on GitLab pipelines). The client
-	// addresses the configured GitHub host (GITHUB_API_URL), so on a host
-	// other than github.com the fallback resolves the agents repo there.
+	// addresses the configured GitHub host (GITHUB_API_URL); when that is the
+	// API of the GITHUB_SERVER_URL instance, the fallback resolves and reads
+	// the agents repo there (agentsRepoHostURLPrefix).
 	fallbackForgeClient := newGitHubLiveClient(composeGitToken, "")
 	// The configured host serves raw content from itself, so allow it in the
 	// fetch policy too; the default policy names only github.com hosts.
@@ -7957,22 +7964,23 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 // agentsRepoHostURLPrefix returns the raw-content URL prefix of
 // fullsend-ai/agents on the GitHub host forgeClient addresses, in the
 // https://<host>/<owner>/<repo>/raw/ form that host serves raw files from.
-// It returns "" when the client addresses github.com (the default API URL)
-// or is not a GitHub API client, in which case the agents repo is fetched
-// from defaultAgentsRepoURLPrefix. A GitHub Enterprise Server API base
-// (<host>/api/v3) maps back to its instance URL.
+// The host is the GITHUB_SERVER_URL instance (githubServerBaseURLFn), the
+// same value the default allowed_remote_resources entries are built from,
+// so the prefix, the fetch-policy host and the allowlist agree. It returns
+// "" — the agents repo is then fetched from defaultAgentsRepoURLPrefix —
+// when no non-github.com instance is configured, when forgeClient is not a
+// GitHub API client, or when the client's API is not that instance's API
+// (<server>/api/v3 or api.<host>).
 func agentsRepoHostURLPrefix(forgeClient forge.Client) string {
 	client, ok := forgeClient.(*gh.LiveClient)
 	if !ok || client == nil {
 		return ""
 	}
-	base := strings.TrimRight(strings.TrimSpace(client.BaseURL()), "/")
-	// gh.New's base URL is the github.com API default.
-	if base == "" || strings.EqualFold(base, gh.New("").BaseURL()) {
+	server := githubServerBaseURLFn()
+	if githubAPIURLForServer(server, client.BaseURL()) == "" {
 		return ""
 	}
-	instance := strings.TrimSuffix(base, "/api/v3")
-	return instance + "/" + defaultAgentsRepoOwner + "/" + defaultAgentsRepoName + "/raw/"
+	return server + "/" + defaultAgentsRepoOwner + "/" + defaultAgentsRepoName + "/raw/"
 }
 
 // withAgentsRepoHostAllowed returns policy extended to permit fetching from

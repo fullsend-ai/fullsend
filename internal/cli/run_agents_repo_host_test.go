@@ -25,30 +25,161 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
+// useConfiguredGitHubHost points the run at a GitHub instance served from
+// serverURL with its API under /api/v3: GITHUB_API_URL names that API, and
+// githubServerBaseURLFn stands in for GITHUB_SERVER_URL, because
+// config.GitHubServerBaseURL accepts only HTTPS and httptest.NewServer is
+// plain HTTP.
+func useConfiguredGitHubHost(t *testing.T, serverURL string) {
+	t.Helper()
+	t.Setenv("GITHUB_API_URL", serverURL+"/api/v3")
+	old := githubServerBaseURLFn
+	githubServerBaseURLFn = func() string { return serverURL }
+	t.Cleanup(func() { githubServerBaseURLFn = old })
+}
+
+func TestGitHubAPIURLForServer(t *testing.T) {
+	tests := []struct {
+		name   string
+		server string
+		api    string
+		want   string
+	}{
+		{name: "no server configured", server: "", api: "https://ghe.example.com/api/v3", want: ""},
+		{name: "enterprise server", server: "https://ghe.example.com", api: "https://ghe.example.com/api/v3", want: "https://ghe.example.com/api/v3"},
+		{name: "enterprise server, trailing slash", server: "https://ghe.example.com", api: "https://ghe.example.com/api/v3/", want: "https://ghe.example.com/api/v3"},
+		{name: "enterprise server, mixed case", server: "https://ghe.example.com", api: "https://GHE.Example.com/api/v3", want: "https://ghe.example.com/api/v3"},
+		{name: "enterprise server with port", server: "https://ghe.example.com:8443", api: "https://ghe.example.com:8443/api/v3", want: "https://ghe.example.com:8443/api/v3"},
+		{name: "GHE.com", server: "https://octo.ghe.com", api: "https://api.octo.ghe.com", want: "https://api.octo.ghe.com"},
+		{name: "GHE.com, mixed case", server: "https://octo.ghe.com", api: "https://API.Octo.ghe.com/", want: "https://api.octo.ghe.com"},
+		{name: "disagreeing host", server: "https://ghe.example.com", api: "https://evil.example.net/api/v3", want: ""},
+		{name: "github.com API with a GHES server", server: "https://ghe.example.com", api: "https://api.github.com", want: ""},
+		{name: "same host without the API path", server: "https://ghe.example.com", api: "https://ghe.example.com", want: ""},
+		{name: "same host, other path", server: "https://ghe.example.com", api: "https://ghe.example.com/proxy/api/v3", want: ""},
+		{name: "GHE.com style with a path", server: "https://octo.ghe.com", api: "https://api.octo.ghe.com/api/v3", want: ""},
+		{name: "port differs", server: "https://ghe.example.com", api: "https://ghe.example.com:8443/api/v3", want: ""},
+		{name: "scheme differs", server: "https://ghe.example.com", api: "http://ghe.example.com/api/v3", want: ""},
+		{name: "userinfo", server: "https://ghe.example.com", api: "https://u:p@ghe.example.com/api/v3", want: ""},
+		{name: "query", server: "https://ghe.example.com", api: "https://ghe.example.com/api/v3?x=1", want: ""},
+		{name: "empty API URL", server: "https://ghe.example.com", api: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, githubAPIURLForServer(tt.server, tt.api))
+		})
+	}
+}
+
+// TestStatusGitHubAPIURL checks that the write-scoped status client follows
+// GITHUB_API_URL only when GITHUB_SERVER_URL names another GitHub instance
+// and the API URL is that instance's API; otherwise it stays on
+// api.github.com.
+func TestStatusGitHubAPIURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		server string
+		api    string
+		want   string
+	}{
+		{name: "nothing set", want: ""},
+		{name: "API URL alone", api: "https://ghe.example.com/api/v3", want: ""},
+		{name: "github.com server, other API", server: "https://github.com", api: "https://ghe.example.com/api/v3", want: ""},
+		{name: "github.com server and API", server: "https://github.com", api: "https://api.github.com", want: ""},
+		{name: "enterprise server", server: "https://ghe.example.com", api: "https://ghe.example.com/api/v3", want: "https://ghe.example.com/api/v3"},
+		{name: "GHE.com", server: "https://Octo.ghe.com", api: "https://api.octo.ghe.com", want: "https://api.octo.ghe.com"},
+		{name: "server and API disagree", server: "https://ghe.example.com", api: "https://other.example.com/api/v3", want: ""},
+		{name: "malformed server", server: "http://ghe.example.com", api: "http://ghe.example.com/api/v3", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_SERVER_URL", tt.server)
+			t.Setenv("GITHUB_API_URL", tt.api)
+			assert.Equal(t, tt.want, statusGitHubAPIURL())
+			client, ok := statusNewForgeClientFn("t").(*gh.LiveClient)
+			require.True(t, ok)
+			want := tt.want
+			if want == "" {
+				want = "https://api.github.com"
+			}
+			assert.Equal(t, want, client.BaseURL())
+		})
+	}
+}
+
 func TestAgentsRepoHostURLPrefix(t *testing.T) {
 	tests := []struct {
 		name   string
+		server string
 		client forge.Client
 		want   string
 	}{
-		{name: "nil client", client: nil, want: ""},
-		{name: "non-GitHub client", client: forge.NewFakeClient(), want: ""},
+		{name: "nil client", server: "https://ghe.example.com", client: nil, want: ""},
+		{name: "non-GitHub client", server: "https://ghe.example.com", client: forge.NewFakeClient(), want: ""},
 		{name: "github.com default", client: gh.New("t"), want: ""},
-		{name: "github.com explicit", client: gh.New("t").WithBaseURL("https://api.github.com/"), want: ""},
+		{name: "github.com server", server: "https://github.com", client: gh.New("t").WithBaseURL("https://ghe.example.com/api/v3"), want: ""},
+		{name: "API URL without a server URL", client: gh.New("t").WithBaseURL("https://ghe.example.com/api/v3"), want: ""},
 		{
 			name:   "enterprise server API base",
+			server: "https://ghe.example.com",
 			client: gh.New("t").WithBaseURL("https://ghe.example.com/api/v3"),
 			want:   "https://ghe.example.com/fullsend-ai/agents/raw/",
 		},
 		{
-			name:   "host without API path",
-			client: gh.New("t").WithBaseURL("https://emulator.example.test/"),
-			want:   "https://emulator.example.test/fullsend-ai/agents/raw/",
+			name:   "GHE.com API host",
+			server: "https://octo.ghe.com",
+			client: gh.New("t").WithBaseURL("https://api.octo.ghe.com"),
+			want:   "https://octo.ghe.com/fullsend-ai/agents/raw/",
+		},
+		{
+			name:   "mixed-case URLs use the lowercased server host",
+			server: "https://GHE.Example.com",
+			client: gh.New("t").WithBaseURL("https://ghe.EXAMPLE.com/api/v3"),
+			want:   "https://ghe.example.com/fullsend-ai/agents/raw/",
+		},
+		{
+			name:   "client API disagrees with the server",
+			server: "https://ghe.example.com",
+			client: gh.New("t").WithBaseURL("https://other.example.com/api/v3"),
+			want:   "",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_SERVER_URL", tt.server)
 			assert.Equal(t, tt.want, agentsRepoHostURLPrefix(tt.client))
+		})
+	}
+}
+
+// TestAgentsRepoHostAgreesWithAllowlist covers the #9038 review finding: the
+// fallback's host prefix and fetch-policy host come from the same
+// GITHUB_SERVER_URL value as the default allowed_remote_resources entries,
+// so on GHE.com (API at api.<host>) or with a mixed-case URL the fallback
+// URL is still allowlisted and its host still admitted.
+func TestAgentsRepoHostAgreesWithAllowlist(t *testing.T) {
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+	tests := []struct {
+		name     string
+		server   string
+		api      string
+		wantHost string
+	}{
+		{name: "enterprise server", server: "https://ghe.example.com", api: "https://GHE.example.com/api/v3", wantHost: "ghe.example.com"},
+		{name: "GHE.com", server: "https://Octo.ghe.com", api: "https://api.octo.ghe.com", wantHost: "octo.ghe.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_SERVER_URL", tt.server)
+			t.Setenv("GITHUB_API_URL", tt.api)
+			client := newGitHubLiveClient("t", "")
+			prefix := agentsRepoHostURLPrefix(client)
+			policy := withAgentsRepoHostAllowed(fetch.DefaultPolicy, client)
+			require.NotEmpty(t, prefix)
+			assert.Contains(t, policy.AllowedDomains, tt.wantHost)
+			assert.Equal(t, "https://"+tt.wantHost+"/fullsend-ai/agents/raw/", prefix)
+			rawURL := prefix + sha + "/harness/triage.yaml"
+			assert.NotEmpty(t, harness.MatchingAllowedPrefixInList(rawURL, config.DefaultAllowedRemoteResources()),
+				"the fallback URL must be covered by the default allowlist built from the same GITHUB_SERVER_URL")
 		})
 	}
 }
@@ -124,14 +255,14 @@ func (s *agentsRepoHostServer) requests() ([]string, []string) {
 }
 
 // TestTryAgentsRepoFallback_OtherGitHubHost covers #9038: with
-// GITHUB_API_URL naming a host other than github.com, the ref lookup and the
+// GITHUB_SERVER_URL and GITHUB_API_URL naming a host other than github.com, the ref lookup and the
 // harness fetch both go to that host, and the harness is recorded under the
 // host's raw-content URL.
 func TestTryAgentsRepoFallback_OtherGitHubHost(t *testing.T) {
 	sha := "abcdef1234567890abcdef1234567890abcdef12"
 	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
 	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{"harness/triage.yaml": harnessContent})
-	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	useConfiguredGitHubHost(t, srv.URL)
 
 	client := newGitHubLiveClient("host-token", "")
 	hostPrefix := srv.URL + "/fullsend-ai/agents/raw/"
@@ -165,7 +296,7 @@ func TestTryAgentsRepoFallback_OtherGitHubHost(t *testing.T) {
 func TestTryAgentsRepoMeasurementManifest_OtherGitHubHost404(t *testing.T) {
 	sha := "abcdef1234567890abcdef1234567890abcdef12"
 	srv := newAgentsRepoHostServer(t, sha, nil)
-	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	useConfiguredGitHubHost(t, srv.URL)
 
 	var buf bytes.Buffer
 	opts := harness.ComposeOpts{
@@ -183,7 +314,7 @@ func TestTryAgentsRepoMeasurementManifest_OtherGitHubHost404(t *testing.T) {
 func TestTryAgentsRepoFallback_OtherGitHubHostSizeLimit(t *testing.T) {
 	sha := "abcdef1234567890abcdef1234567890abcdef12"
 	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{"harness/triage.yaml": []byte("agent: agents/triage.md\n")})
-	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	useConfiguredGitHubHost(t, srv.URL)
 
 	var buf bytes.Buffer
 	opts := harness.ComposeOpts{
@@ -203,7 +334,7 @@ func TestTryAgentsRepoFallback_OtherGitHubHostSizeLimit(t *testing.T) {
 func TestTryAgentsRepoFallback_OtherGitHubHostNotAllowlisted(t *testing.T) {
 	sha := "abcdef1234567890abcdef1234567890abcdef12"
 	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{"harness/triage.yaml": []byte("agent: a\n")})
-	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	useConfiguredGitHubHost(t, srv.URL)
 
 	var buf bytes.Buffer
 	opts := harness.ComposeOpts{
@@ -218,6 +349,7 @@ func TestTryAgentsRepoFallback_OtherGitHubHostNotAllowlisted(t *testing.T) {
 }
 
 func TestStatusNewForgeClientFn_HonoursGitHubAPIURL(t *testing.T) {
+	t.Setenv("GITHUB_SERVER_URL", "https://ghe.example.com")
 	t.Setenv("GITHUB_API_URL", "https://ghe.example.com/api/v3")
 	client, ok := statusNewForgeClientFn("t").(*gh.LiveClient)
 	require.True(t, ok)
@@ -243,7 +375,7 @@ func TestAgentsRepoHostFallback_LoadsCompanionFiles(t *testing.T) {
 		"policies/triage.yaml":  []byte("# triage policy"),
 		"scripts/pre-triage.sh": []byte("#!/bin/bash\necho pre\n"),
 	})
-	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	useConfiguredGitHubHost(t, srv.URL)
 
 	client := newGitHubLiveClient("host-token", "")
 	hostPrefix := srv.URL + "/fullsend-ai/agents/raw/"
@@ -291,7 +423,7 @@ func TestAgentsRepoHostFallback_LoadsDirectoryResources(t *testing.T) {
 		t.Helper()
 		files["harness/triage.yaml"] = []byte(harnessContent)
 		srv := newAgentsRepoHostServer(t, sha, files)
-		t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+		useConfiguredGitHubHost(t, srv.URL)
 		client := newGitHubLiveClient("host-token", "")
 		opts := harness.ComposeOpts{
 			WorkspaceRoot: t.TempDir(),
@@ -362,7 +494,7 @@ func TestAgentsRepoHostTreeFetcher(t *testing.T) {
 		"skills/review/SKILL.md":       []byte("# review"),
 		"skills/review/checks/lint.md": []byte("# lint"),
 	})
-	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	useConfiguredGitHubHost(t, srv.URL)
 	client := newGitHubLiveClient("host-token", "")
 	prefix := srv.URL + "/fullsend-ai/agents/raw/"
 	info, err := agentsRepoHostForgeInfo(prefix, sha, "skills/review")
@@ -443,7 +575,7 @@ func TestAgentsRepoHostURLParser(t *testing.T) {
 func TestAgentsRepoHostFileFetcher_Rejects(t *testing.T) {
 	sha := "abcdef1234567890abcdef1234567890abcdef12"
 	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{"agents/a.md": []byte("0123456789")})
-	t.Setenv("GITHUB_API_URL", srv.URL+"/api/v3")
+	useConfiguredGitHubHost(t, srv.URL)
 	client := newGitHubLiveClient("t", "")
 	prefix := srv.URL + "/fullsend-ai/agents/raw/"
 	fetcher := agentsRepoHostFileFetcher(client, prefix, fetch.FetchPolicy{MaxSizeBytes: 4})
@@ -473,6 +605,7 @@ func TestWithAgentsRepoHostAllowed(t *testing.T) {
 
 	tests := []struct {
 		name        string
+		server      string
 		client      forge.Client
 		wantDomains []string
 		wantPorts   []string
@@ -482,11 +615,13 @@ func TestWithAgentsRepoHostAllowed(t *testing.T) {
 		{name: "github.com default", client: gh.New("t"), wantDomains: defaultDomains},
 		{
 			name:        "enterprise server",
+			server:      "https://ghe.example.com",
 			client:      gh.New("t").WithBaseURL("https://ghe.example.com/api/v3"),
 			wantDomains: append(append([]string(nil), defaultDomains...), "ghe.example.com"),
 		},
 		{
 			name:        "host with port",
+			server:      "https://ghe.example.com:8443",
 			client:      gh.New("t").WithBaseURL("https://ghe.example.com:8443/api/v3"),
 			wantDomains: append(append([]string(nil), defaultDomains...), "ghe.example.com"),
 			wantPorts:   []string{"443", "8443"},
@@ -494,6 +629,7 @@ func TestWithAgentsRepoHostAllowed(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_SERVER_URL", tt.server)
 			got := withAgentsRepoHostAllowed(fetch.DefaultPolicy, tt.client)
 			assert.Equal(t, tt.wantDomains, got.AllowedDomains)
 			assert.Equal(t, tt.wantPorts, got.AllowedPorts)
@@ -505,6 +641,7 @@ func TestWithAgentsRepoHostAllowed(t *testing.T) {
 
 	t.Run("host is no longer refused by the policy", func(t *testing.T) {
 		const rawURL = "https://ghe.example.invalid/fullsend-ai/agents/raw/abc/harness/triage.yaml"
+		t.Setenv("GITHUB_SERVER_URL", "https://ghe.example.invalid")
 		client := gh.New("t").WithBaseURL("https://ghe.example.invalid/api/v3")
 
 		_, err := fetch.FetchURL(context.Background(), rawURL, fetch.DefaultPolicy)

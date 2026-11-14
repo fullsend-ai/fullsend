@@ -79,11 +79,11 @@ type dispatchOpts struct {
 // newDispatchFetchPolicy returns the fetch policy `fullsend dispatch`
 // uses when it resolves and loads harnesses, for both the dispatch matrix
 // and --route. It is the default policy extended to admit the configured
-// GitHub host, derived from the base URL of the same fallback client
-// fullsend run uses (GITHUB_API_URL and the manifest are honoured; the
-// token is optional, as fullsend-ai/agents is public and the client here
-// only names the host). On github.com the default policy is returned
-// unchanged.
+// GitHub host exactly as fullsend run does: the GITHUB_SERVER_URL
+// instance, when the fallback client's API (GITHUB_API_URL) is that
+// instance's API (the token is optional, as fullsend-ai/agents is public
+// and the client here only names the host). On github.com the default
+// policy is returned unchanged.
 func newDispatchFetchPolicy(forgeToken string) fetch.FetchPolicy {
 	token, err := resolveGitHubToken(forgeToken)
 	if err != nil {

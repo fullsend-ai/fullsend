@@ -3,11 +3,13 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 )
@@ -156,4 +158,56 @@ func githubAPIURL(instanceURL string) string {
 		return ""
 	}
 	return normalized + "/api/v3"
+}
+
+// githubServerBaseURLFn returns the configured GitHub instance URL
+// ("https://<host>", lowercased) from GITHUB_SERVER_URL, or "" for
+// github.com, an unset value or a malformed one. It is the same value the
+// default allowed_remote_resources entries are built from
+// (config.GitHubServerBaseURL), so the agents-repo fallback host and those
+// entries agree. Override in tests to point at a plain-HTTP test server,
+// which config.GitHubServerBaseURL rejects.
+var githubServerBaseURLFn = func() string {
+	return config.GitHubServerBaseURL(os.Getenv("GITHUB_SERVER_URL"))
+}
+
+// githubAPIURLForServer returns apiURL, normalised (lowercase host, no
+// trailing slash), when it is the REST API of the GitHub instance at
+// serverBase: <server>/api/v3 (GitHub Enterprise Server) or
+// <scheme>://api.<host> (GHE.com). It returns "" when serverBase is empty
+// or apiURL names any other location, so a GITHUB_API_URL that disagrees
+// with GITHUB_SERVER_URL is never followed.
+func githubAPIURLForServer(serverBase, apiURL string) string {
+	if serverBase == "" {
+		return ""
+	}
+	server, err := url.Parse(serverBase)
+	if err != nil || server.Host == "" {
+		return ""
+	}
+	api, err := url.Parse(strings.TrimSpace(apiURL))
+	if err != nil || api.Host == "" || api.User != nil || api.Opaque != "" ||
+		api.RawQuery != "" || api.Fragment != "" || !strings.EqualFold(api.Scheme, server.Scheme) {
+		return ""
+	}
+	serverHost := strings.ToLower(server.Host)
+	host := strings.ToLower(api.Host)
+	path := strings.TrimRight(api.Path, "/")
+	switch {
+	case host == serverHost && path == "/api/v3":
+	case host == "api."+serverHost && path == "":
+	default:
+		return ""
+	}
+	return strings.ToLower(server.Scheme) + "://" + host + path
+}
+
+// statusGitHubAPIURL returns the API base URL for the status comment
+// client, or "" for the github.com default. The status token is a
+// write-scoped installation token from the mint, so GITHUB_API_URL is
+// followed only when GITHUB_SERVER_URL names a non-github.com instance and
+// GITHUB_API_URL is that same instance's API. On github.com (or with the
+// two disagreeing) GITHUB_API_URL alone can never redirect the token.
+func statusGitHubAPIURL() string {
+	return githubAPIURLForServer(githubServerBaseURLFn(), os.Getenv("GITHUB_API_URL"))
 }
