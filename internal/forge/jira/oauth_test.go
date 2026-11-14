@@ -3,6 +3,7 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -492,4 +493,52 @@ func TestMintAccessToken_ErrorsNeverCarryTheSecret(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid_client")
 	assert.NotContains(t, err.Error(), testClientSecret)
 	assert.NotContains(t, err.Error(), testClientID)
+}
+
+func TestMintAccessToken_PermanentOAuthErrors(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		status    int
+		body      string
+		permanent bool
+	}{
+		{"invalid_client", http.StatusUnauthorized, `{"error":"invalid_client"}`, true},
+		{"access_denied", http.StatusForbidden, `{"error":"access_denied"}`, true},
+		{"unauthorized_client", http.StatusBadRequest, `{"error":"unauthorized_client"}`, true},
+		{"invalid_scope", http.StatusBadRequest, `{"error":"invalid_scope"}`, true},
+		{"invalid_grant", http.StatusBadRequest, `{"error":"invalid_grant"}`, true},
+		{"400 with no code", http.StatusBadRequest, `{}`, true},
+		{"401 with an unsafe code", http.StatusUnauthorized, `{"error":"Injected\nline"}`, true},
+		{"429", http.StatusTooManyRequests, `{}`, false},
+		{"429 slow_down", http.StatusTooManyRequests, `{"error":"slow_down"}`, false},
+		{"500", http.StatusInternalServerError, `{"error":"server_error"}`, false},
+		{"503 non-JSON", http.StatusServiceUnavailable, `<html>down</html>`, false},
+		{"400 with another code", http.StatusBadRequest, `{"error":"temporarily_unavailable"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newOAuthFixture(t)
+			f.status.Store(int32(tc.status))
+			f.body.Store(tc.body)
+			_, err := MintAccessToken(context.Background(), nil, f.tokenURL(),
+				Credentials{ClientID: testClientID, ClientSecret: testClientSecret})
+			require.Error(t, err)
+			var oe *OAuthError
+			require.ErrorAs(t, err, &oe)
+			assert.Equal(t, tc.status, oe.Status)
+			assert.Equal(t, tc.permanent, IsPermanentOAuthError(err))
+			assert.NotContains(t, err.Error(), testClientSecret)
+			assert.NotContains(t, err.Error(), testClientID)
+		})
+	}
+}
+
+func TestIsPermanentOAuthError_NonOAuthErrors(t *testing.T) {
+	t.Parallel()
+	assert.False(t, IsPermanentOAuthError(nil))
+	assert.False(t, IsPermanentOAuthError(context.DeadlineExceeded), "transport errors are transient")
+	wrapped := fmt.Errorf("provider %q: %w", "jira", &OAuthError{Status: http.StatusUnauthorized, Code: "invalid_client"})
+	assert.True(t, IsPermanentOAuthError(wrapped), "wrapping keeps the classification")
 }

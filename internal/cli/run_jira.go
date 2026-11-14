@@ -22,12 +22,12 @@ import (
 
 // Jira in the sandbox with a service account's OAuth 2.0 client
 // credentials (fullsend#9220). The builtin jira provider (profile
-// fullsend-jira) normally expands a static JIRA_TOKEN like any provider.
-// When that expands empty and the runner has FULLSEND_JIRA_CLIENT_ID and
-// FULLSEND_JIRA_CLIENT_SECRET, the runner mints the access token itself,
-// gives it to a run-scoped provider instance, and refreshes it before it
-// expires, as ensureOpenAIProvider does for OpenAI (ADR 0092). The client
-// secret stays in this process: it never reaches a provider value, the
+// fullsend-jira) normally expands a static token from FULLSEND_JIRA_TOKEN
+// like any provider. When that expands empty and the runner has
+// FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, the runner mints
+// the access token itself, gives it to a run-scoped provider instance, and
+// refreshes it before it expires, as ensureOpenAIProvider does for OpenAI
+// (ADR 0092). The client secret never reaches a provider value, the
 // sandbox, or a log.
 //
 // A running process keeps the placeholder it started with, and OpenShell
@@ -50,28 +50,44 @@ const jiraAPIHost = "api.atlassian.com"
 
 // Test seams.
 var (
-	// jiraMintFn performs one client_credentials grant.
+	// jiraMintFn performs one client_credentials grant. Override in tests
+	// to return fixed tokens or errors without a token endpoint.
 	jiraMintFn = func(ctx context.Context, creds jira.Credentials) (jira.AccessToken, error) {
 		return jira.MintAccessToken(ctx, nil, "", creds)
 	}
+	// ensureJiraProviderLiteralFn creates the run-scoped provider with the
+	// minted value. Override in tests to record the call without openshell.
 	ensureJiraProviderLiteralFn = sandbox.EnsureProviderLiteral
-	updateJiraProviderFn        = sandbox.UpdateProviderLiteralWithExpiry
+	// updateJiraProviderFn stores a token and its expiry on the provider.
+	// Override in tests to record or block the update without openshell.
+	updateJiraProviderFn = sandbox.UpdateProviderLiteralWithExpiry
 	// reseedJiraFn hands a new generation to the token file
-	// (reseedCredential).
+	// (reseedCredential). Override in tests to return a placeholder or
+	// error without a sandbox.
 	reseedJiraFn = reseedCredential
 	// seedJiraTokenFileFn writes the token file once the sandbox is up.
+	// Override in tests to set the recorded placeholder without a sandbox.
 	seedJiraTokenFileFn = seedJiraTokenFile
+	// jiraBaselineFn reads the placeholder the sandbox hands out now
+	// (baselinePlaceholder). Override in tests to return a placeholder
+	// without a sandbox.
+	jiraBaselineFn = baselinePlaceholder
 )
 
-// errJiraUnredactable is a refresh failure no retry can fix.
-var errJiraUnredactable = errors.New("minted Jira access token is too short to redact reliably; refusing to use it")
+// errJiraUnredactable and errJiraUnsafeToken are refresh failures no
+// retry can fix.
+var (
+	errJiraUnredactable = errors.New("minted Jira access token is too short to redact reliably; refusing to use it")
+	errJiraUnsafeToken  = errors.New("minted Jira access token has characters outside printable ASCII; refusing to use it")
+)
 
 // jiraMintCredentials decides how the jira provider pd gets its value. It
 // returns mint=false when the definition's JIRA_TOKEN expands to a value
-// (a static token, unchanged behaviour) or when no client credentials are
-// set (the provider is created as it always was). It returns the client
-// credentials and mint=true when JIRA_TOKEN expands empty and both client
-// variables are set, and an error when only one of them is.
+// (a static token: the builtin definition reads FULLSEND_JIRA_TOKEN) or
+// when no client credentials are set (the provider is created as it always
+// was). It returns the client credentials and mint=true when JIRA_TOKEN
+// expands empty and both client variables are set, and an error when only
+// one of them is.
 func jiraMintCredentials(pd harness.ProviderDef, getenv func(string) string) (jira.Credentials, bool, error) {
 	v, declared := pd.Credentials[jiraCredentialKey]
 	if !declared || !sandbox.ProviderCredentialEmpty(v) {
@@ -90,11 +106,56 @@ func jiraMintCredentials(pd harness.ProviderDef, getenv func(string) string) (ji
 	return creds, true, nil
 }
 
+// jiraRunMints reports whether any fullsend-jira definition in defs mints
+// its token. An incomplete client pair counts as not minting; the provider
+// loop reports it.
+func jiraRunMints(defs []harness.ProviderDef, getenv func(string) string) bool {
+	for _, pd := range defs {
+		if !strings.EqualFold(pd.Type, jiraProviderType) {
+			continue
+		}
+		if _, mint, err := jiraMintCredentials(pd, getenv); err == nil && mint {
+			return true
+		}
+	}
+	return false
+}
+
+// rejectMultipleMintedJiraProviders fails when a fullsend-jira definition
+// mints its token and the run lists any other definition that declares the
+// JIRA_TOKEN credential, whatever its type (for example the agents repo's
+// fullsend-jira-ro): every attached provider exports JIRA_TOKEN into the
+// sandbox, and a second minted one would also rewrite the one token file.
+func rejectMultipleMintedJiraProviders(defs []harness.ProviderDef, getenv func(string) string) error {
+	var all, minted []string
+	for _, pd := range defs {
+		if _, declared := pd.Credentials[jiraCredentialKey]; !declared {
+			continue
+		}
+		all = append(all, pd.Name)
+		if !strings.EqualFold(pd.Type, jiraProviderType) {
+			continue
+		}
+		// An incomplete pair is reported by the provider loop.
+		if _, mint, err := jiraMintCredentials(pd, getenv); err == nil && mint {
+			minted = append(minted, pd.Name)
+		}
+	}
+	if len(minted) == 0 || len(all) < 2 {
+		return nil
+	}
+	return fmt.Errorf("providers %q all declare %s and %q mints its token, but they would share %s in the sandbox and the one Jira token file (%s); list only the %s provider", all, jiraCredentialKey, minted[0], jiraCredentialKey, sandbox.SandboxJiraTokenFile, minted[0])
+}
+
 // jiraSeedState is the placeholder the token file names, shared by every
 // copy of a handle and by the refresher across restarts.
 type jiraSeedState struct {
 	mu          sync.Mutex
 	placeholder string
+	// rotateMu is held across the initial seed and marking the sandbox up,
+	// and across a refresh's provider update and its re-seed decision, so
+	// a rotation that lands after the seed always re-seeds.
+	rotateMu sync.Mutex
 }
 
 func (s *jiraSeedState) get() string {
@@ -135,15 +196,23 @@ func (h jiraProviderHandle) sandboxReady() bool {
 
 // registerJiraToken adds a minted token to the process redactor (the
 // authoritative control: the token is opaque, so no pattern can match it)
-// and, in GitHub Actions, the log mask.
-func registerJiraToken(value string, maskActions bool) bool {
+// and, in GitHub Actions, the log mask (maskActionsValue escapes it). A
+// token with a byte outside printable ASCII (0x21-0x7E) is refused first:
+// such a token is not what Atlassian issues, and refusing it keeps the
+// mask line from ever carrying a control character.
+func registerJiraToken(value string, maskActions bool) error {
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x21 || value[i] > 0x7e {
+			return errJiraUnsafeToken
+		}
+	}
 	if !security.RegisterRuntimeSecret(value) {
-		return false
+		return errJiraUnredactable
 	}
 	if maskActions {
-		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", value)
+		maskActionsValue(value)
 	}
-	return true
+	return nil
 }
 
 // ensureJiraProvider mints the first access token and creates the
@@ -156,12 +225,17 @@ func ensureJiraProvider(ctx context.Context, pd harness.ProviderDef, sandboxName
 	printer.StepStart("Minting the Jira access token for provider: " + pd.Name)
 	tok, err := jiraMintFn(ctx, creds)
 	if err != nil {
+		if jira.IsPermanentOAuthError(err) {
+			cause := jiraRejectedCause(err)
+			printer.StepFail(fmt.Sprintf("Jira %s for provider %s; check %s and %s", cause, pd.Name, jira.ClientIDEnvVar, jira.ClientSecretEnvVar))
+			return jiraProviderHandle{}, fmt.Errorf("provider %q: %s: %w", pd.Name, cause, err)
+		}
 		printer.StepFail("Jira access token unavailable for provider " + pd.Name)
 		return jiraProviderHandle{}, fmt.Errorf("provider %q: %w", pd.Name, err)
 	}
-	if !registerJiraToken(tok.Value, maskActions) {
+	if err := registerJiraToken(tok.Value, maskActions); err != nil {
 		printer.StepFail("Jira access token unusable for provider " + pd.Name)
-		return jiraProviderHandle{}, fmt.Errorf("provider %q: %w", pd.Name, errJiraUnredactable)
+		return jiraProviderHandle{}, fmt.Errorf("provider %q: %w", pd.Name, err)
 	}
 	printer.StepDone(fmt.Sprintf("Jira access token ready (OAuth 2.0 client credentials, lifetime %s)", time.Until(tok.ExpiresAt).Round(time.Minute)))
 	var ignored []string
@@ -204,6 +278,21 @@ func ensureJiraProvider(ctx context.Context, pd harness.ProviderDef, sandboxName
 		state:       &jiraSeedState{},
 		unrecorded:  &seedGenerations{},
 	}, nil
+}
+
+// jiraRejectedCause names a permanent token endpoint refusal
+// (jira.IsPermanentOAuthError) by its OAuth error code, or its status when
+// the answer had none.
+func jiraRejectedCause(err error) string {
+	detail := "no error code"
+	var oe *jira.OAuthError
+	if errors.As(err, &oe) {
+		detail = fmt.Sprintf("status %d", oe.Status)
+		if oe.Code != "" {
+			detail = oe.Code
+		}
+	}
+	return "token endpoint rejected the client credentials (" + detail + ")"
 }
 
 // discardRunScopedProvider removes a run-scoped provider whose creation did
@@ -259,6 +348,20 @@ func seedJiraTokenFile(ctx context.Context, h jiraProviderHandle, printer *ui.Pr
 	return nil
 }
 
+// seedJiraAndMarkReady seeds the token file and marks the sandbox up
+// under the handle's rotation lock, so a concurrent refresh either
+// finishes its update before the seed reads the sandbox's placeholder or
+// sees the sandbox up and re-seeds.
+func seedJiraAndMarkReady(ctx context.Context, h jiraProviderHandle, printer *ui.Printer) error {
+	h.state.rotateMu.Lock()
+	defer h.state.rotateMu.Unlock()
+	if err := seedJiraTokenFileFn(ctx, h, printer); err != nil {
+		return err
+	}
+	h.sandboxUp.Store(true)
+	return nil
+}
+
 // refreshJiraProvider mints a new access token, stores it on the provider
 // with its expiry, and, once the sandbox is up, hands the new placeholder
 // to the token file. It returns the new expiry. The mint and the update are
@@ -267,13 +370,31 @@ func seedJiraTokenFile(ctx context.Context, h jiraProviderHandle, printer *ui.Pr
 func refreshJiraProvider(ctx context.Context, h jiraProviderHandle, budget time.Duration, printer *ui.Printer) (time.Time, error) {
 	updateCtx, cancelUpdate := context.WithTimeout(ctx, budget)
 	defer cancelUpdate()
-	reseed := h.sandboxReady()
 	tok, err := jiraMintFn(updateCtx, h.creds)
 	if err != nil {
 		return time.Time{}, err
 	}
-	if !registerJiraToken(tok.Value, h.maskActions) {
-		return time.Time{}, errJiraUnredactable
+	if err := registerJiraToken(tok.Value, h.maskActions); err != nil {
+		return time.Time{}, err
+	}
+	// The lock keeps the first seed out from between the readiness check
+	// and the update.
+	h.state.rotateMu.Lock()
+	defer h.state.rotateMu.Unlock()
+	reseed := h.sandboxReady()
+	var baseline string
+	if reseed {
+		// The file may name an older generation than the sandbox hands
+		// out: a seed right after an earlier update can read the placeholder
+		// before the update reached the sandbox. Waiting only for "not what
+		// the file names" would then settle on the current generation and
+		// stay one behind, so wait for one newer than what the sandbox
+		// hands out before this update.
+		p, err := jiraBaselineFn(updateCtx, h.sandbox, jiraCredentialKey)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("reading the Jira placeholder the sandbox holds before rotating: %w", err)
+		}
+		baseline = p
 	}
 	// One update carries the value and its expiry, so the new token never
 	// sits behind the old expiry between two calls.
@@ -287,7 +408,16 @@ func refreshJiraProvider(ctx context.Context, h jiraProviderHandle, budget time.
 	}
 	settleCtx, cancelSettle := context.WithTimeout(ctx, handOffTimeout())
 	defer cancelSettle()
-	seeded, err := reseedJiraFn(settleCtx, h.sandbox, "Jira", runtime.JiraTokenSeed(), h.state.get(), h.unrecorded, nil, printer)
+	held := h.state.get()
+	var superseded []string
+	if held != baseline {
+		// Retire what the file names too, so a stale writer cannot put it back.
+		superseded = []string{held}
+	}
+	seeded, err := reseedJiraFn(settleCtx, h.sandbox, "Jira", runtime.JiraTokenSeed(), baseline, h.unrecorded, superseded, printer)
+	if err == nil && seeded == held {
+		err = errors.New("the sandbox handed out the generation the token file already names")
+	}
 	if err != nil {
 		return time.Time{}, fmt.Errorf("the provider holds the new token but the sandbox's Jira token file was not re-seeded: %w", err)
 	}
@@ -312,8 +442,9 @@ func failJiraClosed(h jiraProviderHandle, heldExpiresAt time.Time, cause error, 
 // runOpenAIRefresh: shortly before each expiry it mints a new token with
 // bounded retries, and after an exhausted round it waits
 // (openAIRefreshRoundWait) and tries again until one succeeds or the run
-// ends. A token too short to redact, a new generation that never reached
-// the sandbox, or too many unrecorded generations stop it through
+// ends. A token too short to redact or unsafe to mask, a new generation
+// that never reached the sandbox, too many unrecorded generations, or a
+// token endpoint that rejects the client credentials stop it through
 // failJiraClosed. Otherwise it runs until ctx is cancelled.
 func runJiraRefresh(ctx context.Context, h jiraProviderHandle, printer *ui.Printer) {
 	expiresAt := h.expiresAt.Round(0)
@@ -357,8 +488,13 @@ func runJiraRefresh(ctx context.Context, h jiraProviderHandle, printer *ui.Print
 					return
 				}
 				var notObserved *generationNotObservedError
-				if errors.As(err, &notObserved) || errors.Is(err, errJiraUnredactable) {
+				if errors.As(err, &notObserved) || errors.Is(err, errJiraUnredactable) || errors.Is(err, errJiraUnsafeToken) {
 					failJiraClosed(h, expiresAt, err, printer)
+					return
+				}
+				// The same client credentials will be refused again.
+				if jira.IsPermanentOAuthError(err) {
+					failJiraClosed(h, expiresAt, fmt.Errorf("%s: %w", jiraRejectedCause(err), err), printer)
 					return
 				}
 				printer.StepWarn(fmt.Sprintf("Jira access token refresh attempt %d/%d failed: %v", attempt+1, openAIRefreshRetries, err))

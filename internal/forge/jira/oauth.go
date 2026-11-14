@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -136,10 +137,11 @@ func (s *oauthTokenSource) fetch(ctx context.Context, hc *http.Client) (string, 
 	}
 	parseErr := json.Unmarshal(data, &tr)
 	if resp.StatusCode != http.StatusOK {
+		oe := &OAuthError{prefix: errPrefix, Status: resp.StatusCode}
 		if parseErr == nil && oauthErrorCodeRe.MatchString(tr.Error) {
-			return "", 0, fmt.Errorf("%s: unexpected status %d (%s)", errPrefix, resp.StatusCode, tr.Error)
+			oe.Code = tr.Error
 		}
-		return "", 0, fmt.Errorf("%s: unexpected status %d", errPrefix, resp.StatusCode)
+		return "", 0, oe
 	}
 	if parseErr != nil {
 		return "", 0, fmt.Errorf("%s: malformed response", errPrefix)
@@ -158,6 +160,49 @@ func (s *oauthTokenSource) fetch(ctx context.Context, hc *http.Client) (string, 
 		lifetime = time.Duration(tr.ExpiresIn) * time.Second
 	}
 	return tr.AccessToken, lifetime, nil
+}
+
+// OAuthError is a token endpoint's non-200 answer. Code is the RFC 6749
+// error code, empty unless the body carried a well-formed one. The message
+// names the token endpoint and status, never the client ID, client secret
+// or response body.
+type OAuthError struct {
+	prefix string
+	Status int
+	Code   string
+}
+
+func (e *OAuthError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("%s: unexpected status %d (%s)", e.prefix, e.Status, e.Code)
+	}
+	return fmt.Sprintf("%s: unexpected status %d", e.prefix, e.Status)
+}
+
+// permanentOAuthCodes are RFC 6749 error codes that no retry with the same
+// client credentials can fix. access_denied is the usual Auth0 answer for a
+// wrong client secret.
+var permanentOAuthCodes = map[string]bool{
+	"access_denied":       true,
+	"invalid_client":      true,
+	"unauthorized_client": true,
+	"invalid_scope":       true,
+	"invalid_grant":       true,
+}
+
+// IsPermanentOAuthError reports whether err is a token endpoint answer that
+// retrying with the same client credentials cannot fix: one of
+// permanentOAuthCodes, or a 400 or 401 with no code. Rate limits, server
+// errors, other codes and transport errors are transient.
+func IsPermanentOAuthError(err error) bool {
+	var oe *OAuthError
+	if !errors.As(err, &oe) {
+		return false
+	}
+	if oe.Code != "" {
+		return permanentOAuthCodes[oe.Code]
+	}
+	return oe.Status == http.StatusBadRequest || oe.Status == http.StatusUnauthorized
 }
 
 // AccessToken is an OAuth 2.0 access token and the instant it expires.
