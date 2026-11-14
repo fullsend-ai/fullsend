@@ -762,6 +762,29 @@ endpoints:
 	assert.Contains(t, buf.String(), `GitLab credential profile "my-gitlab" narrowed to GITLAB.custom.example:443; removed: gitlab.com:443`)
 }
 
+func TestBindGitLabCredentialToForgeHost_RemovedEndpointIsQuotedInTheLogLine(t *testing.T) {
+	path := writeTestProfile(t, t.TempDir(), "p.yaml", `id: my-gitlab
+credentials:
+  - name: api_token
+    env_vars: [GITLAB_TOKEN]
+endpoints:
+  - host: "old.example\n::warning::forged\x1b[31m"
+    port: 443
+    protocol: rest
+  - host: gitlab.custom.example
+    port: 443
+    protocol: rest
+`)
+	var buf bytes.Buffer
+	_, cleanup, err := bindGitLabCredentialToForgeHost([]resolve.ResolvedProfile{{ID: "my-gitlab", LocalPath: path}}, "gitlab.custom.example", "443", ui.New(&buf))
+	require.NoError(t, err)
+	defer cleanup()
+	got := buf.String()
+	assert.Contains(t, got, `removed: "[old.example\n::warning::forged\x1b[31m]:443"`, "a removed value with control characters is Go-quoted")
+	assert.NotContains(t, got, "\n::warning::", "a removed host must not start a new log line")
+	assert.NotContains(t, got, "\x1b[31m", "a removed host must not send a terminal escape")
+}
+
 func TestBindGitLabCredentialToForgeHost_AllowedIPsKeptOnlyOnTheForgeEntry(t *testing.T) {
 	for _, tc := range []struct {
 		name, endpoints string

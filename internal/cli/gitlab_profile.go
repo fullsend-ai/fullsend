@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -460,17 +461,24 @@ func endpointIsForge(ep *yaml.Node, host, port string) bool {
 }
 
 // describeEndpoint renders an endpoint mapping as host:port for log output.
-// It never returns an empty string.
+// It never returns an empty string. The values come from the profile file,
+// so a value with a control or other non-printing character is returned
+// Go-quoted: it cannot start a new log line or send a terminal escape.
 func describeEndpoint(ep *yaml.Node) string {
 	h := "(no host)"
 	if n := resolveYAMLAlias(yamlMappingValue(ep, "host")); n != nil && n.Value != "" {
 		h = n.Value
 	}
-	n := resolveYAMLAlias(yamlMappingValue(ep, "port"))
-	if n == nil || n.Value == "" {
-		return h
+	out := h
+	if n := resolveYAMLAlias(yamlMappingValue(ep, "port")); n != nil && n.Value != "" {
+		out = net.JoinHostPort(h, n.Value)
 	}
-	return net.JoinHostPort(h, n.Value)
+	for _, r := range out {
+		if !unicode.IsPrint(r) {
+			return strconv.Quote(out)
+		}
+	}
+	return out
 }
 
 // boundProfile is the part of a provider profile that
