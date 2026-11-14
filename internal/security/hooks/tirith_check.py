@@ -33,8 +33,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import traceback
 from datetime import UTC, datetime
 
@@ -132,24 +134,123 @@ def approval_block(raw: object, returncode: int) -> str:
     return reason
 
 
+# The temp root for the per-call directory. Fixed, not tempfile.gettempdir(),
+# so TMPDIR/TMP/TEMP from the agent-influenceable environment cannot steer where
+# the directory lands (and so plant a policy file into it).
+TIRITH_TMP_ROOT = "/tmp"
+
+
+def _tirith_env(config_home: str) -> dict[str, str]:
+    """Build the environment for the tirith subprocess from scratch.
+
+    tirith's verdict must depend only on the command, never on the agent's
+    environment or files. tirith reads a *trusted* user-scope policy from
+    $HOME/.config/tirith (or XDG_CONFIG_HOME / TIRITH_POLICY_ROOT), honours a
+    TIRITH=0 bypass and other TIRITH_* toggles, and looks for a check daemon's
+    socket under its state dir — all of which the agent can set or write in the
+    sandbox, where $HOME is agent-writable. So this passes none of the agent's
+    environment through: it keeps PATH (the runtime already pins it to a trusted
+    value; see the lookup in check_command), forces a fixed C locale, points
+    every config and state directory at a fresh empty per-call directory the
+    agent has not seen, and drops every TIRITH_* name before forcing the one the
+    hook owns.
+
+    The per-call directory is created with mkdtemp (mode 0700) under a fixed
+    temp root. Its only barrier is its unpredictable name: it is owned by the
+    same uid tirith runs as, so a process the agent leaves running under that
+    uid could still race it. The boundary that would close that is running
+    tirith as a different uid, or the sandbox pre-creating a root-owned config
+    dir at bootstrap; both are out of scope here and tracked as follow-ups.
+    """
+    # PATH comes from the hook process, which the runtime launches with a PATH
+    # pinned to directories the agent cannot write (envDataTrustedPath); the
+    # binary is also resolved absolutely in check_command, so this value is used
+    # only as a fallback search path. A fixed C locale keeps tirith's analysis
+    # from depending on an agent-set LANG/LC_*/TZ.
+    env = {
+        "PATH": os.environ.get("PATH") or os.defpath,
+        "LC_ALL": "C.UTF-8",
+        "LANG": "C.UTF-8",
+    }
+    # A single root under the temp dir holds config, data and state, so the
+    # policy lookup, the TIRITH_* toggles and the daemon socket lookup all land
+    # on an empty directory.
+    env["HOME"] = config_home
+    env["XDG_CONFIG_HOME"] = os.path.join(config_home, ".config")
+    env["XDG_DATA_HOME"] = os.path.join(config_home, ".local", "share")
+    env["XDG_STATE_HOME"] = os.path.join(config_home, ".local", "state")
+    env["XDG_RUNTIME_DIR"] = os.path.join(config_home, "run")
+    # Create them so tirith does not fail (and so block every command under
+    # TIRITH_REQUIRED) if it expects them to exist.
+    for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
+        os.makedirs(env[key], mode=0o700, exist_ok=True)
+    # tirith looks for a repo-scope .tirith policy by walking up from its cwd to
+    # the nearest .git. An empty .git in the per-call directory ends that walk
+    # there, so nothing in the temp root or above it is read.
+    os.mkdir(os.path.join(config_home, ".git"), mode=0o700)
+    # Suppress network lookups (OSV, deps.dev, threat-DB). The sandbox egress
+    # policy already denies these, so this only drops the denied attempts.
+    # The variable, not --offline: tirith exits 2 with no output on an unknown
+    # option, so a flag would break every check on a binary that lacks it.
+    env["TIRITH_OFFLINE"] = "1"
+    return env
+
+
+def _setup_failed(exc: OSError) -> tuple[bool, str]:
+    """Verdict when the hook cannot set up tirith's isolated environment."""
+    reason = f"tirith setup failed ({type(exc).__name__})"
+    if TIRITH_REQUIRED:
+        reason += " — blocking (TIRITH_REQUIRED=1)"
+        log_finding("tirith_error", "critical", reason, "block")
+        return True, reason
+    # Even fail-open, leave a trace that the scanner did not run.
+    log_finding("tirith_error", "high", reason, "warn")
+    return False, ""
+
+
 def check_command(command: str) -> tuple[bool, str]:
     """Run tirith check on a command. Returns (should_block, reason)."""
     try:
+        config_home = tempfile.mkdtemp(prefix="tirith-hook-", dir=TIRITH_TMP_ROOT)
+    except OSError as exc:
+        return _setup_failed(exc)
+    try:
+        # Building the env creates the per-call XDG dirs; a failure here is a
+        # setup failure, not a missing binary, so it is caught and labelled as
+        # such rather than falling through to the binary-not-found handler.
+        try:
+            env = _tirith_env(config_home)
+        except OSError as exc:
+            return _setup_failed(exc)
+        # Resolve the binary absolutely against the trusted PATH rather than
+        # letting the child re-resolve a bare `tirith`, so the verdict never
+        # depends on PATH ordering. which uses the same PATH the child gets.
+        # Require an absolute result: a relative path (from an empty or relative
+        # PATH entry) would make subprocess raise under cwd=config_home and
+        # fail open. The shipped PATH is pinned to absolute dirs, so this guard
+        # cannot trigger there; it is defence in depth.
+        tirith_bin = shutil.which("tirith", path=env["PATH"])
+        if tirith_bin is None or not os.path.isabs(tirith_bin):
+            reason = "tirith not found on the trusted PATH"
+            if TIRITH_REQUIRED:
+                reason += " — blocking (TIRITH_REQUIRED=1)"
+                log_finding("tirith_missing", "critical", reason, "block")
+                return True, reason
+            log_finding("tirith_missing", "high", reason, "warn")
+            return False, ""
         result = subprocess.run(
-            ["tirith", "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
+            [tirith_bin, "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
             capture_output=True,
             text=True,
             # Without this a non-UTF-8 byte in a finding raises into the
             # fail-open handler below, discarding a real threat report.
             errors="replace",
             timeout=5,
-            # Keeps package lookups (OSV, deps.dev) and the background
-            # threat-database refresh off the network: in the sandbox they go
-            # to the egress proxy and add hundreds of ms to install checks.
-            # The variable, not --offline: tirith exits 2 with no output on an
-            # unknown option, so a flag would break every check on a binary
-            # that lacks it.
-            env={**os.environ, "TIRITH_OFFLINE": "1"},
+            # The verdict must not depend on the agent's environment or files.
+            env=env,
+            # Not the agent-controlled checkout: tirith walks up from cwd for a
+            # repo-local .tirith policy.
+            cwd=config_home,
         )
     except FileNotFoundError:
         if TIRITH_REQUIRED:
@@ -170,6 +271,10 @@ def check_command(command: str) -> tuple[bool, str]:
             log_finding("tirith_error", "critical", reason, "block")
             return True, reason
         return False, ""
+    finally:
+        # tirith has read its policy and written any state by the time it
+        # returns, so the per-call directory is no longer needed.
+        shutil.rmtree(config_home, ignore_errors=True)
 
     if result.returncode == 0:
         # An allow may still carry requires_approval. Output that is absent or
