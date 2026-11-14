@@ -34,7 +34,7 @@ repos:
     hooks:
       - id: ty
         name: ty check
-        entry: uvx ty@0.0.99 check --ignore import-not-found --ignore unresolved-attribute
+        entry: uvx ty@0.0.104 check --ignore import-not-found --ignore unresolved-attribute
         language: system
         types: [python]
 
