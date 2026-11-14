@@ -382,6 +382,33 @@ func TestStreamingRuntimesArmTheWatchdog(t *testing.T) {
 // only SIGKILLs the local openshell client, so the kill must sweep the
 // sandbox first — otherwise the agent keeps writing the workspace and
 // spending tokens until teardown, and indefinitely under --keep-sandbox.
+// TestStallWatchdog_StalledErrWaitsForTheSweep: the sweep's TERM ends the
+// agent and the stream reaches EOF while the KILL pass can still be running,
+// so a Run that returned ErrStalled at once would report before the sweep's
+// own line ("Terminated N ..." or the could-not-terminate warning) and before
+// the sandbox is final. stalledErr must wait for the kill to return.
+func TestStallWatchdog_StalledErrWaitsForTheSweep(t *testing.T) {
+	t.Parallel()
+
+	sweeping := make(chan struct{})
+	execFn := func(string, string, time.Duration) (string, string, int, error) {
+		close(sweeping)
+		time.Sleep(300 * time.Millisecond) // a slow KILL pass or gateway
+		return "stray processes killed: 1\n", "", 0, nil
+	}
+	var out syncBuf
+	w := startStallWatchdogTo(io.Discard, 50*time.Millisecond, ui.New(io.Discard),
+		stallKill(execFn, "sb", &out, func() {}))
+	require.NotNil(t, w)
+	defer w.stop()
+
+	<-sweeping
+	require.Equal(t, int32(watchdogFired), w.state.Load())
+	require.ErrorIs(t, w.stalledErr(), ErrStalled)
+	assert.Contains(t, out.String(), "Terminated 1 stalled sandbox process(es)",
+		"ErrStalled must not be reported before the sweep has finished and said so")
+}
+
 func TestStallKill_TerminatesTheAgentThenReleasesTheClient(t *testing.T) {
 	t.Parallel()
 

@@ -81,6 +81,10 @@ type stallWatchdog struct {
 	lastEvent atomic.Int64 // time.Since(start) as of the most recent event
 	state     atomic.Int32 // watchdogArmed | watchdogStopped | watchdogFired
 	stopped   chan struct{}
+	// killed is closed once kill has returned, so stalledErr can wait for
+	// the in-sandbox sweep to finish (and its warning to print) before the
+	// run reports ErrStalled.
+	killed chan struct{}
 
 	// mu serializes stop()'s disarm with warning emission. The select in
 	// watch() can draw an already-queued tick even when stopped is closed,
@@ -154,6 +158,7 @@ func startStallWatchdogTo(annotations io.Writer, timeout time.Duration, printer 
 		isCI:    os.Getenv("GITHUB_ACTIONS") == "true",
 		start:   time.Now(),
 		stopped: make(chan struct{}),
+		killed:  make(chan struct{}),
 	}
 	go w.watch()
 	return w
@@ -180,11 +185,25 @@ func (w *stallWatchdog) stop() {
 	w.mu.Unlock()
 }
 
+// stallKillWait bounds how long stalledErr waits for the kill to return. The
+// kill is stallKill, whose sweep exec is bounded by killStrayProcessesTimeout;
+// the margin covers the local openshell client around it.
+var stallKillWait = killStrayProcessesTimeout + 5*time.Second
+
 // stalledErr returns a non-nil error wrapping ErrStalled when the watchdog
-// killed the run, and nil otherwise.
+// killed the run, and nil otherwise. It returns only once the kill has
+// finished (bounded by stallKillWait): the sweep's TERM ends the agent and the
+// stream reaches EOF while its KILL pass may still be running, and both the
+// caller's "the sandbox is swept, the artifacts are final" premise and the
+// sweep's own warning, which an operator reusing a --keep-sandbox sandbox
+// needs, depend on it having ended.
 func (w *stallWatchdog) stalledErr() error {
 	if w == nil || w.state.Load() != watchdogFired {
 		return nil
+	}
+	select {
+	case <-w.killed:
+	case <-time.After(stallKillWait):
 	}
 	return fmt.Errorf("%w: no runtime events for %s (FULLSEND_STALL_TIMEOUT)", ErrStalled, w.timeout)
 }
@@ -211,6 +230,7 @@ func (w *stallWatchdog) watch() {
 			case silence >= w.timeout:
 				if w.state.CompareAndSwap(watchdogArmed, watchdogFired) {
 					w.kill()
+					close(w.killed)
 				}
 				return
 			case silence >= w.timeout/2 && warnedFor != last:
