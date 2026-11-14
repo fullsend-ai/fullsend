@@ -18,6 +18,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -662,4 +663,24 @@ skills:
 	out, err := ListTriggeredHarnesses(context.Background(), ".fullsend", dirCfg, nil)
 	require.NoError(t, err)
 	require.Len(t, out, 1)
+}
+
+// TestNewComposeOpts_ConfiguredGitHubHost pins that harness dispatch threads
+// the configured GitHub host into ComposeOpts, so a base skill directory on a
+// GitHub Enterprise Server host parses as raw content when LoadWithBase
+// fetches it (#9037).
+func TestNewComposeOpts_ConfiguredGitHubHost(t *testing.T) {
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	configDir := filepath.Join(t.TempDir(), ".fullsend")
+
+	t.Setenv(forge.GitHubServerURLEnv, "https://ghe.example.com")
+	opts := newComposeOpts(configDir, cfg, []string{"https://ghe.example.com/org/repo/raw/"}, fetch.DefaultPolicy)
+	assert.Equal(t, "https://ghe.example.com", opts.GitHubURL)
+	assert.Equal(t, filepath.Dir(configDir), opts.WorkspaceRoot)
+	assert.Equal(t, []string{"https://ghe.example.com/org/repo/raw/"}, opts.OrgAllowlist)
+	_, err := forge.ParseRawContentURLOnHost("https://ghe.example.com/org/repo/raw/abc123/skills/triage", opts.GitHubURL)
+	require.NoError(t, err)
+
+	t.Setenv(forge.GitHubServerURLEnv, "")
+	assert.Empty(t, newComposeOpts(configDir, cfg, nil, fetch.DefaultPolicy).GitHubURL)
 }
