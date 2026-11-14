@@ -25,7 +25,7 @@ forge: github                        # Hosting platform: github, gitlab (auto-de
 
 # ── Operations ───────────────────────────────────────────────
 kill_switch: false                   # Emergency stop — disables all agent dispatch when true
-keep_history: true                   # Append previous sticky-comment content as collapsed "Previous run" blocks
+keep_history: true                   # Deprecated: no effect (every result is posted as a new comment)
 
 # ── Runtime ──────────────────────────────────────────────────
 runtime: claude                      # Default agent runtime: claude, pi, codex, opencode
@@ -173,11 +173,11 @@ that does not fall through.
 
 ### `keep_history`
 
-Controls whether sticky comment updates (from post-review, post-comment, and
-issues post-comment) append the previous comment body as a collapsed "Previous
-run" `<details>` block. Default is `true` (history appended). Set to `false`
-when accumulated "Previous run" blocks add unwanted noise — for example, when
-comments are synced to Jira where `<details>` does not render as collapsible.
+Deprecated: no effect. Sticky comments were removed, so every result from
+post-review, post-comment, and issues post-comment is posted as a new
+comment at the end of the thread and nothing is folded into "Previous
+run" blocks. The field stays accepted (and `--keep-history` with it) so
+existing configs keep working until a cleanup removes it.
 
 ### `runtime`
 

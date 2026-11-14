@@ -29,6 +29,14 @@ import (
 
 const reviewMarker = "<!-- fullsend:review-agent -->"
 
+// reviewNoticeMarker marks stale-head and failure notices. It is
+// deliberately distinct from reviewMarker: the prior-review fetchers
+// (pre-fetch-prior-review.sh and the GitLab run-agent-job.sh) select the
+// newest comment carrying reviewMarker as the previous review, so a
+// notice posted with the review marker would be read as the prior
+// review and hide the real review content the next re-review needs.
+const reviewNoticeMarker = "<!-- fullsend:review-notice -->"
+
 // StaleHeadExitCode is the process exit code used when a review is
 // discarded because the PR HEAD moved after the agent reviewed it.
 // post-review.sh uses this to detect stale-head outcomes and
@@ -84,19 +92,20 @@ func newPostReviewCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "post-review",
-		Short: "Post or update a sticky review comment on a PR/MR",
-		Long: `Posts review findings as a sticky issue comment on a pull request
+		Short: "Post a review comment on a PR/MR",
+		Long: `Posts review findings as an issue comment on a pull request
 or merge request, then submits a formal review with the disposition.
 
-The sticky comment is the success criterion. If it is posted, the
+The review comment is the success criterion. If it is posted, the
 command exits 0 even when the subsequent formal review submission
 fails; that failure is logged as a warning so a posted verdict is
 not reported as a workflow Failure.
 
-On first run, creates a new comment with a hidden HTML marker.
-On re-runs, finds the existing comment, collapses old content into
-a <details> block, and edits in-place. Stale formal reviews by the
-same user are minimized before submitting a new one.
+Every run adds a new comment with a hidden HTML marker at the end of
+the thread: nothing is edited in place and there are no collapsed
+"Previous run" sections — the thread itself is the history. Stale
+formal reviews by the same user are minimized before submitting a
+new one.
 
 The --result flag accepts a file path containing a JSON review result
 (with action, body, and optionally head_sha fields), or reads from
@@ -162,11 +171,13 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 			// precedence, otherwise fall back to config.yaml via
 			// --fullsend-dir (matching the pattern in issues post-comment).
 			resolvedKeepHistory := keepHistory
-			if !cmd.Flags().Changed("keep-history") {
+			if cmd.Flags().Changed("keep-history") {
+				warnKeepHistoryDeprecated(cmd)
+			} else {
 				var khFlag *bool // nil = not explicitly set
 				resolved, resolveErr := resolveKeepHistory(khFlag, fullsendDir, nil)
 				if resolveErr != nil {
-					printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to keep_history=true", resolveErr))
+					printer.StepWarn(fmt.Sprintf("Warning: %v (keep_history is deprecated and unused; every result is posted as a new comment)", resolveErr))
 				}
 				resolvedKeepHistory = resolved
 			}
@@ -189,7 +200,7 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 				}
 			}
 
-			// Failure action: post a failure notice as a sticky comment,
+			// Failure action: post a failure notice comment,
 			// skip formal review.
 			if strings.ToLower(parsed.Action) == "failure" {
 				return postFailureNotice(cmd.Context(), client, owner, repoName, pr, parsed, cfg, printer)
@@ -205,7 +216,7 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 	cmd.Flags().StringVar(&token, "token", "", "forge token (default: $GH_TOKEN / $GITHUB_TOKEN for GitHub, $GITLAB_TOKEN for GitLab)")
 	cmd.Flags().StringVar(&headSHA, "head-sha", "", "expected PR HEAD SHA (skips review if HEAD has moved)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
-	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
+	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "deprecated: no effect (every result is posted as a new comment; sticky comments were removed)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", os.Getenv("FULLSEND_DIR"), "path to .fullsend config directory (default: $FULLSEND_DIR; sources defaults from its config.yaml when flags are omitted)")
 	cmd.Flags().StringVar(&forgeName, "forge", "", "forge backend: github (default) or gitlab")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "forge instance URL (e.g. https://gitlab.example.com)")
@@ -320,6 +331,11 @@ func (e *staleHeadError) ExitCode() int { return StaleHeadExitCode }
 // since the review was generated. Returns a *staleHeadError so the CLI
 // exits with StaleHeadExitCode, enabling post-review.sh to re-dispatch.
 func postStaleHeadNotice(ctx context.Context, client forge.Client, owner, repo string, pr int, reviewedSHA, currentSHA string, cfg sticky.Config, printer *ui.Printer) error {
+	// The notice carries its own marker, not the review marker, so the
+	// prior-review fetchers keep selecting the last real review instead
+	// of this notice (see reviewNoticeMarker).
+	cfg.Marker = reviewNoticeMarker
+
 	body := fmt.Sprintf(`## Review
 
 **Reason:** stale-head
@@ -332,9 +348,14 @@ The review agent reviewed commit `+"`%s`"+` but the PR HEAD is now `+"`%s`"+`. T
 	return &staleHeadError{reviewedSHA: reviewedSHA, currentSHA: currentSHA}
 }
 
-// postFailureNotice posts a failure comment as a sticky comment.
+// postFailureNotice posts a failure comment.
 func postFailureNotice(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, printer *ui.Printer) error {
 	printer.StepStart("Review agent reported failure, posting notice")
+
+	// The notice carries its own marker, not the review marker, so the
+	// prior-review fetchers keep selecting the last real review instead
+	// of this notice (see reviewNoticeMarker).
+	cfg.Marker = reviewNoticeMarker
 
 	reason := parsed.Reason
 	if reason == "" {
@@ -361,8 +382,8 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 	return nil
 }
 
-// postReviewContent posts the sticky review comment, then attempts a
-// formal PR/MR review. Once the sticky comment is on the PR, formal
+// postReviewContent posts the review comment, then attempts a
+// formal PR/MR review. Once the review comment is on the PR, formal
 // review submission is best-effort: a forge API failure must not turn
 // a posted verdict into a workflow Failure (#3548).
 func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, dryRun bool, printer *ui.Printer) error {
@@ -388,23 +409,28 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 	} else if !dryRun && strings.EqualFold(parsed.Action, "approve") {
 		printer.StepWarn("Reviewed PR HEAD is unavailable; re-review deduplication will be unavailable")
 	}
-	commentURL, err := sticky.Post(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
+	commentURL, commentID, err := sticky.PostComment(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
 	if err != nil {
 		return err
 	}
 
 	formalReviewErr := submitFormalReviewWithDiffs(ctx, client, owner, repo, pr, parsed.Action, parsed.HeadSHA, commentURL, parsed.Findings, dryRun, printer, diffListing)
 	if formalReviewErr != nil {
-		printer.StepWarn(fmt.Sprintf("Formal review submission failed (%v); sticky review comment was posted", formalReviewErr))
+		printer.StepWarn(fmt.Sprintf("Formal review submission failed (%v); review comment was posted", formalReviewErr))
 	} else if !dryRun && diffHash != "" && strings.EqualFold(parsed.Action, "approve") {
 		// Publish the deduplication marker only after the matching formal
 		// approval succeeds. A request-changes/comment result or a failed
 		// formal submission must never leave an approved-looking hash behind.
+		// The hash and head markers are added to the comment this run
+		// created (its ID from PostComment), so an approve run leaves
+		// exactly one review-agent comment: editing an earlier run's
+		// comment is the stickiness #9334 removed, and UpdateComment
+		// refuses a missing ID rather than guess one.
 		hashBody := fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n<!-- fullsend:review-head:%s -->\n%s", diffHash, parsed.HeadSHA, parsed.Body)
 		hashCfg := cfg
 		hashCfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash, parsed.HeadSHA)
 		hashCfg.MaxTrustedLeadingLines = 3
-		if _, hashErr := sticky.Post(ctx, client, owner, repo, pr, hashBody, hashCfg, printer); hashErr != nil {
+		if hashErr := sticky.UpdateComment(ctx, client, owner, repo, commentID, hashBody, hashCfg, printer); hashErr != nil {
 			printer.StepWarn(fmt.Sprintf("Could not publish review diff hash after approval; re-review deduplication will be unavailable: %v", hashErr))
 		}
 	}
@@ -488,12 +514,12 @@ func pullRequestDiffHashFromDiffs(diffs []forge.PullRequestFileDiff, err error) 
 // The review body varies by event type to balance notification noise
 // against GitHub API requirements:
 //   - APPROVE: empty body (avoids duplicate notification)
-//   - REQUEST_CHANGES: includes a link to the sticky comment (API
+//   - REQUEST_CHANGES: includes a link to the review comment (API
 //     requires a non-empty body for this event); when inline comments
 //     are attached, the body references them instead
-//   - COMMENT: skipped when no inline-eligible findings exist (sticky
-//     comment already covers it); when inline comments are present, a
-//     COMMENT review is submitted with a body linking to the sticky
+//   - COMMENT: skipped when no inline-eligible findings exist (the
+//     review comment already covers it); when inline comments are present, a
+//     COMMENT review is submitted with a body linking to the review
 //     comment so findings appear on the relevant code lines
 func submitFormalReview(ctx context.Context, client forge.Client, owner, repo string, pr int, action, commitSHA, commentURL string, findings []ReviewFinding, dryRun bool, printer *ui.Printer) error {
 	return submitFormalReviewWithDiffs(ctx, client, owner, repo, pr, action, commitSHA, commentURL, findings, dryRun, printer, nil)
@@ -548,7 +574,7 @@ func submitFormalReviewWithDiffs(ctx context.Context, client forge.Client, owner
 
 	// We filter inline comments here because the GitHub API cannot
 	// accept review comments on lines outside the PR diff. The
-	// findings themselves remain in the sticky comment body and
+	// findings themselves remain in the review comment body and
 	// continue to influence the review verdict.
 	//
 	// Findings whose file is in the PR diff but whose line falls
@@ -580,9 +606,9 @@ func submitFormalReviewWithDiffs(ctx context.Context, client forge.Client, owner
 	// relevant code lines.
 	if event == "COMMENT" && len(inlineComments) == 0 {
 		// There is no replacement formal review to succeed, so remove stale
-		// approvals after the sticky verdict has been prepared.
+		// approvals after the review comment has been prepared.
 		dismissStaleApprovals(ctx, client, owner, repo, pr, user, priorReviews, printer)
-		printer.StepInfo("Skipping formal COMMENT review (sticky comment already updated)")
+		printer.StepInfo("Skipping formal COMMENT review (review comment already posted)")
 		return nil
 	}
 
@@ -628,7 +654,7 @@ func submitFormalReviewWithDiffs(ctx context.Context, client forge.Client, owner
 // every failure path logs and returns so the caller's main review still
 // proceeds. On a 422 the comment bodies are retried inside a plain review
 // body — mirroring the main review's fallback — so the findings stay
-// visible on the review itself rather than only in the sticky comment.
+// visible on the review itself rather than only in the review comment.
 func postFileLevelComments(ctx context.Context, client forge.Client, owner, repo string, pr int, commitSHA string, comments []forge.ReviewComment, printer *ui.Printer) {
 	err := client.CreatePullRequestReview(ctx, owner, repo, pr, "COMMENT", "", commitSHA, comments)
 	if err == nil {
@@ -643,7 +669,7 @@ func postFileLevelComments(ctx context.Context, client forge.Client, owner, repo
 		fallbackBody := buildFallbackReviewBody("", comments)
 		if retryErr := client.CreatePullRequestReview(ctx, owner, repo, pr, "COMMENT", fallbackBody, commitSHA, nil); retryErr != nil {
 			logAPIErrorDetails(retryErr, printer)
-			printer.StepWarn(fmt.Sprintf("File-level comments failed (%v), findings remain in sticky comment", retryErr))
+			printer.StepWarn(fmt.Sprintf("File-level comments failed (%v), findings remain in review comment", retryErr))
 			return
 		}
 		printer.StepDone("File-level comments posted in review body (comments omitted due to 422)")
@@ -651,12 +677,12 @@ func postFileLevelComments(ctx context.Context, client forge.Client, owner, repo
 	}
 
 	logAPIErrorDetails(err, printer)
-	printer.StepWarn(fmt.Sprintf("File-level comments failed (%v), findings remain in sticky comment", err))
+	printer.StepWarn(fmt.Sprintf("File-level comments failed (%v), findings remain in review comment", err))
 }
 
 // findingsToReviewComments converts review findings with file and line
 // locations into inline review comments. Findings without a file path
-// or line number are omitted — they remain in the sticky comment body.
+// or line number are omitted — they remain in the review comment body.
 //
 // When diffHunks is non-nil, findings referencing files outside the PR
 // diff are omitted to avoid GitHub 422 errors. Findings whose file is

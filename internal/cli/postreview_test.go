@@ -181,6 +181,10 @@ func TestPostStaleHeadNotice(t *testing.T) {
 	require.Len(t, comments, 1)
 	assert.Contains(t, comments[0].Body, "stale-head")
 	assert.Contains(t, comments[0].Body, "old_sha_123")
+	// The notice must not carry the review marker: prior-review fetchers
+	// select the newest review-marker comment as the previous review.
+	assert.Contains(t, comments[0].Body, reviewNoticeMarker)
+	assert.NotContains(t, comments[0].Body, reviewMarker)
 
 	// Verify the error carries StaleHeadExitCode for post-review.sh.
 	var she *staleHeadError
@@ -208,6 +212,7 @@ func TestPostFailureNotice_WithBody(t *testing.T) {
 	comments := fc.IssueComments["o/r/1"]
 	require.Len(t, comments, 1)
 	assert.Contains(t, comments[0].Body, "Custom failure message")
+	assert.Contains(t, comments[0].Body, reviewNoticeMarker)
 }
 
 func TestPostFailureNotice_WithoutBody(t *testing.T) {
@@ -260,7 +265,7 @@ func TestPostReviewContent_FormalReviewFailureDoesNotFailCommand(t *testing.T) {
 	assert.Contains(t, comments[0].Body, "Looks good")
 	assert.Empty(t, fc.CreatedReviews)
 	assert.Contains(t, buf.String(), "Formal review submission failed")
-	assert.Contains(t, buf.String(), "sticky review comment was posted")
+	assert.Contains(t, buf.String(), "review comment was posted")
 }
 
 func TestPostReviewContent_RequestChangesFormalReviewFailureDoesNotFailCommand(t *testing.T) {
@@ -534,9 +539,16 @@ func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
 	require.NoError(t, err)
+	// An approve run leaves exactly one review-agent comment: the review
+	// body is posted once, and the deduplication markers are added to
+	// that same comment once the formal approval succeeds.
 	require.Len(t, fc.IssueComments["o/r/1"], 1)
-	assert.Regexp(t, reviewDiffHashMarkerRe, strings.SplitN(fc.IssueComments["o/r/1"][0].Body, "\n", 3)[1])
-	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "<summary>Previous run</summary>")
+	lines := strings.Split(fc.IssueComments["o/r/1"][0].Body, "\n")
+	require.GreaterOrEqual(t, len(lines), 3)
+	assert.Equal(t, reviewMarker, lines[0])
+	assert.Regexp(t, reviewDiffHashMarkerRe, lines[1])
+	assert.Equal(t, "<!-- fullsend:review-head:abc123def456 -->", lines[2])
+	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "Looks good")
 }
 
 func TestPostReviewContent_PreservesHistoryWhenPublishingDiffHash(t *testing.T) {
@@ -570,11 +582,17 @@ Earlier review
 		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
 	require.NoError(t, err)
 
-	body := fc.IssueComments["o/r/1"][0].Body
-	assert.Contains(t, body, "Earlier review")
-	assert.Contains(t, body, "Prior review")
-	assert.Contains(t, body, "Looks good")
-	assert.Contains(t, body, "fullsend:review-diff-hash:")
+	// The prior comment stands exactly as it was (nothing is folded into
+	// history any more), and the hash is added to the comment this run
+	// created: one new comment per run, not one per publish.
+	require.Len(t, fc.IssueComments["o/r/1"], 2)
+	prior := fc.IssueComments["o/r/1"][0].Body
+	assert.Contains(t, prior, "Earlier review")
+	assert.Contains(t, prior, "Prior review")
+	assert.NotContains(t, prior, "Looks good")
+	reviewComment := fc.IssueComments["o/r/1"][1].Body
+	assert.Contains(t, reviewComment, "Looks good")
+	assert.Contains(t, reviewComment, "fullsend:review-diff-hash:")
 }
 
 func TestPostReviewContent_PublishesDiffHashOnlyAfterApproval(t *testing.T) {
@@ -587,12 +605,16 @@ func TestPostReviewContent_PublishesDiffHashOnlyAfterApproval(t *testing.T) {
 
 	requestChanges := ReviewResult{Body: "Needs changes", Action: "request-changes", HeadSHA: "abc123def456"}
 	require.NoError(t, postReviewContent(context.Background(), fc, "o", "r", 1, requestChanges, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard)))
-	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
+	for _, comment := range fc.IssueComments["o/r/1"] {
+		assert.NotContains(t, comment.Body, "fullsend:review-diff-hash:")
+	}
 
 	fc.Errors["CreatePullRequestReview"] = fmt.Errorf("approval API error")
 	approval := ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"}
 	require.NoError(t, postReviewContent(context.Background(), fc, "o", "r", 1, approval, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard)))
-	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
+	for _, comment := range fc.IssueComments["o/r/1"] {
+		assert.NotContains(t, comment.Body, "fullsend:review-diff-hash:")
+	}
 }
 
 func TestPostReviewContent_PreservesGeneratedHashAndProjectionMarkers(t *testing.T) {
@@ -607,8 +629,11 @@ func TestPostReviewContent_PreservesGeneratedHashAndProjectionMarkers(t *testing
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
 	require.NoError(t, err)
-	body := fc.IssueComments["o/r/1"][0].Body
-	lines := strings.Split(body, "\n")
+	// One comment: the marker on the first line, then the generated hash,
+	// the reviewed head and the projection marker live and unescaped (the
+	// prior-review fetchers read the newest review-agent comment).
+	require.Len(t, fc.IssueComments["o/r/1"], 1)
+	lines := strings.Split(fc.IssueComments["o/r/1"][0].Body, "\n")
 	require.GreaterOrEqual(t, len(lines), 4)
 	assert.Equal(t, reviewMarker, lines[0])
 	assert.Regexp(t, reviewDiffHashMarkerRe, lines[1])
@@ -673,19 +698,6 @@ func TestPostReviewContent_DoesNotPublishHashWhenHeadLookupFails(t *testing.T) {
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
 }
 
-type failSecondReviewCommentUpdateClient struct {
-	*forge.FakeClient
-	updates int
-}
-
-func (c *failSecondReviewCommentUpdateClient) UpdateIssueComment(ctx context.Context, owner, repo string, id int, body string) error {
-	c.updates++
-	if c.updates > 0 {
-		return fmt.Errorf("hash marker update failed")
-	}
-	return c.FakeClient.UpdateIssueComment(ctx, owner, repo, id, body)
-}
-
 func TestPostReviewContent_HashPublicationFailureIsBestEffort(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
@@ -693,13 +705,15 @@ func TestPostReviewContent_HashPublicationFailureIsBestEffort(t *testing.T) {
 	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
 		"o/r/1": {{Path: "README.md", Patch: "@@ -1 +1 @@\n-old\n+new"}},
 	}
-	client := &failSecondReviewCommentUpdateClient{FakeClient: fc}
+	fc.Errors["UpdateIssueComment"] = fmt.Errorf("hash marker update failed")
 
 	var buf bytes.Buffer
-	err := postReviewContent(context.Background(), client, "o", "r", 1,
+	err := postReviewContent(context.Background(), fc, "o", "r", 1,
 		ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"},
 		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(&buf))
 	require.NoError(t, err)
+	require.Len(t, fc.IssueComments["o/r/1"], 1)
+	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "Looks good")
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
 	assert.Contains(t, buf.String(), "Could not publish review diff hash after approval")
 }
@@ -2645,5 +2659,5 @@ func TestPostFailureNotice_EscapesProjectionMarker(t *testing.T) {
 
 	comments := fc.IssueComments["o/r/1"]
 	require.Len(t, comments, 1)
-	assert.Equal(t, reviewMarker+"\n&lt;!-- fullsend:review-findings-v2:eyJ9 -->\nFailed", comments[0].Body)
+	assert.Equal(t, reviewNoticeMarker+"\n&lt;!-- fullsend:review-findings-v2:eyJ9 -->\nFailed", comments[0].Body)
 }

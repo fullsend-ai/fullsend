@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -14,15 +13,23 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-const defaultMaxSize = 65000
+// DefaultMaxSize is the default maximum comment body size in bytes.
+const DefaultMaxSize = 65000
 
-// Config controls how a sticky comment is identified and managed.
+// Config controls how an agent result comment is marked and posted.
 type Config struct {
 	Marker       string // hidden HTML comment, e.g. "<!-- fullsend:review-agent -->"
 	FooterMarker string // optional footer delimiter, stripped before collapsing history
 	MaxSize      int    // max comment body size (default 65000)
 	DryRun       bool
-	KeepHistory  bool // when false, updates replace the body in-place with no "Previous run" history
+
+	// KeepHistory is deprecated and has no effect on posting: sticky
+	// comments were removed (#9334), so every result is a new comment and
+	// nothing is folded into "Previous run" blocks. It is still read by
+	// BuildUpdatedBody, which no posting path calls anymore; the flag and
+	// config field that set it stay accepted so existing callers keep
+	// working until a cleanup removes them.
+	KeepHistory bool
 
 	// TrustedLeadingLine, when set, matches a marker line that the trusted
 	// caller places at the start of the body. Matching leading lines are
@@ -38,21 +45,87 @@ func (c Config) maxSize() int {
 	if c.MaxSize > 0 {
 		return c.MaxSize
 	}
-	return defaultMaxSize
+	return DefaultMaxSize
 }
 
-// Post implements the sticky comment lifecycle: find an existing comment
-// bearing the marker, collapse old content into history, and create or
-// update in-place. Returns the HTML URL of the comment (empty on dry run).
+// Post publishes an agent result as a new comment at the end of the
+// thread and returns the HTML URL of the created comment (empty on dry
+// run). It never edits an existing comment: sticky comments were removed
+// (#9334), so every run appends its own comment and the thread itself is
+// the history. The marker is still prepended so other steps can find this
+// agent's comments; readers looking for the newest result find it at the
+// bottom, where new activity is expected.
 //
-// It never edits a comment it cannot verify as its own: an existing
-// comment matches only when it carries the marker and its author is
-// exactly the login this client posts as, so a comment anyone could plant
-// with the same marker is ignored. When that login cannot be resolved
-// (after a short retry) it returns an error and posts nothing — not even
-// on dry run, since dry run should not claim an edit would occur when none
-// safely could.
+// Callers that need to edit the comment they just created — the review
+// door adding its diff hash once the formal approval succeeds — call
+// PostComment for the created comment's ID and pass it to UpdateComment.
 func Post(ctx context.Context, client forge.Client, owner, repo string, number int, body string, cfg Config, printer *ui.Printer) (string, error) {
+	url, _, err := PostComment(ctx, client, owner, repo, number, body, cfg, printer)
+	return url, err
+}
+
+// PostComment publishes an agent result as a new comment at the end of
+// the thread and returns the HTML URL and the ID of the created comment
+// (empty and zero on dry run). It never edits an existing comment: sticky
+// comments were removed (#9334), so every run appends its own comment and
+// the thread itself is the history. The marker is still prepended so
+// other steps can find this agent's comments; readers looking for the
+// newest result find it at the bottom, where new activity is expected.
+func PostComment(ctx context.Context, client forge.Client, owner, repo string, number int, body string, cfg Config, printer *ui.Printer) (string, int, error) {
+	markedBody, err := prepareBody(body, cfg)
+	if err != nil {
+		return "", 0, err
+	}
+
+	printer.StepStart("Posting comment")
+
+	if cfg.DryRun {
+		printer.StepInfo("Dry run — would create new comment")
+		printer.StepInfo("Body length: " + strconv.Itoa(len(markedBody)))
+		return "", 0, nil
+	}
+
+	created, err := client.CreateIssueComment(ctx, owner, repo, number, markedBody)
+	if err != nil {
+		return "", 0, fmt.Errorf("creating comment: %w", err)
+	}
+	printer.StepDone("Comment created")
+	return created.HTMLURL, created.ID, nil
+}
+
+// UpdateComment replaces the body of a comment created in this same run
+// (commentID from PostComment), never an earlier run's comment — that
+// find-and-edit is the stickiness #9334 removed. The body is assembled
+// exactly as on create: the runner's marker stays on the first line,
+// marker syntax in the rest is escaped (trusted leading lines
+// excepted), the size cap applies, and trusted leading lines the cap
+// would cut refuse the update instead of posting it partial.
+func UpdateComment(ctx context.Context, client forge.Client, owner, repo string, commentID int, body string, cfg Config, printer *ui.Printer) error {
+	if commentID == 0 {
+		return fmt.Errorf("comment ID is required")
+	}
+	markedBody, err := prepareBody(body, cfg)
+	if err != nil {
+		return err
+	}
+
+	if cfg.DryRun {
+		printer.StepInfo("Dry run — would update comment " + strconv.Itoa(commentID))
+		return nil
+	}
+
+	if err := client.UpdateIssueComment(ctx, owner, repo, commentID, markedBody); err != nil {
+		return fmt.Errorf("updating comment: %w", err)
+	}
+	printer.StepDone("Comment updated")
+	return nil
+}
+
+// prepareBody assembles the comment body the same way for create and
+// update: the runner's marker on the first line, the agent body with its
+// marker syntax escaped (a trusted leading line excepted), the whole
+// capped at the size limit.
+func prepareBody(body string, cfg Config) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
 	}
@@ -60,90 +133,80 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 		return "", fmt.Errorf("marker is empty")
 	}
 
-	// Without a verified identity nothing is posted at all: editing would
-	// trust an unverified comment, and creating a new one would orphan the
-	// earlier comment, whose stale content later runs would never update.
-	botUser, err := resolveBotUser(ctx, client)
-	if err != nil {
-		return "", unverifiedBotUserError(err)
-	}
-
-	comments, err := client.ListIssueComments(ctx, owner, repo, number)
-	if err != nil {
-		return "", fmt.Errorf("listing comments: %w", err)
-	}
-
-	existing := FindMarkedComment(comments, cfg.Marker, botUser)
 	// Escape marker syntax in the agent-written body before the runner's
 	// own marker is prepended, so the runner's marker is the only live one
 	// (apart from a validated trusted leading line, see neutralizeBody).
 	markedBody := cfg.Marker + "\n" + neutralizeBody(body, cfg)
+	// The create path has no history trimming (the update path that used
+	// to cap the assembled body is gone), so cap the body before
+	// creating: an oversized single result would otherwise fail the post.
+	markedBody = TruncateBody(markedBody, cfg.maxSize())
 
-	if existing != nil {
-		printer.StepStart("Found existing comment, updating in-place")
-
-		newBody := BuildUpdatedBody(existing.Body, markedBody, cfg)
-
-		if cfg.DryRun {
-			printer.StepInfo("Dry run — would update comment " + strconv.Itoa(existing.ID))
-			printer.StepInfo("Body length: " + strconv.Itoa(len(newBody)))
-			return "", nil
-		}
-
-		if err := client.UpdateIssueComment(ctx, owner, repo, existing.ID, newBody); err != nil {
-			return "", fmt.Errorf("updating comment: %w", err)
-		}
-		printer.StepDone("Comment updated")
-		return existing.HTMLURL, nil
+	// Trusted leading lines carry the projection payload the next run's
+	// prior-review fetch reads back, so the size cap must never cut any
+	// of them (nor the runner marker before them): TruncateBody cuts at
+	// a byte offset with no line awareness, and a projection line posted
+	// partial would break that fetch. The guard covers every trusted
+	// line the caller's limit keeps — not only the first; the review
+	// door keeps three (diff hash, head, then the findings projection) —
+	// reading the same split neutralizeBody kept, so what is kept
+	// unescaped is exactly what is refused cut. Refuse to post instead.
+	if prefix, _, trusted := splitTrusted(body, cfg); trusted > 0 &&
+		!strings.HasPrefix(markedBody, cfg.Marker+"\n"+prefix) {
+		return "", fmt.Errorf("comment body exceeds the %d-byte size cap without room for the trusted leading line(s) intact; refusing to post a partial marker line", cfg.maxSize())
 	}
-
-	printer.StepStart("No existing comment found, creating new one")
-
-	if cfg.DryRun {
-		printer.StepInfo("Dry run — would create new comment")
-		printer.StepInfo("Body length: " + strconv.Itoa(len(markedBody)))
-		return "", nil
-	}
-
-	created, err := client.CreateIssueComment(ctx, owner, repo, number, markedBody)
-	if err != nil {
-		return "", fmt.Errorf("creating comment: %w", err)
-	}
-	printer.StepDone("Comment created")
-	return created.HTMLURL, nil
+	return markedBody, nil
 }
 
-// neutralizeBody escapes fullsend marker syntax in body. When
-// cfg.TrustedLeadingLine matches the whole first line of body, that line is
-// kept unescaped and only the text after the trusted leading lines is escaped.
-// Escaping starts after the last trusted line, so it cannot join with it.
+// neutralizeBody escapes fullsend marker syntax in body. The trusted
+// leading lines splitTrusted keeps (see TrustedLeadingLine) are posted
+// as-is and only the text after them is escaped. Escaping starts after
+// the last trusted line, so it cannot join with it.
 func neutralizeBody(body string, cfg Config) string {
-	if cfg.TrustedLeadingLine != nil {
-		limit := cfg.MaxTrustedLeadingLines
-		if limit <= 0 {
-			limit = 1
-		}
-		lines := strings.Split(body, "\n")
-		trusted := 0
-		for trusted < len(lines) && trusted < limit && cfg.TrustedLeadingLine.MatchString(lines[trusted]) {
-			trusted++
-		}
-		if trusted > 0 {
-			prefix := strings.Join(lines[:trusted], "\n")
-			if trusted == len(lines) {
-				return prefix
-			}
-			return prefix + "\n" + statuscomment.NeutralizeMarkers(strings.Join(lines[trusted:], "\n"))
-		}
+	prefix, rest, trusted := splitTrusted(body, cfg)
+	switch {
+	case trusted == 0:
+		return statuscomment.NeutralizeMarkers(body)
+	case rest == "":
+		return prefix
+	default:
+		return prefix + "\n" + statuscomment.NeutralizeMarkers(rest)
 	}
-	return statuscomment.NeutralizeMarkers(body)
+}
+
+// splitTrusted splits body into its trusted leading lines and the rest,
+// with one set of rules for every reader: consecutive leading lines that
+// whole-line match cfg.TrustedLeadingLine, at most
+// cfg.MaxTrustedLeadingLines of them (default one). neutralizeBody keeps
+// the prefix unescaped and the size-cap guard in prepareBody refuses any
+// truncation that would cut it, so the two can never disagree about what
+// is trusted.
+func splitTrusted(body string, cfg Config) (prefix, rest string, trusted int) {
+	if cfg.TrustedLeadingLine == nil {
+		return "", body, 0
+	}
+	limit := cfg.MaxTrustedLeadingLines
+	if limit <= 0 {
+		limit = 1
+	}
+	lines := strings.Split(body, "\n")
+	for trusted < len(lines) && trusted < limit && cfg.TrustedLeadingLine.MatchString(lines[trusted]) {
+		trusted++
+	}
+	if trusted == 0 {
+		return "", body, 0
+	}
+	prefix = strings.Join(lines[:trusted], "\n")
+	if trusted == len(lines) {
+		return prefix, "", trusted
+	}
+	return prefix, strings.Join(lines[trusted:], "\n"), trusted
 }
 
 // FindMarkedComment returns the first comment whose body contains the given
 // marker string and whose author is exactly botUser, or nil if none is
-// found. An empty botUser matches nothing: callers pass it only when
-// identity resolution failed, and matching on the marker alone would let
-// anyone's comment be treated as the bot's own and edited in-place.
+// found. An empty botUser matches nothing: matching on the marker alone
+// would let anyone's comment be treated as the bot's own.
 func FindMarkedComment(comments []forge.IssueComment, marker, botUser string) *forge.IssueComment {
 	if botUser == "" {
 		return nil
@@ -157,46 +220,6 @@ func FindMarkedComment(comments []forge.IssueComment, marker, botUser string) *f
 		}
 	}
 	return nil
-}
-
-// botUserLookupBackoff is the wait before each retry of the bot identity
-// lookup; its length is the number of retries. Tests shorten it.
-var botUserLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second}
-
-// resolveBotUser returns the exact login client posts as, retrying a failed
-// or empty lookup per botUserLookupBackoff so a transient error does not
-// degrade marker spoofing protection. This mirrors resolveTrackerSelf in
-// internal/cli/issues.go, but internal/cli imports this package, so the
-// retry logic is kept local here rather than shared, to avoid an import
-// cycle.
-func resolveBotUser(ctx context.Context, client forge.Client) (string, error) {
-	var lastErr error
-	for attempt := 0; ; attempt++ {
-		botUser, err := client.GetAuthenticatedUser(ctx)
-		if err == nil && botUser == "" {
-			err = fmt.Errorf("the authenticated user is empty")
-		}
-		if err == nil {
-			return botUser, nil
-		}
-		lastErr = err
-		if attempt >= len(botUserLookupBackoff) {
-			return "", fmt.Errorf("after %d attempts: %w", attempt+1, lastErr)
-		}
-		select {
-		case <-ctx.Done():
-			return "", fmt.Errorf("%w (last lookup error: %v)", ctx.Err(), lastErr)
-		case <-time.After(botUserLookupBackoff[attempt]):
-		}
-	}
-}
-
-// unverifiedBotUserError reports that the posting identity could not be
-// resolved, so nothing was posted or edited.
-func unverifiedBotUserError(err error) error {
-	return fmt.Errorf("cannot verify which identity this posts as, so no comment was posted or edited; "+
-		"rerun if the failure was transient, otherwise check that the token can read its own identity "+
-		"(the authenticated user): %w", err)
 }
 
 // History blocks are wrapped with sentinel comments so extraction is safe
@@ -219,6 +242,10 @@ var legacyDetailsRe = regexp.MustCompile(`(?s)<details>\s*<summary>Previous [^<]
 // When cfg.KeepHistory is false, the old body is discarded entirely and
 // the new body is returned with footer re-appended (no "Previous run"
 // blocks).
+//
+// Deprecated: no posting path calls this anymore — sticky comments were
+// removed (#9334) and every result is posted as a new comment. It is kept
+// only until a cleanup deletes the history-folding machinery.
 func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 	// When history is disabled, replace the body entirely. We still
 	// need to preserve the footer from the old body if configured.
@@ -332,15 +359,21 @@ func BuildUpdatedBody(oldBody, newBody string, cfg Config) string {
 	return combined
 }
 
-// TruncateBody trims body to fit within maxSize, keeping the current
-// content at the top and trimming history from the end. The truncation
-// point is aligned to a valid UTF-8 boundary.
+// TruncateBody trims body to fit within maxSize, keeping the content at
+// the top and cutting the end. The truncation point is aligned to a valid
+// UTF-8 boundary.
 func TruncateBody(body string, maxSize int) string {
 	if len(body) <= maxSize {
 		return body
 	}
 
-	truncationMsg := "\n\n---\n*Previous history truncated due to comment size limits.*"
+	// No thematic break ("---") before the note: the Jira door round-trips
+	// the body through MarkdownToADF/ADFToMarkdown, and that renders a
+	// thematic break with a following blank line — one byte longer than
+	// the markdown that was posted. Without the break the round trip is
+	// byte-stable, so a body truncated to the Jira limit stays within it
+	// as the stored comment's markdown rendering too.
+	truncationMsg := "\n\n*Comment truncated due to comment size limits.*"
 	budget := maxSize - len(truncationMsg)
 	if budget < 0 {
 		budget = 0

@@ -135,7 +135,7 @@ the overlay → base → code defaults chain.
 | `version` | `string` | Scalar override | `"1"` |
 | `runtime` | `string` | Scalar override | `"claude"` |
 | `kill_switch` | `*bool` | Scalar override | `false` (inactive) |
-| `keep_history` | `*bool` | Scalar override | `true` (history appended) |
+| `keep_history` | `*bool` | Scalar override | `true` (deprecated: no effect) |
 | `roles` | `[]string` | Replace if set | `PerRepoDefaultRoles()` |
 | `agents` | `[]AgentEntry` | Keyed merge by `DerivedName()` | `nil` (none) |
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
@@ -222,20 +222,14 @@ unset, the accessor falls through to the base layer, then to code defaults.
   - `*false` (explicit `kill_switch: false`) — locally set to inactive.
     Does **not** fall through.
   - `*true` (explicit `kill_switch: true`) — locally set to active.
-- **`keep_history`**: Pointer to bool (`*bool`). Controls whether sticky
-  comment updates (from `post-review`, `post-comment`, and
-  `issues post-comment`) append the previous body as a collapsed
-  "Previous run" `<details>` block. Uses the same three-state pointer
-  semantics as `kill_switch`:
-  - `nil` (key omitted) — unset, falls through to parent.
-    Code default is `true` (history appended, preserving existing
-    behavior).
-  - `*true` (explicit `keep_history: true`) — updates collapse old
-    content into history blocks.
-  - `*false` (explicit `keep_history: false`) — updates replace the
-    comment body in-place with no history. Useful when accumulated
-    "Previous run" blocks add unwanted noise (e.g., when comments are
-    synced to Jira where `<details>` does not render as collapsible).
+- **`keep_history`**: Pointer to bool (`*bool`). Deprecated: no effect.
+  Sticky comments were removed, so every result from `post-review`,
+  `post-comment`, and `issues post-comment` is posted as a new comment
+  and nothing is folded into "Previous run" blocks. The field keeps the
+  same three-state pointer semantics as `kill_switch` (`nil` falls
+  through to parent, an explicit value is a local decision) and stays
+  accepted so existing layered configs keep resolving until a cleanup
+  removes it.
 
 ### `mint_url` and `inference` — scalar override
 
@@ -575,7 +569,7 @@ compiled-in defaults apply:
 | `version` | `"1"` |
 | `runtime` | `"claude"` |
 | `kill_switch` | `false` (inactive) |
-| `keep_history` | `true` (history appended) |
+| `keep_history` | `true` (deprecated: no effect) |
 | `roles` | `["triage", "coder", "review", "fix", "retro", "prioritize"]` |
 | `agents` | `nil` (none configured) |
 | `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]`, plus `https://<host>/fullsend-ai/fullsend/raw/` and `https://<host>/fullsend-ai/agents/raw/` when `GITHUB_SERVER_URL` names a host other than `github.com` |

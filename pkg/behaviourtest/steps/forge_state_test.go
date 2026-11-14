@@ -183,6 +183,116 @@ func TestThenTargetCommentContains(t *testing.T) {
 	require.ErrorContains(t, thenTargetCommentContains(w, targetIssue, "x"), "listing comments on issue #7")
 }
 
+func TestThenIssueCommentCountContains(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeForgeStateSCM{comments: map[int][]forge.IssueComment{
+		7: {
+			{Body: "<!-- fullsend:triage-agent -->\nThis issue is ready for implementation."},
+			{Body: "unrelated"},
+			{Body: "<!-- fullsend:triage-agent -->\nRe-triage on the second run"},
+		},
+	}}
+	w := forgeStateWorld(f)
+
+	require.NoError(t, thenIssueCommentCountContains(w, 2, "<!-- fullsend:triage-agent -->"))
+	require.NoError(t, thenIssueCommentCountContains(w, 1, "Re-triage on the second run"))
+	require.ErrorContains(t, thenIssueCommentCountContains(w, 1, "<!-- fullsend:triage-agent -->"),
+		`issue #7 has 2 comments containing "<!-- fullsend:triage-agent -->", want 1 (3 comments checked)`)
+	require.ErrorContains(t, thenIssueCommentCountContains(w, 2, "Re-triage on the second run"),
+		`issue #7 has 1 comments containing "Re-triage on the second run", want 2 (3 comments checked)`)
+
+	require.ErrorContains(t, thenIssueCommentCountContains(&world.World{}, 1, "x"), "no issue created")
+
+	f.err = errors.New("HTTP 403")
+	require.ErrorContains(t, thenIssueCommentCountContains(w, 1, "x"), "listing comments on issue #7")
+}
+
+func TestThenLastIssueCommentContains(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeForgeStateSCM{comments: map[int][]forge.IssueComment{
+		7: {
+			{Body: "<!-- fullsend:triage-agent -->\nThis issue is ready for implementation."},
+			{Body: "<!-- fullsend:triage-agent -->\nRe-triage on the second run"},
+		},
+		8: {},
+	}}
+	w := forgeStateWorld(f)
+
+	require.NoError(t, thenLastIssueCommentContains(w, "Re-triage on the second run"))
+	require.ErrorContains(t, thenLastIssueCommentContains(w, "This issue is ready for implementation."),
+		`the last comment on issue #7 does not contain "This issue is ready for implementation."`)
+
+	// An issue with no comments has no last comment to assert on.
+	f2 := &fakeForgeStateSCM{comments: map[int][]forge.IssueComment{7: {}}}
+	require.ErrorContains(t, thenLastIssueCommentContains(forgeStateWorld(f2), "x"), "issue #7 has no comments")
+
+	f.err = errors.New("HTTP 403")
+	require.ErrorContains(t, thenLastIssueCommentContains(w, "x"), "listing comments on issue #7")
+}
+
+func TestThenLastIssueCommentContainingContains(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeForgeStateSCM{comments: map[int][]forge.IssueComment{
+		7: {
+			{Body: "<!-- fullsend:triage-agent -->\nThis issue is ready for implementation."},
+			{Body: "<!-- fullsend:triage-agent -->\nRe-triage on the second run"},
+			// A status completion appended behind the result: the
+			// marker-scoped step must ignore it, where the
+			// any-kind last-comment step would read it instead.
+			{Body: "🤖 Triage · Completed"},
+		},
+	}}
+	w := forgeStateWorld(f)
+
+	require.NoError(t, thenLastIssueCommentContainingContains(w, "<!-- fullsend:triage-agent -->", "Re-triage on the second run"))
+	// Only the last marker comment satisfies the step, not an earlier one.
+	require.ErrorContains(t, thenLastIssueCommentContainingContains(w, "<!-- fullsend:triage-agent -->", "This issue is ready for implementation."),
+		`the last comment on issue #7 containing "<!-- fullsend:triage-agent -->" does not contain "This issue is ready for implementation."`)
+	// The comment behind the last marker comment is not the one asserted on.
+	require.ErrorContains(t, thenLastIssueCommentContainingContains(w, "<!-- fullsend:triage-agent -->", "Completed"),
+		`does not contain "Completed"`)
+
+	// No comment carries the marker.
+	f2 := &fakeForgeStateSCM{comments: map[int][]forge.IssueComment{7: {{Body: "unrelated"}}}}
+	require.ErrorContains(t, thenLastIssueCommentContainingContains(forgeStateWorld(f2), "<!-- fullsend:triage-agent -->", "x"),
+		`no comment on issue #7 contains "<!-- fullsend:triage-agent -->" (1 comments checked)`)
+
+	require.ErrorContains(t, thenLastIssueCommentContainingContains(&world.World{}, "m", "x"), "no issue created")
+
+	f.err = errors.New("HTTP 403")
+	require.ErrorContains(t, thenLastIssueCommentContainingContains(w, "m", "x"), "listing comments on issue #7")
+}
+
+func TestThenIssueCommentOtherThanLastContains(t *testing.T) {
+	t.Parallel()
+
+	f := &fakeForgeStateSCM{comments: map[int][]forge.IssueComment{
+		7: {
+			{Body: "<!-- fullsend:triage-agent -->\nThis issue is ready for implementation."},
+			{Body: "<!-- fullsend:triage-agent -->\nRe-triage on the second run"},
+		},
+	}}
+	w := forgeStateWorld(f)
+
+	require.NoError(t, thenIssueCommentOtherThanLastContains(w, "This issue is ready for implementation."))
+	// The last comment's text must not satisfy the step: it checks the
+	// comments before the last only.
+	require.ErrorContains(t, thenIssueCommentOtherThanLastContains(w, "Re-triage on the second run"),
+		`no comment before the last on issue #7 contains "Re-triage on the second run" (1 comments checked)`)
+	require.ErrorContains(t, thenIssueCommentOtherThanLastContains(w, "missing"), "no comment before the last on issue #7")
+
+	// A single comment leaves nothing before the last to assert on.
+	f2 := &fakeForgeStateSCM{comments: map[int][]forge.IssueComment{7: {}}}
+	require.ErrorContains(t, thenIssueCommentOtherThanLastContains(forgeStateWorld(f2), "x"),
+		"issue #7 has 0 comments, need at least 2")
+
+	f.err = errors.New("HTTP 403")
+	require.ErrorContains(t, thenIssueCommentOtherThanLastContains(w, "x"), "listing comments on issue #7")
+}
+
 func TestThenPullRequestBodyContains(t *testing.T) {
 	t.Parallel()
 

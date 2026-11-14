@@ -525,11 +525,13 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   a label not used anywhere on the Jira site (triage does not create new
   labels), and component changes skipped because the issue's current
   components could not be read.
-- **Retries:** comments are not duplicated. The code-stage update and the
-  sticky triage comments use fixed markers. Other triage comments use a marker
-  scoped to the CI run (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`). A re-run of the
-  same workflow or pipeline edits its earlier comment, while a new triage run
-  posts a new one.
+- **Retries:** on GitHub and Jira a re-run posts a new comment at the end of
+  the thread instead of editing the earlier one (sticky comments were
+  removed). The code-stage update and the triage comments use fixed or
+  run-scoped markers (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`), so later steps
+  still find the relevant comment. On GitLab, the triage scripts from the
+  agents repo keep their find-and-edit behaviour on a re-run of the same
+  pipeline.
 - **Write failures:** a failed Jira write fails the step, so it is never
   reported as a success. For triage this covers label adds and removals,
   component updates, comments, and transitions. For code the step fails even
@@ -1434,7 +1436,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | Triage or code results do not appear on the Jira issue | The built-in agents are pinned to a release that predates Jira result writes | Use built-in agents from the agents release that follows v0.52.0, or later. Re-pin a harness registered with `source:` or composed with `base:` with `fullsend agent update <name>`. See [Where built-in agent results appear](#where-built-in-agent-results-appear) |
 | Code run skipped; the Jira issue has a comment starting `An open pull request already addresses <KEY> — skipping automated implementation.` | An open pull request written by a person names the issue key in its title or description. Bot pull requests do not count | GitHub: comment `/fs-code --force` on the Jira issue. GitLab: close the merge request, then comment `/fs-code`. See [If the code agent skips the run](#if-the-code-agent-skips-the-run) |
 | Code run skipped; the Jira issue has a comment starting `<KEY> has child issues — skipping automated implementation.` | The issue has child issues, open or closed. Subtasks do not count | Run the code agent on the child issues. On GitHub you can also comment `/fs-code --force` to implement the parent issue. See [If the code agent skips the run](#if-the-code-agent-skips-the-run) |
-| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm the Jira credentials reach the agent job, that `tracker.jira.base_url` is set (a missing or invalid setting stops a Jira-sourced run before the sandbox, with a `jira-sourced run:` error in the run log), and that the account can comment on the issue. A re-run edits the existing update rather than posting a second one |
+| Code step fails after the PR or MR was created | The Jira write of the code-stage update failed | Check the step log for the Jira error, and confirm the Jira credentials reach the agent job, that `tracker.jira.base_url` is set (a missing or invalid setting stops a Jira-sourced run before the sandbox, with a `jira-sourced run:` error in the run log), and that the account can comment on the issue. A re-run posts a new update comment rather than editing the earlier one |
 
 ## See also
 

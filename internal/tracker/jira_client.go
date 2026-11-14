@@ -363,8 +363,6 @@ func (c *JiraClient) CreateCommentWithMarker(ctx context.Context, project string
 // It only matches a comment that carries no fullsend property and whose
 // body opens with the marker, the layout legacy comments were written in,
 // so another comment that quotes the marker is never picked.
-// This allows transparent migration: the first update to a legacy
-// comment will set the property and strip the marker from the body.
 func (c *JiraClient) FindCommentByMarkerProperty(comments []jira.Comment, marker string) *jira.Comment {
 	// Primary: match by entity property.
 	for i := range comments {
@@ -422,38 +420,6 @@ func legacyMarkdown(c jira.Comment) (md string, ok bool) {
 // quoted inside agent-written text from identifying the comment.
 func hasLegacyMarker(md, marker string) bool {
 	return marker != "" && strings.HasPrefix(md, marker)
-}
-
-// MigrateAndUpdateComment updates the body of comment, the sticky
-// comment FindCommentByMarkerProperty matched, and ensures the sticky
-// marker is stored as a comment entity property.
-//
-// A comment that already carries a property exactly matching marker is
-// updated without rewriting the property: the write would be redundant,
-// and a Jira rejection of it would otherwise block the body update. A
-// comment found via the legacy body-text path has the property set
-// first, transparently migrating it to the property-based scheme.
-//
-// The body written to Jira has the marker stripped (unlike
-// GitHub/GitLab where the marker is an invisible HTML comment). The
-// caller should pass the body without the marker prefix.
-func (c *JiraClient) MigrateAndUpdateComment(ctx context.Context, project string, number int, comment jira.Comment, body Body, marker string) error {
-	key := issueKey(project, number)
-	if !hasStickyMarkerProperty(comment, marker) {
-		// Property-before-body ordering is intentional: if the property
-		// write succeeds but the body update fails, the next run will
-		// still find the comment via its property and can retry. The
-		// reverse order risks losing the marker from both the body
-		// (which was just stripped) and the property (which was never
-		// set).
-		if err := c.jira.SetCommentProperty(ctx, key, comment.ID, stickyPropertyKey, stickyMarkerProperty{Marker: marker}); err != nil {
-			return fmt.Errorf("setting sticky marker property on comment %s of %s: %w", comment.ID, key, err)
-		}
-	}
-	if err := c.jira.UpdateComment(ctx, key, comment.ID, string(body)); err != nil {
-		return wrapNotFound(err)
-	}
-	return nil
 }
 
 // UpdateComment implements Client. Unlike GitHub/GitLab, Jira's

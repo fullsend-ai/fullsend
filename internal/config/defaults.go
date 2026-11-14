@@ -98,9 +98,10 @@ func (d *perRepoDefaults) ConfigInferenceWIFAudience() string { return "" }
 // impersonate (empty — direct federated identity, no impersonation).
 func (d *perRepoDefaults) ConfigInferenceServiceAccount() string { return "" }
 
-// ConfigKeepHistory returns the default keep-history state (true —
-// sticky comment updates append previous content as "Previous run"
-// blocks, preserving the pre-existing behavior).
+// ConfigKeepHistory returns the default keep-history state (true).
+// Deprecated: the setting has no effect — sticky comments were removed
+// (#9334); every result is a new comment. Kept until a cleanup removes
+// the field.
 func (d *perRepoDefaults) ConfigKeepHistory() bool { return true }
 
 // ConfigInferenceOpenAI returns the default OpenAI WIF identifiers (none —
