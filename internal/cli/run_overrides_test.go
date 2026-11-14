@@ -248,6 +248,7 @@ func TestRunStallTimeout(t *testing.T) {
 		name     string
 		env      string
 		run      time.Duration
+		runtime  string
 		want     time.Duration
 		contains []string
 	}{
@@ -266,11 +267,16 @@ func TestRunStallTimeout(t *testing.T) {
 		{name: "a value below the sub-agent liveness floor is raised and says so",
 			env: "30s", run: 30 * time.Minute, want: minStallTimeout,
 			contains: []string{"Stall watchdog:", envStallTimeout, "floor", "1m0s"}},
+		{name: "codex is floored above one silent poll",
+			env: "2m", run: 30 * time.Minute, runtime: "codex", want: 6 * time.Minute,
+			contains: []string{"Stall watchdog:", envStallTimeout, "6m0s floor", "codex poll", "5m0s"}},
+		{name: "codex above its floor is armed silently",
+			env: "10m", run: 30 * time.Minute, runtime: "codex", want: 10 * time.Minute},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var out strings.Builder
-			got := runStallTimeout(envMap(map[string]string{envStallTimeout: tc.env}), tc.run, ui.New(&out))
+			got := runStallTimeout(envMap(map[string]string{envStallTimeout: tc.env}), tc.run, tc.runtime, ui.New(&out))
 			assert.Equal(t, tc.want, got)
 			if len(tc.contains) == 0 {
 				assert.NotContains(t, out.String(), "Stall watchdog")

@@ -382,12 +382,17 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 // semantic events.
 //
 // Codex writes no line between a command's item.started and item.completed
-// (item.updated is a plan/todo event, not a command stream), so a long codex
-// command produces no intermediate liveness of its own. What keeps its turn
-// alive is unified-exec returning control to the model at least every 30s
-// (MAX_YIELD_TIME_MS, default-on at the pinned CODEX_VERSION): each yield is a
-// fresh tool call whose lines land here. A pin that flips that default would
-// turn a long codex command into a false stall — re-check it on a bump.
+// (item.updated is a plan/todo event, not a command stream), and its polls
+// of a running command are invisible too: an empty write_stdin poll waits up
+// to DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS (5m) and emits
+// EventMsg::TerminalInteraction, which the exec JSONL processor drops in its
+// catch-all arm (codex-rs/exec/src/event_processor_with_jsonl_output.rs);
+// the only other line a poll turn can add is a reasoning item, dropped when
+// its summary is empty, and the runner does not request summaries. Both
+// verified at rust-v0.152.1 and rust-v0.166.0. So a codex command is one
+// silent stretch from start to finish: one longer than FULLSEND_STALL_TIMEOUT
+// is killed as stalled, and the runner floors codex's timeout above one poll
+// (internal/cli/run_overrides.go, codexPollSilence).
 func parseCodexStreamLines(r io.Reader, onEvent func(AgentEvent), onLine func()) (threadID string, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
 

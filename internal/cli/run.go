@@ -2831,7 +2831,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	timeout := time.Duration(effectiveTimeoutMinutes(h)) * time.Minute
 
-	stallTimeout := runStallTimeout(os.Getenv, timeout, printer)
+	stallTimeout := runStallTimeout(os.Getenv, timeout, rt.Name(), printer)
 
 	maxIterations := 1
 	if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {

@@ -154,6 +154,23 @@ const subagentLivenessTick = 30 * time.Second
 // gap to the next). 0 (explicitly disabled) is left untouched.
 const minStallTimeout = 2 * subagentLivenessTick
 
+// codexPollSilence mirrors codex's DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS
+// (codex-rs/core/src/unified_exec/mod.rs, 300000 at rust-v0.166.0): an empty
+// write_stdin poll of a running command waits up to this long, and the exec
+// JSONL processor writes no line for it (its catch-all arm), so one poll is
+// that much silence on its own. Codex runs are floored at this plus
+// minStallTimeout. Re-check it on a CODEX_VERSION bump.
+const codexPollSilence = 5 * time.Minute
+
+// stallTimeoutFloor is the least non-zero stall timeout runtimeName can run
+// under without a healthy run reading as silence, and why.
+func stallTimeoutFloor(runtimeName string) (time.Duration, string) {
+	if runtimeName == "codex" {
+		return codexPollSilence + minStallTimeout, fmt.Sprintf("a codex poll of a running command writes nothing for up to %s", codexPollSilence)
+	}
+	return minStallTimeout, fmt.Sprintf("a pi sub-agent feeds the watchdog only every %s", subagentLivenessTick)
+}
+
 // resolveStallTimeout returns the event-inactivity timeout for the run:
 // FULLSEND_STALL_TIMEOUT when it parses as a non-negative Go duration ("0"
 // disables the watchdog), the default when it is unset. A malformed value
@@ -194,19 +211,19 @@ func effectiveStallTimeout(stall, run time.Duration) time.Duration {
 // FULLSEND_STALL_TIMEOUT, report a malformed value rather than silently
 // running without the watchdog it configured, and disarm — saying so — when
 // the run's own timeout would always win the race. Zero means no watchdog.
-func runStallTimeout(getenv func(string) string, run time.Duration, printer *ui.Printer) time.Duration {
+func runStallTimeout(getenv func(string) string, run time.Duration, runtimeName string, printer *ui.Printer) time.Duration {
 	stall, err := resolveStallTimeout(getenv)
 	if err != nil {
 		printer.StepWarn(fmt.Sprintf("Stall watchdog: %v; using %s", err, stall))
 	}
-	if stall > 0 && stall < minStallTimeout {
-		// Below the floor a pi sub-agent's liveness tick can't keep the
-		// parent alive between ticks, so a parent waiting on a healthy child
-		// would be killed as stalled. Raise it to the floor and say so.
+	if floor, why := stallTimeoutFloor(runtimeName); stall > 0 && stall < floor {
+		// Below the floor a healthy run can be silent for longer than the
+		// timeout (a pi parent waiting on a child between liveness ticks, a
+		// codex poll), so it would be killed as stalled. Raise it and say so.
 		printer.StepWarn(fmt.Sprintf(
-			"Stall watchdog: FULLSEND_STALL_TIMEOUT (%s) is below the %s floor (a pi sub-agent feeds the watchdog only every %s); using %s",
-			stall, minStallTimeout, subagentLivenessTick, minStallTimeout))
-		stall = minStallTimeout
+			"Stall watchdog: FULLSEND_STALL_TIMEOUT (%s) is below the %s floor (%s); using %s",
+			stall, floor, why, floor))
+		stall = floor
 	}
 	if effective := effectiveStallTimeout(stall, run); effective != stall {
 		// The watchdog could never fire — the global deadline always wins the
