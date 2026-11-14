@@ -54,6 +54,7 @@ func TestValidateHostFileDest(t *testing.T) {
 		{dest: "/sandbox/claude-config/hooks.json", wantErr: "reserved for the runner"},
 		{dest: "/sandbox/claude-config/hooks/tirith_check.py", wantErr: "reserved for the runner"},
 		{dest: "/sandbox/codex-config/config.toml", wantErr: "reserved for the runner"},
+		{dest: "/sandbox/opencode-config/plugins/fullsend-hooks.ts", wantErr: "reserved for the runner"},
 		{dest: "/sandbox/pi-config/settings.json", wantErr: "reserved for the runner"},
 		{dest: "/sandbox/workspace/.fullsend/output-schema.json", wantErr: "reserved for the runner"},
 		{dest: "/sandbox/workspace/.fullsend/iteration.env", wantErr: "reserved for the runner"},

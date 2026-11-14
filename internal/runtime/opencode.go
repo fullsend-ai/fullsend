@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
@@ -30,9 +31,8 @@ func (OpenCodeRuntime) System() string { return "opencode" }
 // ".opencode" suffix is needed: OPENCODE_CONFIG_DIR itself counts as a config
 // dir (config/config.ts:425).
 //
-// The dir is root-owned 0775 (group sandbox) because the run prelude writes
-// opencode.json here each iteration. Lockdown to 0750 with all writes via
-// openshell is deferred to #7824.
+// As with pi, Bootstrap uploads assets here. This is writable sandbox storage,
+// not an OS permission boundary; runner-held digests guard launches.
 func (OpenCodeRuntime) ConfigDir() string { return sandbox.SandboxOpenCodeConfig }
 
 func (OpenCodeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
@@ -43,12 +43,13 @@ func (OpenCodeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 // OPENCODE_CONFIG_CONTENT (Vertex provider + permission policy) and
 // GOOGLE_APPLICATION_CREDENTIALS (WIF credential file) come from the harness;
 // Run restores their pristine values after reading the agent-writable .env.
-// The policy must ALLOW the tools a read-only agent needs: headless
+// The policy must ALLOW the tools an agent needs: headless
 // `opencode run` has no TTY and auto-rejects any permission request config
 // does not pre-resolve (run.ts:795-808), so a bare "deny" fails every tool
-// call. Write-path denial is unbound-force#515.
+// call. The native hook adapter additionally checks file-tool write paths.
 func (r OpenCodeRuntime) EnvExports() []string {
 	return []string{
+		"unset " + strings.Join(openCodeDangerousEnvVars, " "),
 		fmt.Sprintf("export OPENCODE_CONFIG_DIR=%s", r.ConfigDir()),
 		// Skip the workspace config walk so a hostile repo's
 		// .opencode/opencode.json cannot widen tool permissions.
@@ -56,6 +57,9 @@ func (r OpenCodeRuntime) EnvExports() []string {
 		// Skip skill discovery from the workspace and $HOME so a hostile repo
 		// cannot inject skills; runner-owned skills under ConfigDir still load.
 		"export OPENCODE_DISABLE_EXTERNAL_SKILLS=true",
+		"export OPENCODE_DISABLE_DEFAULT_PLUGINS=true",
+		"export OPENCODE_DISABLE_MODELS_FETCH=true",
+		"export BUN_RUNTIME_TRANSPILER_CACHE_PATH=0",
 		"export OPENCODE_CONFIG_CONTENT",        // re-export: Vertex provider + permission policy
 		"export GOOGLE_APPLICATION_CREDENTIALS", // re-export: WIF credential file
 	}
@@ -72,6 +76,7 @@ func (r OpenCodeRuntime) EnvExports() []string {
 func (OpenCodeRuntime) LaunchEnvExports() []string {
 	return []string{
 		openCodeRuntimeEnv,
+		openCodeHookConfigEnv,
 		"GOOGLE_CLOUD_PROJECT",
 		"GOOGLE_CLOUD_LOCATION",
 		"HOME",

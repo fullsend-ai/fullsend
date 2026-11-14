@@ -48,6 +48,7 @@ var (
 	reservedHostFileDirs = []string{
 		"/sandbox/claude-config",
 		"/sandbox/codex-config",
+		"/sandbox/opencode-config",
 		"/sandbox/pi-config",
 		hostFileSandboxWorkspace + "/.fullsend",
 		// The security findings log the runner creates in bootstrapCommon

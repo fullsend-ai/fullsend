@@ -6,14 +6,35 @@
 # run also proves an agent that declares Bash keeps the trusted pattern rules
 # rather than losing bash to its own "*": "deny".
 #
-# OpenCode has no sandbox tool hooks yet (unbound-force#515), so the harness
-# sets security.enabled: false, as docs/runtimes/opencode.md requires.
+# OpenCode requires security.enabled: true; see docs/runtimes/opencode.md.
 #
 # Gated on the `runtime-opencode` capability, which the Makefile does not
 # declare: fullsend-sandbox:latest carries OpenCode only once the image change
 # is published from main. Enable with BEHAVIOUR_CAPABILITIES=runtime-opencode
 # (costs one small haiku run on Vertex).
 Feature: OpenCode runtime runs an agent unattended
+
+  Scenario: opencode rejects disabled sandbox security before sandbox creation
+    Given the enrolled test repository
+    And the repository runtime is "opencode"
+    And a custom harness "opencode-security-disabled" with:
+      """
+      agent: agents/opencode-smoke.md
+      role: triage
+      slug: fullsend-ai-opencode-security-disabled
+      model: haiku
+      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      policy: policies/base.yaml
+      trigger: |
+        event.entity.kind == "work_item"
+        && event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-for-opencode-security-disabled"
+      security:
+        enabled: false
+      """
+    And an issue
+    When the issue is labeled "ready-for-opencode-security-disabled"
+    Then the harness "opencode-security-disabled" workflow fails reporting "OpenCode requires security.enabled: true"
 
   @requires:capability:runtime-opencode
   Scenario: opencode run selects the runtime, calls a pattern-allowed tool, and reports metrics
@@ -37,7 +58,7 @@ Feature: OpenCode runtime runs an agent unattended
       providers:
         - providers/vertex-ai.yaml
       security:
-        enabled: false
+        enabled: true
       host_files:
         - src: ${GOOGLE_APPLICATION_CREDENTIALS}
           dest: /tmp/.gcp-credentials.json
@@ -50,25 +71,28 @@ Feature: OpenCode runtime runs an agent unattended
           GOOGLE_CLOUD_PROJECT: ${ANTHROPIC_VERTEX_PROJECT_ID}
           CLOUD_ML_REGION: ${CLOUD_ML_REGION}
           GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json
-          OPENCODE_CONFIG_CONTENT: '{"provider":{"google-vertex-anthropic":{"id":"google-vertex-anthropic"}},"permission":{"*":"deny","read":"allow","glob":"allow","grep":"allow","list":"allow","bash":{"*":"deny","ls *":"allow","ls":"allow","cat *":"allow"}}}'
+          OPENCODE_CONFIG_CONTENT: >-
+            {"provider":{"google-vertex-anthropic":{"id":"google-vertex-anthropic"}},"permission":{"*":"deny","bash":{"*":"deny","ls .":"allow","printf %s *":"allow","printf '%s' *":"allow","tee /sandbox/workspace/output/agent-result.json":"allow"}}}
       """
     And an opencode agent "opencode-smoke" defined as:
       """
       ---
       name: opencode-smoke
       description: Behaviour smoke agent for the OpenCode runtime.
-      tools: Bash
+      tools: Bash(ls,printf,tee)
       ---
       You are an unattended smoke-test agent. Do exactly the following, in
       order, then stop. Do not ask questions, do not explain, do not read or
       modify any other file.
 
       1. Using the bash tool, run: ls .
-      2. Using the bash tool, write the file "$FULLSEND_OUTPUT_DIR/agent-result.json"
-         with `cat > "$FULLSEND_OUTPUT_DIR/agent-result.json" <<'EOF'`, containing
-         exactly this content and nothing else:
+      2. Using the bash tool, run this command exactly. Keep the JSON as a
+         single-quoted literal; do not use expansions, redirections or a heredoc:
 
-      {{fixture:fixtures/triage/sufficient.json}}
+      ```sh
+      printf '%s' '{{fixture:fixtures/triage/sufficient.json}}
+      ' | tee /sandbox/workspace/output/agent-result.json
+      ```
       """
     And an issue
     When the issue is labeled "ready-for-opencode-smoke"

@@ -1,0 +1,649 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { createHash } from "node:crypto";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const plugin = (await import(pathToFileURL(process.env.FULLSEND_TEST_ADAPTER))).default;
+
+async function setup(t, extra = {}, scripts = {}) {
+  const root = mkdtempSync(path.join(tmpdir(), "fullsend-opencode-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dir = path.join(root, "hooks");
+  const workspace = path.join(root, "workspace");
+  mkdirSync(dir); mkdirSync(workspace);
+  const digests = {};
+  for (const [name, source] of Object.entries(scripts)) {
+    writeFileSync(path.join(dir, name), source);
+    digests[name] = createHash("sha256").update(source).digest("hex");
+  }
+  const cfg = { dir, workspace, python: process.env.FULLSEND_TEST_PYTHON,
+    env: { PATH: "/usr/bin:/bin" }, groups: [], digests, tools: null,
+    bashAllowlist: null, permission: { "*": "allow" }, ...extra };
+  process.env.FULLSEND_OPENCODE_HOOK_CONFIG = JSON.stringify(cfg);
+  const hooks = await plugin({ directory: workspace, worktree: workspace });
+  const before = (tool, args = {}) => hooks["tool.execute.before"]({ tool }, { args });
+  const after = async (tool, args, output = "original") => {
+    const result = { output, metadata: { output }, attachments: [{ url: output }], title: output };
+    await hooks["tool.execute.after"]({ tool, args }, result);
+    return result;
+  };
+  const messages = (parts) => hooks["experimental.chat.messages.transform"]({}, { messages: [{ parts }] });
+  return { root, dir, workspace, cfg, hooks, before, after, messages };
+}
+
+test("Bash restrictions reject composed/hidden commands and environment overrides", async (t) => {
+  const h = await setup(t, { bashAllowlist: ["gh", "jq"] });
+  for (const command of ["gh", "gh issue list", "gh issue list | jq '.[]'"]) {
+    await h.before("bash", { command });
+  }
+  for (const command of ["", "rm file", "gh issue list; rm file", "gh && rm file", "gh && jq", "gh | sh", "gh & rm file", "gh > output", "gh 2> output", "gh < input", "$(rm file)", "gh `rm file`", "GH_PAGER=sh gh", "env gh", "command gh", "/usr/bin/gh", "g\\h", "gh <<EOF\nrm file\nEOF", "gh $(rm file)", "gh # '\nrm file\n# '", "gh # \"; rm file #\""]) {
+    await assert.rejects(h.before("bash", { command }), /fullsend-hooks/);
+  }
+});
+
+test("parent tool and trusted policy ceilings apply to every session", async (t) => {
+  const h = await setup(t, { tools: ["Bash", "Task"], permission: { bash: { "*": "deny", "gh *": "allow", "gh secret*": "deny" }, task: "allow" } });
+  await h.before("bash", { command: "gh issue list" });
+  await h.before("task", { subagent_type: "child" });
+  await assert.rejects(h.before("bash", { command: "gh secret list" }), /trusted permission/);
+  await assert.rejects(h.before("write", { filePath: "file" }), /parent allowlist/);
+});
+
+test("native invalid diagnostics preserve restricted capabilities and output scanning", async (t) => {
+  const source = "import json,sys\np=json.load(sys.stdin); v=p['tool_response']; v['output']=v['output'].replace('original','sanitized')\nprint(json.dumps({'hookSpecificOutput':{'updatedToolOutput':v}}))\n";
+  const h = await setup(t, { tools: ["Read"], permission: { "*": "deny" },
+    groups: [{ Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py"] }] }, { "post.py": source });
+  const args = { tool: "write", error: "malformed arguments" };
+  await h.before("invalid", args);
+  const result = await h.after("invalid", args, "The arguments provided to the tool are invalid: original");
+  assert.equal(result.output, "The arguments provided to the tool are invalid: sanitized");
+  assert.deepEqual(result.metadata, {});
+  assert.deepEqual(result.attachments, []);
+  await assert.rejects(h.before("write", { filePath: "file" }), /parent allowlist/);
+  await assert.rejects(h.before("read", { filePath: "file" }), /trusted permission/);
+  writeFileSync(path.join(h.dir, "post.py"), "tampered");
+  await assert.rejects(h.before("invalid", args), /hook script missing or modified/);
+});
+
+test("trusted Bash patterns reject path-qualified programs without restricting argument paths", async (t) => {
+  const h = await setup(t, { permission: { bash: { "*": "allow", "rm *": "deny" } } });
+  await assert.rejects(h.before("bash", { command: "rm -rf x" }), /trusted permission/);
+  for (const command of ["/bin/rm -rf x", "./rm -rf x", "printf safe; /bin/rm -rf x", "printf safe | ./rm -rf x"]) {
+    await assert.rejects(h.before("bash", { command }), /path-qualified program/, command);
+  }
+  await h.before("bash", { command: "printf /tmp/file" });
+  const unrestricted = await setup(t, { permission: { bash: "allow" } });
+  await unrestricted.before("bash", { command: "/usr/bin/printf safe" });
+});
+
+test("trusted Bash patterns reject unquoted argument globs", async (t) => {
+  const commands = ["gh secre? list", "gh s[e]cret list", "gh s*t list"];
+  for (const bashAllowlist of [null, ["gh"]]) {
+    const h = await setup(t, { bashAllowlist, permission: { bash: {
+      "*": "deny", "gh *": "allow", "gh secret*": "deny",
+    } } });
+    writeFileSync(path.join(h.workspace, "secret"), "");
+    await assert.rejects(h.before("bash", { command: "gh secret list" }), /trusted permission/);
+    for (const command of commands) {
+      await assert.rejects(h.before("bash", { command }), /pathname expansion/, command);
+    }
+    for (const argument of ["secre?", "s[e]cret", "s*t"]) {
+      for (const quote of ["'", '"']) {
+        await h.before("bash", { command: `gh ${quote}${argument}${quote} list` });
+      }
+    }
+  }
+  const programOnly = await setup(t, { bashAllowlist: ["gh"], permission: { bash: "allow" } });
+  for (const command of commands) await programOnly.before("bash", { command });
+});
+
+test("trusted Bash patterns reject unquoted tilde expansion", async (t) => {
+  for (const bashAllowlist of [null, ["cat"]]) {
+    const h = await setup(t, { bashAllowlist, permission: { bash: {
+      "*": "deny", "cat *": "allow", "cat /sandbox/private*": "deny",
+    } } });
+    await assert.rejects(h.before("bash", { command: "cat /sandbox/private.txt" }), /trusted permission/);
+    await assert.rejects(h.before("bash", { command: "cat ~/private.txt" }), /tilde expansion/);
+    await assert.rejects(h.before("bash", { command: "cat ~root/private.txt" }), /tilde expansion/);
+    for (const quote of ["'", '"']) {
+      await h.before("bash", { command: `cat ${quote}~/private.txt${quote}` });
+    }
+  }
+  const programOnly = await setup(t, { bashAllowlist: ["cat"], permission: { bash: "allow" } });
+  await programOnly.before("bash", { command: "cat ~/private.txt" });
+});
+
+test("trusted permission patterns use native values and trailing wildcard semantics", async (t) => {
+  const patterns = { "*": "deny", "safe *": "allow" };
+  const h = await setup(t, { permission: { bash: { "*": "deny", "printf *": "allow" }, skill: patterns, glob: patterns, grep: patterns, websearch: patterns } });
+  await h.before("bash", { command: "printf" });
+  await h.before("skill", { name: "safe" });
+  await h.before("glob", { pattern: "safe" });
+  await h.before("grep", { pattern: "safe" });
+  await h.before("websearch", { query: "safe" });
+  await assert.rejects(h.before("websearch", { query: "unsafe" }), /trusted permission/);
+});
+
+test("trusted permission patterns use tool-specific values when optional fields coexist", async (t) => {
+  const h = await setup(t, { permission: {
+    task: { "*": "deny", explore: "allow" },
+    grep: { "*": "deny", "TODO*": "allow" },
+    glob: { "*": "deny", "src/*": "allow" },
+  } });
+  await h.before("task", { command: "ignored", subagent_type: "explore" });
+  await h.before("grep", { path: "ignored", pattern: "TODO*" });
+  await h.before("glob", { path: "ignored", pattern: "src/*" });
+  await assert.rejects(h.before("task", { command: "explore", subagent_type: "general" }), /trusted permission/);
+});
+
+test("native patch and edit tools preserve translated parent capabilities", async (t) => {
+  for (const capability of ["Write", "Edit", "MultiEdit"]) {
+    const h = await setup(t, { tools: [capability], permission: { edit: "allow" } });
+    for (const patchText of ["*** Add File: file.txt\n+new", "*** Update File: file.txt\n@@\n-old\n+new"]) {
+      await h.before("apply_patch", { patchText });
+    }
+    if (capability !== "Write") await h.before("edit", { filePath: "file.txt", oldString: "old", newString: "new" });
+  }
+  const readOnly = await setup(t, { tools: ["Read"], permission: { edit: "allow" } });
+  await assert.rejects(readOnly.before("apply_patch", { patchText: "*** Add File: file.txt\n+new" }), /parent allowlist/);
+  const denied = await setup(t, { tools: ["Write"], permission: { edit: "deny" } });
+  await assert.rejects(denied.before("apply_patch", { patchText: "*** Add File: file.txt\n+new" }), /trusted permission/);
+});
+
+test("trusted Bash patterns check every command and unquoted argument value", async (t) => {
+  for (const bashAllowlist of [null, ["printf", "touch"]]) {
+    const h = await setup(t, { bashAllowlist, permission: { bash: {
+      "*": "deny", "printf *": "allow", "printf denied*": "deny", "touch *": "deny",
+    } } });
+    for (const command of ["printf safe; printf again", "printf safe | printf again", "printf 'literal; touch data'", "printf \"literal | touch data\""]) {
+      await h.before("bash", { command });
+    }
+    for (const command of [
+      "touch forbidden", "printf safe; touch forbidden", "printf safe | touch forbidden",
+      "printf safe || touch forbidden", "printf safe\ntouch forbidden", "printf 'denied value'",
+      "printf de'nied'", "printf\tdenied", 'printf "$VALUE"', 'printf "${VALUE}"',
+      "printf safe # '\ntouch forbidden\n# '", "printf safe > forbidden", "printf safe && touch forbidden",
+    ]) {
+      await assert.rejects(h.before("bash", { command }), /fullsend-hooks/, command);
+    }
+  }
+  const permissive = await setup(t, { permission: { bash: { "*": "allow", "touch *": "deny" } } });
+  for (const command of ["! touch forbidden", "if printf safe; then touch forbidden; fi", "while printf safe; do touch forbidden; done", "touc? forbidden", "hash -p /tmp/evil touch; touch forbidden", "export VALUE=evil; printf safe"]) {
+    await assert.rejects(permissive.before("bash", { command }), /Bash policy/, command);
+  }
+});
+
+test("Bash accepts single-quoted GraphQL literals without hiding executable syntax", async (t) => {
+  const h = await setup(t, { bashAllowlist: ["gh", "jq"] });
+  for (const command of [
+    "gh api graphql -f query='query($owner: String!) { repository(owner: $owner) { name } }'",
+    "gh api graphql -f query='{ viewer { login } }' | jq '.data.viewer'",
+    "gh api -f note='literal $(rm file); `rm file` | rm file \\ text'",
+  ]) {
+    await h.before("bash", { command });
+  }
+  for (const command of [
+    "gh api graphql -f query='{ viewer { login } }'; rm file",
+    "gh api -f query='literal'$(rm file)",
+    'gh api -f query="$(rm file)"',
+    'gh api -f query="\'$(rm file)\'"',
+    "'gh' api user", "g'h' api user", "gh api -f query='unterminated",
+    'gh api -f query="unterminated',
+  ]) {
+    await assert.rejects(h.before("bash", { command }), /fullsend-hooks/, command);
+  }
+});
+
+test("Bash accepts double-quoted literal punctuation and simple parameter expansion", async (t) => {
+  const h = await setup(t, { bashAllowlist: ["git", "gh", "fullsend-check-output"] });
+  await h.before("bash", { command: 'git commit -m "fix(ci): x"' });
+  await h.before("bash", { command: 'gh pr comment 1 --body "a; b"' });
+  await h.before("bash", { command: 'fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"' });
+  await h.before("bash", { command: 'fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"' });
+  for (const command of ['git commit -m "$(rm file)"', 'gh pr comment 1 --body "`rm file`"', 'gh pr comment 1 --body "a\\ b"', 'gh pr comment 1 --body "${VALUE:-fallback}"']) {
+    await assert.rejects(h.before("bash", { command }), /fullsend-hooks/, command);
+  }
+});
+
+test("LS-only parents can list directories without gaining file reads", async (t) => {
+  const h = await setup(t, { tools: ["LS"], permission: { "*": "deny", read: "allow" } });
+  writeFileSync(path.join(h.workspace, "private.txt"), "not available through LS");
+  symlinkSync(h.workspace, path.join(h.workspace, "directory-link"));
+  symlinkSync(path.join(h.workspace, "private.txt"), path.join(h.workspace, "file-link"));
+  for (const filePath of [h.workspace, ".", "directory-link"]) {
+    await h.before("read", { filePath });
+    await h.after("read", { filePath }, "directory listing");
+  }
+  for (const filePath of ["private.txt", "file-link"]) {
+    await assert.rejects(h.before("read", { filePath }), /not a directory/);
+  }
+  for (const filePath of ["missing", "private.txt/child"]) {
+    await assert.rejects(h.before("read", { filePath }), /target does not exist/);
+  }
+  await assert.rejects(h.before("read", {}), /missing read target/);
+  await assert.rejects(h.before("write", { filePath: "new.txt" }), /parent allowlist/);
+});
+
+test("native write paths resolve symlinks and protect runner state", async (t) => {
+  const h = await setup(t);
+  await h.before("write", { filePath: "new/file" });
+  symlinkSync(h.root, path.join(h.workspace, "outside"));
+  symlinkSync(path.join(h.root, "missing"), path.join(h.workspace,"broken"));
+  for (const filePath of ["../escape", "outside/escape", "broken", ".env", ".env.d/agent.env", ".fullsend/iteration.env", ".security/findings.jsonl", "runner-state/file", "bin/gh"]) {
+    await assert.rejects(h.before("write", { filePath }), /write path/);
+  }
+  for (const tool of ["edit", "multiedit"]) {
+    await assert.rejects(h.before(tool, { filePath: "../escape" }), /write path/);
+  }
+  await assert.rejects(h.before("apply_patch", { patchText: "*** Add File: ../escape\n+x" }), /write path/);
+  await assert.rejects(h.before("apply_patch", { patchText: "unrecognized" }), /unrecognized/);
+});
+
+test("relative tool paths cannot hide protected native destinations behind symlinks", async (t) => {
+  const h = await setup(t);
+  const repo = path.join(h.workspace, "repo");
+  mkdirSync(path.join(repo, "a/b"), { recursive: true });
+  symlinkSync("a/b", path.join(repo, "link"));
+  const hooks = await plugin({ directory: repo, worktree: repo });
+  const before = (tool, args) => hooks["tool.execute.before"]({ tool }, { args });
+  for (const existing of [false, true]) {
+    if (existing) writeFileSync(path.join(h.workspace, ".env"), "protected fixture");
+    for (const protectedPath of [".env", ".env.d/new.env", ".fullsend/file", ".security/file", "runner-state/file", "bin/gh"]) {
+      const filePath = `link/../../${protectedPath}`;
+      assert.equal(path.resolve(repo, filePath), path.join(h.workspace, protectedPath));
+      for (const tool of ["write", "edit", "multiedit"]) {
+        await assert.rejects(before(tool, { filePath }), /write path/, `${tool}: ${filePath}`);
+      }
+      for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
+        for (const target of [filePath, `${repo}/${filePath}`]) {
+          await assert.rejects(before("apply_patch", { patchText: `*** Add File: safe.txt\n+safe\n*** ${header}: ${target}` }), /write path/);
+        }
+      }
+    }
+  }
+  await before("write", { filePath: "link/../safe.txt" });
+});
+
+test("trusted file policies check the normalized native destination too", async (t) => {
+  const scoped = { "*": "deny", "src/*": "allow" };
+  const h = await setup(t, { permission: { "*": "deny", read: scoped, edit: scoped } });
+  mkdirSync(path.join(h.workspace, "src/a/b"), { recursive: true });
+  symlinkSync("src/a/b", path.join(h.workspace, "link"));
+  // Physically this names src/private.txt; native normalization names ../private.txt.
+  const filePath = "link/../../private.txt";
+  for (const tool of ["read", "write", "edit", "multiedit"]) {
+    await assert.rejects(h.before(tool, { filePath }), /trusted permission/, tool);
+  }
+  await assert.rejects(h.before("apply_patch", { patchText: `*** Add File: ${filePath}\n+private` }), /trusted permission/);
+  await h.before("write", { filePath: "src/a/../safe.txt" });
+});
+
+test("LS-only checks inspect the file selected by native relative normalization", async (t) => {
+  const h = await setup(t, { tools: ["LS"] });
+  mkdirSync(path.join(h.workspace, "a/b"), { recursive: true });
+  mkdirSync(path.join(h.workspace, "private.txt"));
+  symlinkSync("a/b", path.join(h.workspace, "link"));
+  writeFileSync(path.join(h.root, "private.txt"), "not available through LS");
+  await assert.rejects(h.before("read", { filePath: "link/../../private.txt" }), /not a directory/);
+  await h.before("read", { filePath: "link/../a" });
+});
+
+test("symlink targets resolve parent traversal before checking protected writes", async (t) => {
+  const h = await setup(t);
+  mkdirSync(path.join(h.workspace, "src"));
+  mkdirSync(path.join(h.workspace, ".fullsend"));
+  symlinkSync(path.join(h.workspace, ".fullsend"), path.join(h.workspace, "src/bridge"));
+  symlinkSync("bridge/../.env", path.join(h.workspace, "src/alias"));
+  symlinkSync(h.workspace + "/src/bridge/../.env", path.join(h.workspace, "src/absolute-alias"));
+  symlinkSync("bridge/../.env.d/new.env", path.join(h.workspace, "src/new-alias"));
+  for (const existing of [false, true]) {
+    if (existing) {
+      writeFileSync(path.join(h.workspace, ".env"), "protected fixture");
+      assert.equal(readFileSync(path.join(h.workspace, "src/alias"), "utf8"), "protected fixture");
+    }
+    for (const filePath of ["src/alias", "src/absolute-alias", "src/bridge/../.env", path.join(h.workspace, "src/alias"), "src/new-alias"]) {
+      for (const tool of ["write", "edit", "multiedit"]) {
+        await assert.rejects(h.before(tool, { filePath }), /write path/, `${tool}: ${filePath}`);
+      }
+      for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
+        await assert.rejects(h.before("apply_patch", { patchText: `*** Add File: safe.txt\n+safe\n*** ${header}: ${filePath}` }), /write path/);
+      }
+    }
+  }
+  symlinkSync("loop", path.join(h.workspace, "loop"));
+  await assert.rejects(h.before("write", { filePath: "loop" }), /symlink loop/);
+});
+
+test("trusted file policies follow symlinks before parent traversal", async (t) => {
+  const scoped = { "*": "deny", "src/*": "allow" };
+  const h = await setup(t, { permission: { "*": "deny", read: scoped, edit: scoped } });
+  mkdirSync(path.join(h.workspace, "src"));
+  mkdirSync(path.join(h.workspace, "private/sub"), { recursive: true });
+  symlinkSync("../private/sub", path.join(h.workspace, "src/bridge"));
+  symlinkSync("bridge/../file.txt", path.join(h.workspace, "src/alias"));
+  symlinkSync("bridge/../../src/new.txt", path.join(h.workspace, "src/safe-alias"));
+  const nested = await plugin({ directory: path.join(h.workspace, "src"), worktree: h.workspace });
+  for (const existing of [false, true]) {
+    if (existing) writeFileSync(path.join(h.workspace, "private/file.txt"), "outside trusted subtree");
+    for (const tool of ["read", "write", "edit", "multiedit"]) {
+      for (const filePath of ["src/alias", "src/bridge/../file.txt"]) {
+        await assert.rejects(h.before(tool, { filePath }), /trusted permission/, `${tool}: ${filePath}`);
+      }
+      await assert.rejects(nested["tool.execute.before"]({ tool }, { args: { filePath: "alias" } }), /trusted permission/);
+      await h.before(tool, { filePath: "src/safe-alias" });
+    }
+    for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
+      await assert.rejects(h.before("apply_patch", { patchText: `*** Add File: src/ok.txt\n+ok\n*** ${header}: src/alias` }), /trusted permission/);
+    }
+    await h.before("apply_patch", { patchText: "*** Add File: src/safe-alias\n+safe" });
+  }
+});
+
+test("patch targets use native header recognition and trimming", async (t) => {
+  const h = await setup(t);
+  for (const spacing of ["", " ", "\t"]) {
+    for (const suffix of ["", " ", "\t", "\r"]) {
+      for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
+        for (const target of [".env", ".env.d/agent.env", ".fullsend/iteration.env", ".security/findings.jsonl", "runner-state/file", "bin/gh", "../escape"]) {
+          const patchText = `*** Begin Patch\n*** Add File: safe.txt\n+safe\n*** ${header}:${spacing}${target}${suffix}\n*** End Patch`;
+          await assert.rejects(h.before("apply_patch", { patchText }), /write path/, patchText);
+        }
+      }
+    }
+  }
+  await h.before("apply_patch", { patchText: "*** Begin Patch\n*** Update File:\tsrc/old.txt \n*** Move to:src/new.txt\n@@\n-old\n+new\n*** End of File\n*** End Patch" });
+  await assert.rejects(h.before("apply_patch", { patchText: "*** Add File: safe\n+x\n*** Unknown File: .env" }), /unrecognized/);
+  await assert.rejects(h.before("apply_patch", { patchText: "*** Add File: \t" }), /missing write path/);
+});
+
+test("plugin setup failure does not signal activation", async (t) => {
+  const h = await setup(t);
+  const activation = path.join(h.root, "activation");
+  const notADirectory = path.join(h.root, "not-a-directory");
+  writeFileSync(notADirectory, "not a directory");
+  const invalidWorktree = path.join(notADirectory, "child");
+  h.cfg.activation = { path: activation, token: "runner-held-token" };
+  process.env.FULLSEND_OPENCODE_HOOK_CONFIG = JSON.stringify(h.cfg);
+
+  await assert.rejects(plugin({ directory: h.workspace, worktree: invalidWorktree }));
+  assert.throws(() => readFileSync(activation));
+});
+
+test("trusted file permissions use worktree-relative paths for every patch target", async (t) => {
+  const scoped = { "*": "deny", "src/*": "allow", "src/private*": "deny", "src/review*": "ask" };
+  const h = await setup(t, { permission: { "*": "deny", read: scoped, edit: scoped } });
+  mkdirSync(path.join(h.workspace, "src"));
+  writeFileSync(path.join(h.root, "secret.txt"), "outside the trusted scope");
+  symlinkSync(path.join(h.root, "secret.txt"), path.join(h.workspace, "src/external.txt"));
+  for (const tool of ["read", "write", "edit", "multiedit"]) {
+    for (const filePath of ["src/app.go", path.join(h.workspace, "src/app.go")]) {
+      await h.before(tool, { filePath });
+    }
+    for (const filePath of ["other/app.go", "src/private.go", "src/review.go"]) {
+      await assert.rejects(h.before(tool, { filePath }), /trusted permission/);
+    }
+  }
+  await h.before("apply_patch", { patchText: "*** Add File:src/one.go\n+one\n*** Update File: src/two.go\n*** Move to:\tsrc/three.go " });
+  for (const header of ["Add File", "Update File", "Delete File", "Move to"]) {
+    await assert.rejects(h.before("apply_patch", { patchText: `*** Add File: src/ok.go\n+ok\n*** ${header}: other/denied.go` }), /trusted permission/);
+  }
+  for (const tool of ["read", "edit"]) {
+    await assert.rejects(h.before(tool, { filePath: "src/external.txt" }), /trusted permission/);
+  }
+  const nested = await plugin({ directory: path.join(h.workspace, "src"), worktree: h.workspace });
+  await nested["tool.execute.before"]({ tool: "edit" }, { args: { filePath: "app.go" } });
+  await assert.rejects(nested["tool.execute.before"]({ tool: "edit" }, { args: { filePath: "../other/app.go" } }), /trusted permission/);
+});
+
+test("trusted file permissions resolve a symlinked worktree root", async (t) => {
+  const scoped = { "*": "deny", "src/*": "allow" };
+  const h = await setup(t, { permission: { "*": "deny", edit: scoped } });
+  mkdirSync(path.join(h.workspace, "src"));
+  const linkedWorktree = path.join(h.root, "linked-worktree");
+  symlinkSync(h.workspace, linkedWorktree);
+  const hooks = await plugin({ directory: linkedWorktree, worktree: linkedWorktree });
+
+  await hooks["tool.execute.before"]({ tool: "edit" }, { args: { filePath: "src/app.go" } });
+  await assert.rejects(
+    hooks["tool.execute.before"]({ tool: "edit" }, { args: { filePath: "other/app.go" } }),
+    /trusted permission/,
+  );
+});
+
+test("native Bash exit metadata prevents false success suppression", async (t) => {
+  const hooksDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../security/hooks");
+  const scripts = Object.fromEntries(["hook_io.py", "context_suppress_posttool.py"].map((file) =>
+    [file, readFileSync(path.join(hooksDir, file), "utf8")]));
+  const h = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["Bash"], Scripts: ["context_suppress_posttool.py"] }] }, scripts);
+  const text = "ok\tgithub.com/example/pkg\t0.1s\n";
+  for (const exit of [0, 1, -9, null]) {
+    const output = { output: text, metadata: { output: text, exit }, title: "go test ./..." };
+    await h.hooks["tool.execute.after"]({ tool: "bash", args: { command: "go test ./..." } }, output);
+    if (exit === 0) assert.notEqual(output.output, text, "successful output should be summarized");
+    else {
+      assert.equal(output.output, text, "failed verification output must not be suppressed");
+      assert.equal(output.metadata.exit, exit);
+    }
+  }
+});
+
+test("unsupported MCP-style tool results fail closed", async (t) => {
+  const h = await setup(t);
+  const output = { content: [{ type: "text", text: "original-secret" }], metadata: {} };
+  await assert.rejects(h.hooks["tool.execute.after"]({ tool: "mcp_tool", args: {} }, output), /unsupported tool result shape/);
+});
+
+test("scripts receive translated v2 payload, isolated environment and chained output", async (t) => {
+  const scripts = {
+    "pre.py": "import json,os,sys\np=json.load(sys.stdin)\nassert p['tool_name']=='Read' and p['tool_input']['file_path']=='file'\nassert 'PYTHONPATH' not in os.environ\nassert os.environ['FULLSEND_CANARY_TOKEN']=='trusted'\nassert os.environ['FULLSEND_TRACE_ID']=='trace-1'\n",
+    "post.py": "import json,sys\nassert sys.argv[1].startswith('--sandbox-workspace=')\np=json.load(sys.stdin)\nassert p['tool_response']==p['tool_result']\nv=p['tool_response']; v['output']=v['output'].replace('original','sanitized')\nprint(json.dumps({'hookSpecificOutput':{'updatedToolOutput':v}}))\n",
+  };
+  const h = await setup(t, {
+    env: { PATH: "/usr/bin:/bin", FULLSEND_CANARY_TOKEN: "trusted", FULLSEND_TRACE_ID: "trace-1" },
+    groups: [{ Phase: "PreToolUse", Tools: ["Read"], Scripts: ["pre.py"] },
+      { Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py", "post.py"] }],
+  }, scripts);
+  process.env.PYTHONPATH = h.root;
+  process.env.FULLSEND_CANARY_TOKEN = "untrusted";
+  process.env.FULLSEND_OPENCODE_HOOK_CONFIG = "null";
+  t.after(() => {
+    delete process.env.PYTHONPATH;
+    delete process.env.FULLSEND_CANARY_TOKEN;
+    delete process.env.FULLSEND_OPENCODE_HOOK_CONFIG;
+  });
+  await h.before("read", { filePath: "file" });
+  const result = await h.after("read", {}, "original");
+  assert.equal(result.output, "sanitized");
+  assert.deepEqual(result.metadata, {});
+  assert.deepEqual(result.attachments, []);
+});
+
+test("hook script names cannot escape the hook directory", async (t) => {
+  const h = await setup(t, { groups: [{ Phase: "PreToolUse", Tools: ["*"], Scripts: ["../escape.py"] }] });
+  await assert.rejects(h.before("read", {}), /invalid hook script name/);
+});
+
+test("script failure, malformed replies and tampering all fail closed", async (t) => {
+  for (const source of ["import sys; sys.exit(1)", "print('not json')", "print('{\"decision\":\"block\",\"reason\":\"secret\"}')"]) {
+    const h = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["*"], Scripts: ["hook.py"] }] }, { "hook.py": source });
+    await assert.rejects(h.after("read", {}, "secret original"), /fullsend-hooks/);
+  }
+  const h = await setup(t, {}, { "hook.py": "pass" });
+  writeFileSync(path.join(h.dir, "hook.py"), "# tampered");
+  await assert.rejects(h.before("bash", { command: "gh" }), /modified/);
+  const other = await setup(t);
+  mkdirSync(path.join(other.dir, "json"));
+  await assert.rejects(other.before("read", {}), /directory changed/);
+  const missing = await setup(t, { python: "/does-not-exist", groups: [{ Phase: "PreToolUse", Tools: ["*"], Scripts: ["hook.py"] }] }, { "hook.py": "pass" });
+  await assert.rejects(missing.before("read", {}), /failed to execute/);
+});
+
+test("nonempty hook replies must satisfy the wire contract on every scan path", async (t) => {
+  for (const reply of [
+    "null", "[]", "true", '"not a hook reply"', '{"decision":"blok"}', '{"continue":"false"}',
+    '{"reason":42}', '{"metadata":[]}', '{"hookSpecificOutput":null}',
+    '{"hookSpecificOutput":{"hookEventName":"wrong"}}', '{"hookSpecificOutput":{"additionalContext":false}}',
+    '{"unexpected":"field"}',
+  ]) {
+    const script = `print(${JSON.stringify(reply)})\n`;
+    const h = await setup(t, { groups: [
+      { Phase: "PreToolUse", Tools: ["*"], Scripts: ["hook.py"] },
+      { Phase: "PostToolUse", Tools: ["*"], Scripts: ["hook.py"] },
+    ] }, { "hook.py": script });
+    await assert.rejects(h.before("read", {}), /malformed hook reply/, reply);
+    await assert.rejects(h.after("read", {}, "private"), /malformed hook reply/, reply);
+    const failed = { type: "tool", tool: "read", state: { status: "error", input: {}, error: "private" } };
+    await assert.rejects(h.messages([failed]), /malformed hook reply/, reply);
+    assert.equal(failed.state.error, "Tool error withheld by Fullsend");
+  }
+  for (const reply of ["", "{}", '{"decision":"allow"}', '{"continue":true}']) {
+    const h = await setup(t, { groups: [{ Phase: "PreToolUse", Tools: ["*"], Scripts: ["hook.py"] }] },
+      { "hook.py": `print(${JSON.stringify(reply)})\n` });
+    await h.before("read", {});
+  }
+});
+
+test("denial diagnostics retain useful details without secrets or canaries", async (t) => {
+  const hooksDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "../../security/hooks");
+  const sanitizers = Object.fromEntries(["hook_io.py", "secret_redact_posttool.py"].map((file) =>
+    [file, readFileSync(path.join(hooksDir, file), "utf8")]));
+  const token = "ghp_" + "A".repeat(36);
+  const canary = "FULLSEND_REASON_CANARY";
+  const cases = [
+    { reason: "Only HTTPS URLs are allowed", expected: "Only HTTPS URLs are allowed" },
+    { reason: `Credential ${token} is not allowed`, expected: "Credential ghp_... is not allowed", absent: token },
+    { reason: `Token ${canary.toLowerCase()} detected`, expected: "blocked by deny.py", absent: "detected" },
+    { reason: "\u001b[31mDenied\u001b[0m\n::warning:: details", expected: "Denied : :warning: : details", absent: "\u001b" },
+    { reason: "x".repeat(4097), expected: "blocked by deny.py", absent: "xxx" },
+  ];
+  for (const entry of cases) {
+    const script = `import json\nprint(json.dumps({'decision':'block','reason':${JSON.stringify(entry.reason)}}))\n`;
+    const h = await setup(t, { env: { PATH: "/usr/bin:/bin", FULLSEND_CANARY_TOKEN: canary },
+      groups: [{ Phase: "PreToolUse", Tools: ["*"], Scripts: ["deny.py"] }],
+    }, { ...sanitizers, "deny.py": script });
+    await assert.rejects(h.before("read", {}), (error) => {
+      assert.ok(error.message.includes(entry.expected), error.message);
+      if (entry.absent) assert.ok(!error.message.includes(entry.absent), error.message);
+      return true;
+    });
+  }
+  const h = await setup(t, { groups: [{ Phase: "PreToolUse", Tools: ["*"], Scripts: ["deny.py"] }] },
+    { "deny.py": "print('{\"decision\":\"block\",\"reason\":\"do not reflect this\"}')" });
+  await assert.rejects(h.before("read", {}), (error) => {
+    assert.equal(error.message, "[fullsend-hooks] blocked by deny.py");
+    return true;
+  });
+  for (const redactor of [
+    "print('untrusted stdout')\ndef redact_text(text): return text, []\n",
+    "raise ImportError('untrusted interpreter error')\n",
+    "import time\ntime.sleep(3)\ndef redact_text(text): return text, []\n",
+  ]) {
+    const failed = await setup(t, { groups: [{ Phase: "PreToolUse", Tools: ["*"], Scripts: ["deny.py"] }] },
+      { ...sanitizers, "secret_redact_posttool.py": redactor,
+        "deny.py": "print('{\"decision\":\"block\",\"reason\":\"do not reflect this\"}')" });
+    await assert.rejects(failed.before("read", {}), (error) => {
+      assert.equal(error.message, "[fullsend-hooks] blocked by deny.py");
+      return true;
+    });
+  }
+});
+
+test("missing policy blocks all calls", async () => {
+  process.env.FULLSEND_OPENCODE_HOOK_CONFIG = "not json";
+  const hooks = await plugin({ directory: tmpdir() });
+  await assert.rejects(hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "true" } }), /policy unavailable/);
+});
+
+test("failed-tool history is sanitized before a model request or withheld on failure", async (t) => {
+  const source = "import json,sys\np=json.load(sys.stdin); v=p['tool_response']; v['output']=v['output'].replace('original-secret','masked')\nprint(json.dumps({'hookSpecificOutput':{'updatedToolOutput':v}}))\n";
+  const h = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py"] }] }, { "post.py": source });
+  const failed = { type: "tool", tool: "read", metadata: { raw: "original-secret" },
+    state: { status: "error", input: {}, error: "original-secret", metadata: { raw: "original-secret" } } };
+  const completed = { type: "tool", tool: "read", state: { status: "completed", output: "untouched" } };
+  await h.messages([failed, completed]);
+  assert.equal(failed.state.error, "masked");
+  assert.deepEqual(failed.state.metadata, {});
+  assert.deepEqual(failed.metadata, {});
+  assert.equal(completed.state.output, "untouched");
+  // Reprocessing retained history must remain safe.
+  await h.messages([failed]);
+  assert.equal(failed.state.error, "masked");
+
+  const broken = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py"] }] }, { "post.py": "import sys; sys.exit(7)" });
+  failed.state.error = "original-secret";
+  await assert.rejects(broken.messages([failed]), /blocked by post.py/);
+  assert.equal(failed.state.error, "Tool error withheld by Fullsend");
+  const failedStage = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py"] }] },
+    { "post.py": "print('{\"metadata\":{\"redact_error\":true}}')" });
+  failed.state.error = "original-secret";
+  await assert.rejects(failedStage.messages([failed]), /sanitizer failed/);
+  assert.equal(failed.state.error, "Tool error withheld by Fullsend");
+});
+
+test("unchanged historical errors reuse only successful sanitization", async (t) => {
+  const source = "import json,os,sys\np=json.load(sys.stdin)\nwith open(os.path.join(p['cwd'],'scans'),'a') as f: f.write('scan\\n')\nv=p['tool_response']; v['output']=v['output'].replace('secret','masked')\nprint(json.dumps({'hookSpecificOutput':{'updatedToolOutput':v}}))\n";
+  const h = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py"] }] }, { "post.py": source });
+  const part = () => ({ id: "part-1", callID: "call-1", type: "tool", tool: "bash",
+    metadata: { raw: "secret" },
+    state: { status: "error", input: { command: "gh api user" }, error: "secret", metadata: { raw: "secret" } } });
+  const failed = part();
+  const scans = () => readFileSync(path.join(h.workspace, "scans"), "utf8").trim().split("\n").length;
+  await h.messages([failed]);
+  assert.equal(failed.state.error, "masked");
+  await h.messages([failed]);
+  const reloaded = part();
+  await h.messages([reloaded]);
+  assert.equal(reloaded.state.error, "masked");
+  assert.deepEqual(reloaded.state.metadata, {});
+  assert.deepEqual(reloaded.metadata, {});
+  assert.equal(scans(), 1, "unchanged and reloaded history must not rerun Python");
+
+  failed.state.error = "new secret";
+  await h.messages([failed]);
+  assert.equal(failed.state.error, "new masked");
+  assert.equal(scans(), 2, "changed error text must be rescanned");
+  failed.state.metadata = { raw: "new secret metadata" };
+  await h.messages([failed]);
+  assert.equal(scans(), 3, "new metadata must not bypass sanitization");
+  failed.state.input.command = "gh api repos";
+  await h.messages([failed]);
+  assert.equal(scans(), 4, "changed tool input must be rescanned");
+
+  writeFileSync(path.join(h.dir, "post.py"), "# tampered");
+  await assert.rejects(h.messages([failed]), /modified/);
+});
+
+test("a failed historical-error scan is never cached", async (t) => {
+  const source = "import json,os,sys\np=json.load(sys.stdin)\nwith open(os.path.join(p['cwd'],'scans'),'a') as f: f.write('scan\\n')\nsys.exit(7)\n";
+  const h = await setup(t, { groups: [{ Phase: "PostToolUse", Tools: ["*"], Scripts: ["post.py"] }] }, { "post.py": source });
+  const failed = { id: "failed-part", type: "tool", tool: "bash",
+    state: { status: "error", input: {}, error: "secret" } };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    failed.state.error = "secret";
+    await assert.rejects(h.messages([failed]), /blocked by post.py/);
+    assert.equal(failed.state.error, "Tool error withheld by Fullsend");
+  }
+  assert.equal(readFileSync(path.join(h.workspace, "scans"), "utf8"), "scan\nscan\n");
+});
+
+test("command environment does not import shell startup code", async (t) => {
+  const h = await setup(t, { shellHome: "/sandbox", env: { PATH: "/usr/local/bin:/usr/bin:/bin" } });
+  process.env["BASH_FUNC_gh%%"] = "() { echo unexpected; }";
+  process.env.FULLSEND_OPENCODE_HOOK_CONFIG = "secret-policy";
+  const output = { env: {} };
+  try {
+    await h.hooks["shell.env"]({}, output);
+    assert.equal(output.env.BASH_ENV, "");
+    assert.equal(output.env.SHELLOPTS, "");
+    assert.equal(output.env["BASH_FUNC_gh%%"], "");
+    assert.equal(output.env.FULLSEND_OPENCODE_HOOK_CONFIG, "");
+    assert.equal(output.env.HOME, "/sandbox");
+    assert.equal(output.env.PATH, "/usr/local/bin:/usr/bin:/bin:" + path.join(h.workspace, "bin"));
+  } finally {
+    delete process.env["BASH_FUNC_gh%%"];
+    delete process.env.FULLSEND_OPENCODE_HOOK_CONFIG;
+  }
+});

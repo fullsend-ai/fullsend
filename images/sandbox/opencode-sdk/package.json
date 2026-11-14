@@ -1,0 +1,7 @@
+{
+  "name": "fullsend-opencode-sdk",
+  "private": true,
+  "dependencies": {
+    "@opencode-ai/plugin": "1.19.1"
+  }
+}

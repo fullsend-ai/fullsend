@@ -158,6 +158,8 @@ func TestEnvManifestCollector(t *testing.T) {
 				"RUST_LOG",
 			}},
 			{"opencode", []string{
+				"BUN_RUNTIME_TRANSPILER_CACHE_PATH",
+				"FULLSEND_OPENCODE_HOOK_CONFIG",
 				"FULLSEND_RUNTIME",
 				"GOOGLE_APPLICATION_CREDENTIALS",
 				"GOOGLE_CLOUD_LOCATION",
@@ -165,7 +167,9 @@ func TestEnvManifestCollector(t *testing.T) {
 				"HOME",
 				"OPENCODE_CONFIG_CONTENT",
 				"OPENCODE_CONFIG_DIR",
+				"OPENCODE_DISABLE_DEFAULT_PLUGINS",
 				"OPENCODE_DISABLE_EXTERNAL_SKILLS",
+				"OPENCODE_DISABLE_MODELS_FETCH",
 				"OPENCODE_DISABLE_PROJECT_CONFIG",
 			}},
 			{"pi", []string{

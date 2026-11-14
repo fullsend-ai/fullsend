@@ -54,8 +54,12 @@ func launchCommandVariants(t *testing.T, rt Runtime) []string {
 		}
 	case OpenCodeRuntime:
 		params := RunParams{SandboxName: "fs-launchenv-opencode", AgentBaseName: "triage", Model: "opus", Effort: "high", RepoDir: "/r"}
+		trusted := openCodeTrustedEnv{ConfigContent: `{"permission":{"*":"deny"}}`, CredentialsPath: "/runner/adc.json"}
+		withHooks := trusted
+		withHooks.Hooks = &openCodeHookConfig{}
 		return []string{
-			buildOpenCodeRunCommand(params, "triage", openCodeTrustedEnv{ConfigContent: `{"permission":{"*":"deny"}}`, CredentialsPath: "/runner/adc.json"}),
+			buildOpenCodeRunCommand(params, "triage", trusted),
+			buildOpenCodeRunCommand(params, "triage", withHooks),
 		}
 	case PiRuntime:
 		var cmds []string

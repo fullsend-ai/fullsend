@@ -2,12 +2,14 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -24,21 +26,33 @@ func fakeOpenshellOpenCode(t *testing.T, logPath, storeDir string) {
 	require.NoError(t, os.MkdirAll(storeDir, 0o755))
 	binDir := t.TempDir()
 	script := `#!/bin/sh
-echo "$@" >> '` + logPath + `'
+printf '%s\n' "$*" >> '` + logPath + `'
 if [ "$2" = "upload" ]; then
+  if [ -n "${FULLSEND_OPENCODE_TEST_FAIL:-}" ]; then
+    case "$6" in *"$FULLSEND_OPENCODE_TEST_FAIL"*) exit 41 ;; esac
+  fi
   case "$6" in /tmp/fs-upload-*/) cp -- "$5" "$6/"; exit $? ;; esac
   cp "$5" '` + storeDir + `'/"$(printf '%s' "$6" | tr '/' '_')"
   exit 0
 fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
+  if [ -n "${FULLSEND_OPENCODE_TEST_FAIL:-}" ]; then
+    case "$last" in *"$FULLSEND_OPENCODE_TEST_FAIL"*) exit 41 ;; esac
+  fi
   case "$last" in
     "mkdir -m 700 -- /tmp/"*|"mkdir -m 700 -- '/tmp/"*|"rm -f -- '/tmp/fs-upload-"*) sh -c "$last"; exit $? ;;
     "test -f '/tmp/fs-upload-"*)
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
-    *"opencode debug agent"*) printf '{"name":"triage","mode":"primary","permission":{"bash":"allow","read":"allow"}}'; exit 0 ;;
-    "opencode --version") echo "0.1.0"; exit 0 ;;
+    *"debug agent"*) printf '{"name":"triage","mode":"primary","permission":{"bash":"allow","read":"allow"}}'; exit 0 ;;
+    *FULLSEND_OPENCODE_BIN*--version*) echo "1.19.1"; exit 0 ;;
+    *fullsend-hook-sep*) printf '%s\n' '/usr/bin/python3|fullsend-hook-sep|/usr/bin:/bin'; exit 0 ;;
+    *sys.version_info*) echo "3.11"; exit 0 ;;
+    "printf '%s' "*HOME*) printf '%s' '/sandbox'; exit 0 ;;
+    *FULLSEND_TRACE_ID*) printf '%s' 'trace-id'; exit 0 ;;
+    "printf '%s' "*) printf '%s' '/usr/bin:/bin'; exit 0 ;;
+    *fullsend-env-sep*) printf '%s' 'probe-canary|fullsend-env-sep|Bash,Read'; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"*":"deny","bash":"allow","read":"allow","glob":"allow","grep":"allow","skill":"allow"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
   esac
   exit 0
@@ -76,14 +90,17 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 		skillDirs:   []string{skillDir},
 		plugins:     claudePlugins("/tmp/some-plugin"),
 	}
-	require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+	var bootstrapErr error
+	warning := captureStderr(t, func() { bootstrapErr = OpenCodeRuntime{}.Bootstrap(in) })
+	require.NoError(t, bootstrapErr)
+	assert.Contains(t, warning, `Plugin "some-plugin" (claude): skipped`)
 
 	r := OpenCodeRuntime{}
 	agentMD := string(storedUpload(t, store, r.openCodeAgentPath("triage")))
 	assert.Contains(t, agentMD, `"mode": "primary"`)
 	assert.Contains(t, agentMD, `"description": "Inspect an issue."`)
 	assert.Contains(t, agentMD, `"model": "opus"`)
-	assert.Contains(t, agentMD, `"bash": "allow"`)
+	assert.Contains(t, agentMD, `"gh *": "allow"`)
 	assert.Contains(t, agentMD, `"read": "allow"`)
 	assert.Contains(t, agentMD, `"skill": "allow"`)
 	assert.Contains(t, agentMD, "You are the triage agent. Use gh.")
@@ -93,7 +110,10 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 	logStr := string(log)
 	cfg := r.ConfigDir()
 	assert.Contains(t, logStr, "mkdir -p '"+cfg+"/agent' '"+cfg+"/skills' '"+cfg+"/plugins'")
-	assert.Contains(t, logStr, "opencode --version")
+	assert.Contains(t, logStr, openCodePinnedCommand("", " --version"))
+	assert.Contains(t, logStr, openCodePinnedCommand("OPENCODE_CONFIG_DIR="+shellQuote(cfg)+" ", " debug agent 'triage' 2>/dev/null"))
+	assert.Equal(t, 2, strings.Count(logStr, openCodeBinaryPin()), "Bootstrap preflight and agent verification must each pin OpenCode")
+	assert.NotContains(t, logStr, "/usr/local/bin/opencode --version")
 	// Skills go through the upload/tar path; the archive lands under skills/.
 	assert.Contains(t, logStr, cfg+"/skills/")
 	trustedEnv, ok := lookupOpenCodeTrustedEnv("sb")
@@ -102,13 +122,27 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 	assert.Equal(t, "/runner/adc.json", trustedEnv.CredentialsPath)
 }
 
-func TestOpenCodeBashAllowlistWarning(t *testing.T) {
+func TestOpenCodeBashPatterns(t *testing.T) {
 	t.Parallel()
+	assert.JSONEq(t, `{"*":"deny","gh":"allow","gh *":"allow","jq":"allow","jq *":"allow"}`, string(openCodeBashPatterns([]string{"gh", "jq"})))
+}
 
-	warning := openCodeBashAllowlistWarning([]string{"gh", "jq"})
-	assert.Contains(t, warning, "Bash allowlist (gh, jq) is recorded but not enforced")
-	assert.Contains(t, warning, "bare bash: \"allow\"")
-	assert.Contains(t, warning, "unbound-force/unbound-force#515")
+func TestOpenCodeRuntimeBootstrap_RejectsBashPatternsBeforeSandboxSetup(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	fakeOpenshellOpenCode(t, logPath, filepath.Join(work, "store"))
+	for _, entry := range []string{"git tag:*", "gh *", "gh:*", "*", "gh?", "[g]h", "/usr/bin/gh", "./gh", "gh;rm"} {
+		t.Run(entry, func(t *testing.T) {
+			definition := strings.Replace(openCodeTestAgentDef, "Bash(gh,jq)", "Bash("+entry+")", 1)
+			err := OpenCodeRuntime{}.Bootstrap(bootstrapInput{
+				sandboxName: "sb", agentPath: writeAgentFile(t, definition),
+			})
+			require.ErrorContains(t, err, "unsupported OpenCode Bash allowlist entry")
+			assert.Contains(t, err.Error(), "Bash(gh,jq)")
+			_, statErr := os.Stat(logPath)
+			assert.True(t, os.IsNotExist(statErr), "invalid entries must fail before sandbox commands")
+		})
+	}
 }
 
 func TestOpenCodeRuntimeBootstrap_EmptyAgentPath(t *testing.T) {
@@ -219,7 +253,7 @@ fi
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "opencode --version") echo "0.1.0"; exit 0 ;;
+    *FULLSEND_OPENCODE_BIN*--version*) echo "1.19.1"; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
   esac
   exit 0
@@ -311,7 +345,7 @@ func TestOpenCodePreflightVersionFailure(t *testing.T) {
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "opencode --version") echo "boom" >&2; exit 1 ;;
+    *FULLSEND_OPENCODE_BIN*--version*) echo "boom" >&2; exit 1 ;;
   esac
   exit 0
 fi
@@ -396,8 +430,8 @@ exit 0
 func TestOpenCodePathHelpers(t *testing.T) {
 	t.Parallel()
 	r := OpenCodeRuntime{}
-	assert.Equal(t, "/sandbox/opencode-config/agent/triage.md", r.openCodeAgentPath("triage"))
-	assert.Equal(t, "/sandbox/opencode-config/skills", r.openCodeSkillsPath())
+	assert.Equal(t, sandbox.SandboxOpenCodeConfig+"/agent/triage.md", r.openCodeAgentPath("triage"))
+	assert.Equal(t, sandbox.SandboxOpenCodeConfig+"/skills", r.openCodeSkillsPath())
 	assert.True(t, strings.HasPrefix(r.openCodeHooksExtensionPath(), r.ConfigDir()+"/plugins/"))
 }
 
@@ -408,6 +442,7 @@ func fakeOpenshellOpenCodeStream(t *testing.T, streamFixture string) {
 	recordOpenCodeTrustedEnv("sb", openCodeTrustedEnv{
 		ConfigContent:   `{"permission":{"*":"deny"}}`,
 		CredentialsPath: "/runner/adc.json",
+		Hooks:           openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", "/sandbox/workspace", &piAgentDef{}, nil),
 	})
 	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
 	binDir := t.TempDir()
@@ -479,6 +514,7 @@ func TestOpenCodeRuntimeRun_RestoresAgentAndRejectsFallback(t *testing.T) {
 		CredentialsPath: "/runner/adc.json",
 		AgentPath:       agentPath,
 		AgentDefinition: "---\n{\"mode\":\"primary\"}\n---\n",
+		Hooks:           openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", "/sandbox/workspace", &piAgentDef{}, nil),
 	})
 	t.Cleanup(func() { forgetOpenCodeTrustedEnv("sb") })
 	binDir := t.TempDir()
@@ -504,9 +540,75 @@ exit 0
 
 	calls, readErr := os.ReadFile(logPath)
 	require.NoError(t, readErr)
-	assert.Contains(t, string(calls), OpenCodeRuntime{}.ConfigDir()+"/mode", "agent overrides cleared before the run")
+	assert.Contains(t, string(calls), "refusing to run unhooked", "adapter checked before debug verification")
+	env, ok := lookupOpenCodeTrustedEnv("sb")
+	require.True(t, ok)
+	assert.Contains(t, string(calls), openCodeHookGuardCommand(env.Hooks), "adapter guard pins its utilities before restore")
 	assert.Contains(t, string(calls), agentPath, "agent file re-uploaded before the run")
 	assert.Contains(t, string(calls), "debug agent", "agent re-verified before the run")
+}
+
+func TestOpenCodeRuntimeRun_RestoreFailurePreventsLaunch(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		failure string
+		want    string
+	}{
+		{"hook integrity", "refusing to run unhooked", "verifying OpenCode hooks before agent restore"},
+		{"override cleanup", "rm -rf -- '/sandbox/opencode-config/agent'", "clearing OpenCode agent overrides"},
+		{"SDK cache", "OpenCode plugin SDK missing", "restoring OpenCode plugin SDK cache"},
+		{"agent upload", "test -f '/tmp/fs-upload-", "restoring agent definition"},
+		{"agent verification", "debug agent", "opencode debug agent"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			work := t.TempDir()
+			logPath := filepath.Join(work, "calls.log")
+			fakeOpenshellOpenCode(t, logPath, filepath.Join(work, "store"))
+			in := hooksBootstrapInput{bootstrapInput: bootstrapInput{
+				sandboxName: "sb", agentName: "triage", agentPath: writeAgentFile(t, openCodeTestAgentDef),
+			}}
+			require.NoError(t, OpenCodeRuntime{}.Bootstrap(in))
+			t.Setenv("FULLSEND_OPENCODE_TEST_FAIL", tt.failure)
+			params := RunParams{SandboxName: "sb", AgentBaseName: "triage", HooksSettingsPath: "enabled"}
+			exit, err := OpenCodeRuntime{}.Run(t.Context(), params, ui.New(&strings.Builder{}), time.Now(), &RunMetrics{})
+			require.ErrorContains(t, err, tt.want)
+			assert.Equal(t, -1, exit)
+			calls, err := os.ReadFile(logPath)
+			require.NoError(t, err)
+			assert.NotContains(t, string(calls), "--format json", "restore failure must prevent model invocation")
+		})
+	}
+}
+
+func TestOpenCodeRuntimeRun_UploadsRetryPrompt(t *testing.T) {
+	for _, failUpload := range []bool{false, true} {
+		t.Run(fmt.Sprintf("upload_failure=%t", failUpload), func(t *testing.T) {
+			work := t.TempDir()
+			logPath, store := filepath.Join(work, "calls.log"), filepath.Join(work, "store")
+			fakeOpenshellOpenCode(t, logPath, store)
+			recordOpenCodeTrustedEnv("sb", openCodeTrustedEnv{
+				Hooks: openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", sandbox.SandboxWorkspace, &piAgentDef{}, nil),
+			})
+			if failUpload {
+				t.Setenv("FULLSEND_OPENCODE_TEST_FAIL", openCodePromptFile)
+			}
+			prompt := "Previous attempt failed: '$HOME' $(touch marker)\n\n"
+			params := RunParams{SandboxName: "sb", AgentBaseName: "fix", RepoDir: "/repo", Prompt: prompt, Timeout: 30 * time.Second, OnEvent: func(AgentEvent) {}}
+			_, err := OpenCodeRuntime{}.Run(t.Context(), params, ui.New(&strings.Builder{}), time.Now(), &RunMetrics{})
+			calls, readErr := os.ReadFile(logPath)
+			require.NoError(t, readErr)
+			if failUpload {
+				require.ErrorContains(t, err, "uploading retry prompt")
+				assert.NotContains(t, string(calls), "--format json", "upload failure must prevent model invocation")
+			} else {
+				require.NoError(t, err)
+				promptPath := sandbox.SandboxWorkspace + "/" + openCodePromptFile
+				assert.Equal(t, prompt, string(storedUpload(t, store, promptPath)))
+				assert.Contains(t, string(calls), "<"+shellQuote(promptPath))
+				assert.NotContains(t, string(calls), prompt, "feedback must not be in an exec argument")
+			}
+		})
+	}
 }
 
 func TestOpenCodeRuntimeRun_TeesToOutputPath(t *testing.T) {
@@ -670,9 +772,10 @@ func TestOpenCodeVerifyAgent_FallbackDetected(t *testing.T) {
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    *"opencode debug agent"*) printf '{"name":"default","mode":"agent","permission":{"*":"allow"}}'; exit 0 ;;
-    "opencode --version") echo "0.1.0"; exit 0 ;;
+    *"debug agent"*) printf '{"name":"default","mode":"agent","permission":{"*":"allow"}}'; exit 0 ;;
+    *FULLSEND_OPENCODE_BIN*--version*) echo "1.19.1"; exit 0 ;;
     *fullsend-opencode-env-sep*) printf '%s' '{"permission":{"*":"deny","bash":"allow"}}|fullsend-opencode-env-sep|/runner/adc.json'; exit 0 ;;
+    "printf '%s' "*HOME*) printf '%s' '/sandbox'; exit 0 ;;
   esac
   exit 0
 fi

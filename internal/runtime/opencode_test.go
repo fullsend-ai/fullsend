@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -359,8 +360,8 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	// CLOUD_ML_REGION is mapped to GOOGLE_CLOUD_LOCATION for Vertex region parity.
 	assert.Contains(t, cmd, openCodeCloudLocationExport)
 
-	// Runner-owned opencode.json with instructions pointing at workspace
-	// AGENTS.md is rewritten after .env is sourced.
+	// Bootstrap files follow pi's writable layout; repo instructions are
+	// rewritten after .env without widening the pinned permission policy.
 	configPath := OpenCodeRuntime{}.ConfigDir() + "/" + openCodeConfigFile
 	assert.Contains(t, cmd, "> "+shellQuote(configPath))
 	expectedJSON := openCodeInstructionsConfig(params.RepoDir)
@@ -369,16 +370,16 @@ func TestBuildOpenCodeRunCommand(t *testing.T) {
 	configIdx := strings.Index(cmd, shellQuote(configPath))
 	envIdx := strings.Index(cmd, "&& "+openCodeEnvLoad)
 	require.NotEqual(t, -1, configIdx, "config write must be present")
-	require.NotEqual(t, -1, envIdx, ".env source must be present")
-	assert.Greater(t, configIdx, envIdx, "runner-owned opencode.json must be rewritten after .env is sourced")
-	assert.Contains(t, cmd, `"$`+openCodePrintfVar+`" '%s' `+shellQuote(expectedJSON))
+	require.NotEqual(t, -1, envIdx, ".env data load must be present")
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeBinaryPin()), envIdx, "opencode binary must be pinned before .env")
 	assert.Less(t, strings.Index(cmd, "&& "+openCodeTrustedEnvPin(trustedEnv)), envIdx, "trusted values must be pinned before .env")
+	assert.Greater(t, strings.Index(cmd, "> "+shellQuote(configPath)), envIdx, "config must be written after .env")
 	// HOME and PATH pins are embedded inside openCodeTrustedEnvPin; verify the
 	// pin variables appear before .env so a hostile .env cannot redirect them.
 	assert.Less(t, strings.Index(cmd, openCodeHomePinVar+`="$HOME"`), envIdx, "HOME pin must appear before .env")
 	assert.Less(t, strings.Index(cmd, openCodePathPinVar+`="$PATH"`), envIdx, "PATH pin must appear before .env")
 	assert.Greater(t, strings.Index(cmd, "&& "+openCodeTrustedEnvRestore()), envIdx, "trusted values must be restored after .env")
+	assert.Contains(t, openCodeTrustedEnvRestore(), "unset OPENCODE_PURE ")
 	// EnvExports re-pin (OPENCODE_CONFIG_DIR, OPENCODE_DISABLE_PROJECT_CONFIG) must
 	// appear after .env sourcing — a hostile .env could otherwise redirect config
 	// discovery or re-enable the workspace config walk.
@@ -427,6 +428,7 @@ func TestOpenCodeLaunch_HostileEnvDoesNotExecute(t *testing.T) {
 		"export LD_PRELOAD=/tmp/evil.so",
 		"export LD_LIBRARY_PATH=/tmp/evil",
 		"export LD_AUDIT=/tmp/evil.so",
+		"export OPENCODE_PURE=true",
 		"export " + openCodeBinaryVar + "=/bin/true",
 		"export " + openCodePathPinVar + "=/evil",
 		"export PATH=/sandbox/workspace/bin:$PATH",
@@ -434,6 +436,7 @@ func TestOpenCodeLaunch_HostileEnvDoesNotExecute(t *testing.T) {
 	control := envDataControlLines(f.ws)
 	f.write(t, ".env", hostile+"export KEPT=ok\n"+strings.Join(control, "\n")+"\n")
 	f.write(t, ".env.d/harness.env", hostile+"export FROM_ENVD=yes\n")
+	f.write(t, ".fullsend/iteration.env", "export OPENCODE_PURE=1\n")
 
 	trusted := openCodeTrustedEnv{ConfigContent: `{"permission":{"*":"deny"}}`, CredentialsPath: "/runner/adc.json"}
 	script := strings.Join([]string{
@@ -446,7 +449,7 @@ func TestOpenCodeLaunch_HostileEnvDoesNotExecute(t *testing.T) {
 		cliLaunch(openCodeBinaryVar, openCodeNodeVar),
 	}, " && ")
 	cmd := exec.Command("/bin/sh", "-c", protectedDirsShell(t, bin)+script)
-	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=/home/agent"}
+	cmd.Env = []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=/home/agent", "OPENCODE_PURE=true"}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -462,7 +465,7 @@ func TestOpenCodeLaunch_HostileEnvDoesNotExecute(t *testing.T) {
 			env[k] = v
 		}
 	}
-	for _, name := range []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "SUB", "TICK"} {
+	for _, name := range []string{"LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "SUB", "TICK", "OPENCODE_PURE"} {
 		_, ok := env[name]
 		assert.False(t, ok, "%s reached opencode", name)
 	}
@@ -472,6 +475,7 @@ func TestOpenCodeLaunch_HostileEnvDoesNotExecute(t *testing.T) {
 	assert.NotContains(t, stderr.String(), marker, "dropped lines are reported by number, not content")
 	assert.Contains(t, stderr.String(), "harness.env")
 	assert.Contains(t, stderr.String(), openCodePathPinVar+" is not taken from .env")
+	assert.Contains(t, stderr.String(), "OPENCODE_PURE is not taken from .env")
 }
 
 func TestOpenCodeCloudLocationExport(t *testing.T) {
@@ -487,6 +491,43 @@ func TestOpenCodeCloudLocationExport(t *testing.T) {
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "%s", out)
 		assert.Equal(t, tc.want, strings.TrimSpace(string(out)), "CLOUD_ML_REGION=%q", tc.region)
+	}
+}
+
+func TestOpenCodeLaunch_DropsExperimentalFlags(t *testing.T) {
+	for _, source := range []string{"inherited", ".env", ".env.d/harness.env", ".fullsend/iteration.env"} {
+		t.Run(source, func(t *testing.T) {
+			f := newEnvDataFixture(t)
+			flags := []string{
+				"OPENCODE_EXPERIMENTAL=true",
+				"OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true",
+				"OPENCODE_EXPERIMENTAL_FUTURE_FLAG=true",
+			}
+			f.write(t, ".env", "export KEPT=yes\n"+strings.Join(envDataControlLines(f.ws), "\n")+"\n")
+			var inherited []string
+			if source == "inherited" {
+				inherited = flags
+			} else {
+				content := "export " + strings.Join(flags, "\nexport ") + "\n"
+				if source == ".env" {
+					content += "export KEPT=yes\n"
+				}
+				f.write(t, source, content)
+			}
+			trusted := openCodeTrustedEnv{ConfigContent: `{"permission":{"task":"allow"}}`}
+			out, stderr, err := f.loadIn(t, "", inherited,
+				openCodeTrustedEnvPin(trusted)+" && "+openCodeTrustedEnvRestore()+" && env -0", openCodeEnvDataDrop...)
+			require.NoError(t, err, stderr)
+			assert.NotContains(t, out, "OPENCODE_EXPERIMENTAL", "experimental flags must not reach OpenCode")
+			assert.Contains(t, out, "KEPT=yes\x00", "ordinary environment exports still apply")
+			assert.Contains(t, out, "OPENCODE_CONFIG_CONTENT="+trusted.ConfigContent+"\x00", "foreground Task permissions stay intact")
+			if source != "inherited" {
+				for _, flag := range flags {
+					name, _, _ := strings.Cut(flag, "=")
+					assert.Contains(t, stderr, name+" is not taken from .env")
+				}
+			}
+		})
 	}
 }
 
@@ -511,6 +552,7 @@ func TestOpenCodeExitPipeline(t *testing.T) {
 		[]string{"/bin/sh", "-c", shellQuote("command -p printf real-output; exit 7")},
 		rcFile,
 		transcript,
+		nil,
 	)
 	cmd := exec.Command("sh", "-c", command)
 	out, err := cmd.CombinedOutput()
@@ -547,9 +589,11 @@ func TestOpenCodeTrustedEnvRestore(t *testing.T) {
 			// the trusted policy (CWE-15). Verify restore clears it.
 			`export OPENCODE_PERMISSION='{"edit":"allow","bash":"allow"}'`+"\n"+
 			`export OPENCODE_CONFIG=/tmp/hostile.json`+"\n"+
+			`export OPENCODE_PURE=true`+"\n"+
 			// Loader/linker injection vectors (CWE-426). Verify restore clears them.
 			`export LD_PRELOAD=/tmp/evil.so`+"\n"+
 			`export OPENCODE_TEST_HOME=/tmp/fake-home`+"\n"+
+			`export SHELL=/tmp/agent-shell`+"\n"+
 			// HOME and PATH hijack attempt — restore must re-pin them.
 			`export HOME=/tmp/agent-home`+"\n"+
 			`export PATH=/tmp/agent-bin:/usr/bin:/bin`+"\n",
@@ -565,23 +609,21 @@ func TestOpenCodeTrustedEnvRestore(t *testing.T) {
 	command := "HOME=" + shellQuote(origHome) + " PATH=" + shellQuote(origPath) +
 		" sh -c " + shellQuote(
 		openCodeTrustedEnvPin(trustedEnv)+" && "+envDataTrustedPin()+" && "+envDataLoad(envFile, openCodeEnvDataDrop...)+" && "+openCodeTrustedEnvRestore()+
-			` && printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$OPENCODE_CONFIG_CONTENT" "$GOOGLE_APPLICATION_CREDENTIALS" "$HOME" "$PATH" "$OPENCODE_PERMISSION" "$OPENCODE_CONFIG" "$LD_PRELOAD"`,
+			` && printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' "$OPENCODE_CONFIG_CONTENT" "$GOOGLE_APPLICATION_CREDENTIALS" "$HOME" "$PATH" "$OPENCODE_PERMISSION" "$OPENCODE_CONFIG" "$LD_PRELOAD" "${OPENCODE_PURE-unset}" "${SHELL-unset}"`,
 	)
 	cmd := exec.Command("sh", "-c", command)
-	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	cmd.Env = []string{"PATH=/usr/bin:/bin", "OPENCODE_PURE=true"}
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	require.NoError(t, err, "%s%s", out, stderr.String())
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	// Expect exactly 4 non-empty lines: CONFIG_CONTENT, GOOGLE_APPLICATION_CREDENTIALS,
-	// HOME, PATH. Dangerous vars (OPENCODE_PERMISSION, OPENCODE_CONFIG, LD_PRELOAD)
-	// must be empty and therefore collapse to blank lines that TrimSpace removes.
-	require.Len(t, lines, 4, "only four non-empty lines expected (pinned values); dangerous vars must be empty: %s", strings.Join(lines, "|"))
+	require.Len(t, lines, 9)
 	assert.Equal(t, `{"permission":{"*":"deny"}}`, lines[0], "OPENCODE_CONFIG_CONTENT must be restored from pin")
 	assert.Equal(t, "/runner/adc.json", lines[1], "GOOGLE_APPLICATION_CREDENTIALS must be restored from pin")
-	assert.Equal(t, origHome, lines[2], "HOME must be restored to the pre-.env value")
-	assert.Equal(t, origPath, lines[3], "PATH must be restored to the pre-.env value")
+	assert.Equal(t, origHome, lines[2], "HOME must be restored from before .env")
+	assert.Equal(t, origPath, lines[3], "PATH must be restored from before .env")
+	assert.Equal(t, []string{"", "", "", "unset", "unset"}, lines[4:], "dangerous values must be cleared; OPENCODE_PURE and SHELL must be unset")
 }
 
 func TestOpenCodeReadTrustedEnvErrors(t *testing.T) {
@@ -673,6 +715,7 @@ func TestOpenCodeValidateTrustedEnv(t *testing.T) {
 		{name: "string permission", env: openCodeTrustedEnv{ConfigContent: `{"permission":"deny"}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission policy"},
 		{name: "invalid action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":"sometimes"}}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission action"},
 		{name: "invalid pattern action", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{"*":"sometimes"}}}`, CredentialsPath: valid.CredentialsPath}, want: "invalid permission action"},
+		{name: "MCP server", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":"allow"},"mcp":{"server":{}}}`, CredentialsPath: valid.CredentialsPath}, want: "MCP servers are not supported"},
 		{name: "empty pattern map", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{}}}`, CredentialsPath: valid.CredentialsPath}, want: "must be an action or non-empty pattern map"},
 		{name: "non-string pattern value", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":{"*":1}}}`, CredentialsPath: valid.CredentialsPath}, want: "must be an action or non-empty pattern map"},
 		{name: "non-object non-string tool value", env: openCodeTrustedEnv{ConfigContent: `{"permission":{"bash":true}}`, CredentialsPath: valid.CredentialsPath}, want: "must be an action or non-empty pattern map"},
@@ -725,8 +768,70 @@ func TestBuildOpenCodeRunCommand_PromptOverride(t *testing.T) {
 		Prompt:        "Previous attempt failed: retry with the fix.",
 	}
 	cmd := buildOpenCodeRunCommand(params, "fix", openCodeTrustedEnv{})
-	assert.Contains(t, cmd, shellQuote("Previous attempt failed: retry with the fix."))
+	assert.NotContains(t, cmd, params.Prompt)
+	assert.Contains(t, cmd, "<"+shellQuote(sandbox.SandboxWorkspace+"/"+openCodePromptFile))
+	assert.Contains(t, cmd, openCodePromptGuard(sandbox.SandboxWorkspace+"/"+openCodePromptFile, params.Prompt))
+	assert.NotContains(t, cmd, "</dev/null")
 	assert.NotContains(t, cmd, shellQuote(DefaultAgentPrompt))
+}
+
+func TestBuildOpenCodeRunCommand_CommandSize(t *testing.T) {
+	t.Setenv(openCodeProviderEnv, "")
+	hooks := security.SandboxHookConfig{}
+	policy := openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", sandbox.SandboxWorkspace, &piAgentDef{
+		BashAllowlist: []string{"git", "go", "make", "jq", "python3"},
+	}, nil)
+	policy.Groups = security.HookPlan(hooks)
+	for file, content := range security.HookFiles(hooks) {
+		policy.Digests[file] = codexAssetSHA256(content)
+	}
+	policy.Python, policy.ShellHome = "/usr/bin/python3", "/sandbox"
+	policy.Env = map[string]string{
+		"PATH":             "/usr/bin:/bin",
+		"EGRESS_ALLOWLIST": "api.github.com,github.com,registry.npmjs.org,proxy.golang.org,sum.golang.org,storage.googleapis.com,example.com,api.example.com,registry.example.com",
+	}
+	policy.Activation = &openCodeHookActivation{Path: sandbox.SandboxWorkspace + "/" + openCodeHookActivationFile, Token: strings.Repeat("a", 64)}
+	trusted := openCodeTrustedEnv{
+		ConfigContent:   `{"permission":{"*":"deny","bash":"allow","read":"allow","task":"allow"}}`,
+		CredentialsPath: "/runner/adc.json", AgentPath: OpenCodeRuntime{}.openCodeAgentPath("fix"),
+		AgentDefinition: strings.Repeat("Agent instructions.\n", 2048), Hooks: policy,
+	}
+	for _, prompt := range []string{"", strings.Repeat("validation failed\n", 640), strings.Repeat("'", 10*1024) + "\nretry\n"} {
+		cmd := buildOpenCodeRunCommand(RunParams{RepoDir: sandbox.SandboxWorkspace + "/repo", Model: "opus", Prompt: prompt}, "fix", trusted)
+		assert.Less(t, len(cmd), 32*1024, "command with %d prompt bytes is %d bytes", len(prompt), len(cmd))
+		assert.Equal(t, 2, strings.Count(cmd, "refusing to run unhooked"), "both hook guards must remain")
+		t.Logf("prompt=%d bytes, command=%d bytes", len(prompt), len(cmd))
+	}
+}
+
+func TestOpenCodePromptGuard(t *testing.T) {
+	requirePinnedSha256sum(t)
+	prompt := "retry '$HOME' $(touch must-not-execute)\n\n"
+	promptPath := filepath.Join(t.TempDir(), "prompt.txt")
+	for _, state := range []string{"valid", "modified", "missing"} {
+		t.Run(state, func(t *testing.T) {
+			if state != "missing" {
+				content := prompt
+				if state == "modified" {
+					content += "tampered"
+				}
+				require.NoError(t, os.WriteFile(promptPath, []byte(content), 0o600))
+			} else {
+				require.NoError(t, os.Remove(promptPath))
+			}
+			cmd := exec.Command("/bin/sh", "-c", openCodeUtilityPin()+" && "+openCodePromptGuard(promptPath, prompt)+" && \"$"+openCodeCatVar+"\" <"+shellQuote(promptPath))
+			out, err := cmd.Output()
+			if state == "valid" {
+				require.NoError(t, err)
+				assert.Equal(t, prompt, string(out), "stdin transport preserves shell syntax and trailing newlines as data")
+			} else {
+				var exitErr *exec.ExitError
+				require.ErrorAs(t, err, &exitErr)
+				assert.Equal(t, openCodeAgentModifiedExit, exitErr.ExitCode())
+				assert.Empty(t, out, "changed or missing prompts must prevent invocation")
+			}
+		})
+	}
 }
 
 func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
@@ -735,9 +840,9 @@ func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
 	params := RunParams{
 		AgentBaseName:     "fix",
 		RepoDir:           "/repo",
-		HooksSettingsPath: "/sandbox/opencode-config/hooks.json",
+		HooksSettingsPath: "enabled",
 	}
-	cmd := buildOpenCodeRunCommand(params, "fix", openCodeTrustedEnv{})
+	cmd := buildOpenCodeRunCommand(params, "fix", openCodeTrustedEnv{Hooks: openCodeHookPolicy(OpenCodeRuntime{}.ConfigDir()+"/hooks", "/sandbox/workspace", &piAgentDef{}, nil)})
 	// The sha256 fail-closed guard is emitted before and after .env is sourced.
 	firstGuardIdx := strings.Index(cmd, "refusing to run unhooked")
 	lastGuardIdx := strings.LastIndex(cmd, "refusing to run unhooked")
@@ -747,6 +852,10 @@ func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(cmd, "refusing to run unhooked"))
 	assert.Less(t, firstGuardIdx, envIdx, "integrity guard must run before .env is sourced")
 	assert.Greater(t, lastGuardIdx, envIdx, "integrity guard must run again after .env is sourced")
+	unsetIdx := strings.Index(cmd, openCodeHookFunctionsUnset)
+	require.NotEqual(t, -1, unsetIdx)
+	assert.Greater(t, unsetIdx, envIdx, "shell functions must be unset after .env")
+	assert.Less(t, unsetIdx, lastGuardIdx, "shell functions must be unset before the second integrity guard")
 	assert.Contains(t, cmd, `"$`+openCodeSHA256Var+`"`)
 	assert.Contains(t, cmd, openCodeUtilityPin())
 	assert.Contains(t, cmd, OpenCodeRuntime{}.openCodeHooksExtensionPath())
@@ -756,16 +865,17 @@ func TestBuildOpenCodeRunCommand_HooksGuard(t *testing.T) {
 func TestBuildOpenCodeRunCommand_ResetsOverridesAfterEnv(t *testing.T) {
 	t.Setenv(openCodeProviderEnv, "")
 
-	env := openCodeTrustedEnv{AgentPath: "/sandbox/opencode-config/agent/triage.md", AgentDefinition: "---\n{}\n---\nbody\n"}
+	env := openCodeTrustedEnv{AgentPath: sandbox.SandboxOpenCodeConfig + "/agent/triage.md", AgentDefinition: "---\n{}\n---\nbody\n"}
 	cmd := buildOpenCodeRunCommand(RunParams{AgentBaseName: "triage", RepoDir: "/repo"}, "triage", env)
 	envIdx := strings.Index(cmd, "&& "+openCodeEnvLoad)
 	resetIdx := strings.Index(cmd, `"$`+openCodeRmVar+`" -rf -- `+OpenCodeRuntime{}.openCodeOverridePaths(false))
 	guardIdx := strings.Index(cmd, openCodeAgentGuard(env.AgentPath, env.AgentDefinition))
-	require.NotEqual(t, -1, resetIdx)
 	require.NotEqual(t, -1, guardIdx)
-	assert.Greater(t, resetIdx, envIdx, "reset must run after .env")
+	require.NotEqual(t, -1, resetIdx)
+	assert.Greater(t, resetIdx, envIdx, "overrides must be reset after .env")
+	assert.Greater(t, guardIdx, envIdx, "agent guard must run after .env")
 	configPath := OpenCodeRuntime{}.ConfigDir() + "/" + openCodeConfigFile
-	assert.Greater(t, strings.Index(cmd, "> "+shellQuote(configPath)), resetIdx, "the reset clears opencode.json before the runner rewrites it")
+	assert.Contains(t, cmd, "> "+shellQuote(configPath), "repo instructions must be restored after .env")
 	assert.Less(t, guardIdx, strings.Index(cmd, " run --format json"), "agent is checked before opencode starts")
 	assert.NotContains(t, cmd, shellQuote(env.AgentDefinition), "the agent body is not inlined (openshell argument limit)")
 }
@@ -881,27 +991,108 @@ func TestOpenCodeRuntimeRunRequiresBootstrapState(t *testing.T) {
 func TestOpenCodeHooksExtensionPath(t *testing.T) {
 	t.Parallel()
 	r := OpenCodeRuntime{}
-	assert.Equal(t, "/sandbox/opencode-config/plugins/fullsend-hooks.ts", r.openCodeHooksExtensionPath())
+	assert.Equal(t, sandbox.SandboxOpenCodeConfig+"/plugins/fullsend-hooks.ts", r.openCodeHooksExtensionPath())
 }
 
-func TestOpenCodeRunFailsClosedWhenHooksEnabledButAdapterMissing(t *testing.T) {
-	t.Parallel()
-	// When a harness enables hooks (HooksSettingsPath non-empty) but the
-	// adapter bytes are nil (not yet available — #515), Run must refuse to
-	// start rather than running unhooked.
-	require.Nil(t, openCodeHooksExtensionBytes(), "precondition: adapter bytes are nil until #515")
+func TestOpenCodeHookActivationGuard(t *testing.T) {
+	requirePinnedSha256sum(t)
+	out, err := exec.Command("sh", "-c", openCodeUtilityPin()+" && "+openCodeHookActivationGuard(nil)).CombinedOutput()
+	var exit *exec.ExitError
+	require.ErrorAs(t, err, &exit, "%s", out)
+	assert.Equal(t, openCodeHookActivationMissingExit, exit.ExitCode())
 
-	r := OpenCodeRuntime{}
-	params := RunParams{
-		AgentBaseName:     "fix",
-		RepoDir:           "/repo",
-		HooksSettingsPath: "/sandbox/opencode-config/hooks.json",
+	activation := &openCodeHookActivation{Path: filepath.Join(t.TempDir(), "activation"), Token: "runner-held-token"}
+	for _, tt := range []struct {
+		name  string
+		write bool
+		want  int
+	}{
+		{name: "active plugin signal", write: true},
+		{name: "missing plugin signal", want: openCodeHookActivationMissingExit},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.write {
+				require.NoError(t, os.WriteFile(activation.Path, []byte(activation.Token), 0o600))
+			}
+			out, err := exec.Command("sh", "-c", openCodeUtilityPin()+" && "+openCodeHookActivationGuard(activation)).CombinedOutput()
+			if tt.want == 0 {
+				require.NoError(t, err, "%s", out)
+			} else {
+				var exit *exec.ExitError
+				require.ErrorAs(t, err, &exit, "%s", out)
+				assert.Equal(t, tt.want, exit.ExitCode())
+			}
+			if tt.write {
+				require.NoError(t, os.Remove(activation.Path))
+			}
+		})
 	}
-	exitCode, err := r.Run(t.Context(), params, nil, time.Now(), &RunMetrics{})
-	require.Error(t, err)
-	assert.Equal(t, -1, exitCode)
-	assert.Contains(t, err.Error(), "hooks adapter not yet available")
-	assert.Contains(t, err.Error(), "#515")
+}
+
+func TestOpenCodeExitPipelineChecksActivationAfterFailedRun(t *testing.T) {
+	requirePinnedSha256sum(t)
+	for _, tt := range []struct {
+		name      string
+		active    bool
+		failTee   bool
+		failRC    bool
+		staleRC   bool
+		agentExit int
+		want      int
+	}{
+		{name: "successful hooked run", active: true},
+		{name: "failed hooked run", active: true, agentExit: 7, want: 7},
+		{name: "successful unhooked run", want: 99},
+		{name: "failed unhooked run", agentExit: 7, want: 99},
+		{name: "tee failure cannot skip missing activation", failTee: true, want: 99},
+		{name: "rc failure cannot skip missing activation", failRC: true, want: 99},
+		{name: "tee failure with active plugin", active: true, failTee: true, want: 1},
+		{name: "rc failure with active plugin", active: true, failRC: true, want: 1},
+		{name: "stale read-only rc cannot hide agent failure", active: true, staleRC: true, agentExit: 7, want: 7},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			activation := &openCodeHookActivation{Path: filepath.Join(dir, "activation"), Token: "runner-held-token"}
+			if tt.active {
+				require.NoError(t, os.WriteFile(activation.Path, []byte(activation.Token), 0o600))
+			}
+			rc := filepath.Join(dir, "rc")
+			if tt.staleRC {
+				require.NoError(t, os.WriteFile(rc, []byte("0\n"), 0o444))
+			}
+			if tt.failRC {
+				rc = filepath.Join(dir, "missing", "rc")
+			}
+			transcript := filepath.Join(dir, "transcript")
+			if tt.failTee {
+				transcript = dir
+			}
+			invocation := []string{"/bin/sh", "-c", shellQuote(fmt.Sprintf("printf output; exit %d", tt.agentExit))}
+			// Errexit must not short-circuit the post-launch checks either.
+			command := openCodeUtilityPin() + " && " + openCodeExitPipeline(invocation, rc, transcript, activation)
+			out, err := exec.Command("sh", "-e", "-c", command).CombinedOutput()
+			if tt.want == 0 {
+				require.NoError(t, err, "%s", out)
+			} else {
+				var exit *exec.ExitError
+				require.ErrorAs(t, err, &exit, "%s", out)
+				assert.Equal(t, tt.want, exit.ExitCode(), "%s", out)
+			}
+			if !tt.active {
+				assert.Contains(t, string(out), "detected an unhooked iteration")
+			} else if tt.failTee || tt.failRC {
+				assert.Contains(t, string(out), "could not be persisted")
+			}
+		})
+	}
+}
+
+func TestNewOpenCodeHookActivation(t *testing.T) {
+	first := newOpenCodeHookActivation()
+	second := newOpenCodeHookActivation()
+	assert.Equal(t, sandbox.SandboxWorkspace+"/"+openCodeHookActivationFile, first.Path)
+	assert.Len(t, first.Token, 64)
+	assert.NotEqual(t, first.Token, second.Token, "each iteration needs a distinct activation challenge")
 }
 
 func TestParseOpenCodeTranscriptFile(t *testing.T) {
