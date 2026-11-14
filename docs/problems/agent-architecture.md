@@ -227,6 +227,10 @@ The multi-agent framework space is expanding rapidly, with new entries appearing
 
 **Observable delegation, still a single coordinator ([Kiro Crew](../landscape.md#kiro-crew)).** Kiro Crew lets a parent conversation delegate to sub-agents that "return their results to the parent conversation," with every step — planning, sub-agent spawning, tool selection, approvals — observable live via the Agent Client Protocol. The observability is worth borrowing: making agent reasoning and tool calls inspectable in real time, rather than only after the fact in a transcript, is a good default regardless of coordination model. But the coordination model itself is the same star topology as MetaGPT and CrewAI — the parent conversation is the coordinator, and it consumes a sub-agent's returned result without the zero-trust composition fullsend's independent review sub-agents apply to each other's findings. It is a session-scoped pattern (one developer's crew, running on their own machine or a remote host they control) rather than a repo-scoped one, so it does not need to answer the question this document is built around: what authorizes a decision when no single human or agent is watching.
 
+Exact Pi extension tool permissions are decided in
+[ADR 0166](../ADRs/0166-select-pi-extension-tools-without-widening-access.md);
+the runtime must enforce them without widening access to default tools.
+
 ## Open questions
 
 - Should agents be stateless (fresh context per task) or stateful (accumulated knowledge of the codebase)? Stateless is safer (no poisoned state persists) but less efficient.
