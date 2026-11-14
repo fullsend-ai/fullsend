@@ -1,6 +1,7 @@
 package scaffold
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,9 +40,14 @@ func loadRootActionSteps(t *testing.T) map[string]actionStep {
 }
 
 // runDetectSandboxHost runs the "Detect sandbox host" step script with only
-// pathDir on PATH and returns the outputs it wrote to GITHUB_OUTPUT. When
-// endpoint is nil, OPENSHELL_GATEWAY_ENDPOINT is left unset.
-func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir string) map[string]string {
+// pathDir on PATH and returns its combined output, the values it wrote to
+// GITHUB_OUTPUT and GITHUB_ENV, and the command error. The maps are returned
+// on failure too, so rejection cases can assert what the step did and did
+// not write. When endpoint is nil, OPENSHELL_GATEWAY_ENDPOINT is left unset;
+// when workflowEndpoint is non-nil, FULLSEND_OPENSHELL_GATEWAY_ENDPOINT is
+// set to it (the channel the dispatch workflow passes from repository
+// variables).
+func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir string, workflowEndpoint *string) (string, map[string]string, map[string]string, error) {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
 	require.NoError(t, err)
@@ -51,25 +57,36 @@ func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir
 	require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o600))
 	outputPath := filepath.Join(dir, "github_output")
 	require.NoError(t, os.WriteFile(outputPath, nil, 0o600))
+	envPath := filepath.Join(dir, "github_env")
+	require.NoError(t, os.WriteFile(envPath, nil, 0o600))
 
-	env := []string{"PATH=" + pathDir, "GITHUB_OUTPUT=" + outputPath}
+	env := []string{"PATH=" + pathDir, "GITHUB_OUTPUT=" + outputPath, "GITHUB_ENV=" + envPath}
 	if endpoint != nil {
 		env = append(env, "OPENSHELL_GATEWAY_ENDPOINT="+*endpoint)
+	}
+	if workflowEndpoint != nil {
+		env = append(env, "FULLSEND_OPENSHELL_GATEWAY_ENDPOINT="+*workflowEndpoint)
 	}
 	cmd := exec.Command(bash, scriptPath)
 	cmd.Env = env
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(out))
 
-	raw, err := os.ReadFile(outputPath)
-	require.NoError(t, err)
-	outputs := map[string]string{}
-	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
-		if k, v, ok := strings.Cut(line, "="); ok {
-			outputs[k] = v
+	parse := func(path string) map[string]string {
+		raw, readErr := os.ReadFile(path)
+		require.NoError(t, readErr)
+		parsed := map[string]string{}
+		for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
+			if k, v, ok := strings.Cut(line, "="); ok {
+				parsed[k] = v
+			}
 		}
+		return parsed
 	}
-	return outputs
+	outputs, envWrites := parse(outputPath), parse(envPath)
+	if err != nil {
+		return string(out), outputs, envWrites, fmt.Errorf("%w: %s", err, out)
+	}
+	return string(out), outputs, envWrites, nil
 }
 
 func TestActionDetectSandboxHostStep(t *testing.T) {
@@ -85,24 +102,62 @@ func TestActionDetectSandboxHostStep(t *testing.T) {
 
 	empty := ""
 	remote := "https://gateway.example:8080"
+	other := "https://other-gateway.example:8080"
+	whitespace := "   "
+	injected := "https://gateway.example\nBASH_ENV=/tmp/x"
+	httpEndpoint := "http://gateway.example:8080"
 
 	cases := []struct {
 		name             string
 		endpoint         *string
+		workflowEndpoint *string
 		pathDir          string
 		wantLocal        string
 		wantInstallShell string
+		wantEndpoint     string
+		wantErr          bool
 	}{
 		{name: "endpoint unset sets up a local sandbox host", pathDir: withCLI, wantLocal: "true", wantInstallShell: "true"},
 		{name: "empty endpoint sets up a local sandbox host", endpoint: &empty, pathDir: withCLI, wantLocal: "true", wantInstallShell: "true"},
-		{name: "endpoint set with preinstalled CLI skips all local setup", endpoint: &remote, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false"},
-		{name: "endpoint set without CLI still installs the CLI", endpoint: &remote, pathDir: emptyPath, wantLocal: "false", wantInstallShell: "true"},
+		{name: "endpoint set with preinstalled CLI skips all local setup", endpoint: &remote, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
+		{name: "endpoint set without CLI still installs the CLI", endpoint: &remote, pathDir: emptyPath, wantLocal: "false", wantInstallShell: "true", wantEndpoint: remote},
+		{name: "workflow channel wins over the runner environment", endpoint: &remote, workflowEndpoint: &other, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: other},
+		{name: "empty workflow channel falls back to the runner environment", endpoint: &remote, workflowEndpoint: &empty, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
+		{name: "workflow channel alone skips local setup", workflowEndpoint: &remote, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
+		{name: "empty workflow channel and no runner endpoint sets up locally", workflowEndpoint: &empty, pathDir: withCLI, wantLocal: "true", wantInstallShell: "true"},
+		{name: "whitespace-only workflow endpoint is rejected", workflowEndpoint: &whitespace, pathDir: withCLI, wantErr: true},
+		{name: "newline-injected workflow endpoint is rejected", workflowEndpoint: &injected, pathDir: withCLI, wantErr: true},
+		{name: "non-https workflow endpoint is rejected", workflowEndpoint: &httpEndpoint, pathDir: withCLI, wantErr: true},
+		{name: "whitespace-only runner endpoint is rejected", endpoint: &whitespace, pathDir: withCLI, wantErr: true},
+		{name: "newline-injected runner endpoint is rejected", endpoint: &injected, pathDir: withCLI, wantErr: true},
+		{name: "non-https runner endpoint is rejected", endpoint: &httpEndpoint, pathDir: withCLI, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			outputs := runDetectSandboxHost(t, detect.Run, tc.endpoint, tc.pathDir)
+			out, outputs, envWrites, err := runDetectSandboxHost(t, detect.Run, tc.endpoint, tc.pathDir, tc.workflowEndpoint)
+			if tc.wantErr {
+				// A rejection must be the step's own validation failing, not
+				// any non-zero exit: the error annotation is printed, and
+				// nothing is published to GITHUB_ENV or GITHUB_OUTPUT.
+				require.Error(t, err)
+				assert.Contains(t, out, "::error::OPENSHELL_GATEWAY_ENDPOINT must be a single https:// URL")
+				_, wrote := envWrites["OPENSHELL_GATEWAY_ENDPOINT"]
+				assert.False(t, wrote, "a rejected endpoint must not be published to GITHUB_ENV")
+				_, decided := outputs["local"]
+				assert.False(t, decided, "a rejected endpoint must not produce a sandbox-host decision")
+				return
+			}
+			require.NoError(t, err)
 			assert.Equal(t, tc.wantLocal, outputs["local"])
 			assert.Equal(t, tc.wantInstallShell, outputs["install-openshell"])
+			// The propagation is asserted unconditionally: remote cases must
+			// publish the resolved endpoint, local cases must write nothing.
+			if tc.wantEndpoint != "" {
+				assert.Equal(t, tc.wantEndpoint, envWrites["OPENSHELL_GATEWAY_ENDPOINT"])
+			} else {
+				_, wrote := envWrites["OPENSHELL_GATEWAY_ENDPOINT"]
+				assert.False(t, wrote, "local setup must not publish a gateway endpoint")
+			}
 		})
 	}
 }

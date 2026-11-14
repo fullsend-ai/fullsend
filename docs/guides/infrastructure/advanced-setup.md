@@ -106,13 +106,43 @@ configuration, and installs the OpenShell CLI. That suits GitHub-hosted
 runners, which start empty.
 
 A self-hosted runner can instead use an OpenShell gateway that runs
-elsewhere. Set `OPENSHELL_GATEWAY_ENDPOINT` in the runner's environment to
-that gateway's `https://` endpoint. When it is set, the action skips the
-Podman installation, the rootless Podman configuration, and the local gateway
-configuration, and sandboxes are created on the remote gateway. If the
-`openshell` CLI is already on the runner's `PATH`, the action also skips the
-OpenShell CLI installer, which needs `sudo` and starts a local gateway
-service. Install the CLI version pinned in
+elsewhere. Configure the endpoint in one of these ways:
+
+1. Set the `OPENSHELL_GATEWAY_ENDPOINT` repository (or organization)
+   variable to the gateway's `https://` endpoint, on the repository where
+   the workflow run is triggered (the one whose Actions tab shows the
+   run); the dispatch workflow passes it to the agent action. In a
+   reusable workflow, `vars` is read from that calling repository, not
+   from the repository holding the issue or pull request. For the
+   standard per-repo install the calling repository is the work-item
+   repository itself; for runs driven from the `.fullsend` config
+   repository (prioritize, poller and harness-matrix runs) it is the
+   config repository. An organization variable visible to the calling
+   repository also works. When the run starts from a different repository
+   than the work item, a variable set only on the work-item repository is
+   not read.
+2. As a fallback, for fleet-managed runner images, set
+   `OPENSHELL_GATEWAY_ENDPOINT` in the runner's own process environment;
+   it applies whenever the variable from step 1 is unset.
+
+When an endpoint is configured, the action skips the Podman installation,
+the rootless Podman configuration, and the local gateway configuration,
+and sandboxes are created on the remote gateway. The gateway must
+already be registered on the runner: `openshell gateway add` stores the
+gateway's mTLS or authentication material, and the action never
+registers a gateway itself. Set the variable to the endpoint exactly as
+it was registered — OpenShell matches the configured endpoint against
+the registered gateways, and a value that does not match (for example
+`https://gw:443` where `https://gw` is registered) makes the sandbox
+fail later at the TLS or authentication handshake, with an error that
+does not point at the mismatch. The runner operator who registered the
+gateway can confirm the exact registered value. A non-empty repository
+or organization variable deliberately takes precedence over a value
+configured in the runner's process environment: repository
+administrators choose the gateway for their runs. The value must be a
+single `https://` URL with no whitespace. If the `openshell` CLI is already on the runner's `PATH`, the
+action also skips the OpenShell CLI installer, which needs `sudo` and
+starts a local gateway service. Install the CLI version pinned in
 `.github/scripts/openshell-version.sh` in the runner image.
 
 The action also needs the Python `jsonschema` package to validate agent

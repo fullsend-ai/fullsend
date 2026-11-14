@@ -1514,6 +1514,11 @@ jobs:
       - name: Run triage agent
         uses: ./.defaults/
         env:
+          # Remote OpenShell gateway endpoint from repository variables
+          # (#9044): passed via a dedicated channel so an unset variable
+          # (rendered as an empty string) does not shadow a value configured
+          # in the runner's own process environment.
+          FULLSEND_OPENSHELL_GATEWAY_ENDPOINT: ${{ vars.OPENSHELL_GATEWAY_ENDPOINT }}
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           REPO_FULL_NAME: ${{ github.repository }}
@@ -1645,6 +1650,7 @@ jobs:
       - name: Run code agent
         uses: ./.defaults/
         env:
+          FULLSEND_OPENSHELL_GATEWAY_ENDPOINT: ${{ vars.OPENSHELL_GATEWAY_ENDPOINT }}
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_KEY: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
@@ -1821,6 +1827,7 @@ jobs:
       - name: Run review agent
         uses: ./.defaults/
         env:
+          FULLSEND_OPENSHELL_GATEWAY_ENDPOINT: ${{ vars.OPENSHELL_GATEWAY_ENDPOINT }}
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_URL: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.html_url || fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           GITHUB_PR_URL: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.html_url || fromJSON(needs.route.outputs.event_payload).issue.html_url }}
@@ -2090,6 +2097,7 @@ jobs:
       - name: Run fix agent
         uses: ./.defaults/
         env:
+          FULLSEND_OPENSHELL_GATEWAY_ENDPOINT: ${{ vars.OPENSHELL_GATEWAY_ENDPOINT }}
           PR_NUMBER: ${{ steps.context.outputs.pr_number }}
           REPO_FULL_NAME: ${{ github.repository }}
           TARGET_BRANCH: ${{ steps.context.outputs.base_ref }}
@@ -2208,6 +2216,7 @@ jobs:
       - name: Run retro agent
         uses: ./.defaults/
         env:
+          FULLSEND_OPENSHELL_GATEWAY_ENDPOINT: ${{ vars.OPENSHELL_GATEWAY_ENDPOINT }}
           ORIGINATING_URL: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.html_url || fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           RETRO_COMMENT: ${{ fromJSON(needs.route.outputs.event_payload).comment.body || '' }}
           REPO_FULL_NAME: ${{ github.repository }}
@@ -2309,6 +2318,7 @@ jobs:
       - name: Run prioritize agent
         uses: ./.defaults/
         env:
+          FULLSEND_OPENSHELL_GATEWAY_ENDPOINT: ${{ vars.OPENSHELL_GATEWAY_ENDPOINT }}
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           FULLSEND_WORK_ITEM_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           REPO_FULL_NAME: ${{ github.repository }}
@@ -2690,6 +2700,7 @@ jobs:
       - name: Run harness agent
         uses: ./.defaults/
         env:
+          FULLSEND_OPENSHELL_GATEWAY_ENDPOINT: ${{ vars.OPENSHELL_GATEWAY_ENDPOINT }}
           GITHUB_ISSUE_URL: ${{ steps.dispatch-env.outputs.issue_url }}
           FULLSEND_WORK_ITEM_URL: ${{ steps.dispatch-env.outputs.issue_url }}
           FULLSEND_WORK_ITEM_KEY: ${{ steps.dispatch-env.outputs.work_item_key }}
