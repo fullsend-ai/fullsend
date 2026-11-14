@@ -124,6 +124,146 @@ func TestExtractRepoSlug(t *testing.T) {
 			expected: "group/issues/project",
 		},
 		{
+			name:     "GitLab project named packages",
+			rawURL:   "https://gitlab.com/group/sub/packages",
+			expected: "group/sub/packages",
+		},
+		{
+			name:     "GitLab nested subgroup named packages",
+			rawURL:   "https://gitlab.com/group/sub/packages/repo",
+			expected: "group/sub/packages/repo",
+		},
+		{
+			name:     "GitLab project named issues",
+			rawURL:   "https://gitlab.com/group/sub/issues",
+			expected: "group/sub/issues",
+		},
+		{
+			name:     "GitLab legacy route without /-/: deeply nested issues ID",
+			rawURL:   "https://gitlab.com/group/sub/issues/42",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: deeply nested merge_requests ID",
+			rawURL:   "https://gitlab.com/group/sub/merge_requests/12",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: commit SHA",
+			rawURL:   "https://gitlab.com/group/sub/commit/a1b2c3d4",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: compare range",
+			rawURL:   "https://gitlab.com/group/sub/compare/main...feat",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: releases version tag",
+			rawURL:   "https://gitlab.com/group/sub/releases/v1.2.0",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: wildcard blob subpath",
+			rawURL:   "https://gitlab.com/group/sub/blob/main/README.md",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: wildcard tree subpath",
+			rawURL:   "https://gitlab.com/group/sub/tree/main",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: wildcard commits subpath",
+			rawURL:   "https://gitlab.com/group/sub/commits/main",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: wildcard raw subpath",
+			rawURL:   "https://gitlab.com/group/sub/raw/main/file.txt",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: wildcard wikis subpath",
+			rawURL:   "https://gitlab.com/group/sub/wikis/home",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: jobs raw asset",
+			rawURL:   "https://gitlab.com/group/sub/jobs/99/raw",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: container_registry numeric ID",
+			rawURL:   "https://gitlab.com/group/sub/container_registry/123",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: tags version tag",
+			rawURL:   "https://gitlab.com/group/sub/tags/v1.2.0",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: tags edit action",
+			rawURL:   "https://gitlab.com/group/sub/tags/v1.2.0/edit",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: numeric calendar release tag",
+			rawURL:   "https://gitlab.com/group/sub/releases/2026.11",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: multi-segment release download",
+			rawURL:   "https://gitlab.com/group/sub/releases/v1.2.0/downloads/app.tgz",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: release edit action",
+			rawURL:   "https://gitlab.com/group/sub/releases/v1.2.0/edit",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: release new action",
+			rawURL:   "https://gitlab.com/group/sub/releases/new",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: compare with slashed branch",
+			rawURL:   "https://gitlab.com/group/sub/compare/main...feat/auth",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: issues new action",
+			rawURL:   "https://gitlab.com/group/sub/issues/new",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: pipelines new action",
+			rawURL:   "https://gitlab.com/group/sub/pipelines/new",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab legacy route without /-/: forks new action",
+			rawURL:   "https://gitlab.com/group/sub/forks/new",
+			expected: "group/sub",
+		},
+		{
+			name:     "GitLab nested subgroup under commit named my-repo preserved",
+			rawURL:   "https://gitlab.com/group/sub/commit/my-repo",
+			expected: "group/sub/commit/my-repo",
+		},
+		{
+			name:     "GitLab nested subgroup under commit with short hex preserved",
+			rawURL:   "https://gitlab.com/group/sub/commit/abc123",
+			expected: "group/sub/commit/abc123",
+		},
+		{
+			name:     "GitLab nested subgroup under jobs named my-repo preserved",
+			rawURL:   "https://gitlab.com/group/sub/jobs/my-repo",
+			expected: "group/sub/jobs/my-repo",
+		},
+		{
 			name:     "GitLab reserved non-repo route: groups",
 			rawURL:   "https://gitlab.example.com/groups/my-group",
 			expected: "",

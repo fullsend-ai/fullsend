@@ -37,15 +37,72 @@ var (
 		"snippets": {}, "uploads": {}, "users": {},
 	}
 
-	gitlabLegacyUIRoutes = map[string]struct{}{
-		"badges": {}, "blame": {}, "blob": {}, "branches": {}, "commit": {},
-		"commits": {}, "compare": {}, "container_registry": {}, "edit": {},
-		"forks": {}, "graphs": {}, "issues": {}, "jobs": {}, "labels": {},
-		"merge_requests": {}, "milestones": {}, "network": {}, "packages": {},
-		"pipelines": {}, "raw": {}, "releases": {}, "snippets": {}, "tags": {},
-		"tree": {}, "wikis": {},
+	gitlabReservedWildcardRoutes = map[string]struct{}{
+		"badges": {}, "blame": {}, "blob": {}, "commits": {},
+		"edit": {}, "files": {}, "new": {}, "raw": {},
+		"refs": {}, "tree": {}, "wikis": {},
+	}
+
+	gitlabLegacyEntityRoutes = map[string]struct{}{
+		"commit": {}, "compare": {}, "container_registry": {},
+		"forks": {}, "issues": {}, "jobs": {}, "labels": {},
+		"merge_requests": {}, "milestones": {}, "packages": {},
+		"pipelines": {}, "releases": {}, "snippets": {}, "tags": {},
 	}
 )
+
+func isDigitsOnly(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexCommitRef(s string) bool {
+	if len(s) < 7 || len(s) > 64 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+		if !isHex {
+			return false
+		}
+	}
+	return true
+}
+
+func looksLikeVersionTag(s string) bool {
+	if len(s) >= 2 && (s[0] == 'v' || s[0] == 'V') && s[1] >= '0' && s[1] <= '9' {
+		return true
+	}
+	return len(s) >= 1 && s[0] >= '0' && s[0] <= '9' && (strings.ContainsRune(s, '.') || isDigitsOnly(s))
+}
+
+func isLegacyGitLabEntitySubpath(route string, tail []string) bool {
+	if len(tail) == 0 {
+		return false
+	}
+	switch route {
+	case "issues", "merge_requests", "milestones", "pipelines", "snippets":
+		return isDigitsOnly(tail[0]) || (len(tail) == 1 && strings.EqualFold(tail[0], "new"))
+	case "jobs", "packages", "container_registry":
+		return isDigitsOnly(tail[0])
+	case "forks", "labels":
+		return len(tail) == 1 && strings.EqualFold(tail[0], "new")
+	case "commit":
+		return isHexCommitRef(tail[0])
+	case "compare":
+		return strings.Contains(strings.Join(tail, "/"), "..")
+	default: // "releases", "tags"
+		return looksLikeVersionTag(tail[0]) || (route == "releases" && len(tail) == 1 && strings.EqualFold(tail[0], "new"))
+	}
+}
 
 func parseGitLabInstance(rawURL string) (host, pathPrefix string) {
 	rawURL = strings.TrimSpace(rawURL)
@@ -194,9 +251,11 @@ func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
 		if idx := strings.Index(path, "/-/"); idx != -1 {
 			path = path[:idx]
 		} else {
-			// Legacy GitLab UI URLs omit "/-/": only truncate at a UI route word
-			// once past owner/repo (segment index >= 2) so nested subgroups named
-			// "blob" or "issues" remain intact.
+			// Legacy GitLab UI URLs omit "/-/": never split before segment index 2
+			// (keeping 2-segment subgroups such as "group/blob/project" intact); at
+			// index >= 2, reserved wildcard UI routes truncate immediately whereas
+			// entity routes (issues, packages, releases, etc.) truncate only when
+			// followed by a recognized entity ID or ref subpath.
 			path = strings.TrimSuffix(path, ".git")
 			path = strings.Trim(path, "/")
 			segs, ok := splitNonEmptyPathSegments(path)
@@ -204,7 +263,12 @@ func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
 				return "", ""
 			}
 			for i := 2; i < len(segs); i++ {
-				if _, isUI := gitlabLegacyUIRoutes[strings.ToLower(segs[i])]; isUI {
+				seg := strings.ToLower(segs[i])
+				if _, isWildcard := gitlabReservedWildcardRoutes[seg]; isWildcard {
+					segs = segs[:i]
+					break
+				}
+				if _, isEntity := gitlabLegacyEntityRoutes[seg]; isEntity && isLegacyGitLabEntitySubpath(seg, segs[i+1:]) {
 					segs = segs[:i]
 					break
 				}
