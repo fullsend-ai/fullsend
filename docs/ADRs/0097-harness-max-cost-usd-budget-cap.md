@@ -69,8 +69,8 @@ of an explicit `0`; clarifications and additive reserved keys stay in v1.
 
 ## Consequences
 
-- A repo can bound the worst-case spend of a retrying harness without
-  distorting `max_iterations` or `timeout_minutes`.
+- A repo can stop a retrying harness once its reported spend reaches a
+  cap, without distorting `max_iterations` or `timeout_minutes`.
 - The cap is soft — by one iteration when every iteration reports its
   cost (cost is only known at iteration end), and wider when they do
   not (a crashed or unpriced iteration contributes $0 — see the
