@@ -497,6 +497,7 @@ everything else stays `scenario` — never retried, never masked.
 | Infrastructure mode | Recognized by |
 |---------------------|---------------|
 | GitHub API rate limit: 429 or secondary-rate-limit 403 | `gh.IsRateLimitError` on the forge client's `APIError` |
+| GitHub server error: a REST 500–504 left after the client's retries, or an untyped GraphQL error with GitHub's generic "Something went wrong while executing your query" message | `gh.IsServerError` on the forge client's `APIError` or GraphQL error |
 | Pool capacity exhausted — every org rate-limited, denied or failed | `install.CapacityError` (all causes), when it reaches the classifier on its own |
 | Collaborator invitation pending (access requested, not yet granted) | the `gh.ErrInvitationPending` sentinel |
 | Terminal setup-poll exhaustion — repo never visible after creation, or dispatch workflow never settles | `behaviourfail.Mark` in the install ensure path |
@@ -516,9 +517,9 @@ context error to the `CapacityError`, and that join stays `scenario`, so a
 full pool earns no retry on this path.
 
 Everything else classifies as `scenario`: assertion failures (expected
-state not observed), unrecognized API errors (a 500 is a product or forge
-defect, not an environment condition), lease races (`errLeaseLost`,
-`errForkReplaced`), unexplained failures of the test repo's workflow runs,
+state not observed), unrecognized API errors (a 4xx other than a rate
+limit, or a typed GraphQL error such as `FORBIDDEN`), lease races
+(`errLeaseLost`, `errForkReplaced`), unexplained failures of the test repo's workflow runs,
 and errors whose message merely mentions a rate limit without a structural
 match. Unexplained workflow-run failures stay scenario deliberately: a
 dispatch workflow failing without its artifact may be exactly the product

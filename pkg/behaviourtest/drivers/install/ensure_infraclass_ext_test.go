@@ -116,9 +116,9 @@ func TestInfraClassWorkflowGetErrorSurfaced(t *testing.T) {
 			wantMarked: false,
 			wantMsg:    "polling fullsend.yaml on org/repo failed",
 		},
-		"server 500 stays unmarked and classifies scenario": {
+		"server 500 stays unmarked and classifies infra": {
 			err:        &gh.APIError{StatusCode: http.StatusInternalServerError, Message: "boom"},
-			wantClass:  behaviourfail.Scenario,
+			wantClass:  behaviourfail.Infrastructure,
 			wantMarked: false,
 			wantMsg:    "polling fullsend.yaml on org/repo failed",
 		},
