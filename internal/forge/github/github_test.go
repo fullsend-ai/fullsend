@@ -2818,6 +2818,37 @@ func TestWithoutAmbiguousRetry_DoesNotRetryServerError(t *testing.T) {
 	assert.Equal(t, int32(maxRetries), attempts.Load())
 }
 
+// TestServerErrorGiveUpMessages pins the wording of do()'s two 5xx
+// give-up errors. The behaviour harness builds its `github setup`
+// server-error signature from these prefixes and the "github api:
+// <status> " rendering (pkg/behaviourtest/drivers/install/common).
+func TestServerErrorGiveUpMessages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	client := newTestClient(t, srv)
+
+	tests := []struct {
+		name   string
+		ctx    context.Context
+		prefix string
+	}{
+		{"retries used up", context.Background(), RetryGiveUpPrefix},
+		{"not retried", forge.WithoutAmbiguousRetry(context.Background()), ServerErrorNotRetriedPrefix},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := client.DeleteRepo(tt.ctx, "org", "repo")
+			var apiErr *APIError
+			require.ErrorAs(t, err, &apiErr)
+			assert.Equal(t, http.StatusInternalServerError, apiErr.StatusCode)
+			assert.True(t, strings.HasPrefix(apiErr.Message, tt.prefix), "message %q", apiErr.Message)
+			assert.Contains(t, err.Error(), "github api: 500 "+tt.prefix)
+		})
+	}
+}
+
 func TestWithoutAmbiguousRetry_DoesNotRetryTimeout(t *testing.T) {
 	var attempts atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

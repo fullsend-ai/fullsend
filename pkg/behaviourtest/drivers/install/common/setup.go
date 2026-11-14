@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
 
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
@@ -150,7 +151,13 @@ func RunGitHubSetupWithOpts(
 //     attempts on ..." (retries used up) or "server error on ... (not
 //     retried: the request may have been applied)". Observed: HTTP 500 on PATCH
 //     git/refs during setup. This is the subprocess counterpart of
-//     gh.IsServerError's REST rule.
+//     gh.IsServerError's REST rule. The pattern is built from the
+//     client's gh.RetryGiveUpPrefix and gh.ServerErrorNotRetriedPrefix,
+//     so rewording those messages cannot silently stop the match. A
+//     GraphQL server error ("Something went wrong while executing your
+//     query", from createCommitOnBranch) is deliberately not matched:
+//     only the REST 5xx and the CANCEL reset were observed (#9497), so
+//     it stays scenario.
 //   - "setup: github stream reset" — GitHub reset the HTTP/2 stream with
 //     CANCEL while the client read a response, rendered by the Go HTTP/2
 //     transport as "stream error: stream ID N; CANCEL; received from
@@ -166,7 +173,9 @@ var githubSetupTransientSignatures = []struct {
 	reason string
 }{
 	{
-		re:     regexp.MustCompile(`\bgithub api: 50[0-4] (?:retryable error after \d+ attempts on |server error on )`),
+		re: regexp.MustCompile(`\bgithub api: 50[0-4] (?:` +
+			regexp.QuoteMeta(gh.RetryGiveUpPrefix) + `\d+ attempts on |` +
+			regexp.QuoteMeta(gh.ServerErrorNotRetriedPrefix) + `)`),
 		reason: "setup: github server error",
 	},
 	{

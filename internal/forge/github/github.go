@@ -433,6 +433,19 @@ func IsPATForbiddenError(err error) bool {
 
 const maxRetries = 5
 
+// do() ends a retryable failure it stops on with a message that starts
+// with one of these prefixes: RetryGiveUpPrefix when its retries are
+// used up, and ServerErrorNotRetriedPrefix when it does not resend a
+// 5xx because the request may already have been applied
+// (forge.WithoutAmbiguousRetry). The behaviour harness matches this
+// wording in `fullsend github setup` output, where no typed APIError
+// survives the subprocess boundary, so reword these only together with
+// the tests that pin them.
+const (
+	RetryGiveUpPrefix           = "retryable error after "
+	ServerErrorNotRetriedPrefix = "server error on "
+)
+
 func ambiguousRetryDisabled(ctx context.Context) bool {
 	return forge.AmbiguousRetryDisabled(ctx)
 }
@@ -591,7 +604,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		if resp.StatusCode >= 500 && ambiguousRetryDisabled(ctx) {
 			return nil, &APIError{
 				StatusCode: resp.StatusCode,
-				Message:    fmt.Sprintf("server error on %s %s (not retried: the request may have been applied)", method, path),
+				Message:    fmt.Sprintf(ServerErrorNotRetriedPrefix+"%s %s (not retried: the request may have been applied)", method, path),
 			}
 		}
 
@@ -613,7 +626,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		}
 
 		if attempt == maxRetries-1 {
-			msg := fmt.Sprintf("retryable error after %d attempts on %s %s (last delay: %s", maxRetries, method, path, delay)
+			msg := fmt.Sprintf(RetryGiveUpPrefix+"%d attempts on %s %s (last delay: %s", maxRetries, method, path, delay)
 			if retryAfter != "" {
 				msg += fmt.Sprintf(", Retry-After: %s", retryAfter)
 			}
