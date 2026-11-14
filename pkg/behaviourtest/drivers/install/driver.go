@@ -121,11 +121,16 @@ type LeaseDriver interface {
 }
 
 // LeaseVerifier is implemented by a LeaseDriver that can tell whether a
-// slot it leased is still its caller's. Scenario cleanup mutates the
-// repository and auxiliary repositories by name, and the name may
-// have been taken over by another holder (for example after GC deleted
-// a slow lessee's repo), so cleanup asks before each mutation and skips
-// it when the answer is no or cannot be determined.
+// slot it leased is still its caller's. Step-time mutations and scenario
+// cleanup both mutate the repository and auxiliary repositories by name,
+// and the name may have been taken over by another holder (for example
+// after GC deleted a slow lessee's repo), so the check is installed when
+// the scenario acquires its leased repository and reinstalled by the
+// After hook for cleanup, guarding both: a guarded step-time write fails
+// when the answer is no or cannot be determined, and cleanup skips the
+// mutation. A LeaseDriver that does not implement it therefore fails
+// guarded step-time writes (the scenario fails), not just has its
+// cleanup mutations skipped.
 type LeaseVerifier interface {
 	// StillOwnsLease reports whether the repository currently under
 	// (org, repo) is still the one this driver's lease claimed. It

@@ -437,6 +437,15 @@ func ambiguousRetryDisabled(ctx context.Context) bool {
 	return forge.AmbiguousRetryDisabled(ctx)
 }
 
+// replaySafeMethod reports whether a request with this method cannot
+// change server state, so the client may replay it after an ambiguous
+// failure (a transport timeout or a 5xx) even when the caller disabled
+// ambiguous retries for the operation: a replayed GET or HEAD reads
+// again, it never writes.
+func replaySafeMethod(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead
+}
+
 // checkRetryGuard runs the forge.WithRetryGuard guard on ctx, if any.
 func checkRetryGuard(ctx context.Context, method, path string) error {
 	guard := forge.RetryGuard(ctx)
@@ -555,7 +564,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 			// HTTP client timeout (Client.Timeout exceeded): retry
 			// with exponential backoff, same as transient server errors.
 			if isTimeoutError(ctx, err) {
-				if ambiguousRetryDisabled(ctx) {
+				if ambiguousRetryDisabled(ctx) && !replaySafeMethod(method) {
 					return nil, fmt.Errorf("http %s %s: %w (not retried: the request may have been applied)", method, path, err)
 				}
 				if attempt == maxRetries-1 {
@@ -588,7 +597,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		// Body already read or drained by isRetryable.
 		resp.Body.Close()
 
-		if resp.StatusCode >= 500 && ambiguousRetryDisabled(ctx) {
+		if resp.StatusCode >= 500 && ambiguousRetryDisabled(ctx) && !replaySafeMethod(method) {
 			return nil, &APIError{
 				StatusCode: resp.StatusCode,
 				Message:    fmt.Sprintf("server error on %s %s (not retried: the request may have been applied)", method, path),
