@@ -83,6 +83,13 @@ func validateBaseURL(rawURL string) error {
 	return fmt.Errorf("base URL %q uses insecure scheme %q; only https is allowed for non-loopback hosts", rawURL, u.Scheme)
 }
 
+// ValidateBaseURL applies the client's base URL rule: https, or any scheme
+// for a loopback host (localhost, 127.0.0.1, ::1). Callers that derive
+// other settings from the GitLab URL use it to accept the same URLs.
+func ValidateBaseURL(rawURL string) error {
+	return validateBaseURL(rawURL)
+}
+
 // New creates a new GitLab client with the given project access token.
 // Returns an error if the configured base URL uses an insecure scheme
 // for a non-loopback host.

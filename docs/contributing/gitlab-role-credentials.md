@@ -1772,7 +1772,7 @@ Leave these to the follow-up issues.
 
 ## Credential-routing security checklist
 
-Hold these four code invariants and the documentation-terminology rule
+Hold these five code invariants and the documentation-terminology rule
 below when changing `internal/gitlabroles` or GitLab credential handling
 in `internal/cli`. They are
 the review findings from [PR #7510](https://github.com/fullsend-ai/fullsend/pull/7510)
@@ -1852,6 +1852,38 @@ step on a repository installed before the role-only rollout.
       `FULLSEND_FORGE_TOKEN`.
 - [ ] Missing role secrets fail closed as `ErrUnconfigured`.
 
+### Bind the GitLab credential profile to the GitLab host only
+
+OpenShell resolves a provider's `GITLAB_TOKEN` placeholder at every
+endpoint of the provider profile (an OpenShell file that names a credential and the hosts it may be sent to)
+that issues it. `fullsend run --forge
+gitlab` therefore limits each imported profile that issues
+`GITLAB_TOKEN` to the one GitLab host and port it resolves from the first
+set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL`
+(`gl.ResolveBaseURL`, shared with the GitLab clients).
+
+The run stops before setup in these cases:
+
+- **Invalid GitLab URL** (every GitLab run): the first set of
+  `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL` has no
+  host, or is not an https URL; a non-https URL is accepted only for
+  localhost, 127.0.0.1 or ::1. Fix: set `FULLSEND_GITLAB_URL` to the
+  instance's https URL.
+- **No GitLab URL** (only when an imported provider profile issues
+  `GITLAB_TOKEN`): none of the three is set. Fix: set
+  `FULLSEND_GITLAB_URL` to the instance's https URL.
+- **Profile cannot be limited** (any imported provider profile): it uses
+  YAML merge keys (`<<`), alias keys, duplicate keys or several documents.
+  Fix: write the keys out explicitly.
+
+See `bindGitLabCredentialToForgeHost` in `internal/cli/gitlab_profile.go`.
+
+- [ ] The GitLab credential profile is bound only to the GitLab host and
+      port; no change adds a second host to a profile that issues
+      `GITLAB_TOKEN`.
+- [ ] New code that reads the GitLab URL goes through
+      `gl.ResolveBaseURL`.
+
 ### Keep fallback terminology consistent across docs
 
 Two distinct leftover terms share similar wording and are easy to
@@ -1867,7 +1899,8 @@ conflate. Use these terms, and do not mix them:
   run --forge gitlab` now fails closed unless the matching role secret
   is present.
 
-These two are described independently in four documents:
+These two, and the GitLab host binding above, are described
+independently in four documents:
 
 - this file (`docs/contributing/gitlab-role-credentials.md`)
 - [`docs/cli/run.md`](../cli/run.md)
@@ -1894,16 +1927,5 @@ These two are described independently in four documents:
 - `CI_DEBUG_TRACE` remains forbidden on jobs that hold any of these
   variables. YAML `workflow:` and job `rules:` deny it before any admit
   rule so the job never starts; the script-level guard is defense-in-depth.
-- The sandbox placeholder for the selected role credential resolves
-  only at the run's GitLab host. `bindGitLabForgeHost` in
-  `internal/cli/gitlab_profile.go` limits every imported profile that
-  issues `GITLAB_TOKEN` to one endpoint, the host and port of the URL
-  from `gitlab.ResolveURL`. It stops the run when no valid URL is set,
-  and it refuses such a profile when it uses YAML merge keys, alias or
-  non-scalar keys, duplicate keys, or more than one document. Keep one
-  URL resolver for the forge client, the status client and the profile
-  binding, and add no default host. Operators set `FULLSEND_GITLAB_URL`
-  when the sandbox reaches GitLab under another host name; see
-  [GitLab host in the sandbox credential profile](../guides/getting-started/configuring-gitlab.md#gitlab-host-in-the-sandbox-credential-profile).
 - When changing credential routing or rotation, follow the
   [credential-routing security checklist](#credential-routing-security-checklist).

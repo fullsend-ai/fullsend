@@ -512,8 +512,11 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │                   │  fullsend-gitlab-forge profile is        │
 │  │                   │  auto-generated from the forge host URL  │
 │  │                   │  — see #6615 — and each profile that     │
-│  │                   │  issues GITLAB_TOKEN is limited to the   │
-│  │                   │  forge host — see #8683, #9480)          │
+│  │                   │  issues GITLAB_TOKEN is bound only to    │
+│  │                   │  the forge host — see #8683. The run     │
+│  │                   │  stops if such a profile cannot be       │
+│  │                   │  limited to that host, or if no host     │
+│  │                   │  resolves while one is imported)         │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │

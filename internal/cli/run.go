@@ -1612,15 +1612,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// with the same ID wins via last-wins dedup. Inserted before the
 	// integrity check so providers referencing this ID are valid.
 	if forgePlatform == "gitlab" {
-		// One GitLab URL for the whole run (gl.ResolveURL). An invalid
-		// URL stops the run here, before any profile is imported; an
-		// unset one stops it in bindGitLabForgeHost below when a profile
-		// issues GITLAB_TOKEN (#9480).
-		forgeHost, forgePort, err := gl.ResolveForgeHostPort()
-		if err != nil {
-			printer.StepFail("Invalid GitLab URL")
-			return fmt.Errorf("resolving the GitLab URL (set FULLSEND_GITLAB_URL to the https URL of the GitLab instance this run uses): %w", err)
-		}
 		if profilePath, cleanupProfile, err := generateGitLabForgeProfile(); err != nil {
 			printer.StepWarn("Failed to auto-generate GitLab forge profile: " + err.Error())
 		} else if profilePath != "" {
@@ -1633,12 +1624,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// The profile above is imported but attached only when a provider
 		// names its type, and it carries no credential. The stock GitLab
 		// providers attach their own profiles, whose GITLAB_TOKEN
-		// placeholder OpenShell resolves only at those profiles' endpoints,
-		// so each of them is limited to exactly the run's GitLab host and
-		// port (#8683, #9480).
-		boundProfiles, cleanupBound, err := bindGitLabForgeHost(result.Profiles, forgeHost, forgePort, printer.StepInfo)
+		// placeholder OpenShell resolves at every endpoint of those
+		// profiles, so their endpoints are replaced with the configured
+		// forge host alone: the GitLab credential is bound only to the
+		// deployment's own GitLab instance (#8683).
+		// With no forge host, a profile that issues GITLAB_TOKEN stops the
+		// run rather than keep every endpoint it declares. A run loads no
+		// repos.yaml manifest, so, like the GitLab clients it builds (for
+		// example newForgeTrackerClient), it has no configured URL and reads
+		// the environment only.
+		forgeHost, forgePort, err := resolveGitLabCredentialForgeHost("")
 		if err != nil {
-			printer.StepFail("Failed to limit GitLab token profiles to the run's GitLab host")
+			printer.StepFail("Failed to resolve the GitLab forge host")
+			return err
+		}
+		boundProfiles, cleanupBound, err := bindGitLabCredentialToForgeHost(result.Profiles, forgeHost, forgePort, printer)
+		if errors.Is(err, errNoGitLabForgeHost) {
+			printer.StepFail("No GitLab forge host for an imported GitLab credential profile")
+			return err
+		}
+		if err != nil {
+			printer.StepFail("Failed to bind GitLab provider profiles to the forge host")
 			return fmt.Errorf("binding GitLab forge host to provider profiles: %w", err)
 		}
 		defer cleanupBound()
@@ -2440,12 +2446,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Resolve the forge egress entry for the sandbox SSRF allowlist.
 	// The runtime layer consumes this via SandboxHookConfig without
 	// importing forge-specific packages (#6615).
-	// NOTE: gl.ResolveForgeHostPort() is also called before profile
-	// import, which stops the run on an invalid URL; both calls are
-	// deterministic env-var reads.
+	// NOTE: gl.ResolveForgeHostPort() is also called in
+	// generateGitLabForgeProfile() for the L7 proxy profile; both
+	// calls are deterministic env-var reads.
 	var forgeEgressEntry string
 	if forgePlatform == "gitlab" {
-		if host, port, err := gl.ResolveForgeHostPort(); err == nil && host != "" {
+		if host, port := gl.ResolveForgeHostPort(); host != "" {
 			forgeEgressEntry = host + ":" + port
 		}
 	}

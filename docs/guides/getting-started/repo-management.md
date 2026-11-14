@@ -121,14 +121,29 @@ For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 (`repos install` and `repos status`) require `gitlab.url` whenever GitLab
 repos are present, including gitlab.com; there is no manifest default. Set
 it with `fullsend repos set gitlab.url <url>` before declaring the first
-GitLab repository. The env-var fallback chain
-(`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to
-gitlab.com) applies only to call paths without a manifest URL; it does
-not override manifest validation. A URL from these variables must use
-`https` (`http` only for a loopback host). `fullsend run` also limits
-each sandbox profile that issues `GITLAB_TOKEN` to this URL's host, with
-no gitlab.com default — see
-[GitLab host in the sandbox credential profile](configuring-gitlab.md#gitlab-host-in-the-sandbox-credential-profile). Self-hosted
+GitLab repository. These variables do not override manifest validation.
+
+Call paths without a manifest URL, such as `fullsend run` in CI, read the
+GitLab URL from the environment: the first one set of
+`FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL` wins. Each
+provider profile (an OpenShell file that names a credential and the hosts it may be sent to) that issues
+`GITLAB_TOKEN` is limited to that GitLab host and port. `fullsend run`
+stops before setup in these cases:
+
+- **Invalid GitLab URL** (every GitLab run): the value has no host, or
+  is not an https URL; a non-https URL is accepted only for localhost,
+  127.0.0.1 or ::1. The run names the variable. Fix: set
+  `FULLSEND_GITLAB_URL` to the instance's https URL.
+- **No GitLab URL** (only when an imported provider profile issues
+  `GITLAB_TOKEN`): none of the three is set. Fix: set
+  `FULLSEND_GITLAB_URL` to the instance's https URL.
+- **Profile cannot be limited** (any imported provider profile): it uses
+  YAML merge keys (`<<`), alias keys, duplicate keys or several documents.
+  Fix: write the keys out explicitly.
+
+See [Self-Hosted GitLab Instances](configuring-gitlab.md#self-hosted-gitlab-instances).
+
+Self-hosted
 instances that use a private CA need runner `tls-ca-file` plus separate
 sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
 

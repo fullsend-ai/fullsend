@@ -334,9 +334,30 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 | `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` | Preferred over `CI_COMMIT_SHA` in merge request pipelines. |
 | `CI_PIPELINE_ID` | Used as the run ID for status comment markers. |
 | `CI_MERGE_REQUEST_IID` | When set, status comments target the merge request notes API instead of issues. |
-| `FULLSEND_GITLAB_URL` | Override for `GITLAB_API_URL` and `CI_SERVER_URL` (e.g., for self-hosted instances). The GitLab URL must use `https` (`http` only for a loopback host). Every sandbox profile that issues `GITLAB_TOKEN` keeps only this URL's host and port, and a run that imports such a profile stops when no GitLab URL is set. Set it when the sandbox reaches GitLab under another host name than `CI_SERVER_URL`. See [GitLab host in the sandbox credential profile](configuring-gitlab.md#gitlab-host-in-the-sandbox-credential-profile). |
+| `FULLSEND_GITLAB_URL` | Override for `GITLAB_API_URL` and `CI_SERVER_URL` (e.g., for self-hosted instances). See how `fullsend run` reads these below the table. |
 | `FULLSEND_NOTE_TARGET` | Set to `merge_requests` to force MR note targeting when `CI_MERGE_REQUEST_IID` is unavailable (e.g., child pipelines, scheduled jobs). |
 | `CI_SERVER_TLS_CA_FILE` | GitLab Runner predefined path to a job-local PEM CA bundle when `tls-ca-file` is set. Consumed by poll/agent jobs and the GitLab Go client. See [Private CA](#private-ca-self-hosted-gitlab). |
+
+How `fullsend run` reads the GitLab URL (a *provider profile* is an
+OpenShell file that names a credential and the hosts it may be sent to):
+
+- The first one set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and
+  `CI_SERVER_URL` wins; later ones are not read.
+- Profiles that issue `GITLAB_TOKEN` are limited to your GitLab host and
+  port. See [Self-Hosted GitLab Instances](configuring-gitlab.md#self-hosted-gitlab-instances).
+
+The run stops before setup in these cases:
+
+- **Invalid GitLab URL** (every GitLab run): the value has no host, or
+  is not an https URL; a non-https URL is accepted only for localhost,
+  127.0.0.1 or ::1. The run names the variable. Fix: set
+  `FULLSEND_GITLAB_URL` to the instance's https URL.
+- **No GitLab URL** (only when an imported provider profile issues
+  `GITLAB_TOKEN`): none of the three is set. Fix: set
+  `FULLSEND_GITLAB_URL` to the instance's https URL.
+- **Profile cannot be limited** (any imported provider profile): it uses
+  YAML merge keys (`<<`), alias keys, duplicate keys or several documents.
+  Fix: write the keys out explicitly.
 
 For a generated scaffold, `repos install` provisions the protected
 role-credential secrets (`FULLSEND_GITLAB_POLLER_TOKEN`,
