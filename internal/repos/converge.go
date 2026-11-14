@@ -400,12 +400,13 @@ var gitlabMaskableRe = regexp.MustCompile(`^[A-Za-z0-9_+=/@:.~-]{8,}$`)
 // inference.project the effective configuration declares; cfg carries the
 // repository's effective inputs, see withVertexInputs), --openai-api-key
 // for openai-api-key. For openai-wif, the GCP project supplies the
-// optional GCP pair used by Vertex sub-agents.
+// optional GCP pair used by Vertex sub-agents. A gateway-only repository
+// (empty auth) consumes no credential inputs.
 func inferenceInputsSupplied(cfg ConvergeConfig, auth string) bool {
 	if auth == InferenceAuthOpenAIAPIKey {
 		return cfg.OpenAIAPIKey != ""
 	}
-	return cfg.InferenceProject != ""
+	return usesVertexCredentials(auth) && cfg.InferenceProject != ""
 }
 
 // inferenceInputFlags names the inputs that supply the credentials for
@@ -949,18 +950,11 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			defer func() { <-sem }()
 
 			resolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
-			// A missing inference.auth selection is a configuration error
-			// for this repository only; report it before any forge call so
-			// nothing is probed or written for it.
-			if authErr := resolved.RequireInferenceAuth(); authErr != nil {
-				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: authErr}
-				return
-			}
 			// Load the declared preset before any forge call so a hash
 			// mismatch or invalid source fails the repo without applying
 			// changes, and so the effective infrastructure values (mint
-			// URL, region, Vertex inputs) come from the same layers that
-			// are committed (#8220).
+			// URL, region, Vertex inputs) and any inference.gateway route
+			// come from the same layers that are committed (#8220).
 			var presetData []byte
 			if resolved.Config != "" {
 				data, loadErr := store.Load(ctx, resolved.Config, resolved.ConfigHash)
@@ -970,6 +964,14 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				}
 				presetData = data
 				resolved.ProposedBase = data
+			}
+			// A missing inference.auth selection (without an
+			// inference.gateway route) is a configuration error for this
+			// repository only; report it before any forge call so nothing
+			// is probed or written for it.
+			if authErr := resolved.RequireInferenceAuth(); authErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: authErr}
+				return
 			}
 			if infraErr := resolved.applyEffectiveInfrastructure(); infraErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: infraErr}
@@ -1033,7 +1035,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
 				return
 			}
-			probed, probeErr := ProbeComponentsForAuth(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, resolved.InferenceAuth, fc, expectedVars)
+			probed, probeErr := ProbeComponentsForConfig(ctx, fc.Client, resolved, fc, expectedVars)
 			if probeErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: probeErr}
 				return
@@ -1328,6 +1330,42 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 					d.repo.Owner, d.repo.Repo, auth,
 					strings.Join(missingSecretNames(d.components, auth), ", "),
 					inferenceInputFlags(auth)),
+			}
+			continue
+		}
+
+		// A gateway-only repository in the api-key mode authenticates with
+		// FULLSEND_INFERENCE_GATEWAY_API_KEY, which no flag supplies and
+		// setup never writes: the repository admin sets it. Runs fail
+		// without it, so report it before any writes.
+		if d.resolved.requiresGatewayAPIKey() && !hasComponent(d.components, "secret:"+forge.SecretInferenceGatewayAPIKey) {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("%s/%s routes inference through inference.gateway with auth %s: missing %s; install does not write it, so set it as a repository secret (a masked CI/CD variable on GitLab)",
+					d.repo.Owner, d.repo.Repo, config.GatewayAuthAPIKey, forge.SecretInferenceGatewayAPIKey),
+			}
+			continue
+		}
+
+		// The admin-set gateway key must also be usable by jobs; an
+		// existing but unusable variable (file-type, unmasked, unprotected)
+		// is rejected before any writes, without naming the value.
+		gatewayKeyDefect := ""
+		if d.resolved.requiresGatewayAPIKey() {
+			for _, c := range d.components {
+				if c.Name == "secret:"+forge.SecretInferenceGatewayAPIKey && c.Present && !c.Match {
+					gatewayKeyDefect = c.Actual
+					break
+				}
+			}
+		}
+		if gatewayKeyDefect != "" {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: fmt.Errorf("%s/%s: the existing %s variable is not a masked, protected environment variable available to all environments (%s); fix it before installing",
+					d.repo.Owner, d.repo.Repo, forge.SecretInferenceGatewayAPIKey, gatewayKeyDefect),
 			}
 			continue
 		}

@@ -214,8 +214,15 @@ if your scripts used them.
 (`vertex-wif` or `openai-api-key`; `openai-wif` is GitHub only and is
 rejected for GitLab projects). It can be set under `defaults`, in the
 `gitlab` section, or on the project's entry. There is no default: when the
-manifest does not provide a selection, `repos install` fails before
-changing the project. See
+manifest does not provide a selection and no complete `inference.gateway`
+block applies, `repos install` fails before changing the project. A
+project that routes inference through a complete `inference.gateway` block
+needs no `inference.auth`. On GitLab the gateway route must use
+`auth: api-key`, because the `oidc` mode is GitHub only and is rejected for a
+gateway-only project. Set `FULLSEND_INFERENCE_GATEWAY_API_KEY` as a masked,
+protected CI/CD variable available to all environments (not a file-type
+variable) before `repos install`; install does not write it. See
+[Inference gateway route](../../cli/repos.md#inference-gateway-route) and
 [Repository management § Inference authentication](repo-management.md#inference-authentication).
 
 For an installation without Vertex credentials, run

@@ -357,6 +357,8 @@ Secrets and variables are deployed on the target repository.
   `env.runner`
   ([setup](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github))
 
+Gateway-only repositories (a complete `inference.gateway` block and no `inference.auth`) need no provider secrets and no `FULLSEND_GCP_*` secrets or variables. In the gateway's `api-key` mode, `repos install` and `repos status` check that `FULLSEND_INFERENCE_GATEWAY_API_KEY` exists and, on GitLab, that it is a masked, protected, non-file-type variable available to all environments. Install reports a missing or unusable key before any write. See [Inference gateway route](../../cli/repos.md#inference-gateway-route).
+
 Repos whose `inference.auth` is `openai-wif` need no fullsend-managed inference secret: they authenticate with the user-managed `FULLSEND_OPENAI_*` identifier variables or `inference.openai` configuration, and the GCP secrets above are written only when Vertex sub-agents are configured.
 
 **Target repo variables:**
@@ -448,7 +450,7 @@ access instead of Maintainer.
 - `FULLSEND_FAILED_KEYS_FAST` — Legacy; superseded by `failed_keys_fast` in `state.json` on `fullsend-poll-state-slash`
 - `FULLSEND_FAILED_KEYS_FULL` — Legacy; superseded by `failed_keys_full` in `state.json` on `fullsend-poll-state-events`
 
-**Inference variables (required when inference is configured):**
+**Inference variables (required when inference is configured; a gateway-only project needs none of the GCP variables below, only `FULLSEND_INFERENCE_GATEWAY_API_KEY` in the `api-key` mode):**
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name for inference (stored as a CI/CD secret, protected + masked)
 - `FULLSEND_GCP_REGION` — GCP region for inference (e.g., `us-central1`)

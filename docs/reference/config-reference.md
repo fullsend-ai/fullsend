@@ -837,7 +837,12 @@ flag is an error). See
     the same run-scoped provider placeholder, egress profile and guards as
     the OIDC token. The key is not rotated, so nothing is re-seeded. The
     block applies on local runs too, so the runner owns the route there
-    as well.
+    as well. For `fullsend repos install`, a complete block satisfies the
+    `inference.auth` requirement. The `oidc` mode is rejected for a
+    gateway-only GitLab repository, and the `api-key` mode needs
+    `FULLSEND_INFERENCE_GATEWAY_API_KEY` set in advance (a masked,
+    protected CI/CD variable on GitLab). See
+    [Inference gateway route](../cli/repos.md#inference-gateway-route).
   - `messages_auth_header` — the header the gateway credential travels in
     on Messages-dialect requests: `authorization` (the default, used when
     the field is absent) or `x-api-key`

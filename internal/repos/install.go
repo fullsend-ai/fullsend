@@ -863,9 +863,11 @@ func inferenceSecretsForAuth(auth string) []string {
 
 // requiredInferenceSecretsForAuth returns the inference secrets that must
 // exist (or be supplied) for auth to be usable. openai-wif requires none:
-// its identifiers are non-secret configuration checked separately.
+// its identifiers are non-secret configuration checked separately. A
+// gateway-only repository (empty auth past RequireInferenceAuth) requires
+// none either: its inference.gateway route authenticates on its own.
 func requiredInferenceSecretsForAuth(auth string) []string {
-	if auth == InferenceAuthOpenAIWIF {
+	if auth == InferenceAuthOpenAIWIF || auth == "" {
 		return nil
 	}
 	return inferenceSecretsForAuth(auth)
@@ -926,6 +928,9 @@ type obsoleteVariable struct {
 // is established.
 func obsoleteInferenceVariables(cfg ResolvedConfig) []obsoleteVariable {
 	authReason := "inference.auth is " + cfg.InferenceAuth
+	if cfg.InferenceAuth == "" {
+		authReason = "inference is routed through inference.gateway"
+	}
 	var vars []obsoleteVariable
 	if cfg.InferenceAuth == InferenceAuthOpenAIAPIKey {
 		vars = append(vars, obsoleteVariable{name: forge.VarGCPRegion, reason: authReason})
@@ -941,10 +946,10 @@ func obsoleteInferenceVariables(cfg ResolvedConfig) []obsoleteVariable {
 }
 
 // inferenceRegionForAuth returns region when auth uses Vertex and ""
-// otherwise, so OpenAI-only repositories never get FULLSEND_GCP_REGION
-// written or value-checked.
+// otherwise, so OpenAI-only and gateway-only repositories never get
+// FULLSEND_GCP_REGION written or value-checked.
 func inferenceRegionForAuth(auth, region string) string {
-	if auth == InferenceAuthOpenAIAPIKey {
+	if !usesVertexCredentials(auth) {
 		return ""
 	}
 	return region
