@@ -82,6 +82,9 @@ func runFetchSkill(ctx context.Context, skillURL string, stdout, stderr io.Write
 		}
 		return fmt.Errorf("%s", msg)
 	}
+	if fetchResp.LocalPath == "" {
+		return fmt.Errorf("fetch service returned an empty local_path")
+	}
 
 	fmt.Fprintln(stdout, fetchResp.LocalPath)
 	return nil
