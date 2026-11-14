@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8202,4 +8203,104 @@ func TestGetRawFileContentAtRef_JSONNonFileOrRawFile(t *testing.T) {
 			assert.Equal(t, tt.body, string(data))
 		})
 	}
+}
+
+func TestSameOriginRedirect(t *testing.T) {
+	req := func(t *testing.T, raw string) *http.Request {
+		t.Helper()
+		r, err := http.NewRequest(http.MethodGet, raw, nil)
+		require.NoError(t, err)
+		return r
+	}
+	const from = "https://ghe.example.com/api/v3/repos/o/r/contents/a"
+	tests := []struct {
+		name string
+		to   string
+		ok   bool
+	}{
+		{name: "same origin, other path", to: "https://ghe.example.com/api/v3/repos/o/renamed/contents/a", ok: true},
+		{name: "host in another case", to: "https://GHE.Example.com/api/v3/x", ok: true},
+		{name: "explicit default port", to: "https://ghe.example.com:443/api/v3/x", ok: true},
+		{name: "another host", to: "https://evil.example.net/api/v3/x"},
+		{name: "subdomain", to: "https://cdn.ghe.example.com/x"},
+		{name: "parent domain", to: "https://example.com/x"},
+		{name: "http downgrade", to: "http://ghe.example.com/api/v3/x"},
+		{name: "other port", to: "https://ghe.example.com:8443/api/v3/x"},
+		{name: "internal address", to: "https://169.254.169.254/latest/meta-data"},
+		{name: "loopback IP literal", to: "https://127.0.0.1/api/v3/x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := sameOriginRedirect(req(t, tt.to), []*http.Request{req(t, from)})
+			if tt.ok {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not the same origin")
+		})
+	}
+
+	t.Run("each hop is checked", func(t *testing.T) {
+		via := []*http.Request{req(t, from), req(t, "https://ghe.example.com/api/v3/hop")}
+		assert.Error(t, sameOriginRedirect(req(t, "https://evil.example.net/x"), via))
+	})
+	t.Run("hop limit", func(t *testing.T) {
+		via := make([]*http.Request, maxSameOriginRedirects)
+		for i := range via {
+			via[i] = req(t, from)
+		}
+		assert.ErrorContains(t, sameOriginRedirect(req(t, from), via), "stopped after")
+	})
+}
+
+// TestWithSameOriginRedirects checks the policy on a live client: a
+// same-origin redirect (GitHub's renamed-repository 301) is followed with
+// the token, while a redirect to another host is refused before any request
+// reaches it, so the token never leaves the configured host.
+func TestWithSameOriginRedirects(t *testing.T) {
+	var otherHits []string
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otherHits = append(otherHits, r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, "stolen")
+	}))
+	defer other.Close()
+	otherURL, err := url.Parse(other.URL)
+	require.NoError(t, err)
+
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		switch {
+		case strings.Contains(r.URL.Path, "/repos/o/old/"):
+			http.Redirect(w, r, strings.Replace(r.URL.RequestURI(), "/repos/o/old/", "/repos/o/new/", 1), http.StatusMovedPermanently)
+		case strings.Contains(r.URL.Path, "/repos/o/away/"):
+			// Same port, another host name: Go would keep the token on a
+			// same-host or subdomain hop, never on this one, but it must
+			// be refused outright either way.
+			http.Redirect(w, r, "http://localhost:"+otherURL.Port()+"/x", http.StatusFound)
+		default:
+			w.Header().Set("Content-Type", "application/vnd.github.raw")
+			_, _ = io.WriteString(w, "content")
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv).WithSameOriginRedirects()
+
+	data, err := client.GetRawFileContentAtRef(context.Background(), "o", "old", "a.md", "main")
+	require.NoError(t, err)
+	assert.Equal(t, "content", string(data))
+	assert.Equal(t, []string{"Bearer test-token", "Bearer test-token"}, auth)
+
+	_, err = client.GetRawFileContentAtRef(context.Background(), "o", "away", "a.md", "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not the same origin")
+	assert.Empty(t, otherHits, "a cross-origin redirect target must get no request")
+
+	// Without the policy the same redirect is followed (Go's default).
+	plain := newTestClient(t, srv)
+	_, err = plain.GetRawFileContentAtRef(context.Background(), "o", "away", "a.md", "main")
+	require.NoError(t, err)
+	assert.Len(t, otherHits, 1)
 }

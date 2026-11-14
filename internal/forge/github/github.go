@@ -265,6 +265,66 @@ func (c *LiveClient) BaseURL() string {
 	return c.baseURL
 }
 
+// WithSameOriginRedirects makes the client follow an HTTP redirect only to
+// the same scheme, host (compared lowercased) and port as the request that
+// was redirected, as GitHub does with same-host 301s for renamed
+// repositories, and refuse any other redirect — another host, a
+// subdomain, a different port or an https-to-http downgrade — with an
+// error. Go's default policy follows those and keeps the Authorization
+// header on same-host and subdomain hops, so a client sending its token
+// to a host other than github.com uses this. The client's transport and
+// timeout are kept.
+func (c *LiveClient) WithSameOriginRedirects() *LiveClient {
+	hc := *c.http
+	hc.CheckRedirect = sameOriginRedirect
+	c.http = &hc
+	return c
+}
+
+// maxSameOriginRedirects matches the hop limit of Go's default redirect
+// policy.
+const maxSameOriginRedirects = 10
+
+// sameOriginRedirect is the http.Client.CheckRedirect of
+// WithSameOriginRedirects.
+func sameOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxSameOriginRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxSameOriginRedirects)
+	}
+	from := via[len(via)-1].URL
+	if !sameOrigin(from, req.URL) {
+		return fmt.Errorf("refusing redirect from %q to %q: not the same origin", originOf(from), originOf(req.URL))
+	}
+	return nil
+}
+
+// sameOrigin reports whether a and b have the same scheme, lowercased
+// host and port, with the scheme's default port filled in.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
+}
+
+// originOf returns scheme://host of u, without path, query or userinfo,
+// for error messages.
+func originOf(u *url.URL) string {
+	return strings.ToLower(u.Scheme) + "://" + u.Host
+}
+
 // WithAfterFunc sets a custom delay function (for testing without real sleeps).
 func (c *LiveClient) WithAfterFunc(f func(time.Duration) <-chan time.Time) *LiveClient {
 	c.afterFunc = f

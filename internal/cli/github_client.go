@@ -216,11 +216,15 @@ func configuredGitHubAPIURL() string {
 // configured instance's API. It is used where the token must not follow
 // GITHUB_API_URL on its own: the write-scoped status token, and the
 // compose/git token of the agents-repo fallback, whose ref lookup picks
-// the commit the harness is then fetched at.
+// the commit the harness is then fetched at. On the configured instance
+// the client also follows redirects only within that instance's origin
+// (gh.LiveClient.WithSameOriginRedirects), so a redirect cannot carry the
+// token to another host; on api.github.com it is exactly what gh.New
+// builds.
 func newConfiguredHostGitHubClient(token string) *gh.LiveClient {
 	client := gh.New(token)
 	if base := configuredGitHubAPIURL(); base != "" {
-		client = client.WithBaseURL(base)
+		client = client.WithBaseURL(base).WithSameOriginRedirects()
 	}
 	return client
 }

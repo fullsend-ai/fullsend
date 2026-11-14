@@ -688,3 +688,44 @@ func TestReadAgentsRepoFileAtRef_RawMediaType(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "from fake", string(got))
 }
+
+// TestConfiguredHostGitHubClient_RefusesCrossOriginRedirect checks that the
+// client the agents-repo host path, the route and the status comments use on
+// a configured host follows a same-origin redirect but never carries its
+// token to another host through a redirect.
+func TestConfiguredHostGitHubClient_RefusesCrossOriginRedirect(t *testing.T) {
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+	var otherAuth []string
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otherAuth = append(otherAuth, r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, "attacker content")
+	}))
+	t.Cleanup(other.Close)
+	_, otherPort, _ := strings.Cut(strings.TrimPrefix(other.URL, "http://"), ":")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/contents/agents/moved.md"):
+			http.Redirect(w, r, strings.Replace(r.URL.RequestURI(), "moved.md", "a.md", 1), http.StatusMovedPermanently)
+		case strings.HasSuffix(r.URL.Path, "/contents/agents/away.md"):
+			http.Redirect(w, r, "http://localhost:"+otherPort+"/agents/away.md", http.StatusFound)
+		default:
+			w.Header().Set("Content-Type", "application/vnd.github.raw")
+			_, _ = io.WriteString(w, "host content")
+		}
+	}))
+	t.Cleanup(srv.Close)
+	useConfiguredGitHubHost(t, srv.URL)
+
+	client := newConfiguredHostGitHubClient("host-token")
+	policy := fetch.FetchPolicy{MaxSizeBytes: 1 << 20}
+
+	got, err := readAgentsRepoFileAtRef(context.Background(), client, "agents/moved.md", sha, policy)
+	require.NoError(t, err)
+	assert.Equal(t, "host content", string(got))
+
+	_, err = readAgentsRepoFileAtRef(context.Background(), client, "agents/away.md", sha, policy)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not the same origin")
+	assert.Empty(t, otherAuth, "the redirect target must get no request and no token")
+}
