@@ -8029,7 +8029,7 @@ func TestGetIssuePullRequestMarker(t *testing.T) {
 	}
 }
 
-func TestGetFileContentAtRef_RawMediaType(t *testing.T) {
+func TestGetRawFileContentAtRef_RawMediaType(t *testing.T) {
 	var gotAccept string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/repos/acme/widgets/contents/harness/triage.yaml", r.URL.Path)
@@ -8041,14 +8041,14 @@ func TestGetFileContentAtRef_RawMediaType(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	data, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "harness/triage.yaml", "deadbeef")
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "harness/triage.yaml", "deadbeef")
 	require.NoError(t, err)
 	assert.Equal(t, "application/vnd.github.raw", gotAccept,
 		"the raw media type is requested so files over the 1 MiB JSON limit are served")
 	assert.Equal(t, "role: triage\n", string(data))
 }
 
-func TestGetFileContentAtRef_JSONFallback(t *testing.T) {
+func TestGetRawFileContentAtRef_JSONFallback(t *testing.T) {
 	// A server that ignores the raw media type and answers with the JSON
 	// representation (the GitHub API-compatible emulators do) still works.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -8063,12 +8063,12 @@ func TestGetFileContentAtRef_JSONFallback(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	data, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "harness/triage.yaml", "deadbeef")
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "harness/triage.yaml", "deadbeef")
 	require.NoError(t, err)
 	assert.Equal(t, "role: triage\n", string(data))
 }
 
-func TestGetFileContentAtRef_EmptyContentForNonEmptyFileFails(t *testing.T) {
+func TestGetRawFileContentAtRef_EmptyContentForNonEmptyFileFails(t *testing.T) {
 	// The over-1-MiB JSON representation: GitHub returns encoding "none"
 	// and empty content. That must fail explicitly, not decode to empty
 	// bytes that then get cached as an empty file.
@@ -8084,13 +8084,13 @@ func TestGetFileContentAtRef_EmptyContentForNonEmptyFileFails(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	_, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "big.bin", "deadbeef")
+	_, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "big.bin", "deadbeef")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "raw media type")
 	assert.Contains(t, err.Error(), "encoding \"none\"")
 }
 
-func TestGetFileContentAtRef_RawJSONFileIsNotAnEnvelope(t *testing.T) {
+func TestGetRawFileContentAtRef_RawJSONFileIsNotAnEnvelope(t *testing.T) {
 	// With the raw media type requested, a JSON Content-Type can also be a
 	// raw JSON file served with its own type. It must be returned as the
 	// file's bytes, not decoded as a (field-less) contents envelope that
@@ -8102,12 +8102,12 @@ func TestGetFileContentAtRef_RawJSONFileIsNotAnEnvelope(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	data, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "config/labels.json", "deadbeef")
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "config/labels.json", "deadbeef")
 	require.NoError(t, err)
 	assert.Equal(t, `{"labels":["bug","documentation"],"count":2}`, string(data))
 }
 
-func TestGetFileContentAtRef_JSONWithCommonKeysIsNotAnEnvelope(t *testing.T) {
+func TestGetRawFileContentAtRef_JSONWithCommonKeysIsNotAnEnvelope(t *testing.T) {
 	// A top-level "type" or "size" key is common in ordinary JSON files
 	// (JSON schemas say "type":"object"; manifests carry sizes). With the
 	// raw media type requested such a file can be served as
@@ -8121,12 +8121,12 @@ func TestGetFileContentAtRef_JSONWithCommonKeysIsNotAnEnvelope(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	data, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "schemas/labels.schema.json", "deadbeef")
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "schemas/labels.schema.json", "deadbeef")
 	require.NoError(t, err)
 	assert.Equal(t, body, string(data))
 }
 
-func TestGetFileContentAtRef_JSONNonFileOrRawFile(t *testing.T) {
+func TestGetRawFileContentAtRef_JSONNonFileOrRawFile(t *testing.T) {
 	// A server that ignores the raw media type answers a directory with a
 	// JSON array of entries, and a symlink or submodule with an object of
 	// that type and no content. Those must error, as they did before the
@@ -8191,7 +8191,7 @@ func TestGetFileContentAtRef_JSONNonFileOrRawFile(t *testing.T) {
 			defer srv.Close()
 
 			client := newTestClient(t, srv)
-			data, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "skills/x", "deadbeef")
+			data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "skills/x", "deadbeef")
 			if tt.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.wantErr)

@@ -8008,10 +8008,26 @@ func withAgentsRepoHostAllowed(policy fetch.FetchPolicy, forgeClient forge.Clien
 	return policy
 }
 
+// rawFileContentReader is implemented by forge clients that can read a
+// file in full through the contents API's raw media type
+// (gh.LiveClient.GetRawFileContentAtRef). It is kept local to the
+// agents-repo host path rather than added to forge.Client.
+type rawFileContentReader interface {
+	GetRawFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
+}
+
 // readAgentsRepoFileAtRef reads relPath of fullsend-ai/agents at sha through
 // forgeClient. It bypasses fetch.FetchURL, so it applies the same size bound.
+// A client that can read raw media (the GitHub client this path is used
+// with) reads the file that way, so files over the contents API's 1 MiB
+// JSON limit are returned and non-file paths fail; any other client falls
+// back to GetFileContentAtRef.
 func readAgentsRepoFileAtRef(ctx context.Context, forgeClient forge.Client, relPath, sha string, policy fetch.FetchPolicy) ([]byte, error) {
-	content, err := forgeClient.GetFileContentAtRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, relPath, sha)
+	read := forgeClient.GetFileContentAtRef
+	if raw, ok := forgeClient.(rawFileContentReader); ok {
+		read = raw.GetRawFileContentAtRef
+	}
+	content, err := read(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, relPath, sha)
 	if err != nil {
 		return nil, err
 	}

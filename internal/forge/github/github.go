@@ -2250,6 +2250,33 @@ func escapePathSegments(p string) string {
 // GetFileContentAtRef retrieves the content of a file at a specific ref
 // (commit SHA, branch, or tag). Unlike GetFileContent which reads from
 // the default branch, this reads from the specified ref.
+func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s",
+		url.PathEscape(owner), url.PathEscape(repo), escapePathSegments(path), url.QueryEscape(ref)))
+	if err != nil {
+		return nil, fmt.Errorf("get file content at ref: %w", err)
+	}
+
+	var file struct {
+		Content string `json:"content"`
+	}
+	if err := decodeJSON(resp, &file); err != nil {
+		return nil, fmt.Errorf("decode file content: %w", err)
+	}
+
+	cleaned := strings.ReplaceAll(strings.ReplaceAll(file.Content, "\n", ""), "\r", "")
+	data, err := base64.StdEncoding.DecodeString(cleaned)
+	if err != nil {
+		return nil, fmt.Errorf("decode base64 content: %w", err)
+	}
+	return data, nil
+}
+
+// GetRawFileContentAtRef retrieves the content of a file at a specific
+// ref like GetFileContentAtRef, but requests the raw media type and
+// rejects paths that are not files. It is used where a file must be read
+// through a GitHub host's contents API in full, for example the
+// agents-repo fallback on a GitHub host other than github.com.
 //
 // The file is requested with the raw media type, so files the base64
 // JSON representation cannot carry (GitHub serves those as content: "",
@@ -2265,7 +2292,7 @@ func escapePathSegments(p string) string {
 // and a content key is decoded as the contents envelope. Any other JSON
 // body — a raw JSON file such as a schema, a manifest or ["bug"] — is
 // returned as the file's own bytes, never decoded into empty content.
-func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+func (c *LiveClient) GetRawFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s",
 		url.PathEscape(owner), url.PathEscape(repo), escapePathSegments(path), url.QueryEscape(ref)),
 		withHeader("Accept", "application/vnd.github.raw"))

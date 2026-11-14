@@ -660,3 +660,31 @@ func TestWithAgentsRepoHostAllowed(t *testing.T) {
 		assert.NotContains(t, err.Error(), "domain not in allowlist")
 	})
 }
+
+// TestReadAgentsRepoFileAtRef_RawMediaType checks that the agents-repo host
+// path reads through GetRawFileContentAtRef on the GitHub client (raw media
+// type, so files over the 1 MiB JSON limit come back), and through
+// GetFileContentAtRef on any other client.
+func TestReadAgentsRepoFileAtRef_RawMediaType(t *testing.T) {
+	sha := "abcdef1234567890abcdef1234567890abcdef12"
+	var accept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		accept = r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "application/vnd.github.raw")
+		_, _ = io.WriteString(w, "raw body\n")
+	}))
+	t.Cleanup(srv.Close)
+	useConfiguredGitHubHost(t, srv.URL)
+
+	policy := fetch.FetchPolicy{MaxSizeBytes: 1 << 20}
+	got, err := readAgentsRepoFileAtRef(context.Background(), newConfiguredHostGitHubClient("t"), "agents/a.md", sha, policy)
+	require.NoError(t, err)
+	assert.Equal(t, "raw body\n", string(got))
+	assert.Equal(t, "application/vnd.github.raw", accept)
+
+	fake := forge.NewFakeClient()
+	fake.FileContentsRef = map[string][]byte{"fullsend-ai/agents/agents/a.md@" + sha: []byte("from fake")}
+	got, err = readAgentsRepoFileAtRef(context.Background(), fake, "agents/a.md", sha, policy)
+	require.NoError(t, err)
+	assert.Equal(t, "from fake", string(got))
+}
