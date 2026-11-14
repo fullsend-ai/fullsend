@@ -39,14 +39,36 @@ def _load_hook_module():
     return module
 
 
+# A stand-in absolute path for the binary, so the mocked tests do not depend on
+# tirith being installed (CI's script-test runner has none).
+FAKE_TIRITH_BIN = "/trusted/bin/tirith"
+_real_which = shutil.which
+
+
+def _which_with_fake_tirith(name, *args, **kwargs):
+    if name == "tirith":
+        return FAKE_TIRITH_BIN
+    return _real_which(name, *args, **kwargs)
+
+
 @pytest.fixture()
-def hook():
+def unpatched_hook():
     module = _load_hook_module()
     # TIRITH_FAIL_ON is read at import time, so pin it rather than inherit
     # whatever the developer's shell exports — otherwise these assertions
     # depend on the ambient environment.
     with mock.patch.object(module, "TIRITH_FAIL_ON", "high"):
         yield module
+
+
+@pytest.fixture()
+def hook(unpatched_hook):
+    """The hook with its tirith lookup pinned; subprocess.run is mocked per test.
+
+    A test that patches shutil.which itself overrides this.
+    """
+    with mock.patch("shutil.which", side_effect=_which_with_fake_tirith):
+        yield unpatched_hook
 
 
 def _make_tirith_output(findings, action="block"):
@@ -960,6 +982,11 @@ class TestRealTirithBinary:
     XDG_CONFIG_HOME are redirected to an empty directory: the sandbox image
     installs the binary only and ships no policy file.
     """
+
+    @pytest.fixture()
+    def hook(self, unpatched_hook):
+        """The real binary: no pinned lookup."""
+        return unpatched_hook
 
     @pytest.fixture()
     def isolated_hook(self, hook, tmp_path):
