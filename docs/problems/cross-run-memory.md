@@ -92,6 +92,11 @@ consume evidence from earlier runs.
 
 Cross-run memory is one piece of a broader question: what happens when an agent fails? The memory problem asks how agents learn from prior failures. The recovery problem asks what the system does immediately after a failure, before any learning occurs.
 
+Recovering scheduling ownership and ambiguous external writes is a separate
+mechanical problem; see [durable work recovery](durable-work-recovery.md).
+Its operation journal retains attempts and work bounds without deciding
+whether another model approach is likely to succeed.
+
 ### Retry vs. escalate
 
 When a run fails (CI failure, merge conflict, model refusal, timeout), the system must decide: retry the same approach, try a different approach, or escalate to a human. Execution limits bound how much work can occur, but reaching a limit does not establish whether another attempt is likely to produce a different outcome.

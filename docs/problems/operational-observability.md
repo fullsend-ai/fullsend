@@ -47,6 +47,11 @@ When something goes wrong — a bad merge, a missed vulnerability, an unexpected
 
 This is the debugging use case. It requires structured traces of individual agent runs that can be correlated into end-to-end workflows. The trace is the unit of debugging — when something goes wrong, you pull the trace and read it.
 
+A trace alone cannot establish whether an external write succeeded after its
+acknowledgement was lost. [Durable work recovery](durable-work-recovery.md)
+separates scheduling, execution and publication receipts so an operator can
+identify which effect still needs reconciliation.
+
 ### Is the system getting better or worse?
 
 Beyond individual incidents, operators need trend-level visibility:
