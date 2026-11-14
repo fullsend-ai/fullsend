@@ -30,6 +30,10 @@ const (
 	testJiraClientSecret = "jira-oauth-client-secret-never-leaves-the-runner"
 )
 
+// testJiraSiteProfileID is the per-site profile id for testJiraCloudID,
+// the type the run-scoped provider is created with.
+var testJiraSiteProfileID = jiraSiteProfileID(testJiraCloudID)
+
 func testJiraCreds() jira.Credentials {
 	return jira.Credentials{ClientID: testJiraClientID, ClientSecret: testJiraClientSecret}
 }
@@ -119,6 +123,8 @@ type jiraProviderCalls struct {
 	updates []jiraUpdateCall
 	expiry  []time.Time
 	mints   atomic.Int32
+	// lookups counts the minting run's cloud-ID lookups.
+	lookups atomic.Int32
 }
 
 type jiraUpdateCall struct {
@@ -145,10 +151,18 @@ func (c *jiraProviderCalls) expiryList() []time.Time {
 func stubJiraProvider(t *testing.T, lifetime time.Duration, mintErr func(n int32) error) *jiraProviderCalls {
 	t.Helper()
 	calls := &jiraProviderCalls{}
-	prevMint, prevEnsure, prevUpdate, prevExpiry, prevBaseline := jiraMintFn, ensureJiraProviderLiteralFn, updateJiraProviderFn, setProviderCredentialExpiryFn, jiraBaselineFn
+	prevMint, prevEnsure, prevUpdate, prevExpiry, prevBaseline, prevDiscover := jiraMintFn, ensureJiraProviderLiteralFn, updateJiraProviderFn, setProviderCredentialExpiryFn, jiraBaselineFn, jiraMintGatewayDiscoverFn
 	t.Cleanup(func() {
-		jiraMintFn, ensureJiraProviderLiteralFn, updateJiraProviderFn, setProviderCredentialExpiryFn, jiraBaselineFn = prevMint, prevEnsure, prevUpdate, prevExpiry, prevBaseline
+		jiraMintFn, ensureJiraProviderLiteralFn, updateJiraProviderFn, setProviderCredentialExpiryFn, jiraBaselineFn, jiraMintGatewayDiscoverFn = prevMint, prevEnsure, prevUpdate, prevExpiry, prevBaseline, prevDiscover
 	})
+	// The minting run's cloud-ID lookup answers testJiraCloudID.
+	jiraMintGatewayDiscoverFn = func(_ context.Context, cfg jira.ScopedConfig) (string, error) {
+		calls.lookups.Add(1)
+		if cfg.BaseURL != testJiraSite {
+			return "", errors.New("unexpected site " + cfg.BaseURL)
+		}
+		return jira.DefaultAPIURL + "/ex/jira/" + testJiraCloudID, nil
+	}
 	// The sandbox hands out the generation the tests' token files name.
 	jiraBaselineFn = func(context.Context, string, string) (string, error) { return ph("v1_JIRA_TOKEN"), nil }
 	jiraMintFn = func(_ context.Context, creds jira.Credentials) (jira.AccessToken, error) {
@@ -166,7 +180,7 @@ func stubJiraProvider(t *testing.T, lifetime time.Duration, mintErr func(n int32
 	ensureJiraProviderLiteralFn = func(_ context.Context, name, providerType string, values map[string]string) error {
 		calls.mu.Lock()
 		defer calls.mu.Unlock()
-		if providerType != jiraProviderType {
+		if providerType != testJiraSiteProfileID {
 			return errors.New("unexpected provider type " + providerType)
 		}
 		calls.creates = append(calls.creates, values)
@@ -193,7 +207,7 @@ func TestEnsureJiraProvider_MintsAndCreatesRunScopedProvider(t *testing.T) {
 	pd := harness.ProviderDef{Name: "jira", Type: jiraProviderType,
 		Credentials: map[string]string{jiraCredentialKey: "${FULLSEND_JIRA_TOKEN}"}, Config: map[string]string{"x": "y"}}
 	var buf syncBuffer
-	h, err := ensureJiraProvider(context.Background(), pd, "fs-tri-0123456789abcdef", testJiraCreds(), ui.New(&buf))
+	h, err := ensureJiraProvider(context.Background(), pd, testJiraSiteProfileID, "fs-tri-0123456789abcdef", testJiraCreds(), ui.New(&buf))
 	require.NoError(t, err)
 
 	assert.Equal(t, "jira-0123456789ab", h.name, "run-scoped name")
@@ -227,7 +241,7 @@ func TestEnsureJiraProvider_ActionsMask(t *testing.T) {
 	require.NoError(t, err)
 	prev := os.Stderr
 	os.Stderr = w
-	h, ensureErr := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
+	h, ensureErr := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, testJiraSiteProfileID, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
 	os.Stderr = prev
 	require.NoError(t, w.Close())
 	out, _ := io.ReadAll(r)
@@ -257,7 +271,7 @@ func TestEnsureJiraProvider_RefusesTokenThatCouldInjectAWorkflowCommand(t *testi
 			require.NoError(t, err)
 			prev := os.Stderr
 			os.Stderr = w
-			_, ensureErr := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
+			_, ensureErr := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, testJiraSiteProfileID, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
 			os.Stderr = prev
 			require.NoError(t, w.Close())
 			out, _ := io.ReadAll(r)
@@ -304,7 +318,7 @@ func TestEnsureJiraProvider_MaskIsEscaped(t *testing.T) {
 	require.NoError(t, err)
 	prev := os.Stderr
 	os.Stderr = w
-	_, ensureErr := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
+	_, ensureErr := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, testJiraSiteProfileID, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
 	os.Stderr = prev
 	require.NoError(t, w.Close())
 	out, _ := io.ReadAll(r)
@@ -314,7 +328,7 @@ func TestEnsureJiraProvider_MaskIsEscaped(t *testing.T) {
 
 func TestEnsureJiraProvider_MintFailureCreatesNothing(t *testing.T) {
 	calls := stubJiraProvider(t, time.Hour, func(int32) error { return errors.New("token endpoint said no") })
-	_, err := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
+	_, err := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, testJiraSiteProfileID, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "token endpoint said no")
 	assert.Empty(t, calls.creates)
@@ -324,7 +338,7 @@ func TestEnsureJiraProvider_MintFailureCreatesNothing(t *testing.T) {
 func TestEnsureJiraProvider_RejectedCredentialsNamed(t *testing.T) {
 	calls := stubJiraProvider(t, time.Hour, func(int32) error { return &jira.OAuthError{Status: 401, Code: "invalid_client"} })
 	var buf syncBuffer
-	_, err := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(&buf))
+	_, err := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, testJiraSiteProfileID, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(&buf))
 	require.Error(t, err)
 	assert.True(t, jira.IsPermanentOAuthError(err))
 	assert.Contains(t, err.Error(), "token endpoint rejected the client credentials (invalid_client)")
@@ -333,7 +347,7 @@ func TestEnsureJiraProvider_RejectedCredentialsNamed(t *testing.T) {
 	assert.Empty(t, calls.creates)
 
 	stubJiraProvider(t, time.Hour, func(int32) error { return &jira.OAuthError{Status: 400} })
-	_, err = ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
+	_, err = ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, testJiraSiteProfileID, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "(status 400)")
 }
@@ -342,7 +356,7 @@ func TestEnsureJiraProvider_StoreFailureDiscardsProvider(t *testing.T) {
 	stubJiraProvider(t, time.Hour, nil)
 	updateJiraProviderFn = func(context.Context, string, map[string]string, time.Time) error { return errors.New("update refused") }
 	argsLog, _ := fakeOpenshellRecorder(t)
-	_, err := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
+	_, err := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, testJiraSiteProfileID, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "update refused")
 	assert.Contains(t, readArgLines(t, argsLog), "provider delete jira-0123456789ab", "the half-created provider is removed")
@@ -795,9 +809,13 @@ func writeJiraFullsendDir(t *testing.T, providerEntry string, extraFiles map[str
 		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, p)), 0o755))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, p), []byte(c), 0o644))
 	}
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nagents:\n  - harness/code.yaml\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("version: \"1\"\nagents:\n  - harness/code.yaml\n"+testJiraTrackerConfig), 0o644))
 	return dir
 }
+
+// testJiraTrackerConfig is the tracker.jira block a minting run looks its
+// site's cloud ID up from (stubJiraProvider stubs the lookup).
+const testJiraTrackerConfig = "tracker:\n  jira:\n    base_url: " + testJiraSite + "\n    project: PROJ\n"
 
 func runJiraAgent(t *testing.T, dir string) (error, []string) {
 	t.Helper()
@@ -1049,7 +1067,7 @@ func TestEnsureJiraProvider_StoreAndDeleteFailureExpiresCredential(t *testing.T)
 	updateJiraProviderFn = func(context.Context, string, map[string]string, time.Time) error { return errors.New("update refused") }
 	fakeOpenshellRecorder(t, "provider delete")
 	var buf syncBuffer
-	_, err := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(&buf))
+	_, err := ensureJiraProvider(context.Background(), harness.ProviderDef{Name: "jira", Type: jiraProviderType}, testJiraSiteProfileID, "fs-x-0123456789abcdef", testJiraCreds(), ui.New(&buf))
 	require.Error(t, err)
 	require.Len(t, calls.expiryList(), 1, "the credential is expired when the delete fails")
 	assert.WithinDuration(t, time.Now(), calls.expiryList()[0], 5*time.Second)
