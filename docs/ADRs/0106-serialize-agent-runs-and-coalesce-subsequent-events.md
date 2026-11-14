@@ -22,10 +22,8 @@ Accepted
 
 [#6957](https://github.com/fullsend-ai/fullsend/issues/6957) is the origin
 issue for the later steering work that builds on this preserve-and-coalesce
-decision. Its validation criteria still describe `harness.steer` as off by
-default; that criterion is superseded by the default-on decision in
-[PR #7461](https://github.com/fullsend-ai/fullsend/pull/7461) (ADR 0121,
-not on `main`). This ADR's decision is unchanged.
+decision. Steering's default and opt-outs are decided in
+[ADR 0121](0121-steering-on-by-default.md). This ADR's decision is unchanged.
 
 On GitLab, the webhook candidate and poller-backstop composition is
 [ADR 0125](0125-gitlab-hybrid-webhook-poller-dispatch.md).
