@@ -22,6 +22,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -576,6 +577,95 @@ func TestAfterScenario_SkipAfterLeaseDeallocationFailureWritesSummary(t *testing
 	require.NoError(t, readErr)
 	assert.Contains(t, string(data), "Scenario: skipped but leaks")
 	assert.Contains(t, string(data), "deallocating repo")
+}
+
+// TestAfterScenario_SkippedScenarioCleanTeardownRecordsNothing checks
+// that a scenario skipped after it took a lease, whose deallocation
+// succeeds, records no failure and writes no failure summary.
+func TestAfterScenario_SkippedScenarioCleanTeardownRecordsNothing(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(1)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{LeasedRepoName: name, ScenarioName: "skipped cleanly", Failures: rec}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err = afterScenario(ctx, driver, godog.ErrSkip)
+	require.NoError(t, err)
+
+	assert.Empty(t, rec.Snapshot(), "a skip with a clean teardown is not a failure")
+	assert.Equal(t, 1, driver.deallocated, "the lease is still returned")
+	entries, err := os.ReadDir(artifactDir)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "a skip with a clean teardown writes no failure summary")
+}
+
+// countingListerCI is a ci.Driver that lists no workflow runs and counts
+// the listings; every other method panics (embedded nil interface).
+type countingListerCI struct {
+	ci.Driver
+	mu    sync.Mutex
+	lists int
+}
+
+func (c *countingListerCI) ListRecentRuns(context.Context, string, string, int) ([]forge.WorkflowRun, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lists++
+	return nil, nil
+}
+
+// TestAfterScenario_NotDispatchedPlusDeallocationFailure checks that a
+// scenario that failed because no workflow run was dispatched, and whose
+// deallocation then fails, records both failures but collects failure
+// logs once: the dispatch grace wait runs once, not again for the
+// teardown failure. The context is already cancelled so the grace wait
+// returns at once instead of sleeping.
+func TestAfterScenario_NotDispatchedPlusDeallocationFailure(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(2)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	// Deallocate before After — the hook's own deallocation then fails.
+	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
+
+	rec := &behaviourfail.Recorder{}
+	lister := &countingListerCI{}
+	w := &world.World{
+		LeasedRepoName: name, Org: "org", RepoName: name, CI: lister,
+		ScenarioName: "never dispatched", Failures: rec,
+	}
+	ctx, cancel := context.WithCancel(world.WithWorld(context.Background(), w))
+	cancel()
+
+	scenarioErr := fmt.Errorf("waiting for issue-open workflow: %w",
+		&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Event: "issues"})
+	_, err = afterScenario(ctx, driver, scenarioErr)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deallocating repo")
+
+	records := rec.Snapshot()
+	require.Len(t, records, 2, "the step failure and the deallocation failure are both recorded")
+	assert.Contains(t, records[0].Message, "was not dispatched")
+	assert.Contains(t, records[1].Message, "deallocating repo")
+	for _, r := range records {
+		assert.Equal(t, behaviourfail.Scenario, r.Class)
+	}
+
+	matches, globErr := filepath.Glob(filepath.Join(artifactDir, "debug-scenario-*", "failure-summary.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, matches, 1)
+	data, readErr := os.ReadFile(matches[0])
+	require.NoError(t, readErr)
+	assert.Equal(t, 1, strings.Count(string(data), "Dispatch diagnostics:"), "the grace wait runs once")
+	assert.Equal(t, 1, strings.Count(string(data), "the grace period was cut short"))
+	assert.Equal(t, 2, lister.lists, "one dispatch listing and one failure-log listing, not repeated for the teardown failure")
 }
 
 func TestAfterScenario_NoFailureSummaryForPassingOrSkippedScenario(t *testing.T) {

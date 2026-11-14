@@ -178,11 +178,15 @@ func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	// before our trigger timestamp and the first poll window misses it.
 	worldLogf(w, "issue-open drain: retrying with skew buffer: %v", err)
 	buffered := trigger.Add(-issueOpenDrainSkewBuffer)
-	if _, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent); retryErr == nil {
+	_, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent)
+	if retryErr == nil {
 		return nil
 	}
 
-	return fmt.Errorf("waiting for issue-open workflow: %w", err)
+	// Wrap the retry's error: its wait ended last, so its detail (such as
+	// a poll-error summary) matches the window the dispatch diagnostics
+	// measure from.
+	return fmt.Errorf("waiting for issue-open workflow: %w", retryErr)
 }
 
 func whenIssueLabeled(w *world.World, label string) error {

@@ -536,8 +536,8 @@ happened in a failing job:
 
 1. Download the `behaviour-artifacts-*` artifact of the failing job.
 2. Open `debug-scenario-<name>-<suffix>/failure-summary.txt`.
-3. Read its `Dispatch diagnostics` section (described under the After hook
-   below).
+3. Read its `Dispatch diagnostics` section; see
+   [Dispatch diagnostics](#dispatch-diagnostics).
 
 The per-failure report counts these timeouts so a follow-up (#9469) can
 decide from data whether to classify them.
@@ -676,6 +676,40 @@ its report, and releases its repos inside the job's `timeout-minutes: 90`
 The merge queue window is shorter than the job: a retry fits it only when
 attempt 1 plus the failed scenarios finish within 60 minutes.
 
+#### Dispatch diagnostics
+
+This applies to GitHub Actions only: only its driver returns
+`ci.ErrWorkflowNotDispatched`. When a scenario fails with that error (no
+workflow run appeared), the After hook's `CollectFailureLogs` (see
+[Repo allocation via the shared slot driver](#repo-allocation-via-the-shared-slot-driver))
+first waits a 2-minute grace period, outside `failureLogBudget`. It then adds
+a `Dispatch diagnostics` section to `failure-summary.txt`, before teardown
+deletes the repository. The section shows, in this order:
+
+- a `grace wait:` note, only when the shared 6-minute window for the test
+  process has closed or is about to; it says the wait was skipped or
+  shortened, and the runs are still listed;
+- the repository, the time of the listing (runner clock) and the real
+  elapsed grace wait;
+- the scenario's issue with its `created_at` and state;
+- every workflow run in the repository, with its workflow file, event,
+  `created_at`, status and conclusion;
+- the runs of the waited-for workflow and event. The gap from the issue's
+  `created_at` (both GitHub timestamps) is shown only for issue-triggered
+  waits (the `issues` event); for other events, such as `issue_comment`, the
+  issue is not the triggering event, so no gap is shown;
+- the verdict: whether a matching run was created after the scenario's wait
+  for the run timed out (counted from the start of the grace wait, allowing
+  30 s of clock skew). `yes` suggests a late dispatch. `no` with no matching
+  run suggests the event produced no run, but only after a full grace wait:
+  when the wait was skipped, shortened or cut short, the verdict says
+  `inconclusive` instead.
+
+The first grace wait in a test process opens the 6-minute window. Each
+scenario waits for 2 minutes or until the window closes, whichever comes
+first. Overlapping waits share the window, so the grace waits add at most
+about 6 minutes to a test process.
+
 ### Repo allocation via the shared slot driver
 
 `RunSuite` and `RunPlaybackSuite` build one shared install driver (`install.Factory` over an `install.PoolConfig`) for the environment's pool. On `dev` the pool is the derived orgs `halfsend-01` … `halfsend-22`, and on `stage` it is the single unsuffixed `halfsend` org, each with `test-repo-01` … `test-repo-NN` slots (`install.PoolLayoutForEnvironment`; `BEHAVIOUR_POOL_SIZE` sets the slots per org). The driver resolves one installation token per org (`e2etest.TokenForOrg`, minted once per org and kept for the run, since a token outlives a 45-minute `go test` attempt; the infra-retry's fresh process mints its own). It builds one forge client per org from that token. The `Given the enrolled test repository` step calls `install.LeaseDriver.AllocateLease(ctx)`, which:
@@ -741,26 +775,7 @@ every org's mint, and stops the trace collector.
 **Step failure vs. teardown failure.** The After hook returns only a
 repo-deallocation error, never the scenario's step error. A failing step
 therefore appears in CI output as the bare step error. The
-`after scenario hook failed:` prefix now means cleanup (repo release) failed.
-
-**Dispatch diagnostics (GitHub Actions only).** When the scenario error wraps
-`ci.ErrWorkflowNotDispatched` (no workflow run appeared), `CollectFailureLogs`
-first waits a 2-minute grace period, outside `failureLogBudget`, and then adds
-a `Dispatch diagnostics` section to `failure-summary.txt`. Only the GitHub
-Actions driver returns that error. The section lists:
-
-- the time of the listing and the real elapsed grace wait;
-- every workflow run in the repository, with its event, `created_at` and
-  workflow file;
-- whether a run of the waited-for workflow and event was created after the
-  wait ended. The comparison uses the runner clock and allows 30 seconds of
-  clock skew. `yes` suggests a late dispatch; `no` with no matching run
-  suggests the event produced no run;
-- the scenario's issue with its `created_at` and state, and each matching
-  run's gap from that `created_at` (both GitHub timestamps);
-- the run-level grace budget: the waits of one test process share 6 minutes.
-  Once it is spent, later scenarios skip the wait, still list the runs, and
-  say the wait was skipped.
+`after scenario hook failed:` prefix means cleanup (repo release) failed.
 
 Concurrent ensures of the same repo are serialized via `singleflight.Group`, so only one goroutine runs the install while others wait. The numbered `test-repo-NN` repos do not need to be pre-provisioned in the pool orgs.
 
@@ -1333,7 +1348,9 @@ more claim and `github setup`
 This happens rarely, so it is not budgeted per lease, but it reduces the slack
 for the whole suite. The behaviour job's `timeout-minutes` in `e2e.yml` and the
 `go test -timeout` in the Makefile must account for this overhead across all
-leases in the suite.
+leases in the suite. A not-dispatched scenario can add up to 2 minutes of
+After-hook time, within one shared 6-minute window per test process
+([Dispatch diagnostics](#dispatch-diagnostics)).
 
 Current budget: **45 minutes per `go test` attempt** and **90 minutes for the CI job**. The job budget carries one [infrastructure-classified retry](#failure-classification-and-infrastructure-retry): both Make targets run through `scripts/run-with-infra-retry.sh`, and a retried run executes a second `go test`, for the failed scenarios only, with its own 45-minute `-timeout`. The wrapper refuses the retry when attempt 1 ran longer than `INFRA_RETRY_MAX_ATTEMPT1_SECONDS` (2400 in CI), so attempt 2 always has 45 minutes left in the job. Keep `go test -timeout` at or below 45 minutes — it is the per-attempt bound the [repo-slot GC](#repo-slot-gc) age guarantee rests on — and never above the job's `timeout-minutes`, or the Go process is killed mid-test with no artifact collection. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within one attempt's budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) and the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios) lease one repo per Examples row. The same rule applies to the `playback-test` target and to any CI job that runs it.
 

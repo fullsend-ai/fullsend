@@ -110,6 +110,12 @@ func TestClassifyScenario(t *testing.T) {
 			err: fmt.Errorf("waiting for issue-open workflow: %w",
 				fmt.Errorf("workflow fullsend.yaml (issues) %w", ci.ErrWorkflowNotDispatched)),
 		},
+		// The typed error the GitHub Actions driver returns, with a
+		// poll-error detail, behind the same step wrap.
+		"not dispatched error type through step wrap": {
+			err: fmt.Errorf("waiting for issue-open workflow: %w",
+				&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Event: "issues", Detail: " (failed on 3 of 3 polls)"}),
+		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

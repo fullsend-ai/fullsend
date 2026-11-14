@@ -19,14 +19,21 @@ import (
 )
 
 // TestCollectFailureLogs_DispatchSimulation drives the real
-// CollectFailureLogs path with the real GitHub Actions CI driver and
+// CollectFailureLogs path, with the real GitHub Actions CI driver and
 // GitHub SCM driver over a fake forge, for the two outcomes the dispatch
-// diagnostics exist to tell apart (#9469):
+// diagnostics exist to tell apart (#9469). The real CI driver is used
+// for listing runs only: the test does not run the scenario's wait, it
+// constructs the NotDispatchedError that wait would return.
 //
-//   - late: the issue exists, no run existed during the 5-minute wait,
+//   - late: the issue exists, no run existed while the scenario waited,
 //     and a matching fullsend.yaml (issues) run is created during the
 //     grace period;
 //   - none: the issue exists and no run is created at all.
+//
+// In a real run drainIssueOpenWorkflow waits about 10 minutes (two
+// 5-minute waits, the second with a 30s skew buffer). The fixture times
+// are simpler: the issue is created 5 minutes before the wait ends, so
+// the printed gaps are shorter than a real run's would be.
 //
 // The grace wait uses a simulated clock, so the test does not sleep.
 // Set DISPATCH_SIM_KEEP_DIR to a directory to keep each generated
@@ -37,8 +44,9 @@ func TestCollectFailureLogs_DispatchSimulation(t *testing.T) {
 		issueNumber  = 7
 		issueCreated = "2026-11-14T00:05:58Z"
 	)
-	// Runner clock when WaitForWorkflow gave up: 5 minutes after the
-	// issue was opened.
+	// Runner clock when the scenario's wait gave up (the grace wait
+	// starts here); the fixture puts it 5 minutes after the issue was
+	// opened, not the ~10 minutes of a real drainIssueOpenWorkflow.
 	waitEnd := time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC)
 
 	tests := map[string]struct {
@@ -99,7 +107,9 @@ func TestCollectFailureLogs_DispatchSimulation(t *testing.T) {
 				SCM:          scmgithub.New(fake),
 				Logf:         func(string, ...any) {},
 			}
-			// The error WaitForWorkflow returns, wrapped as drainIssueOpenWorkflow does.
+			// Constructed by the test, not returned by a real wait: the
+			// error WaitForWorkflow returns, wrapped as
+			// drainIssueOpenWorkflow does.
 			scenarioErr := fmt.Errorf("waiting for issue-open workflow: %w",
 				&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Event: "issues"})
 
