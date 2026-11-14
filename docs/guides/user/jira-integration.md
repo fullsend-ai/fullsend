@@ -41,7 +41,8 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
    2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account).
 2. **Grant it the minimum Jira permissions** in the target project, usually
    through the **Developers** project role. The poller needs Browse
-   Projects, Edit Issues, Add Comments, and Edit Own Comments to operate on
+   Projects (which also covers reading remote issue links for repository
+   routing), Edit Issues, Add Comments, and Edit Own Comments to operate on
    issues and write the entity properties it uses for lock and checkpoint
    coordination. Then choose how Jira users are authorized:
    - **Recommended:** list who may trigger agents under a `jira` provider in
@@ -1273,7 +1274,7 @@ the user's Jira profile: the ID is the last part of its URL.
 
 | Permission | When the poller account needs it |
 |---|---|
-| Browse Projects, Edit Issues, Add Comments, Edit Own Comments | Always |
+| Browse Projects, Edit Issues, Add Comments, Edit Own Comments | Always (Browse Projects also covers reading issue remote links via `GET /issue/{key}/remotelink`; if issue linking is disabled on the Jira site, the poller degrades gracefully and treats remote links as absent) |
 | Browse users and groups (global permission) | When the `jira` lists name groups, or when project-role resolution finds a project role granted to a group (the poller then calls `GET /user/groups` for the actor) |
 | Administer Projects (the **Administrators** project role) | Only when project roles are used: no `jira` entry, `labels: project_roles`, or slash commands when the `jira` entry sets no lists |
 
@@ -1317,6 +1318,8 @@ entry's default `labels: jira_editors`, anyone with Edit Issues on the project c
 add a label such as `ready-to-code` and dispatch the agent whose trigger
 matches it. Use `labels: allowlist` if that group is broader than you want.
 
+> **Security note — Link Issues controls repository routing.** Any user with Jira's **Link Issues** permission on a polled project can attach or remove remote web links pointing at Git repositories. Because attached repository links take Priority-1 routing precedence over project defaults or component filters, adding or removing a link changes which repository's poller claims or skips an issue. Treat **Link Issues** on polled projects as part of the routing trust boundary.
+
 ## Poll coordination
 
 The poller uses Jira entity properties for distributed lock coordination and checkpoint tracking, following a write-then-verify protocol. Each cycle randomly selects up to N (default 5) issues from the candidate set for processing, spreading load across cycles. Two properties are stored on each processed issue:
@@ -1357,13 +1360,22 @@ Because each cron run is a fresh process, per-cycle Jira API cost is worth sizin
 
 Two more scaling limits:
 
-- **Issues beyond the top M candidates can be starved.** Each cycle's JQL search returns at most M (default 50) candidates, ordered by `updated DESC`. If a project has more than M issues with in-scope activity at once, whichever issues aren't in that top-M window this cycle are simply never selected — there's no rotation across cycles to eventually reach them. This is expected to self-resolve for most projects (an issue with new activity moves toward the front of `updated DESC` on its own), but a project that consistently has more than M simultaneously-active issues will have some starved indefinitely. Narrow the default `--jql` (e.g. scope to a label or a subset of issue types) if this applies to you.
+- **Issues beyond the candidate scan window can be starved, and remote-link routing scales per inspected candidate.** Each cycle scans up to **5 JQL pages** of 50 issues (up to **250 candidates** ordered by `updated DESC`), evaluating attached repository links in bounded batches (up to **8 concurrent** `GET /issue/{key}/remotelink` calls) until M (default 50) matching candidates for `--target-repo` (GitHub) or `--project` (GitLab) are collected, the routing fan-out deadline (2 minutes) is reached, or a rate-limit (`429`) / `5xx` error aborts the scan early before selecting up to N issues to process. If a project has more than M matching issues (or more than 250 active issues) ahead in `updated DESC`, issues beyond that scan window are not reached — there is no rotation across cycles. Scope `tracker.jira.poll.query` (for example with `component = "..."` or `labels = "..."`) to reduce both starvation and per-cycle `remotelink` API cost.
 - **Comments are re-listed in full, oldest-first, every cycle.** The Jira REST API has no way to filter comments server-side by date, so `ListComments` always paginates from the start of an issue's comment history; the poller then filters client-side by timestamp. For issues with very long comment histories, this means re-fetching (and re-decoding) old comments every cycle just to discard them. Listings are capped at 10,000 entries per issue; an issue beyond that cap has its newest activity invisible to the poller (a WARNING is logged when the cap is hit). Each API response is bounded to 10MB, but the accumulated per-issue comment history is bounded only by the page cap — a per-issue byte budget is a tracked follow-up; against real Jira Cloud (which caps individual comments) the realistic worst case is tens of MB per issue.
-- **Sustained Jira errors can stall a cycle.** Each Jira call retries up to 5 times with exponential backoff, honoring `Retry-After` (capped at 5 minutes). Under a sustained 429 or outage a single cycle can therefore run long; the workflow's concurrency group queues subsequent cron runs rather than stacking them, and a failed cycle simply retries from its checkpoints on the next run.
+- **Sustained Jira errors can stall a cycle.** Each Jira call retries up to 5 times with exponential backoff, honoring `Retry-After` (capped at 5 minutes), while the remote-link routing fan-out itself is bounded to a 2-minute per-cycle deadline and stops scanning on `429`/`5xx` failures so transient errors on large candidate lists do not stall the workflow timeout. For other calls, the workflow's concurrency group queues subsequent cron runs rather than stacking them, and a failed cycle simply retries from its checkpoints on the next run.
 
 ## Multi-repo polling
 
-Multiple GitHub repos can poll the same Jira project. Each repo runs its own poll workflow and gets an isolated view of coordination state — no cross-repo configuration is needed. Before adding pollers, use Jira Components or labels to segment your project so each repo's `tracker.jira.poll.query` filter only matches issues relevant to it — this avoids redundant API calls and keeps each poller's candidate window focused.
+Multiple GitHub or GitLab repos can poll the same Jira project. Each repo runs its own poll workflow and gets an isolated view of coordination state — no cross-repo configuration is needed. The poller also inspects each issue's attached web links to route work automatically, and you can combine that with `tracker.jira.poll.query` (for example `component = Backend` or `labels = backend`) to segment your project server-side and reduce redundant API calls.
+
+### Automatic repository routing via attached links
+
+Before processing candidates, the poller reads each candidate's Jira remote web links (`GET /issue/{key}/remotelink`) across recognized forge URLs (`github.com`, `bitbucket.org`, `gitlab.com`, `gitlab.*`, `*.gitlab.com`, your configured GitLab host, SSH `git@` / `ssh://` URLs, and `git.*` hosts ending in `.git`, ignoring reserved non-repository routes and non-git links such as Google Docs or Confluence). On sites where remote issue linking is disabled (HTTP 403), the poller logs a warning, skips remote-link lookups for the rest of the cycle, and treats remote links as empty:
+
+1. **Attached repository link(s) present:** Only pollers whose `--target-repo` (GitHub `owner/repo` slug) or `--project` (GitLab full nested path, e.g. `group/subgroup/repo`, defaulting to `CI_PROJECT_PATH`) matches at least one attached repository link claim the issue (for example, `https://gitlab.example.com/group/subgroup/repo/-/merge_requests/12` routes to `--project group/subgroup/repo`); pollers for other repositories skip it automatically (and if remote-link lookup errors occur for a candidate, the poller fails safe by skipping that candidate rather than falling through; if all attempted candidates fail lookup, the cycle fails).
+2. **No attached repository links:** The poller keeps the candidate for `--target-repo` / `--project` unless `tracker.jira.poll.query` filters it out server-side (or a component filter is configured in the internal poller options).
+
+To filter by Jira component in production workflows, add a `component = <name>` predicate to `tracker.jira.poll.query` (for example `query: 'component = Backend AND statusCategory != Done ORDER BY updated DESC'`) rather than relying on client-side filtering alone, because server-side JQL avoids scanning unrelated issues and their remote links.
 
 ### Should each repo have its own poll workflow?
 
@@ -1393,13 +1405,13 @@ When `acme/frontend` and `acme/backend` both poll issue `PROJ-42`:
 
 The two repos lock independently, checkpoint independently, and can process the same Jira comment — each dispatching to its own agent workflows. This is intentional: the same `/fs-triage` comment on a Jira issue may be relevant to multiple repos if their harness triggers match.
 
-### 50-candidate cap with multiple repos
+### Candidate window and API cost with multiple repos
 
-Each repo's poller runs its own JQL query and gets its own top-M (default 50) candidate window. The cap is per-poller, not global — three repos polling the same project each see up to 50 candidates per cycle, not 50 shared across all three.
+Each repo's poller runs its own JQL query, scans up to 5 pages × 50 issues (250 candidates) checking remote links, and keeps up to M (default 50) routed candidates per cycle. The cap is per-poller, not global — three repos polling the same project each maintain their own window and checkpoints.
 
-However, more pollers against the same Jira project means more API calls per cycle. Each poller independently reads entity properties for lock filtering, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
+However, more pollers against the same Jira project means more API calls per cycle. Each poller reads up to 250 `remotelink` endpoints, reads entity properties for lock filtering, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
 
-- **Narrowing `tracker.jira.poll.query` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so it skips issues that belong to other repos.
+- **Narrowing `tracker.jira.poll.query` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so Jira skips issues that belong to other repos before `remotelink` lookups run.
 - **Staggering cron schedules** so pollers from different repos don't hit the Jira API simultaneously. For example, offset each repo's schedule by one or two minutes.
 - **Monitoring Jira rate limits.** Jira Cloud uses points-based quotas, and multiple pollers multiply the cost. Watch for `429` responses in workflow logs — the poller retries with backoff, but sustained rate limiting slows all repos' cycles.
 
@@ -1411,6 +1423,7 @@ However, more pollers against the same Jira project means more API calls per cyc
 | `jira: OAuth token request to "https://auth.atlassian.com/oauth/token" with FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET: unexpected status 401 (invalid_client)` | The service account's OAuth 2.0 client ID or secret is wrong, expired, or revoked | Create a new OAuth 2.0 credential for the service account and update `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` with `repos install --jira-client-id --jira-client-secret` |
 | `jira: set either FULLSEND_JIRA_TOKEN or FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET, not both` | Both credential types are set | Keep one. `repos install` removes the other set when you supply new credentials |
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
+| The poll fails with `all N candidates dropped by remote-link lookup errors` | `GET /rest/api/3/issue/{key}/remotelink` failed for every candidate attempted in the cycle (for example due to expired credentials, rate limiting, or upstream 5xx/404 errors), and the poller fails safe rather than routing without link data | Read the `WARNING: listing remote links for <KEY>: …` lines above the error, check Jira credentials and API rate limits (or `200`/`404` responses from Jira), and let the next scheduled cycle retry since no checkpoints were advanced |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Agent comments or label changes re-dispatch in a loop | A different Jira account posted the agent output than the one the poller authenticates as | The poller classifies its own `/myself` account as `actor.kind: bot` and filters those events. The built-in agents post with the poller's own `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`. Confirm that a custom agent which posts comments or labels uses the same credential, not another account's token. Human follow-up, including `/fs-triage`, still dispatches |
 | Your own comments or label changes never dispatch | The poller's `FULLSEND_JIRA_TOKEN` belongs to your own Jira account | The poller classifies its own `/myself` account as `actor.kind: bot`, so that account's comments (including `/fs-triage`) and label changes are filtered with no error. Give the poller a dedicated account; see [Use a dedicated account for the poller](#use-a-dedicated-account-for-the-poller) |

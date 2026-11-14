@@ -56,21 +56,22 @@ var validProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}$`)
 
 // Poller discovers Jira events and dispatches agent stages.
 type Poller struct {
-	client              JiraClient
-	matcher             EventMatcher
-	opts                Options
-	dispatches          []DispatchRecord
-	sleepFn             func(context.Context, time.Duration) // overridable for testing
-	roleMembership      map[string]string                    // accountID → Jira project role name
-	roleGroups          map[string][]string                  // Jira role name → group IDs for per-actor resolution
-	roleGroupsChecked   map[string]bool                      // accountID → group membership already fetched this cycle
-	rolesLoaded         bool                                 // project role roster loaded (or skipped for a missing project key) this cycle
-	userGroups          map[string][]jira.UserGroupInfo      // accountID → GetUserGroups result, cached per cycle
-	statusCategoryCache map[string]string                    // status name → statusCategory key, reset each cycle
-	selfAccountID       string                               // authenticated Jira account from GetMyself; used to classify self-authored events as bot
-	eventsSeen          int                                  // events converted this cycle
-	eventsInvalid       int                                  // events skipped this cycle because they failed validation
-	eventsMatchErrors   int                                  // events dropped this cycle because matcher.Match errored
+	client               JiraClient
+	matcher              EventMatcher
+	opts                 Options
+	dispatches           []DispatchRecord
+	sleepFn              func(context.Context, time.Duration) // overridable for testing
+	routingFanoutTimeout time.Duration                        // cycle deadline for remote-link fan-out (default: defaultRoutingFanoutTimeout)
+	roleMembership       map[string]string                    // accountID → Jira project role name
+	roleGroups           map[string][]string                  // Jira role name → group IDs for per-actor resolution
+	roleGroupsChecked    map[string]bool                      // accountID → group membership already fetched this cycle
+	rolesLoaded          bool                                 // project role roster loaded (or skipped for a missing project key) this cycle
+	userGroups           map[string][]jira.UserGroupInfo      // accountID → GetUserGroups result, cached per cycle
+	statusCategoryCache  map[string]string                    // status name → statusCategory key, reset each cycle
+	selfAccountID        string                               // authenticated Jira account from GetMyself; used to classify self-authored events as bot
+	eventsSeen           int                                  // events converted this cycle
+	eventsInvalid        int                                  // events skipped this cycle because they failed validation
+	eventsMatchErrors    int                                  // events dropped this cycle because matcher.Match errored
 }
 
 // ctxSleep sleeps for d or until ctx is cancelled, whichever comes first,
@@ -99,10 +100,11 @@ func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
 		opts.FirstPollBackfillWindow = 24 * time.Hour
 	}
 	return &Poller{
-		client:  client,
-		matcher: matcher,
-		opts:    opts,
-		sleepFn: ctxSleep,
+		client:               client,
+		matcher:              matcher,
+		opts:                 opts,
+		sleepFn:              ctxSleep,
+		routingFanoutTimeout: defaultRoutingFanoutTimeout,
 	}
 }
 
@@ -136,8 +138,8 @@ func (p *Poller) Run(ctx context.Context) error {
 	// as human follow-up re-dispatches the same agent in a loop.
 	p.selfAccountID = userID(*myself)
 
-	// Step 1: Execute JQL to get candidate issues.
-	candidates, err := p.searchCandidates(ctx)
+	// Step 1: Discover and route candidate issues up to M across bounded search pages.
+	candidates, err := p.discoverCandidates(ctx)
 	if err != nil {
 		return fmt.Errorf("search candidates: %w", err)
 	}
@@ -401,17 +403,86 @@ func (p *Poller) resolveActorRoles(ctx context.Context, actorIDs []string) error
 	return nil
 }
 
-// searchCandidates executes JQL and collects up to M results.
-func (p *Poller) searchCandidates(ctx context.Context) ([]jira.Issue, error) {
-	jql := p.opts.JQL
-	if jql == "" {
-		if !validProjectKey.MatchString(p.opts.JiraProject) {
-			return nil, fmt.Errorf("invalid Jira project key %q: must match %s", p.opts.JiraProject, validProjectKey.String())
-		}
-		jql = fmt.Sprintf("project = %q AND statusCategory != Done ORDER BY updated DESC", p.opts.JiraProject)
+// maxCandidateScanPages caps how many JQL result pages (50 issues/page =
+// up to 250 candidates) discoverCandidates scans per poll cycle while
+// filtering issues for TargetRepo.
+const maxCandidateScanPages = 5
+
+// defaultRoutingFanoutTimeout bounds total time spent resolving remote links
+// during one poll cycle so sustained 429/5xx backoff cannot stall the job.
+const defaultRoutingFanoutTimeout = 2 * time.Minute
+
+func (p *Poller) buildCandidateJQL() (string, error) {
+	if p.opts.JQL != "" {
+		return p.opts.JQL, nil
+	}
+	if !validProjectKey.MatchString(p.opts.JiraProject) {
+		return "", fmt.Errorf("invalid Jira project key %q: must match %s", p.opts.JiraProject, validProjectKey.String())
+	}
+	return fmt.Sprintf("project = %q AND statusCategory != Done ORDER BY updated DESC", p.opts.JiraProject), nil
+}
+
+// discoverCandidates scans up to maxCandidateScanPages JQL pages (50 issues per
+// page), applying repository routing incrementally until M routed candidates
+// are collected, results are exhausted, or the routing fan-out aborts early.
+func (p *Poller) discoverCandidates(ctx context.Context) ([]jira.Issue, error) {
+	jql, err := p.buildCandidateJQL()
+	if err != nil {
+		return nil, err
 	}
 
-	return p.client.SearchIssues(ctx, jql, p.opts.M)
+	limit := p.opts.M
+	timeout := p.routingFanoutTimeout
+	if timeout <= 0 {
+		timeout = defaultRoutingFanoutTimeout
+	}
+	fanoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var collected []jira.Issue
+	var nextPageToken string
+	var totalAttempted, totalLinkErrors int
+
+	for page := 0; page < maxCandidateScanPages; page++ {
+		if fanoutCtx.Err() != nil {
+			break
+		}
+		res, err := p.client.SearchIssuesPage(ctx, jql, nextPageToken, 50)
+		if err != nil {
+			return nil, err
+		}
+		if len(res.Issues) == 0 {
+			break
+		}
+
+		remaining := 0
+		if limit > 0 {
+			remaining = limit - len(collected)
+			if remaining <= 0 {
+				break
+			}
+		}
+
+		routed, attempted, linkErrors, stopScan := p.filterRoutingPage(fanoutCtx, res.Issues, remaining)
+		totalAttempted += attempted
+		totalLinkErrors += linkErrors
+		collected = append(collected, routed...)
+
+		if limit > 0 && len(collected) >= limit {
+			collected = collected[:limit]
+			break
+		}
+		if stopScan || res.IsLast || res.NextPageToken == "" {
+			break
+		}
+		nextPageToken = res.NextPageToken
+	}
+
+	if totalAttempted > 0 && totalLinkErrors == totalAttempted {
+		return nil, fmt.Errorf("all %d candidates dropped by remote-link lookup errors", totalAttempted)
+	}
+
+	return collected, nil
 }
 
 // filterLocked removes locked issues and cleans up stale locks. If every

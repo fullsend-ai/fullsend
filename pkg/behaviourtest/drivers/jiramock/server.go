@@ -20,14 +20,15 @@ import (
 
 // State holds the mutable mock data. All methods are safe for concurrent use.
 type State struct {
-	mu         sync.Mutex
-	issues     map[string]*jira.Issue                // key → issue
-	comments   map[string][]jira.Comment             // issueKey → comments
-	changelog  map[string][]jira.ChangelogEntry      // issueKey → changelog
-	properties map[string]map[string]json.RawMessage // issueKey → propKey → value
-	nextID     int
-	roleGroups map[string]string   // role name → group ID, for roles backed by a group actor (in addition to the canned "Developers" direct-user role)
-	userGroups map[string][]string // accountID → group IDs, backing GET /user/groups
+	mu          sync.Mutex
+	issues      map[string]*jira.Issue                // key → issue
+	comments    map[string][]jira.Comment             // issueKey → comments
+	changelog   map[string][]jira.ChangelogEntry      // issueKey → changelog
+	properties  map[string]map[string]json.RawMessage // issueKey → propKey → value
+	remoteLinks map[string][]jira.RemoteLink          // issueKey → remote web links
+	nextID      int
+	roleGroups  map[string]string   // role name → group ID, for roles backed by a group actor (in addition to the canned "Developers" direct-user role)
+	userGroups  map[string][]string // accountID → group IDs, backing GET /user/groups
 }
 
 // AddIssue inserts an issue with the given key and labels. A synthetic
@@ -213,14 +214,32 @@ func (s *State) AddLabelChangeAt(issueKey, label string, at time.Time) {
 	})
 }
 
+// AddRemoteLink appends an external web link to the given issue, backing
+// GET /issue/{key}/remotelink.
+func (s *State) AddRemoteLink(issueKey, rawURL string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.remoteLinks == nil {
+		s.remoteLinks = make(map[string][]jira.RemoteLink)
+	}
+	id := len(s.remoteLinks[issueKey]) + 1
+	s.remoteLinks[issueKey] = append(s.remoteLinks[issueKey], jira.RemoteLink{
+		ID: id,
+		Object: jira.RemoteLinkObject{
+			URL: rawURL,
+		},
+	})
+}
+
 // NewServer creates a mock Jira REST API server and returns the httptest
 // server and its backing state. The caller should defer srv.Close().
 func NewServer() (*httptest.Server, *State) {
 	state := &State{
-		issues:     make(map[string]*jira.Issue),
-		comments:   make(map[string][]jira.Comment),
-		changelog:  make(map[string][]jira.ChangelogEntry),
-		properties: make(map[string]map[string]json.RawMessage),
+		issues:      make(map[string]*jira.Issue),
+		comments:    make(map[string][]jira.Comment),
+		changelog:   make(map[string][]jira.ChangelogEntry),
+		properties:  make(map[string]map[string]json.RawMessage),
+		remoteLinks: make(map[string][]jira.RemoteLink),
 	}
 
 	mux := http.NewServeMux()
@@ -426,6 +445,8 @@ func handleIssueRoute(w http.ResponseWriter, r *http.Request, s *State, parts []
 		handleComments(w, s, issueKey)
 	case "changelog":
 		handleChangelog(w, s, issueKey)
+	case "remotelink":
+		handleRemoteLinks(w, r, s, issueKey)
 	case "properties":
 		if len(parts) < 4 {
 			http.NotFound(w, r)
@@ -436,6 +457,27 @@ func handleIssueRoute(w http.ResponseWriter, r *http.Request, s *State, parts []
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func handleRemoteLinks(w http.ResponseWriter, r *http.Request, s *State, issueKey string) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.mu.Lock()
+	_, exists := s.issues[issueKey]
+	links := append([]jira.RemoteLink(nil), s.remoteLinks[issueKey]...)
+	s.mu.Unlock()
+	if !exists {
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"errorMessages": []string{fmt.Sprintf("Issue %s does not exist", issueKey)},
+		})
+		return
+	}
+	if links == nil {
+		links = []jira.RemoteLink{}
+	}
+	writeJSON(w, http.StatusOK, links)
 }
 
 func handleGetIssue(w http.ResponseWriter, s *State, key string) {

@@ -48,6 +48,17 @@ Feature: Jira poll dispatch
     And the poll log says the event for issue "PROJ-505" was skipped
     And the dispatch output contains a "triage" stage for issue "PROJ-506"
 
+  Scenario: Jira remote link routes matching repo issues and skips other repos
+    Given a Jira issue "PROJ-601" with labels "bug"
+    And Jira issue "PROJ-601" has a remote link to "https://github.com/test-org/test-repo/pull/1"
+    And a Jira issue "PROJ-602" with labels "bug"
+    And Jira issue "PROJ-602" has a remote link to "https://github.com/test-org/other-repo"
+    When a comment "/fs-triage check routing" is added to Jira issue "PROJ-601"
+    And a comment "/fs-triage check routing" is added to Jira issue "PROJ-602"
+    And the Jira poller runs
+    Then the dispatch output contains a "triage" stage for issue "PROJ-601"
+    And the dispatch output does not contain a stage for issue "PROJ-602"
+
   Scenario: fullsend poll refuses a target repo whose path contains ..
     When fullsend poll runs the Jira poller with target repo "test-org/.."
     Then fullsend poll fails with "must not contain '..'" and writes no dispatch output
