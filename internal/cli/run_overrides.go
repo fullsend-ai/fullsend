@@ -132,13 +132,21 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 
 // defaultStallTimeout is how long the runtime event stream may stay silent
 // before the run is killed as stalled. Streaming tool output counts as
-// liveness (every well-formed stream line resets the clock), so this floor
-// only has to cover genuinely silent calls. The binding constraint is Claude
-// Code's bash ceiling: BASH_MAX_TIMEOUT_MS defaults to 600000ms (10m) and
-// the model routinely requests the full ceiling for test suites, so the
-// default must sit above it or a legitimately quiet 10m command is killed as
-// stalled. 15m gives that headroom; repos that raise BASH_MAX_TIMEOUT_MS or
-// know their event cadence tune FULLSEND_STALL_TIMEOUT to match.
+// liveness (every well-formed stream line resets the clock), so it only has
+// to cover genuinely silent stretches.
+//
+// The 10m it clears is a Claude-only lower bound: Claude Code's bash
+// ceiling, BASH_MAX_TIMEOUT_MS, defaults to 600000ms and the model routinely
+// requests the full ceiling for test suites. Nothing bounds the other
+// runtimes the same way: pi's bash tool has no default timeout and writes a
+// tool_execution_update only when output arrives, codex writes nothing while
+// a command runs (parseCodexStreamLines), and opencode writes a tool line only
+// when the call ends. A quiet pi, codex or opencode command longer than 15m is
+// therefore killed as stalled. Claude without --include-partial-messages has
+// its own silent stretches (a long thinking block, a large Write tool_use),
+// which 15m is assumed, not measured, to cover. 15m is not yet backed by
+// measured inter-line gaps from real output.jsonl artifacts; repos that know
+// their cadence, or run longer quiet commands, tune FULLSEND_STALL_TIMEOUT.
 const defaultStallTimeout = 15 * time.Minute
 
 // subagentLivenessTick mirrors DEFAULT_LIVENESS_MS in
