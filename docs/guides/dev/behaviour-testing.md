@@ -525,13 +525,22 @@ match. Unexplained workflow-run failures stay scenario deliberately: a
 dispatch workflow failing without its artifact may be exactly the product
 regression a scenario exists to catch. Other post-install validation
 failures (a wrong runtime in the config, for example) also stay scenario.
-So does a `WaitForWorkflow` timeout because no run appeared
+The per-failure report below makes their frequency and shape measurable,
+so a follow-up can decide with data whether to classify them.
+
+A GitHub Actions `WaitForWorkflow` timeout because no run appeared
 (`workflow <file> (<event>) was not dispatched`, which wraps
-`ci.ErrWorkflowNotDispatched`): whether the run arrives late or never is
-not yet established, and the failure summary's dispatch diagnostics
-collect the evidence (#9469). The per-failure report below makes
-their frequency and shape measurable, so a follow-up can decide with data
-whether to classify them.
+`ci.ErrWorkflowNotDispatched`) stays `scenario` and is not retried.
+Whether the run arrives late or never is not yet established. To see what
+happened in a failing job:
+
+1. Download the `behaviour-artifacts-*` artifact of the failing job.
+2. Open `debug-scenario-<name>-<suffix>/failure-summary.txt`.
+3. Read its `Dispatch diagnostics` section (described under the After hook
+   below).
+
+The per-failure report counts these timeouts so a follow-up (#9469) can
+decide from data whether to classify them.
 
 The **run** class is decided at completion: `infrastructure` only when at
 least one failure was recorded and none of them is scenario. A mixed run —
@@ -717,25 +726,41 @@ logs of the repository's recent workflow runs that no step already saved,
 which covers a wait that timed out or a step that failed before it resolved a
 run. It always writes `debug-scenario-<name>-<suffix>/failure-summary.txt` with
 the scenario error and each run's outcome. A run whose logs cannot be fetched
-gets a `workflow-logs-unavailable.txt` stating why. When the scenario error
-wraps `ci.ErrWorkflowNotDispatched` (no workflow run appeared), the hook first
-waits a 2-minute grace period and then adds a `Dispatch diagnostics` section:
-the time of the listing, every workflow run in the repository with its event,
-`created_at` and workflow file, whether a `fullsend.yaml` run was created
-during the grace period, and the scenario's issue with its `created_at` and
-state. The After hook returns only a deallocation error, never the scenario's
-own error, so godog reports a step failure as a step failure; the
-`after scenario hook failed:` prefix appears only when teardown itself failed. The summary states when the
+gets a `workflow-logs-unavailable.txt` stating why. The summary states when the
 run listing may be truncated or the per-scenario fetch cap was reached. A
-scenario that passes but whose repo deallocation fails also gets a failure
-summary. Everything is redacted and written `0600`, like the in-scenario logs;
-the redaction also masks the runner's `World.Token` and the values of
-credential-named environment variables (for example `*_TOKEN`, `*_PAT`,
-`*_KEY`), including in directory names. The next claim of that slot creates the
-repo from scratch. Mint enrollment of the numbered *names* can remain
-pre-provisioned; the GitHub repos themselves are ephemeral around a lease.
-`Driver.Finalize` releases outstanding leases with an error, tears down every
-org's mint, and stops the trace collector.
+scenario that passes, or is skipped, but whose repo deallocation fails also
+gets a failure summary. Everything is redacted and written `0600`, like the
+in-scenario logs; the redaction also masks the runner's `World.Token` and the
+values of credential-named environment variables (for example `*_TOKEN`,
+`*_PAT`, `*_KEY`), including in directory names. The next claim of that slot
+creates the repo from scratch. Mint enrollment of the numbered *names* can
+remain pre-provisioned; the GitHub repos themselves are ephemeral around a
+lease. `Driver.Finalize` releases outstanding leases with an error, tears down
+every org's mint, and stops the trace collector.
+
+**Step failure vs. teardown failure.** The After hook returns only a
+repo-deallocation error, never the scenario's step error. A failing step
+therefore appears in CI output as the bare step error. The
+`after scenario hook failed:` prefix now means cleanup (repo release) failed.
+
+**Dispatch diagnostics (GitHub Actions only).** When the scenario error wraps
+`ci.ErrWorkflowNotDispatched` (no workflow run appeared), `CollectFailureLogs`
+first waits a 2-minute grace period, outside `failureLogBudget`, and then adds
+a `Dispatch diagnostics` section to `failure-summary.txt`. Only the GitHub
+Actions driver returns that error. The section lists:
+
+- the time of the listing and the real elapsed grace wait;
+- every workflow run in the repository, with its event, `created_at` and
+  workflow file;
+- whether a run of the waited-for workflow and event was created after the
+  wait ended. The comparison uses the runner clock and allows 30 seconds of
+  clock skew. `yes` suggests a late dispatch; `no` with no matching run
+  suggests the event produced no run;
+- the scenario's issue with its `created_at` and state, and each matching
+  run's gap from that `created_at` (both GitHub timestamps);
+- the run-level grace budget: the waits of one test process share 6 minutes.
+  Once it is spent, later scenarios skip the wait, still list the runs, and
+  say the wait was skipped.
 
 Concurrent ensures of the same repo are serialized via `singleflight.Group`, so only one goroutine runs the install while others wait. The numbered `test-repo-NN` repos do not need to be pre-provisioned in the pool orgs.
 

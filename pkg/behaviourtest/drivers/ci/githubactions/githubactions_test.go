@@ -3611,6 +3611,12 @@ func TestWaitForWorkflow_NotDispatchedWrapsSentinel(t *testing.T) {
 	assert.ErrorIs(t, wrapped, ci.ErrWorkflowNotDispatched, "callers detect the timeout through their own wraps")
 	// Every poll succeeded, so the message is the bare timeout text.
 	assert.Equal(t, "workflow fullsend.yaml (issues) was not dispatched", err.Error())
+	// The error carries what was waited for, so diagnostics can look for
+	// exactly that run.
+	var nd *ci.NotDispatchedError
+	require.ErrorAs(t, wrapped, &nd)
+	assert.Equal(t, "fullsend.yaml", nd.WorkflowFile)
+	assert.Equal(t, "issues", nd.Event)
 }
 
 func TestWaitForWorkflow_NotDispatchedNoEvent(t *testing.T) {

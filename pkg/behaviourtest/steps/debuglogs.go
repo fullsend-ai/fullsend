@@ -17,7 +17,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
-	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -57,10 +56,61 @@ const (
 // scenario failed because a workflow run never appeared
 // (ci.ErrWorkflowNotDispatched), before listing the repository's runs. A
 // run that shows up during the grace period measures a late dispatch; no
-// run at all points to a lost event (#9469). It runs outside
-// failureLogBudget so it cannot starve the log collection that follows.
-// A variable so tests can shorten it.
+// run at all points to a lost event (#9469). Only the GitHub Actions
+// driver returns that error, so this applies to GitHub Actions only. It
+// runs outside failureLogBudget so it cannot starve the log collection
+// that follows, and is capped per process by dispatchGraceBudget. A
+// variable so tests can shorten it.
 var dispatchDiagnosticsGrace = 2 * time.Minute
+
+// dispatchGraceTotal caps the grace waits of one test process. Scenarios
+// run in parallel and every not-dispatched scenario would otherwise wait
+// the full grace period before its teardown; once the budget is spent,
+// later scenarios skip the wait but still list the repository.
+const dispatchGraceTotal = 6 * time.Minute
+
+// dispatchGraceBudget is the run-level budget shared by every scenario
+// in the process. A variable so tests can replace it.
+var dispatchGraceBudget = newGraceBudget(dispatchGraceTotal)
+
+// dispatchNow and dispatchAfter are the clock the grace wait uses;
+// variables so tests can simulate the wait without sleeping.
+var (
+	dispatchNow   = time.Now
+	dispatchAfter = time.After
+)
+
+// graceBudget is a concurrency-safe pool of wait time shared across
+// scenarios.
+type graceBudget struct {
+	total     time.Duration
+	mu        sync.Mutex
+	remaining time.Duration
+}
+
+func newGraceBudget(total time.Duration) *graceBudget {
+	return &graceBudget{total: total, remaining: total}
+}
+
+// take reserves up to want from the budget and returns the amount
+// granted: want, the smaller remainder, or zero once the budget is spent.
+func (g *graceBudget) take(want time.Duration) time.Duration {
+	if want <= 0 {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	granted := min(want, g.remaining)
+	g.remaining -= granted
+	return granted
+}
+
+// give returns unused wait time to the budget.
+func (g *graceBudget) give(d time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.remaining = min(g.total, g.remaining+d)
+}
 
 // saveWorkflowRunLogs fetches the logs for a workflow run and writes
 // them into a debug subdirectory under BEHAVIOUR_ARTIFACT_DIR. Called
@@ -431,7 +481,7 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 	// time to appear, so the run-log collection below also saves it.
 	var dispatch string
 	if errors.Is(scenarioErr, ci.ErrWorkflowNotDispatched) {
-		dispatch = collectDispatchDiagnostics(ctx, w)
+		dispatch = collectDispatchDiagnostics(ctx, w, scenarioErr)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, failureLogBudget)
@@ -549,57 +599,89 @@ func collectScenarioRunLogs(ctx context.Context, w *world.World) string {
 }
 
 // collectDispatchDiagnostics records, for a scenario that failed because
-// no workflow run appeared, what the repository shows after a grace
-// period: the time of the listing, every workflow run (without the
-// scenario time filter) with its event, creation time and workflow file,
-// whether a run of the dispatch workflow appeared during the grace
-// period, and the scenario's issue with its creation time and state. It
+// no workflow run appeared (GitHub Actions only), what the repository
+// shows after a grace period: the time of the listing and the real
+// elapsed wait, the run-level grace budget, the scenario's issue with its
+// creation time and state, every workflow run (without the scenario time
+// filter) with its event, creation time and workflow file, and whether a
+// run of the waited-for workflow and event appeared after the wait. It
 // runs before teardown deletes the repository, so the evidence survives
 // in the artifact. Every lookup is best-effort and reports its own
 // failure in place of its section.
-func collectDispatchDiagnostics(ctx context.Context, w *world.World) string {
+func collectDispatchDiagnostics(ctx context.Context, w *world.World, scenarioErr error) string {
 	if w.RepoName == "" {
 		return "  none: the repository identity is unavailable, so dispatch diagnostics could not be collected\n"
 	}
+	var waited *ci.NotDispatchedError
+	errors.As(scenarioErr, &waited)
+
 	var b strings.Builder
-	graceStart := time.Now()
-	select {
-	case <-ctx.Done():
-		fmt.Fprintf(&b, "  the grace period was cut short: %v\n", ctx.Err())
-	case <-time.After(dispatchDiagnosticsGrace):
+	graceStart := dispatchNow()
+	granted := dispatchGraceBudget.take(dispatchDiagnosticsGrace)
+	switch {
+	case dispatchDiagnosticsGrace <= 0:
+	case granted <= 0:
+		fmt.Fprintf(&b, "  grace wait: skipped: the run-level grace budget (%s per test process) was spent by earlier scenarios\n",
+			dispatchGraceBudget.total)
+	default:
+		if granted < dispatchDiagnosticsGrace {
+			fmt.Fprintf(&b, "  grace wait: shortened to %s: the rest of the run-level grace budget (%s per test process)\n",
+				granted, dispatchGraceBudget.total)
+		}
+		select {
+		case <-ctx.Done():
+			fmt.Fprintf(&b, "  the grace period was cut short: %v\n", ctx.Err())
+		case <-dispatchAfter(granted):
+		}
 	}
-	listedAt := time.Now()
+	listedAt := dispatchNow()
+	elapsed := listedAt.Sub(graceStart)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	// Return the part of the grant the wait did not use (a cut-short
+	// wait), so later scenarios can still wait.
+	if unused := granted - elapsed; unused > 0 {
+		dispatchGraceBudget.give(unused)
+	}
 	fmt.Fprintf(&b, "  repository: %s/%s\n", w.Org, w.RepoName)
-	fmt.Fprintf(&b, "  listed at: %s, after a %s grace period that began at %s\n",
-		listedAt.UTC().Format(time.RFC3339), dispatchDiagnosticsGrace, graceStart.UTC().Format(time.RFC3339))
-	b.WriteString(describeDispatchIssue(ctx, w))
-	b.WriteString(describeDispatchRuns(ctx, w, graceStart))
+	fmt.Fprintf(&b, "  listed at: %s (runner clock), after a %s grace period that began at %s\n",
+		listedAt.UTC().Format(time.RFC3339), elapsed.Round(time.Second), graceStart.UTC().Format(time.RFC3339))
+	issueLine, issueCreated := describeDispatchIssue(ctx, w)
+	b.WriteString(issueLine)
+	b.WriteString(describeDispatchRuns(ctx, w, waited, graceStart, issueCreated))
 	return b.String()
 }
 
 // describeDispatchIssue reports the scenario's issue with its creation
-// time and state, so a late run's delay can be measured from the event
-// that should have triggered it.
-func describeDispatchIssue(ctx context.Context, w *world.World) string {
+// time and state, and returns the parsed creation time (zero when
+// unknown), so a late run's delay can be measured from the event that
+// should have triggered it on GitHub's own clock.
+func describeDispatchIssue(ctx context.Context, w *world.World) (string, time.Time) {
 	if w.IssueNumber == 0 {
-		return "  issue: none recorded for this scenario\n"
+		return "  issue: none recorded for this scenario\n", time.Time{}
 	}
 	if w.SCM == nil {
-		return fmt.Sprintf("  issue #%d: not looked up: no SCM driver is configured\n", w.IssueNumber)
+		return fmt.Sprintf("  issue #%d: not looked up: no SCM driver is configured\n", w.IssueNumber), time.Time{}
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, logFetchTimeout)
 	defer cancel()
 	issue, err := w.SCM.GetIssue(lookupCtx, w.Org, w.RepoName, w.IssueNumber)
 	if err != nil {
-		return fmt.Sprintf("  issue #%d: lookup failed: %v\n", w.IssueNumber, err)
+		return fmt.Sprintf("  issue #%d: lookup failed: %v\n", w.IssueNumber, err), time.Time{}
 	}
-	return fmt.Sprintf("  issue #%d: created_at %s, state %s\n", w.IssueNumber, orUnknown(issue.CreatedAt), orUnknown(issue.State))
+	created, _ := time.Parse(time.RFC3339, issue.CreatedAt)
+	return fmt.Sprintf("  issue #%d: created_at %s, state %s\n", w.IssueNumber, orUnknown(issue.CreatedAt), orUnknown(issue.State)), created
 }
 
-// describeDispatchRuns lists every workflow run in the repository and
-// states whether a run of the dispatch workflow was created at or after
-// graceStart.
-func describeDispatchRuns(ctx context.Context, w *world.World, graceStart time.Time) string {
+// describeDispatchRuns lists every workflow run in the repository, then
+// the runs of the workflow and event the scenario waited for, each with
+// its gap from the issue's creation (both GitHub timestamps), and states
+// whether one appeared after the wait. "After the wait" compares the
+// run's GitHub created_at with the runner's grace start minus
+// issueOpenDrainSkewBuffer, the same clock-skew allowance the issue-open
+// drain uses.
+func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDispatchedError, graceStart, issueCreated time.Time) string {
 	lister, ok := w.CI.(ci.RunLister)
 	if !ok {
 		return "  workflow runs: not listed: the CI driver cannot list workflow runs (it does not implement ci.RunLister)\n"
@@ -616,35 +698,71 @@ func describeDispatchRuns(ctx context.Context, w *world.World, graceStart time.T
 	if len(runs) >= maxListedFailureRuns {
 		fmt.Fprintf(&b, "    the listing returned %d runs, its limit; older runs may exist\n", len(runs))
 	}
-	// Run timestamps have second precision, so compare against the
-	// grace start truncated to the second.
-	graceSecond := graceStart.Truncate(time.Second)
-	var lateRun *forge.WorkflowRun
-	for i := range runs {
-		run := runs[i]
-		created, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-		duringGrace := parseErr == nil && !created.Before(graceSecond)
-		note := ""
-		if duringGrace {
-			note = " (created during the grace period)"
-		}
-		fmt.Fprintf(&b, "    - run %d: workflow %q, event %q, created_at %s, status %q, conclusion %q%s\n",
+	for _, run := range runs {
+		fmt.Fprintf(&b, "    - run %d: workflow %q, event %q, created_at %s, status %q, conclusion %q\n",
 			run.ID, RedactText(runWorkflowFile(run)), RedactText(run.Event), orUnknown(RedactText(run.CreatedAt)),
-			RedactText(run.Status), RedactText(run.Conclusion), note)
-		if duringGrace && lateRun == nil && filepath.Base(run.Path) == install.PerRepoTriageWorkflow {
-			lateRun = &run
-		}
+			RedactText(run.Status), RedactText(run.Conclusion))
 	}
 	if len(runs) == 0 {
 		b.WriteString("    none\n")
 	}
-	if lateRun != nil {
-		fmt.Fprintf(&b, "  %s run created during the grace period: yes (run %d, event %q, created_at %s)\n",
-			install.PerRepoTriageWorkflow, lateRun.ID, RedactText(lateRun.Event), RedactText(lateRun.CreatedAt))
+
+	if waited == nil {
+		b.WriteString("  matching run after the wait: unknown: the error does not record which workflow and event were waited for\n")
+		return b.String()
+	}
+	label := waited.WorkflowFile
+	if waited.Event != "" {
+		label += " (" + waited.Event + ")"
+	}
+	// Run timestamps have second precision; allow the runner clock to be
+	// ahead of GitHub's by up to issueOpenDrainSkewBuffer.
+	threshold := graceStart.Add(-issueOpenDrainSkewBuffer).Truncate(time.Second)
+	var lateRun *forge.WorkflowRun
+	var matching strings.Builder
+	for i := range runs {
+		run := runs[i]
+		if filepath.Base(run.Path) != waited.WorkflowFile || (waited.Event != "" && run.Event != waited.Event) {
+			continue
+		}
+		created, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+		gap := "unknown"
+		if parseErr == nil && !issueCreated.IsZero() {
+			gap = formatSignedDuration(created.Sub(issueCreated))
+		}
+		fmt.Fprintf(&matching, "    - run %d: created_at %s, %s after the issue's created_at\n",
+			run.ID, orUnknown(RedactText(run.CreatedAt)), gap)
+		if parseErr == nil && !created.Before(threshold) && lateRun == nil {
+			lateRun = &run
+		}
+	}
+	if matching.Len() == 0 {
+		fmt.Fprintf(&b, "  matching %s runs: none\n", label)
 	} else {
-		fmt.Fprintf(&b, "  %s run created during the grace period: no\n", install.PerRepoTriageWorkflow)
+		fmt.Fprintf(&b, "  matching %s runs (gap measured on GitHub's clock):\n", label)
+		b.WriteString(matching.String())
+	}
+	const skewNote = "compared with the runner clock, allowing 30s of clock skew"
+	switch {
+	case lateRun != nil:
+		fmt.Fprintf(&b, "  matching %s run created after the wait ended: yes (run %d, created_at %s; %s): suggests a late dispatch\n",
+			label, lateRun.ID, RedactText(lateRun.CreatedAt), skewNote)
+	case matching.Len() == 0:
+		fmt.Fprintf(&b, "  matching %s run created after the wait ended: no (%s): no matching run exists, which suggests the event produced no run\n",
+			label, skewNote)
+	default:
+		fmt.Fprintf(&b, "  matching %s run created after the wait ended: no (%s): the matching runs listed above predate the end of the wait\n",
+			label, skewNote)
 	}
 	return b.String()
+}
+
+// formatSignedDuration renders d with an explicit sign, e.g. "+5m12s".
+func formatSignedDuration(d time.Duration) string {
+	if d < 0 {
+		return "-" + (-d).String()
+	}
+	return "+" + d.String()
 }
 
 // runWorkflowFile names a run's workflow by its file, falling back to the

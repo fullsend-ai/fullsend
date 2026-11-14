@@ -3,19 +3,48 @@ package ci
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// ErrWorkflowNotDispatched is wrapped by a WaitForWorkflow error when no
-// matching workflow run appeared within the dispatch window. Callers
-// detect it with errors.Is through any wraps they add. Its text completes
-// the driver's "workflow <file> (<event>)" prefix, so the timeout message
-// still reads "workflow <file> (<event>) was not dispatched". The timeout
-// stays scenario-classified: whether the run arrives late or never is
-// not yet established (#9469).
+// ErrWorkflowNotDispatched is wrapped by the GitHub Actions driver's
+// WaitForWorkflow error (as a *NotDispatchedError) when no matching
+// workflow run appeared within the dispatch window. The GitLab CI driver
+// does not return it, so the dispatch diagnostics that key on it apply
+// to GitHub Actions only. Callers detect it with errors.Is through any
+// wraps they add. Its text completes the driver's "workflow <file>
+// (<event>)" prefix, so the timeout message still reads "workflow <file>
+// (<event>) was not dispatched". The timeout stays scenario-classified:
+// whether the run arrives late or never is not yet established (#9469).
 var ErrWorkflowNotDispatched = errors.New("was not dispatched")
+
+// NotDispatchedError is the GitHub Actions driver's WaitForWorkflow
+// timeout when no matching run appeared. It records the workflow file and
+// event that were waited for, so failure diagnostics can look for exactly
+// that run, and unwraps to ErrWorkflowNotDispatched.
+type NotDispatchedError struct {
+	// WorkflowFile is the base name of the workflow file, e.g.
+	// "fullsend.yaml".
+	WorkflowFile string
+	// Event is the triggering event waited for, or empty for any event.
+	Event string
+	// Detail is appended verbatim to the message, e.g. the poll-error
+	// summary " (failed on 3 of 40 polls ...)"; empty when every poll
+	// succeeded.
+	Detail string
+}
+
+func (e *NotDispatchedError) Error() string {
+	if e.Event != "" {
+		return fmt.Sprintf("workflow %s (%s) %v%s", e.WorkflowFile, e.Event, ErrWorkflowNotDispatched, e.Detail)
+	}
+	return fmt.Sprintf("workflow %s %v%s", e.WorkflowFile, ErrWorkflowNotDispatched, e.Detail)
+}
+
+// Unwrap lets errors.Is(err, ErrWorkflowNotDispatched) match.
+func (e *NotDispatchedError) Unwrap() error { return ErrWorkflowNotDispatched }
 
 // Driver abstracts CI workflow operations for behaviour tests.
 //

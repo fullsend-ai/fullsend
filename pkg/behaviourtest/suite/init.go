@@ -109,8 +109,9 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, n
 //
 // driver.DeallocateRepo is deferred so the lease is returned even if
 // steps.CleanupScenario panics. A deallocation failure is always
-// returned and recorded: with no scenario error it fails the scenario
-// and writes the failure summary, and beside a scenario error it is
+// returned and recorded: with no scenario error (or a skipped
+// scenario) it fails the scenario and writes the failure summary, and
+// beside a scenario error it is
 // recorded separately, so a scenario-classified teardown failure keeps
 // the run non-retryable (#8036's no-masking contract).
 func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error) (_ context.Context, retErr error) {
@@ -134,10 +135,11 @@ func afterScenario(ctx context.Context, driver install.Driver, scenarioErr error
 				}
 				deallocFailure := fmt.Errorf("deallocating repo: %w", deallocErr)
 				retErr = deallocFailure
-				if scenarioErr == nil {
-					// The scenario passed, so no failure summary was written
-					// above; the deallocation failure turns it into a failed
-					// scenario, which must leave the same artifact.
+				if scenarioErr == nil || errors.Is(scenarioErr, godog.ErrSkip) {
+					// The scenario passed or was skipped, so no failure
+					// summary was written above; the deallocation failure
+					// turns it into a failed scenario, which must leave the
+					// same artifact.
 					recordScenarioFailure(w, retErr)
 					steps.CollectFailureLogs(ctx, w, retErr)
 				} else {

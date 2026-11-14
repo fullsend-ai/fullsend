@@ -543,6 +543,41 @@ func TestAfterScenario_DeallocationFailureWritesFailureSummary(t *testing.T) {
 	assert.Contains(t, string(data), "deallocating repo")
 }
 
+// TestAfterScenario_SkipAfterLeaseDeallocationFailureWritesSummary checks
+// that a scenario skipped after it took a lease (godog.ErrSkip from a
+// step) and whose deallocation then fails is treated like a passing one:
+// the deallocation failure is returned, recorded and gets a failure
+// summary, since the skip itself recorded nothing.
+func TestAfterScenario_SkipAfterLeaseDeallocationFailureWritesSummary(t *testing.T) {
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	driver := newFakeDriver(2)
+	name, err := driver.AllocateRepo(context.Background())
+	require.NoError(t, err)
+	// Deallocate before After — the hook's own deallocation then fails.
+	require.NoError(t, driver.DeallocateRepo(context.Background(), name))
+
+	rec := &behaviourfail.Recorder{}
+	w := &world.World{LeasedRepoName: name, ScenarioName: "skipped but leaks", Failures: rec}
+	ctx := world.WithWorld(context.Background(), w)
+
+	_, err = afterScenario(ctx, driver, godog.ErrSkip)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deallocating repo")
+
+	record := requireRecordedFailure(t, rec, behaviourfail.Scenario, "skipped but leaks")
+	assert.Contains(t, record.Message, "deallocating repo")
+
+	matches, globErr := filepath.Glob(filepath.Join(artifactDir, "debug-scenario-*", "failure-summary.txt"))
+	require.NoError(t, globErr)
+	require.Len(t, matches, 1)
+	data, readErr := os.ReadFile(matches[0])
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "Scenario: skipped but leaks")
+	assert.Contains(t, string(data), "deallocating repo")
+}
+
 func TestAfterScenario_NoFailureSummaryForPassingOrSkippedScenario(t *testing.T) {
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)

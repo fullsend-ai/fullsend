@@ -147,10 +147,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 	if triageRun == nil {
 		// The poll-error tail tells a blind wait (every listing failed)
 		// apart from one that listed successfully and found no run.
-		if event != "" {
-			return nil, fmt.Errorf("workflow %s (%s) %w%s", workflowFile, event, ci.ErrWorkflowNotDispatched, listErrs.describe(nil, "polls"))
-		}
-		return nil, fmt.Errorf("workflow %s %w%s", workflowFile, ci.ErrWorkflowNotDispatched, listErrs.describe(nil, "polls"))
+		return nil, &ci.NotDispatchedError{WorkflowFile: workflowFile, Event: event, Detail: listErrs.describe(nil, "polls")}
 	}
 
 	deadline = time.Now().Add(dispatchWait)

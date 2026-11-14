@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1384,31 +1385,79 @@ func (f *fakeIssueSCM) GetIssue(_ context.Context, _, _ string, number int) (*fo
 	return f.issue, f.err
 }
 
-// shortenDispatchGrace sets dispatchDiagnosticsGrace for one test.
+// shortenDispatchGrace sets dispatchDiagnosticsGrace for one test and
+// gives the test a fresh run-level grace budget.
 func shortenDispatchGrace(t *testing.T, d time.Duration) {
 	t.Helper()
-	orig := dispatchDiagnosticsGrace
+	orig, origBudget := dispatchDiagnosticsGrace, dispatchGraceBudget
 	dispatchDiagnosticsGrace = d
-	t.Cleanup(func() { dispatchDiagnosticsGrace = orig })
+	dispatchGraceBudget = newGraceBudget(dispatchGraceTotal)
+	t.Cleanup(func() { dispatchDiagnosticsGrace, dispatchGraceBudget = orig, origBudget })
 }
 
-// notDispatchedErr builds the wrapped timeout a step returns when
-// WaitForWorkflow saw no run.
+// fakeDispatchClock replaces the grace wait's clock for one test. The
+// clock starts at start; a grace wait returns at once and advances it by
+// the waited duration, after calling onWait (if set). It returns a
+// pointer to the number of waits.
+func fakeDispatchClock(t *testing.T, start time.Time, onWait func()) *int {
+	t.Helper()
+	origNow, origAfter := dispatchNow, dispatchAfter
+	var mu sync.Mutex
+	now := start
+	waits := 0
+	dispatchNow = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	dispatchAfter = func(d time.Duration) <-chan time.Time {
+		mu.Lock()
+		now = now.Add(d)
+		waits++
+		mu.Unlock()
+		if onWait != nil {
+			onWait()
+		}
+		ch := make(chan time.Time, 1)
+		ch <- start
+		return ch
+	}
+	t.Cleanup(func() { dispatchNow, dispatchAfter = origNow, origAfter })
+	return &waits
+}
+
+// notDispatchedErr builds the wrapped timeout a step returns when the
+// GitHub Actions driver's WaitForWorkflow saw no fullsend.yaml run for
+// the issues event.
 func notDispatchedErr() error {
 	return fmt.Errorf("waiting for issue-open workflow: %w",
-		fmt.Errorf("workflow fullsend.yaml (issues) %w", ci.ErrWorkflowNotDispatched))
+		&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Event: "issues"})
+}
+
+func TestNotDispatchedError_MessageAndSentinel(t *testing.T) {
+	t.Parallel()
+	err := notDispatchedErr()
+	assert.ErrorIs(t, err, ci.ErrWorkflowNotDispatched)
+	assert.Equal(t, "waiting for issue-open workflow: workflow fullsend.yaml (issues) was not dispatched", err.Error())
+	assert.Equal(t, "workflow fullsend.yaml was not dispatched (failed on 1 of 2 polls)",
+		(&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Detail: " (failed on 1 of 2 polls)"}).Error())
 }
 
 func TestCollectFailureLogs_DispatchDiagnosticsReportLateRun(t *testing.T) {
-	shortenDispatchGrace(t, 0)
+	shortenDispatchGrace(t, 2*time.Minute)
+	// Runner clock at the end of the 5-minute wait.
+	waitEnd := time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC)
+	waits := fakeDispatchClock(t, waitEnd, nil)
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
 
-	late := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	fake := &fakeListerCI{
 		runs: []forge.WorkflowRun{
-			{ID: 90, Name: "fullsend", Event: "issues", Status: "queued", CreatedAt: late, Path: ".github/workflows/fullsend.yaml"},
-			{ID: 12, Name: "setup", Event: "push", Status: "completed", Conclusion: "success", CreatedAt: "2026-01-01T00:00:00Z", Path: ".github/workflows/setup.yaml"},
+			// The waited-for run, created 10s into the grace period.
+			{ID: 90, Name: "fullsend", Event: "issues", Status: "queued", CreatedAt: "2026-11-14T00:11:08Z", Path: ".github/workflows/fullsend.yaml"},
+			// Same workflow, other event: listed, not matched.
+			{ID: 91, Name: "fullsend", Event: "issue_comment", Status: "queued", CreatedAt: "2026-11-14T00:11:30Z", Path: ".github/workflows/fullsend.yaml"},
+			{ID: 12, Name: "setup", Event: "push", Status: "completed", Conclusion: "success", CreatedAt: "2026-11-14T00:04:00Z", Path: ".github/workflows/setup.yaml"},
 		},
 	}
 	issues := &fakeIssueSCM{issue: &forge.Issue{Number: 7, CreatedAt: "2026-11-14T00:05:58Z", State: "open"}}
@@ -1421,17 +1470,61 @@ func TestCollectFailureLogs_DispatchDiagnosticsReportLateRun(t *testing.T) {
 	CollectFailureLogs(context.Background(), w, notDispatchedErr())
 
 	summary := readFailureSummary(t, artifactDir)
+	assert.Equal(t, 1, *waits)
 	assert.Contains(t, summary, "\nDispatch diagnostics:\n")
 	assert.Contains(t, summary, "repository: halfsend-22/test-repo-03")
-	assert.Contains(t, summary, "listed at: ")
-	assert.Contains(t, summary, "grace period that began at ")
+	assert.Contains(t, summary, "listed at: 2026-11-14T00:12:58Z (runner clock), after a 2m0s grace period that began at 2026-11-14T00:10:58Z")
 	assert.Equal(t, 7, issues.requested)
 	assert.Contains(t, summary, "issue #7: created_at 2026-11-14T00:05:58Z, state open")
-	assert.Contains(t, summary, "workflow runs (2, no time filter)")
-	assert.Contains(t, summary, `run 90: workflow ".github/workflows/fullsend.yaml", event "issues", created_at `+late+`, status "queued", conclusion "" (created during the grace period)`)
-	assert.Contains(t, summary, `run 12: workflow ".github/workflows/setup.yaml", event "push", created_at 2026-01-01T00:00:00Z, status "completed", conclusion "success"`+"\n",
-		"a run from before the grace period is listed without the time filter and not marked")
-	assert.Contains(t, summary, `fullsend.yaml run created during the grace period: yes (run 90, event "issues", created_at `+late+`)`)
+	assert.Contains(t, summary, "workflow runs (3, no time filter)")
+	assert.Contains(t, summary, `run 90: workflow ".github/workflows/fullsend.yaml", event "issues", created_at 2026-11-14T00:11:08Z, status "queued", conclusion ""`)
+	assert.Contains(t, summary, `run 12: workflow ".github/workflows/setup.yaml", event "push", created_at 2026-11-14T00:04:00Z, status "completed", conclusion "success"`,
+		"a run from before the scenario is listed without the time filter")
+	assert.Contains(t, summary, "matching fullsend.yaml (issues) runs (gap measured on GitHub's clock):\n    - run 90: created_at 2026-11-14T00:11:08Z, +5m10s after the issue's created_at\n")
+	assert.NotContains(t, summary, "run 91: created_at", "a run for another event is not a matching run")
+	assert.Contains(t, summary, "matching fullsend.yaml (issues) run created after the wait ended: yes (run 90, created_at 2026-11-14T00:11:08Z; compared with the runner clock, allowing 30s of clock skew)")
+	assert.NotContains(t, summary, "grace wait:", "a full grant needs no budget note")
+}
+
+func TestCollectFailureLogs_DispatchDiagnosticsSkewAllowance(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	waitEnd := time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC)
+
+	tests := map[string]struct {
+		created string
+		want    string
+	}{
+		// 20s before the runner says the wait ended: within the 30s skew
+		// allowance, so it counts as after the wait.
+		"within skew":   {created: "2026-11-14T00:10:38Z", want: "after the wait ended: yes (run 90"},
+		"beyond skew":   {created: "2026-11-14T00:10:20Z", want: "after the wait ended: no (compared with the runner clock, allowing 30s of clock skew): the matching runs listed above predate the end of the wait"},
+		"unparseable":   {created: "", want: "run 90: created_at (unknown), unknown after the issue's created_at"},
+		"issue unknown": {created: "2026-11-14T00:11:08Z", want: "run 90: created_at 2026-11-14T00:11:08Z, unknown after the issue's created_at"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			artifactDir := t.TempDir()
+			t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+			dispatchGraceBudget = newGraceBudget(dispatchGraceTotal)
+			fakeDispatchClock(t, waitEnd, nil)
+			issue := &forge.Issue{Number: 7, CreatedAt: "2026-11-14T00:05:58Z", State: "open"}
+			if name == "issue unknown" {
+				issue.CreatedAt = ""
+			}
+			w := &world.World{
+				Org: "org", RepoName: "repo", IssueNumber: 7, ScenarioName: name,
+				CI: &fakeListerCI{runs: []forge.WorkflowRun{
+					{ID: 90, Event: "issues", CreatedAt: tc.created, Path: ".github/workflows/fullsend.yaml"},
+				}},
+				SCM:  &fakeIssueSCM{issue: issue},
+				Logf: func(string, ...any) {},
+			}
+
+			CollectFailureLogs(context.Background(), w, notDispatchedErr())
+
+			assert.Contains(t, readFailureSummary(t, artifactDir), tc.want)
+		})
+	}
 }
 
 func TestCollectFailureLogs_DispatchDiagnosticsReportNoRun(t *testing.T) {
@@ -1459,7 +1552,20 @@ func TestCollectFailureLogs_DispatchDiagnosticsReportNoRun(t *testing.T) {
 	summary := readFailureSummary(t, artifactDir)
 	assert.Contains(t, summary, "issue #3: lookup failed: get issue #3: 502")
 	assert.Contains(t, summary, `run 6: workflow "Named only", event "issues", created_at (unknown)`)
-	assert.Contains(t, summary, "fullsend.yaml run created during the grace period: no")
+	assert.Contains(t, summary, "matching fullsend.yaml (issues) runs: none")
+	assert.Contains(t, summary, "matching fullsend.yaml (issues) run created after the wait ended: no (compared with the runner clock, allowing 30s of clock skew): no matching run exists")
+}
+
+func TestCollectFailureLogs_DispatchDiagnosticsWithoutWaitRecord(t *testing.T) {
+	shortenDispatchGrace(t, 0)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+	w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}, ScenarioName: "bare sentinel", Logf: func(string, ...any) {}}
+
+	CollectFailureLogs(context.Background(), w, fmt.Errorf("workflow x.yaml %w", ci.ErrWorkflowNotDispatched))
+
+	assert.Contains(t, readFailureSummary(t, artifactDir),
+		"matching run after the wait: unknown: the error does not record which workflow and event were waited for")
 }
 
 func TestCollectFailureLogs_DispatchDiagnosticsLookupGaps(t *testing.T) {
@@ -1479,7 +1585,7 @@ func TestCollectFailureLogs_DispatchDiagnosticsLookupGaps(t *testing.T) {
 		},
 		"empty listing": {
 			world: &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}},
-			want:  []string{"workflow runs (0, no time filter):\n    none\n", "fullsend.yaml run created during the grace period: no"},
+			want:  []string{"workflow runs (0, no time filter):\n    none\n", "matching fullsend.yaml (issues) run created after the wait ended: no"},
 		},
 		"no repository": {
 			world: &world.World{},
@@ -1504,7 +1610,7 @@ func TestCollectFailureLogs_DispatchDiagnosticsLookupGaps(t *testing.T) {
 }
 
 func TestCollectFailureLogs_DispatchDiagnosticsGraceCutShort(t *testing.T) {
-	shortenDispatchGrace(t, time.Hour)
+	shortenDispatchGrace(t, time.Minute)
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
 
@@ -1514,12 +1620,75 @@ func TestCollectFailureLogs_DispatchDiagnosticsGraceCutShort(t *testing.T) {
 
 	CollectFailureLogs(ctx, w, notDispatchedErr())
 
-	assert.Contains(t, readFailureSummary(t, artifactDir), "the grace period was cut short: context canceled")
+	summary := readFailureSummary(t, artifactDir)
+	assert.Contains(t, summary, "the grace period was cut short: context canceled")
+	assert.Contains(t, summary, "after a 0s grace period", "the line reports the real elapsed wait, not the configured one")
+	assert.InDelta(t, float64(dispatchGraceTotal), float64(dispatchGraceBudget.take(dispatchGraceTotal)), float64(time.Second),
+		"a cut-short wait returns its unused grant")
+}
+
+// TestCollectFailureLogs_DispatchGraceBudgetExhausted checks the
+// run-level cap: once earlier scenarios spent the budget, a later one
+// skips the wait, still lists the repository, and says why it did not
+// wait. A partly spent budget shortens the wait to what is left.
+func TestCollectFailureLogs_DispatchGraceBudgetExhausted(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	waits := fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
+	dispatchGraceBudget = newGraceBudget(5 * time.Minute)
+
+	run := func(name string) string {
+		artifactDir := t.TempDir()
+		t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+		w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}, ScenarioName: name, Logf: func(string, ...any) {}}
+		CollectFailureLogs(context.Background(), w, notDispatchedErr())
+		return readFailureSummary(t, artifactDir)
+	}
+
+	first, second := run("first"), run("second")
+	assert.Contains(t, first, "after a 2m0s grace period")
+	assert.Contains(t, second, "after a 2m0s grace period")
+	third := run("third")
+	assert.Contains(t, third, "grace wait: shortened to 1m0s: the rest of the run-level grace budget (5m0s per test process)")
+	assert.Contains(t, third, "after a 1m0s grace period")
+	assert.Equal(t, 3, *waits)
+
+	fourth := run("fourth")
+	assert.Equal(t, 3, *waits, "a spent budget skips the wait")
+	assert.Contains(t, fourth, "grace wait: skipped: the run-level grace budget (5m0s per test process) was spent by earlier scenarios")
+	assert.Contains(t, fourth, "after a 0s grace period")
+	assert.Contains(t, fourth, "workflow runs (0, no time filter)", "the repository is still listed")
+	assert.Contains(t, fourth, "run created after the wait ended: no")
+}
+
+func TestGraceBudget_ConcurrentTakeNeverOverspends(t *testing.T) {
+	t.Parallel()
+	b := newGraceBudget(6 * time.Minute)
+	var mu sync.Mutex
+	var total time.Duration
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got := b.take(2 * time.Minute)
+			mu.Lock()
+			total += got
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	assert.Equal(t, 6*time.Minute, total)
+	assert.Zero(t, b.take(time.Second))
+	b.give(time.Hour)
+	assert.Equal(t, 6*time.Minute, b.take(time.Hour), "give never refills past the total")
 }
 
 func TestCollectFailureLogs_NoDispatchDiagnosticsForOtherErrors(t *testing.T) {
-	// A grace period this long would hang the test if it ran.
-	shortenDispatchGrace(t, time.Hour)
+	// Default grace; the deadline makes a regression that waits fail
+	// within seconds (the wait is cut short) instead of hanging.
+	shortenDispatchGrace(t, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
 
@@ -1529,8 +1698,9 @@ func TestCollectFailureLogs_NoDispatchDiagnosticsForOtherErrors(t *testing.T) {
 		ScenarioName: "other failure", Logf: func(string, ...any) {},
 	}
 
-	CollectFailureLogs(context.Background(), w, fmt.Errorf("workflow fullsend.yaml run 4 concluded with %q", "failure"))
+	CollectFailureLogs(ctx, w, fmt.Errorf("workflow fullsend.yaml run 4 concluded with %q", "failure"))
 
+	require.NoError(t, ctx.Err(), "CollectFailureLogs must not wait for other errors")
 	summary := readFailureSummary(t, artifactDir)
 	assert.NotContains(t, summary, "Dispatch diagnostics")
 	assert.Zero(t, issues.requested, "the issue is not looked up for other failures")
