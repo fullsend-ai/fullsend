@@ -1063,7 +1063,12 @@ func TestRunPollJobScript_UsesPinnedRefForDispatch(t *testing.T) {
 // test for the secret-exposure finding on the `fullsend run` invocation:
 // after a successful identity pin, --status-repo must come from
 // FULLSEND_PINNED_PROJECT_PATH (the CI_JOB_TOKEN job record), never the
-// overridable CI_PROJECT_PATH pipeline variable.
+// overridable CI_PROJECT_PATH pipeline variable. CI_SERVER_URL and
+// CI_SERVER_HOST match the pinned URL here, since a mismatch stops the job
+// before `fullsend run` (see
+// TestRunAgentJobScript_ChecksCIServerOriginAgainstPinnedURL); the pinned
+// GitLab URL itself is covered by
+// TestRunAgentJobScript_UsesPinnedGitLabURLForFullsendRun.
 func TestRunAgentJobScript_UsesPinnedIdentityForStatusRepo(t *testing.T) {
 	root := t.TempDir()
 	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
