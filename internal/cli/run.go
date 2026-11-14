@@ -1672,6 +1672,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		defer cleanupBound()
 		result.Profiles = boundProfiles
+	} else if ghHost, ghPort := githubForgeHostPort(os.Getenv); ghHost != "" {
+		// The same for a GitHub server other than github.com: the stock
+		// GitHub profiles' GH_TOKEN placeholder resolves only at
+		// api.github.com and github.com.
+		boundProfiles, cleanupBound, err := bindGitHubForgeHost(result.Profiles, ghHost, ghPort)
+		if err != nil {
+			printer.StepFail("Failed to add the GitHub server to provider profiles")
+			return fmt.Errorf("binding GitHub server to provider profiles: %w", err)
+		}
+		defer cleanupBound()
+		result.Profiles = boundProfiles
 	}
 
 	if intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles); intErr != nil {
@@ -4084,6 +4095,11 @@ func harnessEnvLines(h *harness.Harness) []string {
 	// The runner's PATH goes back in front after every harness-controlled
 	// entry, the same ordering rule as iteration.env below.
 	lines = append(lines, runnerPathRestoreLine())
+
+	// On a GitHub server other than github.com, gh needs GH_HOST and reads
+	// its token from GH_ENTERPRISE_TOKEN. Runner-owned, after the harness
+	// entries, so env.sandbox cannot point gh at another host.
+	lines = append(lines, githubForgeSandboxEnvLines(os.Getenv)...)
 
 	// Runner-owned budget, deadline, and TRACEPARENT come after every
 	// harness-controlled entry so none of them can shadow the values (#7042).
