@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -169,9 +170,14 @@ var defaultAgentsRepoKnownAgents = func() map[string]bool {
 var statusMintToken = mintclient.MintToken
 
 // statusNewForgeClientFn constructs the GitHub client for status comments.
+// It stays on api.github.com unless GITHUB_SERVER_URL names another GitHub
+// instance and GITHUB_API_URL is that instance's API
+// (newConfiguredHostGitHubClient), so a run on such a host posts its status
+// there while the write-scoped token can never be redirected by
+// GITHUB_API_URL alone.
 // Override in tests to capture status writes without calling GitHub.
 var statusNewForgeClientFn = func(token string) forge.Client {
-	return gh.New(token)
+	return newConfiguredHostGitHubClient(token)
 }
 
 // agentWorkingDirExcludes lists fullsend-reserved directory patterns that
@@ -667,8 +673,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Resolve agent source: config agents take precedence, then agents repo
 	// fallback. Always create a GitHub client for the agents-repo fallback —
 	// fullsend-ai/agents is public, so unauthenticated requests work when no
-	// GitHub token is available (e.g., on GitLab pipelines).
-	fallbackForgeClient := gh.New(composeGitToken)
+	// GitHub token is available (e.g., on GitLab pipelines). The client
+	// stays on api.github.com unless GITHUB_API_URL is the API of the
+	// GITHUB_SERVER_URL instance; then the fallback resolves and reads the
+	// agents repo there (agentsRepoHostURLPrefix). GITHUB_API_URL alone
+	// never receives the compose token or picks the fallback commit.
+	fallbackForgeClient := newConfiguredHostGitHubClient(composeGitToken)
+	// The configured host serves raw content from itself, so allow it in the
+	// fetch policy too; the default policy names only github.com hosts.
+	composeOpts.FetchPolicy = withAgentsRepoHostAllowed(composeOpts.FetchPolicy, fallbackForgeClient)
 	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
 	if err != nil {
 		return err
@@ -681,6 +694,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// field (ADR-0045 resource resolution for config-registered agents).
 	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 		composeOpts.SourceURL = fetchDeps[0].URL
+		useAgentsRepoHostFetch(&composeOpts, fallbackForgeClient)
 	}
 
 	// If the harness has a URL base and org config failed to load,
@@ -7972,7 +7986,11 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 		return "", none, false
 	}
 
+	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
 	rawURL := defaultAgentsRepoURLPrefix + resolvedSHA + "/" + relPath
+	if hostPrefix != "" {
+		rawURL = hostPrefix + resolvedSHA + "/" + relPath
+	}
 
 	if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
 		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", noun))
@@ -7985,9 +8003,16 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	}
 	printer.StepStart(fmt.Sprintf("Fetching %s from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
 
-	content, err := fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
+	var content []byte
+	if hostPrefix != "" {
+		// A host other than github.com has no raw.githubusercontent.com,
+		// so read the file through the same client that resolved the ref.
+		content, err = readAgentsRepoFileAtRef(ctx, forgeClient, relPath, resolvedSHA, composeOpts.FetchPolicy)
+	} else {
+		content, err = fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
+	}
 	if err != nil {
-		if isFetchHTTPStatus(err, http.StatusNotFound) {
+		if isFetchHTTPStatus(err, http.StatusNotFound) || forge.IsNotFound(err) {
 			printer.StepInfo(fmt.Sprintf("No %s at %s/%s@%s (HTTP 404); skipping", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
 		} else {
 			printer.StepWarn(fmt.Sprintf("Failed to fetch %s from agents repo: %v", noun, err))
@@ -8038,6 +8063,237 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 
 	printer.StepDone(fmt.Sprintf("%s resolved from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef))
 	return localPath, dep, true
+}
+
+// agentsRepoHostURLPrefix returns the raw-content URL prefix of
+// fullsend-ai/agents on the GitHub host forgeClient addresses, in the
+// https://<host>/<owner>/<repo>/raw/ form that host serves raw files from.
+// The host is the GITHUB_SERVER_URL instance (githubServerBaseURLFn), the
+// same value the default allowed_remote_resources entries are built from,
+// so the prefix, the fetch-policy host and the allowlist agree. It returns
+// "" — the agents repo is then fetched from defaultAgentsRepoURLPrefix —
+// when no non-github.com instance is configured, when forgeClient is not a
+// GitHub API client, or when the client's API is not that instance's API
+// (<server>/api/v3 or api.<host>).
+func agentsRepoHostURLPrefix(forgeClient forge.Client) string {
+	client, ok := forgeClient.(*gh.LiveClient)
+	if !ok || client == nil {
+		return ""
+	}
+	server := githubServerBaseURLFn()
+	if githubAPIURLForServer(server, client.BaseURL()) == "" {
+		return ""
+	}
+	return server + "/" + defaultAgentsRepoOwner + "/" + defaultAgentsRepoName + "/raw/"
+}
+
+// withAgentsRepoHostAllowed returns policy extended to permit fetching from
+// the GitHub host forgeClient addresses, when that host is not github.com. The
+// host serves raw content from itself, so without this the default policy
+// (github.com and raw.githubusercontent.com only) refuses a base harness or
+// companion file whose URL is on it. A host with an explicit port also has
+// that port allowed. The returned policy does not share slices with policy,
+// and policy is returned unchanged for github.com or a non-GitHub client.
+func withAgentsRepoHostAllowed(policy fetch.FetchPolicy, forgeClient forge.Client) fetch.FetchPolicy {
+	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
+	if hostPrefix == "" {
+		return policy
+	}
+	u, err := url.Parse(hostPrefix)
+	if err != nil || u.Hostname() == "" {
+		return policy
+	}
+	policy.AllowedDomains = append(slices.Clone(policy.AllowedDomains), u.Hostname())
+	if port := u.Port(); port != "" {
+		ports := policy.AllowedPorts
+		if len(ports) == 0 {
+			ports = []string{"443"}
+		}
+		policy.AllowedPorts = append(slices.Clone(ports), port)
+	}
+	return policy
+}
+
+// rawFileContentReader is implemented by forge clients that can read a
+// file in full through the contents API's raw media type
+// (gh.LiveClient.GetRawFileContentAtRef). It is kept local to the
+// agents-repo host path rather than added to forge.Client.
+type rawFileContentReader interface {
+	GetRawFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
+}
+
+// readAgentsRepoFileAtRef reads relPath of fullsend-ai/agents at sha through
+// forgeClient. It bypasses fetch.FetchURL, so it applies the same size bound.
+// A client that can read raw media (the GitHub client this path is used
+// with) reads the file that way, so files over the contents API's 1 MiB
+// JSON limit are returned and non-file paths fail; any other client falls
+// back to GetFileContentAtRef.
+func readAgentsRepoFileAtRef(ctx context.Context, forgeClient forge.Client, relPath, sha string, policy fetch.FetchPolicy) ([]byte, error) {
+	read := forgeClient.GetFileContentAtRef
+	if raw, ok := forgeClient.(rawFileContentReader); ok {
+		read = raw.GetRawFileContentAtRef
+	}
+	content, err := read(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, relPath, sha)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > policy.MaxSizeBytes {
+		return nil, fmt.Errorf("response exceeds the %d-byte fetch size limit", policy.MaxSizeBytes)
+	}
+	return content, nil
+}
+
+// useAgentsRepoHostFetch makes opts read the companion files and directory
+// resources of a harness whose SourceURL is on the configured non-github.com
+// host through that host (see agentsRepoHostFileFetcher and
+// agentsRepoHostTreeFetcher). It leaves opts unchanged otherwise.
+func useAgentsRepoHostFetch(opts *harness.ComposeOpts, forgeClient forge.Client) {
+	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
+	if hostPrefix != "" && strings.HasPrefix(opts.SourceURL, hostPrefix) {
+		opts.FetchFile = agentsRepoHostFileFetcher(forgeClient, hostPrefix, opts.FetchPolicy)
+		opts.ParseRawURL = agentsRepoHostURLParser(hostPrefix)
+		opts.TreeFetcher = agentsRepoHostTreeFetcher(forgeClient, hostPrefix, opts.FetchPolicy, opts.TreeFetcher)
+	}
+}
+
+// parseAgentsRepoHostURL splits a URL under hostPrefix
+// (<prefix><sha>/<path>) into its commit SHA and repo-relative path. It
+// accepts only a full commit SHA and a clean path with no traversal, query, or
+// fragment, so what it returns is safe to hand to the forge API.
+func parseAgentsRepoHostURL(rawURL, hostPrefix string) (sha, relPath string, err error) {
+	rest, ok := strings.CutPrefix(rawURL, hostPrefix)
+	if !ok {
+		return "", "", fmt.Errorf("not an agents repo URL on this host: %q", rawURL)
+	}
+	sha, relPath, found := strings.Cut(rest, "/")
+	if !found || !commitSHAPattern.MatchString(sha) || relPath == "" ||
+		strings.ContainsAny(relPath, "?#") || strings.HasPrefix(relPath, "/") {
+		return "", "", fmt.Errorf("unsupported agents repo URL %q", rawURL)
+	}
+	for _, seg := range strings.Split(relPath, "/") {
+		if seg == ".." || seg == "." || seg == "" {
+			return "", "", fmt.Errorf("unsupported agents repo URL %q", rawURL)
+		}
+	}
+	return sha, relPath, nil
+}
+
+// agentsRepoHostFileFetcher returns the harness.ComposeOpts.FetchFile hook for
+// a harness fetched from fullsend-ai/agents on a GitHub host other than
+// github.com. URLs under hostPrefix (<prefix><sha>/<path>, as recorded for the
+// harness itself) are read through forgeClient at the commit they name, so
+// companion files stay pinned to the harness's commit and are fetched from the
+// configured host with its token. The caller's allowlist check has already
+// run. Any other URL goes through fetch.FetchURL under policy.
+func agentsRepoHostFileFetcher(forgeClient forge.Client, hostPrefix string, policy fetch.FetchPolicy) func(context.Context, string) ([]byte, error) {
+	return func(ctx context.Context, rawURL string) ([]byte, error) {
+		if !strings.HasPrefix(rawURL, hostPrefix) {
+			return fetch.FetchURL(ctx, rawURL, policy)
+		}
+		sha, relPath, err := parseAgentsRepoHostURL(rawURL, hostPrefix)
+		if err != nil {
+			return nil, err
+		}
+		return readAgentsRepoFileAtRef(ctx, forgeClient, relPath, sha, policy)
+	}
+}
+
+// agentsRepoHostForgeInfo describes a path of the agents repo on the
+// configured host. Its Forge is the host itself, so CloneURL names that host;
+// the clone URL is how agentsRepoHostTreeFetcher recognises the requests that
+// are for it.
+func agentsRepoHostForgeInfo(hostPrefix, ref, relPath string) (*forge.ForgeURLInfo, error) {
+	u, err := url.Parse(hostPrefix)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("invalid agents repo host prefix %q", hostPrefix)
+	}
+	return &forge.ForgeURLInfo{
+		Forge:    u.Host,
+		Owner:    defaultAgentsRepoOwner,
+		Repo:     defaultAgentsRepoName,
+		Path:     relPath,
+		Ref:      ref,
+		PathType: "tree",
+	}, nil
+}
+
+// agentsRepoHostURLParser returns the harness.ComposeOpts.ParseRawURL hook for
+// a harness fetched from fullsend-ai/agents on a GitHub host other than
+// github.com: URLs under hostPrefix describe a path of the agents repo at the
+// commit they name, and any other URL is parsed as a raw.githubusercontent.com
+// URL.
+func agentsRepoHostURLParser(hostPrefix string) func(string) (*forge.ForgeURLInfo, error) {
+	return func(rawURL string) (*forge.ForgeURLInfo, error) {
+		if !strings.HasPrefix(rawURL, hostPrefix) {
+			return forge.ParseRawContentURL(rawURL)
+		}
+		sha, relPath, err := parseAgentsRepoHostURL(rawURL, hostPrefix)
+		if err != nil {
+			return nil, err
+		}
+		return agentsRepoHostForgeInfo(hostPrefix, sha, relPath)
+	}
+}
+
+// maxAgentsRepoHostTreeBytes bounds the total size of a directory read from
+// the configured host, matching the limit git sparse checkout applies.
+const maxAgentsRepoHostTreeBytes = 50 << 20
+
+// agentsRepoHostTreeFetcher returns the harness.ComposeOpts.TreeFetcher hook
+// for a harness fetched from fullsend-ai/agents on a GitHub host other than
+// github.com. A directory of the agents repo (a skill, plugin, or script
+// directory) is listed and read through forgeClient at the commit it is
+// pinned to, so it is fetched from the configured host with its token rather
+// than by git sparse checkout from github.com. Entries are bounded in count,
+// per-file size (policy.MaxSizeBytes), and total size. Any other repository
+// goes to next, or to git sparse checkout when next is nil.
+func agentsRepoHostTreeFetcher(forgeClient forge.Client, hostPrefix string, policy fetch.FetchPolicy, next gitfetch.TreeFetchFunc) gitfetch.TreeFetchFunc {
+	if next == nil {
+		next = gitfetch.FetchTree
+	}
+	hostInfo, infoErr := agentsRepoHostForgeInfo(hostPrefix, "", "")
+	return func(ctx context.Context, cloneURL, dirPath, ref, token string) (map[string][]byte, error) {
+		if infoErr != nil || cloneURL != hostInfo.CloneURL() {
+			return next(ctx, cloneURL, dirPath, ref, token)
+		}
+		if !commitSHAPattern.MatchString(ref) || dirPath == "" {
+			return nil, fmt.Errorf("unsupported agents repo directory %q at %q", dirPath, ref)
+		}
+		for _, seg := range strings.Split(dirPath, "/") {
+			if seg == ".." || seg == "." || seg == "" {
+				return nil, fmt.Errorf("unsupported agents repo directory %q", dirPath)
+			}
+		}
+		entries, err := forgeClient.ListDirectoryContents(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, dirPath, ref, true)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) > gitfetch.MaxFiles {
+			return nil, fmt.Errorf("directory %q exceeds the %d-file limit", dirPath, gitfetch.MaxFiles)
+		}
+		files := make(map[string][]byte, len(entries))
+		total := 0
+		for _, e := range entries {
+			if e.Type != "file" {
+				continue
+			}
+			for _, seg := range strings.Split(e.Path, "/") {
+				if seg == ".." || seg == "." || seg == "" {
+					return nil, fmt.Errorf("unsupported path %q in agents repo directory %q", e.Path, dirPath)
+				}
+			}
+			content, err := readAgentsRepoFileAtRef(ctx, forgeClient, dirPath+"/"+e.Path, ref, policy)
+			if err != nil {
+				return nil, fmt.Errorf("reading %q/%q: %w", dirPath, e.Path, err)
+			}
+			total += len(content)
+			if total > maxAgentsRepoHostTreeBytes {
+				return nil, fmt.Errorf("directory %q exceeds the %d MiB total size limit", dirPath, maxAgentsRepoHostTreeBytes>>20)
+			}
+			files[e.Path] = content
+		}
+		return files, nil
+	}
 }
 
 // cachedPinnedAgentsRepoFile is the offline counterpart of

@@ -659,7 +659,7 @@ func DefaultAllowedRemoteResources() []string {
 	for _, repo := range defaultAllowedRepos {
 		prefixes = append(prefixes, "https://raw.githubusercontent.com/"+repo+"/")
 	}
-	if base := githubServerBaseURL(os.Getenv("GITHUB_SERVER_URL")); base != "" {
+	if base := GitHubServerBaseURL(os.Getenv("GITHUB_SERVER_URL")); base != "" {
 		for _, repo := range defaultAllowedRepos {
 			prefixes = append(prefixes, base+"/"+repo+"/raw/")
 		}
@@ -667,12 +667,13 @@ func DefaultAllowedRemoteResources() []string {
 	return prefixes
 }
 
-// githubServerBaseURL returns "https://<host>" for a GitHub server URL
+// GitHubServerBaseURL returns "https://<host>" for a GitHub server URL
 // naming a host other than github.com. It returns "" for empty input,
 // github.com, and any value that is not a bare HTTPS origin (userinfo,
 // a path, a query or a fragment), so a malformed value never widens
-// the default allowlist.
-func githubServerBaseURL(serverURL string) string {
+// the default allowlist. The CLI derives the agents-repo fallback host
+// from it too, so that host and the allowlist entries always agree.
+func GitHubServerBaseURL(serverURL string) string {
 	serverURL = strings.TrimSpace(serverURL)
 	if serverURL == "" {
 		return ""

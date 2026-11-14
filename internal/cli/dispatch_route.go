@@ -12,7 +12,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
@@ -146,7 +145,9 @@ type routeOpts struct {
 	// forgeClient resolves the agents-repo ref for the fallback. When nil,
 	// an unauthenticated GitHub client is used (fullsend-ai/agents is public).
 	forgeClient forge.Client
-	// fetchPolicy overrides fetch.DefaultPolicy (tests).
+	// fetchPolicy overrides fetch.DefaultPolicy. The dispatch command
+	// passes its host-admitting policy (newDispatchFetchPolicy); tests
+	// inject their own.
 	fetchPolicy *fetch.FetchPolicy
 	printer     *ui.Printer
 }
@@ -247,7 +248,11 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	}
 	forgeClient := o.forgeClient
 	if forgeClient == nil {
-		forgeClient = gh.New("")
+		// Unauthenticated, as the agents repository is public, and on the
+		// configured host when GITHUB_SERVER_URL and GITHUB_API_URL agree
+		// (newConfiguredHostGitHubClient), so the route reads the harness
+		// from the same host fullsend run does; otherwise api.github.com.
+		forgeClient = newConfiguredHostGitHubClient("")
 	}
 	printer := o.printer
 	if printer == nil {
@@ -263,6 +268,11 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		d.Harness = routeHarnessLabel(cfg, o.agent, deps)
 		if len(deps) > 0 && deps[0].URL != "" {
 			composeOpts.SourceURL = deps[0].URL
+			// Same as runAgent: a harness resolved from the agents repo on
+			// the configured host reads its relative companion files and
+			// directory resources through that host's API, or composition
+			// fails and the route's threshold wrongly fails closed.
+			useAgentsRepoHostFetch(&composeOpts, forgeClient)
 		}
 		if h, _, err := harness.LoadWithBase(ctx, path, composeOpts); err == nil {
 			harnessRole = h.Role

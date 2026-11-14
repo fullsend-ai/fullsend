@@ -265,6 +265,66 @@ func (c *LiveClient) BaseURL() string {
 	return c.baseURL
 }
 
+// WithSameOriginRedirects makes the client follow an HTTP redirect only to
+// the same scheme, host (compared lowercased) and port as the request that
+// was redirected, as GitHub does with same-host 301s for renamed
+// repositories, and refuse any other redirect — another host, a
+// subdomain, a different port or an https-to-http downgrade — with an
+// error. Go's default policy follows those and keeps the Authorization
+// header on same-host and subdomain hops, so a client sending its token
+// to a host other than github.com uses this. The client's transport and
+// timeout are kept.
+func (c *LiveClient) WithSameOriginRedirects() *LiveClient {
+	hc := *c.http
+	hc.CheckRedirect = sameOriginRedirect
+	c.http = &hc
+	return c
+}
+
+// maxSameOriginRedirects matches the hop limit of Go's default redirect
+// policy.
+const maxSameOriginRedirects = 10
+
+// sameOriginRedirect is the http.Client.CheckRedirect of
+// WithSameOriginRedirects.
+func sameOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxSameOriginRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxSameOriginRedirects)
+	}
+	from := via[len(via)-1].URL
+	if !sameOrigin(from, req.URL) {
+		return fmt.Errorf("refusing redirect from %q to %q: not the same origin", originOf(from), originOf(req.URL))
+	}
+	return nil
+}
+
+// sameOrigin reports whether a and b have the same scheme, lowercased
+// host and port, with the scheme's default port filled in.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
+}
+
+// originOf returns scheme://host of u, without path, query or userinfo,
+// for error messages.
+func originOf(u *url.URL) string {
+	return strings.ToLower(u.Scheme) + "://" + u.Host
+}
+
 // WithAfterFunc sets a custom delay function (for testing without real sleeps).
 func (c *LiveClient) WithAfterFunc(f func(time.Duration) <-chan time.Time) *LiveClient {
 	c.afterFunc = f
@@ -847,8 +907,8 @@ func checkStatus(resp *http.Response, acceptable ...int) error {
 }
 
 // get performs a GET request and checks for success.
-func (c *LiveClient) get(ctx context.Context, path string) (*http.Response, error) {
-	resp, err := c.do(ctx, http.MethodGet, path, nil)
+func (c *LiveClient) get(ctx context.Context, path string, headers ...requestHeader) (*http.Response, error) {
+	resp, err := c.do(ctx, http.MethodGet, path, nil, headers...)
 	if err != nil {
 		return nil, err
 	}
@@ -2271,6 +2331,109 @@ func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path,
 	}
 	return data, nil
 }
+
+// GetRawFileContentAtRef retrieves the content of a file at a specific
+// ref like GetFileContentAtRef, but requests the raw media type and
+// rejects paths that are not files. It is used where a file must be read
+// through a GitHub host's contents API in full, for example the
+// agents-repo fallback on a GitHub host other than github.com.
+//
+// The file is requested with the raw media type, so files the base64
+// JSON representation cannot carry (GitHub serves those as content: "",
+// encoding: "none" — every file over 1 MiB) are still returned.
+//
+// On github.com a raw file is never served as application/json, so the
+// JSON handling below is defensive, for servers that ignore the raw media
+// type and answer with the JSON representation instead. Such a body is
+// read as that representation only when it unmistakably is one: a
+// directory listing (a non-empty array of entries, each with type, path
+// and sha) or a symlink or submodule entry errors, as it did before the
+// raw media type; a type "file" object with an encoding of base64 or none
+// and a content key is decoded as the contents envelope. Any other JSON
+// body — a raw JSON file such as a schema, a manifest or ["bug"] — is
+// returned as the file's own bytes, never decoded into empty content.
+func (c *LiveClient) GetRawFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s",
+		url.PathEscape(owner), url.PathEscape(repo), escapePathSegments(path), url.QueryEscape(ref)),
+		withHeader("Accept", "application/vnd.github.raw"))
+	if err != nil {
+		return nil, fmt.Errorf("get file content at ref: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := readLimitedBytes(resp.Body, maxFileContentBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read file content at ref: %w", err)
+	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "json") {
+		return body, nil
+	}
+
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '[' {
+		// A directory listing is a non-empty array of entries, each an
+		// object with type, path and sha. Any other array is a raw JSON
+		// file.
+		var entries []contentsJSONEntry
+		if err := json.Unmarshal(trimmed, &entries); err == nil && len(entries) > 0 &&
+			slices.IndexFunc(entries, func(e contentsJSONEntry) bool { return !e.isEntry() }) < 0 {
+			return nil, fmt.Errorf("file %q at %q: the path is a directory, not a file", path, ref)
+		}
+		return body, nil
+	}
+
+	var file contentsJSONEntry
+	if err := json.Unmarshal(body, &file); err != nil || file.Type == nil {
+		// Not a contents entry: a raw JSON file served with its own type.
+		return body, nil
+	}
+	// A bare "type" key is common in ordinary JSON files (JSON schemas say
+	// "type":"object"), so a non-file entry also needs its path and sha.
+	if file.isEntry() {
+		switch *file.Type {
+		case "dir", "symlink", "submodule":
+			return nil, fmt.Errorf("file %q at %q: the path is a %s, not a file", path, ref, *file.Type)
+		}
+	}
+	// The envelope is a type "file" object with its encoding ("base64", or
+	// "none" over 1 MiB) and a content key. Anything else is the file's
+	// own bytes, served as JSON because the raw media type was requested.
+	if *file.Type != "file" || file.Encoding == nil || file.Content == nil ||
+		(*file.Encoding != "base64" && *file.Encoding != "none") {
+		return body, nil
+	}
+	if *file.Encoding != "base64" || (*file.Content == "" && file.Size > 0) {
+		return nil, fmt.Errorf("file %s at %s: the contents response carries no base64 content (encoding %q, size %d); files over 1 MiB need the raw media type", path, ref, *file.Encoding, file.Size)
+	}
+
+	cleaned := strings.ReplaceAll(strings.ReplaceAll(*file.Content, "\n", ""), "\r", "")
+	data, err := base64.StdEncoding.DecodeString(cleaned)
+	if err != nil {
+		return nil, fmt.Errorf("decode base64 content: %w", err)
+	}
+	return data, nil
+}
+
+// contentsJSONEntry is one entry of the contents API's JSON
+// representation: a file, directory, symlink or submodule.
+type contentsJSONEntry struct {
+	Type     *string `json:"type"`
+	SHA      *string `json:"sha"`
+	Path     *string `json:"path"`
+	Content  *string `json:"content"`
+	Encoding *string `json:"encoding"`
+	Size     int64   `json:"size"`
+}
+
+// isEntry reports whether e carries the type, path and sha keys every
+// contents entry has.
+func (e contentsJSONEntry) isEntry() bool {
+	return e.Type != nil && e.Path != nil && e.SHA != nil
+}
+
+// maxFileContentBytes bounds a raw-media file read, matching the 100 MiB
+// ceiling GitHub documents for raw contents requests; callers apply their
+// own policy bounds on top.
+const maxFileContentBytes = 100 << 20
 
 const (
 	maxDirDepth    = 10
