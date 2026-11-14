@@ -20,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 )
@@ -173,7 +174,17 @@ func RequireSecureURL(what, raw string) error {
 // GitHub's Actions token service (loopback is allowed for tests). The URL
 // is runner-injected and deny-listed, so this is defence in depth against a
 // rewritten runner environment, not SSRF hardening.
+//
+// On a GitHub server other than github.com (GitHub Enterprise Server, or a
+// GitHub-compatible API) the Actions token service is that server itself,
+// so the host GITHUB_SERVER_URL names is accepted too. The runner sets
+// GITHUB_SERVER_URL beside the request URL. github.com itself is never
+// accepted as a token service.
 func RequireGitHubOIDCHost(raw string) error {
+	return requireGitHubOIDCHost(raw, os.Getenv)
+}
+
+func requireGitHubOIDCHost(raw string, getenv func(string) string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("parsing OIDC request URL: %w", err)
@@ -182,7 +193,28 @@ func RequireGitHubOIDCHost(raw string) error {
 	if isLoopback(host) || strings.HasSuffix(host, oidcHostSuffix) {
 		return nil
 	}
+	if server := configuredGitHubServerHost(getenv); server != "" && host == server {
+		return nil
+	}
 	return fmt.Errorf("OIDC request URL host %q is not GitHub's Actions token service (*%s)", u.Hostname(), oidcHostSuffix)
+}
+
+// configuredGitHubServerHost returns the host GITHUB_SERVER_URL names, or ""
+// when it is unset, unparsable, or github.com.
+func configuredGitHubServerHost(getenv func(string) string) string {
+	raw := strings.TrimSpace(getenv("GITHUB_SERVER_URL"))
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" || host == "github.com" {
+		return ""
+	}
+	return host
 }
 
 func isLoopback(host string) bool {

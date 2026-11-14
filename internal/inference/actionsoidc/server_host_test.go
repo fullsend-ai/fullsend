@@ -1,0 +1,46 @@
+package actionsoidc
+
+import "testing"
+
+func envWith(server string) func(string) string {
+	return func(k string) string {
+		if k == "GITHUB_SERVER_URL" {
+			return server
+		}
+		return ""
+	}
+}
+
+func TestRequireGitHubOIDCHostAcceptsTheConfiguredServer(t *testing.T) {
+	cases := []struct{ server, oidcURL string }{
+		{"https://ghes.example.com", "https://ghes.example.com/_services/token?api-version=2.0"},
+		{"https://GHES.example.com/", "https://ghes.example.com/_services/token"},
+		{"https://ghemu.localhost:443", "https://ghemu.localhost:443/actions/oidc/token"},
+		{"https://ghemu.localhost", "https://ghemu.localhost/actions/oidc/token"},
+	}
+	for _, c := range cases {
+		if err := requireGitHubOIDCHost(c.oidcURL, envWith(c.server)); err != nil {
+			t.Errorf("GITHUB_SERVER_URL=%q refused %q: %v", c.server, c.oidcURL, err)
+		}
+	}
+}
+
+func TestRequireGitHubOIDCHostRefusesOtherHosts(t *testing.T) {
+	if err := requireGitHubOIDCHost("https://elsewhere.example/token", envWith("https://ghes.example.com")); err == nil {
+		t.Error("a host other than the configured server was accepted")
+	}
+	if err := requireGitHubOIDCHost("https://ghes.example.com.evil.test/token", envWith("https://ghes.example.com")); err == nil {
+		t.Error("a look-alike host was accepted")
+	}
+}
+
+func TestRequireGitHubOIDCHostOnGitHubCom(t *testing.T) {
+	for _, server := range []string{"", "https://github.com", "https://GitHub.com/"} {
+		if err := requireGitHubOIDCHost("https://github.com/token", envWith(server)); err == nil {
+			t.Errorf("GITHUB_SERVER_URL=%q accepted github.com itself as a token service", server)
+		}
+		if err := requireGitHubOIDCHost("https://pipelines.actions.githubusercontent.com/abc/token", envWith(server)); err != nil {
+			t.Errorf("GITHUB_SERVER_URL=%q refused GitHub's token service: %v", server, err)
+		}
+	}
+}
