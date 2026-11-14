@@ -14,6 +14,9 @@ import (
 type SandboxHookConfig struct {
 	hooks            *harness.SandboxHooks
 	forgeEgressEntry string // optional "host:port" to auto-merge into the egress allowlist
+	// tirithRepoPolicy is the repository's .tirith/policy.yaml as the runner
+	// read it from the ref the run trusts, or nil when there is none.
+	tirithRepoPolicy []byte
 }
 
 // SandboxHookConfigFromHarness extracts sandbox hook settings from a harness.
@@ -70,4 +73,21 @@ func (c SandboxHookConfig) WithForgeEgressEntry(entry string) SandboxHookConfig 
 // set by the CLI layer, or empty when none was configured.
 func (c SandboxHookConfig) ForgeEgressEntry() string {
 	return c.forgeEgressEntry
+}
+
+// WithTirithRepoPolicy returns a copy of c carrying the repository's
+// .tirith/policy.yaml bytes. The runner reads them from the ref the run
+// trusts (not the agent-writable checkout) before the agent starts. HookFiles
+// then installs them next to tirith_check.py as TirithRepoPolicyFile, so the
+// runner-held digests that cover the hook scripts cover them too (ADR 0152,
+// rule 4). Empty content stages nothing.
+func (c SandboxHookConfig) WithTirithRepoPolicy(policy []byte) SandboxHookConfig {
+	c.tirithRepoPolicy = policy
+	return c
+}
+
+// TirithRepoPolicy returns the repository tirith policy set by the CLI layer,
+// or nil when none was staged.
+func (c SandboxHookConfig) TirithRepoPolicy() []byte {
+	return c.tirithRepoPolicy
 }

@@ -778,6 +778,82 @@ class TestTirithEnvironment:
 
 
 # ---------------------------------------------------------------------------
+# Staged repository policy (#9486)
+# ---------------------------------------------------------------------------
+
+
+class TestStagedRepoPolicy:
+    """The runner-staged repository policy reaches tirith as a repo-scope policy."""
+
+    POLICY = b"approval_rules:\n  - rule_ids: [package_lookup_incomplete]\n    timeout_secs: 1\n"
+
+    def _run(self, hook, policy_path):
+        """Run check_command with REPO_POLICY_PATH pointed at policy_path."""
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            cwd = kwargs["cwd"]
+            seen["cwd"] = cwd
+            seen["git"] = os.path.isdir(os.path.join(cwd, ".git"))
+            staged = os.path.join(cwd, ".tirith", "policy.yaml")
+            if os.path.exists(staged):
+                with open(staged, "rb") as fh:
+                    seen["policy"] = fh.read()
+                seen["mode"] = os.stat(staged).st_mode & 0o777
+            return _make_completed_process("", returncode=0)
+
+        with (
+            mock.patch.object(hook, "REPO_POLICY_PATH", str(policy_path)),
+            mock.patch("subprocess.run", side_effect=fake_run),
+        ):
+            result = hook.check_command("pip install requests")
+        return result, seen
+
+    def test_default_path_is_next_to_the_hook(self, hook):
+        assert (
+            os.path.join(os.path.dirname(os.path.abspath(HOOK_PATH)), "tirith-repo-policy.yaml")
+            == hook.REPO_POLICY_PATH
+        )
+
+    def test_staged_file_is_copied_unchanged(self, hook, tmp_path):
+        staged = tmp_path / "tirith-repo-policy.yaml"
+        staged.write_bytes(self.POLICY)
+        (blocked, _), seen = self._run(hook, staged)
+        assert not blocked
+        assert seen["git"], "the .git marker must still end tirith's walk in the per-call dir"
+        assert seen.get("policy") == self.POLICY, "the staged bytes must be passed through as-is"
+        assert seen["mode"] == 0o600
+        assert not os.path.exists(seen["cwd"]), "the per-call copy must be removed afterwards"
+
+    def test_no_staged_file_leaves_todays_behaviour(self, hook, tmp_path):
+        (blocked, _), seen = self._run(hook, tmp_path / "absent.yaml")
+        assert not blocked
+        assert seen["git"]
+        assert "policy" not in seen
+        assert not os.path.exists(os.path.join(seen["cwd"], ".tirith"))
+
+    def test_staged_symlink_is_a_setup_failure(self, hook, tmp_path):
+        target = tmp_path / "elsewhere.yaml"
+        target.write_bytes(self.POLICY)
+        link = tmp_path / "tirith-repo-policy.yaml"
+        link.symlink_to(target)
+        with mock.patch.object(hook, "TIRITH_REQUIRED", True):
+            (blocked, reason), seen = self._run(hook, link)
+        assert blocked
+        assert "setup failed" in reason
+        assert "cwd" not in seen, "tirith must not run without the owner's policy"
+
+    def test_unreadable_staged_file_fails_open_only_when_not_required(self, hook, tmp_path):
+        # A directory in its place cannot be read as a policy.
+        staged = tmp_path / "tirith-repo-policy.yaml"
+        staged.mkdir()
+        with mock.patch.object(hook, "TIRITH_REQUIRED", False):
+            (blocked, _), seen = self._run(hook, staged)
+        assert not blocked
+        assert "cwd" not in seen
+
+
+# ---------------------------------------------------------------------------
 # Wire protocol (stdin JSON -> stdout JSON + exit code)
 # ---------------------------------------------------------------------------
 
@@ -1249,3 +1325,46 @@ class TestRealTirithBinary:
         # JSON), so the premise is the exit code, not the body.
         if direct.returncode != 0:
             pytest.skip("this tirith build does not honour the env bypass; premise not shown")
+
+    def test_staged_repo_policy_approval_rule_blocks(self, isolated_hook, tmp_path):
+        """A staged repository policy tightens scanning (#9486).
+
+        `pip install requests` is a MEDIUM package_lookup_incomplete under
+        TIRITH_OFFLINE=1, which the defaults allow. A staged policy with an
+        approval rule for that finding makes tirith ask for approval, which the
+        hook blocks.
+        """
+        assert not isolated_hook.check_command("pip install requests")[0], (
+            "control: the defaults must allow the command"
+        )
+        staged = tmp_path / "tirith-repo-policy.yaml"
+        staged.write_text(
+            "approval_rules:\n  - rule_ids: [package_lookup_incomplete]\n    timeout_secs: 1\n"
+        )
+        with mock.patch.object(isolated_hook, "REPO_POLICY_PATH", str(staged)):
+            blocked, reason = isolated_hook.check_command("pip install requests")
+        assert blocked, "a staged approval rule must block the command"
+        assert "approval" in reason
+
+    def test_staged_repo_policy_cannot_unblock(self, isolated_hook, tmp_path):
+        """A staged repository policy cannot loosen scanning.
+
+        tirith neutralises allowlists, bypass switches and severity relaxations
+        in a repo-scope policy, so a command the defaults block stays blocked.
+        """
+        staged = tmp_path / "tirith-repo-policy.yaml"
+        staged.write_text(
+            "allow_bypass_env_noninteractive: true\n"
+            "fail_on: critical\n"
+            "rules:\n"
+            "  blast_writes_system_path: allow\n"
+            "  curl_pipe_shell: allow\n"
+            'allowlist:\n  - "*"\n'
+        )
+        with mock.patch.object(isolated_hook, "REPO_POLICY_PATH", str(staged)):
+            assert isolated_hook.check_command("chmod -R 777 /etc")[0], (
+                "a staged repo policy must not unblock a destructive command"
+            )
+            assert isolated_hook.check_command("TIRITH=0 chmod -R 777 /etc")[0], (
+                "a staged repo policy + TIRITH=0 must not unblock"
+            )
