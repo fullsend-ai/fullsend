@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -127,9 +128,92 @@ func RunGitHubSetupWithOpts(
 
 	logf("[install] running fullsend %s", strings.Join(args, " "))
 	if _, err := runCLI(binary, token, args...); err != nil {
-		return fmt.Errorf("github setup %s: %w", target, err)
+		return markGitHubSetupTransient(fmt.Errorf("github setup %s: %w", target, err))
 	}
 	return nil
+}
+
+// githubSetupTransientSignatures are the anchored patterns that identify
+// a GitHub-side failure in the final "Error: " line of a failed
+// `fullsend github setup` run. Setup runs in a subprocess, so the
+// harness receives only its exit status and combined output: the typed
+// *gh.APIError that failclass.Classify recognizes in process is gone,
+// and the CLI's message is all that is left (#9497).
+//
+// Each pattern names a failure the behaviour suite has observed while
+// setting up a pool repo:
+//
+//   - "setup: github server error" — the forge client gave up on a
+//     500–504 response. Its APIError renders as "github api: <status>
+//     <message>", and a retryable 5xx it stops on always carries one of
+//     its retry loop's two give-up messages: "retryable error after N
+//     attempts on ..." (retries used up) or "server error on ... (not
+//     retried: the request may have been applied)". Observed: HTTP 500 on PATCH
+//     git/refs during setup. This is the subprocess counterpart of
+//     gh.IsServerError's REST rule.
+//   - "setup: github stream reset" — GitHub reset the HTTP/2 stream with
+//     CANCEL while the client read a response, rendered by the Go HTTP/2
+//     transport as "stream error: stream ID N; CANCEL; received from
+//     peer". Observed: on create blob, while committing scaffold files.
+//     Other reset codes, connection resets and unexpected EOFs have not
+//     been observed here and stay scenario.
+//
+// A GitHub 4xx, a validation error, a panic, or any other message
+// matches neither pattern and stays scenario, so a real `github setup`
+// regression still fails the run without the automatic retry.
+var githubSetupTransientSignatures = []struct {
+	re     *regexp.Regexp
+	reason string
+}{
+	{
+		re:     regexp.MustCompile(`\bgithub api: 50[0-4] (?:retryable error after \d+ attempts on |server error on )`),
+		reason: "setup: github server error",
+	},
+	{
+		re:     regexp.MustCompile(`\bstream error: stream ID \d+; CANCEL; received from peer\b`),
+		reason: "setup: github stream reset",
+	},
+}
+
+// githubSetupErrorLine returns the message of the last line in msg that
+// starts with "Error: " — the line cmd/fullsend's main prints for the
+// error that ended the run — and false when there is none. Matching
+// only that line keeps a warning the CLI logged earlier, and recovered
+// from, from deciding the class. Output with a Go panic has no
+// trustworthy final error and returns false.
+func githubSetupErrorLine(msg string) (string, bool) {
+	var last string
+	found := false
+	for line := range strings.SplitSeq(msg, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "panic: ") {
+			return "", false
+		}
+		if rest, ok := strings.CutPrefix(line, "Error: "); ok {
+			last, found = rest, true
+		}
+	}
+	return last, found
+}
+
+// markGitHubSetupTransient marks a failed `fullsend github setup` run as
+// an infrastructure failure when the CLI's final error matches one of
+// githubSetupTransientSignatures, and returns every other error —
+// including nil and already-marked errors — unchanged.
+func markGitHubSetupTransient(err error) error {
+	if err == nil || behaviourfail.Is(err) {
+		return err
+	}
+	line, ok := githubSetupErrorLine(err.Error())
+	if !ok {
+		return err
+	}
+	for _, sig := range githubSetupTransientSignatures {
+		if sig.re.MatchString(line) {
+			return behaviourfail.Mark(err, sig.reason)
+		}
+	}
+	return err
 }
 
 // gcpWIFQuotaSignatures are the lowercase substrings that identify a GCP
