@@ -102,7 +102,7 @@ The key distinction: **transient failures** (network timeout, flaky test, rate l
 
 A per-run execution limit does not bound the total work spent on a task across runs. A cross-run retry budget would account for that cumulative work, including attempts that fail or produce no commit. It is distinct from per-run limits:
 
-- **Per-run limit:** an execution ceiling within one run, such as the runner's per-iteration timeout or a runtime-supported turn or cost limit.
+- **Per-run limit:** an execution ceiling within one run, such as the runner's per-iteration timeout, a runtime-supported turn or cost limit, or the harness `max_cost_usd` cap ([ADR 0097](../ADRs/0097-harness-max-cost-usd-budget-cap.md)), which stops a capped run from starting another iteration.
 - **Retry budget:** a cumulative limit on attempts or cost across runs for the same task.
 
 A task might allow 3 retries with a total budget of $10. Each individual run stays within its per-run limits, but the system tracks cumulative spend and attempt count.

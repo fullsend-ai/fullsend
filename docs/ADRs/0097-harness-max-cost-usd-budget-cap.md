@@ -36,10 +36,20 @@ whether they should hard-stop or gate on human approval (see
 Fullsend enforces at the iteration boundary because that is the
 runtime-agnostic layer: cost arrives as a runtime-reported aggregate (for
 Claude Code, once, in the final result event of a completed iteration), and
-not every runtime offers an in-flight budget control — pi has none. Claude
-Code does ship a native per-invocation `--max-budget-usd` flag, unused
-here, which could later complement this cap as a tighter in-flight bound
-for that runtime.
+not every runtime offers an in-flight budget control — pi has none, and
+codex reports no cost at all (see [runtimes.md](../runtimes.md)).
+
+Claude Code is the exception: it ships a native `--max-budget-usd` flag
+that stops an invocation once its own API spend reaches the amount. This
+ADR does not pass it through — `buildRunCommand`
+([`internal/runtime/claude.go`](../../internal/runtime/claude.go)) never
+sets it, and no runtime reads `max_cost_usd`. That is a deliberate gap,
+not an oversight: the flag bounds one invocation, while `max_cost_usd`
+bounds a run's total across `validation_loop` retries, so forwarding it
+means deciding what per-iteration remainder each invocation gets and what
+a mid-iteration budget trip should mean for the run's outcome. Wiring it
+would tighten the cap on the Claude runtime only, and is left to its own
+decision.
 
 ## Decision
 

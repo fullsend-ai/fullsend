@@ -61,11 +61,17 @@ Enforcement depends entirely on the runtime's self-reported cost — fullsend
 has no pricing table and accepts the reported total as-is (see the
 [cost data contract](../../../guides/infrastructure/distributed-tracing.md#cost-data-contract)).
 A runtime that reports zero or no cost under-counts the aggregate and
-weakens the cap: Claude Code reports cost only in a final result event, so a
-crashed or killed iteration contributes $0 despite spending tokens, and pi
-sums provider-priced usage, so an unpriced provider entry reports $0.
+weakens the cap. Per-runtime coverage, per
+[runtimes.md](../../../runtimes.md):
+
+| Runtime | Cost reported | Effect on the cap |
+|---|---|---|
+| Claude Code | Only in a final result event | A crashed or killed iteration contributes $0 despite spending tokens |
+| pi | Summed from provider-priced usage | An entry for an unpriced provider/model reports $0 |
+| codex | None — codex sends no cost | The cap never trips; it is inert on this runtime |
+
 `fullsend run` emits a warning when a cap is set and a completed iteration
-reports no cost.
+reports no cost, so an inert cap is at least visible in the run log.
 
 ## The `over_budget` marker
 

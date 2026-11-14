@@ -48,7 +48,7 @@ Each iteration's diff is compared to the previous iteration's diff. If the diffs
 
 ### Cost and turn accounting
 
-Per-run execution limits and post-run evaluation thresholds do not account for cumulative work across retries. The [functional-test suite](../testing/functional-tests.md) checks turn and cost thresholds against completed runs rather than enforcing live budgets. Cross-run accounting could detect slow-burn flapping: eight attempts using five turns each consume forty turns in total, even if every attempt stays within its individual limits. Collecting and attributing those measurements across runs remains a separate requirement.
+Per-run execution limits (including a harness's `max_cost_usd` cap, [ADR 0097](../ADRs/0097-harness-max-cost-usd-budget-cap.md)) and post-run evaluation thresholds do not account for cumulative work across retries. The [functional-test suite](../testing/functional-tests.md) checks turn and cost thresholds against completed runs rather than enforcing live budgets. Cross-run accounting could detect slow-burn flapping: eight attempts using five turns each consume forty turns in total, even if every attempt stays within its individual limits. Collecting and attributing those measurements across runs remains a separate requirement.
 
 ### Review comment velocity
 
