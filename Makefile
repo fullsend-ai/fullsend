@@ -90,7 +90,7 @@ lint-all: ensure-hooks
 
 check:
 	uvx ruff@0.15.7 check .
-	uvx ty@0.0.99 check hack/
+	uvx ty@0.0.104 check hack/
 
 fmt:
 	uvx ruff@0.15.7 format .
