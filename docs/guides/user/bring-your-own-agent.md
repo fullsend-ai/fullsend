@@ -417,7 +417,8 @@ nothing to keep in sync. These names are reserved for the built-in copies.
 If a harness still uses its own copy under one (a `providers/<name>.yaml`
 file, a path or URL entry, or an `openshell.profiles` entry with the
 `fullsend-<name>` id), `fullsend run` uses that copy and prints a warning; a
-later release rejects it. To customise a provider, define it under your own
+later release rejects it. `fullsend-openai` is always rejected, and
+`fullsend-jira` is rejected when the run mints the Jira token. To customise a provider, define it under your own
 name — see [Remote providers and profiles](customizing-agents.md#remote-providers-and-profiles).
 
 > **Note (CI only):** the embedded `vertex-ai` profile controls network access only; real credentials are delivered via `host_files` (see [real-world example](#real-world-example-the-triage-agent)). Make sure you've completed the GCP prerequisites in [Before you begin](#before-you-begin).

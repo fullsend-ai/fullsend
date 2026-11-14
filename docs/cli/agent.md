@@ -110,11 +110,12 @@ Commit it with the agent.
 
 The built-in names (`vertex-ai`, `github`, `github-ro`, `github-artifacts`,
 `gitleaks`, `package-registries`, `atlassian-cloud`, `openai`, `jira`) and
-their `fullsend-<name>` profile ids are reserved. A harness that still uses
-its own copy under one of them keeps working for now: `fullsend run` uses the
-copy and prints a warning naming the migration below. A later release rejects
-it. `fullsend-openai` and `fullsend-jira` are already rejected, because
-`fullsend run` mints the tokens those profiles govern.
+their `fullsend-<name>` profile ids are reserved. `fullsend-openai` is always rejected, and `fullsend-jira` is rejected when
+the run mints the Jira token,
+because `fullsend run` mints the tokens those profiles govern. Otherwise, a
+harness that still uses its own copy keeps working for now: `fullsend run`
+uses the copy and prints a warning naming the migration below. A later
+release rejects it.
 
 Bare names need the same `fullsend` release in CI as the one that
 generated the agent, or a newer one. The scaffolded workflows run the

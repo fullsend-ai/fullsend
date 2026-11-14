@@ -251,8 +251,11 @@ secret to meet its masking rules.
 
 The built-in triage and code agents cannot use client credentials yet. Their
 sandbox `jira-ro` provider and result-write scripts need `FULLSEND_JIRA_TOKEN`,
-which cannot be set together with the client credentials. Support for agent
-runs is tracked in [#9220](https://github.com/fullsend-ai/fullsend/issues/9220).
+which cannot be set together with the client credentials. The sandbox
+[`jira` provider](#read-only-jira-access-from-the-sandbox-jira-provider) can
+mint tokens now. Switching the built-in agents to this provider, and their
+skills to read the token file, is tracked in
+[fullsend-ai/agents#1926](https://github.com/fullsend-ai/agents/issues/1926).
 
 Use the same Jira account for the poller, status notifications, and agent
 result writes. The poller treats only its own account as a bot, so writes from
@@ -578,7 +581,7 @@ implementation
 |---|---|
 | `FULLSEND_JIRA_TOKEN` | Scoped Jira API token for the poller and agent run-status updates; use instead of the client credentials below |
 | `FULLSEND_JIRA_EMAIL` | Bot account's email. Set it when the token belongs to a bot account; omit it for a service account's token. It selects Basic auth (email set) or Bearer auth (unset) everywhere, including the agents' sandbox Jira reads |
-| `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Alternative to `FULLSEND_JIRA_TOKEN`: a service account's OAuth 2.0 credential (see [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)). Not yet supported by the built-in triage and code agents |
+| `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET` | Alternative to `FULLSEND_JIRA_TOKEN`: a service account's OAuth 2.0 credential (see [Use OAuth 2.0 client credentials](#use-oauth-20-client-credentials-for-a-service-account)). The sandbox `jira` provider supports it; the built-in triage and code agents do not yet ([fullsend-ai/agents#1926](https://github.com/fullsend-ai/agents/issues/1926)) |
 | `JIRA_BASE_URL` | Jira site URL used by built-in agent result-write scripts. For Jira-sourced runs, `fullsend run` replaces it with `tracker.jira.base_url` and also sets `JIRA_API_URL` (see [Jira connection variables in agent runs](#jira-connection-variables-in-agent-runs)) |
 
 > **Upgrading:** Fullsend and the built-in agents no longer read the
@@ -606,9 +609,10 @@ implementation
 >   `JIRA_TOKEN` and `JIRA_USER_EMAIL` secrets.
 > - **OAuth repositories:** if your repository uses `FULLSEND_JIRA_CLIENT_ID`
 >   and `FULLSEND_JIRA_CLIENT_SECRET`, keep them for the poller and do not add
->   `FULLSEND_JIRA_TOKEN`: the two cannot be set together. The built-in Jira
->   agents cannot run on such a repository until
->   [#9220](https://github.com/fullsend-ai/fullsend/issues/9220).
+>   `FULLSEND_JIRA_TOKEN`: the two cannot be set together. The sandbox `jira`
+>   provider works with them now, but the built-in Jira agents still use
+>   `jira-ro` and cannot run on such a repository until
+>   [fullsend-ai/agents#1926](https://github.com/fullsend-ai/agents/issues/1926).
 
 The poller and Jira-originated agent workflows use either the token and
 optional email or the OAuth client ID and secret. They take the Jira site and
@@ -729,48 +733,73 @@ The wildcard host (`*.atlassian.net`) permits egress to any Atlassian Cloud tena
 ### Read-only Jira access from the sandbox (`jira` provider)
 
 The fullsend binary also ships a read-only Jira provider, `jira`, with the
-profile `fullsend-jira`. The profile allows read-only HTTPS to
-`*.atlassian.net` and the Atlassian API gateway (`api.atlassian.com`), from
-`curl` only. List the bare name `jira` under a harness's `providers:`. The
-sandbox sees `JIRA_TOKEN` as a placeholder, never the real value, and the
+profile `fullsend-jira`. To use it, list the bare name in the harness:
+
+```yaml
+providers:
+  - jira
+```
+
+The profile allows read-only HTTPS to `*.atlassian.net` and the Atlassian
+API gateway (`api.atlassian.com`), from `curl` only. The sandbox sees `JIRA_TOKEN` as a placeholder, never the real value, and the
 proxy swaps the real value in for either Basic (`--user email:token`) or
 Bearer (`--oauth2-bearer token`) auth.
 
+The profile does not limit the gateway path to one Jira site. A service
+account's credential can be valid on more than one site, for example a
+staging and a production site in one organization. If you share one
+credential across sites, the credential gives no site separation: the
+sandbox can read every site it is valid on. The profile's read-only
+enforcement is what keeps the sandbox from writing on any of them, so keep
+that profile read-only.
+
 Where the value comes from depends on the deployment's credential:
 
-- **Token or bot user.** The provider expands `JIRA_TOKEN` from the
-  `fullsend run` environment, like any provider. Nothing else changes.
-- **OAuth 2.0 client credentials only.** When `JIRA_TOKEN` is unset or empty
-  and `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` are both
-  set, `fullsend run` mints the access token itself and gives it to a
-  provider instance created for this run only, with the token's expiry. It
-  mints a new token about five minutes before each one expires. The client
-  secret never reaches a provider value, the sandbox, or a log, and every
-  minted token is redacted from output and masked in GitHub Actions logs.
-  Setting only one of the two client variables fails the run. The minted
-  token works only through the Atlassian API gateway, so sandboxed tools
-  must call `JIRA_API_URL`, not the site URL.
+- **Token or bot user.** The provider's `JIRA_TOKEN` expands from
+  `FULLSEND_JIRA_TOKEN`, like the `jira-ro` provider. Nothing else changes.
+- **OAuth 2.0 client credentials only.** Set `FULLSEND_JIRA_CLIENT_ID` and
+  `FULLSEND_JIRA_CLIENT_SECRET`, and leave `FULLSEND_JIRA_TOKEN` unset or empty.
+  - `fullsend run` mints the access token itself and gives it to a provider
+    created for this run only. It mints a new token about five minutes
+    before each one expires.
+  - The client secret never reaches a provider value, the sandbox, or a log.
+    Every minted token is redacted from output and masked in GitHub Actions
+    logs.
+  - Setting only one of the two client variables fails the run. The run also
+    fails if you list any other provider with a `JIRA_TOKEN` credential (such
+    as `jira-ro`) alongside the minted one: both share `JIRA_TOKEN` and the
+    single token file described below.
+  - The minted token works only through the Atlassian API gateway, so
+    sandboxed tools must call `JIRA_API_URL`, not the site URL.
 
 A running process keeps the placeholder it started with, and OpenShell keeps
 resolving that one to the token it was issued for, which expires after 60
 minutes. So in the OAuth 2.0 mode `fullsend run` also keeps the current
 placeholder in `/sandbox/fullsend-jira/token`, rewriting it after every
 refresh. Tools in the sandbox should read the token from that file on every
-call and fall back to `$JIRA_TOKEN` when the file is absent:
+call and fall back to `$JIRA_TOKEN` when the file is absent, as it is with a
+static token:
 
 ```sh
 JIRA_TOKEN=$(cat /sandbox/fullsend-jira/token 2>/dev/null || printf %s "$JIRA_TOKEN")
 ```
 
-The file holds only the placeholder. If minting fails, `fullsend run` keeps
-retrying: Jira access from the sandbox stops when the token the agent holds
-expires and resumes once a retry succeeds. If a new token is minted but the
-sandbox never picks it up, the refresh stops for the rest of the run, and
-access ends when the held token expires.
+The file holds only the placeholder. When minting fails:
 
-A harness cannot supply its own `fullsend-jira` profile: `fullsend run`
-refuses a profile with that id, so only the copy built into the binary
-governs a token it mints.
+- **First mint:** the run fails straight away.
+- **A later mint, temporary error** (network, 429, 5xx): `fullsend run` keeps
+  retrying. Jira access from the sandbox stops when the held token expires
+  and resumes once a retry succeeds.
+- **A later mint, permanent error:** the refresh stops for the rest of the
+  run, and access ends when the held token expires. This happens when the
+  token endpoint rejects the client credentials (for example
+  `invalid_client` or `access_denied`), when a minted token cannot be safely
+  redacted or masked, or when the sandbox never picks up new tokens.
+
+A harness cannot supply its own `fullsend-jira` profile for a minted token:
+when the run mints, `fullsend run` refuses a profile with that id, so only the
+copy built into the binary governs that token. In static-token mode, a harness copy under that id gets a
+warning and is used for now, like other reserved ids.
 
 ## Repo configuration
 
