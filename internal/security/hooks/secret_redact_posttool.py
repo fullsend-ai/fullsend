@@ -88,10 +88,14 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("perplexity_key", re.compile(r"pplx-[a-f0-9]{48}")),
     ("databricks_token", re.compile(r"dapi[a-f0-9]{32}")),
     ("telegram_bot", re.compile(r"\d{8,10}:[A-Za-z0-9_-]{35}")),
+    # A header line or a quoted key (JSON, Python dict, YAML):
+    # ``{"Authorization": "Bearer <token>"}``. Only the ``secret`` group is
+    # masked, so the key and the scheme word stay visible (see redact_text).
     (
         "auth_header",
         re.compile(
-            r"(?:Authorization|authorization)\s*:\s*(?:Bearer|Basic|Token)\s+[A-Za-z0-9_.+/=-]{20,}"
+            r"""(?i:authorization)["']?\s*:\s*["']?(?i:bearer|basic|token)\s+"""
+            r"(?P<secret>[A-Za-z0-9_.+/=-]{20,})"
         ),
     ),
 ]
@@ -618,7 +622,7 @@ def redact_text(text: str, *, skip: frozenset[str] = frozenset()) -> tuple[str, 
         if name in skip:
             continue
         for match in pattern.finditer(result):
-            token = match.group(0)
+            token = match.group("secret") if "secret" in pattern.groupindex else match.group(0)
             masked = mask_token(token)
             if masked != token:
                 findings.append({"pattern": name, "masked": masked})

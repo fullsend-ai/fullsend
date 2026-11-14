@@ -1098,6 +1098,7 @@ class TestSchemePrefixedValues(unittest.TestCase):
             (f'export SVC_TOKEN="Basic {self.FAKE}"', "env_secret", '"Basic '),
             (f'export SVC_TOKEN="bearer {self.FAKE}"', "env_secret", '"bearer '),
             (f"export SVC_TOKEN='Bearer {self.FAKE}'", "env_secret", "'Bearer "),
+            (f'export SVC_TOKEN="Bearer {self.FAKE}"', "env_secret", '"Bearer '),
             (f'SVC_AUTH="Basic {self.FAKE}"', "env_secret", '"Basic '),
             (f'{{"token": "basic {self.FAKE}"}}', "json_secret", '"basic '),
         ]
@@ -1109,6 +1110,29 @@ class TestSchemePrefixedValues(unittest.TestCase):
                 self.assertNotIn(self.FAKE, result["tool_result"])
                 self.assertIn(scheme + self.FAKE[:4] + "...", result["tool_result"])
                 self.assertEqual(result["metadata"]["patterns"], [pattern])
+
+    def test_authorization_header_and_key_redacted(self):
+        """The header line and a quoted Authorization key (JSON, Python dict,
+        YAML) keep the key and the scheme word visible (#9487)."""
+        cases = [
+            (f"Authorization: Basic {self.FAKE}", "Authorization: Basic "),
+            (f"Authorization: Token {self.FAKE}", "Authorization: Token "),
+            (f'{{"Authorization": "Bearer {self.FAKE}"}}', '"Authorization": "Bearer '),
+            (
+                f'{{"headers": {{"authorization": "token {self.FAKE}"}}}}',
+                '"authorization": "token ',
+            ),
+            (f"{{'Authorization': 'Basic {self.FAKE}'}}", "'Authorization': 'Basic "),
+            (f'authorization: "Bearer {self.FAKE}"', 'authorization: "Bearer '),
+        ]
+        for line, kept in cases:
+            with self.subTest(line=line):
+                _, stdout, _ = run_hook(line + "\n")
+                self.assertTrue(stdout, "Expected redaction output")
+                result = json.loads(stdout)
+                self.assertNotIn(self.FAKE, result["tool_result"])
+                self.assertIn(kept + self.FAKE[:4] + "...", result["tool_result"])
+                self.assertEqual(result["metadata"]["patterns"], ["auth_header"])
 
     def test_unprefixed_and_authorization_header_still_redacted(self):
         for line in (f'export SVC_TOKEN="{self.FAKE}"', f"Authorization: Basic {self.FAKE}"):
@@ -1125,6 +1149,8 @@ class TestSchemePrefixedValues(unittest.TestCase):
             'export GH_TOKEN="Bearer os.environ.token"\n'
             'TOKEN="token https://example.com/oauth/token"\n'
             '{"password": "basic changeme"}\n'
+            '{"Authorization": "Bearer ${TOKEN}"}\n'
+            'headers["Authorization"] = "Bearer " + token\n'
         )
         self.assertEqual(stdout, "")
 
