@@ -34,7 +34,7 @@ func buildHandlerAndTracer() (http.Handler, *mintcore.Tracer, error) {
 	}
 
 	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL: "https://token.actions.githubusercontent.com",
+		IssuerURL: oidcIssuerURL(),
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("creating OIDC verifier: %w", err)

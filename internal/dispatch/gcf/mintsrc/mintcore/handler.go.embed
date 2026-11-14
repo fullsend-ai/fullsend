@@ -152,7 +152,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	h := &Handler{
 		pemAccessor:          pemAccessor,
 		oidcVerifier:         oidcVerifier,
-		githubBaseURL:        "https://api.github.com",
+		githubBaseURL:        githubAPIBaseURL(),
 		foreignCache:         make(map[string]foreignCacheEntry),
 		foreignInflight:      make(map[string]*foreignInflight),
 		foreignCacheTTL:      defaultForeignCacheTTL,
@@ -950,4 +950,18 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// defaultGitHubAPIBaseURL is github.com's REST API.
+const defaultGitHubAPIBaseURL = "https://api.github.com"
+
+// githubAPIBaseURL is the REST API the mint calls to mint installation
+// tokens. MINT_GITHUB_API_URL points it at another GitHub API, such as an
+// emulator in a test. It is not GITHUB_API_URL: a mint started as a step of
+// an Actions job would otherwise inherit the job's API URL.
+func githubAPIBaseURL() string {
+	if v := strings.TrimRight(strings.TrimSpace(mintEnv("MINT_GITHUB_API_URL")), "/"); v != "" {
+		return v
+	}
+	return defaultGitHubAPIBaseURL
 }
