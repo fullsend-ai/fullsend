@@ -3,6 +3,7 @@ package jira
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -439,4 +440,105 @@ func TestCredentialsFromEnv_OAuth(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMintAccessToken_ReturnsTokenAndExpiry(t *testing.T) {
+	t.Parallel()
+	f := newOAuthFixture(t)
+	f.expiresIn.Store(3600)
+	before := time.Now()
+	tok, err := MintAccessToken(context.Background(), nil, f.tokenURL(),
+		Credentials{ClientID: testClientID, ClientSecret: testClientSecret})
+	require.NoError(t, err)
+	assert.Equal(t, "access-token-1", tok.Value)
+	assert.WithinDuration(t, before.Add(time.Hour), tok.ExpiresAt, 5*time.Second)
+	assert.False(t, tok.ExpiresAt.After(time.Now().Add(time.Hour)), "the expiry counts from before the request, never later")
+	grant, _ := f.lastGrant.Load().(map[string]string)
+	assert.Equal(t, "client_credentials", grant["grant_type"])
+	assert.Equal(t, testClientID, grant["client_id"])
+	assert.Equal(t, testClientSecret, grant["client_secret"])
+
+	// No caching: each call is a fresh grant.
+	tok2, err := MintAccessToken(context.Background(), nil, f.tokenURL(),
+		Credentials{ClientID: testClientID, ClientSecret: testClientSecret})
+	require.NoError(t, err)
+	assert.Equal(t, "access-token-2", tok2.Value)
+}
+
+func TestMintAccessToken_Validation(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	_, err := MintAccessToken(ctx, nil, "", Credentials{Token: "static"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ClientIDEnvVar)
+
+	_, err = MintAccessToken(ctx, nil, "", Credentials{ClientID: testClientID})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), ClientSecretEnvVar)
+
+	_, err = MintAccessToken(ctx, nil, "http://auth.example.com/oauth/token",
+		Credentials{ClientID: testClientID, ClientSecret: testClientSecret})
+	require.Error(t, err, "a non-loopback http token URL is refused")
+	assert.NotContains(t, err.Error(), testClientSecret)
+}
+
+func TestMintAccessToken_ErrorsNeverCarryTheSecret(t *testing.T) {
+	t.Parallel()
+	f := newOAuthFixture(t)
+	f.status.Store(http.StatusUnauthorized)
+	f.body.Store(`{"error":"invalid_client","error_description":"` + testClientSecret + `"}`)
+	_, err := MintAccessToken(context.Background(), nil, f.tokenURL(),
+		Credentials{ClientID: testClientID, ClientSecret: testClientSecret})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid_client")
+	assert.NotContains(t, err.Error(), testClientSecret)
+	assert.NotContains(t, err.Error(), testClientID)
+}
+
+func TestMintAccessToken_PermanentOAuthErrors(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		status    int
+		body      string
+		permanent bool
+	}{
+		{"invalid_client", http.StatusUnauthorized, `{"error":"invalid_client"}`, true},
+		{"access_denied", http.StatusForbidden, `{"error":"access_denied"}`, true},
+		{"unauthorized_client", http.StatusBadRequest, `{"error":"unauthorized_client"}`, true},
+		{"invalid_scope", http.StatusBadRequest, `{"error":"invalid_scope"}`, true},
+		{"invalid_grant", http.StatusBadRequest, `{"error":"invalid_grant"}`, true},
+		{"400 with no code", http.StatusBadRequest, `{}`, true},
+		{"401 with an unsafe code", http.StatusUnauthorized, `{"error":"Injected\nline"}`, true},
+		{"429", http.StatusTooManyRequests, `{}`, false},
+		{"429 slow_down", http.StatusTooManyRequests, `{"error":"slow_down"}`, false},
+		{"500", http.StatusInternalServerError, `{"error":"server_error"}`, false},
+		{"503 non-JSON", http.StatusServiceUnavailable, `<html>down</html>`, false},
+		{"400 with another code", http.StatusBadRequest, `{"error":"temporarily_unavailable"}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newOAuthFixture(t)
+			f.status.Store(int32(tc.status))
+			f.body.Store(tc.body)
+			_, err := MintAccessToken(context.Background(), nil, f.tokenURL(),
+				Credentials{ClientID: testClientID, ClientSecret: testClientSecret})
+			require.Error(t, err)
+			var oe *OAuthError
+			require.ErrorAs(t, err, &oe)
+			assert.Equal(t, tc.status, oe.Status)
+			assert.Equal(t, tc.permanent, IsPermanentOAuthError(err))
+			assert.NotContains(t, err.Error(), testClientSecret)
+			assert.NotContains(t, err.Error(), testClientID)
+		})
+	}
+}
+
+func TestIsPermanentOAuthError_NonOAuthErrors(t *testing.T) {
+	t.Parallel()
+	assert.False(t, IsPermanentOAuthError(nil))
+	assert.False(t, IsPermanentOAuthError(context.DeadlineExceeded), "transport errors are transient")
+	wrapped := fmt.Errorf("provider %q: %w", "jira", &OAuthError{Status: http.StatusUnauthorized, Code: "invalid_client"})
+	assert.True(t, IsPermanentOAuthError(wrapped), "wrapping keeps the classification")
 }
