@@ -3560,6 +3560,7 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		} `json:"labels"`
 		State       string    `json:"state"`
 		StateReason string    `json:"state_reason"`
+		CreatedAt   string    `json:"created_at"`
 		PullRequest *struct{} `json:"pull_request"`
 	}
 	if err := decodeJSON(resp, &result); err != nil {
@@ -3574,6 +3575,7 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		Labels:        labelNames(result.Labels),
 		State:         result.State,
 		StateReason:   result.StateReason,
+		CreatedAt:     result.CreatedAt,
 		IsPullRequest: result.PullRequest != nil,
 	}, nil
 }
@@ -4765,6 +4767,7 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 			Conclusion string `json:"conclusion"`
 			HTMLURL    string `json:"html_url"`
 			CreatedAt  string `json:"created_at"`
+			Path       string `json:"path"`
 		} `json:"workflow_runs"`
 	}
 	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage), &result); err != nil {
@@ -4781,6 +4784,7 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 			Conclusion: r.Conclusion,
 			HTMLURL:    r.HTMLURL,
 			CreatedAt:  r.CreatedAt,
+			Path:       r.Path,
 		}
 	}
 	return runs, nil

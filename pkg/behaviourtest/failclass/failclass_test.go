@@ -15,6 +15,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 )
 
@@ -102,6 +103,15 @@ func TestClassifyInfrastructure(t *testing.T) {
 		"marked error": {
 			err: behaviourfail.Mark(errors.New("repo acme/widget not visible after 30 attempts"), "setup: repo never visible"),
 		},
+		// getFileWithRetry marks a 404 that outlasts every retry; the
+		// mark must survive the install driver's wraps (#9469).
+		"exhausted post-install 404 through install wraps": {
+			err: fmt.Errorf("allocating repo acme/widget: %w",
+				fmt.Errorf("post-install validation for acme/widget: %w",
+					fmt.Errorf("post-install: missing vendored marker .defaults/action.yml: %w",
+						behaviourfail.Mark(fmt.Errorf("not found on 5 attempts over 30s: %w", forge.ErrNotFound),
+							"github: file not readable after commit")))),
+		},
 		"marked error through wrap chain": {
 			err: fmt.Errorf("bootstrap: %w", behaviourfail.Mark(errors.New("iam 429"), "setup: gcp wif quota")),
 		},
@@ -159,6 +169,25 @@ func TestClassifyScenario(t *testing.T) {
 		},
 		"forbidden 403 without rate limit message": {
 			err: &gh.APIError{StatusCode: http.StatusForbidden, Message: "resource not accessible by integration"},
+		},
+		// A post-install validation failure other than an exhausted 404
+		// (here, a wrong runtime) is a product assertion (#9469).
+		"non-404 post-install validation error through install wraps": {
+			err: fmt.Errorf("allocating repo acme/widget: %w",
+				fmt.Errorf("post-install validation for acme/widget: %w",
+					errors.New(`post-install: .fullsend/config.yaml runtime is "claude", want dummy`))),
+		},
+		// The missing-workflow-run timeout keeps its scenario class until
+		// diagnostics show whether the run is late or lost (#9469).
+		"workflow not dispatched timeout through step wrap": {
+			err: fmt.Errorf("waiting for issue-open workflow: %w",
+				fmt.Errorf("workflow fullsend.yaml (issues) %w", ci.ErrWorkflowNotDispatched)),
+		},
+		// The typed error the GitHub Actions driver returns, with a
+		// poll-error detail, behind the same step wrap.
+		"not dispatched error type through step wrap": {
+			err: fmt.Errorf("waiting for issue-open workflow: %w",
+				&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Event: "issues", Detail: " (failed on 3 of 3 polls)"}),
 		},
 	}
 	for name, tc := range tests {

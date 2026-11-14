@@ -329,7 +329,7 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 | Variable | Description |
 |----------|-------------|
 | `FULLSEND_FORGE_TOKEN` | Legacy shared credential; no longer selected by runtime or CI routing. Neither `repos install` nor `repos uninstall` removes a leftover copy from a repository installed before the role-only rollout — clean it up manually. The agent job exports `GITLAB_TOKEN` from `FULLSEND_JOB_TOKEN`, resolved by `.gitlab/ci/scripts/select-gitlab-role-token.sh`, which always resolves the registered role credential and fails closed if that secret is missing. See [gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md). |
-| `CI_SERVER_URL` | GitLab instance URL (set automatically by GitLab CI). Fallback when `FULLSEND_GITLAB_URL` and `GITLAB_API_URL` are unset. |
+| `CI_SERVER_URL` | GitLab instance URL (set automatically by GitLab CI). Fallback when `FULLSEND_GITLAB_URL` and `GITLAB_API_URL` are unset. On agent jobs, `CI_SERVER_URL` and `CI_SERVER_HOST` must agree with the pinned instance URL derived from `CI_API_V4_URL`; a mismatch stops the job before the agent runs. |
 | `CI_COMMIT_SHA` | Commit SHA shown in the status comment. |
 | `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` | Preferred over `CI_COMMIT_SHA` in merge request pipelines. |
 | `CI_PIPELINE_ID` | Used as the run ID for status comment markers. |

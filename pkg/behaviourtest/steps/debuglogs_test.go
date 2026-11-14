@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -1364,4 +1366,629 @@ func TestLogNoteMarkersAreSharedWithForge(t *testing.T) {
 	}
 	assert.Equal(t, want, got, "partialLogNotes matches the shared log notes")
 	assert.Len(t, partialLogNotes, len(sharedLogNotes), "partialLogNotes lists each shared note once")
+}
+
+// --- dispatch diagnostics (#9469) ---
+
+// fakeIssueSCM answers GetIssue with a fixed issue or error and records
+// the requested number.
+type fakeIssueSCM struct {
+	scm.Driver
+
+	issue     *forge.Issue
+	err       error
+	requested int
+}
+
+func (f *fakeIssueSCM) GetIssue(_ context.Context, _, _ string, number int) (*forge.Issue, error) {
+	f.requested = number
+	return f.issue, f.err
+}
+
+// shortenDispatchGrace sets dispatchDiagnosticsGrace for one test and
+// gives the test a fresh, unused grace budget, of total when given (a
+// positive value) and dispatchGraceBudgetTotal otherwise. Both are
+// restored when the test ends.
+func shortenDispatchGrace(t *testing.T, d time.Duration, total ...time.Duration) {
+	t.Helper()
+	ResetDispatchGraceForTest(t)
+	dispatchDiagnosticsGrace = d
+	if len(total) > 0 && total[0] > 0 {
+		dispatchGraceBudget = newGraceBudget(total[0])
+	}
+}
+
+// fakeDispatchClock replaces the grace wait's clock for one test. The
+// clock starts at start; a grace wait returns at once and advances it by
+// the waited duration, after calling onWait (if set). It returns a
+// pointer to the number of waits.
+func fakeDispatchClock(t *testing.T, start time.Time, onWait func()) *int {
+	t.Helper()
+	origNow, origAfter := dispatchNow, dispatchAfter
+	var mu sync.Mutex
+	now := start
+	waits := 0
+	dispatchNow = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return now
+	}
+	dispatchAfter = func(d time.Duration) <-chan time.Time {
+		mu.Lock()
+		now = now.Add(d)
+		waits++
+		mu.Unlock()
+		if onWait != nil {
+			onWait()
+		}
+		ch := make(chan time.Time, 1)
+		ch <- start
+		return ch
+	}
+	t.Cleanup(func() { dispatchNow, dispatchAfter = origNow, origAfter })
+	return &waits
+}
+
+// notDispatchedErr builds the wrapped timeout a step returns when the
+// GitHub Actions driver's WaitForWorkflow saw no fullsend.yaml run for
+// the issues event.
+func notDispatchedErr() error {
+	return fmt.Errorf("waiting for issue-open workflow: %w",
+		&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Event: "issues"})
+}
+
+func TestNotDispatchedError_MessageAndSentinel(t *testing.T) {
+	t.Parallel()
+	err := notDispatchedErr()
+	assert.ErrorIs(t, err, ci.ErrWorkflowNotDispatched)
+	assert.Equal(t, "waiting for issue-open workflow: workflow fullsend.yaml (issues) was not dispatched", err.Error())
+	assert.Equal(t, "workflow fullsend.yaml was not dispatched (failed on 1 of 2 polls)",
+		(&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Detail: " (failed on 1 of 2 polls)"}).Error())
+}
+
+func TestCollectFailureLogs_DispatchDiagnosticsReportLateRun(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	// Runner clock at the end of the 5-minute wait.
+	waitEnd := time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC)
+	waits := fakeDispatchClock(t, waitEnd, nil)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	fake := &fakeListerCI{
+		runs: []forge.WorkflowRun{
+			// The waited-for run, created 10s into the grace period.
+			{ID: 90, Name: "fullsend", Event: "issues", Status: "queued", CreatedAt: "2026-11-14T00:11:08Z", Path: ".github/workflows/fullsend.yaml"},
+			// Same workflow, other event: listed, not matched.
+			{ID: 91, Name: "fullsend", Event: "issue_comment", Status: "queued", CreatedAt: "2026-11-14T00:11:30Z", Path: ".github/workflows/fullsend.yaml"},
+			{ID: 12, Name: "setup", Event: "push", Status: "completed", Conclusion: "success", CreatedAt: "2026-11-14T00:04:00Z", Path: ".github/workflows/setup.yaml"},
+		},
+	}
+	issues := &fakeIssueSCM{issue: &forge.Issue{Number: 7, CreatedAt: "2026-11-14T00:05:58Z", State: "open"}}
+	w := &world.World{
+		Org: "halfsend-22", RepoName: "test-repo-03", CI: fake, SCM: issues,
+		IssueNumber: 7, ScenarioName: "OWNERS alias resolves to grant access",
+		Logf: func(string, ...any) {},
+	}
+
+	CollectFailureLogs(context.Background(), w, notDispatchedErr())
+
+	summary := readFailureSummary(t, artifactDir)
+	assert.Equal(t, 1, *waits)
+	assert.Contains(t, summary, "\nDispatch diagnostics:\n")
+	assert.Contains(t, summary, "repository: halfsend-22/test-repo-03")
+	assert.Contains(t, summary, "listed at: 2026-11-14T00:12:58Z (runner clock), after a 2m0s grace period that began at 2026-11-14T00:10:58Z")
+	assert.Equal(t, 7, issues.requested)
+	assert.Contains(t, summary, "issue #7: created_at 2026-11-14T00:05:58Z, state open")
+	assert.Contains(t, summary, "workflow runs (3, no time filter)")
+	assert.Contains(t, summary, `run 90: workflow ".github/workflows/fullsend.yaml", event "issues", created_at 2026-11-14T00:11:08Z, status "queued", conclusion ""`)
+	assert.Contains(t, summary, `run 12: workflow ".github/workflows/setup.yaml", event "push", created_at 2026-11-14T00:04:00Z, status "completed", conclusion "success"`,
+		"a run from before the scenario is listed without the time filter")
+	assert.Contains(t, summary, "matching fullsend.yaml (issues) runs (gap measured on GitHub's clock):\n    - run 90: created_at 2026-11-14T00:11:08Z, +5m10s after the issue's created_at\n")
+	assert.NotContains(t, summary, "run 91: created_at", "a run for another event is not a matching run")
+	assert.Contains(t, summary, "matching fullsend.yaml (issues) run created after the wait ended: yes (run 90, created_at 2026-11-14T00:11:08Z; compared with the runner clock, allowing 30s of clock skew)")
+	assert.NotContains(t, summary, "grace wait:", "a full wait needs no budget note")
+}
+
+func TestCollectFailureLogs_DispatchDiagnosticsSkewAllowance(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	waitEnd := time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC)
+
+	tests := map[string]struct {
+		created string
+		want    string
+	}{
+		// 20s before the runner says the wait ended: within the 30s skew
+		// allowance, so it counts as after the wait.
+		"within skew":   {created: "2026-11-14T00:10:38Z", want: "after the wait ended: yes (run 90"},
+		"beyond skew":   {created: "2026-11-14T00:10:20Z", want: "after the wait ended: no (compared with the runner clock, allowing 30s of clock skew): the matching runs listed above predate the end of the wait"},
+		"unparseable":   {created: "", want: "run 90: created_at (unknown), unknown after the issue's created_at"},
+		"issue unknown": {created: "2026-11-14T00:11:08Z", want: "run 90: created_at 2026-11-14T00:11:08Z, unknown after the issue's created_at"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			artifactDir := t.TempDir()
+			t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+			shortenDispatchGrace(t, 2*time.Minute)
+			fakeDispatchClock(t, waitEnd, nil)
+			issue := &forge.Issue{Number: 7, CreatedAt: "2026-11-14T00:05:58Z", State: "open"}
+			if name == "issue unknown" {
+				issue.CreatedAt = ""
+			}
+			w := &world.World{
+				Org: "org", RepoName: "repo", IssueNumber: 7, ScenarioName: name,
+				CI: &fakeListerCI{runs: []forge.WorkflowRun{
+					{ID: 90, Event: "issues", CreatedAt: tc.created, Path: ".github/workflows/fullsend.yaml"},
+				}},
+				SCM:  &fakeIssueSCM{issue: issue},
+				Logf: func(string, ...any) {},
+			}
+
+			CollectFailureLogs(context.Background(), w, notDispatchedErr())
+
+			assert.Contains(t, readFailureSummary(t, artifactDir), tc.want)
+		})
+	}
+}
+
+func TestCollectFailureLogs_DispatchDiagnosticsReportNoRun(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	late := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	fake := &fakeListerCI{
+		runs: []forge.WorkflowRun{
+			// A late run of another workflow, and one with no reported
+			// file, do not count as the dispatch workflow's run.
+			{ID: 5, Name: "other", Event: "issues", CreatedAt: late, Path: ".github/workflows/other.yaml"},
+			{ID: 6, Name: "Named only", Event: "issues", CreatedAt: ""},
+		},
+	}
+	w := &world.World{
+		Org: "org", RepoName: "repo", CI: fake,
+		SCM: &fakeIssueSCM{err: fmt.Errorf("get issue #3: 502")}, IssueNumber: 3,
+		ScenarioName: "overlay refused", Logf: func(string, ...any) {},
+	}
+
+	CollectFailureLogs(context.Background(), w, notDispatchedErr())
+
+	summary := readFailureSummary(t, artifactDir)
+	assert.Contains(t, summary, "issue #3: lookup failed: get issue #3: 502")
+	assert.Contains(t, summary, `run 6: workflow "Named only", event "issues", created_at (unknown)`)
+	assert.Contains(t, summary, "matching fullsend.yaml (issues) runs: none")
+	assert.Contains(t, summary, "matching fullsend.yaml (issues) run created after the wait ended: no (compared with the runner clock, allowing 30s of clock skew): no matching run exists")
+}
+
+// TestCollectFailureLogs_DispatchDiagnosticsInconclusiveVerdicts checks
+// the cases where a verdict would overreach: no grace wait configured, a
+// truncated listing, and matching runs that predate a wait which fell
+// short. None of them may say the event produced no run or give a clean
+// "predate" verdict.
+func TestCollectFailureLogs_DispatchDiagnosticsInconclusiveVerdicts(t *testing.T) {
+	const skew = "compared with the runner clock, allowing 30s of clock skew"
+	waitEnd := time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC)
+	truncatedRuns := func() []forge.WorkflowRun {
+		runs := make([]forge.WorkflowRun, 0, maxListedFailureRuns)
+		for id := 1; id <= maxListedFailureRuns; id++ {
+			runs = append(runs, forge.WorkflowRun{ID: id, Event: "push", CreatedAt: "2026-11-14T00:04:00Z", Path: ".github/workflows/setup.yaml"})
+		}
+		return runs
+	}
+	oldMatch := []forge.WorkflowRun{{ID: 90, Event: "issues", CreatedAt: "2026-11-14T00:01:00Z", Path: ".github/workflows/fullsend.yaml"}}
+
+	tests := map[string]struct {
+		grace  time.Duration
+		runs   []forge.WorkflowRun
+		budget time.Duration // zero keeps the default budget
+		want   string
+	}{
+		"no grace wait configured": {
+			grace: 0,
+			want:  "run created after the wait ended: no (inconclusive: no grace wait is configured; " + skew + ")\n",
+		},
+		"listing truncated": {
+			grace: 2 * time.Minute,
+			runs:  truncatedRuns(),
+			want:  "run created after the wait ended: no (inconclusive: the listing was truncated; " + skew + ")\n",
+		},
+		"no grace and truncated": {
+			grace: 0,
+			runs:  truncatedRuns(),
+			want:  "no (inconclusive: no grace wait is configured; the listing was truncated; " + skew + ")\n",
+		},
+		"predating runs after a shortened wait": {
+			grace:  2 * time.Minute,
+			runs:   oldMatch,
+			budget: time.Minute,
+			want:   "run created after the wait ended: no (inconclusive: the grace wait was shortened to 1m0s; " + skew + "): the matching runs listed above predate the end of the wait\n",
+		},
+		"predating runs with no grace wait": {
+			grace: 0,
+			runs:  oldMatch,
+			want:  "no (inconclusive: no grace wait is configured; " + skew + "): the matching runs listed above predate",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			shortenDispatchGrace(t, tc.grace, tc.budget)
+			waits := fakeDispatchClock(t, waitEnd, nil)
+			artifactDir := t.TempDir()
+			t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+			w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{runs: tc.runs}, ScenarioName: name, Logf: func(string, ...any) {}}
+
+			CollectFailureLogs(context.Background(), w, notDispatchedErr())
+
+			summary := readFailureSummary(t, artifactDir)
+			assert.Contains(t, summary, tc.want)
+			assert.NotContains(t, summary, "suggests the event produced no run")
+			if tc.grace <= 0 {
+				assert.Zero(t, *waits, "no grace wait is configured, so none runs")
+				assert.Empty(t, dispatchGraceBudget.covered, "a zero grace does not use the budget")
+			}
+		})
+	}
+}
+
+// TestCollectFailureLogs_NoDispatchDiagnosticsForBareSentinel checks
+// that a not-dispatched timeout wrapping only the sentinel, as the GitLab
+// CI driver returns, gets no dispatch diagnostics and no grace wait: they
+// are for *ci.NotDispatchedError (GitHub Actions) only.
+func TestCollectFailureLogs_NoDispatchDiagnosticsForBareSentinel(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	waits := fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+	w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}, ScenarioName: "gitlab timeout", Logf: func(string, ...any) {}}
+
+	err := fmt.Errorf("waiting for issue-open workflow: %w",
+		fmt.Errorf("pipeline (issues) %w", ci.ErrWorkflowNotDispatched))
+	require.ErrorIs(t, err, ci.ErrWorkflowNotDispatched)
+	CollectFailureLogs(context.Background(), w, err)
+
+	summary := readFailureSummary(t, artifactDir)
+	assert.Contains(t, summary, "Error: waiting for issue-open workflow: pipeline (issues) was not dispatched")
+	assert.NotContains(t, summary, "Dispatch diagnostics:")
+	assert.Zero(t, *waits, "no grace wait without the GitHub Actions details")
+	assert.Empty(t, dispatchGraceBudget.covered)
+}
+
+func TestCollectFailureLogs_DispatchDiagnosticsLookupGaps(t *testing.T) {
+	shortenDispatchGrace(t, 0)
+
+	tests := map[string]struct {
+		world *world.World
+		want  []string
+	}{
+		"listing fails and no issue recorded": {
+			world: &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{listErr: fmt.Errorf("list recent workflow runs: 500")}},
+			want:  []string{"issue: none recorded for this scenario", "workflow runs: listing failed: list recent workflow runs: 500"},
+		},
+		"driver cannot list and no SCM driver": {
+			world: &world.World{Org: "org", RepoName: "repo", CI: &fakeDebugCI{}, IssueNumber: 4},
+			want:  []string{"issue #4: not looked up: no SCM driver is configured", "workflow runs: not listed: the CI driver cannot list workflow runs"},
+		},
+		"empty listing": {
+			world: &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}},
+			want:  []string{"workflow runs (0, no time filter):\n    none\n", "matching fullsend.yaml (issues) run created after the wait ended: no"},
+		},
+		"no repository": {
+			world: &world.World{},
+			want:  []string{"Dispatch diagnostics:\n  none: the repository identity is unavailable"},
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			artifactDir := t.TempDir()
+			t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+			tc.world.ScenarioName = name
+			tc.world.Logf = func(string, ...any) {}
+
+			CollectFailureLogs(context.Background(), tc.world, notDispatchedErr())
+
+			summary := readFailureSummary(t, artifactDir)
+			for _, want := range tc.want {
+				assert.Contains(t, summary, want)
+			}
+		})
+	}
+}
+
+// TestCollectFailureLogs_DispatchDiagnosticsGraceCutShort checks that a
+// context already cancelled before the wait skips it, reports it as cut
+// short with an inconclusive verdict, and does not use up the budget.
+func TestCollectFailureLogs_DispatchDiagnosticsGraceCutShort(t *testing.T) {
+	shortenDispatchGrace(t, time.Minute)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}, ScenarioName: "cancelled", Logf: func(string, ...any) {}}
+
+	CollectFailureLogs(ctx, w, notDispatchedErr())
+
+	summary := readFailureSummary(t, artifactDir)
+	assert.Contains(t, summary, "the grace period was cut short: context canceled")
+	assert.Contains(t, summary, "after a 0s grace period", "the line reports the real elapsed wait, not the configured one")
+	assert.Contains(t, summary, "run created after the wait ended: no (inconclusive: the grace wait was cut short after 0s;")
+	assert.NotContains(t, summary, "suggests the event produced no run", "a cut-short wait proves nothing about the event")
+	assert.Empty(t, dispatchGraceBudget.covered, "a cancelled context does not use up the budget")
+}
+
+// TestCollectFailureLogs_DispatchGraceBudgetUsedUp checks the
+// process-wide budget end to end: back-to-back waits each cost their own
+// time, a wait that would exceed the budget is shortened to what is
+// left, and once it is used up a later scenario skips the wait, still
+// lists the repository, says why it did not wait, and reports the
+// verdict as inconclusive.
+func TestCollectFailureLogs_DispatchGraceBudgetUsedUp(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute, 5*time.Minute)
+	// The fake clock advances only while a scenario waits, so these
+	// waits are back to back and do not overlap.
+	waits := fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
+
+	run := func(name string) string {
+		artifactDir := t.TempDir()
+		t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+		w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}, ScenarioName: name, Logf: func(string, ...any) {}}
+		CollectFailureLogs(context.Background(), w, notDispatchedErr())
+		return readFailureSummary(t, artifactDir)
+	}
+
+	first, second := run("first"), run("second")
+	assert.Contains(t, first, "after a 2m0s grace period")
+	assert.Contains(t, second, "after a 2m0s grace period")
+	assert.Contains(t, first, "suggests the event produced no run", "a full wait with no run is a verdict")
+	third := run("third")
+	assert.Contains(t, third, "grace wait: shortened to 1m0s: the total grace wait time (5m0s per test process) runs out then")
+	assert.Contains(t, third, "after a 1m0s grace period")
+	assert.Contains(t, third, "run created after the wait ended: no (inconclusive: the grace wait was shortened to 1m0s;")
+	assert.NotContains(t, third, "suggests the event produced no run")
+	assert.Equal(t, 3, *waits)
+
+	fourth := run("fourth")
+	assert.Equal(t, 3, *waits, "a used-up budget skips the wait")
+	assert.Contains(t, fourth, "grace wait: skipped: the total grace wait time (5m0s per test process) is used up")
+	assert.Contains(t, fourth, "after a 0s grace period")
+	assert.Contains(t, fourth, "workflow runs (0, no time filter)", "the repository is still listed")
+	assert.Contains(t, fourth, "run created after the wait ended: no (inconclusive: the grace wait was skipped;")
+	assert.NotContains(t, fourth, "suggests the event produced no run", "a skipped wait proves nothing about the event")
+}
+
+// TestGraceBudget_ConcurrentWaitsCountOnce checks that overlapping waits
+// do not use each other up: a burst of scenarios starting together all
+// get the full wait, and the burst costs its wall time once. Run with
+// -race.
+func TestGraceBudget_ConcurrentWaitsCountOnce(t *testing.T) {
+	t.Parallel()
+	g := newGraceBudget(6 * time.Minute)
+	start := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	var grants []time.Duration
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Starts spread over the first 20s, all inside the first wait.
+			got := g.grant(start.Add(time.Duration(i)*time.Second), 2*time.Minute)
+			mu.Lock()
+			grants = append(grants, got)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	require.Len(t, grants, 20)
+	for _, got := range grants {
+		assert.Equal(t, 2*time.Minute, got, "an overlapping wait gets the full grace period")
+	}
+	g.mu.Lock()
+	require.Len(t, g.covered, 1, "the burst is one covered interval")
+	assert.Equal(t, 2*time.Minute+19*time.Second, g.covered[0].end.Sub(g.covered[0].start))
+	g.mu.Unlock()
+	assert.Zero(t, g.grant(start, 0), "no wait wanted, none granted")
+}
+
+// TestGraceBudget_IsolatedLaterWaitStillWaits checks that a failure long
+// after the first one still gets its full wait while the covered time is
+// below the budget, and that the budget, once used up, shortens and then
+// skips later waits.
+func TestGraceBudget_IsolatedLaterWaitStillWaits(t *testing.T) {
+	t.Parallel()
+	g := newGraceBudget(6 * time.Minute)
+	start := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+
+	assert.Equal(t, 2*time.Minute, g.grant(start, 2*time.Minute))
+	assert.Equal(t, 2*time.Minute, g.grant(start.Add(30*time.Minute), 2*time.Minute), "an isolated wait well after the first still gets 2m")
+	// Overlaps the second wait's last minute: that minute is free, the
+	// next minute is charged (5m covered).
+	assert.Equal(t, 2*time.Minute, g.grant(start.Add(31*time.Minute), 2*time.Minute))
+	assert.Equal(t, time.Minute, g.grant(start.Add(3*time.Hour), 2*time.Minute), "shortened to the budget left")
+	assert.Zero(t, g.grant(start.Add(4*time.Hour), 2*time.Minute), "skipped once the budget is used up")
+	// A wait inside an already covered interval costs nothing, so it
+	// still runs to the end of that interval.
+	assert.Equal(t, 30*time.Second, g.grant(start.Add(3*time.Hour+30*time.Second), 2*time.Minute))
+}
+
+// TestGraceBudget_GapBeforeLaterInterval checks the charge when a wait
+// starts before an interval already granted (a clock that steps back):
+// only the uncovered gap is charged.
+func TestGraceBudget_GapBeforeLaterInterval(t *testing.T) {
+	t.Parallel()
+	g := newGraceBudget(3 * time.Minute)
+	start := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+
+	assert.Equal(t, 2*time.Minute, g.grant(start.Add(time.Minute), 2*time.Minute))
+	// [0, 1m) is new (1m charged, budget used up), [1m, 3m) is covered.
+	assert.Equal(t, 3*time.Minute, g.grant(start, 5*time.Minute))
+	assert.Zero(t, g.grant(start.Add(10*time.Minute), time.Minute))
+}
+
+// TestCollectFailureLogs_DispatchGraceCancelMidWait checks that a wait
+// cancelled after 30s is reported as cut short with an inconclusive
+// verdict, and keeps its whole reservation: the next isolated wait gets
+// only the 1m left of the 3m budget.
+func TestCollectFailureLogs_DispatchGraceCancelMidWait(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute, 3*time.Minute)
+	fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
+	fakeAfter := dispatchAfter
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The first wait: 30s pass, then the context is cancelled; the timer
+	// never fires.
+	dispatchAfter = func(time.Duration) <-chan time.Time {
+		<-fakeAfter(30 * time.Second)
+		cancel()
+		return make(chan time.Time)
+	}
+	run := func(ctx context.Context, name string) string {
+		artifactDir := t.TempDir()
+		t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+		w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}, ScenarioName: name, Logf: func(string, ...any) {}}
+		CollectFailureLogs(ctx, w, notDispatchedErr())
+		return readFailureSummary(t, artifactDir)
+	}
+
+	first := run(ctx, "cancelled")
+	assert.Contains(t, first, "after a 30s grace period")
+	assert.Contains(t, first, "no (inconclusive: the grace wait was cut short after 30s;")
+
+	// An hour later, so the second wait does not overlap the first one's
+	// reservation; it runs on the fake clock.
+	<-fakeAfter(time.Hour)
+	dispatchAfter = fakeAfter
+	second := run(context.Background(), "second")
+	assert.Contains(t, second, "grace wait: shortened to 1m0s")
+	assert.Contains(t, second, "after a 1m0s grace period")
+}
+
+// TestCollectFailureLogs_DispatchDiagnosticsEarliestLateRun checks that
+// the verdict names the earliest late matching run, whatever the order of
+// the listing.
+func TestCollectFailureLogs_DispatchDiagnosticsEarliestLateRun(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+	w := &world.World{
+		Org: "org", RepoName: "repo", ScenarioName: "two late runs", Logf: func(string, ...any) {},
+		CI: &fakeListerCI{runs: []forge.WorkflowRun{
+			// Newest first, as the forge lists them.
+			{ID: 92, Event: "issues", CreatedAt: "2026-11-14T00:12:00Z", Path: ".github/workflows/fullsend.yaml"},
+			{ID: 91, Event: "issues", CreatedAt: "2026-11-14T00:11:08Z", Path: ".github/workflows/fullsend.yaml"},
+		}},
+	}
+
+	CollectFailureLogs(context.Background(), w, notDispatchedErr())
+
+	assert.Contains(t, readFailureSummary(t, artifactDir), "run created after the wait ended: yes (run 91, created_at 2026-11-14T00:11:08Z;")
+}
+
+// TestResetDispatchGraceForTest checks that the exported helper gives a
+// test a fresh budget and restores the previous budget and grace
+// afterwards.
+func TestResetDispatchGraceForTest(t *testing.T) {
+	orig, origGrace := dispatchGraceBudget, dispatchDiagnosticsGrace
+	t.Run("reset", func(t *testing.T) {
+		ResetDispatchGraceForTest(t)
+		dispatchDiagnosticsGrace = time.Second
+		assert.NotSame(t, orig, dispatchGraceBudget)
+		assert.Equal(t, dispatchGraceBudgetTotal, dispatchGraceBudget.total)
+		assert.Empty(t, dispatchGraceBudget.covered)
+	})
+	assert.Same(t, orig, dispatchGraceBudget, "the previous budget is restored")
+	assert.Equal(t, origGrace, dispatchDiagnosticsGrace, "the previous grace is restored")
+}
+
+// TestCollectFailureLogs_DispatchDiagnosticsNoVerdictSkipsWait checks
+// that the grace wait is skipped, without using the budget, when no
+// verdict can be computed: a NotDispatchedError without a workflow file
+// (reported as unknown, not as "matching runs: none"), or a CI driver
+// that cannot list runs.
+func TestCollectFailureLogs_DispatchDiagnosticsNoVerdictSkipsWait(t *testing.T) {
+	tests := map[string]struct {
+		driver ci.Driver
+		err    error
+		want   string
+	}{
+		"no workflow file": {
+			driver: &fakeListerCI{},
+			err:    fmt.Errorf("wait: %w", &ci.NotDispatchedError{Event: "issues"}),
+			want:   "matching run after the wait: unknown: the error does not record which workflow and event were waited for",
+		},
+		"driver cannot list": {
+			driver: &fakeDebugCI{},
+			err:    notDispatchedErr(),
+			want:   "workflow runs: not listed: the CI driver cannot list workflow runs",
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			shortenDispatchGrace(t, 2*time.Minute)
+			waits := fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
+			artifactDir := t.TempDir()
+			t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+			w := &world.World{Org: "org", RepoName: "repo", CI: tc.driver, ScenarioName: name, Logf: func(string, ...any) {}}
+
+			CollectFailureLogs(context.Background(), w, tc.err)
+
+			summary := readFailureSummary(t, artifactDir)
+			assert.Contains(t, summary, "grace wait: skipped: no verdict can be computed")
+			assert.Contains(t, summary, tc.want)
+			assert.NotContains(t, summary, "runs: none")
+			assert.Zero(t, *waits)
+			assert.Empty(t, dispatchGraceBudget.covered, "a skipped wait does not use the budget")
+		})
+	}
+}
+
+// TestCollectFailureLogs_DispatchDiagnosticsCommentEventHasNoGap checks
+// that a wait for an issue_comment run does not print a gap from the
+// issue's creation, which is not the event that triggered the run.
+func TestCollectFailureLogs_DispatchDiagnosticsCommentEventHasNoGap(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+	w := &world.World{
+		Org: "org", RepoName: "repo", IssueNumber: 7, ScenarioName: "comment",
+		CI: &fakeListerCI{runs: []forge.WorkflowRun{
+			{ID: 95, Event: "issue_comment", CreatedAt: "2026-11-14T00:11:08Z", Path: ".github/workflows/fullsend.yaml"},
+		}},
+		SCM:  &fakeIssueSCM{issue: &forge.Issue{Number: 7, CreatedAt: "2026-11-14T00:05:58Z", State: "open"}},
+		Logf: func(string, ...any) {},
+	}
+
+	CollectFailureLogs(context.Background(), w, fmt.Errorf("waiting for dispatch workflow (issue_comment): %w",
+		&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml", Event: "issue_comment"}))
+
+	summary := readFailureSummary(t, artifactDir)
+	assert.Contains(t, summary, "matching fullsend.yaml (issue_comment) runs (no gap: it is measured only from an issue's creation, and the triggering event here is not the issue):\n    - run 95: created_at 2026-11-14T00:11:08Z\n")
+	assert.NotContains(t, summary, "after the issue's created_at")
+	assert.Contains(t, summary, "matching fullsend.yaml (issue_comment) run created after the wait ended: yes (run 95")
+}
+
+func TestCollectFailureLogs_NoDispatchDiagnosticsForOtherErrors(t *testing.T) {
+	// Default grace; the deadline makes a regression that waits fail
+	// within seconds (the wait is cut short) instead of hanging.
+	shortenDispatchGrace(t, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	issues := &fakeIssueSCM{issue: &forge.Issue{Number: 7}}
+	w := &world.World{
+		Org: "org", RepoName: "repo", CI: &fakeListerCI{}, SCM: issues, IssueNumber: 7,
+		ScenarioName: "other failure", Logf: func(string, ...any) {},
+	}
+
+	CollectFailureLogs(ctx, w, fmt.Errorf("workflow fullsend.yaml run 4 concluded with %q", "failure"))
+
+	require.NoError(t, ctx.Err(), "CollectFailureLogs must not wait for other errors")
+	summary := readFailureSummary(t, artifactDir)
+	assert.NotContains(t, summary, "Dispatch diagnostics")
+	assert.Zero(t, issues.requested, "the issue is not looked up for other failures")
 }

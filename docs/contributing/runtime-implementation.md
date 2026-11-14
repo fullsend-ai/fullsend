@@ -333,7 +333,7 @@ Gaps against the rules are tracked in
 | Component | On malformed / oversized input (> 10 × 1024 × 1024 characters, text-mode stdin) | On its own error |
 |-----------|-------------------------------------------|------------------|
 | Blocking scripts (all PreToolUse, standalone `canary_posttool.py`) | fail **closed** — block | block |
-| `tirith_check.py` | block. Once tirith has run and exited non-zero, anything the hook cannot read blocks too — a non-list `findings`, a non-string `action` or `severity`, or any unexpected exception — regardless of `TIRITH_REQUIRED`, so a bumped pin that changes the output schema fails closed. `analysis_incomplete` blocks as well; the reason names the [accepted shell dialect](#tirith-accepted-shell-dialect) | fails **open** when the `tirith` binary is missing, times out or errors — unless `TIRITH_REQUIRED=1` (`appendHookEnv` writes it when Tirith is enabled; adapters must make sure it reaches the script) |
+| `tirith_check.py` | block. Once tirith has run and exited non-zero, anything the hook cannot read blocks too — a non-list `findings`, a non-string `action` or `severity`, or any unexpected exception — regardless of `TIRITH_REQUIRED`, so a bumped pin that changes the output schema fails closed. A `requires_approval` of `true`, or a value the hook cannot read, blocks whatever the exit code, an exit 0 included, because the hook cannot collect an approval; `false` or an absent field allows. `analysis_incomplete` blocks as well; the reason names the [accepted shell dialect](#tirith-accepted-shell-dialect) | fails **open** when the `tirith` binary is missing, times out or errors — unless `TIRITH_REQUIRED=1` (`appendHookEnv` writes it when Tirith is enabled; adapters must make sure it reaches the script) |
 | Sanitizing scripts / each `posttool_chain.py` sanitizer stage | fail **open** — pass through unchanged (exit 0; the unicode hook logs an `input_truncated` finding) | pass through; recorded in `findings.jsonl` as `<stage>_stage_error` |
 | `posttool_chain.py` canary stage | fails **closed** whenever `FULLSEND_CANARY_TOKEN` is set: input the driver cannot read blocks (`exit 1`, `continue: false`) instead of skipping detection; with no canary token configured it stays fail-open | a scan that raises is treated as a hit; a hit whose redaction cannot be verified clean withholds the output entirely; `exit 1` is unconditional |
 
@@ -347,19 +347,19 @@ The finding is not a downgradeable false positive. Tirith emits the same `rule_i
 
 #### What a block looks like
 
-Run the time-check snippet the code and fix agents document straight through the hook:
+Run a command with `$( )` inside `$(( ))` straight through the hook. This is tirith 0.5.0 with `TIRITH_REQUIRED=1` and an empty `HOME`:
 
 ```console
-$ echo '{"tool_name": "Bash", "tool_input": {"command": "if [ -n \"${TIMEOUT_SECONDS:-}\" ]; then echo yes; fi"}}' \
-    | python3 internal/security/hooks/tirith_check.py; echo "exit=$?"
-{"decision": "block", "reason": "Tirith [HIGH] analysis_incomplete: Nested executable body could not be resolved \u2014 tirith could not analyse this command, so it is blocked rather than trusted. Rewrite it in a form tirith parses: `test -n \"$X\"` instead of `[ -n \"$X\" ]` or `[[ ... ]]`; two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` inside `$(( ))`; in a `case`, only the first arm may be a glob. See docs/contributing/runtime-implementation.md, 'Tirith: accepted shell dialect'."}exit=1
+$ echo '{"tool_name": "Bash", "tool_input": {"command": "ELAPSED=$(( $(date +%s) - AGENT_START ))"}}' \
+    | env TIRITH_REQUIRED=1 HOME="$(mktemp -d)" python3 internal/security/hooks/tirith_check.py; echo "exit=$?"
+{"decision": "block", "reason": "Tirith [HIGH] analysis_incomplete: Executable name could not be resolved \u2014 tirith could not analyse this command, so it is blocked rather than trusted. Rewrite it in a form tirith parses: two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` inside `$(( ))`; in a `case`, only the first arm may be a glob. See docs/contributing/runtime-implementation.md, 'Tirith: accepted shell dialect'."}exit=1
 ```
 
 The reply is one line with no trailing newline, which is why `exit=1` is glued to it. Apply the rewrite it asks for and the command passes:
 
 ```console
-$ echo '{"tool_name": "Bash", "tool_input": {"command": "if test -n \"${TIMEOUT_SECONDS:-}\"; then echo yes; fi"}}' \
-    | python3 internal/security/hooks/tirith_check.py; echo "exit=$?"
+$ echo '{"tool_name": "Bash", "tool_input": {"command": "NOW=$(date +%s); ELAPSED=$(( NOW - AGENT_START ))"}}' \
+    | env TIRITH_REQUIRED=1 HOME="$(mktemp -d)" python3 internal/security/hooks/tirith_check.py; echo "exit=$?"
 exit=0
 ```
 
@@ -367,16 +367,19 @@ exit=0
 
 | Blocked | Write instead | What tirith cannot resolve |
 |---------|---------------|----------------------------|
-| `[ -n "$X" ]`, `[[ -d .git ]]`, and any `if`/`while` built on them | `test -n "$X"`, `test -d .git` | the bracket form, in every position |
 | `ELAPSED=$(( $(date +%s) - AGENT_START ))` | `NOW=$(date +%s); ELAPSED=$(( NOW - AGENT_START ))` | a `$( )` substitution inside `$(( ))` |
-| `case "$X" in a) echo a;; *) echo b;; esac` | all-literal arms, or `if`/`elif` | any glob arm (`*)`, `z*)`, `?)`) after the first. A lone or leading catch-all is fine |
-| `curl -H "Authorization: Bearer $TOKEN" https://host/…` | `curl -K creds.cfg https://host/…`, header in the config file | a variable expanded inside a header argument |
+| `case "$X" in a) echo a;; *) echo b;; esac` | `if test "$X" = a; then echo a; else echo b; fi` — or all-literal arms (`a) echo a;; b) echo b;;`) when every value is known | any glob arm (`*)`, `z*)`, `?)`) after the first. A lone or leading catch-all is fine |
 
-The last row is **deliberately missing from the block message**, which carries only the syntax rewrites. That text reaches the caller at the moment its command was blocked; an agent acting on an injected instruction, whose exfiltration just tripped the credential rule, must not be handed the form that passes. You are reading a contributing guide, which is a different audience.
+Since tirith 0.5.0, bracket tests pass unchanged, so no rewrite is needed: `[ -n "$X" ]`, `[ -d .git ]` and `[[ -d .git ]]` are all accepted.
 
-Two notes on that row. Tirith reports it as `analysis_incomplete` too, titled `Could not resolve wrapped command for sensitive upload analysis`, so the block still carries the syntax hint even though the config file is the fix. Write that file under `umask 077`.
+#### curl upload arguments
 
-What tirith keys on is a variable it cannot resolve inside a **header, data or form argument** — `-H`, `-d`, `-F`, `--data-binary` — whether or not it holds a credential. `curl -H "X-Trace: $ID" …` blocks; `curl -o "$OUT" …`, `curl --user "$U" …` and `curl "$URL"` all pass. So `-K` works here only because it removes the inline `-H` altogether: leave a variable in a `-d` or `--data-binary` argument and the command still blocks with `-K` present.
+Tirith also blocks a `curl` upload it cannot resolve. It reports `analysis_incomplete`, titled `Could not resolve wrapped command for sensitive upload analysis`. The hook appends the same arithmetic and `case` hint to every `analysis_incomplete` block, so that text shows up here too even though no syntax rewrite fixes this one. Two shapes trigger it:
+
+- a variable inside a data or form argument: `-d "q=$Q"`, `--data-urlencode`, `-F`, `--data-binary`. Adding `curl -K` does not change this.
+- an `@` file path built from a variable, such as `-d @$HOME/...`.
+
+A variable in `-o "$OUT"`, in `--user "$U"` or as the URL passes. Header arguments that carry a file block as `data_exfiltration`: `-H @.env` and a header built from `$(cat ...)`.
 
 #### Checking a pin bump
 
@@ -393,9 +396,9 @@ Two traps when reproducing by hand:
 
 | Symptom | Cause | Action |
 |---------|-------|--------|
-| `analysis_incomplete: Nested executable body could not be resolved` | a bracket test, a late glob `case` arm, or `$( )` inside `$(( ))` | rewrite per the table above |
-| `analysis_incomplete: Could not resolve wrapped command for sensitive upload analysis`, from a `-H` header | a variable expanded inside a header argument | move the header into a `curl -K` config file, so no `-H` remains |
-| the same message, from a `-d`, `-F` or `--data-binary` argument | a variable expanded inside a data or form argument | resolve it first and pass the value literally; `-K` does not help |
+| `analysis_incomplete: Executable name could not be resolved` | `$( )` inside `$(( ))` | rewrite per [The rewrites](#the-rewrites) |
+| `analysis_incomplete: Nested executable body could not be resolved` | a glob `case` arm after the first | rewrite per [The rewrites](#the-rewrites) |
+| `analysis_incomplete: Could not resolve wrapped command for sensitive upload analysis` | a variable inside a `-d`, `--data-urlencode`, `-F` or `--data-binary` argument, or an `@` path built from a variable | write the value into the argument as literal text; `-K` does not help |
 | `Tirith blocked command (exit code 1): ... expected a list` / `an object` / `a string` | the installed tirith reports a shape this hook does not know | check `tirith --version` against the pin; a bumped pin needs `tirith_check.py` updated before it ships |
 | `Hook error (fail-closed): <ExceptionName>` | an error with no specific guard | the traceback is on the hook's stderr and a `hook_error` finding is in `findings.jsonl`; file both with the command |
 | Commands block only in the sandbox, never locally | `TIRITH_REQUIRED=1` is set there and the binary is missing or timing out | check the binary is on `PATH` inside the sandbox |
@@ -407,6 +410,7 @@ Two traps when reproducing by hand:
 | Variable | Read by | Behaviour |
 |----------|---------|-----------|
 | `TIRITH_FAIL_ON`, `TIRITH_REQUIRED` | `tirith_check.py` | written by `appendHookEnv`; `TIRITH_REQUIRED=1` turns the fail-open into fail-closed |
+| `TIRITH_OFFLINE` | `tirith` | always set to `1` by `tirith_check.py` in the `tirith` subprocess environment, so package lookups and the threat-database refresh make no network calls; not read from `.env`. The trade-off: offline skips tirith's package-metadata and threat-database lookups, which the sandbox egress policy denies today, so no detection is lost — an operator who allowed tirith's egress would need to revisit this |
 | `FULLSEND_EGRESS_ALLOWLIST` | `ssrf_pretool.py` | comma-separated `host:port` entries; supports exact hostnames and leading-wildcard patterns (e.g. `*.example.com:443`) matched by domain-anchored suffix comparison — bare `*`, mid-string globs, and single-label TLD wildcards (e.g. `*.com`) are rejected with a warning on stderr; the rejection check requires >= 2 dots in the full pattern (e.g. `*.com` has 1 dot and is rejected, `*.example.com` has 2 and is accepted), so multi-label public suffixes (e.g. `*.co.uk`, `*.github.io`) also have 2 dots, pass the check, and are accepted — this is an accepted residual risk since the allowlist is operator-controlled config, not attacker input, and the L7 proxy remains the primary SSRF enforcement boundary; on DNS failure the hook defers to the L7 proxy for allowlisted hosts instead of failing closed; if DNS succeeds but resolves to a blocked IP, the allowlist is not consulted |
 | `OPENSHELL_SANDBOX` | `ssrf_pretool.py` | set by OpenShell, not `appendHookEnv`. When non-empty and `policy.local` resolves to `198.18.0.1` (policy DNS is answering), a host name whose every DNS answer is in `198.18.0.0/15` is allowed, and the supervisor enforces the real destination on connect. IP literals in any spelling, blocked hostnames, `policy.local` and the host-gateway names are still checked. Clearing the variable only turns this off |
 | `FULLSEND_TOOL_ALLOWLIST` | `tool_allowlist_pretool.py` | fail-closed when unset |

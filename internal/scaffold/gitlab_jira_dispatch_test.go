@@ -136,7 +136,7 @@ func runAgentJobScriptForJira(t *testing.T, stage, eventType, signedEventType, p
 		"CI_MERGE_REQUEST_IID=7",
 		"FULLSEND_NOTE_TARGET=merge_requests",
 		"COMMENT_BODY=inherited-pipeline-variable",
-	}, pinTLSEnv(t, srv)...)
+	}, pinAgentJobEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	run.out = string(out)
 	run.err = err
