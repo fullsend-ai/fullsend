@@ -1127,8 +1127,11 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 		exitCode = execCmd.ProcessState.ExitCode()
 	}
 	// A stall is the cause of whatever Wait reports, so it is checked first.
+	// lastResult travels with it: the parent's tokens and cost come only from
+	// agent_end, and a pi that hangs after it (a lingering child or open
+	// handle) would otherwise lose the parent's whole spend from metrics.json.
 	if stallErr := stall.stalledErr(); stallErr != nil {
-		return piRunResult{exitCode: exitCode, stallErr: stallErr, modelSpec: modelSpec}
+		return piRunResult{exitCode: exitCode, stallErr: stallErr, lastResult: lastResult, modelSpec: modelSpec}
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return piRunResult{exitCode: exitCode, execErr: fmt.Errorf("openshell exec failed: %w", waitErr), modelSpec: modelSpec}

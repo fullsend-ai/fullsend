@@ -371,7 +371,18 @@ func TestPiRuntimeRun_FoldsSubagentUsage(t *testing.T) {
 // already written by the ordinary fake.
 func fakeOpenshellPiStall(t *testing.T, logPath, storeDir string) {
 	t.Helper()
+	fakeOpenshellPiStallAfter(t, logPath, storeDir, "")
+}
+
+// fakeOpenshellPiStallAfter is fakeOpenshellPiStall with the stream it writes
+// before going silent: the file at streamFile, or one noop line when empty.
+func fakeOpenshellPiStallAfter(t *testing.T, logPath, storeDir, streamFile string) {
+	t.Helper()
 	require.NoError(t, os.MkdirAll(storeDir, 0o755))
+	stream := `printf '{"type":"noop"}\n'`
+	if streamFile != "" {
+		stream = "cat '" + streamFile + "'"
+	}
 	binDir := t.TempDir()
 	script := `#!/bin/sh
 echo "$@" >> '` + logPath + `'
@@ -387,7 +398,7 @@ if [ "$2" = "exec" ]; then
     *"stray processes killed"*) echo "stray processes killed: 1"; exit 0 ;;
     *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
-    *"--print --mode json"*) printf '{"type":"noop"}\n'; exec sleep 60 ;;
+    *"--print --mode json"*) ` + stream + `; exec sleep 60 ;;
   esac
   exit 0
 fi
@@ -433,6 +444,39 @@ func TestPiRuntimeRun_FoldsSubagentUsageOnStall(t *testing.T) {
 	child := metrics.PerModelUsage["anthropic-vertex/claude-sonnet-4-6"]
 	assert.Equal(t, 1, child.Requests, "the completed child's spend must survive the stall kill")
 	assert.InDelta(t, 0.2, child.CostUSD, 1e-9)
+}
+
+// TestPiRuntimeRun_KeepsTheParentResultOnStall: pi's parent tokens and cost
+// come only from agent_end. A pi that writes it and then hangs (a lingering
+// child or open handle) is killed as stalled, and the parent's spend must
+// still reach the metrics next to the stall.
+func TestPiRuntimeRun_KeepsTheParentResultOnStall(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	t.Setenv(piAgentThinkingEnv, "")
+	work := t.TempDir()
+	store := filepath.Join(work, "store")
+	fixture, err := filepath.Abs(filepath.Join("testdata", "pi", "basic_run.ndjson"))
+	require.NoError(t, err)
+	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, fixture)
+	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb", agentPath: writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview."), agentName: "review",
+	}))
+
+	// The whole run, agent_end included, then silence.
+	fakeOpenshellPiStallAfter(t, filepath.Join(work, "openshell-stall.log"), store, fixture)
+
+	var metrics RunMetrics
+	_, err = PiRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "sb", AgentBaseName: "review", RepoDir: "/sandbox/workspace/repo",
+		Timeout:      60 * time.Second,
+		StallTimeout: 300 * time.Millisecond,
+		OnEvent:      func(AgentEvent) {},
+	}, ui.New(os.Stderr), time.Now(), &metrics)
+
+	require.ErrorIs(t, err, ErrStalled, "a stream that goes silent after agent_end must fail as stalled")
+	assert.InDelta(t, 0.015, metrics.TotalCostUSD, 0.001, "the parent's agent_end spend must survive the stall kill")
+	assert.Positive(t, metrics.InputTokens)
 }
 
 // Without sub-agent usage the totals are exactly what the stream reported,
