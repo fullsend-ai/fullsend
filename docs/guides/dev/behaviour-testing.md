@@ -686,9 +686,9 @@ first waits a 2-minute grace period, outside `failureLogBudget`. It then adds
 a `Dispatch diagnostics` section to `failure-summary.txt`, before teardown
 deletes the repository. The section shows, in this order:
 
-- a `grace wait:` note, only when the shared 6-minute window for the test
-  process has closed or is about to; it says the wait was skipped or
-  shortened, and the runs are still listed;
+- a `grace wait:` note, only when the total grace wait time for the test
+  process (about 6 minutes) is used up or about to be; it says the wait was
+  skipped or shortened, and the runs are still listed;
 - the repository, the time of the listing (runner clock) and the real
   elapsed grace wait;
 - the scenario's issue with its `created_at` and state;
@@ -701,14 +701,19 @@ deletes the repository. The section shows, in this order:
 - the verdict: whether a matching run was created after the scenario's wait
   for the run timed out (counted from the start of the grace wait, allowing
   30 s of clock skew). `yes` suggests a late dispatch. `no` with no matching
-  run suggests the event produced no run, but only after a full grace wait:
-  when the wait was skipped, shortened or cut short, the verdict says
-  `inconclusive` instead.
+  run suggests the event produced no run, and `no` with only older matching
+  runs says they predate the wait, but only after a full grace wait. The
+  verdict says `inconclusive` instead when the wait was skipped, shortened or
+  cut short, or when no grace wait is configured. A `no` with no matching run
+  is also `inconclusive` when the run listing was truncated at its limit.
 
-The first grace wait in a test process opens the 6-minute window. Each
-scenario waits for 2 minutes or until the window closes, whichever comes
-first. Overlapping waits share the window, so the grace waits add at most
-about 6 minutes to a test process.
+Total grace wait time is bounded at about 6 minutes per test process: the
+bound counts the wall-clock time covered by grace waits, so waits that
+overlap, such as a burst of parallel failures, count once. Each scenario
+waits 2 minutes, or what is left of the 6 minutes if that is less. A
+failure long after the first one still gets its full wait while time is
+left. A scenario whose context is already cancelled skips the wait and
+uses none of the time.
 
 ### Repo allocation via the shared slot driver
 
@@ -1348,8 +1353,10 @@ more claim and `github setup`
 This happens rarely, so it is not budgeted per lease, but it reduces the slack
 for the whole suite. The behaviour job's `timeout-minutes` in `e2e.yml` and the
 `go test -timeout` in the Makefile must account for this overhead across all
-leases in the suite. A not-dispatched scenario can add up to 2 minutes of
-After-hook time, within one shared 6-minute window per test process
+leases in the suite. A not-dispatched scenario's grace wait runs before, and
+outside, `failureLogBudget`, so it can add up to 2 minutes of After-hook time
+on top of the 2-minute log-collection budget. Total grace wait time across
+the test process is bounded at about 6 minutes
 ([Dispatch diagnostics](#dispatch-diagnostics)).
 
 Current budget: **45 minutes per `go test` attempt** and **90 minutes for the CI job**. The job budget carries one [infrastructure-classified retry](#failure-classification-and-infrastructure-retry): both Make targets run through `scripts/run-with-infra-retry.sh`, and a retried run executes a second `go test`, for the failed scenarios only, with its own 45-minute `-timeout`. The wrapper refuses the retry when attempt 1 ran longer than `INFRA_RETRY_MAX_ATTEMPT1_SECONDS` (2400 in CI), so attempt 2 always has 45 minutes left in the job. Keep `go test -timeout` at or below 45 minutes — it is the per-attempt bound the [repo-slot GC](#repo-slot-gc) age guarantee rests on — and never above the job's `timeout-minutes`, or the Go process is killed mid-test with no artifact collection. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within one attempt's budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) and the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios) lease one repo per Examples row. The same rule applies to the `playback-test` target and to any CI job that runs it.

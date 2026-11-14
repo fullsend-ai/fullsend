@@ -76,3 +76,75 @@ func TestDispatchWaitRetry_ReturnsRetryError(t *testing.T) {
 		})
 	}
 }
+
+// TestDispatchWaitRetry_OnlyAfterNotDispatched checks that the skew-buffer
+// retry runs only after a timeout with no run. A first wait that found a
+// run which concluded with a failure returns that error unchanged, with
+// no retry; a not-dispatched first wait followed by a retry that fails
+// some other way returns the retry's error.
+func TestDispatchWaitRetry_OnlyAfterNotDispatched(t *testing.T) {
+	t.Parallel()
+	runFailed := errors.New(`workflow fullsend.yaml run 4 concluded with "failure"`)
+	pollsFailed := errors.New("list workflow runs: 502 bad gateway")
+
+	calls := map[string]struct {
+		prefix string
+		call   func(w *world.World) error
+	}{
+		"issue-open drain": {
+			prefix: "waiting for issue-open workflow: ",
+			call: func(w *world.World) error {
+				return drainIssueOpenWorkflow(w, time.Date(2026, 11, 14, 0, 5, 58, 0, time.UTC))
+			},
+		},
+		"dispatch run": {
+			prefix: "waiting for dispatch workflow (issue_comment): ",
+			call: func(w *world.World) error {
+				_, err := waitForDispatchRun(w)
+				return err
+			},
+		},
+	}
+	cases := map[string]struct {
+		attempts     []error // error returned by each attempt
+		wantAttempts int
+		wantErr      error
+	}{
+		"run failure is not retried": {
+			attempts:     []error{runFailed, pollsFailed},
+			wantAttempts: 1,
+			wantErr:      runFailed,
+		},
+		"not dispatched then other error": {
+			attempts:     []error{&ci.NotDispatchedError{WorkflowFile: "fullsend.yaml"}, pollsFailed},
+			wantAttempts: 2,
+			wantErr:      pollsFailed,
+		},
+	}
+	for callName, c := range calls {
+		for name, tc := range cases {
+			t.Run(callName+"/"+name, func(t *testing.T) {
+				t.Parallel()
+				attempts := 0
+				w := &world.World{
+					Org: "org", RepoOwner: "org", RepoName: "repo",
+					ScenarioStart: time.Date(2026, 11, 14, 0, 5, 58, 0, time.UTC),
+					Logf:          func(string, ...any) {},
+					CI: &mockCIDriver{waitForWorkflowFn: func(context.Context, string, string, string, time.Time, string) (*forge.WorkflowRun, error) {
+						err := tc.attempts[attempts]
+						attempts++
+						return nil, err
+					}},
+				}
+
+				err := c.call(w)
+
+				require.Error(t, err)
+				assert.Equal(t, tc.wantAttempts, attempts)
+				assert.ErrorIs(t, err, tc.wantErr)
+				assert.Equal(t, c.prefix+tc.wantErr.Error(), err.Error())
+				assert.NotErrorIs(t, err, ci.ErrWorkflowNotDispatched, "the dispatch diagnostics must not run for this error")
+			})
+		}
+	}
+}

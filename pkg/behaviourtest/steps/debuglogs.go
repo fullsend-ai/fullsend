@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 	"unicode"
 
@@ -59,23 +60,23 @@ const (
 // run at all points to a lost event (#9469). Only the GitHub Actions
 // driver returns that error, so this applies to GitHub Actions only. It
 // runs outside failureLogBudget so it cannot starve the log collection
-// that follows, and is bounded per process by dispatchGraceWindow. A
+// that follows, and is bounded per process by dispatchGraceBudget. A
 // variable so tests can shorten it.
 var dispatchDiagnosticsGrace = 2 * time.Minute
 
-// dispatchGraceWindowLength bounds the grace waits of one test process
-// in wall-clock time. Scenarios run in parallel, so overlapping waits
-// cost the same wall time; a sum of waits would starve a mass failure
-// for no gain. The first grace wait in the process opens a window that
-// closes this long after; each scenario waits at most until the window
-// closes, and once it has closed later scenarios skip the wait but still
-// list the repository. The grace waits therefore add at most about this
-// much wall time to one test process.
-const dispatchGraceWindowLength = 6 * time.Minute
+// dispatchGraceBudgetTotal bounds the wall-clock time one test process
+// spends in grace waits: the length of the union of the intervals the
+// waits cover. Scenarios run in parallel, so overlapping waits cost the
+// same wall time and count once; a sum of waits would starve a mass
+// failure for no gain. A later isolated failure still gets its wait while
+// the union is below the bound. Once it is used up, later scenarios skip
+// the wait but still list the repository. The grace waits therefore add
+// at most about this much wall time to one test process.
+const dispatchGraceBudgetTotal = 6 * time.Minute
 
-// dispatchGraceWindow is the window shared by every scenario in the
+// dispatchGraceBudget is the budget shared by every scenario in the
 // process. A variable so tests can replace it.
-var dispatchGraceWindow = newGraceWindow(dispatchGraceWindowLength)
+var dispatchGraceBudget = newGraceBudget(dispatchGraceBudgetTotal)
 
 // dispatchNow and dispatchAfter are the clock the grace wait uses;
 // variables so tests can simulate the wait without sleeping.
@@ -84,35 +85,127 @@ var (
 	dispatchAfter = time.After
 )
 
-// graceWindow is a concurrency-safe wall-clock window shared across
-// scenarios. It opens on the first grant and closes length later.
-type graceWindow struct {
-	length time.Duration
-	mu     sync.Mutex
-	end    time.Time // zero until the first grant opens the window
+// ResetDispatchGraceForTest gives the calling test a fresh grace budget,
+// so grace waits from other tests in the process do not shorten or skip
+// its wait, and restores the previous budget when the test ends. It is
+// for tests in other packages (such as the suite's After hook tests);
+// tests that call it must not run in parallel with other tests that use
+// the grace wait.
+func ResetDispatchGraceForTest(t testing.TB) {
+	t.Helper()
+	orig := dispatchGraceBudget
+	dispatchGraceBudget = newGraceBudget(dispatchGraceBudgetTotal)
+	t.Cleanup(func() { dispatchGraceBudget = orig })
 }
 
-func newGraceWindow(length time.Duration) *graceWindow {
-	return &graceWindow{length: length}
+// graceInterval is a half-open wall-clock interval [start, end).
+type graceInterval struct {
+	start, end time.Time
 }
 
-// grant returns how long a wait starting at now may last: want, the time
-// left until the window closes, or zero once it has closed. The first
-// call opens the window.
-func (g *graceWindow) grant(now time.Time, want time.Duration) time.Duration {
+// graceBudget is a concurrency-safe bound on the wall-clock time covered
+// by grace waits, shared across scenarios. It records the intervals it
+// has granted, merged and sorted by start.
+type graceBudget struct {
+	total     time.Duration
+	mu        sync.Mutex
+	intervals []graceInterval
+}
+
+func newGraceBudget(total time.Duration) *graceBudget {
+	return &graceBudget{total: total}
+}
+
+// grant returns how long a wait starting at now may last, at most want,
+// and records the granted interval. Time already covered by an earlier
+// grant (such as a wait still in progress) is free; uncovered time is
+// charged against the budget, and the wait ends where the budget runs
+// out. It returns zero once the budget is used up.
+func (g *graceBudget) grant(now time.Time, want time.Duration) time.Duration {
 	if want <= 0 {
 		return 0
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if g.end.IsZero() {
-		g.end = now.Add(g.length)
+
+	var used time.Duration
+	for _, iv := range g.intervals {
+		used += iv.end.Sub(iv.start)
 	}
-	left := g.end.Sub(now)
-	if left <= 0 {
+	left := g.total - used
+
+	t, end := now, now.Add(want)
+	for _, iv := range g.intervals {
+		if !t.Before(end) {
+			break
+		}
+		if !iv.end.After(t) {
+			continue
+		}
+		if iv.start.After(t) {
+			gap := minTime(iv.start, end).Sub(t)
+			if gap > left {
+				t = t.Add(left)
+				left = 0
+				break
+			}
+			t = t.Add(gap)
+			left -= gap
+			if !t.Before(end) {
+				break
+			}
+		}
+		t = minTime(iv.end, end)
+	}
+	if t.Before(end) && left > 0 {
+		t = minTime(t.Add(left), end)
+	}
+	granted := t.Sub(now)
+	if granted <= 0 {
 		return 0
 	}
-	return min(want, left)
+	g.add(graceInterval{start: now, end: t})
+	return granted
+}
+
+// add merges iv into g.intervals, keeping them sorted and disjoint.
+// The caller holds g.mu.
+func (g *graceBudget) add(iv graceInterval) {
+	merged := make([]graceInterval, 0, len(g.intervals)+1)
+	placed := false
+	for _, cur := range g.intervals {
+		switch {
+		case cur.end.Before(iv.start):
+			merged = append(merged, cur)
+		case iv.end.Before(cur.start):
+			if !placed {
+				merged = append(merged, iv)
+				placed = true
+			}
+			merged = append(merged, cur)
+		default:
+			iv.start = minTime(iv.start, cur.start)
+			iv.end = maxTime(iv.end, cur.end)
+		}
+	}
+	if !placed {
+		merged = append(merged, iv)
+	}
+	g.intervals = merged
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 // saveWorkflowRunLogs fetches the logs for a workflow run and writes
@@ -603,7 +696,7 @@ func collectScenarioRunLogs(ctx context.Context, w *world.World) string {
 
 // collectDispatchDiagnostics records, for a scenario that failed because
 // no workflow run appeared (GitHub Actions only), what the repository
-// shows after a grace period: a note when the shared grace window
+// shows after a grace period: a note when the shared grace budget
 // skipped or shortened the wait, the time of the listing and the real
 // elapsed wait, the scenario's issue with its creation time and state,
 // every workflow run (without the scenario time filter) with its event,
@@ -621,22 +714,32 @@ func collectDispatchDiagnostics(ctx context.Context, w *world.World, scenarioErr
 
 	var b strings.Builder
 	graceStart := dispatchNow()
-	granted := dispatchGraceWindow.grant(graceStart, dispatchDiagnosticsGrace)
 	// partialWait is empty when the configured wait ran in full, and
 	// otherwise says how it fell short, so the verdict does not read a
 	// missing run as a lost event.
 	partialWait := ""
+	var granted time.Duration
 	switch {
 	case dispatchDiagnosticsGrace <= 0:
+		partialWait = "no grace wait is configured"
+	case ctx.Err() != nil:
+		// Already cancelled: do not use up the shared budget.
+		partialWait = "the grace wait was cut short after 0s"
+		fmt.Fprintf(&b, "  the grace period was cut short: %v\n", ctx.Err())
+	default:
+		granted = dispatchGraceBudget.grant(graceStart, dispatchDiagnosticsGrace)
+	}
+	switch {
+	case partialWait != "":
 	case granted <= 0:
 		partialWait = "the grace wait was skipped"
-		fmt.Fprintf(&b, "  grace wait: skipped: the shared grace window (%s per test process) has closed\n",
-			dispatchGraceWindow.length)
+		fmt.Fprintf(&b, "  grace wait: skipped: the total grace wait time (%s per test process) is used up\n",
+			dispatchGraceBudget.total)
 	default:
 		if granted < dispatchDiagnosticsGrace {
 			partialWait = "the grace wait was shortened to " + granted.Round(time.Second).String()
-			fmt.Fprintf(&b, "  grace wait: shortened to %s: the shared grace window (%s per test process) closes then\n",
-				granted.Round(time.Second), dispatchGraceWindow.length)
+			fmt.Fprintf(&b, "  grace wait: shortened to %s: the total grace wait time (%s per test process) runs out then\n",
+				granted.Round(time.Second), dispatchGraceBudget.total)
 		}
 		select {
 		case <-ctx.Done():
@@ -691,7 +794,9 @@ func describeDispatchIssue(ctx context.Context, w *world.World) (string, time.Ti
 // created_at with the runner's grace start minus
 // issueOpenDrainSkewBuffer, the same clock-skew allowance the issue-open
 // drain uses. partialWait, when not empty, says how the grace wait fell
-// short; a missing run is then inconclusive rather than a lost event.
+// short; the verdict is then inconclusive rather than a lost event or a
+// clean "predates the wait". A missing run is also inconclusive when the
+// listing was truncated, since the run may be among the unlisted ones.
 func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDispatchedError, graceStart, issueCreated time.Time, partialWait string) string {
 	lister, ok := w.CI.(ci.RunLister)
 	if !ok {
@@ -706,7 +811,8 @@ func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDis
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "  workflow runs (%d, no time filter):\n", len(runs))
-	if len(runs) >= maxListedFailureRuns {
+	truncated := len(runs) >= maxListedFailureRuns
+	if truncated {
 		fmt.Fprintf(&b, "    the listing returned %d runs, its limit; older runs may exist\n", len(runs))
 	}
 	for _, run := range runs {
@@ -766,12 +872,22 @@ func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDis
 	case lateRun != nil:
 		fmt.Fprintf(&b, "  matching %s run created after the wait ended: yes (run %d, created_at %s; %s): suggests a late dispatch\n",
 			label, lateRun.ID, RedactText(lateRun.CreatedAt), skewNote)
-	case matching.Len() == 0 && partialWait != "":
+	case matching.Len() == 0 && (partialWait != "" || truncated):
+		reasons := make([]string, 0, 2)
+		if partialWait != "" {
+			reasons = append(reasons, partialWait)
+		}
+		if truncated {
+			reasons = append(reasons, "the listing was truncated")
+		}
 		fmt.Fprintf(&b, "  matching %s run created after the wait ended: no (inconclusive: %s; %s)\n",
-			label, partialWait, skewNote)
+			label, strings.Join(reasons, "; "), skewNote)
 	case matching.Len() == 0:
 		fmt.Fprintf(&b, "  matching %s run created after the wait ended: no (%s): no matching run exists, which suggests the event produced no run\n",
 			label, skewNote)
+	case partialWait != "":
+		fmt.Fprintf(&b, "  matching %s run created after the wait ended: no (inconclusive: %s; %s): the matching runs listed above predate the end of the wait\n",
+			label, partialWait, skewNote)
 	default:
 		fmt.Fprintf(&b, "  matching %s run created after the wait ended: no (%s): the matching runs listed above predate the end of the wait\n",
 			label, skewNote)

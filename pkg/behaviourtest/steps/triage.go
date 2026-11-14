@@ -8,6 +8,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -160,9 +161,9 @@ func createIssue(w *world.World, title, body string) error {
 const issueOpenDrainSkewBuffer = 30 * time.Second
 
 // drainIssueOpenWorkflow waits for the fullsend.yaml workflow to process
-// the issues.opened event. If the first attempt fails (typically due to
-// GitHub Actions webhook delivery lag or clock skew between the runner
-// and GitHub), it retries once with a relaxed trigger timestamp.
+// the issues.opened event. If the first attempt finds no run (typically
+// due to GitHub Actions webhook delivery lag or clock skew between the
+// runner and GitHub), it retries once with a relaxed trigger timestamp.
 func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	ctx := context.Background()
 	repo := w.RepoName
@@ -171,6 +172,12 @@ func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	_, err := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, trigger, issueOpenEvent)
 	if err == nil {
 		return nil
+	}
+	// Only a timeout with no run is retried. A run that concluded with a
+	// failure, or did not finish in time, did dispatch: its error is the
+	// real one.
+	if !errors.Is(err, ci.ErrWorkflowNotDispatched) {
+		return fmt.Errorf("waiting for issue-open workflow: %w", err)
 	}
 
 	// Retry with a clock-skew buffer. When the test runner's clock is

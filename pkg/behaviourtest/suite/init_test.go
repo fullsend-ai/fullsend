@@ -25,6 +25,7 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -626,6 +627,8 @@ func (c *countingListerCI) ListRecentRuns(context.Context, string, string, int) 
 // teardown failure. The context is already cancelled so the grace wait
 // returns at once instead of sleeping.
 func TestAfterScenario_NotDispatchedPlusDeallocationFailure(t *testing.T) {
+	// The grace budget is process-global; start from a fresh one.
+	steps.ResetDispatchGraceForTest(t)
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
 

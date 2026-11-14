@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -244,6 +245,11 @@ func waitForDispatchRun(w *world.World) (*forge.WorkflowRun, error) {
 	run, err := w.CI.WaitForWorkflow(ctx, w.RepoOwner, repo, file, w.ScenarioStart, issueCommentEvent)
 	if err == nil {
 		return run, nil
+	}
+	// Only a timeout with no run is retried; any other error comes from a
+	// run that did dispatch and is the real failure.
+	if !errors.Is(err, ci.ErrWorkflowNotDispatched) {
+		return nil, fmt.Errorf("waiting for dispatch workflow (issue_comment): %w", err)
 	}
 
 	worldLogf(w, "dispatch run: retrying with skew buffer: %v", err)
