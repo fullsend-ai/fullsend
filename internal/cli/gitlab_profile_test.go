@@ -1002,9 +1002,12 @@ func TestBindGitLabCredentialToForgeHost_IssuedKeysMatchOpenShell(t *testing.T) 
 	}
 }
 
-// TestBindGitLabCredentialToForgeHost_UnrelatedMalformedProfile checks a
-// malformed profile for another provider does not stop a GitLab run.
-func TestBindGitLabCredentialToForgeHost_UnrelatedMalformedProfile(t *testing.T) {
+// TestBindGitLabCredentialToForgeHost_NonGitLabProfileBadCredentialOrEndpointShapeLeftAlone
+// checks a profile for another provider with a bad credential or endpoint
+// shape is left alone and does not stop a GitLab run. Key-form and
+// document errors stop the run for every profile; see
+// TestBindGitLabCredentialToForgeHost_MergeInProfileWithoutGitLabTokenStillStops.
+func TestBindGitLabCredentialToForgeHost_NonGitLabProfileBadCredentialOrEndpointShapeLeftAlone(t *testing.T) {
 	dir := t.TempDir()
 	bad := writeTestProfile(t, dir, "vertex.yaml", "id: vertex\ncredentials:\n  - name: key\n    env_vars: {bad: shape}\nendpoints: nope\n")
 	rw := writeTestProfile(t, dir, "rw.yaml", stockGitLabRWProfile)

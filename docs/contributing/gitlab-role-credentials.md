@@ -1907,8 +1907,18 @@ independently in four documents:
 - [`docs/guides/user/running-agents-locally.md`](../guides/user/running-agents-locally.md)
 - [`docs/problems/security-threat-model.md`](../problems/security-threat-model.md)
 
+The GitLab host binding is also described in five more documents, nine
+in all:
+
+- [`docs/guides/getting-started/operations.md`](../guides/getting-started/operations.md)
+- [`docs/guides/getting-started/configuring-gitlab.md`](../guides/getting-started/configuring-gitlab.md)
+- [`docs/guides/getting-started/repo-management.md`](../guides/getting-started/repo-management.md)
+- [`docs/contributing/runtime-implementation.md`](runtime-implementation.md)
+- [`docs/guides/dev/cli-internals.md`](../guides/dev/cli-internals.md)
+
 - [ ] Any change that touches credential selection or fallback behavior
-      re-reads all four documents and updates them with the same
+      re-reads the first four documents, and any change to the GitLab
+      host binding re-reads all nine, and updates them with the same
       terms. Do not edit only the file under your cursor.
 
 ## Security notes

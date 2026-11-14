@@ -159,10 +159,13 @@ func resolveGitLabCredentialForgeHost(configured string) (host, port string, err
 // GITLAB_TOKEN on the forge host and port alone.
 //
 // A credential issues GITLAB_TOKEN by OpenShell's rule: its env_vars when
-// the list is non-empty, else its trimmed name. The key checks apply to
-// every profile, because a merge or alias key could hide the credential;
-// only profiles that issue GITLAB_TOKEN are decoded strictly, so a
-// malformed profile for another provider does not stop the run.
+// the list is non-empty, else its trimmed name. Every imported profile,
+// GitLab or not, stops the run if its YAML does not parse, it has more
+// than one document, or it uses a merge key, an alias or non-scalar key,
+// or a duplicate key, because those forms could hide the credential. Only
+// profiles that issue GITLAB_TOKEN are decoded strictly, so a bad
+// credential or endpoint shape in a profile for another provider does not
+// stop the run.
 //
 // Known limits: the binding covers profiles by the GITLAB_TOKEN key only.
 // A provider that stores the token under another key, credential
@@ -508,11 +511,13 @@ func credentialIssuesKey(name string, envVars []string, key string) bool {
 // errNoGitLabForgeHost when the profile issues GITLAB_TOKEN and host is "",
 // whether or not the profile declares endpoints.
 //
-// Only profiles that issue GITLAB_TOKEN are decoded strictly, so a
-// malformed profile for another provider does not stop a GitLab run. The
-// key checks (checkProfileKeys) still apply to every profile: a merge or
-// alias key could hide the credential from the lenient scan, so those
-// forms are refused before it runs.
+// Only profiles that issue GITLAB_TOKEN are decoded strictly, so a bad
+// credential or endpoint shape in a profile for another provider does not
+// stop a GitLab run. Every profile is still refused when its YAML does not
+// parse or has more than one document (parseSingleProfileDocument), or
+// when it uses a merge key, an alias or non-scalar key, or a duplicate key
+// (checkProfileKeys): those forms could hide the credential from the
+// lenient scan, so they are refused before it runs.
 func checkGitLabCredentialBinding(data []byte, host string, port int) error {
 	doc, err := parseSingleProfileDocument(data)
 	if err != nil || doc == nil || len(doc.Content) == 0 {

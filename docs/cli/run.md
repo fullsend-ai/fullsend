@@ -470,12 +470,12 @@ without an OIDC endpoint) is an error. Details:
 
 On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a GitHub App token. It selects a registered GitLab role credential via `gitlabroles.SelectAgent` and exports `GITLAB_TOKEN` from that CI/CD variable. Poller/Analyst/Coder (or a registered custom role) is required unconditionally. A missing role secret fails closed; there is no shared-token fallback and no fallback to a directly-set `GITLAB_TOKEN`. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request.
 
-The GitLab URL is the first set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL`. The GitLab credential profile is bound only to the GitLab host and port: every imported provider profile (an OpenShell file that names a credential and the hosts it may be sent to) that issues `GITLAB_TOKEN` is limited to the host and port of that URL.
+The GitLab URL is the first set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL`. The GitLab credential profile is bound only to the GitLab host and port: every imported provider profile (an OpenShell file that names a credential and the hosts it may be sent to) that issues `GITLAB_TOKEN` is limited to the host and port of that URL. In scaffolded GitLab CI agent jobs, the job script sets `FULLSEND_GITLAB_URL` to the job's pinned instance URL (from `CI_API_V4_URL`) before `fullsend run`, so a `FULLSEND_GITLAB_URL` you set is not used and the two URL stops below do not occur.
 
 The run stops before setup in these cases:
 
-- **Invalid GitLab URL** (every GitLab run): the URL has no host, or is not an https URL; a non-https URL is accepted only for localhost, 127.0.0.1 or ::1. Fix: set `FULLSEND_GITLAB_URL` to the instance's https URL.
-- **No GitLab URL** (only when an imported provider profile issues `GITLAB_TOKEN`): none of the three is set. Fix: set `FULLSEND_GITLAB_URL` to the instance's https URL.
+- **Invalid GitLab URL** (every GitLab run): the URL has no host, or is not an https URL; a non-https URL is accepted only for localhost, 127.0.0.1 or ::1. Fix (local runs and CI jobs you wrote yourself): set `FULLSEND_GITLAB_URL` to the instance's https URL.
+- **No GitLab URL** (only when an imported provider profile issues `GITLAB_TOKEN`): none of the three is set. Fix (local runs and CI jobs you wrote yourself): set `FULLSEND_GITLAB_URL` to the instance's https URL.
 - **Profile cannot be limited** (any imported provider profile): it uses YAML merge keys (`<<`), alias keys, duplicate keys or several documents. Fix: write the keys out explicitly.
 
 See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).

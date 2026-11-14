@@ -343,6 +343,10 @@ OpenShell file that names a credential and the hosts it may be sent to):
 
 - The first one set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and
   `CI_SERVER_URL` wins; later ones are not read.
+- In scaffolded GitLab CI agent jobs, the job script sets
+  `FULLSEND_GITLAB_URL` to the job's pinned instance URL (from
+  `CI_API_V4_URL`) before `fullsend run`. A `FULLSEND_GITLAB_URL` you set
+  is not used there, and the two URL stops below do not occur.
 - Profiles that issue `GITLAB_TOKEN` are limited to your GitLab host and
   port. See [Self-Hosted GitLab Instances](configuring-gitlab.md#self-hosted-gitlab-instances).
 
@@ -350,11 +354,13 @@ The run stops before setup in these cases:
 
 - **Invalid GitLab URL** (every GitLab run): the value has no host, or
   is not an https URL; a non-https URL is accepted only for localhost,
-  127.0.0.1 or ::1. The run names the variable. Fix: set
-  `FULLSEND_GITLAB_URL` to the instance's https URL.
+  127.0.0.1 or ::1. The run names the variable. Fix (local runs and CI
+  jobs you wrote yourself): set `FULLSEND_GITLAB_URL` to the instance's
+  https URL.
 - **No GitLab URL** (only when an imported provider profile issues
-  `GITLAB_TOKEN`): none of the three is set. Fix: set
-  `FULLSEND_GITLAB_URL` to the instance's https URL.
+  `GITLAB_TOKEN`): none of the three is set. Fix (local runs and CI jobs
+  you wrote yourself): set `FULLSEND_GITLAB_URL` to the instance's https
+  URL.
 - **Profile cannot be limited** (any imported provider profile): it uses
   YAML merge keys (`<<`), alias keys, duplicate keys or several documents.
   Fix: write the keys out explicitly.
