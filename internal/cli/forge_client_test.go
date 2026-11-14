@@ -230,3 +230,23 @@ func TestGitHubAPIURL(t *testing.T) {
 		})
 	}
 }
+
+func TestGitHubAPIBaseURLFromEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want string
+	}{
+		{"unset uses github.com API", "", "https://api.github.com"},
+		{"whitespace-only uses github.com API", "   ", "https://api.github.com"},
+		{"GHES API URL", "https://ghes.example.com/api/v3", "https://ghes.example.com/api/v3"},
+		{"trailing slash stripped", "https://ghes.example.com/api/v3/", "https://ghes.example.com/api/v3"},
+		{"surrounding whitespace trimmed", " https://ghes.example.com/api/v3 ", "https://ghes.example.com/api/v3"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GITHUB_API_URL", tt.env)
+			assert.Equal(t, tt.want, githubAPIBaseURLFromEnv())
+		})
+	}
+}

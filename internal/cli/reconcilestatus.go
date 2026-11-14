@@ -9,7 +9,6 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
@@ -19,7 +18,7 @@ import (
 
 var reconcileMintToken = mintclient.MintToken
 var reconcileNewForgeClient = func(token string) forge.Client {
-	return gh.New(token)
+	return newGitHubLiveClient(token, "")
 }
 var reconcileOrphaned = statuscomment.ReconcileOrphaned
 
