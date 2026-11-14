@@ -29,10 +29,7 @@ func RegisteredAgents(cfg config.ConfigReader) ([]RegisteredAgent, error) {
 	if cfg == nil || reflect.ValueOf(cfg).IsNil() {
 		return nil, fmt.Errorf("config is required")
 	}
-	allowlist := cfg.AllowedResources()
-	if allowlist == nil {
-		allowlist = config.DefaultAllowedRemoteResources()
-	}
+	allowlist := config.EffectiveAllowedResources(cfg)
 	agents := cfg.AgentEntries()
 	if err := config.ValidateAgentEntries(agents, allowlist); err != nil {
 		return nil, err

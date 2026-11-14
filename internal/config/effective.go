@@ -12,6 +12,11 @@ import (
 // is a read-only view for operator guidance (for example the effective
 // difference shown when adopting an existing configuration file); it is
 // not a loadable configuration file.
+//
+// The rendered allowed_remote_resources is the accessor-level list;
+// command loaders additionally resolve EffectiveAllowedResources, which
+// ensures fullsend's default prefixes on top of a non-empty result, so
+// the rendered list may omit the default prefixes a command adds.
 func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 	if r == nil {
 		return nil, fmt.Errorf("configuration is required")

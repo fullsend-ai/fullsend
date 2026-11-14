@@ -1551,6 +1551,67 @@ func TestDefaultAllowedRemoteResources_NonGitHubHostAdmitsFullsendRepos(t *testi
 	})
 }
 
+// TestEffectiveAllowedResources pins the command-level allowlist every
+// command family resolves through EffectiveAllowedResources, over the
+// layered accessor shapes TestBuildConfigMap_AllowlistShapes exercises
+// end to end: an omitted key falls through to the defaults parent, an
+// explicit [] stays deny-all, and a non-empty list carries the default
+// prefixes on top.
+func TestEffectiveAllowedResources(t *testing.T) {
+	t.Parallel()
+	defaults := DefaultAllowedRemoteResources()
+
+	t.Run("omitted key falls through to defaults", func(t *testing.T) {
+		cfg := &perRepoConfig{Version: "1", parent: &perRepoDefaults{}}
+		assert.Equal(t, defaults, EffectiveAllowedResources(cfg))
+	})
+
+	t.Run("explicit empty over an empty base stays deny-all", func(t *testing.T) {
+		base := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{}, parent: &perRepoDefaults{}}
+		cfg := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{}, parent: base}
+		got := EffectiveAllowedResources(cfg)
+		assert.NotNil(t, got)
+		assert.Empty(t, got)
+	})
+
+	t.Run("non-empty over an empty base carries the default prefixes", func(t *testing.T) {
+		base := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{}, parent: &perRepoDefaults{}}
+		cfg := &perRepoConfig{Version: "1", AllowedRemoteResources: []string{"https://example.com/"}, parent: base}
+		expected := append([]string{"https://example.com/"}, defaults...)
+		assert.Equal(t, expected, EffectiveAllowedResources(cfg))
+	})
+}
+
+// perRepoConfig.Validate resolves agents through the effective allowlist
+// (EffectiveAllowedResources), the same list the command families that
+// run or edit agents use, so the base-[] layered shape `agent add` writes
+// — a non-empty overlay list holding a default-prefix agent over an
+// explicit deny-all base — validates for `github setup`'s re-run of the
+// existing config too, while an explicit [] as the resolved value still
+// denies.
+func TestPerRepoConfigValidate_AllowlistOverBaseEmptyList(t *testing.T) {
+	t.Parallel()
+	defaultPrefix := DefaultAllowedRemoteResources()[0]
+	integrity := "#sha256=" + strings.Repeat("a", 64)
+	agentYAML := "agents:\n  - name: probe\n    source: \"" + defaultPrefix + "harness/probe.yaml" + integrity + "\"\n"
+
+	t.Run("non-empty overlay over a base [] validates", func(t *testing.T) {
+		overlay := []byte("allowed_remote_resources:\n  - https://overlay.example.com/\n" + agentYAML)
+		base := []byte("allowed_remote_resources: []\n")
+		layered, err := ParsePerRepoConfigWriterLayered(overlay, base)
+		require.NoError(t, err)
+		assert.NoError(t, layered.Validate())
+	})
+
+	t.Run("resolved explicit [] stays deny-all", func(t *testing.T) {
+		layered, err := ParsePerRepoConfigWriterLayered([]byte("allowed_remote_resources: []\n"+agentYAML), []byte("version: \"1\"\n"))
+		require.NoError(t, err)
+		err = layered.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not covered by allowed_remote_resources")
+	})
+}
+
 func TestValidModelRef(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

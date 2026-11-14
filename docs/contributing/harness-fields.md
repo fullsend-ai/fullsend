@@ -81,6 +81,20 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `schema_version`   | Schema contract version (ADR-0127); absent = `1`; malformed, zero, negative or unsupported values fail load |
 | `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** ([#8722](https://github.com/fullsend-ai/fullsend/issues/8722)) |
 
+The config-level `allowed_remote_resources` (the `config.yaml` layer over
+`config.base.yaml`) bounds the harness-level field, and every command
+family resolves it by one rule: the layered chain is resolved as-is (an
+omitted key falls through to the parent, an explicit `[]` denies all remote
+resources with no fallthrough, a non-empty list unions with the parent's),
+then fullsend's default prefixes are ensured on top of a non-empty result.
+`fullsend run`, `lint`, `lock` and eval-measure (`loadLockConfig`), harness
+dispatch (`ListTriggeredHarnesses`), `fullsend dispatch --route`
+(`routeBuiltinAgent`), the Jira poll and the agent-editing commands
+(`agent set/add/update/remove`) therefore resolve the same list: a
+non-empty `config.yaml` list over a base layer's `allowed_remote_resources:
+[]` carries the default prefixes everywhere alike, and an explicit `[]` as
+the resolved effective value stays deny-all everywhere alike.
+
 ## Semantic types (ADR 0127)
 
 Each harness field has a semantic type that governs how fullsend interprets
@@ -244,7 +258,28 @@ Overlay `when` expressions are evaluated with:
 |---|---|---|
 | `event` | `map[string]any` | The triggering event (the serialized `normevent.Event`) — fields like `source.system`, `entity.kind`, `transition.kind`. The ADR 0107 fields `actor.bot_role` and `actor.role_verified` are present only when an adapter performed a bot-role lookup; guard them with `has()`. Optional `state.issue_type` carries the current Jira type (`id`, `name`, `is_subtask`); guard with `has(event.state.issue_type)`. It is preserved in `_normalized_event` without a separate legacy payload field |
 | `runtime.forge` | `string` | Effective forge platform (precedence: CLI flag > config.forge > CI env vars) |
-| `config` | `map[string]any` | Full per-repo config from `config.yaml` |
+| `config` | `map[string]any` | Full per-repo config from `config.yaml`, with `allowed_remote_resources` as the effective list the command families that run or edit agents resolve — run/lint/lock, harness dispatch, `dispatch --route`, the Jira poll and the agent-editing commands (the layered chain with fullsend's default prefixes ensured on a non-empty result); the key is omitted when the resolved list is empty, so an explicit `[]` stays deny-all |
+
+#### Why the default prefixes are ensured
+
+`config.allowed_remote_resources` resolves to the layered chain with
+fullsend's default prefixes ensured on top of a non-empty result. The
+defaults are ensured because the default prefixes are what make
+first-party agent sources resolvable with no configuration: `run`, `lint`
+and `lock` resolve them, and the other command families that run or edit
+agents (harness dispatch, `dispatch --route`, the Jira poll, `agent
+set/add/update/remove`) resolve the same value rather than a
+stricter one; tightening `run`/`lint`/`lock` to respect a base `[]`
+instead would change the behaviour of the family that already worked. A
+deny-all that must stay authoritative is declared in a managed
+`repos.yaml` block (`defaults.config`, the forge config or the repo's
+`config`), whose reset rejects a non-empty list declared below it
+([Layered Config
+Reference](../guides/infrastructure/layered-config-reference.md)); a
+`[]` in a `config_base` preset or a hand-edited `config.base.yaml` does
+not stay authoritative over a non-empty `config.yaml` list, because the
+reset compares only the managed blocks and `config.base.yaml` is layered
+in after the check.
 
 ### Mutual exclusion
 

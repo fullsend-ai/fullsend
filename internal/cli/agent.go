@@ -27,6 +27,16 @@ func loadAgentConfig(configPath string) (config.ConfigWriter, error) {
 	return config.LoadConfigWriter(filepath.Dir(configPath), config.LoadOpts{MissingOK: false})
 }
 
+// validateAgentConfig validates a config the agent-editing commands are
+// about to write, resolving the allowlist the way the commands that run
+// agents do: perRepoConfig.Validate ensures fullsend's default prefixes
+// on top of a non-empty layered result, so an agent covered only by a
+// default prefix passes here too, and an explicit [] as the resolved
+// value stays deny-all.
+func validateAgentConfig(cfg config.ConfigWriter) error {
+	return cfg.Validate()
+}
+
 func newAgentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
@@ -53,7 +63,11 @@ func newAgentAddCmd() *cobra.Command {
 
 URL sources are automatically pinned to a specific commit SHA and annotated
 with an integrity hash. The URL prefix is added to allowed_remote_resources
-if not already present.
+only when the effective allowlist does not already cover it. The effective
+allowlist is the layered list plus fullsend's default prefixes. The prefix
+is appended to the config's own list only: entries the parent chain
+resolves (fullsend's defaults, GITHUB_SERVER_URL-derived prefixes,
+config.base.yaml entries) are never written into config.yaml.
 
 Examples:
   fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml
@@ -284,7 +298,7 @@ func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Pri
 	local := config.UpsertAgentSettings(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, runtimeName, model, effort, subagents)
 	w.SetAgents(local)
 
-	if err := cfg.Validate(); err != nil {
+	if err := validateAgentConfig(cfg); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 	data, err := cfg.Marshal()
@@ -337,6 +351,27 @@ func localAgentEntries(cfg config.ConfigReader) []config.AgentEntry {
 	return cfg.AgentEntries()
 }
 
+// localAllowedResources returns the allowlist entries the overlay itself
+// declares (the parent chain's defaults, GITHUB_SERVER_URL-derived entries
+// and base prefixes are not rewritten into config.yaml).
+func localAllowedResources(cfg config.ConfigReader) []string {
+	if local, ok := cfg.(interface{ LocalAllowedRemoteResources() []string }); ok {
+		return local.LocalAllowedRemoteResources()
+	}
+	return cfg.AllowedResources()
+}
+
+// localAllowlistWith returns the overlay's own allowlist plus prefix — the
+// list `agent add` writes. Only this layer's entries are carried, so the
+// parent chain's defaults and base prefixes are never baked into
+// config.yaml by the append.
+func localAllowlistWith(cfg config.ConfigReader, prefix string) []string {
+	local := localAllowedResources(cfg)
+	with := make([]string, 0, len(local)+1)
+	with = append(with, local...)
+	return append(with, prefix)
+}
+
 // upsertAgentSource sets Source for name on a layer's local agent list:
 // on the entry with that name when present, else as a new override-only
 // entry. Mirrors config.UpsertAgentSettings, but for the update path's
@@ -375,12 +410,9 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 		entry.Ref = originalRef
 
 		prefix := allowlistPrefixForURL(pinnedSource)
-		if prefix != "" {
-			resources := cfg.AllowedResources()
-			if !hasAllowlistPrefix(resources, prefix) {
-				printer.StepInfo("Adding " + prefix + " to allowed_remote_resources")
-				cfg.SetAllowedRemoteResources(append(resources, prefix))
-			}
+		if prefix != "" && agentAddWritesPrefix(cfg, prefix) {
+			printer.StepInfo("Adding " + prefix + " to allowed_remote_resources")
+			cfg.SetAllowedRemoteResources(localAllowlistWith(cfg, prefix))
 		}
 	} else {
 		if err := validateLocalPath(absDir, source); err != nil {
@@ -401,7 +433,7 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 
 	cfg.SetAgents(append(agents, entry))
 
-	if err := cfg.Validate(); err != nil {
+	if err := validateAgentConfig(cfg); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
@@ -514,7 +546,7 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 			cfg.SetAgents(agents)
 		}
 
-		if err := cfg.Validate(); err != nil {
+		if err := validateAgentConfig(cfg); err != nil {
 			return fmt.Errorf("config validation failed: %w", err)
 		}
 
@@ -711,21 +743,55 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 	if urlutil.IsURL(removedEntry.Source) {
 		prefix := allowlistPrefixForURL(removedEntry.Source)
 		if prefix != "" && !anyAgentUsesPrefix(agents, prefix) {
-			resources := cfg.AllowedResources()
-			cleaned := make([]string, 0, len(resources))
-			for _, r := range resources {
-				if r != prefix {
-					cleaned = append(cleaned, r)
+			// Clean only the overlay's own list. The resolved value
+			// (AllowedResources) unions the parent chain — fullsend's
+			// default prefixes, the GITHUB_SERVER_URL-derived entries,
+			// any base prefixes — and writing it back would bake all of
+			// them into config.yaml. A prefix the base owns is left to
+			// the base: nothing is written and nothing is announced.
+			local := localAllowedResources(cfg)
+			cleaned := make([]string, 0, len(local))
+			found := false
+			for _, r := range local {
+				if r == prefix {
+					found = true
+					continue
 				}
+				cleaned = append(cleaned, r)
 			}
-			if len(cleaned) < len(resources) {
+			if found {
 				printer.StepInfo("Removed unused prefix from allowed_remote_resources: " + prefix)
-				cfg.SetAllowedRemoteResources(cleaned)
+				if len(cleaned) > 0 {
+					cfg.SetAllowedRemoteResources(cleaned)
+				} else {
+					// Removing the last local prefix must not write an
+					// explicit [] (deny-all): drop the key so the parent
+					// chain resolves again, and when that chain is itself
+					// deny-all (a base []) keep fullsend's default
+					// prefixes so agents under them stay admitted and
+					// the config stays editable — but only the prefixes
+					// a remaining agent still sits under: a base that
+					// asked for deny-all keeps it once no remaining
+					// agent needs a default prefix, and the
+					// GITHUB_SERVER_URL-derived entries are baked in
+					// only when a remaining agent itself sits under one.
+					cfg.SetAllowedRemoteResources(nil)
+					if len(config.EffectiveAllowedResources(cfg)) == 0 {
+						var needed []string
+						for _, p := range config.DefaultAllowedRemoteResources() {
+							if anyAgentUsesPrefix(agents, p) {
+								needed = append(needed, p)
+							}
+						}
+						// A nil needed keeps the key dropped (deny-all).
+						cfg.SetAllowedRemoteResources(needed)
+					}
+				}
 			}
 		}
 	}
 
-	if err := cfg.Validate(); err != nil {
+	if err := validateAgentConfig(cfg); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
@@ -910,6 +976,18 @@ func findAgentByName(agents []config.AgentEntry, name string) (int, bool) {
 	return -1, false
 }
 
+// agentAddWritesPrefix reports whether `agent add` must write the URL's
+// prefix into config.yaml: the effective allowlist (the layered chain
+// with fullsend's default prefixes ensured on a non-empty result) does
+// not already cover it, so a default prefix the running commands admit
+// is never written. The gate needs a default-prefix source, which the
+// offline test server cannot serve, so the decision is pinned directly
+// by TestAgentAddWritesPrefix_AllowlistOverBaseEmptyList; the write it
+// gates is pinned end-to-end by TestAgentAddWritesLocalOnly.
+func agentAddWritesPrefix(cfg config.ConfigReader, prefix string) bool {
+	return !hasAllowlistPrefix(config.EffectiveAllowedResources(cfg), prefix)
+}
+
 func allowlistPrefixForURL(rawURL string) string {
 	cleanURL, _, _ := urlutil.ParseIntegrityHash(rawURL)
 	info, err := parseAgentSourceURL(cleanURL)
@@ -934,7 +1012,7 @@ func hasAllowlistPrefix(resources []string, prefix string) bool {
 
 func anyAgentUsesPrefix(agents []config.AgentEntry, prefix string) bool {
 	for _, a := range agents {
-		if urlutil.IsURL(a.Source) && strings.HasPrefix(a.Source, prefix) {
+		if urlutil.IsURL(a.Source) && urlutil.MatchingAllowedPrefixInList(a.Source, []string{prefix}) != "" {
 			return true
 		}
 	}

@@ -519,8 +519,9 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 		m["agents"] = anyAgents
 	}
 
-	// Security policies
-	if arr := pr.AllowedResources(); len(arr) > 0 {
+	// Security policies: the effective command-level allowlist, so
+	// overlay CEL sees the same list regardless of the call path.
+	if arr := config.EffectiveAllowedResources(pr); len(arr) > 0 {
 		anyArr := make([]any, len(arr))
 		for i, r := range arr {
 			anyArr[i] = r

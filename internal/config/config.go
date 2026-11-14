@@ -690,6 +690,17 @@ func githubServerBaseURL(serverURL string) string {
 	return "https://" + strings.ToLower(u.Host)
 }
 
+// EffectiveAllowedResources returns the config-level allowlist the command
+// families that run or edit agents resolve — run/lint/lock, harness
+// dispatch, dispatch --route, the Jira poll and the agent-editing commands
+// (agent set/add/update/remove): the layered chain as-is (an omitted key
+// falls through to the parent, an explicit [] denies all remote resources,
+// a non-empty list unions with the parent's), then fullsend's default
+// prefixes ensured on top of a non-empty result.
+func EffectiveAllowedResources(cfg ConfigReader) []string {
+	return EnsureDefaultAllowedRemoteResources(cfg.AllowedResources())
+}
+
 // EnsureDefaultAllowedRemoteResources returns a new slice with default
 // allowed-remote-resources prefixes merged into the provided list.
 // Nil input (field omitted from YAML) returns defaults alone.
@@ -1183,12 +1194,16 @@ func (c *perRepoConfig) Validate() error {
 	if err := c.validateLocalFields(); err != nil {
 		return err
 	}
-	// Agents are validated against the resolved allowlist (including
-	// parent resources) so that URL agents covered by a parent or
-	// default prefix pass validation.
+	// Agents are validated against the effective allowlist — the
+	// resolved chain with fullsend's default prefixes ensured on a
+	// non-empty result — the same list every command family that runs
+	// or edits agents resolves through EffectiveAllowedResources, so a
+	// config one of those commands accepts validates here too. An
+	// explicit [] as the resolved value still denies all remote
+	// resources.
 	// The merged set is validated so an overlay entry that only tunes an
 	// agent registered in the base layer sees that agent's source.
-	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true)
+	return validateAgentEntries(c.AgentEntries(), EffectiveAllowedResources(c), true, true)
 }
 
 // ValidateGlobal runs Validate's checks except the agents[] entry
@@ -1337,13 +1352,25 @@ func ValidateManagedLayer(w PerRepoConfigWriter) error {
 
 // ValidateMergedManaged validates a repos.yaml managed configuration
 // (ADR 0122) after defaults.config, the platform config, and the
-// repository config have been merged (mergeManagedConfig). The resolved
-// allowlist is now correct, so
-// a URL-sourced agent entry is checked against it; an override-only entry
-// is still not required to name a compiled-in agent, since
-// config.base.yaml — which may register the agent it tunes — is not
-// layered on until the managed file is written and later read through
-// LayeredConfig.
+// repository config have been merged (mergeManagedConfig). A URL-sourced
+// agent entry is checked against the effective allowlist — the resolved
+// list with fullsend's default prefixes ensured on a non-empty result,
+// the same list every command family resolves through
+// EffectiveAllowedResources; an explicit [] as the resolved value still
+// denies all remote resources. Every writer reaching this function
+// carries the perRepoDefaults terminal parent, so the accessor already
+// resolves the defaults and the explicit call records the rule. A
+// managed block that declares its list validates the same for the
+// prefixes the merged managed blocks resolve once it is written and
+// read through LayeredConfig; a prefix declared only in
+// config.base.yaml or a config_base preset is not visible here, so
+// validation is stricter than the read for that shape. A block that
+// omits the key validates against the defaults alone and still
+// inherits a base [] (deny-all) at LayeredConfig read time, which
+// this validation cannot see. An override-only entry is still not required to name a
+// compiled-in agent, since config.base.yaml — which may register the
+// agent it tunes — is not layered on until the managed file is written
+// and later read through LayeredConfig.
 func ValidateMergedManaged(w PerRepoConfigWriter) error {
 	c := asPerRepo(w)
 	if c == nil {
@@ -1352,7 +1379,7 @@ func ValidateMergedManaged(w PerRepoConfigWriter) error {
 	if err := c.validateLocalFields(); err != nil {
 		return err
 	}
-	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, false)
+	return validateAgentEntries(c.AgentEntries(), EffectiveAllowedResources(c), true, false)
 }
 
 // ValidateModelAliases checks a models.aliases map: every key is one of

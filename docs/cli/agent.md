@@ -347,7 +347,7 @@ stale provider profiles, schema validation, triggers that never fire), see
 
 ## `agent add`
 
-Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. When a URL references a branch or tag (rather than a commit SHA), the original ref is stored in the config entry's `ref` field so that subsequent `agent update` calls re-resolve against the same branch. The URL prefix is added to `allowed_remote_resources` if not already present.
+Register an agent in config by URL or local path. URL sources are automatically pinned to a specific commit SHA and annotated with a `#sha256=...` integrity hash. When a URL references a branch or tag (rather than a commit SHA), the original ref is stored in the config entry's `ref` field so that subsequent `agent update` calls re-resolve against the same branch. The URL prefix is added to `allowed_remote_resources` only when the effective allowlist does not already cover it; the effective allowlist is the layered list plus fullsend's default prefixes. The prefix is appended to the config's own list only: entries the parent chain resolves (fullsend's defaults, `GITHUB_SERVER_URL`-derived prefixes, `config.base.yaml` entries) are never written into `config.yaml`.
 
 ```bash
 fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml
@@ -441,7 +441,7 @@ dispatch on each runtime.
 
 ## `agent remove`
 
-Remove an agent from config. If the removed agent was the last one using a given `allowed_remote_resources` prefix, that prefix is also cleaned up.
+Remove an agent from config. If the removed agent was the last one using a given `allowed_remote_resources` prefix, that prefix is cleaned from the config's own list only. Entries the parent chain resolves (fullsend's defaults, `GITHUB_SERVER_URL`-derived prefixes, `config.base.yaml` entries) are never carried into the cleaned list, and a prefix the base owns is left to the base. When the cleaned local list becomes empty, the local `allowed_remote_resources` key is dropped so the parent chain resolves again. Over a chain that resolves to deny-all (a base `[]`), the command instead writes the fullsend default prefixes a remaining agent still uses. Those can be host-specific when `GITHUB_SERVER_URL` names a GitHub Enterprise host.
 
 ```bash
 fullsend agent remove triage
