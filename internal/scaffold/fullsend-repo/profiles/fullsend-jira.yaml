@@ -27,7 +27,8 @@ endpoints:
   # The gateway serves every Jira site at /ex/jira/{cloudId}/... When
   # `fullsend run` mints the token, it imports a per-site copy of this
   # profile (id fullsend-jira-<hash of cloudId>) whose endpoint here gets
-  # path: /ex/jira/<cloudId>/**, so the run reaches only its own site.
+  # path: /ex/jira/<cloudId>/**, so through the gateway the run reaches
+  # only its own site.
   # Leave this endpoint without a path: the runner adds it.
   # Accepted risk with a static token: no path limit, so a credential valid
   # on several sites reaches all of them; read-only enforcement is what

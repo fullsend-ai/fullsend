@@ -361,7 +361,12 @@ tracker:
 ```
 
 - **`tracker.jira.base_url`** — The Jira site URL. It must be an `https` URL
-  with no credentials, query, or fragment. It has no default.
+  with no credentials, query, or fragment. It has no default. When
+  `fullsend run` mints the sandbox's Jira token from OAuth 2.0 client
+  credentials, set `base_url` and `project`: the run looks up this site's
+  cloud ID and limits the `jira` provider to it, and fails before minting
+  without them. See
+  [Read-only Jira access from the sandbox](../guides/user/jira-integration.md#read-only-jira-access-from-the-sandbox-jira-provider).
 - **`tracker.jira.api_url`** — The Jira API gateway URL. It is optional and
   defaults to `https://api.atlassian.com`. It is validated like `base_url`.
   Fullsend's shared Jira client sends REST requests to
@@ -376,11 +381,9 @@ tracker:
   that agents append `/rest/api/3/...` to. For those runs `fullsend run` also
   sets `JIRA_BASE_URL` to `base_url`. See
   [Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
-  When `fullsend run` mints the sandbox's Jira token from OAuth 2.0 client
-  credentials, `api_url` must be unset or `https://api.atlassian.com`, and
-  `base_url` must be set: the run limits the `jira` provider to that site's
-  gateway path and fails otherwise. See
-  [Read-only Jira access from the sandbox](../guides/user/jira-integration.md#read-only-jira-access-from-the-sandbox-jira-provider).
+  When `fullsend run` mints the sandbox's Jira token, leave `api_url` unset
+  or set it to `https://api.atlassian.com`. Any other value makes the run
+  fail before minting, because the `jira` provider allows only that gateway.
 - **`tracker.jira.project`** — The key of the single Jira project for this
   repository. It is not a fallback project, and it has no default.
 - **`tracker.jira.run_label`** — Optional label added to the source Jira issue

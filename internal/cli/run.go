@@ -1833,6 +1833,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					}
 					profileID, err := ensureJiraSiteProfile(ctx, cloudID, printer)
 					if err != nil {
+						printer.StepFail("Cannot render the per-site Jira profile")
 						return err
 					}
 					handle, err := ensureJiraProvider(ctx, pd, profileID, sandboxName, jiraCreds, printer)

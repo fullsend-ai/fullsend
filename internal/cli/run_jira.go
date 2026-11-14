@@ -241,14 +241,19 @@ func renderJiraSiteProfileFrom(tmpl []byte, cloudID string) ([]byte, string, err
 	invalid := func(why string) error {
 		return fmt.Errorf("embedded provider profile %q cannot be limited to one Jira site: %s", jiraProviderType, why)
 	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(tmpl, &doc); err != nil {
+	// One document only, and no merge, alias or duplicate keys: OpenShell
+	// applies those, and the scan below sees only literal keys.
+	doc, err := parseSingleProfileDocument(tmpl)
+	if err != nil {
 		return nil, "", invalid(err.Error())
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+	if doc == nil || doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
 		return nil, "", invalid("not a mapping")
 	}
 	root := doc.Content[0]
+	if err := checkProfileKeys(root); err != nil {
+		return nil, "", invalid(err.Error())
+	}
 	idNode := yamlMappingValue(root, "id")
 	if idNode == nil || idNode.Kind != yaml.ScalarNode || idNode.Value != jiraProviderType {
 		return nil, "", invalid("id " + jiraProviderType + " expected")
@@ -264,8 +269,8 @@ func renderJiraSiteProfileFrom(tmpl []byte, cloudID string) ([]byte, string, err
 			return nil, "", invalid("an endpoint is not a mapping")
 		}
 		hostNode := yamlMappingValue(ep, "host")
-		if hostNode == nil {
-			continue
+		if hostNode == nil || hostNode.Kind != yaml.ScalarNode {
+			return nil, "", invalid("an endpoint has no literal host")
 		}
 		host := strings.ToLower(strings.TrimSpace(hostNode.Value))
 		if host == jiraAPIHost {
@@ -273,7 +278,12 @@ func renderJiraSiteProfileFrom(tmpl []byte, cloudID string) ([]byte, string, err
 			matches++
 			continue
 		}
-		if strings.HasPrefix(host, "*") && strings.HasSuffix(jiraAPIHost, strings.TrimLeft(host, "*")) {
+		// Any glob that matches the gateway host (*.atlassian.com,
+		// api.atlassian.*, api.**) would admit it without the path. A
+		// leading-* suffix match also covers a bare * or **, which
+		// policyHostMatches reads as a single label.
+		if policyHostMatches(host, jiraAPIHost) ||
+			(strings.HasPrefix(host, "*") && strings.HasSuffix(jiraAPIHost, strings.TrimLeft(host, "*"))) {
 			return nil, "", invalid("endpoint " + host + " also admits " + jiraAPIHost)
 		}
 	}
@@ -293,7 +303,7 @@ func renderJiraSiteProfileFrom(tmpl []byte, cloudID string) ([]byte, string, err
 	var out bytes.Buffer
 	enc := yaml.NewEncoder(&out)
 	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
+	if err := enc.Encode(doc); err != nil {
 		return nil, "", invalid(err.Error())
 	}
 	if err := enc.Close(); err != nil {

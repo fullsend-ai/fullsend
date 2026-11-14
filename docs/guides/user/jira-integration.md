@@ -750,7 +750,7 @@ example a staging and a production site in one organization, and the
 gateway serves every site at `/ex/jira/{cloudId}/...`. In the OAuth 2.0
 client credentials mode below, the run can reach only its own site through
 the gateway: `fullsend run` imports a copy of the profile limited to the
-path `/ex/jira/<cloudId>/**` for the site in `tracker.jira.base_url`. A
+path `/ex/jira/{cloudId}/**` for the site in `tracker.jira.base_url`. A
 static token still reaches every site it is valid on, because the profile
 does not limit the gateway path in that mode. There the credential gives no
 site separation, and the profile's read-only enforcement is what keeps the
@@ -777,8 +777,9 @@ Where the value comes from depends on the deployment's credential:
   - Before it mints, `fullsend run` looks up the site's cloud ID from
     `tracker.jira.base_url` (a Jira-triggered run reuses the lookup behind
     `JIRA_API_URL`) and limits the provider to that site's gateway path.
-    The run fails before minting if `tracker.jira.base_url` is missing or
-    invalid, if `--offline` is set, if the lookup fails, or if
+    So set `base_url` and `project` under `tracker.jira` in
+    `.fullsend/config.yaml`. The run fails before minting if either is
+    missing or invalid, if `--offline` is set, if the lookup fails, or if
     `tracker.jira.api_url` is set to anything other than
     `https://api.atlassian.com`.
 
@@ -807,8 +808,9 @@ The file holds only the placeholder. When minting fails:
   redacted or masked, or when the sandbox never picks up new tokens.
 
 A harness cannot supply its own `fullsend-jira` profile for a minted token:
-when the run mints, `fullsend run` refuses a profile with that id, so only the
-copy built into the binary governs that token. In static-token mode, a harness copy under that id gets a
+when the run mints, `fullsend run` refuses a profile with that id. The token is
+governed only by the per-site copy `fullsend run` renders from the profile
+built into the binary. In static-token mode, a harness copy under that id gets a
 warning and is used for now, like other reserved ids. The ids of the per-site
 copies (`fullsend-jira-` followed by 12 hex digits) are reserved in every
 mode: `fullsend run` refuses a harness profile with such an id.

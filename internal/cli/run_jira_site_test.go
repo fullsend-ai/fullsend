@@ -93,6 +93,13 @@ func TestRenderJiraSiteProfileFrom_RefusesBadTemplates(t *testing.T) {
 		"gateway already has path": head + "  - host: api.atlassian.com\n    path: /ex/jira/**\n",
 		"wildcard admits gateway":  head + ep(`"api.atlassian.com"`) + ep(`"*.atlassian.com"`),
 		"catch-all host":           head + ep(`"api.atlassian.com"`) + ep(`"*"`),
+		"trailing wildcard":        head + ep(`"api.atlassian.com"`) + ep(`"api.atlassian.*"`),
+		"double-star wildcard":     head + ep(`"api.atlassian.com"`) + ep(`"api.**"`),
+		"inner wildcard":           head + ep(`"api.atlassian.com"`) + ep(`"api.atl*ian.com"`),
+		"endpoint without host":    head + "  - port: 443\n" + ep(`"api.atlassian.com"`),
+		"merge-key endpoint":       "id: fullsend-jira\nwide: &w\n  host: \"*.atlassian.com\"\nendpoints:\n" + ep(`"api.atlassian.com"`) + "  - <<: *w\n",
+		"duplicate key":            head + ep(`"api.atlassian.com"`) + "    host: other.example.com\n",
+		"second document":          head + ep(`"api.atlassian.com"`) + "---\nid: other\n",
 		"wrong id":                 "id: other\nendpoints:\n" + ep(`"api.atlassian.com"`),
 		"no id":                    "endpoints:\n" + ep(`"api.atlassian.com"`),
 		"no endpoints":             "id: fullsend-jira\n",
@@ -108,8 +115,8 @@ func TestRenderJiraSiteProfileFrom_RefusesBadTemplates(t *testing.T) {
 			assert.Contains(t, err.Error(), "cannot be limited to one Jira site")
 		})
 	}
-	// An endpoint without a host does not count.
-	data, _, err := renderJiraSiteProfileFrom([]byte(head+"  - port: 443\n"+ep(`"api.atlassian.com"`)), testJiraCloudID)
+	// A wildcard that does not match the gateway host is kept.
+	data, _, err := renderJiraSiteProfileFrom([]byte(head+ep(`"*.atlassian.net"`)+ep(`"api.atlassian.com"`)), testJiraCloudID)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "/ex/jira/"+testJiraCloudID+"/**")
 }
