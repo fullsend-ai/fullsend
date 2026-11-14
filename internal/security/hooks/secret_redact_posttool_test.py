@@ -1134,6 +1134,15 @@ class TestSchemePrefixedValues(unittest.TestCase):
                 self.assertIn(kept + self.FAKE[:4] + "...", result["tool_result"])
                 self.assertEqual(result["metadata"]["patterns"], ["auth_header"])
 
+    def test_header_mask_leaves_a_longer_secret_whole(self):
+        """Masking the header credential must not clip a longer secret that
+        starts with it, or the structural pass no longer sees that secret."""
+        longer = self.FAKE + "-moresecretmaterial"
+        _, stdout, _ = run_hook(f'Authorization: Bearer {self.FAKE}\n{{"key": "{longer}"}}\n')
+        result = json.loads(stdout)
+        self.assertNotIn("moresecretmaterial", result["tool_result"])
+        self.assertEqual(result["metadata"]["patterns"], ["auth_header", "json_secret"])
+
     def test_unprefixed_and_authorization_header_still_redacted(self):
         for line in (f'export SVC_TOKEN="{self.FAKE}"', f"Authorization: Basic {self.FAKE}"):
             with self.subTest(line=line):

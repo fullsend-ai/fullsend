@@ -618,11 +618,23 @@ def redact_text(text: str, *, skip: frozenset[str] = frozenset()) -> tuple[str, 
     findings: list[dict] = []
     result = text
 
+    def mask_secret_group(match: re.Match, name: str) -> str:
+        # Mask in place: a global replace of the credential would also clip a
+        # longer secret that starts with it and hide that one from later passes.
+        token = match.group("secret")
+        masked = mask_token(token)
+        findings.append({"pattern": name, "masked": masked})
+        whole, start = match.group(0), match.start("secret") - match.start()
+        return whole[:start] + masked + whole[start + len(token) :]
+
     for name, pattern in _PREFIX_PATTERNS:
         if name in skip:
             continue
+        if "secret" in pattern.groupindex:
+            result = pattern.sub(lambda m, n=name: mask_secret_group(m, n), result)
+            continue
         for match in pattern.finditer(result):
-            token = match.group("secret") if "secret" in pattern.groupindex else match.group(0)
+            token = match.group(0)
             masked = mask_token(token)
             if masked != token:
                 findings.append({"pattern": name, "masked": masked})
