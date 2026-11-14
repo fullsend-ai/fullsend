@@ -35,9 +35,12 @@ import (
 //   - a rate-limit gh.APIError: primary 429, or a 403 whose message
 //     says "rate limit" (secondary limit), per gh.IsRateLimitError.
 //   - a GitHub server error, per gh.IsServerError: a REST gh.APIError
-//     with status 500–504 (left once the client's own retries are
-//     used up), or a GraphQL error with no type and GitHub's generic
-//     "Something went wrong while executing your query" message (#9472).
+//     with status 500–504 that the client did not retry further (its
+//     retries were used up, or it did not resend because the request
+//     may already have been applied; the suite then retries the
+//     scenario, it does not resend the request), or a GraphQL error
+//     with no type whose message starts with GitHub's generic
+//     "Something went wrong while executing your query" (#9472).
 //   - an install.CapacityError: the slot pool could not provide
 //     capacity — every cause (rate-limited, denied, or failed orgs)
 //     is an environment condition, not a product assertion. A slot
