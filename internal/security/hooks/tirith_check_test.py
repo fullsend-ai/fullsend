@@ -22,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from unittest import mock
 
 import pytest
@@ -39,14 +40,29 @@ def _load_hook_module():
     return module
 
 
+FAKE_TIRITH = "/opt/fake-bin/tirith"
+
+
 @pytest.fixture()
-def hook():
+def lookup_hook():
+    """The hook with its real PATH lookup for the tirith binary."""
     module = _load_hook_module()
     # TIRITH_FAIL_ON is read at import time, so pin it rather than inherit
     # whatever the developer's shell exports — otherwise these assertions
     # depend on the ambient environment.
     with mock.patch.object(module, "TIRITH_FAIL_ON", "high"):
         yield module
+
+
+@pytest.fixture()
+def hook(lookup_hook):
+    """The hook with the binary lookup pinned to an absolute path.
+
+    Tests that mock subprocess.run would otherwise take the missing-binary
+    path on a machine with no tirith installed.
+    """
+    with mock.patch.object(lookup_hook, "resolve_tirith", return_value=FAKE_TIRITH):
+        yield lookup_hook
 
 
 def _make_tirith_output(findings, action="block"):
@@ -509,19 +525,74 @@ class TestApprovalVerdicts:
 # ---------------------------------------------------------------------------
 
 
+XDG_VARS = ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR")
+EXPECTED_ENV_KEYS = {"PATH", "LC_ALL", "LANG", "HOME", "TIRITH_OFFLINE", *XDG_VARS}
+
+# Variables the caller might export that must not reach tirith.
+HOSTILE_ENV = {
+    "KEEP_ME": "x",
+    "TZ": "Pacific/Kiritimati",
+    "LANG": "tr_TR.UTF-8",
+    "LC_ALL": "tr_TR.UTF-8",
+    "TIRITH_OFFLINE": "0",
+    "TIRITH_POLICY": "/attacker/policy.yaml",
+    "TIRITH_FAIL_ON": "critical",
+    "TIRITH_REQUIRED": "1",
+    "HOME": "/attacker/home",
+    "XDG_CONFIG_HOME": "/attacker/config",
+    "XDG_DATA_HOME": "/attacker/data",
+    "XDG_STATE_HOME": "/attacker/state",
+    "XDG_RUNTIME_DIR": "/attacker/run",
+    "TMPDIR": "/attacker/tmp",
+}
+
+
+def _allow_proc():
+    return _make_completed_process("", returncode=0)
+
+
 class TestTirithEnvironment:
-    def test_runs_offline(self, hook):
-        """tirith gets TIRITH_OFFLINE=1, so it makes no network lookups."""
-        proc = _make_completed_process("", returncode=0)
+    """Point 1 and 2: the environment is built from scratch."""
+
+    def _env(self, hook):
         with (
-            mock.patch.dict(os.environ, {"TIRITH_OFFLINE": "0", "KEEP_ME": "x"}),
-            mock.patch("subprocess.run", return_value=proc) as run,
+            mock.patch.dict(os.environ, HOSTILE_ENV),
+            mock.patch("subprocess.run", return_value=_allow_proc()) as run,
         ):
             hook.check_command("pip install requests")
-        env = run.call_args.kwargs["env"]
-        assert env["TIRITH_OFFLINE"] == "1"
-        assert env["KEEP_ME"] == "x", "the rest of the environment must reach tirith"
-        assert "--offline" not in run.call_args.args[0], "use the variable, not the flag"
+        return run.call_args.kwargs["env"]
+
+    def test_only_the_built_variables_reach_tirith(self, hook):
+        env = self._env(hook)
+        assert set(env) == EXPECTED_ENV_KEYS
+
+    def test_path_is_kept(self, hook):
+        path = "/usr/local/bin:/usr/bin:/bin"
+        with (
+            mock.patch.dict(os.environ, {"PATH": path}),
+            mock.patch("subprocess.run", return_value=_allow_proc()) as run,
+        ):
+            hook.check_command("echo hi")
+        assert run.call_args.kwargs["env"]["PATH"] == path
+
+    def test_locale_is_fixed_and_tz_dropped(self, hook):
+        env = self._env(hook)
+        assert env["LC_ALL"] == "C.UTF-8"
+        assert env["LANG"] == "C.UTF-8"
+        assert "TZ" not in env
+
+    def test_only_hook_owned_tirith_switches(self, hook):
+        env = self._env(hook)
+        assert {k: v for k, v in env.items() if k.startswith("TIRITH_")} == {"TIRITH_OFFLINE": "1"}
+
+    def test_runs_offline(self, hook):
+        """tirith gets TIRITH_OFFLINE=1, so it makes no network lookups."""
+        with mock.patch("subprocess.run", return_value=_allow_proc()) as run:
+            hook.check_command("pip install requests")
+        assert run.call_args.kwargs["env"]["TIRITH_OFFLINE"] == "1"
+        args = run.call_args.args[0]
+        assert "--offline" not in args, "use the variable, not the flag"
+        assert "--no-daemon" not in args, "an older binary exits 2 on an unknown flag"
 
     def test_offline_reaches_the_binary(self, tmp_path):
         """End to end: the variable is in the environment of the real child.
@@ -556,6 +627,249 @@ class TestTirithEnvironment:
         assert sentinel.exists(), f"the stub never ran: {res.stdout} {res.stderr[-300:]}"
         assert sentinel.read_text() == "1", "tirith's own environment must carry TIRITH_OFFLINE=1"
         assert res.returncode == 0, res.stdout
+
+    def test_real_child_sees_only_the_built_environment(self, tmp_path):
+        """End to end: what the child process actually receives.
+
+        TIRITH_REQUIRED=1 again keeps a stub that never ran from passing.
+        """
+        stub_dir = tmp_path / "bin"
+        stub_dir.mkdir()
+        env_file, cwd_file, argv0_file = (tmp_path / n for n in ("env", "cwd", "argv0"))
+        script = stub_dir / "tirith"
+        script.write_text(
+            "#!/bin/sh\n"
+            f'env > "{env_file}"\n'
+            f'pwd -P > "{cwd_file}"\n'
+            f'printf %s "$0" > "{argv0_file}"\n'
+            "exit 0\n"
+        )
+        script.chmod(0o755)
+        env = {**os.environ, **HOSTILE_ENV}
+        env["PATH"] = str(stub_dir) + os.pathsep + os.environ["PATH"]
+        res = subprocess.run(
+            [sys.executable, HOOK_PATH],
+            input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "echo hi"}}),
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert env_file.exists(), f"the stub never ran: {res.stdout} {res.stderr[-300:]}"
+        assert res.returncode == 0, res.stdout
+        seen = dict(line.split("=", 1) for line in env_file.read_text().splitlines() if "=" in line)
+        # Variables /bin/sh sets on its own, not passed by the hook.
+        for shell_own in ("PWD", "OLDPWD", "SHLVL", "_"):
+            seen.pop(shell_own, None)
+        assert set(seen) == EXPECTED_ENV_KEYS
+        assert seen["TIRITH_OFFLINE"] == "1"
+        home = seen["HOME"]
+        assert os.path.dirname(home) == "/tmp"
+        assert cwd_file.read_text().strip() == os.path.realpath(home)
+        assert argv0_file.read_text() == str(script), "tirith must be run by absolute path"
+        assert not os.path.exists(home), "the per-call directory must be removed"
+
+
+class TestScanDirectory:
+    """Point 3: a fresh per-call HOME with its XDG directories, always removed."""
+
+    @staticmethod
+    def _inspect(seen, result=None, raises=None):
+        def run(args, **kwargs):
+            env = kwargs["env"]
+            home = env["HOME"]
+            seen.append(
+                {
+                    "home": home,
+                    "home_mode": os.stat(home).st_mode & 0o777,
+                    "xdg": {v: env[v] for v in XDG_VARS},
+                    "xdg_dirs": {v: os.path.isdir(env[v]) for v in XDG_VARS},
+                    "runtime_mode": os.stat(env["XDG_RUNTIME_DIR"]).st_mode & 0o777,
+                }
+            )
+            # Something tirith would leave behind, to check the cleanup is recursive.
+            with open(os.path.join(env["XDG_DATA_HOME"], "log.jsonl"), "w") as fh:
+                fh.write("{}\n")
+            if raises is not None:
+                raise raises
+            return result if result is not None else _allow_proc()
+
+        return run
+
+    def test_home_and_xdg_dirs_exist_during_the_call(self, hook):
+        seen = []
+        with mock.patch("subprocess.run", side_effect=self._inspect(seen)):
+            hook.check_command("echo hi")
+        (call,) = seen
+        assert call["home_mode"] == 0o700
+        assert os.path.dirname(call["home"]) == hook.SCAN_ROOT == "/tmp"
+        for var, path in call["xdg"].items():
+            assert os.path.dirname(path) == call["home"], var
+            assert call["xdg_dirs"][var], f"{var} must exist before the call"
+        assert call["runtime_mode"] == 0o700
+
+    def test_root_does_not_follow_tmpdir(self, hook, tmp_path):
+        seen = []
+        with (
+            mock.patch.dict(os.environ, {"TMPDIR": str(tmp_path)}),
+            mock.patch.object(tempfile, "tempdir", None),
+            mock.patch("subprocess.run", side_effect=self._inspect(seen)),
+        ):
+            hook.check_command("echo hi")
+        assert not seen[0]["home"].startswith(str(tmp_path))
+
+    def test_each_call_gets_a_fresh_directory(self, hook):
+        seen = []
+        with mock.patch("subprocess.run", side_effect=self._inspect(seen)):
+            hook.check_command("echo one")
+            hook.check_command("echo two")
+        assert seen[0]["home"] != seen[1]["home"]
+
+    @pytest.mark.parametrize(
+        ("result", "raises"),
+        [
+            pytest.param(None, None, id="allow"),
+            pytest.param(
+                _make_completed_process(_make_tirith_output([_incomplete()])), None, id="block"
+            ),
+            pytest.param(None, subprocess.TimeoutExpired(cmd="tirith", timeout=5), id="timeout"),
+            pytest.param(None, FileNotFoundError(), id="binary-vanished"),
+            pytest.param(None, RuntimeError("boom"), id="unexpected-error"),
+        ],
+    )
+    @pytest.mark.parametrize("required", [False, True])
+    def test_directory_is_removed(self, hook, result, raises, required):
+        seen = []
+        with (
+            mock.patch.object(hook, "TIRITH_REQUIRED", required),
+            mock.patch("subprocess.run", side_effect=self._inspect(seen, result, raises)),
+        ):
+            hook.check_command("echo hi")
+        assert seen, "subprocess.run was not reached"
+        assert not os.path.exists(seen[0]["home"])
+
+    def test_cleanup_ignores_errors(self, hook):
+        """A cleanup error must not escape past the verdict."""
+        out = _make_tirith_output([_incomplete()])
+        with (
+            mock.patch("subprocess.run", return_value=_make_completed_process(out)),
+            mock.patch("shutil.rmtree", wraps=shutil.rmtree) as rmtree,
+        ):
+            blocked, _ = hook.check_command("echo hi")
+        assert blocked
+        assert rmtree.call_args.kwargs.get("ignore_errors") is True
+
+
+class TestWorkingDirectory:
+    """Point 4: tirith runs in the per-call directory, not the hook's."""
+
+    def test_cwd_is_the_scan_directory(self, hook, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with mock.patch("subprocess.run", return_value=_allow_proc()) as run:
+            hook.check_command("echo hi")
+        kwargs = run.call_args.kwargs
+        assert kwargs["cwd"] == kwargs["env"]["HOME"]
+        assert kwargs["cwd"] != str(tmp_path)
+
+
+class TestBinaryResolution:
+    """Point 5: tirith is resolved on PATH and run by absolute path."""
+
+    def test_runs_the_absolute_path(self, lookup_hook):
+        with (
+            mock.patch("shutil.which", return_value="/usr/local/bin/tirith") as which,
+            mock.patch("subprocess.run", return_value=_allow_proc()) as run,
+        ):
+            lookup_hook.check_command("echo hi")
+        assert which.call_args.args == ("tirith",)
+        assert run.call_args.args[0][0] == "/usr/local/bin/tirith"
+
+    @pytest.mark.parametrize(
+        "found", [None, "tirith", "bin/tirith"], ids=["absent", "bare", "relative"]
+    )
+    def test_unresolved_or_relative_is_missing_fail_open(self, lookup_hook, found):
+        with (
+            mock.patch.object(lookup_hook, "TIRITH_REQUIRED", False),
+            mock.patch("shutil.which", return_value=found),
+            mock.patch("subprocess.run") as run,
+        ):
+            blocked, _ = lookup_hook.check_command("echo hi")
+        assert not blocked
+        run.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "found", [None, "tirith", "bin/tirith"], ids=["absent", "bare", "relative"]
+    )
+    def test_unresolved_or_relative_is_missing_fail_closed(self, lookup_hook, tmp_path, found):
+        findings_file = tmp_path / "findings.jsonl"
+        with (
+            mock.patch.object(lookup_hook, "TIRITH_REQUIRED", True),
+            mock.patch.object(lookup_hook, "FINDINGS_PATH", str(findings_file)),
+            mock.patch("shutil.which", return_value=found),
+            mock.patch("subprocess.run") as run,
+        ):
+            blocked, reason = lookup_hook.check_command("echo hi")
+        assert blocked
+        assert "TIRITH_REQUIRED" in reason
+        run.assert_not_called()
+        logged = [json.loads(line) for line in findings_file.read_text().splitlines()]
+        assert [f["name"] for f in logged] == ["tirith_missing"]
+
+
+class TestScanSetupFailure:
+    """Point 6: a per-call directory that cannot be made has one labelled path."""
+
+    def _run(self, hook, tmp_path, required, **patches):
+        findings_file = tmp_path / "findings.jsonl"
+        with (
+            mock.patch.object(hook, "TIRITH_REQUIRED", required),
+            mock.patch.object(hook, "FINDINGS_PATH", str(findings_file)),
+            mock.patch("tempfile.mkdtemp", **patches),
+            mock.patch("subprocess.run") as run,
+        ):
+            blocked, reason = hook.check_command("echo hi")
+        run.assert_not_called()
+        logged = [json.loads(line) for line in findings_file.read_text().splitlines()]
+        return blocked, reason, logged
+
+    def test_fails_open_by_default_and_logs(self, hook, tmp_path):
+        blocked, reason, logged = self._run(
+            hook, tmp_path, False, side_effect=PermissionError("denied")
+        )
+        assert not blocked
+        assert reason == ""
+        assert [(f["name"], f["action"]) for f in logged] == [("tirith_setup_failed", "warn")]
+
+    def test_fails_closed_when_required(self, hook, tmp_path):
+        blocked, reason, logged = self._run(
+            hook, tmp_path, True, side_effect=PermissionError("denied")
+        )
+        assert blocked
+        assert "setup failed" in reason
+        assert "TIRITH_REQUIRED" in reason
+        assert [(f["name"], f["action"]) for f in logged] == [("tirith_setup_failed", "block")]
+
+    @pytest.mark.parametrize("required", [False, True])
+    def test_xdg_dir_failure_removes_the_partial_directory(self, hook, tmp_path, required):
+        created = []
+        real_mkdtemp = tempfile.mkdtemp
+        real_mkdir = os.mkdir
+
+        def mkdtemp(*args, **kwargs):
+            path = real_mkdtemp(*args, **kwargs)
+            created.append(path)
+            return path
+
+        def mkdir(path, mode=0o777, *args, **kwargs):
+            if os.path.basename(path) == "state":
+                raise PermissionError("denied")
+            return real_mkdir(path, mode, *args, **kwargs)
+
+        with mock.patch("os.mkdir", side_effect=mkdir):
+            blocked, _, logged = self._run(hook, tmp_path, required, side_effect=mkdtemp)
+        assert blocked is required
+        assert logged[0]["name"] == "tirith_setup_failed"
+        assert created, "mkdtemp was not reached"
+        assert not os.path.exists(created[0])
 
 
 # ---------------------------------------------------------------------------
@@ -759,20 +1073,15 @@ requires_pinned_tirith = pytest.mark.skipif(
 class TestRealTirithBinary:
     """Runs the pinned binary so a version bump that changes a verdict is visible.
 
-    A stray ~/.config/tirith/policy.yaml changes verdicts, so HOME and
-    XDG_CONFIG_HOME are redirected to an empty directory: the sandbox image
-    installs the binary only and ships no policy file.
+    A stray ~/.config/tirith/policy.yaml changes verdicts. The hook points
+    HOME and every XDG directory at a fresh empty directory on each call, so
+    the developer's own policy file does not reach these runs, as the sandbox
+    image installs the binary only and ships no policy file.
     """
 
     @pytest.fixture()
-    def isolated_hook(self, hook, tmp_path):
-        empty = tmp_path / "home"
-        empty.mkdir()
-        with mock.patch.dict(
-            os.environ,
-            {"HOME": str(empty), "XDG_CONFIG_HOME": str(empty / ".config")},
-        ):
-            yield hook
+    def isolated_hook(self, lookup_hook):
+        yield lookup_hook
 
     @pytest.mark.parametrize(
         "command",
@@ -807,30 +1116,52 @@ class TestRealTirithBinary:
         blocked, reason = isolated_hook.check_command(command)
         assert not blocked, f"accepted dialect should pass, got: {reason}"
 
-    def test_repo_policy_approval_rule_blocks(self, isolated_hook, tmp_path, monkeypatch):
-        """A real approval verdict blocks, and the reason names the rule.
+    APPROVAL_POLICY = (
+        "approval_rules:\n  - rule_ids: [package_lookup_incomplete]\n    timeout_secs: 1\n"
+    )
 
-        tirith discovers a repo-local .tirith/policy.yaml by walking up to the
-        nearest .git, and an approval rule there is additive (its fallback is
-        clamped to block). `pip install requests` under the TIRITH_OFFLINE=1
-        this hook always sets reports package_lookup_incomplete at MEDIUM with
-        action=warn — the control below shows the hook allows that — so the
-        block can only come from the approval path.
+    def test_repo_policy_in_hook_directory_is_not_read(self, isolated_hook, tmp_path, monkeypatch):
+        """A repo-local policy beside the hook does not reach tirith.
+
+        tirith discovers a repo-local .tirith/policy.yaml by walking up from
+        its working directory to the nearest .git. The hook runs tirith in the
+        per-call directory, so the approval rule below is never found and
+        `pip install requests` stays the MEDIUM, action=warn
+        package_lookup_incomplete verdict that the hook allows.
         """
-        plain = tmp_path / "plain"
-        (plain / ".git").mkdir(parents=True)
-        monkeypatch.chdir(plain)
-        blocked, reason = isolated_hook.check_command("pip install requests")
-        assert not blocked, f"control: a MEDIUM finding alone must not block, got: {reason}"
-
         gated = tmp_path / "gated"
         (gated / ".git").mkdir(parents=True)
         (gated / ".tirith").mkdir()
-        (gated / ".tirith" / "policy.yaml").write_text(
-            "approval_rules:\n  - rule_ids: [package_lookup_incomplete]\n    timeout_secs: 1\n"
-        )
+        (gated / ".tirith" / "policy.yaml").write_text(self.APPROVAL_POLICY)
         monkeypatch.chdir(gated)
         blocked, reason = isolated_hook.check_command("pip install requests")
+        assert not blocked, f"a policy in the hook's directory reached tirith: {reason}"
+
+    def test_policy_approval_rule_blocks(self, isolated_hook):
+        """A real approval verdict blocks, and the reason names the rule.
+
+        The policy is written into the per-call XDG config directory, the one
+        place a policy can still come from. The control shows the hook allows
+        `pip install requests` without it, so the block can only come from the
+        approval path.
+        """
+        blocked, reason = isolated_hook.check_command("pip install requests")
+        assert not blocked, f"control: a MEDIUM finding alone must not block, got: {reason}"
+
+        real_make_scan_dir = isolated_hook.make_scan_dir
+
+        def make_scan_dir_with_policy():
+            scan_dir = real_make_scan_dir()
+            policy_dir = os.path.join(scan_dir, "config", "tirith")
+            os.mkdir(policy_dir)
+            with open(os.path.join(policy_dir, "policy.yaml"), "w") as fh:
+                fh.write(self.APPROVAL_POLICY)
+            return scan_dir
+
+        with mock.patch.object(
+            isolated_hook, "make_scan_dir", side_effect=make_scan_dir_with_policy
+        ):
+            blocked, reason = isolated_hook.check_command("pip install requests")
         assert blocked, "a verdict requesting approval must block"
         assert "approval" in reason
         assert "package_lookup_incomplete" in reason, "the reason must name the rule"

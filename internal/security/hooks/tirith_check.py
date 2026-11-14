@@ -33,12 +33,38 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import traceback
 from datetime import UTC, datetime
 
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
+
+# tirith's verdict must depend only on the command and on configuration the
+# runner controls, so its environment is built here rather than copied from
+# the hook's. Each call gets a fresh HOME under SCAN_ROOT, which is fixed
+# rather than tempfile.gettempdir(): that follows TMPDIR, which the caller sets.
+SCAN_ROOT = "/tmp"
+SCAN_LOCALE = "C.UTF-8"
+# Each XDG directory tirith could read configuration or state from, and the
+# subdirectory of the per-call HOME it points at.
+SCAN_XDG_DIRS = {
+    "XDG_CONFIG_HOME": "config",
+    "XDG_DATA_HOME": "data",
+    "XDG_STATE_HOME": "state",
+    "XDG_RUNTIME_DIR": "runtime",
+}
+# The only TIRITH_* switches tirith sees; any the caller exports are dropped.
+# TIRITH_OFFLINE keeps package lookups (OSV, deps.dev) and the background
+# threat-database refresh off the network: in the sandbox they go to the
+# egress proxy and add hundreds of ms to install checks. The variable, not
+# --offline: tirith exits 2 with no output on an unknown option, so a flag
+# would break every check on a binary that lacks it. --no-daemon is left out
+# for the same reason.
+HOOK_TIRITH_ENV = {"TIRITH_OFFLINE": "1"}
+
 TIRITH_FAIL_ON = os.environ.get("TIRITH_FAIL_ON", "high")
 # When tirith is baked into the sandbox image, set TIRITH_REQUIRED=1 so that
 # a missing binary is treated as a security failure (fail-closed) rather than
@@ -132,31 +158,92 @@ def approval_block(raw: object, returncode: int) -> str:
     return reason
 
 
+def resolve_tirith() -> str | None:
+    """Return the absolute path of tirith on PATH, or None when there is none."""
+    path = shutil.which("tirith")
+    if not path or not os.path.isabs(path):
+        return None
+    return path
+
+
+def make_scan_dir() -> str:
+    """Create the per-call HOME (mode 0700) and its XDG directories.
+
+    Raises OSError, after removing whatever it created, when any of them
+    cannot be made.
+    """
+    scan_dir = tempfile.mkdtemp(prefix="tirith-hook-", dir=SCAN_ROOT)
+    try:
+        for subdir in SCAN_XDG_DIRS.values():
+            os.mkdir(os.path.join(scan_dir, subdir), 0o700)
+    except OSError:
+        shutil.rmtree(scan_dir, ignore_errors=True)
+        raise
+    return scan_dir
+
+
+def scan_env(scan_dir: str) -> dict[str, str]:
+    """Build tirith's whole environment; nothing is copied from the hook's."""
+    env = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "LC_ALL": SCAN_LOCALE,
+        "LANG": SCAN_LOCALE,
+        "HOME": scan_dir,
+    }
+    for var, subdir in SCAN_XDG_DIRS.items():
+        env[var] = os.path.join(scan_dir, subdir)
+    env.update(HOOK_TIRITH_ENV)
+    return env
+
+
+def tirith_missing() -> tuple[bool, str]:
+    if TIRITH_REQUIRED:
+        reason = "tirith binary not found but TIRITH_REQUIRED=1 (expected in sandbox image)"
+        log_finding("tirith_missing", "critical", reason, "block")
+        return True, reason
+    return False, ""
+
+
+def scan_setup_failed(err: OSError) -> tuple[bool, str]:
+    """The one path for a per-call directory that could not be made.
+
+    Logged either way so a fail-open skip is still visible; blocks only under
+    TIRITH_REQUIRED, as a missing binary does.
+    """
+    detail = f"tirith scan directory setup failed: {type(err).__name__}"
+    if TIRITH_REQUIRED:
+        reason = f"{detail} — blocking (TIRITH_REQUIRED=1)"
+        log_finding("tirith_setup_failed", "critical", reason, "block")
+        return True, reason
+    log_finding("tirith_setup_failed", "critical", f"{detail} — command not scanned", "warn")
+    return False, ""
+
+
 def check_command(command: str) -> tuple[bool, str]:
     """Run tirith check on a command. Returns (should_block, reason)."""
+    binary = resolve_tirith()
+    if binary is None:
+        return tirith_missing()
+    try:
+        scan_dir = make_scan_dir()
+    except OSError as e:
+        return scan_setup_failed(e)
     try:
         result = subprocess.run(
-            ["tirith", "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
+            [binary, "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
             capture_output=True,
             text=True,
             # Without this a non-UTF-8 byte in a finding raises into the
             # fail-open handler below, discarding a real threat report.
             errors="replace",
             timeout=5,
-            # Keeps package lookups (OSV, deps.dev) and the background
-            # threat-database refresh off the network: in the sandbox they go
-            # to the egress proxy and add hundreds of ms to install checks.
-            # The variable, not --offline: tirith exits 2 with no output on an
-            # unknown option, so a flag would break every check on a binary
-            # that lacks it.
-            env={**os.environ, "TIRITH_OFFLINE": "1"},
+            env=scan_env(scan_dir),
+            # Not the hook's directory, so a policy file there is not found.
+            cwd=scan_dir,
         )
     except FileNotFoundError:
-        if TIRITH_REQUIRED:
-            reason = "tirith binary not found but TIRITH_REQUIRED=1 (expected in sandbox image)"
-            log_finding("tirith_missing", "critical", reason, "block")
-            return True, reason
-        return False, ""
+        # The binary went away between resolve_tirith and the call.
+        return tirith_missing()
     except subprocess.TimeoutExpired:
         if TIRITH_REQUIRED:
             reason = "tirith timed out — blocking (TIRITH_REQUIRED=1)"
@@ -170,6 +257,9 @@ def check_command(command: str) -> tuple[bool, str]:
             log_finding("tirith_error", "critical", reason, "block")
             return True, reason
         return False, ""
+    finally:
+        # ignore_errors: a failed cleanup must not raise past the handling above.
+        shutil.rmtree(scan_dir, ignore_errors=True)
 
     if result.returncode == 0:
         # An allow may still carry requires_approval. Output that is absent or
