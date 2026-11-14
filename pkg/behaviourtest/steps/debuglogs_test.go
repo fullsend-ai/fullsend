@@ -15,6 +15,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -1364,4 +1365,173 @@ func TestLogNoteMarkersAreSharedWithForge(t *testing.T) {
 	}
 	assert.Equal(t, want, got, "partialLogNotes matches the shared log notes")
 	assert.Len(t, partialLogNotes, len(sharedLogNotes), "partialLogNotes lists each shared note once")
+}
+
+// --- dispatch diagnostics (#9469) ---
+
+// fakeIssueSCM answers GetIssue with a fixed issue or error and records
+// the requested number.
+type fakeIssueSCM struct {
+	scm.Driver
+
+	issue     *forge.Issue
+	err       error
+	requested int
+}
+
+func (f *fakeIssueSCM) GetIssue(_ context.Context, _, _ string, number int) (*forge.Issue, error) {
+	f.requested = number
+	return f.issue, f.err
+}
+
+// shortenDispatchGrace sets dispatchDiagnosticsGrace for one test.
+func shortenDispatchGrace(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := dispatchDiagnosticsGrace
+	dispatchDiagnosticsGrace = d
+	t.Cleanup(func() { dispatchDiagnosticsGrace = orig })
+}
+
+// notDispatchedErr builds the wrapped timeout a step returns when
+// WaitForWorkflow saw no run.
+func notDispatchedErr() error {
+	return fmt.Errorf("waiting for issue-open workflow: %w",
+		fmt.Errorf("workflow fullsend.yaml (issues) %w", ci.ErrWorkflowNotDispatched))
+}
+
+func TestCollectFailureLogs_DispatchDiagnosticsReportLateRun(t *testing.T) {
+	shortenDispatchGrace(t, 0)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	late := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	fake := &fakeListerCI{
+		runs: []forge.WorkflowRun{
+			{ID: 90, Name: "fullsend", Event: "issues", Status: "queued", CreatedAt: late, Path: ".github/workflows/fullsend.yaml"},
+			{ID: 12, Name: "setup", Event: "push", Status: "completed", Conclusion: "success", CreatedAt: "2026-01-01T00:00:00Z", Path: ".github/workflows/setup.yaml"},
+		},
+	}
+	issues := &fakeIssueSCM{issue: &forge.Issue{Number: 7, CreatedAt: "2026-11-14T00:05:58Z", State: "open"}}
+	w := &world.World{
+		Org: "halfsend-22", RepoName: "test-repo-03", CI: fake, SCM: issues,
+		IssueNumber: 7, ScenarioName: "OWNERS alias resolves to grant access",
+		Logf: func(string, ...any) {},
+	}
+
+	CollectFailureLogs(context.Background(), w, notDispatchedErr())
+
+	summary := readFailureSummary(t, artifactDir)
+	assert.Contains(t, summary, "\nDispatch diagnostics:\n")
+	assert.Contains(t, summary, "repository: halfsend-22/test-repo-03")
+	assert.Contains(t, summary, "listed at: ")
+	assert.Contains(t, summary, "grace period that began at ")
+	assert.Equal(t, 7, issues.requested)
+	assert.Contains(t, summary, "issue #7: created_at 2026-11-14T00:05:58Z, state open")
+	assert.Contains(t, summary, "workflow runs (2, no time filter)")
+	assert.Contains(t, summary, `run 90: workflow ".github/workflows/fullsend.yaml", event "issues", created_at `+late+`, status "queued", conclusion "" (created during the grace period)`)
+	assert.Contains(t, summary, `run 12: workflow ".github/workflows/setup.yaml", event "push", created_at 2026-01-01T00:00:00Z, status "completed", conclusion "success"`+"\n",
+		"a run from before the grace period is listed without the time filter and not marked")
+	assert.Contains(t, summary, `fullsend.yaml run created during the grace period: yes (run 90, event "issues", created_at `+late+`)`)
+}
+
+func TestCollectFailureLogs_DispatchDiagnosticsReportNoRun(t *testing.T) {
+	shortenDispatchGrace(t, 0)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	late := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	fake := &fakeListerCI{
+		runs: []forge.WorkflowRun{
+			// A late run of another workflow, and one with no reported
+			// file, do not count as the dispatch workflow's run.
+			{ID: 5, Name: "other", Event: "issues", CreatedAt: late, Path: ".github/workflows/other.yaml"},
+			{ID: 6, Name: "Named only", Event: "issues", CreatedAt: ""},
+		},
+	}
+	w := &world.World{
+		Org: "org", RepoName: "repo", CI: fake,
+		SCM: &fakeIssueSCM{err: fmt.Errorf("get issue #3: 502")}, IssueNumber: 3,
+		ScenarioName: "overlay refused", Logf: func(string, ...any) {},
+	}
+
+	CollectFailureLogs(context.Background(), w, notDispatchedErr())
+
+	summary := readFailureSummary(t, artifactDir)
+	assert.Contains(t, summary, "issue #3: lookup failed: get issue #3: 502")
+	assert.Contains(t, summary, `run 6: workflow "Named only", event "issues", created_at (unknown)`)
+	assert.Contains(t, summary, "fullsend.yaml run created during the grace period: no")
+}
+
+func TestCollectFailureLogs_DispatchDiagnosticsLookupGaps(t *testing.T) {
+	shortenDispatchGrace(t, 0)
+
+	tests := map[string]struct {
+		world *world.World
+		want  []string
+	}{
+		"listing fails and no issue recorded": {
+			world: &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{listErr: fmt.Errorf("list recent workflow runs: 500")}},
+			want:  []string{"issue: none recorded for this scenario", "workflow runs: listing failed: list recent workflow runs: 500"},
+		},
+		"driver cannot list and no SCM driver": {
+			world: &world.World{Org: "org", RepoName: "repo", CI: &fakeDebugCI{}, IssueNumber: 4},
+			want:  []string{"issue #4: not looked up: no SCM driver is configured", "workflow runs: not listed: the CI driver cannot list workflow runs"},
+		},
+		"empty listing": {
+			world: &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}},
+			want:  []string{"workflow runs (0, no time filter):\n    none\n", "fullsend.yaml run created during the grace period: no"},
+		},
+		"no repository": {
+			world: &world.World{},
+			want:  []string{"Dispatch diagnostics:\n  none: the repository identity is unavailable"},
+		},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			artifactDir := t.TempDir()
+			t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+			tc.world.ScenarioName = name
+			tc.world.Logf = func(string, ...any) {}
+
+			CollectFailureLogs(context.Background(), tc.world, notDispatchedErr())
+
+			summary := readFailureSummary(t, artifactDir)
+			for _, want := range tc.want {
+				assert.Contains(t, summary, want)
+			}
+		})
+	}
+}
+
+func TestCollectFailureLogs_DispatchDiagnosticsGraceCutShort(t *testing.T) {
+	shortenDispatchGrace(t, time.Hour)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}, ScenarioName: "cancelled", Logf: func(string, ...any) {}}
+
+	CollectFailureLogs(ctx, w, notDispatchedErr())
+
+	assert.Contains(t, readFailureSummary(t, artifactDir), "the grace period was cut short: context canceled")
+}
+
+func TestCollectFailureLogs_NoDispatchDiagnosticsForOtherErrors(t *testing.T) {
+	// A grace period this long would hang the test if it ran.
+	shortenDispatchGrace(t, time.Hour)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+
+	issues := &fakeIssueSCM{issue: &forge.Issue{Number: 7}}
+	w := &world.World{
+		Org: "org", RepoName: "repo", CI: &fakeListerCI{}, SCM: issues, IssueNumber: 7,
+		ScenarioName: "other failure", Logf: func(string, ...any) {},
+	}
+
+	CollectFailureLogs(context.Background(), w, fmt.Errorf("workflow fullsend.yaml run 4 concluded with %q", "failure"))
+
+	summary := readFailureSummary(t, artifactDir)
+	assert.NotContains(t, summary, "Dispatch diagnostics")
+	assert.Zero(t, issues.requested, "the issue is not looked up for other failures")
 }

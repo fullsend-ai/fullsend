@@ -17,6 +17,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -51,6 +52,15 @@ const (
 	// CollectFailureLogs.
 	failureSummaryFile = "failure-summary.txt"
 )
+
+// dispatchDiagnosticsGrace is how long CollectFailureLogs waits, after a
+// scenario failed because a workflow run never appeared
+// (ci.ErrWorkflowNotDispatched), before listing the repository's runs. A
+// run that shows up during the grace period measures a late dispatch; no
+// run at all points to a lost event (#9469). It runs outside
+// failureLogBudget so it cannot starve the log collection that follows.
+// A variable so tests can shorten it.
+var dispatchDiagnosticsGrace = 2 * time.Minute
 
 // saveWorkflowRunLogs fetches the logs for a workflow run and writes
 // them into a debug subdirectory under BEHAVIOUR_ARTIFACT_DIR. Called
@@ -417,6 +427,13 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 		return
 	}
 
+	// Dispatch diagnostics run first: the grace period gives a late run
+	// time to appear, so the run-log collection below also saves it.
+	var dispatch string
+	if errors.Is(scenarioErr, ci.ErrWorkflowNotDispatched) {
+		dispatch = collectDispatchDiagnostics(ctx, w)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, failureLogBudget)
 	defer cancel()
 
@@ -431,6 +448,10 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 	fmt.Fprintf(&b, "Repository: %s\n", repo)
 	b.WriteString("\nWorkflow runs:\n")
 	b.WriteString(collectScenarioRunLogs(ctx, w))
+	if dispatch != "" {
+		b.WriteString("\nDispatch diagnostics:\n")
+		b.WriteString(dispatch)
+	}
 
 	summaryPath, err := writeFailureSummary(artifactDir, w.ScenarioName, b.String())
 	if err != nil {
@@ -525,6 +546,122 @@ func collectScenarioRunLogs(ctx context.Context, w *world.World) string {
 		b.WriteString("  none: no workflow run was found in the repository for this scenario\n")
 	}
 	return b.String()
+}
+
+// collectDispatchDiagnostics records, for a scenario that failed because
+// no workflow run appeared, what the repository shows after a grace
+// period: the time of the listing, every workflow run (without the
+// scenario time filter) with its event, creation time and workflow file,
+// whether a run of the dispatch workflow appeared during the grace
+// period, and the scenario's issue with its creation time and state. It
+// runs before teardown deletes the repository, so the evidence survives
+// in the artifact. Every lookup is best-effort and reports its own
+// failure in place of its section.
+func collectDispatchDiagnostics(ctx context.Context, w *world.World) string {
+	if w.RepoName == "" {
+		return "  none: the repository identity is unavailable, so dispatch diagnostics could not be collected\n"
+	}
+	var b strings.Builder
+	graceStart := time.Now()
+	select {
+	case <-ctx.Done():
+		fmt.Fprintf(&b, "  the grace period was cut short: %v\n", ctx.Err())
+	case <-time.After(dispatchDiagnosticsGrace):
+	}
+	listedAt := time.Now()
+	fmt.Fprintf(&b, "  repository: %s/%s\n", w.Org, w.RepoName)
+	fmt.Fprintf(&b, "  listed at: %s, after a %s grace period that began at %s\n",
+		listedAt.UTC().Format(time.RFC3339), dispatchDiagnosticsGrace, graceStart.UTC().Format(time.RFC3339))
+	b.WriteString(describeDispatchIssue(ctx, w))
+	b.WriteString(describeDispatchRuns(ctx, w, graceStart))
+	return b.String()
+}
+
+// describeDispatchIssue reports the scenario's issue with its creation
+// time and state, so a late run's delay can be measured from the event
+// that should have triggered it.
+func describeDispatchIssue(ctx context.Context, w *world.World) string {
+	if w.IssueNumber == 0 {
+		return "  issue: none recorded for this scenario\n"
+	}
+	if w.SCM == nil {
+		return fmt.Sprintf("  issue #%d: not looked up: no SCM driver is configured\n", w.IssueNumber)
+	}
+	lookupCtx, cancel := context.WithTimeout(ctx, logFetchTimeout)
+	defer cancel()
+	issue, err := w.SCM.GetIssue(lookupCtx, w.Org, w.RepoName, w.IssueNumber)
+	if err != nil {
+		return fmt.Sprintf("  issue #%d: lookup failed: %v\n", w.IssueNumber, err)
+	}
+	return fmt.Sprintf("  issue #%d: created_at %s, state %s\n", w.IssueNumber, orUnknown(issue.CreatedAt), orUnknown(issue.State))
+}
+
+// describeDispatchRuns lists every workflow run in the repository and
+// states whether a run of the dispatch workflow was created at or after
+// graceStart.
+func describeDispatchRuns(ctx context.Context, w *world.World, graceStart time.Time) string {
+	lister, ok := w.CI.(ci.RunLister)
+	if !ok {
+		return "  workflow runs: not listed: the CI driver cannot list workflow runs (it does not implement ci.RunLister)\n"
+	}
+	listCtx, cancel := context.WithTimeout(ctx, logFetchTimeout)
+	defer cancel()
+	runs, err := lister.ListRecentRuns(listCtx, w.Org, w.RepoName, maxListedFailureRuns)
+	if err != nil {
+		return fmt.Sprintf("  workflow runs: listing failed: %v\n", err)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "  workflow runs (%d, no time filter):\n", len(runs))
+	if len(runs) >= maxListedFailureRuns {
+		fmt.Fprintf(&b, "    the listing returned %d runs, its limit; older runs may exist\n", len(runs))
+	}
+	// Run timestamps have second precision, so compare against the
+	// grace start truncated to the second.
+	graceSecond := graceStart.Truncate(time.Second)
+	var lateRun *forge.WorkflowRun
+	for i := range runs {
+		run := runs[i]
+		created, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+		duringGrace := parseErr == nil && !created.Before(graceSecond)
+		note := ""
+		if duringGrace {
+			note = " (created during the grace period)"
+		}
+		fmt.Fprintf(&b, "    - run %d: workflow %q, event %q, created_at %s, status %q, conclusion %q%s\n",
+			run.ID, RedactText(runWorkflowFile(run)), RedactText(run.Event), orUnknown(RedactText(run.CreatedAt)),
+			RedactText(run.Status), RedactText(run.Conclusion), note)
+		if duringGrace && lateRun == nil && filepath.Base(run.Path) == install.PerRepoTriageWorkflow {
+			lateRun = &run
+		}
+	}
+	if len(runs) == 0 {
+		b.WriteString("    none\n")
+	}
+	if lateRun != nil {
+		fmt.Fprintf(&b, "  %s run created during the grace period: yes (run %d, event %q, created_at %s)\n",
+			install.PerRepoTriageWorkflow, lateRun.ID, RedactText(lateRun.Event), RedactText(lateRun.CreatedAt))
+	} else {
+		fmt.Fprintf(&b, "  %s run created during the grace period: no\n", install.PerRepoTriageWorkflow)
+	}
+	return b.String()
+}
+
+// runWorkflowFile names a run's workflow by its file, falling back to the
+// workflow name when the forge did not report the file.
+func runWorkflowFile(run forge.WorkflowRun) string {
+	if run.Path != "" {
+		return run.Path
+	}
+	return run.Name
+}
+
+// orUnknown returns s, or "(unknown)" when s is empty.
+func orUnknown(s string) string {
+	if s == "" {
+		return "(unknown)"
+	}
+	return s
 }
 
 // inScenarioWindow reports whether run was created during the scenario.

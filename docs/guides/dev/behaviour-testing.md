@@ -500,6 +500,7 @@ everything else stays `scenario` — never retried, never masked.
 | Pool capacity exhausted — every org rate-limited, denied or failed | `install.CapacityError` (all causes), when it reaches the classifier on its own |
 | Collaborator invitation pending (access requested, not yet granted) | the `gh.ErrInvitationPending` sentinel |
 | Terminal setup-poll exhaustion — repo never visible after creation, or dispatch workflow never settles | `behaviourfail.Mark` in the install ensure path |
+| Post-install validation reads a file setup has just committed and GitHub still answers 404 after every retry (5 attempts, backing off 2, 4, 8 and 16 seconds) | `behaviourfail.Mark` in `getFileWithRetry` (`drivers/install/validate.go`) |
 | GCP WIF quota or rate limit during inference provisioning (provision and status wait) | `behaviourfail.Mark` on matched CLI stderr signatures |
 | e2e auth-token mint or download failure at bootstrap: a transport error, or a 429 or 5xx response | `behaviourfail.Mark` at the e2etest token source |
 
@@ -522,7 +523,13 @@ defect, not an environment condition), lease races (`errLeaseLost`,
 and errors whose message merely mentions a rate limit without a structural
 match. Unexplained workflow-run failures stay scenario deliberately: a
 dispatch workflow failing without its artifact may be exactly the product
-regression a scenario exists to catch. The per-failure report below makes
+regression a scenario exists to catch. Other post-install validation
+failures (a wrong runtime in the config, for example) also stay scenario.
+So does a `WaitForWorkflow` timeout because no run appeared
+(`workflow <file> (<event>) was not dispatched`, which wraps
+`ci.ErrWorkflowNotDispatched`): whether the run arrives late or never is
+not yet established, and the failure summary's dispatch diagnostics
+collect the evidence (#9469). The per-failure report below makes
 their frequency and shape measurable, so a follow-up can decide with data
 whether to classify them.
 
@@ -710,7 +717,15 @@ logs of the repository's recent workflow runs that no step already saved,
 which covers a wait that timed out or a step that failed before it resolved a
 run. It always writes `debug-scenario-<name>-<suffix>/failure-summary.txt` with
 the scenario error and each run's outcome. A run whose logs cannot be fetched
-gets a `workflow-logs-unavailable.txt` stating why. The summary states when the
+gets a `workflow-logs-unavailable.txt` stating why. When the scenario error
+wraps `ci.ErrWorkflowNotDispatched` (no workflow run appeared), the hook first
+waits a 2-minute grace period and then adds a `Dispatch diagnostics` section:
+the time of the listing, every workflow run in the repository with its event,
+`created_at` and workflow file, whether a `fullsend.yaml` run was created
+during the grace period, and the scenario's issue with its `created_at` and
+state. The After hook returns only a deallocation error, never the scenario's
+own error, so godog reports a step failure as a step failure; the
+`after scenario hook failed:` prefix appears only when teardown itself failed. The summary states when the
 run listing may be truncated or the per-scenario fetch cap was reached. A
 scenario that passes but whose repo deallocation fails also gets a failure
 summary. Everything is redacted and written `0600`, like the in-scenario logs;

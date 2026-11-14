@@ -3579,6 +3579,69 @@ func TestWaitForWorkflow_Success(t *testing.T) {
 	assert.Equal(t, 10, run.ID)
 }
 
+// flakyRunsClient fails every failEvery-th ListWorkflowRuns call with
+// err and returns no runs otherwise.
+type flakyRunsClient struct {
+	*forge.FakeClient
+	mu        sync.Mutex
+	calls     int
+	failEvery int
+	err       error
+}
+
+func (c *flakyRunsClient) ListWorkflowRuns(_ context.Context, _, _, _ string) ([]forge.WorkflowRun, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.failEvery > 0 && c.calls%c.failEvery == 0 {
+		return nil, c.err
+	}
+	return nil, nil
+}
+
+func TestWaitForWorkflow_NotDispatchedWrapsSentinel(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	d := &Driver{Client: forge.NewFakeClient(), afterFunc: instantAfter, nowFunc: steppingClock(start, time.Minute)}
+	_, err := d.WaitForWorkflow(context.Background(), "org", "repo", "fullsend.yaml", start, "issues")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ci.ErrWorkflowNotDispatched)
+	wrapped := fmt.Errorf("waiting for issue-open workflow: %w", err)
+	assert.ErrorIs(t, wrapped, ci.ErrWorkflowNotDispatched, "callers detect the timeout through their own wraps")
+	// Every poll succeeded, so the message is the bare timeout text.
+	assert.Equal(t, "workflow fullsend.yaml (issues) was not dispatched", err.Error())
+}
+
+func TestWaitForWorkflow_NotDispatchedNoEvent(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	d := &Driver{Client: forge.NewFakeClient(), afterFunc: instantAfter, nowFunc: steppingClock(start, time.Minute)}
+	_, err := d.WaitForWorkflow(context.Background(), "org", "repo", "fullsend.yaml", start, "")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ci.ErrWorkflowNotDispatched)
+	assert.Equal(t, "workflow fullsend.yaml was not dispatched", err.Error())
+}
+
+func TestWaitForWorkflow_NotDispatchedReportsPollErrors(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := &flakyRunsClient{FakeClient: forge.NewFakeClient(), failEvery: 2, err: errRateLimited}
+	d := &Driver{Client: client, afterFunc: instantAfter, nowFunc: steppingClock(start, time.Minute)}
+	_, err := d.WaitForWorkflow(context.Background(), "org", "repo", "fullsend.yaml", start, "issues")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ci.ErrWorkflowNotDispatched)
+
+	client.mu.Lock()
+	calls := client.calls
+	client.mu.Unlock()
+	require.GreaterOrEqual(t, calls, 2, "the wait must poll more than once")
+	assert.Contains(t, err.Error(), "workflow fullsend.yaml (issues) was not dispatched (failed on ")
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed on %d of %d polls during the wait; last: %v", calls/2, calls, errRateLimited))
+}
+
 func TestFindCompletedWorkflowRun_PollsWithTimerAfter(t *testing.T) {
 	t.Parallel()
 

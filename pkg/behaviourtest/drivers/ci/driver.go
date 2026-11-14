@@ -2,10 +2,20 @@ package ci
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
+
+// ErrWorkflowNotDispatched is wrapped by a WaitForWorkflow error when no
+// matching workflow run appeared within the dispatch window. Callers
+// detect it with errors.Is through any wraps they add. Its text completes
+// the driver's "workflow <file> (<event>)" prefix, so the timeout message
+// still reads "workflow <file> (<event>) was not dispatched". The timeout
+// stays scenario-classified: whether the run arrives late or never is
+// not yet established (#9469).
+var ErrWorkflowNotDispatched = errors.New("was not dispatched")
 
 // Driver abstracts CI workflow operations for behaviour tests.
 //

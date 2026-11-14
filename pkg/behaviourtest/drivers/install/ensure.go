@@ -408,9 +408,9 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string, stillO
 	expectedRuntime := e.setupOpts.Runtime
 	var validateErr error
 	if e.setupOpts.Vendor {
-		validateErr = ValidatePerRepoPostInstallWithRuntime(ctx, e.client, org, repoName, expectedRuntime)
+		validateErr = ValidatePerRepoPostInstallWithRuntime(ctx, e.client, org, repoName, expectedRuntime, e.logf)
 	} else {
-		validateErr = ValidatePerRepoPostInstallNonVendoredWithRuntime(ctx, e.client, org, repoName, expectedRuntime)
+		validateErr = ValidatePerRepoPostInstallNonVendoredWithRuntime(ctx, e.client, org, repoName, expectedRuntime, e.logf)
 	}
 	if validateErr != nil {
 		return fmt.Errorf("post-install validation for %s: %w", target, validateErr)

@@ -121,9 +121,10 @@ func nextBackoff(current, max time.Duration) time.Duration {
 func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error) {
 	workflowFile = filepath.Base(workflowFile)
 	var triageRun *forge.WorkflowRun
-	deadline := time.Now().Add(dispatchTimeout)
+	var listErrs pollErrors
+	deadline := d.now().Add(dispatchTimeout)
 	interval := dispatchPollInit
-	for time.Now().Before(deadline) {
+	for d.now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -131,6 +132,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		}
 		interval = nextBackoff(interval, dispatchPollMax)
 		runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, workflowFile)
+		listErrs.record(ctx, err)
 		if err != nil {
 			continue
 		}
@@ -143,10 +145,12 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		}
 	}
 	if triageRun == nil {
+		// The poll-error tail tells a blind wait (every listing failed)
+		// apart from one that listed successfully and found no run.
 		if event != "" {
-			return nil, fmt.Errorf("workflow %s (%s) was not dispatched", workflowFile, event)
+			return nil, fmt.Errorf("workflow %s (%s) %w%s", workflowFile, event, ci.ErrWorkflowNotDispatched, listErrs.describe(nil, "polls"))
 		}
-		return nil, fmt.Errorf("workflow %s was not dispatched", workflowFile)
+		return nil, fmt.Errorf("workflow %s %w%s", workflowFile, ci.ErrWorkflowNotDispatched, listErrs.describe(nil, "polls"))
 	}
 
 	deadline = time.Now().Add(dispatchWait)
