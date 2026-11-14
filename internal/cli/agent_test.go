@@ -2767,6 +2767,34 @@ func TestParseAgentSourceURL_ConfiguredGitHubHost(t *testing.T) {
 
 func TestParseAgentSourceURL_ConfiguredGitHubHostFromEnv(t *testing.T) {
 	t.Setenv(forge.GitHubServerURLEnv, "https://ghe.example.com")
-	prefix := allowlistPrefixForURL("https://ghe.example.com/my-org/agents/raw/" + testCommitSHA + "/harness/triage.yaml")
-	assert.Equal(t, "https://ghe.example.com/my-org/agents/", prefix)
+	// The prefix is scoped to the repo's raw/ path, the shape of the
+	// configured-host default prefixes, not the whole repository.
+	prefix := allowlistPrefixForURL("https://GHE.example.com/my-org/agents/raw/" + testCommitSHA + "/harness/triage.yaml")
+	assert.Equal(t, "https://ghe.example.com/my-org/agents/raw/", prefix)
+
+	// raw.githubusercontent.com sources keep the repo-wide prefix.
+	prefix = allowlistPrefixForURL("https://raw.githubusercontent.com/my-org/agents/" + testCommitSHA + "/harness/triage.yaml")
+	assert.Equal(t, "https://raw.githubusercontent.com/my-org/agents/", prefix)
+}
+
+// TestAgentAddWritesPrefix_ConfiguredHostDefaultRepo pins that `agent add`
+// of a default repository's raw URL on the configured GitHub host writes
+// nothing: its prefix equals the configured-host default prefix, so no
+// broader entry lands in config.yaml. A non-default repo is still written.
+func TestAgentAddWritesPrefix_ConfiguredHostDefaultRepo(t *testing.T) {
+	t.Setenv(forge.GitHubServerURLEnv, "https://ghe.example.com")
+
+	dir := t.TempDir()
+	overlay := "allowed_remote_resources:\n  - https://overlay.example.com/\nagents: []\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, config.OverlayConfigFile), []byte(overlay), 0o644))
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+
+	defaultRepoPrefix := allowlistPrefixForURL("https://ghe.example.com/fullsend-ai/agents/raw/" + testCommitSHA + "/harness/triage.yaml")
+	require.Equal(t, "https://ghe.example.com/fullsend-ai/agents/raw/", defaultRepoPrefix)
+	assert.Contains(t, config.DefaultAllowedRemoteResources(), defaultRepoPrefix)
+	assert.False(t, agentAddWritesPrefix(cfg, defaultRepoPrefix))
+
+	otherPrefix := allowlistPrefixForURL("https://ghe.example.com/my-org/agents/raw/" + testCommitSHA + "/harness/triage.yaml")
+	assert.True(t, agentAddWritesPrefix(cfg, otherPrefix))
 }
