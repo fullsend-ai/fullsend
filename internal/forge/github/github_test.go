@@ -8124,17 +8124,59 @@ func TestGetFileContentAtRef_JSONWithCommonKeysIsNotAnEnvelope(t *testing.T) {
 	assert.Equal(t, body, string(data))
 }
 
-func TestGetFileContentAtRef_NonBase64EncodingKeyFails(t *testing.T) {
-	// A JSON body that carries the envelope's encoding key but not base64
-	// content fails explicitly rather than silently returning empty bytes.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"encoding":"utf-8"}`))
-	}))
-	defer srv.Close()
+func TestGetFileContentAtRef_JSONNonFileOrRawFile(t *testing.T) {
+	// With the raw media type, api.github.com answers a directory with a
+	// JSON array of entries, and a symlink or submodule with an object of
+	// that type and no content. Those must error, as they did before the
+	// raw media type, not come back as the file's bytes. A raw JSON file
+	// that carries an encoding key but no content key is the file itself.
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name:    "directory listing",
+			body:    `[{"type":"file","name":"a.md","path":"skills/a.md","sha":"abc"}]`,
+			wantErr: "is a directory",
+		},
+		{
+			name:    "symlink object",
+			body:    `{"type":"symlink","target":"../other","size":8,"name":"link","path":"skills/link","sha":"abc"}`,
+			wantErr: "is a symlink",
+		},
+		{
+			name:    "submodule object",
+			body:    `{"type":"submodule","submodule_git_url":"https://github.com/o/r.git","size":0,"name":"sub","path":"sub","sha":"abc"}`,
+			wantErr: "is a submodule",
+		},
+		{
+			name: "raw JSON file with an encoding key",
+			body: `{"encoding":"utf-8","labels":["bug"]}`,
+		},
+		{
+			name: "raw JSON array-like text that is not JSON",
+			body: `[not json`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
 
-	client := newTestClient(t, srv)
-	_, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "config.json", "deadbeef")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), `encoding "utf-8"`)
+			client := newTestClient(t, srv)
+			data, err := client.GetFileContentAtRef(context.Background(), "acme", "widgets", "skills/x", "deadbeef")
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Nil(t, data)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.body, string(data))
+		})
+	}
 }
