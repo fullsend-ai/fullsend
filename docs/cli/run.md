@@ -470,15 +470,24 @@ without an OIDC endpoint) is an error. Details:
 
 On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a GitHub App token. It selects a registered GitLab role credential via `gitlabroles.SelectAgent` and exports `GITLAB_TOKEN` from that CI/CD variable. Poller/Analyst/Coder (or a registered custom role) is required unconditionally. A missing role secret fails closed; there is no shared-token fallback and no fallback to a directly-set `GITLAB_TOKEN`. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request.
 
-The GitLab URL is the first set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL`. The GitLab credential profile is bound only to the GitLab host and port: every imported provider profile (an OpenShell file that names a credential and the hosts it may be sent to) that issues `GITLAB_TOKEN` is limited to the host and port of that URL. In scaffolded GitLab CI agent jobs, the job script sets `FULLSEND_GITLAB_URL` to the job's pinned instance URL (from `CI_API_V4_URL`) before `fullsend run`, so a `FULLSEND_GITLAB_URL` you set is not used and the two URL stops below do not occur.
+The GitLab URL is the first one set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL`. A *provider profile* is an OpenShell file that names a credential and the hosts it may be sent to. The GitLab credential profile is bound only to the GitLab host and port: every imported provider profile that issues `GITLAB_TOKEN` is limited to the host and port of that URL. In scaffolded GitLab CI agent jobs, the job script sets `FULLSEND_GITLAB_URL` from `CI_API_V4_URL` before `fullsend run`, so a value you set there is not used.
 
-The run stops before setup in these cases:
+**Upgrading.** These GitLab setups need a change:
 
-- **Invalid GitLab URL** (every GitLab run): the URL has no host, or is not an https URL; a non-https URL is accepted only for localhost, 127.0.0.1 or ::1. Fix (local runs and CI jobs you wrote yourself): set `FULLSEND_GITLAB_URL` to the instance's https URL.
-- **No GitLab URL** (only when an imported provider profile issues `GITLAB_TOKEN`): none of the three is set. Fix (local runs and CI jobs you wrote yourself): set `FULLSEND_GITLAB_URL` to the instance's https URL.
-- **Profile cannot be limited** (any imported provider profile): it uses YAML merge keys (`<<`), alias keys, duplicate keys or several documents. Fix: write the keys out explicitly.
+| Who is affected | What you see | What to do |
+|-----------------|--------------|------------|
+| Local `--forge gitlab` runs that set none of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` or `CI_SERVER_URL` | The run stops: `cannot determine the GitLab forge host: ...` | `export FULLSEND_GITLAB_URL=https://gitlab.example.com`, or `https://gitlab.com` on gitlab.com |
+| Runs whose GitLab URL is `http://` for a host other than `localhost`, `127.0.0.1` or `::1` | The run stops: `GitLab forge URL from <variable> must use https ...` | Use the https URL, for example `export FULLSEND_GITLAB_URL=https://gitlab.example.com` |
+| Custom provider profiles with YAML merge keys (`<<`), alias keys, duplicate keys or more than one document | The run stops: `binding GitLab forge host to provider profiles: ...` | Write each key out once, with one document per file. |
+| Agents that call GitLab under a host name other than the URL's | No stop. Calls to the other host no longer get `GITLAB_TOKEN`. The run log lists the hosts removed: `GitLab credential profile "<id>" narrowed to gitlab.example.com:443; removed: ...` | Call GitLab at the URL's host and port. |
 
-See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
+The run stops before setup when:
+
+- the GitLab URL has no host, or is not https (other schemes only for `localhost`, `127.0.0.1` or `::1`);
+- no GitLab URL is set and an imported provider profile issues `GITLAB_TOKEN`;
+- an imported provider profile uses YAML merge keys, alias keys, duplicate keys or more than one document.
+
+For the exact errors and fixes, see [Self-Hosted GitLab Instances](../guides/getting-started/configuring-gitlab.md#self-hosted-gitlab-instances). For the credential contract, see [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
 
 ## GitHub Packages credentials
 

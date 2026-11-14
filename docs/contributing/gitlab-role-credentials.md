@@ -1854,28 +1854,33 @@ step on a repository installed before the role-only rollout.
 
 ### Bind the GitLab credential profile to the GitLab host only
 
-OpenShell resolves a provider's `GITLAB_TOKEN` placeholder at every
-endpoint of the provider profile (an OpenShell file that names a credential and the hosts it may be sent to)
-that issues it. `fullsend run --forge
-gitlab` therefore limits each imported profile that issues
-`GITLAB_TOKEN` to the one GitLab host and port it resolves from the first
-set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL`
-(`gl.ResolveBaseURL`, shared with the GitLab clients).
+A *provider profile* is an OpenShell file that names a credential and
+the hosts it may be sent to. OpenShell resolves a provider's
+`GITLAB_TOKEN` placeholder at every endpoint of the provider profile
+that issues it. `fullsend run --forge gitlab` therefore limits each
+imported profile that issues `GITLAB_TOKEN` to the one GitLab host and
+port it resolves from the first one set of `FULLSEND_GITLAB_URL`,
+`GITLAB_API_URL` and `CI_SERVER_URL` (`gl.ResolveBaseURL`, shared with
+the GitLab clients).
 
-The run stops before setup in these cases:
+The run stops before setup when:
 
-- **Invalid GitLab URL** (every GitLab run): the first set of
-  `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL` has no
-  host, or is not an https URL; a non-https URL is accepted only for
-  localhost, 127.0.0.1 or ::1. Fix: set `FULLSEND_GITLAB_URL` to the
-  instance's https URL.
-- **No GitLab URL** (only when an imported provider profile issues
-  `GITLAB_TOKEN`): none of the three is set. Fix: set
-  `FULLSEND_GITLAB_URL` to the instance's https URL.
-- **Profile cannot be limited** (any imported provider profile): it uses
-  YAML merge keys (`<<`), alias keys, duplicate keys or several documents.
-  Fix: write the keys out explicitly.
+- the GitLab URL has no host, or is not https (other schemes only for
+  localhost, 127.0.0.1 or ::1);
+- no GitLab URL is set and an imported profile issues `GITLAB_TOKEN`;
+- any imported profile, GitLab or not, uses YAML merge keys (`<<`),
+  alias keys, duplicate keys or more than one document. OpenShell
+  applies merge and alias keys when it reads a profile, so a credential
+  or endpoint added through them could be hidden from the check.
 
+The fix for both URL stops is to set the URL, for example:
+
+```bash
+export FULLSEND_GITLAB_URL=https://gitlab.example.com
+```
+
+The operator-facing error table is in
+[Self-Hosted GitLab Instances](../guides/getting-started/configuring-gitlab.md#self-hosted-gitlab-instances).
 See `bindGitLabCredentialToForgeHost` in `internal/cli/gitlab_profile.go`.
 
 - [ ] The GitLab credential profile is bound only to the GitLab host and

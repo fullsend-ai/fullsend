@@ -121,37 +121,24 @@ For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 (`repos install` and `repos status`) require `gitlab.url` whenever GitLab
 repos are present, including gitlab.com; there is no manifest default. Set
 it with `fullsend repos set gitlab.url <url>` before declaring the first
-GitLab repository. These variables do not override manifest validation.
+GitLab repository.
 
-Call paths without a manifest URL, such as `fullsend run` in CI, read the
-GitLab URL from the environment: the first one set of
-`FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL` wins. In
-scaffolded GitLab CI agent jobs, the job script sets `FULLSEND_GITLAB_URL`
-to the job's pinned instance URL (from `CI_API_V4_URL`), so a
-`FULLSEND_GITLAB_URL` you set is not used and the two URL stops below do
-not occur. Each
-provider profile (an OpenShell file that names a credential and the hosts it may be sent to) that issues
-`GITLAB_TOKEN` is limited to that GitLab host and port. `fullsend run`
-stops before setup in these cases:
+`fullsend run` does not read the manifest. It reads the GitLab URL from
+the first one set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and
+`CI_SERVER_URL`. These variables never override `gitlab.url` in
+manifest validation. `fullsend run` limits `GITLAB_TOKEN` in the
+sandbox to that URL's host and port. It stops before setup if the URL
+is invalid. With the stock GitLab agents, it also stops if no URL is
+set. For a local run, set it:
 
-- **Invalid GitLab URL** (every GitLab run): the value has no host, or
-  is not an https URL; a non-https URL is accepted only for localhost,
-  127.0.0.1 or ::1. The run names the variable. Fix (local runs and CI
-  jobs you wrote yourself): set `FULLSEND_GITLAB_URL` to the instance's
-  https URL.
-- **No GitLab URL** (only when an imported provider profile issues
-  `GITLAB_TOKEN`): none of the three is set. Fix (local runs and CI jobs
-  you wrote yourself): set `FULLSEND_GITLAB_URL` to the instance's https
-  URL.
-- **Profile cannot be limited** (any imported provider profile): it uses
-  YAML merge keys (`<<`), alias keys, duplicate keys or several documents.
-  Fix: write the keys out explicitly.
+```bash
+export FULLSEND_GITLAB_URL=https://gitlab.example.com
+```
 
-See [Self-Hosted GitLab Instances](configuring-gitlab.md#self-hosted-gitlab-instances).
+For each stop and its fix, see [Self-Hosted GitLab Instances](configuring-gitlab.md#self-hosted-gitlab-instances).
 
-Self-hosted
-instances that use a private CA need runner `tls-ca-file` plus separate
-sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
+Self-hosted instances that use a private CA need runner `tls-ca-file`
+plus separate sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
 
 Per-repo fields inherit from the platform-level default when omitted.
 To explicitly stop a field from inheriting, set it to the literal value

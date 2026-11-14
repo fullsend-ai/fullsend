@@ -2257,39 +2257,44 @@ fullsend repos set 'gitlab.repos["<group/project>"]' '{}'
 fullsend repos install <group/project> --vertex-project "<gcp-project>"
 ```
 
-Inside CI jobs, `fullsend run` finds your GitLab instance URL as
-follows. A *provider profile* below is an OpenShell file that names a
-credential and the hosts it may be sent to.
+`fullsend run` does not read `repos.yaml`. It reads the instance URL
+from the environment. A *provider profile* is an OpenShell file that
+names a credential and the hosts it may be sent to.
 
 - **Reading order:** the first one set of `FULLSEND_GITLAB_URL`,
   `GITLAB_API_URL` and `CI_SERVER_URL` wins. Later ones are not read.
-  With none set and no provider profile that issues `GITLAB_TOKEN`,
-  GitLab API calls go to `gitlab.com`.
+- **No gitlab.com default:** the stock GitLab agents import provider
+  profiles that issue `GITLAB_TOKEN` (`fullsend-gitlab-ro`, `-rw` and
+  `-code`). With none of the three variables set, their runs stop
+  before setup. Outside GitLab CI, set the URL yourself, also on
+  gitlab.com (`https://gitlab.com`):
+
+  ```bash
+  export FULLSEND_GITLAB_URL=https://gitlab.example.com
+  ```
+
 - **Scaffolded CI jobs:** the agent job script sets `FULLSEND_GITLAB_URL`
   to the job's pinned instance URL (from `CI_API_V4_URL`) before
-  `fullsend run`. A `FULLSEND_GITLAB_URL` you set is not used there, and
-  the two URL stops below do not occur.
+  `fullsend run`. A `FULLSEND_GITLAB_URL` you set is not used there.
 - **One host per profile:** each provider profile that issues
-  `GITLAB_TOKEN` (the stock `fullsend-gitlab-ro`, `-rw` and `-code`) is
-  limited to your GitLab host and port. One profile can no longer span two
-  GitLab hosts.
+  `GITLAB_TOKEN` is limited to your GitLab host and port. One profile
+  can no longer span two GitLab hosts.
 
-The run stops before setup in these cases:
+If `fullsend run` stops before setup, find the start of the error
+below:
 
-- **Invalid GitLab URL** (every GitLab run): the value has no host, or
-  is not an https URL; a non-https URL is accepted only for localhost,
-  127.0.0.1 or ::1. The run names the variable. Fix (local runs and CI
-  jobs you wrote yourself): set `FULLSEND_GITLAB_URL` to the instance's
-  https URL.
-- **No GitLab URL** (only when an imported provider profile issues
-  `GITLAB_TOKEN`): none of the three is set. Fix (local runs and CI jobs
-  you wrote yourself): set `FULLSEND_GITLAB_URL` to the instance's https
-  URL.
-- **Profile cannot be limited** (any imported provider profile): it uses
-  YAML merge keys (`<<`), alias keys, duplicate keys or several documents.
-  Fix: write the keys out explicitly.
+| Error starts with | Cause | Fix |
+|-------------------|-------|-----|
+| `GitLab forge URL from <variable> is not a URL with a host` | The first URL variable set, named in the error, is not a full URL, for example `gitlab.example.com` without `https://`. | `export FULLSEND_GITLAB_URL=https://gitlab.example.com` |
+| `GitLab forge URL from <variable> must use https (http is accepted only for a loopback host)` | The URL is not https, and its host is not `localhost`, `127.0.0.1` or `::1`. | `export FULLSEND_GITLAB_URL=https://gitlab.example.com` |
+| `cannot determine the GitLab forge host: none of FULLSEND_GITLAB_URL, GITLAB_API_URL or CI_SERVER_URL is set` | An imported profile issues `GITLAB_TOKEN`, and no URL is set. The error ends with the profile id. | `export FULLSEND_GITLAB_URL=https://gitlab.example.com` |
+| `binding GitLab forge host to provider profiles: binding GitLab forge host in profile "<id>":` | Profile `<id>` uses a YAML merge key (`<<`), an alias as a key, a duplicate key, or more than one document. This applies to every imported profile, GitLab or not. | Write each key out once, with one document per file. |
 
-This lookup does **not** apply to `repos.yaml` manifest validation.
+The three URL errors do not occur in scaffolded GitLab CI agent jobs,
+because the job script sets a validated https URL.
+
+The environment lookup above does **not** apply to `repos.yaml`
+manifest validation.
 `gitlab.url` must be set in the
 manifest whenever GitLab repos are present; there is no default, and
 `repos install`/`repos status` fail with `gitlab.url is required when
