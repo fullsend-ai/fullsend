@@ -1624,12 +1624,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// The profile above is imported but attached only when a provider
 		// names its type, and it carries no credential. The stock GitLab
 		// providers attach their own profiles, whose GITLAB_TOKEN
-		// placeholder OpenShell resolves only at those profiles' endpoints,
-		// so the configured forge host must be one of them (#8683).
-		forgeHost, forgePort := gl.ResolveForgeHostPort()
-		boundProfiles, cleanupBound, err := bindGitLabForgeHost(result.Profiles, forgeHost, forgePort)
+		// placeholder OpenShell resolves at every endpoint of those
+		// profiles, so their endpoints are replaced with the configured
+		// forge host alone: the GitLab credential is bound only to the
+		// deployment's own GitLab instance (#8683).
+		// With no forge host, a profile that issues GITLAB_TOKEN stops the
+		// run rather than keep every endpoint it declares. A run loads no
+		// repos.yaml manifest, so, like the GitLab clients it builds (for
+		// example newForgeTrackerClient), it has no configured URL and reads
+		// the environment only.
+		forgeHost, forgePort, err := resolveGitLabCredentialForgeHost("")
 		if err != nil {
-			printer.StepFail("Failed to add the GitLab forge host to provider profiles")
+			printer.StepFail("Failed to resolve the GitLab forge host")
+			return err
+		}
+		boundProfiles, cleanupBound, err := bindGitLabCredentialToForgeHost(result.Profiles, forgeHost, forgePort, printer)
+		if errors.Is(err, errNoGitLabForgeHost) {
+			printer.StepFail("No GitLab forge host for an imported GitLab credential profile")
+			return err
+		}
+		if err != nil {
+			printer.StepFail("Failed to bind GitLab provider profiles to the forge host")
 			return fmt.Errorf("binding GitLab forge host to provider profiles: %w", err)
 		}
 		defer cleanupBound()

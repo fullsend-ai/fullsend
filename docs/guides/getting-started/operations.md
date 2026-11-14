@@ -334,9 +334,21 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 | `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` | Preferred over `CI_COMMIT_SHA` in merge request pipelines. |
 | `CI_PIPELINE_ID` | Used as the run ID for status comment markers. |
 | `CI_MERGE_REQUEST_IID` | When set, status comments target the merge request notes API instead of issues. |
-| `FULLSEND_GITLAB_URL` | Override for `GITLAB_API_URL` and `CI_SERVER_URL` (e.g., for self-hosted instances). |
+| `FULLSEND_GITLAB_URL` | Instance URL for local runs and custom CI jobs, for example `https://gitlab.example.com`. Wins over `GITLAB_API_URL` and `CI_SERVER_URL`. Scaffolded GitLab CI agent jobs set it for you from `CI_API_V4_URL`, so a value you set there is ignored. |
 | `FULLSEND_NOTE_TARGET` | Set to `merge_requests` to force MR note targeting when `CI_MERGE_REQUEST_IID` is unavailable (e.g., child pipelines, scheduled jobs). |
 | `CI_SERVER_TLS_CA_FILE` | GitLab Runner predefined path to a job-local PEM CA bundle when `tls-ca-file` is set. Consumed by poll/agent jobs and the GitLab Go client. See [Private CA](#private-ca-self-hosted-gitlab). |
+
+A *provider profile* is an OpenShell file that names a credential and
+the hosts it may be sent to. `fullsend run` limits every provider
+profile that issues `GITLAB_TOKEN` to the host and port of the GitLab
+URL. It stops before setup if that URL is invalid, or missing while
+such a profile is imported. For a local run, set the URL:
+
+```bash
+export FULLSEND_GITLAB_URL=https://gitlab.example.com
+```
+
+For each stop and its fix, see [Self-Hosted GitLab Instances](configuring-gitlab.md#self-hosted-gitlab-instances).
 
 For a generated scaffold, `repos install` provisions the protected
 role-credential secrets (`FULLSEND_GITLAB_POLLER_TOKEN`,
