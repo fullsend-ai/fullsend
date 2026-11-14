@@ -139,6 +139,15 @@ def approval_block(raw: object, returncode: int) -> str:
 # the directory lands (and so plant a policy file into it).
 TIRITH_TMP_ROOT = "/tmp"
 
+# The repository's .tirith/policy.yaml, staged by the runner next to this script
+# before the agent started (security.TirithRepoPolicyFile). It is read from the
+# ref the run trusts, never from the agent-writable checkout, and the runtime's
+# launch guard checks it against the runner-held digest with the scripts.
+# Absent when the repository has none.
+REPO_POLICY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "tirith-repo-policy.yaml"
+)
+
 
 def _tirith_env(config_home: str) -> dict[str, str]:
     """Build the environment for the tirith subprocess from scratch.
@@ -196,6 +205,38 @@ def _tirith_env(config_home: str) -> dict[str, str]:
     return env
 
 
+def _stage_repo_policy(config_home: str) -> None:
+    """Copy the staged repository policy into the per-call directory, if any.
+
+    The per-call directory already holds the .git marker that ends tirith's
+    walk for a repository policy, so a .tirith/policy.yaml beside it is the
+    one tirith reads as repo scope. tirith merges a repo-scope policy into its
+    baseline as tightening only (it can add block and approval rules and
+    network denies, not allowlists or a bypass), so the file is passed through
+    unchanged: fullsend does no merging.
+
+    No staged file leaves the directory as it was. A staged file that cannot
+    be read raises OSError, which the caller treats as a setup failure, so the
+    owner's policy is never silently skipped. O_NOFOLLOW refuses a symlink in
+    its place.
+    """
+    try:
+        fd = os.open(REPO_POLICY_PATH, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, "rb") as src:
+        policy = src.read()
+    policy_dir = os.path.join(config_home, ".tirith")
+    os.mkdir(policy_dir, mode=0o700)
+    dest = os.open(
+        os.path.join(policy_dir, "policy.yaml"),
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    with os.fdopen(dest, "wb") as out:
+        out.write(policy)
+
+
 def _setup_failed(exc: OSError) -> tuple[bool, str]:
     """Verdict when the hook cannot set up tirith's isolated environment."""
     reason = f"tirith setup failed ({type(exc).__name__})"
@@ -220,6 +261,7 @@ def check_command(command: str) -> tuple[bool, str]:
         # such rather than falling through to the binary-not-found handler.
         try:
             env = _tirith_env(config_home)
+            _stage_repo_policy(config_home)
         except OSError as exc:
             return _setup_failed(exc)
         # Resolve the binary absolutely against the trusted PATH rather than

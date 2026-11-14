@@ -45,6 +45,7 @@ Guides for developers working in repositories where fullsend is active.
 - [Issue commands](user/issues-commands.md) — Read, create, comment on, and transition issues across GitHub, GitLab, and Jira (`fullsend issues get`, `create`, `post-comment`, `transition`)
 - [OWNERS file authorization](user/owners-file-authorization.md) — Authorize agent dispatch via Prow-style OWNERS files
 - [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine using released binaries (macOS + Linux)
+- [Tightening command scanning](user/tightening-command-scanning.md) — Commit a `.tirith/policy.yaml` to make sandbox command scanning stricter for your repository
 
 ### Customizing agents
 

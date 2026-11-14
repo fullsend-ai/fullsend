@@ -175,6 +175,37 @@ func TestHookFiles_AllDefaults(t *testing.T) {
 	}
 }
 
+func TestHookFiles_TirithRepoPolicy(t *testing.T) {
+	policy := []byte("approval_rules:\n  - rule_ids: [package_lookup_incomplete]\n")
+	base := SandboxHookConfigFromHarness(&harness.Harness{Agent: "test.md"})
+
+	t.Run("staged next to the scripts when set", func(t *testing.T) {
+		cfg := base.WithTirithRepoPolicy(policy)
+		assert.Equal(t, policy, cfg.TirithRepoPolicy())
+		files := HookFiles(cfg)
+		assert.Len(t, files, 10)
+		assert.Equal(t, policy, files[TirithRepoPolicyFile])
+		// The policy is data, not a hook: nothing schedules it.
+		for _, g := range HookPlan(cfg) {
+			assert.NotContains(t, g.Scripts, TirithRepoPolicyFile)
+		}
+	})
+
+	t.Run("absent when none was set", func(t *testing.T) {
+		assert.Nil(t, base.TirithRepoPolicy())
+		assert.NotContains(t, HookFiles(base), TirithRepoPolicyFile)
+		assert.NotContains(t, HookFiles(base.WithTirithRepoPolicy([]byte{})), TirithRepoPolicyFile)
+	})
+
+	t.Run("absent when tirith is disabled", func(t *testing.T) {
+		off := false
+		cfg := SandboxHookConfigFromHarness(&harness.Harness{Security: &harness.SecurityConfig{
+			SandboxHooks: &harness.SandboxHooks{Tirith: &harness.TirithConfig{Enabled: &off}},
+		}}).WithTirithRepoPolicy(policy)
+		assert.NotContains(t, HookFiles(cfg), TirithRepoPolicyFile)
+	})
+}
+
 func TestHookFiles_SSRFDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{

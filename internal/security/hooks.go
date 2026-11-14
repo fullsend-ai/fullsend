@@ -235,12 +235,24 @@ func GenerateHooksConfigPinned(hooks SandboxHookConfig, python, path string) ([]
 	return json.MarshalIndent(cfg, "", "  ")
 }
 
-// HookFiles returns a map of filename -> content for all enabled hook scripts.
+// TirithRepoPolicyFile is the name the repository's .tirith/policy.yaml is
+// staged under in the hooks directory, next to tirith_check.py. The hook
+// copies it into each call's private directory as a repository policy, which
+// tirith merges into its baseline as tightening only.
+const TirithRepoPolicyFile = "tirith-repo-policy.yaml"
+
+// HookFiles returns a map of filename -> content for all enabled hook scripts,
+// plus the staged repository tirith policy (TirithRepoPolicyFile) when Tirith
+// is enabled and one was set. Every runtime installs and digests exactly this
+// set, so the policy is checked like the scripts beside it.
 func HookFiles(hooks SandboxHookConfig) map[string][]byte {
 	files := make(map[string][]byte)
 
 	if tirithEnabled(hooks) {
 		files["tirith_check.py"] = TirithCheckHook
+		if policy := hooks.TirithRepoPolicy(); len(policy) > 0 {
+			files[TirithRepoPolicyFile] = policy
+		}
 	}
 	if ssrfPreToolEnabled(hooks) {
 		files["ssrf_pretool.py"] = SSRFPreToolHook

@@ -331,6 +331,10 @@ export default defineConfig({
               link: "/guides/user/owners-file-authorization",
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
+            {
+              text: "Tightening Command Scanning",
+              link: "/guides/user/tightening-command-scanning",
+            },
             { text: "Jira Integration", link: "/guides/user/jira-integration" },
             {
               text: "Run Artifacts and Private Data",

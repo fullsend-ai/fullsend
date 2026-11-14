@@ -2451,6 +2451,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
+	// Stage the repository's .tirith/policy.yaml from the ref the run trusts
+	// so the tirith hook can tighten scanning with it (#9486). Read from git
+	// objects on the runner before the agent starts; the hooks bootstrap
+	// installs and digests it with the hook scripts.
+	repoForPolicy := ""
+	if targetRepo != "" {
+		repoForPolicy = hostRepositoryDir
+	}
+	policyNote, err := attachTirithRepoPolicy(ctx, boot, repoForPolicy, os.Getenv)
+	if err != nil {
+		printer.StepFail("Failed to bootstrap sandbox")
+		return fmt.Errorf("staging repository tirith policy: %w", err)
+	}
+	if policyNote != "" {
+		printer.StepInfo(policyNote)
+	}
 	if rt.Name() == "claude" {
 		warnRepoSkillCollisions(hostRepositoryDir, boot.SkillDirs(), printer)
 	}
