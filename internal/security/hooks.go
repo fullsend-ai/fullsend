@@ -243,8 +243,13 @@ const TirithRepoPolicyFile = "tirith-repo-policy.yaml"
 
 // HookFiles returns a map of filename -> content for all enabled hook scripts,
 // plus the staged repository tirith policy (TirithRepoPolicyFile) when Tirith
-// is enabled and one was set. Every runtime installs and digests exactly this
-// set, so the policy is checked like the scripts beside it.
+// is enabled and one was set. Every runtime that installs the sandbox hooks
+// uploads exactly this set, but they do not all check it: Claude Code and
+// Codex record a runner-held digest per filename and verify it before every
+// launch, so for them the policy is checked like the scripts beside it, while
+// pi digests its hook adapter and fullsend-manifest.json rather than these
+// shared files. Under pi a staged policy can therefore be emptied or removed
+// between iterations without refusing the next launch.
 func HookFiles(hooks SandboxHookConfig) map[string][]byte {
 	files := make(map[string][]byte)
 
