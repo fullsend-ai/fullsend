@@ -376,6 +376,11 @@ tracker:
   that agents append `/rest/api/3/...` to. For those runs `fullsend run` also
   sets `JIRA_BASE_URL` to `base_url`. See
   [Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
+  When `fullsend run` mints the sandbox's Jira token from OAuth 2.0 client
+  credentials, `api_url` must be unset or `https://api.atlassian.com`, and
+  `base_url` must be set: the run limits the `jira` provider to that site's
+  gateway path and fails otherwise. See
+  [Read-only Jira access from the sandbox](../guides/user/jira-integration.md#read-only-jira-access-from-the-sandbox-jira-provider).
 - **`tracker.jira.project`** — The key of the single Jira project for this
   repository. It is not a fallback project, and it has no default.
 - **`tracker.jira.run_label`** — Optional label added to the source Jira issue

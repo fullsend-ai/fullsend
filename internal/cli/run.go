@@ -1731,6 +1731,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		printer.StepDone(fmt.Sprintf("Providers v2 enabled (%.1fs)", time.Since(provV2Start).Seconds()))
 
+		// The per-site Jira profile ids are reserved in every mode, so no
+		// listed profile can stand on the gateway under one (#9492).
+		if err := rejectJiraSiteProfileIDs(result.Profiles); err != nil {
+			printer.StepFail("Reserved per-site Jira profile id listed")
+			return err
+		}
+
 		// Import URL-resolved profiles to the gateway. ImportProfileVerified
 		// drops the os.TempDir() content cache and confirms the gateway lists
 		// the profile: a hash match against a freshly-recreated (empty)
@@ -1816,11 +1823,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					return err
 				}
 				if mint {
-					if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
+					// The run-scoped provider reaches only this run's site
+					// through the gateway: its profile is the embedded one
+					// rendered with that site's path (#9492).
+					cloudID, err := resolveJiraMintCloudID(ctx, jiraEnv[envJiraAPIURL], issueTracking, rFlags.offline, jiraMintGatewayDiscoverFn)
+					if err != nil {
+						printer.StepFail("Cannot limit the minted Jira token to the run's own site")
 						return err
 					}
-					handledEmbeddedProfiles[pd.Type] = struct{}{}
-					handle, err := ensureJiraProvider(ctx, pd, sandboxName, jiraCreds, printer)
+					profileID, err := ensureJiraSiteProfile(ctx, cloudID, printer)
+					if err != nil {
+						return err
+					}
+					handle, err := ensureJiraProvider(ctx, pd, profileID, sandboxName, jiraCreds, printer)
 					if err != nil {
 						return err
 					}

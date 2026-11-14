@@ -421,7 +421,7 @@ read-only Jira access as `JIRA_TOKEN`. The runner environment picks the mode:
 | Runner environment | What `fullsend run` does |
 |---|---|
 | `FULLSEND_JIRA_TOKEN` set | Creates the provider from that static token, like any provider. No minting or refresh. |
-| `FULLSEND_JIRA_TOKEN` unset or empty, `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` both set | Mints a service account's OAuth 2.0 access token, gives it to a provider named after the run, refreshes it before it expires, keeps the current placeholder in `/sandbox/fullsend-jira/token`, and deletes the provider when the run ends. The client secret never reaches a provider value or the sandbox. |
+| `FULLSEND_JIRA_TOKEN` unset or empty, `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` both set | Mints a service account's OAuth 2.0 access token, gives it to a provider named after the run, refreshes it before it expires, keeps the current placeholder in `/sandbox/fullsend-jira/token`, and deletes the provider when the run ends. The provider reaches only the gateway path of the site in `tracker.jira.base_url`; the run fails before minting when that site's cloud ID cannot be resolved (no `base_url`, `--offline`, a failed lookup, or a custom `tracker.jira.api_url`). The client secret never reaches a provider value or the sandbox. |
 | Only one of the two client variables set | Fails the run. |
 
 See

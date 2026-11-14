@@ -24,11 +24,14 @@ endpoints:
   # where JIRA_API_URL points by default. It accepts a bot account's classic
   # token, a service account's scoped token, and a minted OAuth 2.0 access
   # token; the site URL accepts only the first.
-  # Accepted risk: no path limit. The gateway serves every Jira site at
-  # /ex/jira/{cloudId}/..., so a credential valid on several sites reaches
-  # all of them; read-only enforcement is what holds writes back. Per-site
-  # scoping (path: /ex/jira/<cloudId>/**, rendered at run time) is a
-  # follow-up.
+  # The gateway serves every Jira site at /ex/jira/{cloudId}/... When
+  # `fullsend run` mints the token, it imports a per-site copy of this
+  # profile (id fullsend-jira-<hash of cloudId>) whose endpoint here gets
+  # path: /ex/jira/<cloudId>/**, so the run reaches only its own site.
+  # Leave this endpoint without a path: the runner adds it.
+  # Accepted risk with a static token: no path limit, so a credential valid
+  # on several sites reaches all of them; read-only enforcement is what
+  # holds writes back.
   - host: "api.atlassian.com"
     port: 443
     protocol: rest

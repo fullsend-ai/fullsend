@@ -1,21 +1,32 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/randutil"
+	"github.com/fullsend-ai/fullsend/internal/resolve"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -48,6 +59,21 @@ const jiraCredentialKey = "JIRA_TOKEN"
 // token works on.
 const jiraAPIHost = "api.atlassian.com"
 
+// jiraSiteProfileIDPrefix starts the id of every per-site profile rendered
+// for a minted token (renderJiraSiteProfile) (#9492).
+const jiraSiteProfileIDPrefix = jiraProviderType + "-"
+
+var (
+	// jiraCloudIDPattern is a Jira Cloud ID as rendered into a per-site
+	// profile: a lowercase UUID, so it can carry no path, YAML or glob
+	// character.
+	jiraCloudIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	// jiraSiteProfileIDPattern matches every id renderJiraSiteProfile can
+	// produce, in any case. Only these ids are reserved: the agents repo's
+	// own fullsend-jira-ro profile shares the prefix and stays listable.
+	jiraSiteProfileIDPattern = regexp.MustCompile(`(?i)^` + regexp.QuoteMeta(jiraSiteProfileIDPrefix) + `[0-9a-f]{` + strconv.Itoa(gatewayProfileIDHashLen) + `}$`)
+)
+
 // Test seams.
 var (
 	// jiraMintFn performs one client_credentials grant. Override in tests
@@ -72,6 +98,13 @@ var (
 	// (baselinePlaceholder). Override in tests to return a placeholder
 	// without a sandbox.
 	jiraBaselineFn = baselinePlaceholder
+	// jiraMintGatewayDiscoverFn looks up the gateway URL for a minting run
+	// that is not Jira-sourced. Override in tests to return a fixed URL or
+	// error without Atlassian.
+	jiraMintGatewayDiscoverFn jiraGatewayDiscoverer = discoverJiraGatewayURL
+	// importJiraProfileFn imports the rendered per-site profile. Override
+	// in tests to record the profile without openshell.
+	importJiraProfileFn = importProfileBytes
 )
 
 // errJiraUnredactable and errJiraUnsafeToken are refresh failures no
@@ -147,6 +180,191 @@ func rejectMultipleMintedJiraProviders(defs []harness.ProviderDef, getenv func(s
 	return fmt.Errorf("providers %q all declare %s and %q mints its token, but they would share %s in the sandbox and the one Jira token file (%s); list only the %s provider", all, jiraCredentialKey, minted[0], jiraCredentialKey, sandbox.SandboxJiraTokenFile, minted[0])
 }
 
+// The gateway serves every Jira Cloud site at /ex/jira/{cloudId}/..., so a
+// credential valid on several sites reaches all of them through one host.
+// When the runner mints the token, the run-scoped provider is governed by a
+// per-site rendering of the embedded fullsend-jira profile whose gateway
+// endpoint carries path /ex/jira/<cloudId>/** (#9492). Static-token mode
+// keeps the embedded profile as it is.
+
+// rejectJiraSiteProfileIDs fails when the run lists a profile under an id
+// renderJiraSiteProfile can produce, so a repository or URL-resolved
+// profile can never stand on the gateway in place of a rendered one. It
+// applies in every mode.
+func rejectJiraSiteProfileIDs(resolved []resolve.ResolvedProfile) error {
+	for _, rp := range resolved {
+		if jiraSiteProfileIDPattern.MatchString(rp.ID) {
+			return fmt.Errorf("provider profile %q is reserved for the per-site Jira profile fullsend renders at run time; remove it from the harness/openshell profiles", rp.ID)
+		}
+	}
+	return nil
+}
+
+// jiraSiteProfileID returns the per-site profile id for a validated cloud
+// ID: fullsend-jira plus a short hash of it, so runs for different sites on
+// one shared OpenShell gateway never import over each other's profile.
+func jiraSiteProfileID(cloudID string) string {
+	sum := sha256.Sum256([]byte(cloudID))
+	return jiraSiteProfileIDPrefix + hex.EncodeToString(sum[:])[:gatewayProfileIDHashLen]
+}
+
+// validateJiraCloudID refuses a cloud ID that is not a lowercase UUID. The
+// value comes from a remote response and is rendered into YAML and a path
+// rule, so nothing else may pass. The error never carries the value.
+func validateJiraCloudID(cloudID string) error {
+	if !jiraCloudIDPattern.MatchString(cloudID) {
+		return errors.New("the Jira cloud ID is not a lowercase UUID; refusing to render it into the Jira profile")
+	}
+	return nil
+}
+
+// renderJiraSiteProfile renders the embedded fullsend-jira profile for the
+// site cloudID and returns its bytes and per-site id.
+func renderJiraSiteProfile(cloudID string) ([]byte, string, error) {
+	tmpl, err := scaffold.FullsendRepoFile("profiles/" + jiraProviderType + ".yaml")
+	if err != nil {
+		return nil, "", fmt.Errorf("provider profile %q is not shipped by this fullsend build: %w", jiraProviderType, err)
+	}
+	return renderJiraSiteProfileFrom(tmpl, cloudID)
+}
+
+// renderJiraSiteProfileFrom renders tmpl, a fullsend-jira profile, for the
+// site cloudID: the one api.atlassian.com endpoint gets path
+// /ex/jira/<cloudId>/** and the id becomes jiraSiteProfileID(cloudID). It
+// fails unless tmpl declares id fullsend-jira and exactly one endpoint for
+// that host, with no path of its own, and no wildcard endpoint that would
+// also admit it.
+func renderJiraSiteProfileFrom(tmpl []byte, cloudID string) ([]byte, string, error) {
+	if err := validateJiraCloudID(cloudID); err != nil {
+		return nil, "", err
+	}
+	invalid := func(why string) error {
+		return fmt.Errorf("embedded provider profile %q cannot be limited to one Jira site: %s", jiraProviderType, why)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(tmpl, &doc); err != nil {
+		return nil, "", invalid(err.Error())
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) != 1 || doc.Content[0].Kind != yaml.MappingNode {
+		return nil, "", invalid("not a mapping")
+	}
+	root := doc.Content[0]
+	idNode := yamlMappingValue(root, "id")
+	if idNode == nil || idNode.Kind != yaml.ScalarNode || idNode.Value != jiraProviderType {
+		return nil, "", invalid("id " + jiraProviderType + " expected")
+	}
+	endpoints := yamlMappingValue(root, "endpoints")
+	if endpoints == nil || endpoints.Kind != yaml.SequenceNode {
+		return nil, "", invalid("no endpoints list")
+	}
+	var gateway *yaml.Node
+	matches := 0
+	for _, ep := range endpoints.Content {
+		if ep.Kind != yaml.MappingNode {
+			return nil, "", invalid("an endpoint is not a mapping")
+		}
+		hostNode := yamlMappingValue(ep, "host")
+		if hostNode == nil {
+			continue
+		}
+		host := strings.ToLower(strings.TrimSpace(hostNode.Value))
+		if host == jiraAPIHost {
+			gateway = ep
+			matches++
+			continue
+		}
+		if strings.HasPrefix(host, "*") && strings.HasSuffix(jiraAPIHost, strings.TrimLeft(host, "*")) {
+			return nil, "", invalid("endpoint " + host + " also admits " + jiraAPIHost)
+		}
+	}
+	if matches != 1 {
+		return nil, "", invalid(fmt.Sprintf("exactly one %s endpoint expected, found %d", jiraAPIHost, matches))
+	}
+	if yamlMappingValue(gateway, "path") != nil {
+		return nil, "", invalid("the " + jiraAPIHost + " endpoint already sets a path")
+	}
+	id := jiraSiteProfileID(cloudID)
+	idNode.Value = id
+	idNode.Style = 0
+	gateway.Content = append(gateway.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "path"},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "/ex/jira/" + cloudID + "/**", Style: yaml.DoubleQuotedStyle},
+	)
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return nil, "", invalid(err.Error())
+	}
+	if err := enc.Close(); err != nil {
+		return nil, "", invalid(err.Error())
+	}
+	return out.Bytes(), id, nil
+}
+
+// ensureJiraSiteProfile renders the per-site fullsend-jira profile for
+// cloudID and imports it (importProfileBytes). It returns the profile id
+// the run-scoped provider must use as its type.
+func ensureJiraSiteProfile(ctx context.Context, cloudID string, printer *ui.Printer) (string, error) {
+	data, id, err := renderJiraSiteProfile(cloudID)
+	if err != nil {
+		return "", err
+	}
+	if err := importJiraProfileFn(ctx, id, data, printer); err != nil {
+		return "", err
+	}
+	return id, nil
+}
+
+// resolveJiraMintCloudID returns the cloud ID of the site a minting run
+// belongs to, failing closed (ADR 0156) rather than leaving the gateway
+// unscoped. apiURL is the JIRA_API_URL resolveJiraRunEnv returned for a
+// Jira-sourced run ("" otherwise), which is reused; any other run looks
+// the gateway URL up from tracker.jira.base_url with discover. It is
+// called only when the run mints. Errors never include a raw URL.
+func resolveJiraMintCloudID(ctx context.Context, apiURL string, tracking *config.TrackingConfig, offline bool, discover jiraGatewayDiscoverer) (string, error) {
+	const what = "minting the Jira access token"
+	if tracking == nil || tracking.Jira == nil || tracking.Jira.BaseURL == "" {
+		return "", fmt.Errorf("%s: tracker.jira.base_url is not configured, so the Jira gateway cannot be limited to the run's own site", what)
+	}
+	// The profile host is fixed to api.atlassian.com.
+	if strings.TrimRight(tracking.Jira.EffectiveAPIURL(), "/") != jira.DefaultAPIURL {
+		return "", fmt.Errorf("%s: tracker.jira.api_url must be unset or %s, the gateway the fullsend-jira profile allows", what, jira.DefaultAPIURL)
+	}
+	if apiURL == "" {
+		conn := *tracking.Jira
+		conn.BaseURL = strings.TrimRight(conn.BaseURL, "/")
+		if err := conn.ValidateConnection(); err != nil {
+			return "", fmt.Errorf("%s: invalid Jira connection settings: %w", what, err)
+		}
+		if offline {
+			return "", fmt.Errorf("%s: limiting the Jira gateway to the run's own site needs a cloud-ID lookup, which --offline does not allow", what)
+		}
+		host := conn.BaseURL
+		if u, err := url.Parse(conn.BaseURL); err == nil {
+			host = u.Host
+		}
+		dctx, cancel := context.WithTimeout(ctx, jiraGatewayDiscoveryTimeout)
+		defer cancel()
+		var err error
+		apiURL, err = discover(dctx, jira.ScopedConfig{BaseURL: conn.BaseURL, APIURL: jira.DefaultAPIURL})
+		if err == nil && apiURL == "" {
+			err = errors.New("empty gateway URL")
+		}
+		if err != nil {
+			return "", fmt.Errorf("%s: could not resolve the Jira cloud ID for %s: %w", what, host, err)
+		}
+	}
+	cloudID, ok := strings.CutPrefix(apiURL, jira.DefaultAPIURL+"/ex/jira/")
+	if !ok {
+		return "", fmt.Errorf("%s: the resolved Jira gateway URL is not under %s/ex/jira/", what, jira.DefaultAPIURL)
+	}
+	if err := validateJiraCloudID(cloudID); err != nil {
+		return "", fmt.Errorf("%s: %w", what, err)
+	}
+	return cloudID, nil
+}
+
 // jiraSeedState is the placeholder the token file names, shared by every
 // copy of a handle and by the refresher across restarts.
 type jiraSeedState struct {
@@ -216,8 +434,9 @@ func registerJiraToken(value string, maskActions bool) error {
 }
 
 // ensureJiraProvider mints the first access token and creates the
-// run-scoped provider instance carrying it, with the token's expiry.
-func ensureJiraProvider(ctx context.Context, pd harness.ProviderDef, sandboxName string, creds jira.Credentials, printer *ui.Printer) (jiraProviderHandle, error) {
+// run-scoped provider instance carrying it, with the token's expiry, as a
+// provider of type profileID (the per-site profile, ensureJiraSiteProfile).
+func ensureJiraProvider(ctx context.Context, pd harness.ProviderDef, profileID, sandboxName string, creds jira.Credentials, printer *ui.Printer) (jiraProviderHandle, error) {
 	maskActions := os.Getenv("GITHUB_ACTIONS") == "true"
 	// The client secret is redacted too, should any error ever quote it.
 	security.RegisterRuntimeSecret(creds.ClientSecret)
@@ -258,7 +477,7 @@ func ensureJiraProvider(ctx context.Context, pd harness.ProviderDef, sandboxName
 	// OpenShell requires a declared credential's value on create and takes
 	// an expiry only on update, so the value is stored first and its expiry
 	// in the very next call.
-	if err := ensureJiraProviderLiteralFn(ctx, name, jiraProviderType, values); err != nil {
+	if err := ensureJiraProviderLiteralFn(ctx, name, profileID, values); err != nil {
 		printer.StepFail("Failed to create run-scoped provider " + name)
 		return jiraProviderHandle{}, fmt.Errorf("ensuring provider %q: %w", name, err)
 	}
