@@ -24,6 +24,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
 // DefaultMintURL is the hosted public mint URL used when --mint-url is not
@@ -190,15 +191,15 @@ func validateSkipMintCheck(mintURL string) error {
 
 func validateMintURLHTTPS(raw string) error {
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+	if err == nil && parsed.User != nil {
+		return fmt.Errorf("--mint-url must not contain embedded credentials (userinfo)")
+	}
+	if !urlutil.IsMintURL(raw) {
 		scheme := ""
 		if parsed != nil {
 			scheme = parsed.Scheme
 		}
-		return fmt.Errorf("--mint-url must be a valid HTTPS URL (got scheme=%q)", scheme)
-	}
-	if parsed.User != nil {
-		return fmt.Errorf("--mint-url must not contain embedded credentials (userinfo)")
+		return fmt.Errorf("--mint-url must be a valid HTTPS URL, or http on localhost/127.0.0.1 (got scheme=%q)", scheme)
 	}
 	return nil
 }

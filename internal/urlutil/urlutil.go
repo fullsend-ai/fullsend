@@ -31,6 +31,27 @@ func IsURL(s string) bool {
 	return true
 }
 
+// IsMintURL reports whether raw is acceptable as a token mint URL: https
+// with a non-empty host, or plain http when the host is "localhost" or
+// "127.0.0.1". It mirrors the loopback rule internal/mintclient applies
+// when it sends a request, so config validation accepts the same local
+// mint that the client would call. URLs with userinfo are rejected.
+func IsMintURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.User != nil || u.Hostname() == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		host := u.Hostname()
+		return host == "localhost" || host == "127.0.0.1"
+	default:
+		return false
+	}
+}
+
 // ParseIntegrityHash extracts the SHA256 hash from a URL fragment (#sha256=...).
 // Returns the URL without the fragment, the hash value, and whether a valid hash was found.
 // The hash is normalized to lowercase; both "sha256=ABC..." and "sha256=abc..." are accepted.
