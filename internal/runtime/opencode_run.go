@@ -452,6 +452,14 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	}
 	defer cancel()
 
+	// stallKill terminates the agent inside the sandbox, then cancels the
+	// sandbox command's own context (derived inside ExecStreamReader) to
+	// release the local exec client — see the stallKill doc. The watchdog
+	// never touches ctx, which the caller owns.
+	stall := startStallWatchdog(params.StallTimeout, printer,
+		stallKill(sandbox.Exec, params.SandboxName, os.Stderr, cancel))
+	defer stall.stop()
+
 	var reader io.Reader = stdout
 	if params.OutputPath != "" {
 		f, ferr := os.Create(params.OutputPath)
@@ -478,6 +486,7 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	var lastResult *ResultEvent
 	innerHandler := handler
 	handler = func(evt AgentEvent) {
+		stall.note()
 		switch e := evt.(type) {
 		case InitEvent:
 			// Drop any future parser InitEvent; one was already emitted above.
@@ -499,7 +508,12 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 
 	var streamParseErr error
 	var malformedLines int
-	if _, ml, parseErr := parseOpenCodeStream(reader, handler); parseErr != nil {
+	// stall.note as the line hook: every well-formed stream line — including
+	// lines that map to no AgentEvent — resets the silence clock. A tool_use
+	// line is written when the call completes or fails (the only states in
+	// the recorded fixtures), so a single long tool call is silent, as on
+	// codex.
+	if _, ml, parseErr := parseOpenCodeStreamLines(reader, handler, stall.note); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		streamParseErr = parseErr
 		cancel()
@@ -507,11 +521,18 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	} else {
 		malformedLines = ml
 	}
+	// The stream is over, so no further event can arrive: disarm before Wait
+	// so a slow reap is never mistaken for a stall.
+	stall.stop()
 
 	waitErr := execCmd.Wait()
 	exitCode := -1
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
+	}
+	// A stall is the cause of whatever Wait reports, so it is checked first.
+	if stallErr := stall.stalledErr(); stallErr != nil {
+		return exitCode, stallErr
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return exitCode, fmt.Errorf("openshell exec failed: %w", waitErr)

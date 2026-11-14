@@ -353,19 +353,19 @@ func streamingRuntimeFiles(t *testing.T) []string {
 			files = append(files, name)
 		}
 	}
-	require.ElementsMatch(t, []string{"claude.go", "pi_run.go", "codex_run.go"}, files)
+	require.ElementsMatch(t, []string{"claude.go", "pi_run.go", "codex_run.go", "opencode_run.go"}, files)
 	return files
 }
 
 // TestStreamingRuntimesArmTheWatchdog is a source-shape guard, not a
-// behavioural test: it pins the three call-site substrings rather than
+// behavioural test: it pins the call-site substrings rather than
 // exercising them, so renaming a helper or splitting one of these calls
 // across lines fails it, and the assertion message names what to restore.
 //
-// It earns that cost by covering all three runtimes at once. What the
+// It earns that cost by covering every streaming runtime at once. What the
 // watchdog does end to end is proved behaviourally through the real Run
 // path by TestClaudeRuntime_Run_StallSweepsTheSandboxOnce; this test is
-// what says pi and codex still share that path — the omission that let
+// what says pi, codex and opencode still share that path — the omission that let
 // codex ship unguarded while claude and pi were covered.
 func TestStreamingRuntimesArmTheWatchdog(t *testing.T) {
 	for _, file := range streamingRuntimeFiles(t) {
@@ -540,4 +540,23 @@ func TestStallDetectionLatency_IsThePollInterval(t *testing.T) {
 	assert.Equal(t, stallMaxPoll, StallDetectionLatency(15*time.Minute), "long timeouts are capped")
 	assert.Equal(t, 15*time.Second, StallDetectionLatency(5*time.Minute), "below the cap it is timeout/20")
 	assert.Equal(t, stallMinPoll, StallDetectionLatency(time.Nanosecond), "a tiny timeout still ticks")
+}
+
+func TestParseOpenCodeStream_LinesResetTheSilenceClock(t *testing.T) {
+	w := startStallWatchdogTo(io.Discard, time.Hour, ui.New(io.Discard), func() {})
+	require.NotNil(t, w)
+	defer w.stop()
+
+	lines := 0
+	time.Sleep(2 * time.Millisecond)
+	// A line of an unknown type maps to no AgentEvent, and an oversized line
+	// is skipped: both are still the runtime writing, so both count.
+	input := `{"type":"step_start","sessionID":"s"}` + "\n" +
+		`{"type":"big","pad":"` + strings.Repeat("a", streamBufSize+1) + `"}` + "\n"
+	_, _, err := parseOpenCodeStreamLines(strings.NewReader(input), func(AgentEvent) {},
+		func() { lines++; w.note() })
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, lines, "every well-formed and every fully consumed oversized line counts as liveness")
+	assert.Positive(t, w.lastEvent.Load(), "a stream line must reset the watchdog's silence clock")
 }
