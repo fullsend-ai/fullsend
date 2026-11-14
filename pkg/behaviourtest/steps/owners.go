@@ -246,8 +246,9 @@ func waitForDispatchRun(w *world.World) (*forge.WorkflowRun, error) {
 	if err == nil {
 		return run, nil
 	}
-	// Only a timeout with no run is retried; any other error comes from a
-	// run that did dispatch and is the real failure.
+	// Only a timeout with no run (any driver's, marked by the shared
+	// sentinel) is retried; any other error, such as one from a run that
+	// did dispatch or a cancelled context, is the real failure.
 	if !errors.Is(err, ci.ErrWorkflowNotDispatched) {
 		return nil, fmt.Errorf("waiting for dispatch workflow (issue_comment): %w", err)
 	}

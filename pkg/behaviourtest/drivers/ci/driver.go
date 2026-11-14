@@ -9,21 +9,23 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// ErrWorkflowNotDispatched is wrapped by the GitHub Actions driver's
-// WaitForWorkflow error (as a *NotDispatchedError) when no matching
-// workflow run appeared within the dispatch window. The GitLab CI driver
-// does not return it, so the dispatch diagnostics that key on it apply
-// to GitHub Actions only. Callers detect it with errors.Is through any
-// wraps they add. Its text completes the driver's "workflow <file>
-// (<event>)" prefix, so the timeout message still reads "workflow <file>
-// (<event>) was not dispatched". The timeout stays scenario-classified:
-// whether the run arrives late or never is not yet established (#9469).
+// ErrWorkflowNotDispatched marks any driver's WaitForWorkflow timeout
+// when no matching workflow run or pipeline appeared within the dispatch
+// window. A driver wraps it with %w; steps detect it with errors.Is
+// through any wraps they add and retry such a timeout once. Its text
+// completes the driver's own prefix, so the message still reads, for
+// example, "workflow <file> (<event>) was not dispatched" (GitHub
+// Actions) or "pipeline (<event>) was not dispatched" (GitLab CI). The
+// timeout stays scenario-classified: whether the run arrives late or
+// never is not yet established (#9469). The details the dispatch
+// diagnostics use are carried only by *NotDispatchedError.
 var ErrWorkflowNotDispatched = errors.New("was not dispatched")
 
 // NotDispatchedError is the GitHub Actions driver's WaitForWorkflow
 // timeout when no matching run appeared. It records the workflow file and
-// event that were waited for, so failure diagnostics can look for exactly
-// that run, and unwraps to ErrWorkflowNotDispatched.
+// event that were waited for, so the failure diagnostics, which run only
+// for this type, can look for exactly that run. It unwraps to
+// ErrWorkflowNotDispatched.
 type NotDispatchedError struct {
 	// WorkflowFile is the base name of the workflow file, e.g.
 	// "fullsend.yaml".

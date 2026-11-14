@@ -173,9 +173,10 @@ func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	if err == nil {
 		return nil
 	}
-	// Only a timeout with no run is retried. A run that concluded with a
-	// failure, or did not finish in time, did dispatch: its error is the
-	// real one.
+	// Only a timeout with no run (any driver's, marked by the shared
+	// sentinel) is retried. A run that concluded with a failure, or did
+	// not finish in time, did dispatch: its error is the real one, as is a
+	// cancelled context.
 	if !errors.Is(err, ci.ErrWorkflowNotDispatched) {
 		return fmt.Errorf("waiting for issue-open workflow: %w", err)
 	}

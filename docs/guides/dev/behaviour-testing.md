@@ -528,11 +528,14 @@ failures (a wrong runtime in the config, for example) also stay scenario.
 The per-failure report below makes their frequency and shape measurable,
 so a follow-up can decide with data whether to classify them.
 
-A GitHub Actions `WaitForWorkflow` timeout because no run appeared
-(`workflow <file> (<event>) was not dispatched`, which wraps
-`ci.ErrWorkflowNotDispatched`) stays `scenario` and is not retried.
-Whether the run arrives late or never is not yet established. To see what
-happened in a failing job:
+A `WaitForWorkflow` timeout because no run appeared wraps
+`ci.ErrWorkflowNotDispatched` on every driver: `workflow <file> (<event>)
+was not dispatched` on GitHub Actions, `pipeline (<event>) was not
+dispatched` on GitLab CI. The issue-open and dispatch-run waits retry it
+once, allowing 30 s of clock skew. If the retry also times out, the failure
+stays `scenario` and gets no infrastructure retry. Whether the run arrives
+late or never is not yet established. To see what happened in a failing
+GitHub Actions job:
 
 1. Download the `behaviour-artifacts-*` artifact of the failing job.
 2. Open `debug-scenario-<name>-<suffix>/failure-summary.txt`.
@@ -678,8 +681,10 @@ attempt 1 plus the failed scenarios finish within 60 minutes.
 
 #### Dispatch diagnostics
 
-This applies to GitHub Actions only: only its driver returns
-`ci.ErrWorkflowNotDispatched`. When a scenario fails with that error (no
+This applies to GitHub Actions only. Every driver's not-dispatched timeout
+wraps `ci.ErrWorkflowNotDispatched`, but only the GitHub Actions driver
+returns a `*ci.NotDispatchedError`, which records the workflow file and event
+these diagnostics look for. When a scenario fails with that error (no
 workflow run appeared), the After hook's `CollectFailureLogs` (see
 [Repo allocation via the shared slot driver](#repo-allocation-via-the-shared-slot-driver))
 first waits a 2-minute grace period, outside `failureLogBudget`. It then adds
@@ -700,19 +705,26 @@ deletes the repository. The section shows, in this order:
   issue is not the triggering event, so no gap is shown;
 - the verdict: whether a matching run was created after the scenario's wait
   for the run timed out (counted from the start of the grace wait, allowing
-  30 s of clock skew). `yes` suggests a late dispatch. `no` with no matching
-  run suggests the event produced no run, and `no` with only older matching
-  runs says they predate the wait, but only after a full grace wait. The
-  verdict says `inconclusive` instead when the wait was skipped, shortened or
-  cut short, or when no grace wait is configured. A `no` with no matching run
-  is also `inconclusive` when the run listing was truncated at its limit.
+  30 s of clock skew). `yes` suggests a late dispatch, even if the grace
+  wait was shortened. When no late run appeared, the verdict is `no`. After
+  a full grace wait, `no` with no matching run suggests the event produced
+  no run, and `no` with only older matching runs says they predate the
+  wait. When the wait was skipped, shortened, cut short or not configured,
+  the line reads `no (inconclusive: <reason>; ...)` instead. A `no` with no
+  matching run also reads `no (inconclusive: the listing was truncated;
+  ...)` when the run listing hit its limit.
 
-Total grace wait time is bounded at about 6 minutes per test process: the
-bound counts the wall-clock time covered by grace waits, so waits that
-overlap, such as a burst of parallel failures, count once. Each scenario
-waits 2 minutes, or what is left of the 6 minutes if that is less. A
-failure long after the first one still gets its full wait while time is
-left. A scenario whose context is already cancelled skips the wait and
+Whatever the verdict, the timeout stays a `scenario` failure; re-run the job
+as usual, and add the summary's verdict line to #9469 so the cause can be
+settled from data.
+
+Total grace wait time is bounded at about 6 minutes per test process. Time
+already covered by another running wait is free, so a wait that overlaps a
+running wait, such as one in a burst of parallel failures, can still get its
+full 2 minutes. Once the budget is spent, a new wait ends where its
+uncovered time would exceed the budget, or is skipped if none is left. A
+wait cut short gives back the time it did not use and no other wait
+covers. A scenario whose context is already cancelled skips the wait and
 uses none of the time.
 
 ### Repo allocation via the shared slot driver

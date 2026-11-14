@@ -1389,10 +1389,8 @@ func (f *fakeIssueSCM) GetIssue(_ context.Context, _, _ string, number int) (*fo
 // gives the test a fresh, unused grace budget.
 func shortenDispatchGrace(t *testing.T, d time.Duration) {
 	t.Helper()
-	orig, origBudget := dispatchDiagnosticsGrace, dispatchGraceBudget
+	ResetDispatchGraceForTest(t)
 	dispatchDiagnosticsGrace = d
-	dispatchGraceBudget = newGraceBudget(dispatchGraceBudgetTotal)
-	t.Cleanup(func() { dispatchDiagnosticsGrace, dispatchGraceBudget = orig, origBudget })
 }
 
 // fakeDispatchClock replaces the grace wait's clock for one test. The
@@ -1483,7 +1481,7 @@ func TestCollectFailureLogs_DispatchDiagnosticsReportLateRun(t *testing.T) {
 	assert.Contains(t, summary, "matching fullsend.yaml (issues) runs (gap measured on GitHub's clock):\n    - run 90: created_at 2026-11-14T00:11:08Z, +5m10s after the issue's created_at\n")
 	assert.NotContains(t, summary, "run 91: created_at", "a run for another event is not a matching run")
 	assert.Contains(t, summary, "matching fullsend.yaml (issues) run created after the wait ended: yes (run 90, created_at 2026-11-14T00:11:08Z; compared with the runner clock, allowing 30s of clock skew)")
-	assert.NotContains(t, summary, "grace wait:", "a full wait needs no window note")
+	assert.NotContains(t, summary, "grace wait:", "a full wait needs no budget note")
 }
 
 func TestCollectFailureLogs_DispatchDiagnosticsSkewAllowance(t *testing.T) {
@@ -1624,22 +1622,33 @@ func TestCollectFailureLogs_DispatchDiagnosticsInconclusiveVerdicts(t *testing.T
 			assert.NotContains(t, summary, "suggests the event produced no run")
 			if tc.grace <= 0 {
 				assert.Zero(t, *waits, "no grace wait is configured, so none runs")
-				assert.Empty(t, dispatchGraceBudget.intervals, "a zero grace does not use the budget")
+				assert.Empty(t, dispatchGraceBudget.reservations, "a zero grace does not use the budget")
 			}
 		})
 	}
 }
 
-func TestCollectFailureLogs_DispatchDiagnosticsWithoutWaitRecord(t *testing.T) {
-	shortenDispatchGrace(t, 0)
+// TestCollectFailureLogs_NoDispatchDiagnosticsForBareSentinel checks
+// that a not-dispatched timeout wrapping only the sentinel, as the GitLab
+// CI driver returns, gets no dispatch diagnostics and no grace wait: they
+// are for *ci.NotDispatchedError (GitHub Actions) only.
+func TestCollectFailureLogs_NoDispatchDiagnosticsForBareSentinel(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	waits := fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
 	artifactDir := t.TempDir()
 	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
-	w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}, ScenarioName: "bare sentinel", Logf: func(string, ...any) {}}
+	w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}, ScenarioName: "gitlab timeout", Logf: func(string, ...any) {}}
 
-	CollectFailureLogs(context.Background(), w, fmt.Errorf("workflow x.yaml %w", ci.ErrWorkflowNotDispatched))
+	err := fmt.Errorf("waiting for issue-open workflow: %w",
+		fmt.Errorf("pipeline (issues) %w", ci.ErrWorkflowNotDispatched))
+	require.ErrorIs(t, err, ci.ErrWorkflowNotDispatched)
+	CollectFailureLogs(context.Background(), w, err)
 
-	assert.Contains(t, readFailureSummary(t, artifactDir),
-		"matching run after the wait: unknown: the error does not record which workflow and event were waited for")
+	summary := readFailureSummary(t, artifactDir)
+	assert.Contains(t, summary, "Error: waiting for issue-open workflow: pipeline (issues) was not dispatched")
+	assert.NotContains(t, summary, "Dispatch diagnostics:")
+	assert.Zero(t, *waits, "no grace wait without the GitHub Actions details")
+	assert.Empty(t, dispatchGraceBudget.reservations)
 }
 
 func TestCollectFailureLogs_DispatchDiagnosticsLookupGaps(t *testing.T) {
@@ -1702,7 +1711,7 @@ func TestCollectFailureLogs_DispatchDiagnosticsGraceCutShort(t *testing.T) {
 	assert.Contains(t, summary, "after a 0s grace period", "the line reports the real elapsed wait, not the configured one")
 	assert.Contains(t, summary, "run created after the wait ended: no (inconclusive: the grace wait was cut short after 0s;")
 	assert.NotContains(t, summary, "suggests the event produced no run", "a cut-short wait proves nothing about the event")
-	assert.Empty(t, dispatchGraceBudget.intervals, "a cancelled context does not use up the budget")
+	assert.Empty(t, dispatchGraceBudget.reservations, "a cancelled context does not use up the budget")
 }
 
 // TestCollectFailureLogs_DispatchGraceBudgetUsedUp checks the
@@ -1762,7 +1771,7 @@ func TestGraceBudget_ConcurrentWaitsCountOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			// Starts spread over the first 20s, all inside the first wait.
-			got := g.grant(start.Add(time.Duration(i)*time.Second), 2*time.Minute)
+			got := grantFor(g, start.Add(time.Duration(i)*time.Second), 2*time.Minute)
 			mu.Lock()
 			grants = append(grants, got)
 			mu.Unlock()
@@ -1774,10 +1783,11 @@ func TestGraceBudget_ConcurrentWaitsCountOnce(t *testing.T) {
 		assert.Equal(t, 2*time.Minute, got, "an overlapping wait gets the full grace period")
 	}
 	g.mu.Lock()
-	require.Len(t, g.intervals, 1, "the burst is one covered interval")
-	assert.Equal(t, 2*time.Minute+19*time.Second, g.intervals[0].end.Sub(g.intervals[0].start))
+	covered := g.covered()
+	require.Len(t, covered, 1, "the burst is one covered interval")
+	assert.Equal(t, 2*time.Minute+19*time.Second, covered[0].end.Sub(covered[0].start))
 	g.mu.Unlock()
-	assert.Zero(t, g.grant(start, 0), "no wait wanted, none granted")
+	assert.Zero(t, grantFor(g, start, 0), "no wait wanted, none granted")
 }
 
 // TestGraceBudget_IsolatedLaterWaitStillWaits checks that a failure long
@@ -1789,16 +1799,16 @@ func TestGraceBudget_IsolatedLaterWaitStillWaits(t *testing.T) {
 	g := newGraceBudget(6 * time.Minute)
 	start := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
 
-	assert.Equal(t, 2*time.Minute, g.grant(start, 2*time.Minute))
-	assert.Equal(t, 2*time.Minute, g.grant(start.Add(30*time.Minute), 2*time.Minute), "an isolated wait well after the first still gets 2m")
+	assert.Equal(t, 2*time.Minute, grantFor(g, start, 2*time.Minute))
+	assert.Equal(t, 2*time.Minute, grantFor(g, start.Add(30*time.Minute), 2*time.Minute), "an isolated wait well after the first still gets 2m")
 	// Overlaps the second wait's last minute: that minute is free, the
 	// next minute is charged (5m covered).
-	assert.Equal(t, 2*time.Minute, g.grant(start.Add(31*time.Minute), 2*time.Minute))
-	assert.Equal(t, time.Minute, g.grant(start.Add(3*time.Hour), 2*time.Minute), "shortened to the budget left")
-	assert.Zero(t, g.grant(start.Add(4*time.Hour), 2*time.Minute), "skipped once the budget is used up")
+	assert.Equal(t, 2*time.Minute, grantFor(g, start.Add(31*time.Minute), 2*time.Minute))
+	assert.Equal(t, time.Minute, grantFor(g, start.Add(3*time.Hour), 2*time.Minute), "shortened to the budget left")
+	assert.Zero(t, grantFor(g, start.Add(4*time.Hour), 2*time.Minute), "skipped once the budget is used up")
 	// A wait inside an already covered interval costs nothing, so it
 	// still runs to the end of that interval.
-	assert.Equal(t, 30*time.Second, g.grant(start.Add(3*time.Hour+30*time.Second), 2*time.Minute))
+	assert.Equal(t, 30*time.Second, grantFor(g, start.Add(3*time.Hour+30*time.Second), 2*time.Minute))
 }
 
 // TestGraceBudget_GapBeforeLaterInterval checks the charge when a wait
@@ -1809,23 +1819,144 @@ func TestGraceBudget_GapBeforeLaterInterval(t *testing.T) {
 	g := newGraceBudget(3 * time.Minute)
 	start := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
 
-	assert.Equal(t, 2*time.Minute, g.grant(start.Add(time.Minute), 2*time.Minute))
+	assert.Equal(t, 2*time.Minute, grantFor(g, start.Add(time.Minute), 2*time.Minute))
 	// [0, 1m) is new (1m charged, budget used up), [1m, 3m) is covered.
-	assert.Equal(t, 3*time.Minute, g.grant(start, 5*time.Minute))
-	assert.Zero(t, g.grant(start.Add(10*time.Minute), time.Minute))
+	assert.Equal(t, 3*time.Minute, grantFor(g, start, 5*time.Minute))
+	assert.Zero(t, grantFor(g, start.Add(10*time.Minute), time.Minute))
+}
+
+// grantFor is grant without the reservation, for tests that only check
+// the granted duration.
+func grantFor(g *graceBudget, now time.Time, want time.Duration) time.Duration {
+	d, _ := g.grant(now, want)
+	return d
+}
+
+// TestGraceBudget_TrimRefundsUnusedTime checks that a wait cancelled
+// mid-way gives its unused time back, so a later isolated wait gets it.
+func TestGraceBudget_TrimRefundsUnusedTime(t *testing.T) {
+	t.Parallel()
+	g := newGraceBudget(3 * time.Minute)
+	start := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+
+	got, r := g.grant(start, 2*time.Minute)
+	require.Equal(t, 2*time.Minute, got)
+	// Cancelled after 30s: 1m30s of the reservation is given back.
+	g.trim(r, start.Add(30*time.Second))
+
+	assert.Equal(t, 2*time.Minute, grantFor(g, start.Add(time.Hour), 2*time.Minute),
+		"the refunded time lets an isolated later wait run in full")
+	assert.Equal(t, 30*time.Second, grantFor(g, start.Add(2*time.Hour), 2*time.Minute),
+		"only the 30s actually waited stays charged")
+	// A trim never extends a reservation, and nil is a no-op.
+	g.trim(r, start.Add(time.Hour))
+	assert.Equal(t, start.Add(30*time.Second), r.end)
+	g.trim(nil, start)
+}
+
+// TestGraceBudget_TrimKeepsOverlappingCoverage checks that cancelling a
+// wait that overlaps another still-running wait does not shorten that
+// wait's coverage: only time no other reservation covers is given back.
+func TestGraceBudget_TrimKeepsOverlappingCoverage(t *testing.T) {
+	t.Parallel()
+	g := newGraceBudget(3 * time.Minute)
+	start := time.Date(2026, 11, 14, 0, 0, 0, 0, time.UTC)
+
+	_, a := g.grant(start, 2*time.Minute)
+	// B overlaps A's last minute: that minute is free, 1m is charged.
+	gotB, _ := g.grant(start.Add(time.Minute), 2*time.Minute)
+	require.Equal(t, 2*time.Minute, gotB)
+	// A is cancelled at 30s; B is still running until 3m.
+	g.trim(a, start.Add(30*time.Second))
+
+	g.mu.Lock()
+	covered := g.covered()
+	g.mu.Unlock()
+	require.Len(t, covered, 2)
+	assert.Equal(t, graceInterval{start: start, end: start.Add(30 * time.Second)}, covered[0])
+	assert.Equal(t, graceInterval{start: start.Add(time.Minute), end: start.Add(3 * time.Minute)}, covered[1],
+		"B keeps its whole interval, including the minute it shared with A")
+	// 2m30s used of 3m: a wait inside B's interval is still free and
+	// runs to B's end, then 30s of new time.
+	assert.Equal(t, 90*time.Second, grantFor(g, start.Add(2*time.Minute), 2*time.Minute))
+}
+
+// TestCollectFailureLogs_DispatchGraceCancelMidWaitRefunds checks the
+// trim end to end: a wait cancelled after 30s is reported as cut short,
+// and the next isolated wait gets the time it did not use.
+func TestCollectFailureLogs_DispatchGraceCancelMidWaitRefunds(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	dispatchGraceBudget = newGraceBudget(3 * time.Minute)
+	fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
+	fakeAfter := dispatchAfter
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// The first wait: 30s pass, then the context is cancelled; the timer
+	// never fires.
+	dispatchAfter = func(time.Duration) <-chan time.Time {
+		<-fakeAfter(30 * time.Second)
+		cancel()
+		return make(chan time.Time)
+	}
+	run := func(ctx context.Context, name string) string {
+		artifactDir := t.TempDir()
+		t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+		w := &world.World{Org: "org", RepoName: "repo", CI: &fakeListerCI{}, ScenarioName: name, Logf: func(string, ...any) {}}
+		CollectFailureLogs(ctx, w, notDispatchedErr())
+		return readFailureSummary(t, artifactDir)
+	}
+
+	first := run(ctx, "cancelled")
+	assert.Contains(t, first, "after a 30s grace period")
+	assert.Contains(t, first, "no (inconclusive: the grace wait was cut short after 30s;")
+
+	// An hour later, so the second wait does not overlap the first one's
+	// reservation; it runs on the fake clock. Without the refund only 1m
+	// would be left after the first 2m reservation.
+	<-fakeAfter(time.Hour)
+	dispatchAfter = fakeAfter
+	second := run(context.Background(), "second")
+	assert.Contains(t, second, "after a 2m0s grace period")
+	assert.NotContains(t, second, "grace wait:", "the refunded time covers the full wait")
+}
+
+// TestCollectFailureLogs_DispatchDiagnosticsEarliestLateRun checks that
+// the verdict names the earliest late matching run, whatever the order of
+// the listing.
+func TestCollectFailureLogs_DispatchDiagnosticsEarliestLateRun(t *testing.T) {
+	shortenDispatchGrace(t, 2*time.Minute)
+	fakeDispatchClock(t, time.Date(2026, 11, 14, 0, 10, 58, 0, time.UTC), nil)
+	artifactDir := t.TempDir()
+	t.Setenv("BEHAVIOUR_ARTIFACT_DIR", artifactDir)
+	w := &world.World{
+		Org: "org", RepoName: "repo", ScenarioName: "two late runs", Logf: func(string, ...any) {},
+		CI: &fakeListerCI{runs: []forge.WorkflowRun{
+			// Newest first, as the forge lists them.
+			{ID: 92, Event: "issues", CreatedAt: "2026-11-14T00:12:00Z", Path: ".github/workflows/fullsend.yaml"},
+			{ID: 91, Event: "issues", CreatedAt: "2026-11-14T00:11:08Z", Path: ".github/workflows/fullsend.yaml"},
+		}},
+	}
+
+	CollectFailureLogs(context.Background(), w, notDispatchedErr())
+
+	assert.Contains(t, readFailureSummary(t, artifactDir), "run created after the wait ended: yes (run 91, created_at 2026-11-14T00:11:08Z;")
 }
 
 // TestResetDispatchGraceForTest checks that the exported helper gives a
-// test a fresh budget and restores the previous one afterwards.
+// test a fresh budget and restores the previous budget and grace
+// afterwards.
 func TestResetDispatchGraceForTest(t *testing.T) {
-	orig := dispatchGraceBudget
+	orig, origGrace := dispatchGraceBudget, dispatchDiagnosticsGrace
 	t.Run("reset", func(t *testing.T) {
 		ResetDispatchGraceForTest(t)
+		dispatchDiagnosticsGrace = time.Second
 		assert.NotSame(t, orig, dispatchGraceBudget)
 		assert.Equal(t, dispatchGraceBudgetTotal, dispatchGraceBudget.total)
-		assert.Empty(t, dispatchGraceBudget.intervals)
+		assert.Empty(t, dispatchGraceBudget.reservations)
 	})
 	assert.Same(t, orig, dispatchGraceBudget, "the previous budget is restored")
+	assert.Equal(t, origGrace, dispatchDiagnosticsGrace, "the previous grace is restored")
 }
 
 // TestCollectFailureLogs_DispatchDiagnosticsNoWorkflowFile checks that a

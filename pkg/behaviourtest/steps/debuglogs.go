@@ -54,24 +54,25 @@ const (
 )
 
 // dispatchDiagnosticsGrace is how long CollectFailureLogs waits, after a
-// scenario failed because a workflow run never appeared
-// (ci.ErrWorkflowNotDispatched), before listing the repository's runs. A
-// run that shows up during the grace period measures a late dispatch; no
-// run at all points to a lost event (#9469). Only the GitHub Actions
-// driver returns that error, so this applies to GitHub Actions only. It
-// runs outside failureLogBudget so it cannot starve the log collection
+// scenario failed because a workflow run never appeared, before listing
+// the repository's runs. A run that shows up during the grace period
+// measures a late dispatch; no run at all points to a lost event (#9469).
+// The diagnostics run only for a *ci.NotDispatchedError, which only the
+// GitHub Actions driver returns, so this applies to GitHub Actions only.
+// It runs outside failureLogBudget so it cannot starve the log collection
 // that follows, and is bounded per process by dispatchGraceBudget. A
 // variable so tests can shorten it.
 var dispatchDiagnosticsGrace = 2 * time.Minute
 
-// dispatchGraceBudgetTotal bounds the wall-clock time one test process
-// spends in grace waits: the length of the union of the intervals the
-// waits cover. Scenarios run in parallel, so overlapping waits cost the
-// same wall time and count once; a sum of waits would starve a mass
-// failure for no gain. A later isolated failure still gets its wait while
-// the union is below the bound. Once it is used up, later scenarios skip
-// the wait but still list the repository. The grace waits therefore add
-// at most about this much wall time to one test process.
+// dispatchGraceBudgetTotal bounds the total grace wait time per test
+// process at about this much wall-clock time: the length of the union of
+// the intervals the waits cover. Time already covered by another running
+// wait is free, so a wait that overlaps a running wait can still get its
+// full dispatchDiagnosticsGrace; a sum of waits would starve a burst of
+// parallel failures for no gain. Once the budget is spent, a new wait ends
+// where its uncovered time would exceed the budget, or is skipped if none
+// is left; a skipped scenario still lists the repository. A wait cut short
+// gives back the time it did not use and no other wait covers.
 const dispatchGraceBudgetTotal = 6 * time.Minute
 
 // dispatchGraceBudget is the budget shared by every scenario in the
@@ -87,15 +88,16 @@ var (
 
 // ResetDispatchGraceForTest gives the calling test a fresh grace budget,
 // so grace waits from other tests in the process do not shorten or skip
-// its wait, and restores the previous budget when the test ends. It is
-// for tests in other packages (such as the suite's After hook tests);
-// tests that call it must not run in parallel with other tests that use
-// the grace wait.
+// its wait, and restores the previous budget and dispatchDiagnosticsGrace
+// when the test ends. It is the single reset entry point, also for tests
+// in other packages (such as the suite's After hook tests); tests that
+// call it must not run in parallel with other tests that use the grace
+// wait.
 func ResetDispatchGraceForTest(t testing.TB) {
 	t.Helper()
-	orig := dispatchGraceBudget
+	origBudget, origGrace := dispatchGraceBudget, dispatchDiagnosticsGrace
 	dispatchGraceBudget = newGraceBudget(dispatchGraceBudgetTotal)
-	t.Cleanup(func() { dispatchGraceBudget = orig })
+	t.Cleanup(func() { dispatchGraceBudget, dispatchDiagnosticsGrace = origBudget, origGrace })
 }
 
 // graceInterval is a half-open wall-clock interval [start, end).
@@ -104,12 +106,13 @@ type graceInterval struct {
 }
 
 // graceBudget is a concurrency-safe bound on the wall-clock time covered
-// by grace waits, shared across scenarios. It records the intervals it
-// has granted, merged and sorted by start.
+// by grace waits, shared across scenarios. It records one reservation per
+// granted wait; the time used is the length of their union, so time two
+// waits share counts once.
 type graceBudget struct {
-	total     time.Duration
-	mu        sync.Mutex
-	intervals []graceInterval
+	total        time.Duration
+	mu           sync.Mutex
+	reservations []*graceInterval
 }
 
 func newGraceBudget(total time.Duration) *graceBudget {
@@ -117,25 +120,28 @@ func newGraceBudget(total time.Duration) *graceBudget {
 }
 
 // grant returns how long a wait starting at now may last, at most want,
-// and records the granted interval. Time already covered by an earlier
-// grant (such as a wait still in progress) is free; uncovered time is
-// charged against the budget, and the wait ends where the budget runs
-// out. It returns zero once the budget is used up.
-func (g *graceBudget) grant(now time.Time, want time.Duration) time.Duration {
+// and records the granted interval as a reservation, returned so the
+// caller can trim it if the wait ends early (nil when nothing is
+// granted). Time already covered by another reservation (such as a wait
+// still in progress) is free; uncovered time is charged against the
+// budget, and the wait ends where the budget runs out. It returns zero
+// once the budget is used up.
+func (g *graceBudget) grant(now time.Time, want time.Duration) (time.Duration, *graceInterval) {
 	if want <= 0 {
-		return 0
+		return 0, nil
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	intervals := g.covered()
 	var used time.Duration
-	for _, iv := range g.intervals {
+	for _, iv := range intervals {
 		used += iv.end.Sub(iv.start)
 	}
 	left := g.total - used
 
 	t, end := now, now.Add(want)
-	for _, iv := range g.intervals {
+	for _, iv := range intervals {
 		if !t.Before(end) {
 			break
 		}
@@ -162,36 +168,48 @@ func (g *graceBudget) grant(now time.Time, want time.Duration) time.Duration {
 	}
 	granted := t.Sub(now)
 	if granted <= 0 {
-		return 0
+		return 0, nil
 	}
-	g.add(graceInterval{start: now, end: t})
-	return granted
+	r := &graceInterval{start: now, end: t}
+	g.reservations = append(g.reservations, r)
+	return granted, r
 }
 
-// add merges iv into g.intervals, keeping them sorted and disjoint.
-// The caller holds g.mu.
-func (g *graceBudget) add(iv graceInterval) {
-	merged := make([]graceInterval, 0, len(g.intervals)+1)
-	placed := false
-	for _, cur := range g.intervals {
-		switch {
-		case cur.end.Before(iv.start):
-			merged = append(merged, cur)
-		case iv.end.Before(cur.start):
-			if !placed {
-				merged = append(merged, iv)
-				placed = true
-			}
-			merged = append(merged, cur)
-		default:
-			iv.start = minTime(iv.start, cur.start)
-			iv.end = maxTime(iv.end, cur.end)
+// trim shortens reservation r, which grant returned, to end when the wait
+// ended before its reserved end (for example when it was cancelled). Only
+// r shrinks: time another reservation covers stays covered, so a wait
+// still running keeps its coverage and only time no other wait covers is
+// given back to the budget.
+func (g *graceBudget) trim(r *graceInterval, end time.Time) {
+	if r == nil {
+		return
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if end.Before(r.end) {
+		r.end = maxTime(end, r.start)
+	}
+}
+
+// covered returns the union of the reservations as disjoint intervals
+// sorted by start. The caller holds g.mu.
+func (g *graceBudget) covered() []graceInterval {
+	sorted := make([]graceInterval, 0, len(g.reservations))
+	for _, r := range g.reservations {
+		if r.end.After(r.start) {
+			sorted = append(sorted, *r)
 		}
 	}
-	if !placed {
+	slices.SortFunc(sorted, func(a, b graceInterval) int { return a.start.Compare(b.start) })
+	merged := make([]graceInterval, 0, len(sorted))
+	for _, iv := range sorted {
+		if n := len(merged); n > 0 && !iv.start.After(merged[n-1].end) {
+			merged[n-1].end = maxTime(merged[n-1].end, iv.end)
+			continue
+		}
 		merged = append(merged, iv)
 	}
-	g.intervals = merged
+	return merged
 }
 
 func minTime(a, b time.Time) time.Time {
@@ -574,10 +592,14 @@ func CollectFailureLogs(ctx context.Context, w *world.World, scenarioErr error) 
 	}
 
 	// Dispatch diagnostics run first: the grace period gives a late run
-	// time to appear, so the run-log collection below also saves it.
+	// time to appear, so the run-log collection below also saves it. They
+	// need the details only *ci.NotDispatchedError (GitHub Actions)
+	// carries; another driver's not-dispatched timeout, which wraps only
+	// ci.ErrWorkflowNotDispatched, gets none.
 	var dispatch string
-	if errors.Is(scenarioErr, ci.ErrWorkflowNotDispatched) {
-		dispatch = collectDispatchDiagnostics(ctx, w, scenarioErr)
+	var waited *ci.NotDispatchedError
+	if errors.As(scenarioErr, &waited) {
+		dispatch = collectDispatchDiagnostics(ctx, w, waited)
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, failureLogBudget)
@@ -705,13 +727,12 @@ func collectScenarioRunLogs(ctx context.Context, w *world.World) string {
 // runs before teardown deletes the repository, so the evidence survives
 // in the artifact. Every lookup is best-effort and reports its own
 // failure in place of its section.
-func collectDispatchDiagnostics(ctx context.Context, w *world.World, scenarioErr error) string {
+func collectDispatchDiagnostics(ctx context.Context, w *world.World, waited *ci.NotDispatchedError) string {
 	if w.RepoName == "" {
 		return "  none: the repository identity is unavailable, so dispatch diagnostics could not be collected\n"
 	}
-	var waited *ci.NotDispatchedError
-	errors.As(scenarioErr, &waited)
 
+	budget := dispatchGraceBudget
 	var b strings.Builder
 	graceStart := dispatchNow()
 	// partialWait is empty when the configured wait ran in full, and
@@ -719,6 +740,7 @@ func collectDispatchDiagnostics(ctx context.Context, w *world.World, scenarioErr
 	// missing run as a lost event.
 	partialWait := ""
 	var granted time.Duration
+	var reservation *graceInterval
 	switch {
 	case dispatchDiagnosticsGrace <= 0:
 		partialWait = "no grace wait is configured"
@@ -727,19 +749,19 @@ func collectDispatchDiagnostics(ctx context.Context, w *world.World, scenarioErr
 		partialWait = "the grace wait was cut short after 0s"
 		fmt.Fprintf(&b, "  the grace period was cut short: %v\n", ctx.Err())
 	default:
-		granted = dispatchGraceBudget.grant(graceStart, dispatchDiagnosticsGrace)
+		granted, reservation = budget.grant(graceStart, dispatchDiagnosticsGrace)
 	}
 	switch {
 	case partialWait != "":
 	case granted <= 0:
 		partialWait = "the grace wait was skipped"
 		fmt.Fprintf(&b, "  grace wait: skipped: the total grace wait time (%s per test process) is used up\n",
-			dispatchGraceBudget.total)
+			budget.total)
 	default:
 		if granted < dispatchDiagnosticsGrace {
 			partialWait = "the grace wait was shortened to " + granted.Round(time.Second).String()
 			fmt.Fprintf(&b, "  grace wait: shortened to %s: the total grace wait time (%s per test process) runs out then\n",
-				granted.Round(time.Second), dispatchGraceBudget.total)
+				granted.Round(time.Second), budget.total)
 		}
 		select {
 		case <-ctx.Done():
@@ -748,6 +770,10 @@ func collectDispatchDiagnostics(ctx context.Context, w *world.World, scenarioErr
 		}
 	}
 	listedAt := dispatchNow()
+	// A wait that ended early gives back the reserved time it did not use;
+	// the reservation stays optimistic until then so concurrent waits see
+	// it as covered.
+	budget.trim(reservation, listedAt)
 	elapsed := listedAt.Sub(graceStart)
 	if elapsed < 0 {
 		elapsed = 0
@@ -836,7 +862,10 @@ func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDis
 	// ahead of GitHub's by up to issueOpenDrainSkewBuffer.
 	threshold := graceStart.Add(-issueOpenDrainSkewBuffer).Truncate(time.Second)
 	issueTriggered := waited.Event == "issues"
+	// lateRun is the earliest matching run created after the threshold, so
+	// the verdict does not depend on the listing's order.
 	var lateRun *forge.WorkflowRun
+	var lateCreated time.Time
 	var matching strings.Builder
 	for i := range runs {
 		run := runs[i]
@@ -854,8 +883,8 @@ func describeDispatchRuns(ctx context.Context, w *world.World, waited *ci.NotDis
 		} else {
 			fmt.Fprintf(&matching, "    - run %d: created_at %s\n", run.ID, orUnknown(RedactText(run.CreatedAt)))
 		}
-		if parseErr == nil && !created.Before(threshold) && lateRun == nil {
-			lateRun = &run
+		if parseErr == nil && !created.Before(threshold) && (lateRun == nil || created.Before(lateCreated)) {
+			lateRun, lateCreated = &run, created
 		}
 	}
 	if matching.Len() == 0 {
