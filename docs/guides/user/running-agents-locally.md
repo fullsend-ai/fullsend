@@ -238,6 +238,8 @@ variables (`GITHUB_ACTIONS`, `GITLAB_CI`).
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
+**Tip**: use `--sync-target-repo` (or `FULLSEND_SYNC_TARGET_REPO=true`) if you want modified files from the sandbox synchronized back into your local repository upon successful agent completion.
+
 **Tip**: `fullsend run` uses multiple tools on your system. Instead of
 installing them all, you can use a container image fullsend publishes —
 see [Run from a container](#run-from-a-container) below.
@@ -329,6 +331,34 @@ fullsend run code \
   --env-file fullsend-code.env \
   --forge github
 ```
+
+### Synchronizing changes back to your local repository
+
+By default, `fullsend run` operates in an isolated sandbox and leaves your local target repository untouched. When developing, testing, or inspecting changes locally, you can automatically synchronize modified, added, and deleted files back to your local checkout upon success:
+
+1. **Run with `--sync-target-repo`**:
+   ```bash
+   fullsend run code \
+     --fullsend-dir /tmp/fullsend-agents/ \
+     --target-repo /tmp/target-repo/ \
+     --forge github \
+     --env-file fullsend-code.env \
+     --env-file fullsend-gcp.env \
+     --sync-target-repo
+   ```
+   Or enable it via environment variable (`FULLSEND_SYNC_TARGET_REPO=true` in your shell or dotenv file).
+
+2. **Inspect synchronized changes**:
+   Once the agent finishes and validation passes, file additions, modifications, and deletions from the sandbox are mirrored into `/tmp/target-repo/`:
+   ```bash
+   cd /tmp/target-repo
+   git status
+   git diff
+   ```
+
+*Note*: Synchronization is gated on a clean outcome without timeouts or transcript/system errors: if a validation loop (`validation_loop`) is configured, validation must pass; if no validation loop is configured, a clean exit or an allowed behavioral exit subtype (`error_max_turns`, `error_max_budget_usd`) still synchronizes partial changes. Critical paths like `.git/` (at any depth, matched case-insensitively) and configured output directories are excluded from synchronization and protected against pruning. Files written inside `TARGET_REPO_DIR` by a validation script are also synchronized back (while unsafe symlinks stripped by `SafeDownload` rules are skipped). Concurrent edits on host files recorded in the pre-run manifest (including host-only children under replaced directories) cause synchronization to refuse overwriting them rather than silently discarding host changes. Runner-injected files (`AGENTS.md`, `CLAUDE.md`) and uncommitted agent working directories (`.agentready/`, `.fullsend-workspace/`) are also excluded when they did not exist on the host prior to the run. Atomic file writes break hardlinks on modified files and mode-only updates so shared inodes outside the target repository are not mutated in place.
+
+*Security warning*: Synchronized files are **untrusted agent output** (`SafeDownload` strips unsafe symlinks, `.git/hooks`, and AppleDouble `._*` files — and `--sync-target-repo` warns and skips non-regular files such as FIFOs, sockets, and device nodes — not arbitrary code or config edits). Always inspect `git status` and `git diff` in `/tmp/target-repo` before running builds/tests, loading `.envrc`, opening the checkout in an IDE, or pointing another agent runtime at it.
 
 ### Choosing the runtime
 

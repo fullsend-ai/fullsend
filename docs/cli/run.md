@@ -28,6 +28,7 @@ A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, UR
 | `--env-file` | Load environment variables from a dotenv file (repeatable) |
 | `--no-post-script` | Skip post-script execution |
 | `--keep-sandbox` | Skip sandbox deletion after the run |
+| `--sync-target-repo` | Synchronize sanitized modified files from the sandbox back to the target repository directory upon completion; also `FULLSEND_SYNC_TARGET_REPO` |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run stops, because its Jira API gateway address needs a network lookup |
@@ -554,6 +555,23 @@ settings](../reference/harness-reference.md#migrating-proxy-and-certificate-sett
 | `FULLSEND_GITHUB_RUNNER_SECRETS` | The object inline. Use it for local runs only: in CI the value would stay readable in `/proc/<pid>/environ` for the life of the process. |
 
 Set one or the other; both set is an error. `fullsend run` removes both variables from its environment before it starts any child process. Rules and setup: [harness reference § `env.runner`](../reference/harness-reference.md#field-details).
+
+## Target repository synchronization
+
+When running locally or in CI pipelines (such as GitLab CI), downstream jobs or developer workflows often expect changes made by the agent to be reflected directly in the local workspace (`--target-repo`).
+
+By default, `fullsend run` downloads the modified repository from the sandbox into a temporary directory (`/tmp/fs-*`) and deletes it on exit unless `--keep-sandbox` is set.
+
+Passing `--sync-target-repo` (or setting `FULLSEND_SYNC_TARGET_REPO=true`):
+- Writes new and modified regular files from the sandbox download back to `--target-repo` using atomic file replacement (`writeAtomicFile`) to avoid mutating shared hardlink inodes outside the target repository. Mode-only updates on hardlinked files (`Nlink > 1`) also replace the target file atomically so shared inodes are never mutated in place, while unchanged files and symlinks preserve their existing inodes and modification times.
+- Prunes deleted paths against a pre-run content manifest of `--target-repo` captured before sandbox upload, preserving symlinks stripped during `SafeDownload` sanitization (such as absolute or repo-escaping symlinks — including ignoring any unsafe symlinks written inside `TARGET_REPO_DIR` during validation), host-only files created directly in `--target-repo` after the run started, host deletions of sandbox-unchanged files, and refusing to overwrite concurrently modified host entries or host-only children under replaced directories. If the pre-run manifest snapshot fails, synchronization fails closed (skips syncing and reports the reason in `Results`). Files written into `TARGET_REPO_DIR` by a configured validation script are synchronized alongside agent changes.
+- Strictly protects `.git/` metadata at any depth (matched case-insensitively, including root Git metadata, submodules, and nested repositories) and configured output directories from being modified or pruned.
+- Preserves existing host directory and file permissions when syncing from a `readonly_repo: true` sandbox checkout (propagating executable-bit changes without applying sandbox `a-w` write-bit removals to writable host files or directories); for host directories that were already read-only before the run, temporarily grants owner write permission (`0o700 | perm`) while writing or pruning and restores the host's original directory modes once synchronization completes.
+- Automatically excludes runner-injected files (such as `AGENTS.md` and `CLAUDE.md` when actually injected for the run) and uncommitted agent working directories (such as `.agentready/` and `.fullsend-workspace/`) when they were not present in the host checkout before the run.
+- Only executes when the run is eligible to finalize cleanly: no transcript error override, zero agent exit code (or an allowed behavioral exit subtype such as `error_max_turns` when no validation loop is configured), a passing validation loop on the final downloaded iteration, and successful repository extraction.
+- If synchronization fails after an otherwise eligible run, `fullsend run` logs a warning and still allows configured `post_script` hooks to execute rather than aborting teardown; partially copied changes or concurrent edits made on the host while the sandbox ran are not transactionally rolled back.
+
+> **Security note:** `SafeDownload` strips unsafe symlinks (absolute targets, dangling targets, or targets escaping the repository root), `.git/hooks`, and AppleDouble `._*` metadata files — and `--sync-target-repo` warns and skips non-regular files (such as FIFOs, sockets, and device nodes) — not malicious file contents. The synchronized working tree is **untrusted agent output** — agent edits can include build scripts (`Makefile`, `package.json`), `.envrc`, editor/IDE tasks (`.vscode/tasks.json`), `.gitattributes`, or agent config/context files (`.claude/`, `.mcp.json`, `CLAUDE.md`, `AGENTS.md`). Always review `git status` and `git diff` in `--target-repo` before building, loading directory environments, opening in an IDE, or pointing another agent runtime at it.
 
 ## Related
 

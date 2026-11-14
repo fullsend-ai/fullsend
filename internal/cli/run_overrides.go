@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -29,18 +30,23 @@ const (
 	// editing each harness.
 	envCodexModel = "FULLSEND_CODEX_MODEL"
 
-	sourceFlagRuntime = "--runtime flag"
-	sourceFlagModel   = "--model flag"
-	sourceFlagEffort  = "--effort flag"
-	sourceHarness     = "harness"
-	sourceDefault     = "default"
+	envSyncTargetRepo = "FULLSEND_SYNC_TARGET_REPO"
+
+	sourceFlagRuntime        = "--runtime flag"
+	sourceFlagModel          = "--model flag"
+	sourceFlagEffort         = "--effort flag"
+	sourceFlagSyncTargetRepo = "--sync-target-repo flag"
+	sourceHarness            = "harness"
+	sourceDefault            = "default"
 )
 
 // runOverrideFlags are the per-run override flags of `fullsend run`.
 type runOverrideFlags struct {
-	runtime string
-	model   string
-	effort  string
+	runtime           string
+	model             string
+	effort            string
+	syncTargetRepo    bool
+	syncTargetRepoSet bool
 }
 
 // runOverrides is the resolved per-run override set. Empty *Source fields
@@ -58,6 +64,9 @@ type runOverrides struct {
 
 	fallbackModels []string
 	fallbackSource string
+
+	syncTargetRepo       bool
+	syncTargetRepoSource string
 }
 
 // runtimeModelEnv returns the runtime-scoped model override variable for a
@@ -124,6 +133,18 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 			o.fallbackSource = envFallbackModels
 		}
 	}
+	if flags.syncTargetRepoSet {
+		o.syncTargetRepo = flags.syncTargetRepo
+		o.syncTargetRepoSource = sourceFlagSyncTargetRepo
+	} else if v := env(envSyncTargetRepo); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return runOverrides{}, fmt.Errorf("%s: invalid boolean value %q: must be true or false", envSyncTargetRepo, v)
+		}
+		o.syncTargetRepo = b
+		o.syncTargetRepoSource = envSyncTargetRepo
+	}
+
 	return o, nil
 }
 
