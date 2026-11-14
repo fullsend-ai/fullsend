@@ -8,6 +8,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
@@ -154,15 +155,15 @@ func createIssue(w *world.World, title, body string) error {
 }
 
 // issueOpenDrainSkewBuffer is subtracted from the trigger timestamp on
-// retry to compensate for clock drift between the test runner and GitHub.
-// 30 s covers typical NTP drift without matching stale runs from prior
-// scenarios (pool repos are org-isolated).
+// retry to compensate for clock drift between the test runner and the
+// forge's clock. 30 s covers typical NTP drift without matching stale
+// runs from prior scenarios (pool repos are org-isolated).
 const issueOpenDrainSkewBuffer = 30 * time.Second
 
 // drainIssueOpenWorkflow waits for the fullsend.yaml workflow to process
-// the issues.opened event. If the first attempt fails (typically due to
-// GitHub Actions webhook delivery lag or clock skew between the runner
-// and GitHub), it retries once with a relaxed trigger timestamp.
+// the issues.opened event. If the first attempt finds no run (typically
+// due to GitHub Actions webhook delivery lag or clock skew between the
+// runner and GitHub), it retries once with a relaxed trigger timestamp.
 func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	ctx := context.Background()
 	repo := w.RepoName
@@ -172,17 +173,29 @@ func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	if err == nil {
 		return nil
 	}
+	// Only a timeout with no run (any driver's, marked by the shared
+	// sentinel) is retried. A run that concluded with a failure, or did
+	// not finish in time, did dispatch: its error is the real one, as is a
+	// cancelled context.
+	if !errors.Is(err, ci.ErrWorkflowNotDispatched) {
+		return fmt.Errorf("waiting for issue-open workflow: %w", err)
+	}
 
 	// Retry with a clock-skew buffer. When the test runner's clock is
-	// slightly ahead of GitHub's, the workflow run's CreatedAt falls
-	// before our trigger timestamp and the first poll window misses it.
+	// slightly ahead of the forge's clock, the workflow run's CreatedAt
+	// falls before our trigger timestamp and the first poll window misses
+	// it.
 	worldLogf(w, "issue-open drain: retrying with skew buffer: %v", err)
 	buffered := trigger.Add(-issueOpenDrainSkewBuffer)
-	if _, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent); retryErr == nil {
+	_, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent)
+	if retryErr == nil {
 		return nil
 	}
 
-	return fmt.Errorf("waiting for issue-open workflow: %w", err)
+	// Wrap the retry's error: its wait ended last, so its detail (such as
+	// a poll-error summary) matches the window the dispatch diagnostics
+	// measure from.
+	return fmt.Errorf("waiting for issue-open workflow: %w", retryErr)
 }
 
 func whenIssueLabeled(w *world.World, label string) error {

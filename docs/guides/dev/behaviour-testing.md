@@ -500,6 +500,7 @@ everything else stays `scenario` — never retried, never masked.
 | Pool capacity exhausted — every org rate-limited, denied or failed | `install.CapacityError` (all causes), when it reaches the classifier on its own |
 | Collaborator invitation pending (access requested, not yet granted) | the `gh.ErrInvitationPending` sentinel |
 | Terminal setup-poll exhaustion — repo never visible after creation, or dispatch workflow never settles | `behaviourfail.Mark` in the install ensure path |
+| Post-install validation reads a file setup has just committed and GitHub still answers 404 after every retry (5 attempts, backing off 2, 4, 8 and 16 seconds) | `behaviourfail.Mark` in `getFileWithRetry` (`drivers/install/validate.go`) |
 | GCP WIF quota or rate limit during inference provisioning (provision and status wait) | `behaviourfail.Mark` on matched CLI stderr signatures |
 | e2e auth-token mint or download failure at bootstrap: a transport error, or a 429 or 5xx response | `behaviourfail.Mark` at the e2etest token source |
 
@@ -522,9 +523,28 @@ defect, not an environment condition), lease races (`errLeaseLost`,
 and errors whose message merely mentions a rate limit without a structural
 match. Unexplained workflow-run failures stay scenario deliberately: a
 dispatch workflow failing without its artifact may be exactly the product
-regression a scenario exists to catch. The per-failure report below makes
-their frequency and shape measurable, so a follow-up can decide with data
-whether to classify them.
+regression a scenario exists to catch. Other post-install validation
+failures (a wrong runtime in the config, for example) also stay scenario.
+The per-failure report below makes their frequency and shape measurable,
+so a follow-up can decide with data whether to classify them.
+
+A `WaitForWorkflow` timeout because no run appeared wraps
+`ci.ErrWorkflowNotDispatched` on every driver: `workflow <file> (<event>)
+was not dispatched` on GitHub Actions, `pipeline (<event>) was not
+dispatched` on GitLab CI. A wait for any event drops the ` (<event>)` part,
+for example `pipeline was not dispatched`. The issue-open and dispatch-run waits retry it
+once, allowing 30 s of clock skew. If the retry also times out, the failure
+stays `scenario` and gets no infrastructure retry. Whether the run arrives
+late or never is not yet established. To see what happened in a failing
+GitHub Actions job:
+
+1. Download the `behaviour-artifacts-*` artifact of the failing job.
+2. Open `debug-scenario-<name>-<suffix>/failure-summary.txt`.
+3. Read its `Dispatch diagnostics` section; see
+   [Dispatch diagnostics](#dispatch-diagnostics).
+
+The per-failure report counts these timeouts so a follow-up (#9469) can
+decide from data whether to classify them.
 
 The **run** class is decided at completion: `infrastructure` only when at
 least one failure was recorded and none of them is scenario. A mixed run —
@@ -660,6 +680,64 @@ its report, and releases its repos inside the job's `timeout-minutes: 90`
 The merge queue window is shorter than the job: a retry fits it only when
 attempt 1 plus the failed scenarios finish within 60 minutes.
 
+#### Dispatch diagnostics
+
+This applies to GitHub Actions only. Every driver's not-dispatched timeout
+wraps `ci.ErrWorkflowNotDispatched`, but only the GitHub Actions driver
+returns a `*ci.NotDispatchedError`, which records the workflow file and event
+these diagnostics look for. When a scenario fails with that error (no
+workflow run appeared), the After hook's `CollectFailureLogs` (see
+[Repo allocation via the shared slot driver](#repo-allocation-via-the-shared-slot-driver))
+first waits a 2-minute grace period, outside `failureLogBudget`. It then adds
+a `Dispatch diagnostics` section to `failure-summary.txt`, before teardown
+deletes the repository. The section shows, in this order:
+
+- a `grace wait:` note when the wait was skipped or shortened. Runs are
+  still listed unless the driver cannot list them
+  (`workflow runs: not listed: ...`). The wait is skipped when the total
+  grace wait time for the test process (about 6 minutes) is used up, or when
+  no verdict can be computed: the CI driver does not implement
+  `ci.RunLister`, or the error does not name the workflow. It is shortened
+  when that total runs out mid-wait;
+- `the grace period was cut short: <err>` when the scenario's context ended
+  before or during the wait;
+- the repository, the time of the listing (runner clock) and the real
+  elapsed grace wait;
+- the scenario's issue with its `created_at` and state;
+- every workflow run in the repository, with its workflow file, event,
+  `created_at`, status and conclusion;
+- the runs of the waited-for workflow and event. The gap from the issue's
+  `created_at` (both GitHub timestamps) is shown only for issue-triggered
+  waits (the `issues` event); for other events, such as `issue_comment`, the
+  issue is not the triggering event, so no gap is shown;
+- the verdict: whether a matching run was created after the scenario's wait
+  for the run timed out (counted from the start of the grace wait, allowing
+  30 s of clock skew). `yes` suggests a late dispatch, even if the grace
+  wait was shortened. When no late run appeared, the verdict is `no`. After
+  a full grace wait, `no` with no matching run suggests the event produced
+  no run, and `no` with only older matching runs says they predate the
+  wait. When the wait was skipped because the total grace wait time is used
+  up, shortened, cut short or not configured, the line reads
+  `no (inconclusive: <reason>; ...)` instead. When no verdict can be
+  computed, there is no verdict: the section says `workflow runs: not listed`
+  (no `ci.RunLister`) or `matching run after the wait: unknown` (the error
+  does not name the workflow). A `no` with no
+  matching run also reads `no (inconclusive: the listing was truncated;
+  ...)` when the run listing hit its limit.
+
+Whatever the verdict, the timeout stays a `scenario` failure; re-run the job
+as usual, and add the summary's verdict line to #9469 so the cause can be
+settled from data.
+
+Total grace wait time is bounded at about 6 minutes of wall-clock time per
+test process. Time already covered by another running wait is free, so a
+wait that overlaps a running wait, such as one in a burst of parallel
+failures, can still get its full 2 minutes, and a later isolated failure
+still gets its own wait. Once the budget is spent, a new wait ends where its
+uncovered time would exceed the budget, or is skipped if none is left. A
+wait cut short keeps the time it reserved. A scenario whose context is
+already cancelled skips the wait and uses none of the time.
+
 ### Repo allocation via the shared slot driver
 
 `RunSuite` and `RunPlaybackSuite` build one shared install driver (`install.Factory` over an `install.PoolConfig`) for the environment's pool. On `dev` the pool is the derived orgs `halfsend-01` … `halfsend-22`, and on `stage` it is the single unsuffixed `halfsend` org, each with `test-repo-01` … `test-repo-NN` slots (`install.PoolLayoutForEnvironment`; `BEHAVIOUR_POOL_SIZE` sets the slots per org). The driver resolves one installation token per org (`e2etest.TokenForOrg`, minted once per org and kept for the run, since a token outlives a 45-minute `go test` attempt; the infra-retry's fresh process mints its own). It builds one forge client per org from that token. The `Given the enrolled test repository` step calls `install.LeaseDriver.AllocateLease(ctx)`, which:
@@ -712,15 +790,20 @@ run. It always writes `debug-scenario-<name>-<suffix>/failure-summary.txt` with
 the scenario error and each run's outcome. A run whose logs cannot be fetched
 gets a `workflow-logs-unavailable.txt` stating why. The summary states when the
 run listing may be truncated or the per-scenario fetch cap was reached. A
-scenario that passes but whose repo deallocation fails also gets a failure
-summary. Everything is redacted and written `0600`, like the in-scenario logs;
-the redaction also masks the runner's `World.Token` and the values of
-credential-named environment variables (for example `*_TOKEN`, `*_PAT`,
-`*_KEY`), including in directory names. The next claim of that slot creates the
-repo from scratch. Mint enrollment of the numbered *names* can remain
-pre-provisioned; the GitHub repos themselves are ephemeral around a lease.
-`Driver.Finalize` releases outstanding leases with an error, tears down every
-org's mint, and stops the trace collector.
+scenario that passes, or is skipped, but whose repo deallocation fails also
+gets a failure summary. Everything is redacted and written `0600`, like the
+in-scenario logs; the redaction also masks the runner's `World.Token` and the
+values of credential-named environment variables (for example `*_TOKEN`,
+`*_PAT`, `*_KEY`), including in directory names. The next claim of that slot
+creates the repo from scratch. Mint enrollment of the numbered *names* can
+remain pre-provisioned; the GitHub repos themselves are ephemeral around a
+lease. `Driver.Finalize` releases outstanding leases with an error, tears down
+every org's mint, and stops the trace collector.
+
+**Step failure vs. teardown failure.** The After hook returns only a
+repo-deallocation error, never the scenario's step error. A failing step
+therefore appears in CI output as the bare step error. The
+`after scenario hook failed:` prefix means cleanup (repo release) failed.
 
 Concurrent ensures of the same repo are serialized via `singleflight.Group`, so only one goroutine runs the install while others wait. The numbered `test-repo-NN` repos do not need to be pre-provisioned in the pool orgs.
 
@@ -1293,7 +1376,11 @@ more claim and `github setup`
 This happens rarely, so it is not budgeted per lease, but it reduces the slack
 for the whole suite. The behaviour job's `timeout-minutes` in `e2e.yml` and the
 `go test -timeout` in the Makefile must account for this overhead across all
-leases in the suite.
+leases in the suite. A not-dispatched scenario's grace wait runs before, and
+outside, `failureLogBudget`, so it can add up to 2 minutes of After-hook time
+on top of the 2-minute log-collection budget. Total grace wait time across
+the test process is bounded at about 6 minutes
+([Dispatch diagnostics](#dispatch-diagnostics)).
 
 Current budget: **45 minutes per `go test` attempt** and **90 minutes for the CI job**. The job budget carries one [infrastructure-classified retry](#failure-classification-and-infrastructure-retry): both Make targets run through `scripts/run-with-infra-retry.sh`, and a retried run executes a second `go test`, for the failed scenarios only, with its own 45-minute `-timeout`. The wrapper refuses the retry when attempt 1 ran longer than `INFRA_RETRY_MAX_ATTEMPT1_SECONDS` (2400 in CI), so attempt 2 always has 45 minutes left in the job. Keep `go test -timeout` at or below 45 minutes — it is the per-attempt bound the [repo-slot GC](#repo-slot-gc) age guarantee rests on — and never above the job's `timeout-minutes`, or the Go process is killed mid-test with no artifact collection. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within one attempt's budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) and the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios) lease one repo per Examples row. The same rule applies to the `playback-test` target and to any CI job that runs it.
 

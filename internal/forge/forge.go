@@ -612,6 +612,10 @@ type WorkflowRun struct {
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
 	CreatedAt  string
+	// Path is the run's workflow file, e.g. ".github/workflows/fullsend.yaml".
+	// Only populated by ListRecentWorkflowRuns, which lists runs of every
+	// workflow; other run reads leave it empty.
+	Path string
 }
 
 // WorkflowJob represents a job within a workflow run.
@@ -679,6 +683,9 @@ type Issue struct {
 	// or "duplicate" for a closed issue, "reopened" or empty otherwise.
 	// GitLab does not report one. Only populated by GetIssue.
 	StateReason string
+	// CreatedAt is the issue's creation time as the forge reports it
+	// (RFC 3339). Only populated by GitHub's GetIssue.
+	CreatedAt string
 }
 
 // PullRequestAuthorizationContext carries PR fields used by the e2e CI

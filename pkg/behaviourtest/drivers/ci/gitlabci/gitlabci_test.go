@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1085,6 +1086,48 @@ func TestWaitForWorkflow_PollsUntilDispatch(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, run)
 	assert.Equal(t, 1, run.ID)
+}
+
+// TestWaitForWorkflow_NotDispatchedWrapsSentinel checks that a timeout
+// with no pipeline wraps ci.ErrWorkflowNotDispatched, so steps retry it,
+// keeps its message, and is not a *ci.NotDispatchedError, so the GitHub
+// Actions dispatch diagnostics do not run for it.
+func TestWaitForWorkflow_NotDispatchedWrapsSentinel(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		event string
+		want  string
+	}{
+		"with event":    {event: "issues", want: "pipeline (issues) was not dispatched"},
+		"without event": {event: "", want: "pipeline was not dispatched"},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			start := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+			calls := 0
+			d := &Driver{
+				Client:    forge.NewFakeClient(),
+				afterFunc: instantAfter,
+				nowFunc: func() time.Time {
+					calls++
+					if calls <= 2 {
+						return start
+					}
+					return start.Add(dispatchTimeout + time.Minute)
+				},
+			}
+
+			_, err := d.WaitForWorkflow(context.Background(), "org", "repo", "", start, tc.event)
+
+			require.Error(t, err)
+			assert.Equal(t, tc.want, err.Error())
+			assert.ErrorIs(t, err, ci.ErrWorkflowNotDispatched)
+			var nd *ci.NotDispatchedError
+			assert.False(t, errors.As(err, &nd), "the GitLab timeout carries no GitHub Actions details")
+		})
+	}
 }
 
 func TestWaitForHarnessAgent_LookupErrsTracked(t *testing.T) {

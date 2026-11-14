@@ -4818,6 +4818,7 @@ func TestGetIssue(t *testing.T) {
 			"labels":       []map[string]string{{"name": "ready-to-code"}},
 			"state":        "closed",
 			"state_reason": "not_planned",
+			"created_at":   "2026-11-14T00:05:58Z",
 		})
 	}))
 	defer srv.Close()
@@ -4829,6 +4830,7 @@ func TestGetIssue(t *testing.T) {
 	assert.Equal(t, []string{"ready-to-code"}, issue.Labels)
 	assert.Equal(t, "closed", issue.State)
 	assert.Equal(t, "not_planned", issue.StateReason)
+	assert.Equal(t, "2026-11-14T00:05:58Z", issue.CreatedAt)
 }
 
 func TestListRecentWorkflowRuns(t *testing.T) {
@@ -4840,7 +4842,7 @@ func TestListRecentWorkflowRuns(t *testing.T) {
 				{
 					"id": 99, "name": "Triage Agent", "event": "issue_comment",
 					"status": "completed", "conclusion": "success", "html_url": "https://example/run/99",
-					"created_at": "2024-01-01T00:00:00Z",
+					"created_at": "2024-01-01T00:00:00Z", "path": ".github/workflows/triage.yml",
 				},
 			},
 		})
@@ -4853,6 +4855,7 @@ func TestListRecentWorkflowRuns(t *testing.T) {
 	require.Len(t, runs, 1)
 	assert.Equal(t, "Triage Agent", runs[0].Name)
 	assert.Equal(t, "issue_comment", runs[0].Event)
+	assert.Equal(t, ".github/workflows/triage.yml", runs[0].Path)
 }
 
 func TestListWorkflowRuns_IncludesEvent(t *testing.T) {

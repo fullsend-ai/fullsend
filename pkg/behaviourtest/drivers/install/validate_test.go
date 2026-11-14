@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
@@ -290,7 +291,7 @@ func TestGetFileWithRetry_SucceedsAfterTransient404(t *testing.T) {
 		},
 	}
 
-	data, err := getFileWithRetry(context.Background(), client, "org", "repo", "file.txt")
+	data, err := getFileWithRetry(context.Background(), client, "org", "repo", "file.txt", nil)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("content"), data)
 	assert.Equal(t, int32(3), calls.Load(), "should succeed on third attempt")
@@ -307,11 +308,88 @@ func TestGetFileWithRetry_ExhaustsRetries(t *testing.T) {
 		},
 	}
 
-	_, err := getFileWithRetry(context.Background(), client, "org", "repo", "file.txt")
+	_, err := getFileWithRetry(context.Background(), client, "org", "repo", "file.txt", nil)
 	require.Error(t, err)
 	assert.True(t, forge.IsNotFound(err), "error should be ErrNotFound")
+	assert.True(t, behaviourfail.Is(err), "a 404 that outlasts every retry is marked infrastructure")
+	assert.Contains(t, err.Error(), fileNotReadableReason)
+	assert.Contains(t, err.Error(), fmt.Sprintf("not found on %d attempts", validateMaxAttempts))
 	assert.Equal(t, int32(validateMaxAttempts), calls.Load(),
 		"should exhaust all retry attempts")
+}
+
+// recordValidateDelays replaces validateAfter with an instant timer that
+// records each requested delay.
+func recordValidateDelays(t *testing.T) *[]time.Duration {
+	t.Helper()
+	var delays []time.Duration
+	orig := validateAfter
+	validateAfter = func(d time.Duration) <-chan time.Time {
+		delays = append(delays, d)
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
+	t.Cleanup(func() { validateAfter = orig })
+	return &delays
+}
+
+func TestGetFileWithRetry_BackoffDoublesFromBaseDelay(t *testing.T) {
+	delays := recordValidateDelays(t)
+
+	var calls atomic.Int32
+	client := &retryTestClient{
+		getFileFn: func(_ context.Context, _, _, _ string) ([]byte, error) {
+			calls.Add(1)
+			return nil, forge.ErrNotFound
+		},
+	}
+
+	_, err := getFileWithRetry(context.Background(), client, "org", "repo", "file.txt", nil)
+	require.Error(t, err)
+	assert.Equal(t, int32(validateMaxAttempts), calls.Load(), "gives up after the last attempt")
+	base := validateRetryDelay
+	assert.Equal(t, []time.Duration{base, 2 * base, 4 * base, 8 * base}, *delays,
+		"sleeps double between attempts and none follows the last attempt")
+	assert.Equal(t, []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}, *delays,
+		"the default base delay sleeps 2, 4, 8 and 16 seconds")
+}
+
+func TestGetFileWithRetry_LogsAttemptsWhenReadAfterRetry(t *testing.T) {
+	delays := recordValidateDelays(t)
+
+	var calls atomic.Int32
+	client := &retryTestClient{
+		getFileFn: func(_ context.Context, _, _, _ string) ([]byte, error) {
+			if calls.Add(1) <= 2 {
+				return nil, forge.ErrNotFound
+			}
+			return []byte("content"), nil
+		},
+	}
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	data, err := getFileWithRetry(context.Background(), client, "org", "repo", "file.txt", logf)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("content"), data)
+	assert.Len(t, *delays, 2)
+	require.Len(t, lines, 1)
+	assert.Contains(t, lines[0], "org/repo: file.txt readable on attempt 3 of 5 after ")
+}
+
+func TestGetFileWithRetry_NoLogOnFirstAttempt(t *testing.T) {
+	client := &retryTestClient{
+		getFileFn: func(_ context.Context, _, _, _ string) ([]byte, error) {
+			return []byte("content"), nil
+		},
+	}
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	_, err := getFileWithRetry(context.Background(), client, "org", "repo", "file.txt", logf)
+	require.NoError(t, err)
+	assert.Empty(t, lines, "a first-attempt read reports nothing")
 }
 
 func TestGetFileWithRetry_NonNotFoundFailsImmediately(t *testing.T) {
@@ -326,9 +404,10 @@ func TestGetFileWithRetry_NonNotFoundFailsImmediately(t *testing.T) {
 		},
 	}
 
-	_, err := getFileWithRetry(context.Background(), client, "org", "repo", "file.txt")
+	_, err := getFileWithRetry(context.Background(), client, "org", "repo", "file.txt", nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, networkErr)
+	assert.False(t, behaviourfail.Is(err), "a non-404 error is not marked infrastructure")
 	assert.Equal(t, int32(1), calls.Load(),
 		"non-404 errors should not be retried")
 }
@@ -351,7 +430,7 @@ func TestGetFileWithRetry_RespectsContextCancellation(t *testing.T) {
 		},
 	}
 
-	_, err := getFileWithRetry(ctx, client, "org", "repo", "file.txt")
+	_, err := getFileWithRetry(ctx, client, "org", "repo", "file.txt", nil)
 	require.Error(t, err)
 	assert.Equal(t, context.Canceled, err)
 	assert.Equal(t, int32(1), calls.Load(),
@@ -415,4 +494,51 @@ func TestValidatePerRepoPostInstall_ExhaustsRetriesWithClearError(t *testing.T) 
 	err := ValidatePerRepoPostInstall(context.Background(), client, "org", "repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing .github/workflows/fullsend.yaml")
+	assert.True(t, behaviourfail.Is(err), "the exhausted 404 stays marked through the validation wrap")
+}
+
+func TestValidatePerRepoPostInstallWithRuntime_LogsRetriedVendoredMarker(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	org, repo := "acme", "test-repo"
+	inner := forge.NewFakeClient()
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+	inner.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml":  []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":            cfg,
+		org + "/" + repo + "/" + scaffold.VendoredMarkerPath(): []byte("marker"),
+		org + "/" + repo + "/.fullsend/bin/fullsend":           []byte("binary"),
+	}
+	// The first read (the shim) is a transient 404.
+	client := &transientNotFoundClient{FakeClient: inner, failCount: 1}
+	var lines []string
+	logf := func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) }
+
+	err = ValidatePerRepoPostInstallWithRuntime(context.Background(), client, org, repo, "dummy", nil, logf)
+	require.NoError(t, err)
+	require.Len(t, lines, 1)
+	assert.Contains(t, lines[0], ".github/workflows/fullsend.yaml readable on attempt 2 of 5")
+}
+
+func TestValidatePerRepoPostInstall_MissingVendoredMarkerIsInfrastructure(t *testing.T) {
+	speedUpValidateRetries(t)
+
+	org, repo := "acme", "test-repo"
+	client := forge.NewFakeClient()
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml": []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":           cfg,
+	}
+
+	err = ValidatePerRepoPostInstall(context.Background(), client, org, repo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing vendored marker "+scaffold.VendoredMarkerPath())
+	assert.True(t, behaviourfail.Is(err), "a vendored marker that never becomes readable is infrastructure")
 }
