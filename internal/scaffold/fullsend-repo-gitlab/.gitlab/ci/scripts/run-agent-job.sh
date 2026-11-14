@@ -1181,6 +1181,37 @@ set +e
 # the pin-validated API root so that resolution never falls through to
 # one of those instead.
 export FULLSEND_GITLAB_URL="${FULLSEND_PINNED_GITLAB_URL}"
+# The agent post-scripts send the forge token to the host named by
+# CI_SERVER_HOST (and the origin in CI_SERVER_URL), which reach them
+# unchanged. Fail the job unless both agree with the pinned API root, so
+# the post-scripts' token destination stays consistent with it and a
+# partial override (CI_SERVER_* changed, CI_API_V4_URL not) is caught.
+# This is defence in depth, not a boundary: FULLSEND_PINNED_GITLAB_URL
+# is derived from CI_API_V4_URL, which is itself overridable by the same
+# Maintainer/Owner-level CI/CD variables that could change CI_SERVER_*.
+# The values are not printed, and neither is used as a fallback.
+_fs_pinned_origin="${FULLSEND_PINNED_GITLAB_URL,,}"
+_fs_pinned_host="${_fs_pinned_origin#https://}"
+_fs_pinned_host="${_fs_pinned_host%%/*}"
+# Drop the port. An IPv6 literal keeps its colons; compare it without
+# brackets so either CI_SERVER_HOST form matches.
+if [[ "${_fs_pinned_host}" == \[* ]]; then
+  _fs_pinned_host="${_fs_pinned_host%%\]*}"
+  _fs_pinned_host="${_fs_pinned_host#\[}"
+else
+  _fs_pinned_host="${_fs_pinned_host%%:*}"
+fi
+_fs_server_url="${CI_SERVER_URL:-}"
+_fs_server_url="${_fs_server_url%/}"
+_fs_server_host="${CI_SERVER_HOST:-}"
+_fs_server_host="${_fs_server_host#\[}"
+_fs_server_host="${_fs_server_host%\]}"
+if [ -z "${_fs_server_url}" ] || [ "${_fs_server_url,,}" != "${_fs_pinned_origin}" ] \
+  || [ -z "${_fs_server_host}" ] || [ "${_fs_server_host,,}" != "${_fs_pinned_host}" ]; then
+  echo "ERROR: CI_SERVER_URL or CI_SERVER_HOST disagrees with the pinned GitLab URL (FULLSEND_PINNED_GITLAB_URL) — refusing to run the agent post-scripts against an unpinned GitLab origin (fail-closed)" >&2
+  exit 1
+fi
+unset _fs_pinned_origin _fs_pinned_host _fs_server_url _fs_server_host
 fullsend run "${STAGE}" \
   --fullsend-dir .fullsend \
   --target-repo "${_FS_TARGET_REPO}" \

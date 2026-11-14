@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/cgi"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -930,13 +931,12 @@ func TestRunAgentJobScript_UsesPinnedProjectIDForPATCalls(t *testing.T) {
 		"FULLSEND_DISPATCH_SECRET=" + secret,
 		"FULLSEND_DISPATCH_HMAC=" + hmacHex,
 		"CI_PROJECT_PATH=group/project",
-		"CI_SERVER_URL=https://gitlab.example",
 		"CI_PIPELINE_URL=https://gitlab.example/group/project/-/pipelines/100",
 		// Deliberately different from the pinned project (42) so a passing
 		// assertion below proves these calls used the pinned project id,
 		// not this overridable CI variable.
 		"CI_PROJECT_ID=1",
-	}, pinTLSEnv(t, srv)...)
+	}, pinAgentJobEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)
 
@@ -1136,14 +1136,12 @@ func TestRunAgentJobScript_UsesPinnedIdentityForStatusRepo(t *testing.T) {
 		// not the overridable CI_PROJECT_PATH pipeline variable.
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=unpinned/project",
-		"CI_SERVER_URL=https://unpinned.example",
-	}, pinTLSEnv(t, srv)...)
+	}, pinAgentJobEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)
 	got := string(out)
 	assert.Contains(t, got, "--status-repo pinned/project")
 	assert.NotContains(t, got, "--status-repo unpinned/project")
-	assert.NotContains(t, got, "unpinned.example")
 }
 
 // TestRunAgentJobScript_UsesPinnedGitLabURLForFullsendRun is a regression
@@ -1162,12 +1160,99 @@ func TestRunAgentJobScript_UsesPinnedGitLabURLForFullsendRun(t *testing.T) {
 		// passing assertion below proves the `fullsend run` child
 		// environment's FULLSEND_GITLAB_URL comes from
 		// FULLSEND_PINNED_GITLAB_URL, not these overridable variables.
-		"CI_SERVER_URL=https://unpinned.example",
+		// (A disagreeing CI_SERVER_URL fails the job instead; see
+		// TestRunAgentJobScript_ChecksCIServerOriginAgainstPinnedURL.)
 		"GITLAB_API_URL=https://also-unpinned.example",
 		"FULLSEND_GITLAB_URL=https://also-unpinned.example",
 	})
 	assert.Contains(t, got, "FULLSEND_GITLAB_URL: "+srvURL)
 	assert.NotContains(t, got, "unpinned.example")
+}
+
+// TestRunAgentJobScript_ChecksCIServerOriginAgainstPinnedURL checks that
+// run-agent-job.sh fails before `fullsend run` unless CI_SERVER_URL and
+// CI_SERVER_HOST agree with FULLSEND_PINNED_GITLAB_URL (#9465). The agent
+// post-scripts send the forge token to the host CI_SERVER_HOST names, so a
+// partial override of CI_SERVER_* (CI_API_V4_URL unchanged) must not reach
+// them. The fake API's URL is https://127.0.0.1:<port>, so every case
+// also exercises a non-default port in both the pinned URL and
+// CI_SERVER_URL.
+func TestRunAgentJobScript_ChecksCIServerOriginAgainstPinnedURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     func(srvURL string) []string
+		wantRun bool
+	}{
+		{
+			name:    "matching values with a non-default port",
+			env:     func(string) []string { return nil },
+			wantRun: true,
+		},
+		{
+			name: "CI_SERVER_URL with a trailing slash",
+			env: func(srvURL string) []string {
+				return []string{"CI_SERVER_URL=" + srvURL + "/"}
+			},
+			wantRun: true,
+		},
+		{
+			name: "CI_SERVER_URL and CI_SERVER_HOST differ only in case",
+			env: func(srvURL string) []string {
+				return []string{
+					"CI_SERVER_URL=" + strings.Replace(srvURL, "https://", "HTTPS://", 1),
+					"CI_SERVER_HOST=127.0.0.1",
+				}
+			},
+			wantRun: true,
+		},
+		{
+			name: "CI_SERVER_URL on another host",
+			env: func(string) []string {
+				return []string{"CI_SERVER_URL=https://other.example"}
+			},
+		},
+		{
+			name: "CI_SERVER_URL on another port",
+			env: func(srvURL string) []string {
+				u, err := url.Parse(srvURL)
+				require.NoError(t, err)
+				return []string{"CI_SERVER_URL=https://" + u.Hostname()}
+			},
+		},
+		{
+			name: "CI_SERVER_HOST on another host while CI_SERVER_URL matches",
+			env: func(string) []string {
+				return []string{"CI_SERVER_HOST=other.example"}
+			},
+		},
+		{
+			name: "CI_SERVER_URL empty",
+			env: func(string) []string {
+				return []string{"CI_SERVER_URL="}
+			},
+		},
+		{
+			name: "CI_SERVER_HOST empty",
+			env: func(string) []string {
+				return []string{"CI_SERVER_HOST="}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, srvURL, err := execAgentJobScriptForFullsendRun(t, tt.env)
+			if tt.wantRun {
+				require.NoError(t, err, "stdout/stderr: %s", got)
+				assert.Contains(t, got, "FULLSEND_GITLAB_URL: "+srvURL)
+				assert.NotContains(t, got, "disagrees with the pinned GitLab URL")
+				return
+			}
+			require.Error(t, err, "stdout/stderr: %s", got)
+			assert.Contains(t, got, "ERROR: CI_SERVER_URL or CI_SERVER_HOST disagrees with the pinned GitLab URL")
+			assert.NotContains(t, got, "FULLSEND_GITLAB_URL:", "fullsend run must not start")
+			assert.NotContains(t, got, "other.example", "the values must not be printed")
+		})
+	}
 }
 
 // TestRunAgentJobScript_MapsOnlyPrefixedOpenAIKey verifies the GitLab job
@@ -1301,6 +1386,27 @@ func TestRunAgentJobScript_MRLifecycleActorAuthorization(t *testing.T) {
 // the fake API's URL.
 func runAgentJobScriptForFullsendRun(t *testing.T, extraEnv []string) (string, string) {
 	t.Helper()
+	out, srvURL, err := execAgentJobScriptForFullsendRun(t, func(string) []string { return extraEnv })
+	require.NoError(t, err, "stdout/stderr: %s", out)
+	return out, srvURL
+}
+
+// pinAgentJobEnv returns pinTLSEnv plus CI_SERVER_URL and CI_SERVER_HOST
+// matching srv, the pinned GitLab URL. run-agent-job.sh refuses to start
+// `fullsend run` unless both agree with FULLSEND_PINNED_GITLAB_URL.
+func pinAgentJobEnv(t *testing.T, srv *httptest.Server) []string {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	require.NoError(t, err)
+	return append(pinTLSEnv(t, srv), "CI_SERVER_URL="+srv.URL, "CI_SERVER_HOST="+u.Hostname())
+}
+
+// execAgentJobScriptForFullsendRun is runAgentJobScriptForFullsendRun
+// without the success requirement. extraEnv receives the fake API's URL
+// and its result is appended after the default CI_SERVER_URL and
+// CI_SERVER_HOST (from pinAgentJobEnv), so it can override them.
+func execAgentJobScriptForFullsendRun(t *testing.T, extraEnv func(srvURL string) []string) (string, string, error) {
+	t.Helper()
 	root := t.TempDir()
 	writeGitLabScript(t, root, ".gitlab/ci/scripts/trust-ci-server-ca.sh")
 	writeGitLabScript(t, root, gitlabPinCIJobIdentityScriptPath)
@@ -1362,7 +1468,8 @@ fi
 		"STAGE":                 "triage",
 		"STATUS_IID":            "",
 	}
-	for _, item := range extraEnv {
+	extra := extraEnv(srv.URL)
+	for _, item := range extra {
 		key, value, ok := strings.Cut(item, "=")
 		if ok {
 			if _, signed := dispatchEnv[key]; signed {
@@ -1399,7 +1506,8 @@ fi
 	for key, value := range dispatchEnv {
 		env = append(env, key+"="+value)
 	}
-	for _, item := range extraEnv {
+	env = append(env, pinAgentJobEnv(t, srv)...)
+	for _, item := range extra {
 		key, _, ok := strings.Cut(item, "=")
 		if !ok {
 			continue
@@ -1408,10 +1516,9 @@ fi
 			env = append(env, item)
 		}
 	}
-	cmd.Env = append(env, pinTLSEnv(t, srv)...)
+	cmd.Env = env
 	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "stdout/stderr: %s", out)
-	return string(out), srv.URL
+	return string(out), srv.URL, err
 }
 
 // TestRunAgentJobScript_UsesPinnedRefForTrustedConfigAndTargetBranch is a
@@ -1570,7 +1677,6 @@ esac
 		"FULLSEND_DISPATCH_HMAC=" + hmacHex,
 		"CI_PROJECT_ID=42",
 		"CI_PROJECT_PATH=group/project",
-		"CI_SERVER_URL=" + serverRoot,
 		"CI_PIPELINE_URL=" + serverRoot + "/group/project/-/pipelines/100",
 		"RESOLVE_JSON_FILE=" + resolvedPath,
 		// The attack this test defends against: an ordinary
@@ -1579,7 +1685,7 @@ esac
 		// fail) but carries a different trusted-config payload and a
 		// different TARGET_BRANCH fallback value than the pinned ref.
 		"CI_DEFAULT_BRANCH=malicious",
-	}, pinTLSEnv(t, srv)...)
+	}, pinAgentJobEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)
 	got := string(out)
@@ -1802,8 +1908,7 @@ func TestRunAgentJobScript_IgnoresUnsignedMergeRequestIIDWhenStatusIIDMissing(t 
 		"CI_MERGE_REQUEST_IID=999",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=unpinned/project",
-		"CI_SERVER_URL=https://unpinned.example",
-	}, pinTLSEnv(t, srv)...)
+	}, pinAgentJobEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)
 	got := string(out)
@@ -1910,8 +2015,7 @@ func TestRunAgentJobScript_ExtractsWrappedPriorReviewSHA(t *testing.T) {
 		"STATUS_IID=5",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=unpinned/project",
-		"CI_SERVER_URL=https://unpinned.example",
-	}, pinTLSEnv(t, srv)...)
+	}, pinAgentJobEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)
 	got := string(out)
@@ -2020,14 +2124,13 @@ func TestRunAgentJobScript_UnsetsMergeRequestIIDForIssueEvent(t *testing.T) {
 		"CI_MERGE_REQUEST_IID=7",
 		"CI_PROJECT_ID=1",
 		"CI_PROJECT_PATH=unpinned/project",
-		"CI_SERVER_URL=https://unpinned.example",
 		// An ordinary, overridable CI/CD variable — the same class as
 		// CI_MERGE_REQUEST_IID above — pre-set to the value
 		// newGitLabClientFromEnv treats as selecting the merge_requests
 		// note target. The issue_* arm must override it so the fullsend
 		// CLI subprocess never inherits it.
 		"FULLSEND_NOTE_TARGET=merge_requests",
-	}, pinTLSEnv(t, srv)...)
+	}, pinAgentJobEnv(t, srv)...)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "stdout/stderr: %s", out)
 	got := string(out)
@@ -2128,7 +2231,7 @@ func TestRunAgentJobScript_IssueOpenTriageRequiresDeveloper(t *testing.T) {
 				"CI_PIPELINE_URL=https://gitlab.example/pinned/project/-/pipelines/999",
 				"CI_PROJECT_ID=1",
 				"CI_PROJECT_PATH=pinned/project",
-			}, pinTLSEnv(t, srv)...)
+			}, pinAgentJobEnv(t, srv)...)
 			out, err := cmd.CombinedOutput()
 			require.NoError(t, err, "a skipped stage must still exit 0; stdout/stderr: %s", out)
 			got := string(out)
