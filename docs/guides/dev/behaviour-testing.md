@@ -692,11 +692,13 @@ first waits a 2-minute grace period, outside `failureLogBudget`. It then adds
 a `Dispatch diagnostics` section to `failure-summary.txt`, before teardown
 deletes the repository. The section shows, in this order:
 
-- a `grace wait:` note when the wait was skipped or shortened, and the runs
-  are still listed. The wait is skipped when the total grace wait time for
-  the test process (about 6 minutes) is used up, or when no verdict can be
-  computed: the CI driver cannot list runs (`ci.RunLister`) or the error does
-  not name the workflow. It is shortened when that total runs out mid-wait;
+- a `grace wait:` note when the wait was skipped or shortened. Runs are
+  still listed unless the driver cannot list them
+  (`workflow runs: not listed: ...`). The wait is skipped when the total
+  grace wait time for the test process (about 6 minutes) is used up, or when
+  no verdict can be computed: the CI driver does not implement
+  `ci.RunLister`, or the error does not name the workflow. It is shortened
+  when that total runs out mid-wait;
 - `the grace period was cut short: <err>` when the scenario's context ended
   before or during the wait;
 - the repository, the time of the listing (runner clock) and the real
@@ -714,8 +716,12 @@ deletes the repository. The section shows, in this order:
   wait was shortened. When no late run appeared, the verdict is `no`. After
   a full grace wait, `no` with no matching run suggests the event produced
   no run, and `no` with only older matching runs says they predate the
-  wait. When the wait was skipped, shortened, cut short or not configured,
-  the line reads `no (inconclusive: <reason>; ...)` instead. A `no` with no
+  wait. When the wait was skipped because the total grace wait time is used
+  up, shortened, cut short or not configured, the line reads
+  `no (inconclusive: <reason>; ...)` instead. When no verdict can be
+  computed, there is no verdict: the section says `workflow runs: not listed`
+  (no `ci.RunLister`) or `matching run after the wait: unknown` (the error
+  does not name the workflow). A `no` with no
   matching run also reads `no (inconclusive: the listing was truncated;
   ...)` when the run listing hit its limit.
 
