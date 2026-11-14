@@ -8054,6 +8054,7 @@ func TestGetFileContentAtRef_JSONFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":     "file",
 			"content":  base64.StdEncoding.EncodeToString([]byte("role: triage\n")),
 			"encoding": "base64",
 			"size":     len("role: triage\n"),
@@ -8074,6 +8075,7 @@ func TestGetFileContentAtRef_EmptyContentForNonEmptyFileFails(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":     "file",
 			"content":  "",
 			"encoding": "none",
 			"size":     2 << 20,
@@ -8125,11 +8127,12 @@ func TestGetFileContentAtRef_JSONWithCommonKeysIsNotAnEnvelope(t *testing.T) {
 }
 
 func TestGetFileContentAtRef_JSONNonFileOrRawFile(t *testing.T) {
-	// With the raw media type, api.github.com answers a directory with a
+	// A server that ignores the raw media type answers a directory with a
 	// JSON array of entries, and a symlink or submodule with an object of
 	// that type and no content. Those must error, as they did before the
-	// raw media type, not come back as the file's bytes. A raw JSON file
-	// that carries an encoding key but no content key is the file itself.
+	// raw media type, not come back as the file's bytes. Any other JSON
+	// body — arrays that are not entry listings, objects that are not
+	// type "file" envelopes — is a raw JSON file and returned verbatim.
 	tests := []struct {
 		name    string
 		body    string
@@ -8137,7 +8140,7 @@ func TestGetFileContentAtRef_JSONNonFileOrRawFile(t *testing.T) {
 	}{
 		{
 			name:    "directory listing",
-			body:    `[{"type":"file","name":"a.md","path":"skills/a.md","sha":"abc"}]`,
+			body:    `[{"type":"file","name":"a.md","path":"skills/a.md","sha":"abc"},{"type":"dir","name":"checks","path":"skills/checks","sha":"def"}]`,
 			wantErr: "is a directory",
 		},
 		{
@@ -8153,6 +8156,26 @@ func TestGetFileContentAtRef_JSONNonFileOrRawFile(t *testing.T) {
 		{
 			name: "raw JSON file with an encoding key",
 			body: `{"encoding":"utf-8","labels":["bug"]}`,
+		},
+		{
+			name: "raw JSON file with encoding and content keys",
+			body: `{"encoding":"base64","content":"aGVsbG8=","note":"not a contents entry"}`,
+		},
+		{
+			name: "raw JSON array file",
+			body: `["bug","documentation"]`,
+		},
+		{
+			name: "raw JSON array of objects that are not entries",
+			body: `[{"type":"object","path":"x"}]`,
+		},
+		{
+			name: "empty raw JSON array file",
+			body: `[]`,
+		},
+		{
+			name: "raw JSON object typed as a dir without path and sha",
+			body: `{"type":"dir","name":"docs"}`,
 		},
 		{
 			name: "raw JSON array-like text that is not JSON",

@@ -2253,17 +2253,18 @@ func escapePathSegments(p string) string {
 //
 // The file is requested with the raw media type, so files the base64
 // JSON representation cannot carry (GitHub serves those as content: "",
-// encoding: "none" — every file over 1 MiB) are still returned. A server
-// that ignores the media type and answers with the JSON envelope is
-// handled too — but a JSON body is only treated as that envelope when it
-// carries both the envelope's encoding (base64 or none) and content keys,
-// because the raw media type can also serve a raw JSON file as
-// application/json (JSON schemas, manifests), and decoding that as an
-// envelope would silently return empty bytes.
+// encoding: "none" — every file over 1 MiB) are still returned.
 //
-// A path that is not a file errors, as it did before the raw media type:
-// the API answers a directory with a JSON array of entries, and a symlink
-// or submodule with an object of that type and no content.
+// On github.com a raw file is never served as application/json, so the
+// JSON handling below is defensive, for servers that ignore the raw media
+// type and answer with the JSON representation instead. Such a body is
+// read as that representation only when it unmistakably is one: a
+// directory listing (a non-empty array of entries, each with type, path
+// and sha) or a symlink or submodule entry errors, as it did before the
+// raw media type; a type "file" object with an encoding of base64 or none
+// and a content key is decoded as the contents envelope. Any other JSON
+// body — a raw JSON file such as a schema, a manifest or ["bug"] — is
+// returned as the file's own bytes, never decoded into empty content.
 func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s",
 		url.PathEscape(owner), url.PathEscape(repo), escapePathSegments(path), url.QueryEscape(ref)),
@@ -2281,38 +2282,36 @@ func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path,
 		return body, nil
 	}
 
-	// A directory is listed as a JSON array of entries.
-	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '[' && json.Valid(trimmed) {
-		return nil, fmt.Errorf("file %q at %q: the path is a directory, not a file", path, ref)
-	}
-
-	var file struct {
-		Type     *string `json:"type"`
-		SHA      *string `json:"sha"`
-		Path     *string `json:"path"`
-		Content  *string `json:"content"`
-		Encoding *string `json:"encoding"`
-		Size     int64   `json:"size"`
-	}
-	if err := json.Unmarshal(body, &file); err != nil {
-		// Not a JSON object: a raw JSON file served with its own type.
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '[' {
+		// A directory listing is a non-empty array of entries, each an
+		// object with type, path and sha. Any other array is a raw JSON
+		// file.
+		var entries []contentsJSONEntry
+		if err := json.Unmarshal(trimmed, &entries); err == nil && len(entries) > 0 &&
+			slices.IndexFunc(entries, func(e contentsJSONEntry) bool { return !e.isEntry() }) < 0 {
+			return nil, fmt.Errorf("file %q at %q: the path is a directory, not a file", path, ref)
+		}
 		return body, nil
 	}
-	// A symlink or submodule (and a directory, defensively) is an object of
-	// that type with its sha and path. A bare "type" key alone is common in
-	// ordinary JSON files (JSON schemas say "type":"object"), so the sha and
-	// path keys are required too.
-	if file.Type != nil && file.SHA != nil && file.Path != nil {
+
+	var file contentsJSONEntry
+	if err := json.Unmarshal(body, &file); err != nil || file.Type == nil {
+		// Not a contents entry: a raw JSON file served with its own type.
+		return body, nil
+	}
+	// A bare "type" key is common in ordinary JSON files (JSON schemas say
+	// "type":"object"), so a non-file entry also needs its path and sha.
+	if file.isEntry() {
 		switch *file.Type {
 		case "dir", "symlink", "submodule":
 			return nil, fmt.Errorf("file %q at %q: the path is a %s, not a file", path, ref, *file.Type)
 		}
 	}
-	// The envelope is recognized by its encoding ("base64", or "none" over
-	// 1 MiB) together with a content key. Anything else — including a raw
-	// JSON file that happens to carry an encoding key — is the file's own
-	// bytes, served as JSON because the raw media type was requested.
-	if file.Encoding == nil || file.Content == nil || (*file.Encoding != "base64" && *file.Encoding != "none") {
+	// The envelope is a type "file" object with its encoding ("base64", or
+	// "none" over 1 MiB) and a content key. Anything else is the file's
+	// own bytes, served as JSON because the raw media type was requested.
+	if *file.Type != "file" || file.Encoding == nil || file.Content == nil ||
+		(*file.Encoding != "base64" && *file.Encoding != "none") {
 		return body, nil
 	}
 	if *file.Encoding != "base64" || (*file.Content == "" && file.Size > 0) {
@@ -2325,6 +2324,23 @@ func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path,
 		return nil, fmt.Errorf("decode base64 content: %w", err)
 	}
 	return data, nil
+}
+
+// contentsJSONEntry is one entry of the contents API's JSON
+// representation: a file, directory, symlink or submodule.
+type contentsJSONEntry struct {
+	Type     *string `json:"type"`
+	SHA      *string `json:"sha"`
+	Path     *string `json:"path"`
+	Content  *string `json:"content"`
+	Encoding *string `json:"encoding"`
+	Size     int64   `json:"size"`
+}
+
+// isEntry reports whether e carries the type, path and sha keys every
+// contents entry has.
+func (e contentsJSONEntry) isEntry() bool {
+	return e.Type != nil && e.Path != nil && e.SHA != nil
 }
 
 // maxFileContentBytes bounds a raw-media file read, matching the 100 MiB
