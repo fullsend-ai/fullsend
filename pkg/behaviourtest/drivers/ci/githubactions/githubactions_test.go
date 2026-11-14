@@ -190,6 +190,132 @@ func TestSelectSuccessfulWorkflowRun_SkipsFailed(t *testing.T) {
 	assert.Equal(t, 2, got.ID)
 }
 
+// sameSecondTrigger is a sub-second trigger time for the #9495 tests:
+// created_at has second precision, so a run created in this second
+// reports 21:56:29Z.
+var sameSecondTrigger = time.Date(2026, 11, 14, 21, 56, 29, 400_000_000, time.UTC)
+
+func TestCreatedBefore(t *testing.T) {
+	t.Parallel()
+
+	assert.True(t, createdBefore(time.Date(2026, 11, 14, 21, 56, 28, 0, time.UTC), sameSecondTrigger))
+	assert.False(t, createdBefore(time.Date(2026, 11, 14, 21, 56, 29, 0, time.UTC), sameSecondTrigger))
+	assert.False(t, createdBefore(time.Date(2026, 11, 14, 21, 56, 30, 0, time.UTC), sameSecondTrigger))
+}
+
+func TestSelectWorkflowRun_MatchesRunCreatedInTriggerSecond(t *testing.T) {
+	t.Parallel()
+
+	runs := []forge.WorkflowRun{
+		{ID: 1, Status: "completed", Conclusion: "success", Event: "issues", CreatedAt: "2026-11-14T21:56:28Z"},
+		{ID: 2, Status: "completed", Conclusion: "success", Event: "issues", CreatedAt: "2026-11-14T21:56:29Z"},
+	}
+	got := selectWorkflowRun(runs, sameSecondTrigger, "issues")
+	require.NotNil(t, got)
+	assert.Equal(t, 2, got.ID)
+
+	got = selectSuccessfulWorkflowRun(runs, sameSecondTrigger, "issues")
+	require.NotNil(t, got)
+	assert.Equal(t, 2, got.ID)
+
+	assert.Nil(t, selectWorkflowRun(runs[:1], sameSecondTrigger, "issues"), "a run from an earlier second is still rejected")
+}
+
+func TestSelectCompletedSuccessRun_MatchesRunCreatedInTriggerSecond(t *testing.T) {
+	t.Parallel()
+
+	runs := []forge.WorkflowRun{
+		{ID: 1, Name: agentWorkflowName, Status: "completed", Conclusion: "success", CreatedAt: "2026-11-14T21:56:28Z"},
+		{ID: 2, Name: agentWorkflowName, Status: "completed", Conclusion: "success", CreatedAt: "2026-11-14T21:56:29Z"},
+	}
+	got := selectCompletedSuccessRun(runs, sameSecondTrigger)
+	require.NotNil(t, got)
+	assert.Equal(t, 2, got.ID)
+
+	got = selectCompletedSuccessRunByName(runs, sameSecondTrigger, agentWorkflowName)
+	require.NotNil(t, got)
+	assert.Equal(t, 2, got.ID)
+
+	assert.Nil(t, selectCompletedSuccessRun(runs[:1], sameSecondTrigger))
+	assert.Nil(t, selectCompletedSuccessRunByName(runs[:1], sameSecondTrigger, agentWorkflowName))
+}
+
+func TestArtifactSelectors_MatchArtifactCreatedInTriggerSecond(t *testing.T) {
+	t.Parallel()
+
+	arts := []forge.RepositoryArtifact{
+		{ID: 1, Name: "fullsend-triage", WorkflowRunID: 10, CreatedAt: "2026-11-14T21:56:28Z"},
+		{ID: 2, Name: "fullsend-triage", WorkflowRunID: 20, CreatedAt: "2026-11-14T21:56:29Z"},
+	}
+
+	got := selectRepositoryArtifactAfter(arts, "fullsend-triage", sameSecondTrigger)
+	require.NotNil(t, got)
+	assert.Equal(t, 2, got.ID)
+	assert.Nil(t, selectRepositoryArtifactAfter(arts[:1], "fullsend-triage", sameSecondTrigger))
+
+	matching := repositoryArtifactsAfter(arts, sameSecondTrigger, func(name string) bool { return name == "fullsend-triage" })
+	require.Len(t, matching, 1)
+	assert.Equal(t, 2, matching[0].ID)
+
+	diag := formatArtifactDiagnostics(arts, "fullsend-triage", sameSecondTrigger)
+	assert.Contains(t, diag, "artifact 1: run=10 created_at=2026-11-14T21:56:28Z (rejected: created before trigger time")
+	assert.Contains(t, diag, "artifact 2: run=20 created_at=2026-11-14T21:56:29Z (eligible by trigger time")
+}
+
+func TestListHarnessRunsAfter_IncludesRunCreatedInTriggerSecond(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/" + harnessWorkflowFile: {
+			{ID: 3, Status: "completed", Conclusion: "success", CreatedAt: "2026-11-14T21:56:30Z"},
+			{ID: 2, Status: "completed", Conclusion: "success", CreatedAt: "2026-11-14T21:56:29Z"},
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2026-11-14T21:56:28Z"},
+		},
+	}
+	d := newTestDriver(client)
+
+	ids := func(runs []forge.WorkflowRun) []int {
+		var out []int
+		for _, r := range runs {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+
+	runs, err := d.listHarnessRunsAfter(context.Background(), "org", "repo", sameSecondTrigger)
+	require.NoError(t, err)
+	assert.Equal(t, []int{3, 2}, ids(runs))
+
+	runs, err = d.listHarnessRunsAfterPaginated(context.Background(), "org", "repo", sameSecondTrigger)
+	require.NoError(t, err)
+	assert.Equal(t, []int{3, 2}, ids(runs))
+}
+
+func TestAssertNoWorkflow_KeepsExactTriggerTime(t *testing.T) {
+	t.Parallel()
+
+	// AssertNoWorkflow is a negative check with no filter beyond the
+	// workflow file, so it keeps the exact trigger time (#9495): a run
+	// reported in the trigger's own second reads as before the trigger.
+	client := forge.NewFakeClient()
+	client.WorkflowRunsList = map[string][]forge.WorkflowRun{
+		"org/repo/test.yaml": {
+			{ID: 2, Status: "completed", Conclusion: "success", CreatedAt: "2026-11-14T21:56:29Z"},
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2026-11-14T21:56:28Z"},
+		},
+	}
+	d := newTestDriver(client)
+	require.NoError(t, d.AssertNoWorkflow(context.Background(), "org", "repo", "test.yaml", sameSecondTrigger))
+
+	client.WorkflowRunsList["org/repo/test.yaml"] = append(
+		[]forge.WorkflowRun{{ID: 3, Status: "completed", Conclusion: "success", CreatedAt: "2026-11-14T21:56:30Z"}},
+		client.WorkflowRunsList["org/repo/test.yaml"]...)
+	err := d.AssertNoWorkflow(context.Background(), "org", "repo", "test.yaml", sameSecondTrigger)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected workflow run 3")
+}
+
 func TestExtractArtifactZip_RejectsCorruptZip(t *testing.T) {
 	t.Parallel()
 
@@ -467,18 +593,16 @@ func TestCountHarnessDispatches_APIError(t *testing.T) {
 	assert.Contains(t, err.Error(), "API error")
 }
 
-func TestCountHarnessDispatches_FractionalSecondBoundaryExcludesSameSecondRun(t *testing.T) {
+func TestCountHarnessDispatches_FractionalSecondBoundaryIncludesSameSecondRun(t *testing.T) {
 	t.Parallel()
 
-	// Regression (#7957 review): forge-reported CreatedAt timestamps have
-	// second precision, but an unnormalized trigger boundary (e.g. a bare
-	// time.Now()) carries a fractional component. A run created in the
-	// same wall-clock second as the boundary can therefore parse as
-	// earlier than it and be excluded — this is exactly why callers (see
-	// steps.whenIssueLabeled) must truncate the boundary to second
-	// precision before calling CountHarnessDispatches. This test pins
-	// both halves of that contract: the untruncated boundary excludes the
-	// same-second run, and the truncated boundary includes it.
+	// Regression (#7957 review, #9495): forge-reported CreatedAt
+	// timestamps have second precision, but an unnormalized trigger
+	// boundary (e.g. a bare time.Now()) carries a fractional component.
+	// A run created in the same wall-clock second as the boundary would
+	// parse as earlier than it, so the driver truncates the boundary
+	// itself (createdBefore). Both an untruncated and an
+	// already-truncated boundary must include the same-second run.
 	runCreatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	fractionalAfter := runCreatedAt.Add(500 * time.Millisecond)
 	client := forge.NewFakeClient()
@@ -494,11 +618,11 @@ func TestCountHarnessDispatches_FractionalSecondBoundaryExcludesSameSecondRun(t 
 	d := newTestDriver(client)
 	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", fractionalAfter)
 	require.NoError(t, err)
-	assert.Equal(t, 0, count, "an unnormalized fractional-second boundary excludes a same-second run")
+	assert.Equal(t, 1, count, "an unnormalized fractional-second boundary includes a same-second run")
 
 	count, err = d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", fractionalAfter.Truncate(time.Second))
 	require.NoError(t, err)
-	assert.Equal(t, 1, count, "truncating the boundary to forge timestamp precision includes the same-second run")
+	assert.Equal(t, 1, count, "a boundary already truncated to forge timestamp precision includes the same-second run")
 }
 
 func TestWaitForHarnessAgentRound_SelectsEarliestEligibleRun(t *testing.T) {
