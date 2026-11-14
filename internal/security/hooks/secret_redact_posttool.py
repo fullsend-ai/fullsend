@@ -88,10 +88,14 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("perplexity_key", re.compile(r"pplx-[a-f0-9]{48}")),
     ("databricks_token", re.compile(r"dapi[a-f0-9]{32}")),
     ("telegram_bot", re.compile(r"\d{8,10}:[A-Za-z0-9_-]{35}")),
+    # A header line or a quoted key (JSON, Python dict, YAML):
+    # ``{"Authorization": "Bearer <token>"}``. Only the ``secret`` group is
+    # masked, so the key and the scheme word stay visible (see redact_text).
     (
         "auth_header",
         re.compile(
-            r"(?:Authorization|authorization)\s*:\s*(?:Bearer|Basic|Token)\s+[A-Za-z0-9_.+/=-]{20,}"
+            r"""(?i:authorization)["']?\s*:\s*["']?(?i:bearer|basic|token)\s+"""
+            r"(?P<secret>[A-Za-z0-9_.+/=-]{20,})"
         ),
     ),
 ]
@@ -614,8 +618,20 @@ def redact_text(text: str, *, skip: frozenset[str] = frozenset()) -> tuple[str, 
     findings: list[dict] = []
     result = text
 
+    def mask_secret_group(match: re.Match, name: str) -> str:
+        # Mask in place: a global replace of the credential would also clip a
+        # longer secret that starts with it and hide that one from later passes.
+        token = match.group("secret")
+        masked = mask_token(token)
+        findings.append({"pattern": name, "masked": masked})
+        whole, start = match.group(0), match.start("secret") - match.start()
+        return whole[:start] + masked + whole[start + len(token) :]
+
     for name, pattern in _PREFIX_PATTERNS:
         if name in skip:
+            continue
+        if "secret" in pattern.groupindex:
+            result = pattern.sub(lambda m, n=name: mask_secret_group(m, n), result)
             continue
         for match in pattern.finditer(result):
             token = match.group(0)
