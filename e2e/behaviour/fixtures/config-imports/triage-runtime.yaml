@@ -1,0 +1,6 @@
+version: "1"
+agents:
+  - name: triage
+    runtime: dummy
+  - name: code
+    runtime: dummy

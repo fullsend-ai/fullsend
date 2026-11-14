@@ -20,6 +20,10 @@ For initial setup, see
 # ── Schema ───────────────────────────────────────────────────
 version: "1"                         # Schema version (required)
 
+# ── Shared configuration ─────────────────────────────────────
+imports:                              # Ordered, pinned full-config documents applied before this file's values
+  - https://raw.githubusercontent.com/acme/agent-config/<commit-sha>/config.yaml#sha256=<64-hex-digest>
+
 # ── Platform ─────────────────────────────────────────────────
 forge: github                        # Hosting platform: github, gitlab (auto-detected if omitted)
 
@@ -153,6 +157,27 @@ trace_context:                       # Trace-context keys of this repository (AD
 
 Most fields are self-explanatory from the inline comments above. This section
 expands on fields where additional context helps.
+
+### `imports`
+
+An ordered list of remote per-repo config documents. Each imported document
+is resolved before the local values in the same file, and its own imports are
+resolved first. Imports in `config.base.yaml` are applied before that file's
+values; imports in `config.yaml` are applied after the base layer and before
+the local overlay values. The existing field-specific merge rules apply at
+each step. `imports` is a resolution directive and is not exposed as an
+effective config field. In `repos.yaml`, imports from `defaults.config`, the
+forge-specific `config`, and the repository's `config` are appended in that
+order.
+
+Each URL must use HTTPS, include a 40- or 64-character commit SHA as a path
+segment, and end with a `#sha256=` fragment containing the imported document's
+64-character hexadecimal digest. The fetched content must match the digest.
+Imports do not follow redirects and cannot target internal or reserved IP
+addresses. An import graph may contain up to 32 unique documents and 16 nested
+levels; each document is limited to 1 MiB. Cycles, invalid pins, fetch errors,
+and digest mismatches fail config loading. Review imported documents carefully:
+they can change any field that participates in config inheritance.
 
 ### `version`
 

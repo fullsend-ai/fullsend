@@ -799,10 +799,11 @@ type LoadOpts struct {
 }
 
 // LoadConfig reads config.yaml (and config.base.yaml if present) from
-// dir, returning a ConfigReader. The parent chain is wired as overlay
-// (config.yaml) → base (config.base.yaml) → code defaults. A config.yaml
-// in the removed per-org format is rejected. This is the preferred
-// entry point for consumer packages that only need read access.
+// dir, resolving each layer's pinned imports before its local values.
+// The parent chain is wired as overlay (config.yaml) → base
+// (config.base.yaml) → code defaults. A config.yaml in the removed
+// per-org format is rejected. This is the preferred entry point for
+// consumer packages that only need read access.
 func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
 	overlayData, haveOverlay, baseData, haveBase, err := readConfigFiles(dir)
 	if err != nil {
@@ -829,13 +830,13 @@ func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
 }
 
 // LoadConfigWriter reads config.yaml (and config.base.yaml if present)
-// from dir, returning a ConfigWriter. The parent chain is wired as
-// overlay (config.yaml) → base (config.base.yaml) → code defaults, and
-// a config.yaml in the removed per-org format is rejected. Only the
-// overlay layer is mutable; base and defaults are read-only via the
-// parent pointer. This is the preferred entry
-// point for consumer packages that need read-write access (e.g. CLI
-// commands that modify and write-back config).
+// from dir, resolving each layer's pinned imports before its local
+// values. The parent chain is wired as overlay (config.yaml) → base
+// (config.base.yaml) → code defaults, and a config.yaml in the removed
+// per-org format is rejected. Only the overlay layer is mutable; base
+// and defaults are read-only via the parent pointer. This is the
+// preferred entry point for consumer packages that need read-write
+// access (e.g. CLI commands that modify and write-back config).
 func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
 	overlayData, haveOverlay, baseData, haveBase, err := readConfigFiles(dir)
 	if err != nil {
@@ -924,12 +925,13 @@ func readConfigFiles(dir string) (overlayData []byte, haveOverlay bool, baseData
 }
 
 // ParsePerRepoConfigWriterLayered parses overlay and optional base YAML
-// bytes into a PerRepoConfigWriter with the parent chain
-// overlay → base → code defaults. When baseData is nil the result is
-// equivalent to ParsePerRepoConfigWriter (parent = code defaults only).
-// This is the preferred entry point when both layers are available as
-// raw bytes (e.g. fetched from a forge API) rather than on the local
-// filesystem (where LoadConfigWriter should be used instead).
+// bytes into a PerRepoConfigWriter, resolving pinned imports in each
+// layer before local values. The parent chain is overlay → base → code
+// defaults. When baseData is nil the result is equivalent to
+// ParsePerRepoConfigWriter (parent = code defaults only). This is the
+// preferred entry point when both layers are available as raw bytes
+// (e.g. fetched from a forge API) rather than on the local filesystem
+// (where LoadConfigWriter should be used instead).
 func ParsePerRepoConfigWriterLayered(overlayData []byte, baseData []byte) (PerRepoConfigWriter, error) {
 	return loadPerRepoLayers(overlayData, true, baseData, len(baseData) > 0)
 }
@@ -939,26 +941,7 @@ func ParsePerRepoConfigWriterLayered(overlayData []byte, baseData []byte) (PerRe
 // empty overlay is created so writes target config.yaml. The returned
 // *perRepoConfig satisfies both ConfigReader and ConfigWriter.
 func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, haveBase bool) (*perRepoConfig, error) {
-	// Parse base layer; parent = code defaults.
-	var baseReader PerRepoConfigReader = &perRepoDefaults{}
-	if haveBase {
-		var base perRepoConfig
-		if err := unmarshalPerRepo(baseData, &base); err != nil {
-			return nil, fmt.Errorf("parsing base config: %w", err)
-		}
-		base.parent = &perRepoDefaults{}
-		baseReader = &base
-	}
-
-	// Parse or create overlay layer; parent = base (or defaults).
-	var overlay perRepoConfig
-	if haveOverlay {
-		if err := unmarshalPerRepo(overlayData, &overlay); err != nil {
-			return nil, fmt.Errorf("parsing per-repo config: %w", err)
-		}
-	}
-	overlay.parent = baseReader
-	return &overlay, nil
+	return loadPerRepoLayersWithImports(overlayData, haveOverlay, baseData, haveBase, nil)
 }
 
 // IsPerRepoYAML reports whether raw YAML parses and is free of the

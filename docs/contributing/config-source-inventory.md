@@ -28,6 +28,12 @@ File merge rules for values that already have a YAML field are in the
 This page does not repeat those rules. It records which source wins before
 the accessor runs.
 
+Each file may also import ordered, pinned remote config layers. Imports from
+`config.base.yaml` run before its local values; imports from `config.yaml` run
+after the base layer and before the overlay's local values. Imported fields
+use the same merge rules as fields written locally, so environment and CLI
+precedence in the tables below remains unchanged.
+
 ## How a workflow run gets a value
 
 Two paths run side by side.
