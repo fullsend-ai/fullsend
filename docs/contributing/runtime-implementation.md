@@ -14,6 +14,7 @@ On this page:
 - [Runtime interface contract](#runtime-interface-contract)
 - [Sandbox hook contract](#sandbox-hook-contract) — files, wiring, wire protocol, sanitizer scope, fail modes, the accepted shell dialect, Claude Code caveats
 - [Pinned runtime binaries in the sandbox image](#pinned-runtime-binaries-in-the-sandbox-image) — pin inventory and [vendored dependency checklist](#vendored-dependency-checklist)
+- [Fullsend tool image mount contract](#fullsend-tool-image-mount-contract) — `/opt/fullsend` paths and image compatibility
 - [Sandbox workspace layout](#sandbox-workspace-layout) and [agent rule layering](#agent-rule-layering)
 - [Dummy runtime operations](#dummy-runtime-operations)
 - [pi runtime internals (#6464)](#pi-runtime-internals-6464) — verification provenance for the pi backend
@@ -449,14 +450,47 @@ Net: after #6358 and #6357, both PreToolUse and PostToolUse halves of the contra
 |--------|-----|------------------|
 | Claude Code | `ARG CLAUDE_CODE_VERSION` (npm, Renovate-tracked). The OpenShell base image ships its **own** unpinned Claude Code at `/usr/local/bin/claude` (whatever `curl claude.ai/install.sh` fetched when the base was built), and `/usr/local/bin` precedes npm's `/usr/bin` on the sandbox `PATH` — so the Containerfile replaces that file with a symlink to the npm install and fails the build unless `claude --version` equals the pin (#6612; before that fix the base image's 2.1.156 shadowed every pin). `TestSandboxImageClaudeCodePinWins` guards the step | the [tool-name vocabulary](#tool-name-vocabulary-608); the hook contract caveats above; the alias table — on Vertex, `opus`/`sonnet`/`haiku` resolve from the running CLI's default table, which `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` steers for the main model and for sub-agents (Agent-tool `model` argument and frontmatter alike); the fleet sets the sonnet pin in fullsend-ai/agents `env/gcp-vertex.env`. A harness or `agents:` entry that needs a specific generation can still name the id. Per-repo `models.aliases` remaps only the parent `--model` ([Claude Code](../runtimes/claude.md) already documents this) and sub-agents follow the env variable until #7031 makes persona models runner-resolved; the inference gateway route's `apiKeyHelper` rules ([Claude Code § Inference gateway route](../runtimes/claude.md#inference-gateway-route)): which headers carry the helper value, when the cache is re-read (TTL, 401/403), that `""` in `--settings` overrides a project helper and project `env`, and that a 500 is not re-read |
 | pi | `ARG PI_VERSION` (npm, `--ignore-scripts`, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`) | `parsePiStream` fixtures (`internal/runtime/testdata/pi/regen.sh`); the extension compatibility notes in [pi runtime internals](#pi-runtime-internals-6464); `piGoogleVertexModels` in `pi_bootstrap.go`, which is the bundled `google-vertex` catalog verbatim and is what the `Agent` tool accepts as a Gemini id — diff `dist/providers/data/google-vertex.json` between the old and new pin, not the generated wrapper, and add any new id; a missed entry makes the `Agent` tool reject a model the running pi serves. `internal/runtime/testdata/pi/check-vertex-catalog.sh` runs exactly that diff against the pinned `PI_VERSION`; the `retry` keys `piSettingsJSON` writes (`core/settings-manager.ts`) and the provider backoff they drive (pi-ai `utils/provider-retry.ts`), see #7191; the edit-repair stopgap, whose removal check is the comment above `ARG PI_VERSION` |
-| `pi-anthropic-vertex` | `ARG PI_ANTHROPIC_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/anthropic-vertex` | the extension's own CI matrix (pinned `PI_VERSION` + latest pi); no compat file or SDK override to check |
-| `pi-xai-vertex` | `ARG PI_XAI_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/xai-vertex` | its `peerDependencies` floor (it mirrors no pi internals; declared only — `--omit=peer` never installs it); `piXaiVertexModels` in `pi_bootstrap.go`, the ids it registers and what the `Agent` tool accepts as a Grok id |
-| `pi-inference-gateway` | `ARG PI_INFERENCE_GATEWAY_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/inference-gateway` (no runtime dependencies, so no `npm ci`). Loaded when `run.go` registers a gateway run for a `gateway/` model (`PrepareGatewayRun`, which calls `SetPiGatewayRun`): the run then gets the `-e` load, the `INFERENCE_GATEWAY_*` clear, the `inference-gateway.json` guard (with the Agent extension's per-dispatch re-check of it) and `INFERENCE_GATEWAY_CONFIG_FILE` (v0.1.2 and later), which names the one config file the extension reads, so no other config-dir file or overlay is read | the extension's own CI matrix (pinned `PI_VERSION` + latest pi) |
+| `pi-anthropic-vertex` | `ARG PI_ANTHROPIC_VERTEX_VERSION` + tarball SHA256, installed under `/usr/local/share/pi-extensions/anthropic-vertex`; loaded from `/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex` | the extension's own CI matrix (pinned `PI_VERSION` + latest pi); no compat file or SDK override to check |
+| `pi-xai-vertex` | `ARG PI_XAI_VERTEX_VERSION` + tarball SHA256, installed under `/usr/local/share/pi-extensions/xai-vertex`; loaded from `/opt/fullsend/usr/local/share/pi-extensions/xai-vertex` | its `peerDependencies` floor (it mirrors no pi internals; declared only — `--omit=peer` never installs it); `piXaiVertexModels` in `pi_bootstrap.go`, the ids it registers and what the `Agent` tool accepts as a Grok id |
+| `pi-inference-gateway` | `ARG PI_INFERENCE_GATEWAY_VERSION` + tarball SHA256, installed under `/usr/local/share/pi-extensions/inference-gateway` and loaded from `/opt/fullsend/usr/local/share/pi-extensions/inference-gateway` (no runtime dependencies, so no `npm ci`). Loaded when `run.go` registers a gateway run for a `gateway/` model (`PrepareGatewayRun`, which calls `SetPiGatewayRun`): the run then gets the `-e` load, the `INFERENCE_GATEWAY_*` clear, the `inference-gateway.json` guard (with the Agent extension's per-dispatch re-check of it) and `INFERENCE_GATEWAY_CONFIG_FILE` (v0.1.2 and later), which names the one config file the extension reads, so no other config-dir file or overlay is read | the extension's own CI matrix (pinned `PI_VERSION` + latest pi) |
 | Codex | `ARG CODEX_VERSION` (npm, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`). The OpenShell base image already installs `@openai/codex` under the same npm prefix (`/usr`, binary `/usr/bin/codex`) — 0.117.0 on the base pinned today — so the pinned install replaces it in place. `/usr/local/bin/codex` is then symlinked at the npm install and the build fails unless `codex --version` reports `codex-cli <pin>`: nothing shadows the pin there today, and the symlink plus assertion make sure nothing can start to, the way the base image's Claude Code did in #6612. `TestSandboxImageCodexPinWins` guards the step | the codex stream parser fixtures (#6920); the JSONL event and hook wire shapes the codex runtime depends on |
 
 The run log's `Agent: <model> (vX.Y.Z)` line is the ground truth for which Claude Code version served a run; the Containerfile pin is a claim, the assertion at build time is what makes it true.
 
 The image also creates each runtime's config directory when the binary refuses to start without one: `CODEX_HOME` (`sandbox.SandboxCodexConfig`) is created owned by the sandbox user and baked as an `ENV` default, so an ad-hoc `codex` invocation from Bash behaves like the runtime's own `EnvExports()`. `TestSandboxImageCodexDefaults` keeps the path in the image and the Go constant in step (the pi equivalent is `TestSandboxImagePiDefaults`).
+
+## Fullsend tool image mount contract
+
+The runner looks for its pinned runtime tools under `/opt/fullsend`:
+
+- `/opt/fullsend/usr/local/bin` — Claude Code, pi, OpenCode, scanners and other Fullsend-installed CLIs.
+- `/opt/fullsend/usr/bin` — Node.js, Python and system utilities required by the runtimes and hooks.
+- `/opt/fullsend/usr/local/share/pi-extensions` — runner-vetted pi provider extensions.
+
+An `image_mounts` entry at `/opt/fullsend` makes the OCI image root visible at
+those paths. OpenShell ignores the mounted image's `ENV`, user, working
+directory and entrypoint. Mounts are read-only. Keep the mounted tool image
+and sandbox image on the same OpenShell base image, or verify that their
+architecture, ELF loader, glibc ABI, Python standard library and Node runtime
+are compatible: executable files run in the sandbox's namespaces, so the
+mount does not provide an isolated root filesystem or automatically select
+the mounted image's dynamic linker.
+
+The regular `fullsend-sandbox` image creates `/opt/fullsend/usr -> /usr`, so
+the same runner paths work when no tool image is mounted. Its
+`fullsend-sandbox-tools` build target removes that link; use that separate
+image for a mount because the OCI root is placed at `/opt/fullsend`. The
+Claude and Codex links in `/usr/local/bin` are relative so they still resolve
+inside the mounted image. The generated base policy allows `/opt/fullsend`
+read-only; custom policies must allow the mount path through
+`filesystem_policy.read_only` or `filesystem_policy.read_write`. Before
+bootstrap, Fullsend checks that the effective policy allows the mount path or
+an ancestor. The harness uses OpenShell's Podman image mount configuration.
+The action leaves local image mounts disabled unless
+`allow-image-mounts: true` is set; a remote gateway operator must enable
+`allow_driver_config` and disable resource admission. See
+[gateway setup](../guides/infrastructure/advanced-setup.md#image-mounts-on-openshell-gateways)
+and the [user guide](../guides/user/bring-your-own-agent.md#mount-the-fullsend-runtime-tools).
 
 ### Vendored dependency checklist
 
@@ -791,7 +825,7 @@ Parity with `claude -p --dangerously-skip-permissions`, verified against pi v0.8
 ### Process and exit codes
 
 - **Hardening levers in use**
-  - `Run` executes `pi --print --mode json --no-approve --no-extensions --no-prompt-templates --no-themes --session-dir /sandbox/pi-config/sessions [-e /usr/local/share/pi-extensions/anthropic-vertex | -e /usr/local/share/pi-extensions/xai-vertex] [-e /sandbox/pi-config/fullsend-hooks.js] [-e /sandbox/pi-config/fullsend-agent.js] [-e /sandbox/pi-config/fullsend-edit-repair.js] [--tools ...] --model <provider/id> --thinking <effort|high> '<RunParams.Prompt, default "Run the agent task">' </dev/null [2>>/sandbox/workspace/pi-debug.log]`.
+  - `Run` executes `pi --print --mode json --no-approve --no-extensions --no-prompt-templates --no-themes --session-dir /sandbox/pi-config/sessions [-e /opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex | -e /opt/fullsend/usr/local/share/pi-extensions/xai-vertex] [-e /sandbox/pi-config/fullsend-hooks.js] [-e /sandbox/pi-config/fullsend-agent.js] [-e /sandbox/pi-config/fullsend-edit-repair.js] [--tools ...] --model <provider/id> --thinking <effort|high> '<RunParams.Prompt, default "Run the agent task">' </dev/null [2>>/sandbox/workspace/pi-debug.log]`.
   - `settings.json` sets `defaultProjectTrust: never` (repo-owned `.pi/` never loaded) and `defaultTools: [read, bash, edit, write, grep, find, ls]` — pi alone activates only the first four; `--tools`, when emitted, replaces the set. The `grep` and `find` tools shell out to `rg` and `fd` (pi's `utils/tools-manager.ts`), which the sandbox image ships because `PI_OFFLINE=1` and the egress policy both stop pi's own GitHub-release download.
   - `settings.json` also raises pi's retry above its defaults (#7191). pi retries at two layers; the settings set both:
     - **Provider layer** — `retry.provider.maxRetries: 6`, `maxRetryDelayMs: 60000`. Retries a single HTTP request on 408/409/429/5xx and honours `Retry-After` (0.5 to 8 s backoff without it). pi leaves this layer off unless `maxRetries` is set, and it is the only layer that reads `Retry-After`. A `Retry-After` above 60 s fails that request at once.
@@ -1008,7 +1042,7 @@ rather than dropping the list silently, the mirror of pi's `plugins:` warning.
 
 ### Claude-on-Vertex via a fullsend-owned extension
 
-pi's `google-vertex` provider is Gemini-only and upstream's `anthropic-vertex` provider (earendil-works/pi#5262) is still an open PR, so the sandbox image vendors [`fullsend-ai/pi-anthropic-vertex`](https://github.com/fullsend-ai/pi-anthropic-vertex) under `/usr/local/share/pi-extensions/anthropic-vertex`, pinned by tag + tarball SHA256 (`PI_ANTHROPIC_VERTEX_VERSION`/`_SHA256`). pi never auto-loads it; `Run` passes it with `-e` for the `anthropic-vertex` provider (`runtime.piVertexExtensionPath`).
+pi's `google-vertex` provider is Gemini-only and upstream's `anthropic-vertex` provider (earendil-works/pi#5262) is still an open PR, so the sandbox image vendors [`fullsend-ai/pi-anthropic-vertex`](https://github.com/fullsend-ai/pi-anthropic-vertex) under `/usr/local/share/pi-extensions/anthropic-vertex`, pinned by tag + tarball SHA256 (`PI_ANTHROPIC_VERTEX_VERSION`/`_SHA256`). At runtime the runner loads it from `/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex`; pi never auto-loads it, and `Run` passes it with `-e` for the `anthropic-vertex` provider (`runtime.piVertexExtensionPath`).
 
 **How it works.** It registers provider `anthropic-vertex` with pi's own Claude catalog and pi's own Anthropic transport. A `fetch` wrapper rewrites each request the way the Vertex SDK does: the model id moves into the URL path, `anthropic_version` goes into the body, and the Google token becomes an `authorization: Bearer` header. No `@anthropic-ai/*` dependency, no mirrored pi internals. It replaced twoGiants/pi-anthropic-vertex in #7019, which copied pi's `streamSimple` helpers, pinned the Anthropic SDK underneath a cast, and hard-failed `claude-opus-5` from pi 0.84.3.
 
@@ -1028,7 +1062,7 @@ Replace with the upstream provider once #5262 ships in a pinned release.
 
 ### Grok-on-Vertex via a fullsend-owned extension
 
-pi's built-in `xai` provider targets xAI's native API (`api.x.ai`, needs `XAI_API_KEY`) and `google-vertex` is Gemini-only, so neither reaches Grok on Vertex, which speaks the OpenAI-completions protocol. The sandbox image vendors [`fullsend-ai/pi-xai-vertex`](https://github.com/fullsend-ai/pi-xai-vertex) (MIT) under `/usr/local/share/pi-extensions/xai-vertex`, pinned by tag + tarball SHA256 (`PI_XAI_VERTEX_VERSION`/`_SHA256`, Renovate-tracked like the Anthropic one) and registering provider `xai-vertex` with model `xai/grok-4.6`.
+pi's built-in `xai` provider targets xAI's native API (`api.x.ai`, needs `XAI_API_KEY`) and `google-vertex` is Gemini-only, so neither reaches Grok on Vertex, which speaks the OpenAI-completions protocol. The sandbox image vendors [`fullsend-ai/pi-xai-vertex`](https://github.com/fullsend-ai/pi-xai-vertex) (MIT) under `/usr/local/share/pi-extensions/xai-vertex`, pinned by tag + tarball SHA256 (`PI_XAI_VERTEX_VERSION`/`_SHA256`, Renovate-tracked like the Anthropic one) and registering provider `xai-vertex` with model `xai/grok-4.6`; the runner loads it from `/opt/fullsend/usr/local/share/pi-extensions/xai-vertex`.
 
 - **No mirrored internals.** Like the Anthropic extension it registers a public pi API (`openAICompletionsApi()`) and lets pi do streaming, tools and usage — so there is no `sync/compat.json` drift to re-check on a `PI_VERSION` bump; confirm its `peerDependencies` floor instead (declared only — it installs with `--omit=peer` too, so nothing enforces it at build time).
 - **Auth** is ambient ADC through `google-auth-library` reading `GOOGLE_APPLICATION_CREDENTIALS`, the same WIF `external_account` path as Claude-on-Vertex and under the same `*.googleapis.com` egress allowlist, so no new credential plumbing.
@@ -1038,7 +1072,7 @@ pi's built-in `xai` provider targets xAI's native API (`api.x.ai`, needs `XAI_AP
 
 ### Binary present but unhooked
 
-The pinned `pi` CLI and the vendored Vertex extensions ship in every sandbox image (so Bootstrap/Run work targets a reviewed version), so an agent on another runtime can invoke `pi -e /usr/local/share/pi-extensions/anthropic-vertex` ad hoc from Bash with none of that runtime's tool hooks — and in a Claude-on-Vertex sandbox the ADC credentials and project id it needs are already in the environment, so that is a working nested agent, not an inert binary. This is the same class of exposure as any interpreter the agent can run (`python`, `node`, `curl` with the same ADC token): the sandbox tool hooks are defense-in-depth and only see the top-level tool call (ADR 0090); the boundary remains the OpenShell sandbox, its L7 egress allowlist and the credential placeholders, which a nested `pi` cannot escape either. The image bakes `PI_OFFLINE=1`/`PI_TELEMETRY=0` and the runner-owned config paths as defaults; treat the `N/A — stub` matrix cells as "not wired", not "cannot run".
+The pinned `pi` CLI and the vendored Vertex extensions ship in every sandbox image (so Bootstrap/Run work targets a reviewed version), so an agent on another runtime can invoke `pi -e /opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex` ad hoc from Bash with none of that runtime's tool hooks — and in a Claude-on-Vertex sandbox the ADC credentials and project id it needs are already in the environment, so that is a working nested agent, not an inert binary. This is the same class of exposure as any interpreter the agent can run (`python`, `node`, `curl` with the same ADC token): the sandbox tool hooks are defense-in-depth and only see the top-level tool call (ADR 0090); the boundary remains the OpenShell sandbox, its L7 egress allowlist and the credential placeholders, which a nested `pi` cannot escape either. The image bakes `PI_OFFLINE=1`/`PI_TELEMETRY=0` and the runner-owned config paths as defaults; treat the `N/A — stub` matrix cells as "not wired", not "cannot run".
 
 ### Not yet exercised
 

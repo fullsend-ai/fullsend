@@ -2120,9 +2120,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return nil
 	}
 
-	// 4a. Create sandbox. A private ghcr.io harness image is pulled first
-	// with the workflow token; the gateway's own pull is anonymous (#9019).
+	// 4a. Create sandbox. Private ghcr.io sandbox and mounted images are
+	// pulled first with the workflow token; the gateway's pull is anonymous.
 	prePullGHCRImage(ctx, h.Image, printer)
+	for _, mount := range h.ImageMounts {
+		prePullGHCRImage(ctx, mount.Image, printer)
+	}
 
 	createStart := time.Now()
 	printer.StepStart("Creating sandbox: " + sandboxName)
@@ -2131,7 +2134,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	))
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
-	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout, keepSandbox); err != nil {
+	imageMounts := make([]sandbox.ImageMount, 0, len(h.ImageMounts))
+	for _, mount := range h.ImageMounts {
+		imageMounts = append(imageMounts, sandbox.ImageMount{Source: mount.Image, Target: mount.Dest})
+	}
+	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout, keepSandbox, imageMounts...); err != nil {
 		finalizeSandboxSpan(sandboxSpan, err)
 		printer.StepFail("Failed to create sandbox")
 		if keepSandbox {
@@ -2140,6 +2147,32 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
 	finalizeSandboxSpan(sandboxSpan, nil)
+	if len(h.ImageMounts) > 0 {
+		printer.StepStart("Checking image mount filesystem policy")
+		policy, err := sandbox.EffectivePolicy(ctx, sandboxName)
+		if err == nil {
+			err = checkImageMountPolicyAccess(policy, h.Policy, h.ImageMounts)
+		}
+		if err != nil {
+			printer.StepFail("Image mount filesystem policy check failed")
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
+			return err
+		}
+		printer.StepDone("Image mount filesystem access is allowed")
+	}
+	for _, mount := range h.ImageMounts {
+		if mount.Dest != sandbox.SandboxFullsendRoot {
+			continue
+		}
+		printer.StepStart("Checking mounted Fullsend Node runtime")
+		if err := checkMountedFullsendNode(ctx, sandboxName); err != nil {
+			printer.StepFail("Mounted Fullsend Node runtime cannot start")
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
+			return err
+		}
+		printer.StepDone("Mounted Fullsend Node runtime is available")
+		break
+	}
 
 	if len(runScopedProviders) > 0 {
 		// The OpenAI credential only reaches api.openai.com through an
@@ -3891,17 +3924,21 @@ func runnerPathRestoreLine() string {
 	return fmt.Sprintf(`export PATH="$%s${PATH:+:$PATH}"`, runnerPathVar)
 }
 
-// runnerPathLines are the first lines of .env: the runner's PATH, then its
-// read-only copy. /sandbox/workspace/bin comes last, after the image's own
-// PATH: host_files can drop files there, so it may add commands (my-tool.sh,
-// and the runner's own fullsend and fullsend-check-output, which exist only
-// there) but not replace one the image provides — python3 and tirith for the
-// security hooks, node for codex and pi, git, find.
+// runnerPathLines are the first lines of .env: Go tools, the sandbox image's
+// project PATH, workspace helpers, and finally the mounted Fullsend tools as
+// a fallback. This lets an agent use the project's Python packages, Node,
+// npm, Git, and other tools while keeping helpers in workspace/bin reachable.
+// Fixed runner commands and hooks use the trusted PATH recorded separately.
 func runnerPathLines() []string {
+	return runnerPathLinesFor(sandbox.SandboxFullsendToolPath)
+}
+
+func runnerPathLinesFor(toolPath string) []string {
 	pathExport := "export PATH=/usr/local/go/bin"
 	pathExport += ":$HOME/go/bin"
 	pathExport += ":$PATH"
 	pathExport += fmt.Sprintf(":%s/bin", sandbox.SandboxWorkspace)
+	pathExport += ":" + toolPath
 	return []string{pathExport, runnerPathCaptureLine()}
 }
 
@@ -5343,12 +5380,34 @@ var deleteSandboxFn = sandbox.Delete
 // without a gateway.
 var collectOpenshellLogsFn = collectOpenshellLogs
 
-// discardSandbox deletes a sandbox that failed a credential egress
-// preflight. Those preflights run before the run's own sandbox cleanup
-// defer is registered (it must follow the post-script's), so without this
-// a failed preflight would leave the sandbox running. Like that defer it
-// collects the OpenShell logs first: a policy failure is when they help.
-// --keep-sandbox keeps it, as it does for every other failure.
+// checkMountedFullsendNode verifies that the mounted image exposes a Node
+// executable that can start in the sandbox before repository setup or agent
+// launch. This is a basic mount/runtime check, not a full compatibility test.
+func checkMountedFullsendNode(ctx context.Context, sandboxName string) error {
+	command := sandbox.SandboxFullsendBinDir + "/node --version"
+	stdout, stderr, exitCode, err := sandbox.ExecContext(ctx, sandboxName, command, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("checking mounted Fullsend Node runtime: %w", err)
+	}
+	if exitCode != 0 {
+		detail := strings.TrimSpace(stderr)
+		if detail == "" {
+			detail = strings.TrimSpace(stdout)
+		}
+		if detail == "" {
+			detail = fmt.Sprintf("command exited with status %d", exitCode)
+		}
+		return fmt.Errorf("checking mounted Fullsend Node runtime failed: %s", detail)
+	}
+	return nil
+}
+
+// discardSandbox deletes a sandbox that failed a preflight. Those preflights
+// run before the run's own sandbox cleanup defer is registered (it must follow
+// the post-script's), so without this a failed preflight would leave the
+// sandbox running. Like that defer it collects the OpenShell logs first:
+// a policy failure is when they help. --keep-sandbox keeps it, as it does for
+// every other failure.
 func discardSandbox(sandboxName, runDir string, keep bool, printer *ui.Printer) {
 	collectOpenshellLogsFn(sandboxName, runDir, printer)
 	if keep {

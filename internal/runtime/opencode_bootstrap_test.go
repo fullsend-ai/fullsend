@@ -94,6 +94,8 @@ func TestOpenCodeRuntimeBootstrap_WritesAgentDefinition(t *testing.T) {
 	cfg := r.ConfigDir()
 	assert.Contains(t, logStr, "mkdir -p '"+cfg+"/agent' '"+cfg+"/skills' '"+cfg+"/plugins'")
 	assert.Contains(t, logStr, "opencode --version")
+	assert.Contains(t, logStr, "PATH='/opt/fullsend/usr/local/bin:/opt/fullsend/usr/bin'${PATH:+:$PATH} OPENCODE_CONFIG_DIR=")
+	assert.Contains(t, logStr, "opencode debug agent 'triage'")
 	// Skills go through the upload/tar path; the archive lands under skills/.
 	assert.Contains(t, logStr, cfg+"/skills/")
 	trustedEnv, ok := lookupOpenCodeTrustedEnv("sb")
@@ -311,7 +313,7 @@ func TestOpenCodePreflightVersionFailure(t *testing.T) {
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "opencode --version") echo "boom" >&2; exit 1 ;;
+  *"opencode --version"*) echo "boom" >&2; exit 1 ;;
   esac
   exit 0
 fi

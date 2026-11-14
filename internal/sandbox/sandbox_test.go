@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -2824,6 +2825,49 @@ exit 0
 		"sandbox create must not use 'true' as the command (breaks OpenShell 0.0.111+)")
 }
 
+func TestCreate_PassesReadOnlyImageMountsToPodmanDriver(t *testing.T) {
+	dir := t.TempDir()
+	argsLog := filepath.Join(dir, "args.log")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = "create" ]; then
+  printf '%%s\n' "$@" >> %s
+  exit 0
+fi
+if [ "$2" = "get" ]; then
+  echo "Phase: Ready"
+  exit 0
+fi
+exit 0
+`, argsLog)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	mounts := []ImageMount{
+		{Source: "registry.example/tools:v1", Target: "/opt/tools"},
+		{Source: "registry.example/config:v2", Target: "/etc/tool"},
+	}
+	require.NoError(t, Create("test-sandbox", nil, "", "", mounts...))
+
+	args, err := os.ReadFile(argsLog)
+	require.NoError(t, err)
+	argv := strings.Split(strings.TrimSpace(string(args)), "\n")
+	index := -1
+	for i, arg := range argv {
+		if arg == "--driver-config-json" {
+			index = i
+			break
+		}
+	}
+	require.NotEqual(t, -1, index, "create should pass Podman driver configuration")
+	require.Less(t, index+1, len(argv))
+	var config podmanDriverConfig
+	require.NoError(t, json.Unmarshal([]byte(argv[index+1]), &config))
+	assert.Equal(t, []podmanImageMount{
+		{Type: "image", Source: "registry.example/tools:v1", Target: "/opt/tools", ReadOnly: true},
+		{Type: "image", Source: "registry.example/config:v2", Target: "/etc/tool", ReadOnly: true},
+	}, config.Podman.Mounts)
+}
+
 // TestCreateOnce_ReadyFallsBackWhenPhaseFieldAbsent covers output-format
 // drift: if OpenShell stops emitting a parseable "Phase:" field, anchoring
 // alone would time out every healthy sandbox, so the historical substring
@@ -3362,6 +3406,79 @@ exit 0
 	require.NoError(t, readErr)
 	gets := strings.Count(string(data), "get")
 	assert.Equal(t, 1, gets, "global policy error must not trigger retries")
+}
+
+func TestCreateWithRetry_UnsupportedImageMountConfigurationNotRetried(t *testing.T) {
+	dir := t.TempDir()
+	createAttempts := filepath.Join(dir, "create-attempts")
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo create >> %s
+  echo "driver config disabled: set allow_driver_config = true" >&2
+  exit 1
+fi
+if [ "$2" = "get" ]; then exit 1; fi
+exit 0
+`, createAttempts)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	orig := RetrySleepFn
+	RetrySleepFn = func(d time.Duration) { t.Fatalf("unexpected retry sleep: %s", d) }
+	t.Cleanup(func() { RetrySleepFn = orig })
+
+	err := CreateWithRetry("test-sandbox", nil, "", "", 3, 5*time.Second, false,
+		ImageMount{Source: "example/tools:latest", Target: "/opt/tools"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errUnsupportedImageMountConfiguration)
+	assert.Contains(t, err.Error(), "allow-image-mounts: true")
+	assert.Contains(t, err.Error(), "effective settings")
+
+	data, readErr := os.ReadFile(createAttempts)
+	require.NoError(t, readErr)
+	assert.Equal(t, "create\n", string(data), "unsupported gateway config must not be retried")
+}
+
+func TestCreateWithRetry_UnsupportedImageMountConfigurationKeepsSandbox(t *testing.T) {
+	dir := t.TempDir()
+	commandsFile := filepath.Join(dir, "commands")
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$2" >> %s
+if [ "$2" = "create" ]; then
+  echo "allow_driver_config is disabled" >&2
+  exit 1
+fi
+if [ "$2" = "get" ]; then echo "Phase: Error"; exit 0; fi
+exit 0
+`, commandsFile)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := CreateWithRetry("test-sandbox", nil, "", "", 3, 5*time.Second, true,
+		ImageMount{Source: "example/tools:latest", Target: "/opt/tools"})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errUnsupportedImageMountConfiguration)
+	assert.Contains(t, err.Error(), "sandbox kept, not retried")
+	assert.Contains(t, err.Error(), "allow-image-mounts: true")
+
+	data, readErr := os.ReadFile(commandsFile)
+	require.NoError(t, readErr)
+	assert.Equal(t, "create\nget\n", string(data), "--keep-sandbox must preserve the failed sandbox")
+}
+
+func TestUnsupportedImageMountConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		message string
+		want    bool
+	}{
+		{message: "allow_driver_config is disabled", want: true},
+		{message: "resource admission rejected image mount", want: true},
+		{message: "image mounts are not supported by this backend", want: true},
+		{message: "Podman driver does not support image mounts", want: true},
+		{message: "gateway temporarily unavailable", want: false},
+	} {
+		assert.Equal(t, tc.want, unsupportedImageMountConfiguration(tc.message), tc.message)
+	}
 }
 
 func TestVerifyPolicy_OutputIncludedInErrors(t *testing.T) {

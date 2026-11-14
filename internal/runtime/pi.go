@@ -40,6 +40,15 @@ type PiRuntime struct{}
 // #5262 ships in a pinned pi release.
 const piVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-vertex"
 
+// Legacy extension paths keep the runner compatible with the currently
+// published sandbox image while its Fullsend tool tree moves under
+// /opt/fullsend. New images always prefer the paths above.
+const (
+	piLegacyVertexExtensionPath    = "/usr/local/share/pi-extensions/anthropic-vertex"
+	piLegacyXaiVertexExtensionPath = "/usr/local/share/pi-extensions/xai-vertex"
+	piLegacyGatewayExtensionPath   = "/usr/local/share/pi-extensions/inference-gateway"
+)
+
 // piXaiVertexExtensionPath is the Grok-on-Vertex provider for pi
 // (fullsend-ai/pi-xai-vertex, pinned in the sandbox image by
 // PI_XAI_VERTEX_VERSION). Grok on Vertex speaks the OpenAI-completions

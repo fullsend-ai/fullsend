@@ -18,6 +18,21 @@
 
 set -euo pipefail
 
+# Prefer Fullsend's mounted Python when available. Older pinned sandbox images
+# do not have the mounted tool tree, so retain the system-python path.
+fullsend_python() (
+  unset PYTHONHOME PYTHONPATH PYTHONUSERBASE PYTHONSTARTUP PYTHONINSPECT
+
+  if [[ -x /opt/fullsend/usr/bin/python3 ]]; then
+    PYTHONHOME=/opt/fullsend/usr \
+    PYTHONPATH=/opt/fullsend/usr/local/share/fullsend/python/site-packages \
+    PYTHONNOUSERSITE=1 \
+      /opt/fullsend/usr/bin/python3 "$@"
+  else
+    python3 "$@"
+  fi
+)
+
 if [[ $# -lt 1 ]]; then
   echo "Usage: fullsend-check-output <path-to-json-file>"
   exit 1
@@ -48,22 +63,26 @@ if [[ "${_actual}" != "${_expected}" ]]; then
   exit 1
 fi
 
-if ! python3 -c "import jsonschema" 2>/dev/null; then
-  echo "FAIL: python3 jsonschema package is not installed"
+if ! fullsend_python -c "import jsonschema" 2>/dev/null; then
+  if [[ -x /opt/fullsend/usr/bin/python3 ]]; then
+    echo "FAIL: mounted Fullsend Python or its jsonschema dependencies are unavailable"
+  else
+    echo "FAIL: python3 jsonschema package is not installed"
+  fi
   exit 1
 fi
 
-if ! python3 -m json.tool "${CANDIDATE}" > /dev/null 2>&1; then
+if ! fullsend_python -m json.tool "${CANDIDATE}" > /dev/null 2>&1; then
   echo "FAIL: ${CANDIDATE} is not valid JSON"
   exit 1
 fi
 
-if ! python3 -m json.tool "${FULLSEND_OUTPUT_SCHEMA}" > /dev/null 2>&1; then
+if ! fullsend_python -m json.tool "${FULLSEND_OUTPUT_SCHEMA}" > /dev/null 2>&1; then
   echo "FAIL: schema file is not valid JSON: ${FULLSEND_OUTPUT_SCHEMA}"
   exit 1
 fi
 
-python3 -c "
+fullsend_python -c "
 import json, sys
 from jsonschema import validate, ValidationError, SchemaError
 

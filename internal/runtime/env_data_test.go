@@ -15,7 +15,7 @@ import (
 // piEnvLoad, codexEnvLoad and openCodeEnvLoad are the .env reads the pi,
 // codex and OpenCode launches emit where they used to source the file.
 var (
-	piEnvLoad       = envDataLoad(sandbox.SandboxWorkspace+"/.env", piBinaryVar, piNodeVar, piHookPythonEnv, piHookPathEnv, piChildBinEnv, piChildNodeEnv)
+	piEnvLoad       = envDataLoad(sandbox.SandboxWorkspace+"/.env", piBinaryVar, piNodeVar, piVertexExtensionVar, piXaiVertexExtensionVar, piGatewayExtensionVar, piHookPythonEnv, piHookPathEnv, piChildBinEnv, piChildNodeEnv)
 	codexEnvLoad    = envDataLoad(sandbox.SandboxWorkspace+"/.env", codexBinaryVar, codexNodeVar, codexPathVar)
 	openCodeEnvLoad = envDataLoad(sandbox.SandboxWorkspace+"/.env", openCodeEnvDataDrop...)
 )
@@ -682,6 +682,71 @@ func TestEnvDataTrustedPath_RootDropsRelativeEntries(t *testing.T) {
 	out, err := cmd.Output()
 	require.NoError(t, err)
 	assert.Equal(t, "/usr/bin:/bin", string(out))
+}
+
+func TestEnvDataTrustedPath_MountedOnlyToolLookup(t *testing.T) {
+	root := t.TempDir()
+	toolDirs := []string{
+		filepath.Join(root, "fullsend", "usr", "local", "bin"),
+		filepath.Join(root, "fullsend", "usr", "bin"),
+	}
+	for _, dir := range toolDirs {
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+	}
+	mountedTool := filepath.Join(toolDirs[0], "fullsend-only")
+	require.NoError(t, os.WriteFile(mountedTool, []byte("#!/bin/sh\necho mounted\n"), 0o755))
+	mountedConflict := filepath.Join(toolDirs[1], "conflicting")
+	require.NoError(t, os.WriteFile(mountedConflict, []byte("#!/bin/sh\necho mounted-conflict\n"), 0o755))
+	projectBin := filepath.Join(root, "project", "bin")
+	require.NoError(t, os.MkdirAll(projectBin, 0o755))
+	projectOnlyTool := filepath.Join(projectBin, "project-only")
+	require.NoError(t, os.WriteFile(projectOnlyTool, []byte("#!/bin/sh\necho project\n"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(projectBin, "conflicting"), []byte("#!/bin/sh\necho project-conflict\n"), 0o755))
+
+	// Model an agent account that cannot own or rewrite the mounted image.
+	// The real filesystem and executable lookup remain in use.
+	protectedRoot := `test() { if [ "$1" = -O ] && [ "$2" = / ]; then return 0; fi; command test "$@"; }; `
+	path := strings.Join([]string{projectBin, os.Getenv("PATH")}, string(os.PathListSeparator))
+	cmd := exec.Command("/bin/sh", "-c", protectedRoot+envDataTrustedPathFor(strings.Join(toolDirs, ":"))+` && PATH="$`+envDataTrustedPathVar+`" command -v fullsend-only`)
+	cmd.Env = []string{"PATH=" + path}
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, mountedTool, strings.TrimSpace(string(out)))
+
+	cmd = exec.Command("/bin/sh", "-c", protectedRoot+envDataTrustedPathFor(strings.Join(toolDirs, ":"))+` && PATH="$`+envDataTrustedPathVar+`" command -v conflicting`)
+	cmd.Env = []string{"PATH=" + path}
+	out, err = cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, mountedConflict, strings.TrimSpace(string(out)), "the trusted PATH prefers mounted tools over conflicting ambient tools")
+
+	cmd = exec.Command("/bin/sh", "-c", protectedRoot+envDataTrustedPathFor(strings.Join(toolDirs, ":"))+` && PATH="$`+envDataTrustedPathVar+`" command -v project-only`)
+	cmd.Env = []string{"PATH=" + path}
+	out, err = cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, projectOnlyTool, strings.TrimSpace(string(out)), "ambient tools remain available after mounted-only tools")
+}
+
+func TestSandboxFullsendToolPathCommandAt_PrefersMountedTool(t *testing.T) {
+	root := t.TempDir()
+	mountedBin := filepath.Join(root, "mounted")
+	projectBin := filepath.Join(root, "project")
+	for _, dir := range []string{mountedBin, projectBin} {
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+	}
+	for dir, output := range map[string]string{mountedBin: "mounted", projectBin: "project"} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "codex"), []byte("#!/bin/sh\necho "+output+"\n"), 0o755))
+	}
+	cmd := exec.Command("/bin/sh", "-c", sandboxFullsendToolPathCommandAt(mountedBin, "codex"))
+	cmd.Env = []string{"PATH=" + projectBin + ":/usr/bin:/bin"}
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, "mounted\n", string(out))
+
+	cmd = exec.Command("/bin/sh", "-c", sandboxFullsendToolPathCommandAt(mountedBin, "codex"))
+	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	out, err = cmd.Output()
+	require.NoError(t, err)
+	assert.Equal(t, "mounted\n", string(out), "the command is found when only the mounted image provides it")
 }
 
 // The fragment pins python3 before reading .env and runs it isolated. The

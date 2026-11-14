@@ -547,9 +547,9 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 │  │  └── security hooks                      │                   │
 │  │                                          │                   │
 │  │  bootstrapEnv() writes:                  │                   │
-│  │  ├── PATH=/usr/local/go/bin:             │                   │
-│  │  │     $HOME/go/bin:$PATH:               │                   │
-│  │  │     /sandbox/workspace/bin (last)     │                   │
+│  │  ├── PATH=/usr/local/go/bin:$HOME/go/bin │                   │
+│  │  │     :<image PATH>:/sandbox/workspace/ │                   │
+│  │  │     bin:/opt/fullsend/...             │                   │
 │  │  ├── readonly FULLSEND_RUNNER_PATH       │                   │
 │  │  ├── CLAUDE_CONFIG_DIR=/sandbox/claude-config│               │
 │  │  ├── FULLSEND_OUTPUT_DIR=...             │                   │
@@ -698,6 +698,10 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ins
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+The agent-facing PATH keeps Go paths first, then the sandbox image's project
+tools, workspace helpers, and mounted Fullsend tools as a fallback. Runner
+commands and hooks use the separately captured trusted PATH.
+
 The `bootstrapEnv()` writes and the `iteration.env` names in this diagram are
 the runner's exports. The full, machine-checkable inventory — what every
 sandbox receives, per gate and per runtime, and what arrives only through
@@ -711,7 +715,7 @@ SandboxWorkspace       = "/sandbox/workspace"
 SandboxClaudeConfig    = "/sandbox/claude-config"
 SandboxCodexConfig     = "/sandbox/codex-config"
 SandboxPiConfig        = "/sandbox/pi-config"
-SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"   // image-baked, read-only pi extensions (loaded only via -e)
+SandboxPiExtensionsDir = "/opt/fullsend/usr/local/share/pi-extensions"   // image-baked, read-only pi extensions (loaded only via -e)
 ```
 
 For sandbox workspace layout, agent rule layering, and security scanning

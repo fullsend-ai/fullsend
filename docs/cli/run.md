@@ -483,16 +483,21 @@ derived from a local PAT — a caller may set it explicitly. `GH_TOKEN`,
 `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` and
 `PUSH_TOKEN` still receive the minted App identity.
 
-The runner itself also reads `GH_WORKFLOW_TOKEN` for one purpose besides provider credential
-expansion: before it creates the sandbox, on GitHub Actions, when the harness `image:` is on
-`ghcr.io`, it pulls the image with the token through Podman (a run-scoped auth file in a private
-temporary directory, removed after the pull), so the image can be a private package. Only the
-shipped code and fix workflows grant `packages: read`, so a private image works on code and fix
-harnesses; on other agents a private image is denied and sandbox creation fails. The package must also
-allow Actions access from the repository. If the pull fails, the runner logs a warning and the
-OpenShell gateway attempts its own unauthenticated pull, so public images keep working. For images
-on other registries the runner adds no credentials. See
-[Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
+Before creating a sandbox on GitHub Actions, the runner can use
+`GH_WORKFLOW_TOKEN` to pull `ghcr.io` harness `image` and
+`image_mounts[].image` references through local Podman. It stores the token in
+a run-scoped auth file in a private temporary directory and removes the file
+after the pull. The package must allow Actions access from the repository and
+the workflow must grant `packages: read`. The default local OpenShell gateway
+can also pull public images if this pre-pull fails. For a remote gateway,
+`OPENSHELL_GATEWAY_ENDPOINT` points the action at a separate image store, so
+the runner skips local Podman pulls; private images then need gateway-side
+registry authentication or a cached copy on the gateway host. The workflow
+token is not sent to the remote gateway or sandbox. For registries other than
+GHCR, the runner adds no credentials. See
+[remote gateway setup](../guides/infrastructure/advanced-setup.md#runners-that-use-a-remote-openshell-gateway)
+the [Fullsend tool image instructions](../guides/user/bring-your-own-agent.md#mount-the-fullsend-runtime-tools),
+and [extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image).
 
 Every mint sets `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN` and
 `GITHUB_ENTERPRISE_TOKEN` to the minted token, even when the caller workflow

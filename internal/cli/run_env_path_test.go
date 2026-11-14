@@ -17,7 +17,7 @@ import (
 func TestRunnerPathLines(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, []string{
-		"export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH:/sandbox/workspace/bin",
+		"export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH:/sandbox/workspace/bin:" + sandbox.SandboxFullsendToolPath,
 		`if ( FULLSEND_RUNNER_PATH= ) 2>/dev/null; then FULLSEND_RUNNER_PATH="$PATH"; readonly FULLSEND_RUNNER_PATH; fi`,
 	}, runnerPathLines())
 	assert.Equal(t, `export PATH="$FULLSEND_RUNNER_PATH${PATH:+:$PATH}"`, runnerPathRestoreLine())
@@ -48,6 +48,56 @@ func TestHarnessEnvLines_RestoresPathAfterHarnessEntries(t *testing.T) {
 	assert.Less(t, sandboxEnv, restore)
 	assert.Less(t, restore, iteration)
 	assert.Equal(t, len(lines)-1, iteration, "iteration.env stays the last line")
+}
+
+func TestRunnerPathLines_PrefersProjectToolsAndKeepsMountedFallback(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	projectBin := filepath.Join(tmp, "project-bin")
+	workspaceBin := filepath.Join(tmp, "bin")
+	mountedLocal := filepath.Join(tmp, "mounted", "usr", "local", "bin")
+	mountedSystem := filepath.Join(tmp, "mounted", "usr", "bin")
+	mountedPath := mountedLocal + ":" + mountedSystem
+	for _, dir := range []string{projectBin, workspaceBin, mountedLocal, mountedSystem} {
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+	}
+	writeTool := func(dir, name, marker string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\necho "+marker+"\n"), 0o755))
+	}
+	for _, name := range []string{"python3", "node", "npm", "git"} {
+		writeTool(projectBin, name, "PROJECT-"+name)
+		writeTool(mountedLocal, name, "MOUNTED-"+name)
+	}
+	writeTool(mountedSystem, "mounted-only", "MOUNTED-ONLY")
+	writeTool(workspaceBin, "workspace-only", "WORKSPACE-ONLY")
+
+	lines := append(runnerPathLinesFor(mountedPath), harnessEnvLines(&harness.Harness{})...)
+	content := strings.ReplaceAll(strings.Join(lines, "\n")+"\n", sandbox.SandboxWorkspace, tmp)
+	envFile := filepath.Join(tmp, ".env")
+	require.NoError(t, os.WriteFile(envFile, []byte(content), 0o644))
+
+	cmd := exec.Command("/bin/sh", "-c", `. "$ENVFILE" && python3 && node && npm && git && mounted-only && workspace-only && echo "PATH=$PATH"`)
+	cmd.Env = []string{"PATH=" + projectBin + ":/usr/bin:/bin", "HOME=" + tmp, "ENVFILE=" + envFile}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	for _, want := range []string{"PROJECT-python3", "PROJECT-node", "PROJECT-npm", "PROJECT-git", "MOUNTED-ONLY", "WORKSPACE-ONLY"} {
+		assert.Contains(t, string(out), want)
+	}
+	assert.NotContains(t, string(out), "MOUNTED-python3")
+	assert.NotContains(t, string(out), "MOUNTED-node")
+	assert.NotContains(t, string(out), "MOUNTED-npm")
+	assert.NotContains(t, string(out), "MOUNTED-git")
+
+	printed := strings.TrimSpace(string(out)[strings.LastIndex(string(out), "PATH="):])
+	projectAt := strings.Index(printed, projectBin+":")
+	workspaceAt := strings.Index(printed, workspaceBin+":")
+	mountedAt := strings.Index(printed, mountedLocal+":"+mountedSystem)
+	require.NotEqual(t, -1, projectAt, printed)
+	require.NotEqual(t, -1, workspaceAt, printed)
+	require.NotEqual(t, -1, mountedAt, printed)
+	assert.Less(t, projectAt, workspaceAt, "project tools precede workspace helpers")
+	assert.Less(t, workspaceAt, mountedAt, "mounted tools are the fallback after project tools and helpers")
 }
 
 // TestEnvFilePath_EnvDCannotShadowRunnerPath sources the generated .env under
@@ -168,7 +218,7 @@ func TestEnvFilePath_EnvDCannotShadowRunnerPath(t *testing.T) {
 					require.NotEqual(t, -1, sysAt, printed)
 					require.NotEqual(t, -1, binAt, printed)
 					assert.Less(t, sysAt, binAt, "workspace bin comes after the image PATH")
-					assert.True(t, strings.HasPrefix(printed, "PATH=/usr/local/go/bin:"), "runner PATH comes first: %s", printed)
+					assert.True(t, strings.HasPrefix(printed, "PATH=/usr/local/go/bin:"+filepath.Join(tmp, "go", "bin")+":"), "Go tools remain ahead of project PATH: %s", printed)
 				}
 			})
 		}

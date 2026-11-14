@@ -31,7 +31,7 @@ func TestSandboxImageClaudeCodePinWins(t *testing.T) {
 	for _, want := range []string{
 		`NPM_CLAUDE="$(npm prefix -g)/bin/claude"`,
 		`rm -f /usr/local/bin/claude`,
-		`ln -s "${NPM_CLAUDE}" /usr/local/bin/claude`,
+		`ln -sr "${NPM_CLAUDE}" /usr/local/bin/claude`,
 		`GOT="$(claude --version | awk '{print $1}')"`,
 		`if [ "${GOT}" != "${CLAUDE_CODE_VERSION}" ]; then`,
 	} {
@@ -40,7 +40,7 @@ func TestSandboxImageClaudeCodePinWins(t *testing.T) {
 
 	// The symlink + assertion must come after the npm install it points at.
 	install := regexp.MustCompile(`npm install -g @anthropic-ai/claude-code@`).FindStringIndex(containerfile)
-	link := regexp.MustCompile(`ln -s "\$\{NPM_CLAUDE\}" /usr/local/bin/claude`).FindStringIndex(containerfile)
+	link := regexp.MustCompile(`ln -sr "\$\{NPM_CLAUDE\}" /usr/local/bin/claude`).FindStringIndex(containerfile)
 	require.NotNil(t, install)
 	require.NotNil(t, link)
 	assert.Less(t, install[0], link[0], "the /usr/local/bin/claude symlink must follow the npm install")

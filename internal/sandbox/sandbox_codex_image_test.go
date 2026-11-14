@@ -54,7 +54,7 @@ func TestSandboxImageCodexPinWins(t *testing.T) {
 	for _, want := range []string{
 		`NPM_CODEX="$(npm prefix -g)/bin/codex"`,
 		`rm -f /usr/local/bin/codex`,
-		`ln -s "${NPM_CODEX}" /usr/local/bin/codex`,
+		`ln -sr "${NPM_CODEX}" /usr/local/bin/codex`,
 		`GOT="$(codex --version)"`,
 		// codex --version prints "codex-cli <version>".
 		`if [ "${GOT}" != "codex-cli ${CODEX_VERSION}" ]; then`,
@@ -64,7 +64,7 @@ func TestSandboxImageCodexPinWins(t *testing.T) {
 
 	// The symlink + assertion must come after the npm install it points at.
 	install := regexp.MustCompile(`npm install -g --ignore-scripts @openai/codex@`).FindStringIndex(containerfile)
-	link := regexp.MustCompile(`ln -s "\$\{NPM_CODEX\}" /usr/local/bin/codex`).FindStringIndex(containerfile)
+	link := regexp.MustCompile(`ln -sr "\$\{NPM_CODEX\}" /usr/local/bin/codex`).FindStringIndex(containerfile)
 	require.NotNil(t, install)
 	require.NotNil(t, link)
 	assert.Less(t, install[0], link[0], "the /usr/local/bin/codex symlink must follow the npm install")

@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -52,9 +53,9 @@ if [ "$2" = "exec" ]; then
     "test -f '/tmp/fs-upload-"*)
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
-    "pi --version") echo "0.84.2"; exit 0 ;;
+    *"pi --version"*) echo "0.84.2"; exit 0 ;;
     ` + hookEnvReadStubArm + `
-    "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
+    *"command -v pi"*) printf '%s\n' /opt/fullsend/usr/bin/pi '/opt/fullsend/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
     *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
     *"--print --mode json"*) cat '` + streamFixture + `'; exit 0 ;;
@@ -254,7 +255,7 @@ func TestPiRuntimeBootstrap_AgentNameMatch(t *testing.T) {
 
 func TestPiRuntimeBootstrap_PreflightFailure(t *testing.T) {
 	binDir := t.TempDir()
-	script := "#!/bin/sh\nfor last; do :; done\ncase \"$last\" in \"pi --version\") echo 'sh: pi: not found' >&2; exit 127 ;; esac\nexit 0\n"
+	script := "#!/bin/sh\nfor last; do :; done\ncase \"$last\" in *\"pi --version\"*) echo 'sh: pi: not found' >&2; exit 127 ;; esac\nexit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -814,7 +815,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		m, store, appendSystem := bootstrap(t, "---\nname: review\nmodel: opus\n---\nReview the PR.", true)
 		require.NotNil(t, m.Agent)
 		assert.True(t, m.Agent.Enabled)
-		assert.Equal(t, "/usr/bin/pi", m.Agent.PiBin, "resolved by the sandbox probe")
+		assert.Equal(t, "/opt/fullsend/usr/bin/pi", m.Agent.PiBin, "resolved by the sandbox probe")
 		assert.Equal(t, cfg+"/sessions", m.Agent.SessionsDir)
 		assert.Equal(t, []string{piVertexExtensionPath, cfg + "/fullsend-hooks.js"}, m.Agent.Extensions,
 			"only the provider extensions the image has (the probe found anthropic-vertex, not xai-vertex), then the hook adapter")
@@ -1165,14 +1166,19 @@ func TestPiAgentTool_OpenAISubagent(t *testing.T) {
 func TestPiAgentProbeCommand(t *testing.T) {
 	t.Parallel()
 	cmd := piAgentProbeCommand()
-	assert.True(t, strings.HasPrefix(cmd, "command -v pi"), cmd)
+	assert.True(t, strings.HasPrefix(cmd, "PATH="+shellQuote(sandbox.SandboxFullsendToolPath)), cmd)
 	assert.Contains(t, cmd, shellQuote(piVertexExtensionPath))
 	assert.Contains(t, cmd, shellQuote(piXaiVertexExtensionPath))
-	assert.Contains(t, cmd, `test -d "$d" && echo "$d"`)
+	assert.Contains(t, cmd, `if test -d "$d"; then echo "$d"; break; fi`)
+	assert.Contains(t, cmd, shellQuote(piLegacyVertexExtensionPath))
+	assert.Less(t, strings.Index(cmd, shellQuote(piVertexExtensionPath)), strings.Index(cmd, shellQuote(piLegacyVertexExtensionPath)),
+		"the relocated image tree takes precedence over the legacy image path")
 
-	bin, exts := parsePiAgentProbe("/usr/bin/pi\n/usr/local/share/pi-extensions/xai-vertex\n")
-	assert.Equal(t, "/usr/bin/pi", bin)
+	bin, exts := parsePiAgentProbe("/opt/fullsend/usr/bin/pi\n/opt/fullsend/usr/local/share/pi-extensions/xai-vertex\n")
+	assert.Equal(t, "/opt/fullsend/usr/bin/pi", bin)
 	assert.Equal(t, []string{piXaiVertexExtensionPath}, exts)
+	_, exts = parsePiAgentProbe("/usr/bin/pi\n" + piLegacyVertexExtensionPath + "\n" + piLegacyGatewayExtensionPath + "\n")
+	assert.Equal(t, []string{piLegacyVertexExtensionPath, piLegacyGatewayExtensionPath}, exts)
 	bin, exts = parsePiAgentProbe("")
 	assert.Equal(t, "pi", bin, "no probe output (the exec failed silently) falls back to PATH lookup at spawn time")
 	assert.Empty(t, exts)

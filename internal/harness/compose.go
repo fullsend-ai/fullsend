@@ -963,6 +963,10 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	if base.HostFiles != nil {
 		child.HostFiles = mergeHostFiles(base.HostFiles, child.HostFiles)
 	}
+	// ImageMounts: concatenated with last-writer-wins dedup by Dest
+	if base.ImageMounts != nil {
+		child.ImageMounts = mergeImageMounts(base.ImageMounts, child.ImageMounts)
+	}
 
 	// RunnerEnv: merge maps, child keys win
 	if base.RunnerEnv != nil {
@@ -2843,9 +2847,12 @@ func mergeForgeConfigInto(base, child *ForgeConfig) error {
 		child.OpenShell.Profiles = merged
 	}
 
-	// HostFiles: concatenated with last-writer-wins dedup by Dest
+	// HostFiles and image mounts: concatenated with last-writer-wins dedup by Dest
 	if base.HostFiles != nil {
 		child.HostFiles = mergeHostFiles(base.HostFiles, child.HostFiles)
+	}
+	if base.ImageMounts != nil {
+		child.ImageMounts = mergeImageMounts(base.ImageMounts, child.ImageMounts)
 	}
 
 	// RunnerEnv: merge, child keys win

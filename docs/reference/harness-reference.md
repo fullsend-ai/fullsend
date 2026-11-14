@@ -20,6 +20,9 @@ base: harness/common-base.yaml      # Inherit from another harness (local or URL
 
 # ── Sandbox ───────────────────────────────────────────────────
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+image_mounts:                       # Read-only OCI images mounted inside the sandbox
+  - image: ghcr.io/fullsend-ai/fullsend-sandbox-tools@sha256:abc...
+    dest: /opt/fullsend              # Fullsend runtime tools and extensions
 model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
 # readonly_repo: true               # make the checkout read-only (chmod a-w, .git/ excluded); absent = inherit from base; false overrides a base true
@@ -148,6 +151,8 @@ security:
 Most fields are self-explanatory from the inline comments above. This section expands on fields where additional context helps.
 
 **`image`** — The sandbox container image. On GitHub Actions a private `ghcr.io` package works on code and fix harnesses, whose shipped workflows grant `packages: read`; see [GitHub Packages credentials](../cli/run.md#github-packages-credentials).
+
+**`image_mounts`** — Additional Open Container Initiative (OCI) images mounted read-only inside the sandbox. Each entry requires an image reference without whitespace or variable expansion and an absolute, clean, non-root `dest` path. Destinations may not overlap runner-owned setup paths, any `host_files[].dest`, or one another after same-destination entries are merged. A child harness layer replaces an inherited entry with the same `dest`; later entries win while the destination keeps its first position, and there is no syntax for removing an inherited mount. Validation applies to top-level, forge, overlay, and final composed harness values. The OCI image's `ENV`, user, working directory and entrypoint are ignored. Fullsend currently passes these mounts to OpenShell's Podman backend; other backends may reject them. Podman mounts require `allow_driver_config = true` and resource admission disabled on the gateway; local action gateways require the explicit `allow-image-mounts: true` opt-in, while remote gateway settings remain operator-managed. For the Fullsend tool image, mount at `/opt/fullsend` and allow that path in the effective filesystem policy; Fullsend checks access before bootstrap. Use an immutable image digest for repeatable runs. The mount image and sandbox image must have compatible Linux ABI and system libraries; see [the tool image contract](../contributing/runtime-implementation.md#fullsend-tool-image-mount-contract) and [gateway setup](../guides/infrastructure/advanced-setup.md#image-mounts-on-openshell-gateways).
 
 **`readonly_repo`** — When `true`, the runner makes the checkout read-only in the sandbox before the agent starts: it removes write permission (`chmod a-w`) from every file and directory in the checkout except `.git/`. A harness that leaves the field out inherits it from its `base:`, and gets a writable checkout when no base sets it. An explicit `false` keeps the checkout writable, even when the base sets `true`. **Top level only** — a `readonly_repo` key placed under `overlays:`/`forge:` is silently ignored. The step also runs `chown -R sandbox:sandbox` on `.git/`. If the step fails, for example on an image that has no `sandbox` user, the run stops with `read-only repo enforcement failed`. That applies to a harness that inherits `true` as well. To fix it, build the image on the fullsend sandbox image, which has that user (see [Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image)), or set `readonly_repo: false` in the harness to keep a writable checkout.
 
