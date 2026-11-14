@@ -15,6 +15,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -72,7 +73,7 @@ func TestRenderJiraSiteProfile(t *testing.T) {
 // TestRenderJiraSiteProfile_EmbeddedTemplateUnchanged: the embedded profile
 // itself keeps no path, so static-token mode is unchanged.
 func TestRenderJiraSiteProfile_EmbeddedTemplateUnchanged(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "scaffold", "fullsend-repo", "profiles", "fullsend-jira.yaml"))
+	data, err := scaffold.FullsendRepoFile("profiles/" + jiraProviderType + ".yaml")
 	require.NoError(t, err)
 	p := parseRenderedJiraProfile(t, data)
 	assert.Equal(t, jiraProviderType, p.ID)
