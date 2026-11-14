@@ -202,12 +202,25 @@ func githubAPIURLForServer(serverBase, apiURL string) string {
 	return strings.ToLower(server.Scheme) + "://" + host + path
 }
 
-// statusGitHubAPIURL returns the API base URL for the status comment
-// client, or "" for the github.com default. The status token is a
-// write-scoped installation token from the mint, so GITHUB_API_URL is
-// followed only when GITHUB_SERVER_URL names a non-github.com instance and
-// GITHUB_API_URL is that same instance's API. On github.com (or with the
-// two disagreeing) GITHUB_API_URL alone can never redirect the token.
-func statusGitHubAPIURL() string {
+// configuredGitHubAPIURL returns the API base URL of the configured GitHub
+// instance, or "" for the github.com default. GITHUB_API_URL is followed
+// only when GITHUB_SERVER_URL names a non-github.com instance and
+// GITHUB_API_URL is that same instance's API, so on github.com (or with the
+// two disagreeing) GITHUB_API_URL alone can never redirect a token.
+func configuredGitHubAPIURL() string {
 	return githubAPIURLForServer(githubServerBaseURLFn(), os.Getenv("GITHUB_API_URL"))
+}
+
+// newConfiguredHostGitHubClient builds a GitHub API client for token that
+// stays on api.github.com unless configuredGitHubAPIURL names the
+// configured instance's API. It is used where the token must not follow
+// GITHUB_API_URL on its own: the write-scoped status token, and the
+// compose/git token of the agents-repo fallback, whose ref lookup picks
+// the commit the harness is then fetched at.
+func newConfiguredHostGitHubClient(token string) *gh.LiveClient {
+	client := gh.New(token)
+	if base := configuredGitHubAPIURL(); base != "" {
+		client = client.WithBaseURL(base)
+	}
+	return client
 }

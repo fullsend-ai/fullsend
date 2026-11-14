@@ -171,16 +171,13 @@ var statusMintToken = mintclient.MintToken
 
 // statusNewForgeClientFn constructs the GitHub client for status comments.
 // It stays on api.github.com unless GITHUB_SERVER_URL names another GitHub
-// instance and GITHUB_API_URL is that instance's API (statusGitHubAPIURL),
-// so a run on such a host posts its status there while the write-scoped
-// token can never be redirected by GITHUB_API_URL alone.
+// instance and GITHUB_API_URL is that instance's API
+// (newConfiguredHostGitHubClient), so a run on such a host posts its status
+// there while the write-scoped token can never be redirected by
+// GITHUB_API_URL alone.
 // Override in tests to capture status writes without calling GitHub.
 var statusNewForgeClientFn = func(token string) forge.Client {
-	client := gh.New(token)
-	if base := statusGitHubAPIURL(); base != "" {
-		client = client.WithBaseURL(base)
-	}
-	return client
+	return newConfiguredHostGitHubClient(token)
 }
 
 // agentWorkingDirExcludes lists fullsend-reserved directory patterns that
@@ -677,10 +674,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// fallback. Always create a GitHub client for the agents-repo fallback —
 	// fullsend-ai/agents is public, so unauthenticated requests work when no
 	// GitHub token is available (e.g., on GitLab pipelines). The client
-	// addresses the configured GitHub host (GITHUB_API_URL); when that is the
-	// API of the GITHUB_SERVER_URL instance, the fallback resolves and reads
-	// the agents repo there (agentsRepoHostURLPrefix).
-	fallbackForgeClient := newGitHubLiveClient(composeGitToken, "")
+	// stays on api.github.com unless GITHUB_API_URL is the API of the
+	// GITHUB_SERVER_URL instance; then the fallback resolves and reads the
+	// agents repo there (agentsRepoHostURLPrefix). GITHUB_API_URL alone
+	// never receives the compose token or picks the fallback commit.
+	fallbackForgeClient := newConfiguredHostGitHubClient(composeGitToken)
 	// The configured host serves raw content from itself, so allow it in the
 	// fetch policy too; the default policy names only github.com hosts.
 	composeOpts.FetchPolicy = withAgentsRepoHostAllowed(composeOpts.FetchPolicy, fallbackForgeClient)

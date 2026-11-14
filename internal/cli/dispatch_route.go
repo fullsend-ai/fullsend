@@ -248,11 +248,11 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 	}
 	forgeClient := o.forgeClient
 	if forgeClient == nil {
-		// Unauthenticated, as the agents repository is public, but on the
-		// configured host: a bare gh.New addresses api.github.com by name, so
-		// on any other forge the fallback lookup fails and the route's
-		// authorization threshold silently fails closed to write.
-		forgeClient = newGitHubLiveClient("", "")
+		// Unauthenticated, as the agents repository is public, and on the
+		// configured host when GITHUB_SERVER_URL and GITHUB_API_URL agree
+		// (newConfiguredHostGitHubClient), so the route reads the harness
+		// from the same host fullsend run does; otherwise api.github.com.
+		forgeClient = newConfiguredHostGitHubClient("")
 	}
 	printer := o.printer
 	if printer == nil {

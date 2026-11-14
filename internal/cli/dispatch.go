@@ -89,7 +89,7 @@ func newDispatchFetchPolicy(forgeToken string) fetch.FetchPolicy {
 	if err != nil {
 		token = ""
 	}
-	return withAgentsRepoHostAllowed(fetch.DefaultPolicy, newGitHubLiveClient(token, ""))
+	return withAgentsRepoHostAllowed(fetch.DefaultPolicy, newConfiguredHostGitHubClient(token))
 }
 
 func runDispatch(ctx context.Context, opts dispatchOpts) error {
@@ -117,7 +117,7 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	// The harnesses dispatch enumerates and routes load can pin base:
 	// chains and companion files to the configured GitHub host — the same
 	// host fullsend run's agents-repo fallback resolves through
-	// newGitHubLiveClient. The default fetch policy names only github.com
+	// newConfiguredHostGitHubClient. The default fetch policy names only github.com
 	// hosts, so it is extended from the fallback client's base URL exactly
 	// as runAgent does; without that, loading such a harness fails with
 	// "domain not in allowlist" before any agent job is reached.

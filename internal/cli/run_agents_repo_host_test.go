@@ -70,11 +70,13 @@ func TestGitHubAPIURLForServer(t *testing.T) {
 	}
 }
 
-// TestStatusGitHubAPIURL checks that the write-scoped status client follows
-// GITHUB_API_URL only when GITHUB_SERVER_URL names another GitHub instance
-// and the API URL is that instance's API; otherwise it stays on
-// api.github.com.
-func TestStatusGitHubAPIURL(t *testing.T) {
+// TestConfiguredHostGitHubClients checks the clients that carry a token
+// GITHUB_API_URL must not redirect on its own — the write-scoped status
+// client, and the agents-repo fallback client fullsend run and dispatch
+// --route build (newConfiguredHostGitHubClient). They follow GITHUB_API_URL
+// only when GITHUB_SERVER_URL names another GitHub instance and the API URL
+// is that instance's API; otherwise they stay on api.github.com.
+func TestConfiguredHostGitHubClients(t *testing.T) {
 	tests := []struct {
 		name   string
 		server string
@@ -94,14 +96,16 @@ func TestStatusGitHubAPIURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("GITHUB_SERVER_URL", tt.server)
 			t.Setenv("GITHUB_API_URL", tt.api)
-			assert.Equal(t, tt.want, statusGitHubAPIURL())
-			client, ok := statusNewForgeClientFn("t").(*gh.LiveClient)
-			require.True(t, ok)
+			assert.Equal(t, tt.want, configuredGitHubAPIURL())
 			want := tt.want
 			if want == "" {
 				want = "https://api.github.com"
 			}
-			assert.Equal(t, want, client.BaseURL())
+			status, ok := statusNewForgeClientFn("t").(*gh.LiveClient)
+			require.True(t, ok)
+			assert.Equal(t, want, status.BaseURL(), "status client")
+			assert.Equal(t, want, newConfiguredHostGitHubClient("t").BaseURL(), "fallback client")
+			assert.Equal(t, want, newConfiguredHostGitHubClient("").BaseURL(), "unauthenticated route client")
 		})
 	}
 }
@@ -171,7 +175,7 @@ func TestAgentsRepoHostAgreesWithAllowlist(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("GITHUB_SERVER_URL", tt.server)
 			t.Setenv("GITHUB_API_URL", tt.api)
-			client := newGitHubLiveClient("t", "")
+			client := newConfiguredHostGitHubClient("t")
 			prefix := agentsRepoHostURLPrefix(client)
 			policy := withAgentsRepoHostAllowed(fetch.DefaultPolicy, client)
 			require.NotEmpty(t, prefix)
@@ -213,6 +217,9 @@ func newAgentsRepoHostServer(t *testing.T, sha string, files map[string][]byte) 
 		if relPath, ok := strings.CutPrefix(r.URL.Path, "/api/v3/repos/fullsend-ai/agents/contents/"); ok && r.URL.Query().Get("ref") == sha {
 			if content, ok := files[relPath]; ok {
 				_ = json.NewEncoder(w).Encode(map[string]string{
+					"type":     "file",
+					"path":     relPath,
+					"sha":      fetch.ComputeSHA256(content),
 					"content":  base64.StdEncoding.EncodeToString(content),
 					"encoding": "base64",
 				})
@@ -226,7 +233,7 @@ func newAgentsRepoHostServer(t *testing.T, sha string, files map[string][]byte) 
 					continue
 				}
 				name, _, nested := strings.Cut(rest, "/")
-				entry := map[string]any{"name": name, "path": relPath + "/" + name, "type": "file", "size": len(content)}
+				entry := map[string]any{"name": name, "path": relPath + "/" + name, "sha": fetch.ComputeSHA256(content), "type": "file", "size": len(content)}
 				if nested {
 					entry["type"], entry["size"] = "dir", 0
 				}
@@ -264,7 +271,7 @@ func TestTryAgentsRepoFallback_OtherGitHubHost(t *testing.T) {
 	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{"harness/triage.yaml": harnessContent})
 	useConfiguredGitHubHost(t, srv.URL)
 
-	client := newGitHubLiveClient("host-token", "")
+	client := newConfiguredHostGitHubClient("host-token")
 	hostPrefix := srv.URL + "/fullsend-ai/agents/raw/"
 	opts := harness.ComposeOpts{
 		WorkspaceRoot: t.TempDir(),
@@ -303,7 +310,7 @@ func TestTryAgentsRepoMeasurementManifest_OtherGitHubHost404(t *testing.T) {
 		WorkspaceRoot: t.TempDir(),
 		OrgAllowlist:  []string{srv.URL + "/fullsend-ai/agents/raw/"},
 	}
-	_, ok := tryAgentsRepoMeasurementManifest(context.Background(), "triage", newGitHubLiveClient("t", ""), opts, ui.New(&buf))
+	_, ok := tryAgentsRepoMeasurementManifest(context.Background(), "triage", newConfiguredHostGitHubClient("t"), opts, ui.New(&buf))
 	assert.False(t, ok)
 	assert.Contains(t, buf.String(), "HTTP 404")
 	assert.NotContains(t, buf.String(), "Failed to fetch")
@@ -322,7 +329,7 @@ func TestTryAgentsRepoFallback_OtherGitHubHostSizeLimit(t *testing.T) {
 		FetchPolicy:   fetch.FetchPolicy{MaxSizeBytes: 4},
 		OrgAllowlist:  []string{srv.URL + "/fullsend-ai/agents/raw/"},
 	}
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", newGitHubLiveClient("t", ""), opts, ui.New(&buf))
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", newConfiguredHostGitHubClient("t"), opts, ui.New(&buf))
 	assert.False(t, ok)
 	assert.Contains(t, buf.String(), "Failed to fetch")
 	assert.Contains(t, buf.String(), "size limit")
@@ -341,7 +348,7 @@ func TestTryAgentsRepoFallback_OtherGitHubHostNotAllowlisted(t *testing.T) {
 		WorkspaceRoot: t.TempDir(),
 		OrgAllowlist:  config.DefaultAllowedRemoteResources(),
 	}
-	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", newGitHubLiveClient("t", ""), opts, ui.New(&buf))
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", newConfiguredHostGitHubClient("t"), opts, ui.New(&buf))
 	assert.False(t, ok)
 	assert.Contains(t, buf.String(), "not in allowed_remote_resources")
 	paths, _ := srv.requests()
@@ -377,7 +384,7 @@ func TestAgentsRepoHostFallback_LoadsCompanionFiles(t *testing.T) {
 	})
 	useConfiguredGitHubHost(t, srv.URL)
 
-	client := newGitHubLiveClient("host-token", "")
+	client := newConfiguredHostGitHubClient("host-token")
 	hostPrefix := srv.URL + "/fullsend-ai/agents/raw/"
 	opts := harness.ComposeOpts{
 		WorkspaceRoot: t.TempDir(),
@@ -424,7 +431,7 @@ func TestAgentsRepoHostFallback_LoadsDirectoryResources(t *testing.T) {
 		files["harness/triage.yaml"] = []byte(harnessContent)
 		srv := newAgentsRepoHostServer(t, sha, files)
 		useConfiguredGitHubHost(t, srv.URL)
-		client := newGitHubLiveClient("host-token", "")
+		client := newConfiguredHostGitHubClient("host-token")
 		opts := harness.ComposeOpts{
 			WorkspaceRoot: t.TempDir(),
 			FetchPolicy:   fetch.FetchPolicy{MaxSizeBytes: 1 << 20},
@@ -495,7 +502,7 @@ func TestAgentsRepoHostTreeFetcher(t *testing.T) {
 		"skills/review/checks/lint.md": []byte("# lint"),
 	})
 	useConfiguredGitHubHost(t, srv.URL)
-	client := newGitHubLiveClient("host-token", "")
+	client := newConfiguredHostGitHubClient("host-token")
 	prefix := srv.URL + "/fullsend-ai/agents/raw/"
 	info, err := agentsRepoHostForgeInfo(prefix, sha, "skills/review")
 	require.NoError(t, err)
@@ -576,7 +583,7 @@ func TestAgentsRepoHostFileFetcher_Rejects(t *testing.T) {
 	sha := "abcdef1234567890abcdef1234567890abcdef12"
 	srv := newAgentsRepoHostServer(t, sha, map[string][]byte{"agents/a.md": []byte("0123456789")})
 	useConfiguredGitHubHost(t, srv.URL)
-	client := newGitHubLiveClient("t", "")
+	client := newConfiguredHostGitHubClient("t")
 	prefix := srv.URL + "/fullsend-ai/agents/raw/"
 	fetcher := agentsRepoHostFileFetcher(client, prefix, fetch.FetchPolicy{MaxSizeBytes: 4})
 
