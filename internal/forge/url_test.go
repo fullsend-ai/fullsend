@@ -339,6 +339,19 @@ func TestParseRawContentURLOnHost(t *testing.T) {
 			wantErr:   "not a raw.githubusercontent.com URL: ghe.example.com",
 		},
 		{
+			// "github" is the Forge sentinel CloneURL maps to github.com.
+			name:      "single-label github host rejected",
+			input:     "https://github/o/r/raw/main/a.md",
+			githubURL: "https://github",
+			wantErr:   "not a raw.githubusercontent.com URL: github",
+		},
+		{
+			name:      "single-label gitlab host with port rejected",
+			input:     "https://GitLab:8443/o/r/raw/main/a.md",
+			githubURL: "https://GitLab:8443",
+			wantErr:   "not a raw.githubusercontent.com URL: GitLab",
+		},
+		{
 			name:      "configured host without raw segment",
 			input:     "https://ghe.example.com/o/r/blob/main/a.md",
 			githubURL: ghe,

@@ -279,9 +279,18 @@ func ParseRawContentURLOnHost(rawURL, githubURL string) (*ForgeURLInfo, error) {
 // enterpriseGitHubHost returns the lowercased host (including any port) of a
 // GitHub instance URL, or "" when the URL is empty, unparseable, or names
 // github.com, whose raw content is served from raw.githubusercontent.com.
+//
+// It also returns "" for the single-label hosts "github" and "gitlab": the
+// host becomes ForgeURLInfo.Forge, where those values are the sentinels
+// forgeHost maps to github.com and gitlab.com, so such a host would make
+// CloneURL point at a public forge instead of the configured one.
 func enterpriseGitHubHost(githubURL string) string {
 	u, err := url.Parse(strings.TrimSpace(githubURL))
 	if err != nil || u.Host == "" || strings.EqualFold(u.Hostname(), "github.com") {
+		return ""
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "github", "gitlab":
 		return ""
 	}
 	return strings.ToLower(u.Host)
