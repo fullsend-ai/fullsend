@@ -253,6 +253,7 @@ func evalMeasureFetchContext(fullsendDir string, offline bool, printer *ui.Print
 		AuditLogPath:  filepath.Join(abs, ".fullsend-cache", "fetch-audit.jsonl"),
 		OrgAllowlist:  orgAllowlist,
 		GitToken:      token,
+		GitHubURL:     forge.ConfiguredGitHubURL(),
 	}, newGitHubLiveClient(token, "")
 }
 
