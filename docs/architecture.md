@@ -572,10 +572,23 @@ The existing design principle is that [the repo is the coordinator](problems/age
   human events; explicit or overlay minima remain target behavior. Non-GitHub
   event paths map source-native roles to normalized roles without cross-system
   identity verification. Bot actors are migrating to provider-backed exact role
-  resolution: adapters classify actors from source-native metadata; recognized bots receive a
-  canonical `actor.bot_role` such as `review`, and bot actors retain
-  `actor.role: none` with `actor.role_verified` reflecting completion of the
-  bot-role lookup; unknown or unresolved bots fail closed on non-label paths.
+  resolution: adapters classify actors from source-native metadata; recognized
+  bots receive a canonical `actor.bot_role` such as `review`, and bot actors
+  retain `actor.role: none` with `actor.role_verified` reflecting completion of
+  the bot-role lookup; unknown or unresolved bots fail closed on non-label
+  paths ([ADR 0107](ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)).
+  **Decided:** For Fullsend-authored non-label contributions, repository-scoped
+  Sigstore keyless attestations based on workflow OIDC take precedence over
+  provider lookup. The provider lookup remains a migration fallback for legacy
+  objects and sources without a carrier; an invalid attestation fails closed.
+  A create event whose stable object identity is not yet attested does not
+  dispatch under ADR 0107; the writer must attach the finalized signature and
+  cause a follow-up dispatch. Initial carriers cover comments, reviews, and
+  issue or pull-request content across forges and Jira where the platform OIDC
+  issuer and metadata carrier are supported. Signatures bind role and run
+  context to source content, but do not make that content trustworthy or grant
+  platform permissions.
+  Cross-repo verification remains open ([ADR 0168](ADRs/0168-authenticate-fullsend-contributions-with-role-signatures.md)).
   A verified human label addition separately grants `triage`-equivalent
   authority for its exact accepted transition and proven projection without
   synthesizing a verified actor role; a higher harness minimum also requires
