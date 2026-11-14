@@ -97,9 +97,9 @@ func PostComment(ctx context.Context, client forge.Client, owner, repo string, n
 // (commentID from PostComment), never an earlier run's comment — that
 // find-and-edit is the stickiness #9334 removed. The body is assembled
 // exactly as on create: the runner's marker stays on the first line,
-// marker syntax in the rest is escaped (a trusted leading line
-// excepted), the size cap applies, and a trusted leading line the cap
-// would cut refuses the update instead of posting it partial.
+// marker syntax in the rest is escaped (trusted leading lines
+// excepted), the size cap applies, and trusted leading lines the cap
+// would cut refuse the update instead of posting it partial.
 func UpdateComment(ctx context.Context, client forge.Client, owner, repo string, commentID int, body string, cfg Config, printer *ui.Printer) error {
 	if commentID == 0 {
 		return fmt.Errorf("comment ID is required")
@@ -142,44 +142,65 @@ func prepareBody(body string, cfg Config) (string, error) {
 	// creating: an oversized single result would otherwise fail the post.
 	markedBody = TruncateBody(markedBody, cfg.maxSize())
 
-	// A trusted leading line carries the projection payload the next
-	// run's prior-review fetch reads back, so the size cap must never
-	// cut it (nor the runner marker before it): TruncateBody cuts at a
-	// byte offset with no line awareness, and a projection line posted
-	// partial would break that fetch. Refuse to post instead.
-	if cfg.TrustedLeadingLine != nil {
-		if first, _, _ := strings.Cut(body, "\n"); cfg.TrustedLeadingLine.MatchString(first) &&
-			!strings.HasPrefix(markedBody, cfg.Marker+"\n"+first) {
-			return "", fmt.Errorf("comment body exceeds the %d-byte size cap without room for the trusted leading line intact; refusing to post a partial marker line", cfg.maxSize())
-		}
+	// Trusted leading lines carry the projection payload the next run's
+	// prior-review fetch reads back, so the size cap must never cut any
+	// of them (nor the runner marker before them): TruncateBody cuts at
+	// a byte offset with no line awareness, and a projection line posted
+	// partial would break that fetch. The guard covers every trusted
+	// line the caller's limit keeps — not only the first; the review
+	// door keeps three (diff hash, head, then the findings projection) —
+	// reading the same split neutralizeBody kept, so what is kept
+	// unescaped is exactly what is refused cut. Refuse to post instead.
+	if prefix, _, trusted := splitTrusted(body, cfg); trusted > 0 &&
+		!strings.HasPrefix(markedBody, cfg.Marker+"\n"+prefix) {
+		return "", fmt.Errorf("comment body exceeds the %d-byte size cap without room for the trusted leading line(s) intact; refusing to post a partial marker line", cfg.maxSize())
 	}
 	return markedBody, nil
 }
 
-// neutralizeBody escapes fullsend marker syntax in body. When
-// cfg.TrustedLeadingLine matches the whole first line of body, that line is
-// kept unescaped and only the text after the trusted leading lines is escaped.
-// Escaping starts after the last trusted line, so it cannot join with it.
+// neutralizeBody escapes fullsend marker syntax in body. The trusted
+// leading lines splitTrusted keeps (see TrustedLeadingLine) are posted
+// as-is and only the text after them is escaped. Escaping starts after
+// the last trusted line, so it cannot join with it.
 func neutralizeBody(body string, cfg Config) string {
-	if cfg.TrustedLeadingLine != nil {
-		limit := cfg.MaxTrustedLeadingLines
-		if limit <= 0 {
-			limit = 1
-		}
-		lines := strings.Split(body, "\n")
-		trusted := 0
-		for trusted < len(lines) && trusted < limit && cfg.TrustedLeadingLine.MatchString(lines[trusted]) {
-			trusted++
-		}
-		if trusted > 0 {
-			prefix := strings.Join(lines[:trusted], "\n")
-			if trusted == len(lines) {
-				return prefix
-			}
-			return prefix + "\n" + statuscomment.NeutralizeMarkers(strings.Join(lines[trusted:], "\n"))
-		}
+	prefix, rest, trusted := splitTrusted(body, cfg)
+	switch {
+	case trusted == 0:
+		return statuscomment.NeutralizeMarkers(body)
+	case rest == "":
+		return prefix
+	default:
+		return prefix + "\n" + statuscomment.NeutralizeMarkers(rest)
 	}
-	return statuscomment.NeutralizeMarkers(body)
+}
+
+// splitTrusted splits body into its trusted leading lines and the rest,
+// with one set of rules for every reader: consecutive leading lines that
+// whole-line match cfg.TrustedLeadingLine, at most
+// cfg.MaxTrustedLeadingLines of them (default one). neutralizeBody keeps
+// the prefix unescaped and the size-cap guard in prepareBody refuses any
+// truncation that would cut it, so the two can never disagree about what
+// is trusted.
+func splitTrusted(body string, cfg Config) (prefix, rest string, trusted int) {
+	if cfg.TrustedLeadingLine == nil {
+		return "", body, 0
+	}
+	limit := cfg.MaxTrustedLeadingLines
+	if limit <= 0 {
+		limit = 1
+	}
+	lines := strings.Split(body, "\n")
+	for trusted < len(lines) && trusted < limit && cfg.TrustedLeadingLine.MatchString(lines[trusted]) {
+		trusted++
+	}
+	if trusted == 0 {
+		return "", body, 0
+	}
+	prefix = strings.Join(lines[:trusted], "\n")
+	if trusted == len(lines) {
+		return prefix, "", trusted
+	}
+	return prefix, strings.Join(lines[trusted:], "\n"), trusted
 }
 
 // FindMarkedComment returns the first comment whose body contains the given
