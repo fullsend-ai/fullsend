@@ -3190,6 +3190,168 @@ base: `+baseURL+`
 	assert.Equal(t, "resource", deps[2].Type)
 }
 
+// A URL base's top-level api_servers[].script is a host-side script like
+// pre_script: composition must fetch it from the base's source (under the
+// same allowlist and integrity rules as the other resolveBase* paths) and
+// rewrite the entry to the cached copy, instead of leaving the relative path
+// to resolve later against the local .fullsend directory (AISDLC-545 ac_1).
+func TestLoadWithBase_URLBase_APIServerScriptFetched(t *testing.T) {
+	apiScript := []byte("#!/bin/bash\necho api")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+api_servers:
+  - name: api
+    script: scripts/api.sh
+    port: 8080
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/scripts/api.sh": apiScript,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.APIServers, 1)
+	assert.Equal(t, "api", h.APIServers[0].Name)
+	assert.Equal(t, 8080, h.APIServers[0].Port)
+
+	// The script is fetched from the source and the entry names the cached copy.
+	script := h.APIServers[0].Script
+	assert.False(t, IsURL(script), "api_servers[0].script should not be a URL")
+	assert.NotEqual(t, "scripts/api.sh", script, "the relative path must be rewritten, not left to resolve against the local .fullsend directory")
+	assert.True(t, filepath.IsAbs(script), "api_servers[0].script should be an absolute cache path")
+	assert.True(t, isFullsendCachePath(script, cacheDir), "api_servers[0].script should name a copy inside fullsend's cache")
+
+	content, err := os.ReadFile(script)
+	require.NoError(t, err)
+	assert.Equal(t, apiScript, content)
+
+	// 1 base + 1 api server script + 1 agent resource
+	require.Len(t, deps, 3)
+	assert.Equal(t, "base", deps[0].Field)
+	assert.Equal(t, "api_servers[0].script", deps[1].Field)
+	assert.Equal(t, "script", deps[1].Type)
+	assert.Equal(t, server.URL+"/scripts/api.sh", deps[1].URL)
+	assert.False(t, deps[1].CacheHit)
+	assert.Equal(t, script, deps[1].LocalPath)
+	assert.Equal(t, "agent", deps[2].Field)
+	assert.Equal(t, "resource", deps[2].Type)
+}
+
+// The fetch goes through the same allowlist as the other resolveBase* paths:
+// a base whose api_servers[].script lives outside allowed_remote_resources
+// is refused (AISDLC-545 ac_1).
+func TestLoadWithBase_URLBase_APIServerScriptNotAllowlisted(t *testing.T) {
+	apiScript := []byte("#!/bin/bash\necho api")
+
+	baseContent := []byte(`
+role: test
+api_servers:
+  - name: api
+    script: scripts/api.sh
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/scripts/api.sh": apiScript,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	// Only the harness itself is allowlisted, not the directory beside it.
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/harness/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+	assert.Contains(t, err.Error(), "api_servers[0].script")
+}
+
+// A local base's api_servers[].script is not fetched: it stays a relative
+// path for ResolveRelativeTo to resolve against the harness directory, as
+// today (AISDLC-545 ac_3).
+func TestLoadWithBase_LocalBase_APIServerScriptUnchanged(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+api_servers:
+  - name: api
+    script: scripts/api.sh
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: base.yaml
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.Len(t, h.APIServers, 1)
+	assert.Equal(t, "scripts/api.sh", h.APIServers[0].Script,
+		"a local base's api_servers[].script stays relative for ResolveRelativeTo")
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseScripts_RejectsAbsoluteAPIServerScript(t *testing.T) {
+	// api_servers[].script runs on the host like pre_script, so an absolute
+	// path that is not already inside fullsend's own cache is untrusted and
+	// must be rejected, not executed.
+	base := &Harness{APIServers: []APIServer{{Name: "api", Script: "/etc/passwd"}}}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
+	assert.Contains(t, err.Error(), "api_servers[0].script")
+}
+
+func TestResolveBaseScripts_RejectsPathTraversalInAPIServerScript(t *testing.T) {
+	base := &Harness{APIServers: []APIServer{{Name: "api", Script: "../../../etc/passwd"}}}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "api_servers[0].script")
+}
+
+func TestResolveBaseScripts_SkipsURLInAPIServerScript(t *testing.T) {
+	// URL-valued script fields are skipped, matching the other script
+	// fields; standalone script URLs remain rejected by ValidateResourceTypes.
+	base := &Harness{APIServers: []APIServer{{Name: "api", Script: "https://evil.com/malware.sh"}}}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, "https://evil.com/malware.sh", base.APIServers[0].Script, "URL should be left unchanged")
+}
+
 func TestLoadWithBase_URLBase_ValidationLoopSchemaFetched(t *testing.T) {
 	validateScript := []byte("#!/bin/bash\necho validate")
 	schemaContent := []byte(`{"type":"object","properties":{"action":{"type":"string"}}}`)

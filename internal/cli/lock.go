@@ -1213,6 +1213,20 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 					return resolve.ResolveResult{}, fmt.Errorf("setting executable permission on cached validation_loop.script: %w", err)
 				}
 			}
+		case strings.HasPrefix(m.field, "api_servers[") && strings.HasSuffix(m.field, ".script"):
+			// A URL base's API server script, recorded by
+			// resolveBaseScripts: same treatment as pre_script. The merged
+			// list's slot N may be a different entry than the base's slot N
+			// the entry was recorded for, so match the URL.
+			var idx int
+			if _, err := fmt.Sscanf(m.field, "api_servers[%d]", &idx); err == nil &&
+				idx >= 0 && idx < len(h.APIServers) && m.field == fmt.Sprintf("api_servers[%d].script", idx) &&
+				lockFieldHolds(h.APIServers[idx].Script, m.url) {
+				h.APIServers[idx].Script = m.localPath
+				if err := os.Chmod(m.localPath, 0o755); err != nil {
+					return resolve.ResolveResult{}, fmt.Errorf("setting executable permission on cached %s: %w", m.field, err)
+				}
+			}
 		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".pre_script"):
 			// Forge scripts are resolved before forge promotion; the field
 			// name is informational — the actual path was already set during
@@ -1424,8 +1438,9 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 
 // lockReplayCopy returns a copy of h that resolveFromLock can change without
 // changing h. It shares nothing with h that the replay writes: the skills
-// slice and each skill's override map, the plugins and providers slices, and
-// the openshell and validation_loop structs are copied. Scalar fields are
+// slice and each skill's override map, the plugins, providers and api_servers
+// slices, and the openshell and validation_loop structs are copied. Scalar
+// fields are
 // copied by value. Anything else is shared, so a field the replay starts to
 // write must be copied here too.
 func lockReplayCopy(h *harness.Harness) *harness.Harness {
@@ -1438,6 +1453,7 @@ func lockReplayCopy(h *harness.Harness) *harness.Harness {
 		}
 	}
 	c.Plugins = slices.Clone(h.Plugins)
+	c.APIServers = slices.Clone(h.APIServers)
 	c.Providers = slices.Clone(h.Providers)
 	if h.OpenShell != nil {
 		openShell := *h.OpenShell
@@ -1533,6 +1549,8 @@ func lockTreeDirName(field, lockURL string) (string, error) {
 func isScriptLockField(field string) bool {
 	switch {
 	case field == "pre_script" || field == "post_script" || field == "validation_loop.script":
+		return true
+	case strings.HasPrefix(field, "api_servers[") && strings.HasSuffix(field, ".script"):
 		return true
 	case strings.HasPrefix(field, "forge.") &&
 		(strings.HasSuffix(field, ".pre_script") || strings.HasSuffix(field, ".post_script") || strings.HasSuffix(field, ".validation_loop.script")):

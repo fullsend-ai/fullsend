@@ -1045,8 +1045,9 @@ func isFullsendCachePath(p, workspaceRoot string) bool {
 }
 
 // resolveBaseScripts fetches script fields from a URL-referenced base harness.
-// For each script field (pre_script, post_script, validation_loop.script) that
-// is a non-empty relative path, the script's containing directory is fetched
+// For each script field (pre_script, post_script, validation_loop.script,
+// api_servers[].script) that is a non-empty relative path, the script's
+// containing directory is fetched
 // (via git sparse checkout) so that companion files are co-located at the
 // BASH_SOURCE-relative path. When the URL cannot be parsed for directory-level
 // fetching (e.g., non-raw.githubusercontent.com URLs), the script is fetched
@@ -1057,8 +1058,8 @@ func isFullsendCachePath(p, workspaceRoot string) bool {
 // A field is skipped (left unchanged) when it's a URL or already resolved to
 // a path inside fullsend's own cache (see isFullsendCachePath) — both cases
 // mean an earlier step already handled it. Any other absolute path is
-// untrusted and is rejected by validateBaseRelPath, since these fields are
-// executed on the host, not just read as data.
+// untrusted and is rejected by validateBaseRelPath, since these fields run or
+// are planned to run on the host, not just read as data.
 //
 // Returns additional dependencies for the fetched scripts.
 func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
@@ -1075,12 +1076,23 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 
 	// agent_input is excluded: runtime treats it as a directory (uploaded
 	// recursively), so single-file fetch is not appropriate.
-	scriptFields := []struct {
+	type scriptField struct {
 		name string
 		ptr  *string
-	}{
+	}
+	scriptFields := []scriptField{
 		{"pre_script", &base.PreScript},
 		{"post_script", &base.PostScript},
+	}
+	// Top-level API server scripts are planned to run on the host like
+	// pre_script, so they get the same fetch treatment. Without this the
+	// merged harness keeps the relative path, which ResolveRelativeTo then
+	// resolves against the local .fullsend directory instead of the base's
+	// source.
+	for i := range base.APIServers {
+		scriptFields = append(scriptFields, scriptField{
+			fmt.Sprintf("api_servers[%d].script", i), &base.APIServers[i].Script,
+		})
 	}
 
 	for _, f := range scriptFields {

@@ -126,13 +126,12 @@ hash verifies the harness YAML, not the relative files fetched alongside it.
 Use an immutable commit ref for a URL base whose relative resources will run on
 the host. For URL `base:` layers,
 relative `pre_script`, `post_script`, `validation_loop.script`/`schema`,
-`host_files[].src` (except `${VAR}` sources), `agent`, `policy`, skills
-(including overrides), `plugins[].path`, `openshell.profiles[]`, and path-form
-`providers[]` are fetched from the base repository and rewritten to cache
-paths. An inherited URL-base `agent_input` is **cleared**, because it is a
-directory and is not fetched. `doc` is source metadata, not a runtime dependency;
-`api_servers[].script` resolves as a local
-path, not a URL-base fetch, and server startup is planned. See
+`api_servers[].script`, `host_files[].src` (except `${VAR}` sources), `agent`,
+`policy`, skills (including overrides), `plugins[].path`,
+`openshell.profiles[]`, and path-form `providers[]` are fetched from the base
+repository and rewritten to cache paths. An inherited URL-base `agent_input` is
+**cleared**, because it is a directory and is not fetched. `doc` is source
+metadata, not a runtime dependency. See
 [ADR 0038](../ADRs/0038-universal-harness-access.md)
 for remote delivery and the [current-field reference](../reference/harness-reference.md)
 for implementation status.

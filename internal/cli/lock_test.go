@@ -3124,3 +3124,39 @@ func TestIsTransitiveSkillLockField(t *testing.T) {
 		assert.Equal(t, want, isTransitiveSkillLockField(field), field)
 	}
 }
+
+// An api_servers[N].script lock entry replaces a harness field that still
+// holds its URL with the cached, executable copy, and leaves any other value
+// alone (AISDLC-545 ac_2: the replay write path itself — the LoadWithBase-based
+// replay tests resolve the script to a cache path before replay, so they never
+// reach the write).
+func TestResolveFromLock_APIServerScriptEntryReplacesURLHolder(t *testing.T) {
+	content := []byte("#!/bin/sh\necho base api\n")
+	hash := fetch.ComputeSHA256(content)
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/scripts/api.sh", content))
+
+	entry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{
+		{Field: "api_servers[0].script", URL: "https://example.com/scripts/api.sh", SHA256: hash},
+	}}
+	newHarness := func(script string) *harness.Harness {
+		return &harness.Harness{
+			APIServers:             []harness.APIServer{{Name: "api", Script: script}},
+			AllowedRemoteResources: []string{"https://example.com/"},
+		}
+	}
+
+	h := newHarness("https://example.com/scripts/api.sh#sha256=" + hash)
+	_, err := resolveFromLock(h, entry, root, nil, ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.False(t, harness.IsURL(h.APIServers[0].Script), "the URL holder is replaced by the cached copy")
+	info, err := os.Stat(h.APIServers[0].Script)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&0o111, "a replaced api server script is executable")
+
+	h = newHarness("/work/scripts/api.sh")
+	_, err = resolveFromLock(h, entry, root, nil, ui.New(io.Discard))
+	require.NoError(t, err)
+	assert.Equal(t, "/work/scripts/api.sh", h.APIServers[0].Script,
+		"a local path the lock entry does not name is left alone")
+}
