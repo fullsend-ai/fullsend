@@ -155,9 +155,9 @@ func createIssue(w *world.World, title, body string) error {
 }
 
 // issueOpenDrainSkewBuffer is subtracted from the trigger timestamp on
-// retry to compensate for clock drift between the test runner and GitHub.
-// 30 s covers typical NTP drift without matching stale runs from prior
-// scenarios (pool repos are org-isolated).
+// retry to compensate for clock drift between the test runner and the
+// forge's clock. 30 s covers typical NTP drift without matching stale
+// runs from prior scenarios (pool repos are org-isolated).
 const issueOpenDrainSkewBuffer = 30 * time.Second
 
 // drainIssueOpenWorkflow waits for the fullsend.yaml workflow to process
@@ -182,8 +182,9 @@ func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
 	}
 
 	// Retry with a clock-skew buffer. When the test runner's clock is
-	// slightly ahead of GitHub's, the workflow run's CreatedAt falls
-	// before our trigger timestamp and the first poll window misses it.
+	// slightly ahead of the forge's clock, the workflow run's CreatedAt
+	// falls before our trigger timestamp and the first poll window misses
+	// it.
 	worldLogf(w, "issue-open drain: retrying with skew buffer: %v", err)
 	buffered := trigger.Add(-issueOpenDrainSkewBuffer)
 	_, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent)

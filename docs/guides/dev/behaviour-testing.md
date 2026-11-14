@@ -531,7 +531,8 @@ so a follow-up can decide with data whether to classify them.
 A `WaitForWorkflow` timeout because no run appeared wraps
 `ci.ErrWorkflowNotDispatched` on every driver: `workflow <file> (<event>)
 was not dispatched` on GitHub Actions, `pipeline (<event>) was not
-dispatched` on GitLab CI. The issue-open and dispatch-run waits retry it
+dispatched` on GitLab CI. A wait for any event drops the ` (<event>)` part,
+for example `pipeline was not dispatched`. The issue-open and dispatch-run waits retry it
 once, allowing 30 s of clock skew. If the retry also times out, the failure
 stays `scenario` and gets no infrastructure retry. Whether the run arrives
 late or never is not yet established. To see what happened in a failing
@@ -691,9 +692,13 @@ first waits a 2-minute grace period, outside `failureLogBudget`. It then adds
 a `Dispatch diagnostics` section to `failure-summary.txt`, before teardown
 deletes the repository. The section shows, in this order:
 
-- a `grace wait:` note, only when the total grace wait time for the test
-  process (about 6 minutes) is used up or about to be; it says the wait was
-  skipped or shortened, and the runs are still listed;
+- a `grace wait:` note when the wait was skipped or shortened, and the runs
+  are still listed. The wait is skipped when the total grace wait time for
+  the test process (about 6 minutes) is used up, or when no verdict can be
+  computed: the CI driver cannot list runs (`ci.RunLister`) or the error does
+  not name the workflow. It is shortened when that total runs out mid-wait;
+- `the grace period was cut short: <err>` when the scenario's context ended
+  before or during the wait;
 - the repository, the time of the listing (runner clock) and the real
   elapsed grace wait;
 - the scenario's issue with its `created_at` and state;
@@ -718,14 +723,14 @@ Whatever the verdict, the timeout stays a `scenario` failure; re-run the job
 as usual, and add the summary's verdict line to #9469 so the cause can be
 settled from data.
 
-Total grace wait time is bounded at about 6 minutes per test process. Time
-already covered by another running wait is free, so a wait that overlaps a
-running wait, such as one in a burst of parallel failures, can still get its
-full 2 minutes. Once the budget is spent, a new wait ends where its
+Total grace wait time is bounded at about 6 minutes of wall-clock time per
+test process. Time already covered by another running wait is free, so a
+wait that overlaps a running wait, such as one in a burst of parallel
+failures, can still get its full 2 minutes, and a later isolated failure
+still gets its own wait. Once the budget is spent, a new wait ends where its
 uncovered time would exceed the budget, or is skipped if none is left. A
-wait cut short gives back the time it did not use and no other wait
-covers. A scenario whose context is already cancelled skips the wait and
-uses none of the time.
+wait cut short keeps the time it reserved. A scenario whose context is
+already cancelled skips the wait and uses none of the time.
 
 ### Repo allocation via the shared slot driver
 

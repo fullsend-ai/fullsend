@@ -83,9 +83,8 @@ func TestDispatchWaitRetry_ReturnsRetryError(t *testing.T) {
 // a run that concluded with a failure, with a cancelled or expired
 // context, or with an error that only reads "was not dispatched" without
 // wrapping the sentinel returns that error unchanged, with no retry; a
-// not-dispatched
-// first wait followed by a retry that fails some other way returns the
-// retry's error.
+// not-dispatched first wait followed by a retry that fails some other way
+// returns the retry's error.
 func TestDispatchWaitRetry_OnlyAfterNotDispatched(t *testing.T) {
 	t.Parallel()
 	runFailed := errors.New(`workflow fullsend.yaml run 4 concluded with "failure"`)

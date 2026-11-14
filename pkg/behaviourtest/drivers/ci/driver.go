@@ -63,6 +63,11 @@ func (e *NotDispatchedError) Unwrap() error { return ErrWorkflowNotDispatched }
 // buffers), it must synchronize access or be deep-copied per scenario
 // in World.Clone.
 type Driver interface {
+	// WaitForWorkflow waits for a run of workflowFile triggered by event
+	// (any event when empty) at or after the given time. A timeout with no
+	// matching run must wrap ErrWorkflowNotDispatched, so steps retry
+	// once with the clock-skew buffer. Only a *NotDispatchedError enables
+	// the dispatch diagnostics.
 	WaitForWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error)
 	FindCompletedWorkflowRun(ctx context.Context, owner, repo, workflowFile string, after time.Time) (*forge.WorkflowRun, error)
 	AssertNoWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time) error

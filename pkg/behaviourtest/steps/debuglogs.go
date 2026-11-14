@@ -60,19 +60,23 @@ const (
 // The diagnostics run only for a *ci.NotDispatchedError, which only the
 // GitHub Actions driver returns, so this applies to GitHub Actions only.
 // It runs outside failureLogBudget so it cannot starve the log collection
-// that follows, and is bounded per process by dispatchGraceBudget. A
-// variable so tests can shorten it.
+// that follows, and is bounded per process by dispatchGraceBudget. It is
+// skipped when no verdict can be computed (the CI driver is not a
+// ci.RunLister, or the error does not name the workflow). A variable so
+// tests can shorten it.
 var dispatchDiagnosticsGrace = 2 * time.Minute
 
 // dispatchGraceBudgetTotal bounds the total grace wait time per test
-// process at about this much wall-clock time: the length of the union of
-// the intervals the waits cover. Time already covered by another running
-// wait is free, so a wait that overlaps a running wait can still get its
-// full dispatchDiagnosticsGrace; a sum of waits would starve a burst of
-// parallel failures for no gain. Once the budget is spent, a new wait ends
+// process: the length of the union of the wall-clock intervals the waits
+// cover, so overlapping waits add no wall time. It is a union bound
+// rather than a fixed cap on waits or a single shared window: a fixed cap
+// starves a burst (12 scenarios timing out together, only the first few
+// wait), and a single window starves a later isolated failure, which is
+// the evidence #9469 needs. Once the budget is spent, a new wait ends
 // where its uncovered time would exceed the budget, or is skipped if none
-// is left; a skipped scenario still lists the repository. A wait cut short
-// gives back the time it did not use and no other wait covers.
+// is left; a skipped scenario still lists the repository. A wait cut
+// short keeps its reservation; in practice a cancelled wait means the
+// test process is shutting down.
 const dispatchGraceBudgetTotal = 6 * time.Minute
 
 // dispatchGraceBudget is the budget shared by every scenario in the
@@ -106,13 +110,13 @@ type graceInterval struct {
 }
 
 // graceBudget is a concurrency-safe bound on the wall-clock time covered
-// by grace waits, shared across scenarios. It records one reservation per
-// granted wait; the time used is the length of their union, so time two
-// waits share counts once.
+// by grace waits, shared across scenarios. covered is the union of the
+// granted intervals, kept merged and sorted by start, so time two waits
+// share counts once.
 type graceBudget struct {
-	total        time.Duration
-	mu           sync.Mutex
-	reservations []*graceInterval
+	total   time.Duration
+	mu      sync.Mutex
+	covered []graceInterval
 }
 
 func newGraceBudget(total time.Duration) *graceBudget {
@@ -120,28 +124,25 @@ func newGraceBudget(total time.Duration) *graceBudget {
 }
 
 // grant returns how long a wait starting at now may last, at most want,
-// and records the granted interval as a reservation, returned so the
-// caller can trim it if the wait ends early (nil when nothing is
-// granted). Time already covered by another reservation (such as a wait
-// still in progress) is free; uncovered time is charged against the
-// budget, and the wait ends where the budget runs out. It returns zero
-// once the budget is used up.
-func (g *graceBudget) grant(now time.Time, want time.Duration) (time.Duration, *graceInterval) {
+// and adds the granted interval to the covered time. Time already covered
+// (such as by a wait still in progress) is free; uncovered time is
+// charged against the budget, and the wait ends where the budget runs
+// out. It returns zero once the budget is used up.
+func (g *graceBudget) grant(now time.Time, want time.Duration) time.Duration {
 	if want <= 0 {
-		return 0, nil
+		return 0
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	intervals := g.covered()
 	var used time.Duration
-	for _, iv := range intervals {
+	for _, iv := range g.covered {
 		used += iv.end.Sub(iv.start)
 	}
 	left := g.total - used
 
 	t, end := now, now.Add(want)
-	for _, iv := range intervals {
+	for _, iv := range g.covered {
 		if !t.Before(end) {
 			break
 		}
@@ -168,41 +169,17 @@ func (g *graceBudget) grant(now time.Time, want time.Duration) (time.Duration, *
 	}
 	granted := t.Sub(now)
 	if granted <= 0 {
-		return 0, nil
+		return 0
 	}
-	r := &graceInterval{start: now, end: t}
-	g.reservations = append(g.reservations, r)
-	return granted, r
+	g.covered = mergeIntervals(append(g.covered, graceInterval{start: now, end: t}))
+	return granted
 }
 
-// trim shortens reservation r, which grant returned, to end when the wait
-// ended before its reserved end (for example when it was cancelled). Only
-// r shrinks: time another reservation covers stays covered, so a wait
-// still running keeps its coverage and only time no other wait covers is
-// given back to the budget.
-func (g *graceBudget) trim(r *graceInterval, end time.Time) {
-	if r == nil {
-		return
-	}
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if end.Before(r.end) {
-		r.end = maxTime(end, r.start)
-	}
-}
-
-// covered returns the union of the reservations as disjoint intervals
-// sorted by start. The caller holds g.mu.
-func (g *graceBudget) covered() []graceInterval {
-	sorted := make([]graceInterval, 0, len(g.reservations))
-	for _, r := range g.reservations {
-		if r.end.After(r.start) {
-			sorted = append(sorted, *r)
-		}
-	}
-	slices.SortFunc(sorted, func(a, b graceInterval) int { return a.start.Compare(b.start) })
-	merged := make([]graceInterval, 0, len(sorted))
-	for _, iv := range sorted {
+// mergeIntervals returns ivs as disjoint intervals sorted by start.
+func mergeIntervals(ivs []graceInterval) []graceInterval {
+	slices.SortFunc(ivs, func(a, b graceInterval) int { return a.start.Compare(b.start) })
+	merged := make([]graceInterval, 0, len(ivs))
+	for _, iv := range ivs {
 		if n := len(merged); n > 0 && !iv.start.After(merged[n-1].end) {
 			merged[n-1].end = maxTime(merged[n-1].end, iv.end)
 			continue
@@ -718,12 +695,12 @@ func collectScenarioRunLogs(ctx context.Context, w *world.World) string {
 
 // collectDispatchDiagnostics records, for a scenario that failed because
 // no workflow run appeared (GitHub Actions only), what the repository
-// shows after a grace period: a note when the shared grace budget
-// skipped or shortened the wait, the time of the listing and the real
-// elapsed wait, the scenario's issue with its creation time and state,
-// every workflow run (without the scenario time filter) with its event,
-// creation time and workflow file, and whether a run of the waited-for
-// workflow and event appeared after the wait. It
+// shows after a grace period: a note when the wait was skipped (no
+// budget left, or no verdict possible) or shortened, the time of the
+// listing and the real elapsed wait, the scenario's issue with its
+// creation time and state, every workflow run (without the scenario time
+// filter) with its event, creation time and workflow file, and whether a
+// run of the waited-for workflow and event appeared after the wait. It
 // runs before teardown deletes the repository, so the evidence survives
 // in the artifact. Every lookup is best-effort and reports its own
 // failure in place of its section.
@@ -740,16 +717,20 @@ func collectDispatchDiagnostics(ctx context.Context, w *world.World, waited *ci.
 	// missing run as a lost event.
 	partialWait := ""
 	var granted time.Duration
-	var reservation *graceInterval
+	_, canList := w.CI.(ci.RunLister)
 	switch {
 	case dispatchDiagnosticsGrace <= 0:
 		partialWait = "no grace wait is configured"
+	case !canList || waited == nil || waited.WorkflowFile == "":
+		// No verdict can be computed, so waiting would prove nothing.
+		partialWait = "the grace wait was skipped"
+		b.WriteString("  grace wait: skipped: no verdict can be computed without a run listing and the waited-for workflow\n")
 	case ctx.Err() != nil:
 		// Already cancelled: do not use up the shared budget.
 		partialWait = "the grace wait was cut short after 0s"
 		fmt.Fprintf(&b, "  the grace period was cut short: %v\n", ctx.Err())
 	default:
-		granted, reservation = budget.grant(graceStart, dispatchDiagnosticsGrace)
+		granted = budget.grant(graceStart, dispatchDiagnosticsGrace)
 	}
 	switch {
 	case partialWait != "":
@@ -770,10 +751,6 @@ func collectDispatchDiagnostics(ctx context.Context, w *world.World, waited *ci.
 		}
 	}
 	listedAt := dispatchNow()
-	// A wait that ended early gives back the reserved time it did not use;
-	// the reservation stays optimistic until then so concurrent waits see
-	// it as covered.
-	budget.trim(reservation, listedAt)
 	elapsed := listedAt.Sub(graceStart)
 	if elapsed < 0 {
 		elapsed = 0
