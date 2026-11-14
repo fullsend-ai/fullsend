@@ -70,7 +70,7 @@ func TestLockDirectOverridesSurviveTransitiveDup(t *testing.T) {
 			h, err := harness.Load(filepath.Join(dir, "harness", "code.yaml"))
 			require.NoError(t, err)
 			require.NoError(t, h.ResolveRelativeTo(dir))
-			_, err = resolveFromLock(h, entry, dir, nil, printer)
+			_, err = resolveFromLock(h, entry, "fullsend lock --update", dir, nil, printer)
 			require.NoError(t, err)
 
 			var bEntries []harness.SkillEntry
@@ -137,7 +137,7 @@ func TestResolveFromLock_URLOverrideSurvivesTransitiveDup(t *testing.T) {
 				AllowedRemoteResources: []string{"https://github.com/test-org/", "https://example.com/"},
 			}
 
-			_, err = resolveFromLock(h, &lock.HarnessLock{Dependencies: deps}, root, nil, ui.New(io.Discard))
+			_, err = resolveFromLock(h, &lock.HarnessLock{Dependencies: deps}, "fullsend lock --update", root, nil, ui.New(io.Discard))
 			require.NoError(t, err)
 
 			var bEntries []harness.SkillEntry
@@ -166,7 +166,7 @@ func TestResolveFromLock_OverridesWithoutLockEntry(t *testing.T) {
 		}},
 		AllowedRemoteResources: []string{"https://github.com/test-org/"},
 	}
-	_, err := resolveFromLock(h, &lock.HarnessLock{}, t.TempDir(), nil, ui.New(io.Discard))
+	_, err := resolveFromLock(h, &lock.HarnessLock{}, "fullsend lock --update", t.TempDir(), nil, ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "skills[0]: file overrides cannot be applied")
 }
@@ -195,7 +195,7 @@ func TestResolveFromLock_OverrideMergeFailureLeavesHarnessUnchanged(t *testing.T
 		{Field: "agent", URL: agentURL, SHA256: agentHash},
 	}}
 
-	_, err := resolveFromLock(h, lockEntry, root, nil, ui.New(io.Discard))
+	_, err := resolveFromLock(h, lockEntry, "fullsend lock --update", root, nil, ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "skills[0]: file overrides cannot be applied")
 	assert.Equal(t, agentURL, h.Agent, "agent must be restored after a merge failure")
@@ -245,7 +245,7 @@ func TestResolveFromLock_OverrideConflictRestoresReplayedValues(t *testing.T) {
 	}}
 
 	h := newHarness()
-	_, err = resolveFromLock(h, lockEntry, root, nil, ui.New(io.Discard))
+	_, err = resolveFromLock(h, lockEntry, "fullsend lock --update", root, nil, ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `override for "sub-agents/x.md" is also set by another entry`)
 	assert.Equal(t, newHarness(), h)

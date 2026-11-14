@@ -311,7 +311,7 @@ func TestLoadWithBase_LockedPins_OfflineMissingLockedContent(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "base "+tt.field+":")
 			assert.Contains(t, err.Error(), "pinned in the lock file with sha256="+missing)
-			assert.Contains(t, err.Error(), "run 'fullsend lock --update' first")
+			assert.Contains(t, err.Error(), "run fullsend lock --update first")
 		})
 	}
 }

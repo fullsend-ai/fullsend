@@ -136,7 +136,7 @@ func runLock(ctx context.Context, agentName, fullsendDir, forgeFlag string, upda
 		return err
 	}
 
-	result, err := lockOneAgent(ctx, agentName, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
+	result, err := lockOneAgent(ctx, agentName, fullsendDir, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
 	if err != nil {
 		return err
 	}
@@ -205,7 +205,7 @@ func loadLockConfig(path string) (config.ConfigWriter, error) {
 // lockOneAgent resolves dependencies for a single harness and returns the
 // lock entry without writing to disk. Returns nil (no error) when the harness
 // has no remote dependencies or the lock entry is already up to date.
-func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag string, update bool, lf *lock.LockFile, rFlags resolveFlags, printer *ui.Printer) (*lockResult, error) {
+func lockOneAgent(ctx context.Context, agentName, fullsendDir, absFullsendDir, forgeFlag string, update bool, lf *lock.LockFile, rFlags resolveFlags, printer *ui.Printer) (*lockResult, error) {
 	// Load org config early — needed for config-driven agent resolution
 	// fallback and later for allowlist validation.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
@@ -312,6 +312,14 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 		sourceURL = agentSourceDeps[0].URL
 	}
 
+	// --update re-resolves each URL from its source once per invocation,
+	// not once per forge platform: the set of index keys already
+	// re-resolved is shared across the loop's LoadWithBase passes, so a
+	// later platform takes the index entry the first pass wrote instead of
+	// re-fetching every shared URL (and re-hitting the rate-limited tree
+	// fetcher) once per platform.
+	resolvedKeys := make(map[string]bool)
+
 	for _, platform := range forgePlatforms {
 		h, baseDeps, loadErr := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
 			WorkspaceRoot: absFullsendDir,
@@ -323,6 +331,14 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			GitToken:      composeGitToken,
 			Config:        harness.BuildConfigMap(orgCfg),
 			SourceURL:     sourceURL,
+			// --update re-resolves from the source, not the URL index, so an
+			// upstream change is recorded even on the cache that wrote the
+			// lock. Offline-miss errors advise the named command, which
+			// carries --forge when the user named a platform for a child
+			// with no forge: block (#8988).
+			BypassURLIndex:    update,
+			ResolvedKeys:      resolvedKeys,
+			LockUpdateCommand: lockUpdateHint(agentName, fullsendDir, harnessPath, forgeFlag, true),
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
@@ -584,7 +600,7 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 		printer.Header("Locking dependencies: " + name)
 		printer.Blank()
 
-		result, lockErr := lockOneAgent(ctx, name, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
+		result, lockErr := lockOneAgent(ctx, name, fullsendDir, absFullsendDir, forgeFlag, update, lf, rFlags, printer)
 		if lockErr != nil {
 			if len(locked) > 0 {
 				printer.StepStart("Writing partial lock file (preserving progress)")
@@ -934,12 +950,16 @@ func unpinnedDeps(deps []harness.Dependency, pins map[string]harness.LockedPin) 
 // content exists in the local cache and replaces the harness URL field with the
 // cache path. Returns an error if any pinned dependency is missing from cache.
 //
+// Its cache-miss, allowlist and missing-lock-entry errors advise
+// lockUpdateCommand (the caller's `fullsend lock <name> --update`), so the
+// advice names the harness and succeeds as written.
+//
 // All changes are made on a working copy of target (lockReplayCopy), which
 // replaces *target only when replay succeeds. Any error therefore leaves
 // target exactly as it was passed in, and the caller can safely fall back to
 // network-based resolution with it. Cache-side effects (named symlinks, file
 // permissions) may still have been applied.
-func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, orgAllowlist []string, printer *ui.Printer) (resolve.ResolveResult, error) {
+func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, lockUpdateCommand, workspaceRoot string, orgAllowlist []string, printer *ui.Printer) (resolve.ResolveResult, error) {
 	h := lockReplayCopy(target)
 
 	type mutation struct {
@@ -963,8 +983,8 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 			h.MatchingAllowedPrefix(lockDep.URL) == "" &&
 			harness.MatchingAllowedPrefixInList(lockDep.URL, orgAllowlist) == "" {
 			return resolve.ResolveResult{}, fmt.Errorf(
-				"locked dependency %s (%s) is no longer in allowed_remote_resources — run 'fullsend lock' to update",
-				lockDep.Field, lockDep.URL)
+				"locked dependency %s (%s) is no longer in allowed_remote_resources — run %s to update",
+				lockDep.Field, lockDep.URL, lockUpdateCommand)
 		}
 
 		var localPath string
@@ -976,7 +996,7 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 				return resolve.ResolveResult{}, fmt.Errorf("dir cache integrity check failed for %s: %w", lockDep.Field, err)
 			}
 			if treePath == "" {
-				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run 'fullsend lock' to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256)
+				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run %s to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256, lockUpdateCommand)
 			}
 			localPath = treePath
 			if isScriptLockField(lockDep.Field) {
@@ -1007,7 +1027,7 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 				return resolve.ResolveResult{}, fmt.Errorf("cache integrity check failed for %s: %w", lockDep.Field, err)
 			}
 			if content == nil {
-				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run 'fullsend lock' to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256)
+				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run %s to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256, lockUpdateCommand)
 			}
 			cachedContent = content
 			cachePath, err := fetch.CachePath(workspaceRoot, lockDep.SHA256)
@@ -1114,7 +1134,7 @@ func resolveFromLock(target *harness.Harness, entry *lock.HarnessLock, workspace
 				cleanURL = p
 			}
 			if _, ok := resolvedURLs[cleanURL]; !ok {
-				return resolve.ResolveResult{}, fmt.Errorf("plugins[%d] (%s) has no entry in the lock file — run 'fullsend lock' to update", i, p)
+				return resolve.ResolveResult{}, fmt.Errorf("plugins[%d] (%s) has no entry in the lock file — run %s to update", i, p, lockUpdateCommand)
 			}
 			forgeInfo, parseErr := forge.ParseForgeURL(cleanURL)
 			if parseErr == nil {

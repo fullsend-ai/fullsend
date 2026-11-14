@@ -250,7 +250,7 @@ func TestStageSkills_EmptySourceReachesStagingThroughResolution(t *testing.T) {
 		entry := &lock.HarnessLock{Dependencies: []lock.DependencyEntry{
 			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
 		}}
-		_, err := resolveFromLock(h, entry, dir, nil, ui.New(io.Discard))
+		_, err := resolveFromLock(h, entry, "fullsend lock --update", dir, nil, ui.New(io.Discard))
 		require.NoError(t, err)
 		require.Len(t, h.Skills, 1, "the lock replay keeps the empty-source entry")
 		assert.Equal(t, []string{want}, stageWarnings(t, h))

@@ -403,23 +403,37 @@ for example `--forge github`, so `fullsend lock` pins them. Without it, the run
 warns that the lock entry does not pin them.
 
 When the lock entry is current (harness SHA256 matches), dependencies are
-resolved from the local cache without network access. If the harness has changed
-or a cached artifact is missing, `fullsend run` falls back to normal network
-resolution and prints a warning suggesting you re-run `fullsend lock`.
+resolved from the local cache without network access. If the harness has
+changed, `fullsend run` falls back to normal network resolution and prints a
+warning suggesting you re-run `fullsend lock <agent>` — a plain lock re-composes
+the changed entry from the URL index's cached copies, so it needs no `--update`
+(which would re-resolve every un-pinned base file from its source). If a cached
+artifact is missing, the error names `fullsend lock <agent> --update` instead,
+which re-fetches the missing content.
 
 A current lock entry also pins the files a URL `base:` (or an agent fetched from
 a URL) names by relative path: agent, policy, skills, skill file overrides,
 scripts, plugins and the rest. They resolve to the locked content even when the
 cache has since fetched newer content for the same URL. `fullsend run` prints
 `Pinning N dependencies from lock file` when it applies these pins. If locked
-content is missing from the cache, an `--offline` run fails and asks you to run
-`fullsend lock --update`, and an online run re-fetches it and fails if it no
-longer matches the lock (`fullsend lock --update` re-pins it). A lock entry for
+content is missing from the cache, an `--offline` run fails and its error names
+the command to run (`fullsend lock <agent> --update`, with `--fullsend-dir` when
+the directory is not the default, and `--forge <platform>` when the run composed
+forge-specific files for a child with no `forge:` block), and an online run
+re-fetches it and fails if
+it no longer matches the lock (the same command re-pins it). A lock entry for
 an agent fetched from a URL that was written before fullsend recorded these
-files does not pin them; run `fullsend lock --update` to add them. `fullsend run`
-warns when a current lock entry leaves any of these files unpinned.
+files does not pin them; run `fullsend lock <agent> --update` to add them.
+`fullsend run` warns when a current lock entry leaves any of these files
+unpinned.
 
 Use `--update` to force re-resolution even if the lock entry appears current.
+It re-resolves the URLs the lock entry records, and the files the base names
+by relative path, from their sources, so a file that changed upstream is
+recorded even on the cache that wrote the lock (the URL cache index is not
+consulted for `--update`). With `--offline`, `--update` re-pins from the cache
+and does not see upstream changes. A base's own `#sha256=` pin still wins: to move a
+base itself, change the pinned SHA in the harness file.
 A current entry is also not composed, so `fullsend lock` does not check it for
 reserved `env.sandbox` keys; see
 [Reserved `env.sandbox` keys](../../cli/run.md#reserved-envsandbox-keys).

@@ -31,7 +31,7 @@ func TestLockCurrentEntry_UpdateReportsReservedKeys(t *testing.T) {
 	}}
 
 	var out bytes.Buffer
-	_, err := lockOneAgent(context.Background(), "code", dir, "", true, lf, resolveFlags{}, ui.New(&out))
+	_, err := lockOneAgent(context.Background(), "code", dir, dir, "", true, lf, resolveFlags{}, ui.New(&out))
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "2 env.sandbox key(s) are reserved")
 	assert.Contains(t, out.String(), "HTTPS_PROXY, PATH", "--update must check the composed base and child")

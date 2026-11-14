@@ -662,6 +662,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		Config:        harness.BuildConfigMap(orgCfg),
 
 		RunnerSecretNames: runnerSecretNameSet(runnerSecrets),
+
+		// Pin-mismatch and offline-miss errors advise this command, which
+		// names the harness and succeeds as written. The harness is not
+		// resolved yet, so the hint cannot carry --forge; it is rebuilt
+		// once the harness path is known.
+		LockUpdateCommand: lockUpdateHint(agentName, fullsendDir, "", forgePlatform, true),
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
@@ -682,6 +688,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 		composeOpts.SourceURL = fetchDeps[0].URL
 	}
+
+	// The harness path is known now, so the lock-update advice can name
+	// the forge platform: for a child with no forge: block run under one,
+	// the advised re-lock must carry --forge or it composes with platform
+	// "" and drops the forge-specific base files (#8988).
+	composeOpts.LockUpdateCommand = lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform, true)
 
 	// If the harness has a URL base and org config failed to load,
 	// load it strictly now so LoadWithBase gets a proper error path
@@ -707,7 +719,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	case lockState.loadErr != nil:
 		printer.StepWarn("Could not load lock file: " + lockState.loadErr.Error())
 	case lockState.stale:
-		printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s%s' to update.", agentName, fullsendDirArg(fullsendDir)))
+		// A plain lock re-composes a stale entry (lock returns early only
+		// when the entry is current), so the stale advice carries no
+		// --update: it would set BypassURLIndex and re-fetch every
+		// un-pinned relative base file from upstream, taking changes the
+		// user was not told about, where the URL index's cached copies
+		// re-compose the entry as before. The hint still carries --forge
+		// and --fullsend-dir exactly like run's other lock advice (#8988),
+		// and the command ends the sentence: a period right after its last
+		// argument would be copied with it and break the advice as written.
+		printer.StepWarn("Harness has changed since lock file was generated; run: " + lockUpdateHint(agentName, fullsendDir, harnessPath, forgePlatform, false))
 	case len(lockState.pins) > 0:
 		noun := "dependency"
 		if len(lockState.pins) > 1 {
@@ -726,21 +747,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// leaves them to the URL index (#8979).
 	if lockState.entry != nil && !lockState.stale {
 		if unpinned := unpinnedDeps(baseDeps, lockState.pins); len(unpinned) > 0 {
-			noun := "dependency"
-			if len(unpinned) > 1 {
-				noun = "dependencies"
-			}
 			// Without --forge, lock reads forge keys from the child only
 			// (#8988), so a child with no forge: block needs the platform
 			// named. A child with forge keys is locked for all of them.
-			forgeArg := ""
-			if composeOpts.ForgePlatform != "" {
-				if rawH, rawErr := harness.LoadRaw(harnessPath); rawErr == nil && len(rawH.Forge) == 0 {
-					forgeArg = " --forge " + composeOpts.ForgePlatform
-				}
-			}
-			printer.StepWarn(fmt.Sprintf("Lock entry for %s does not pin %d %s (%s…); run 'fullsend lock --update%s %s%s' to pin them",
-				agentName, len(unpinned), noun, unpinned[0], forgeArg, agentName, fullsendDirArg(fullsendDir)))
+			// The name and first dependency are control-escaped, and a
+			// name that starts with '-' is guarded behind "--", in
+			// unpinnedDepsWarning so a crafted name can neither forge log
+			// lines nor read as a flag.
+			printer.StepWarn(unpinnedDepsWarning(agentName, unpinned, fullsendDir, harnessPath, composeOpts.ForgePlatform))
 		}
 	}
 
@@ -821,7 +835,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		if entry := lockState.entry; entry != nil && !lockState.stale {
 			printer.StepStart("Using pinned dependencies from lock file")
-			lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
+			lockResult, lockResolveErr := resolveFromLock(h, entry, composeOpts.LockUpdateCommand, absFullsendDir, orgAllowlist, printer)
 			if lockResolveErr != nil {
 				printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
 				printer.StepWarn("Falling back to normal resolution")

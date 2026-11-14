@@ -55,7 +55,7 @@ func lockThenReplay(t *testing.T, dir string, policy fetch.FetchPolicy, allowlis
 
 	before = load()
 	after = load()
-	_, err = resolveFromLock(after, entry, dir, allowlist, printer)
+	_, err = resolveFromLock(after, entry, "fullsend lock --update", dir, allowlist, printer)
 	require.NoError(t, err)
 	return before, after
 }
@@ -234,7 +234,7 @@ func TestResolveFromLock_ScriptEntriesReplaceOnlyMatchingFields(t *testing.T) {
 	}
 
 	h := newHarness("https://example.com/scripts/post.sh#sha256="+hash, "https://example.com/scripts/validate.sh")
-	_, err := resolveFromLock(h, entry, root, nil, ui.New(io.Discard))
+	_, err := resolveFromLock(h, entry, "fullsend lock --update", root, nil, ui.New(io.Discard))
 	require.NoError(t, err)
 	for _, p := range []string{h.PostScript, h.ValidationLoop.Script} {
 		assert.True(t, strings.HasSuffix(p, "/content"), p)
@@ -244,7 +244,7 @@ func TestResolveFromLock_ScriptEntriesReplaceOnlyMatchingFields(t *testing.T) {
 	}
 
 	h = newHarness("/work/scripts/post.sh", "/work/scripts/validate.sh")
-	_, err = resolveFromLock(h, entry, root, nil, ui.New(io.Discard))
+	_, err = resolveFromLock(h, entry, "fullsend lock --update", root, nil, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.Equal(t, "/work/scripts/post.sh", h.PostScript)
 	assert.Equal(t, "/work/scripts/validate.sh", h.ValidationLoop.Script)
