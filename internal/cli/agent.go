@@ -997,11 +997,25 @@ func allowlistPrefixForURL(rawURL string) string {
 	if err != nil {
 		return ""
 	}
+	if isConfiguredHostForge(info.Forge) {
+		// A raw URL on the configured GitHub host is scoped to the repo's
+		// raw/ path, the same shape as the default prefixes
+		// (config.DefaultAllowedRemoteResources), so a default-repo source
+		// matches its default prefix and nothing broader is written.
+		return "https://" + info.Forge + "/" + info.Owner + "/" + info.Repo + "/raw/"
+	}
 	idx := strings.Index(cleanURL, "/"+info.Owner+"/"+info.Repo+"/")
 	if idx < 0 {
 		return ""
 	}
 	return cleanURL[:idx] + "/" + info.Owner + "/" + info.Repo + "/"
+}
+
+// isConfiguredHostForge reports whether a parsed source's Forge names the
+// configured GitHub host (forge.ParseRawContentURLOnHost stores that host as
+// Forge) rather than a well-known forge or a generic URL.
+func isConfiguredHostForge(forgeName string) bool {
+	return forgeName != "" && forgeName != "github" && forgeName != "gitlab"
 }
 
 func hasAllowlistPrefix(resources []string, prefix string) bool {
