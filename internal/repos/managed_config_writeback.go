@@ -320,7 +320,8 @@ type pendingWriteback struct {
 // A declared preset keeps inheriting its own tracker, and an
 // explicit manifest value is never overridden. A repository covered only
 // by a glob gets its own explicit entry copied from the glob so sibling
-// repositories are unaffected. Existing overlays are not touched here
+// repositories are unaffected, and progress names that entry and the
+// glob. Existing overlays are not touched here
 // (install excludes a repository whose markerless overlay needs adoption).
 //
 // The in-memory manifest is always updated so rendering sees the values.
@@ -393,20 +394,22 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 	}
 
 	names := make([]string, 0, len(pending))
+	// globs[i] names the glob entry pending[i]'s new entry is copied from.
+	globs := make([]string, len(pending))
 	needsNewEntry := make(map[string]bool, len(pending))
-	for _, p := range pending {
+	for i, p := range pending {
 		name := p.rr.Owner + "/" + p.rr.Repo
 		entry := findExplicitEntry(m, name)
 		if entry == nil {
 			needsNewEntry[name] = true
-			carved, _, err := carveOutForForge(m, name, p.rr.Forge)
+			carved, glob, err := carveOutForForge(m, name, p.rr.Forge)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", name, err)
 			}
 			if carved == nil {
 				return nil, fmt.Errorf("no manifest entry or glob covers %q", name)
 			}
-			entry = carved
+			entry, globs[i] = carved, glob
 		}
 		entry.Config = p.cfg
 		names = append(names, name)
@@ -424,7 +427,7 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 		if cfg.DryRun && !cfg.Deferred {
 			verb = "Would persist"
 		}
-		progress(names[i], "manifest", fmt.Sprintf("%s config.%s in the manifest entry", verb, strings.Join(p.what, ", config.")))
+		progress(names[i], "manifest", fmt.Sprintf("%s config.%s in %s", verb, strings.Join(p.what, ", config."), manifestEntryWhere(names[i], globs[i])))
 	}
 	return names, nil
 }
@@ -548,7 +551,7 @@ func newEntrySuggestion(m *Manifest, p pendingWriteback) RepoEntry {
 		entry = *existing
 	} else if platform := m.PlatformFor(p.rr.Forge); platform != nil {
 		scratch := &PlatformConfig{Repos: slices.Clone(platform.Repos)}
-		if carved, _ := carveOutGlobEntry([]*PlatformConfig{scratch}, name); carved != nil {
+		if carved, _, _ := carveOutGlobEntry([]*PlatformConfig{scratch}, name); carved != nil {
 			entry = *carved
 		}
 	}

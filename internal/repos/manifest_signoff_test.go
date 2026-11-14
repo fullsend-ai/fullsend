@@ -265,7 +265,7 @@ func TestCarveOutGlobEntry_CopiesSignoff(t *testing.T) {
 	signoff := true
 	platform := &PlatformConfig{Repos: []RepoEntry{{Name: "acme/*", Signoff: &signoff}}}
 
-	carved, err := carveOutGlobEntry([]*PlatformConfig{platform}, "acme/api")
+	carved, _, err := carveOutGlobEntry([]*PlatformConfig{platform}, "acme/api")
 	require.NoError(t, err)
 	require.NotNil(t, carved)
 	require.NotNil(t, carved.Signoff)

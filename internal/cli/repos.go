@@ -396,6 +396,12 @@ type reposInstallConfig struct {
 	jiraClientID     string
 	jiraClientSecret string
 
+	// rotateTraceSigningKey writes a new trace signing key pair and keeps
+	// the previous verification key as retained (ADR 0154); on an existing
+	// install without trace_context the first rotation provisions the
+	// keys. A one-run control: never persisted.
+	rotateTraceSigningKey bool
+
 	// GitLab-specific
 	gitlabRoleRegistry string
 	gitlabRoleTokens   []string
@@ -517,6 +523,22 @@ two credential sets are mutually exclusive; supplying one removes existing
 secrets of the other. When polling is false or omitted, Fullsend-owned poll
 resources are removed and the Jira secrets are left in place.
 
+Trace signing keys (ADR 0154) are provisioned on GitHub only. A fresh
+install generates a trace installation ID and an Ed25519 key pair,
+records the installation ID and the public key in the repository's
+repos.yaml entry as config.trace_context (a repository that only a glob
+covers gets its own entry, copied from the glob), and writes the private
+seed as the FULLSEND_TRACE_SIGNING_KEY secret and its key ID as the
+FULLSEND_TRACE_SIGNING_KEY_ID variable. A later run writes a new pair,
+keeping the installation ID and retaining the previous public key, when
+the secret is missing, when that variable is missing or names a
+retained key, and with --rotate-trace-signing-key, whose first use
+gives an existing install its keys. From a read-only manifest a fresh
+install without --rotate-trace-signing-key goes ahead without keys; any
+other key write stops the run. Output shows installation and key IDs,
+never the seed. Commit the repos.yaml changes install makes, and run one
+install of a repository at a time. GitLab repositories get no keys yet.
+
 The persistent-setting flags --roles, --fullsend-ref, --mint-url, --app-set,
 --inference-auth, --vendor, --signoff, --gitlab-url, --vertex-region and
 --forge were removed; using one fails with the repos.yaml key to set instead.
@@ -557,6 +579,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.jiraEmail, "jira-email", "", "Jira account email written as FULLSEND_JIRA_EMAIL to selected repos whose tracker.jira.poll.enabled is true (optional); an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.jiraClientID, "jira-client-id", "", "Atlassian service account OAuth 2.0 client ID written as FULLSEND_JIRA_CLIENT_ID to selected repos whose tracker.jira.poll.enabled is true, instead of --jira-token; an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.jiraClientSecret, "jira-client-secret", "", "Atlassian service account OAuth 2.0 client secret written as FULLSEND_JIRA_CLIENT_SECRET to selected repos whose tracker.jira.poll.enabled is true, instead of --jira-token; an omitted value keeps the existing secret; command-line only, never written to repos.yaml and never logged")
+	cmd.Flags().BoolVar(&opts.rotateTraceSigningKey, "rotate-trace-signing-key", false, "generate a new trace signing key pair for each selected GitHub repo, written as FULLSEND_TRACE_SIGNING_KEY with its public key recorded in repos.yaml, and keep the previous verification key as retained; on an existing install without trace_context, the first rotation provisions the keys; needs a writable repos.yaml; GitLab repos get no key yet")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")
@@ -772,12 +795,36 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		})
 	}
 
-	// The only manifest edit install still plans is the initial
-	// tracking writeback below. It is planned in memory (DryRun) with
-	// its progress output held in deferredOutput; the layered safety
-	// comparison then runs against the proposed manifest and presets, and
-	// only then is the manifest persisted, so a safety rejection leaves
-	// repos.yaml byte-identical and writes nothing to the forge (#8218).
+	// The token-scope check and the sign-off identity lookup only read, so
+	// they run before install plans any manifest edit: a failure leaves
+	// repos.yaml unchanged instead of recording a trace key whose seed is
+	// never written (ADR 0154). The manifest edits below carve glob-covered
+	// repositories into entries copied from their globs, so they change
+	// neither the targeted forges nor the sign-off settings.
+	targetedForges, err := manifest.DistinctForgesFor(opts.repoFilter)
+	if err != nil {
+		return fmt.Errorf("determining targeted forges: %w", err)
+	}
+	if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
+		return err
+	}
+
+	// Signoff comes from the manifest settings. Trailers are resolved once
+	// per forge before convergence (including dry runs) so a missing
+	// identity fails before any scaffold commit is made.
+	signOffTrailers, err := resolveRepoSignOffTrailers(ctx, clients, printer, manifest,
+		opts.repoFilter, opts.dryRun)
+	if err != nil {
+		return err
+	}
+
+	// Install plans its manifest edits below in memory: the initial
+	// tracking writeback and the trace_context of fresh installs,
+	// recoveries and rotations (ADR 0154). Their progress output is held
+	// in deferredOutput; the layered safety comparison then runs against
+	// the proposed manifest and presets, and only then is the manifest
+	// persisted, so a safety rejection leaves repos.yaml byte-identical and
+	// writes nothing to the forge (#8218).
 	var deferredOutput []func()
 	deferOutput := func(f func()) { deferredOutput = append(deferredOutput, f) }
 	manifestChanged := false
@@ -801,6 +848,29 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return fmt.Errorf("recording install defaults in manifest: %w", wbErr)
 	}
 	if len(writtenBack) > 0 {
+		manifestChanged = true
+	}
+
+	// Plan trace signing key writes (ADR 0154) and record their public keys
+	// in the manifest entries, under the same deferred-persist contract. A
+	// refusal, or a read-only manifest that must record a key, fails here,
+	// before the manifest write and any key write. A fresh install from a
+	// read-only manifest without --rotate-trace-signing-key goes ahead
+	// without keys and says so.
+	traceKeyPlans, traceErr := repos.EnsureTraceSigningKeys(ctx, repos.TraceKeysConfig{
+		Manifest:     manifest,
+		ManifestPath: opts.manifest,
+		Deferred:     !opts.dryRun,
+		RepoFilter:   opts.repoFilter,
+		ExcludeRepos: adoptionSkip,
+		Rotate:       opts.rotateTraceSigningKey,
+	}, preflightClients, func(repo, _, msg string) {
+		deferOutput(func() { printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg)) })
+	})
+	if traceErr != nil {
+		return fmt.Errorf("planning trace signing keys: %w", traceErr)
+	}
+	if len(traceKeyPlans) > 0 {
 		manifestChanged = true
 	}
 
@@ -839,12 +909,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if manifestChanged && !opts.dryRun && opts.manifest != "" {
 		// Another install that uses the same file may have rewritten it since
 		// this run loaded it; writing now would drop its edits, such as a
-		// first-install tracker default it recorded. manifestChanged is set
-		// only for a writable manifest (each edit above refuses a read-only one
-		// or, like the legacy conversion, leaves it unwritten), so the file
-		// here is a local regular file. The comparison and the write are not
-		// atomic: a write that lands between them is overwritten. Lock the
-		// file if that window matters.
+		// first-install tracker default or the trace_context of a key it
+		// wrote. manifestChanged is set only for a writable manifest (each
+		// edit above refuses a read-only one or, like the legacy conversion,
+		// leaves it unwritten), so the file here is a local regular file. The
+		// comparison and the write are not atomic: a write that lands between
+		// them is overwritten. Lock the file if that window matters.
 		current, readErr := os.ReadFile(opts.manifest)
 		if readErr != nil {
 			return fmt.Errorf("writing manifest: reading %s again before writing it: %w", opts.manifest, readErr)
@@ -859,23 +929,6 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 	for _, flush := range deferredOutput {
 		flush()
-	}
-
-	targetedForges, err := manifest.DistinctForgesFor(opts.repoFilter)
-	if err != nil {
-		return fmt.Errorf("determining targeted forges: %w", err)
-	}
-	if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
-		return err
-	}
-
-	// Signoff comes from the manifest settings. Trailers are resolved once
-	// per forge before convergence (including dry runs) so a missing
-	// identity fails before any scaffold commit is made.
-	signOffTrailers, err := resolveRepoSignOffTrailers(ctx, clients, printer, manifest,
-		opts.repoFilter, opts.dryRun)
-	if err != nil {
-		return err
 	}
 
 	upstreamRef, upstreamTag := resolveUpstreamRef()
@@ -973,6 +1026,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		JiraEmail:               opts.jiraEmail,
 		JiraClientID:            opts.jiraClientID,
 		JiraClientSecret:        opts.jiraClientSecret,
+		TraceKeyPlans:           traceKeyPlans,
 		ReviewAppClientID:       reviewAppClientID,
 		ReviewAppClientIDAppSet: reviewAppSet,
 		ReadVendoredWorkflow:    readVendoredWorkflow,
@@ -1496,7 +1550,7 @@ By default, tears down (removes workflow files via a pull request, deletes
 variables and secrets immediately) and then removes the repo entry from
 repos.yaml. The manifest entry is only removed if teardown succeeds.
 
-File deletions (workflow YAML, .fullsend/config.yaml, and GitLab
+File deletions (workflow YAML, and on GitLab .fullsend/config.yaml and the
 .gitlab-ci.yml unmerge) are delivered as a PR unless --direct is set.
 Variable and secret deletions are API operations and always happen
 immediately. Use --direct to push file deletions to the default branch.

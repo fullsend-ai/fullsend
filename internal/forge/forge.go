@@ -179,6 +179,14 @@ const (
 	// SecretTraceSigningKey is the trace-context signing key (ADR 0154).
 	// config.TraceSigningKeySecret is the same literal.
 	SecretTraceSigningKey = "FULLSEND_TRACE_SIGNING_KEY"
+	// VarTraceSigningKeyID is the repository variable in which repos install
+	// records which key SecretTraceSigningKey holds, because a secret cannot
+	// be read back: the key ID (tracecontext.FormatKeyID) of the seed install
+	// last confirmed writing (ADR 0154). Install deletes it before a seed
+	// write and sets it after, so it never names a key whose seed the secret
+	// no longer holds, apart from overlapping installs. It holds no key
+	// material. Install writes it on GitHub only.
+	VarTraceSigningKeyID = "FULLSEND_TRACE_SIGNING_KEY_ID"
 
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"

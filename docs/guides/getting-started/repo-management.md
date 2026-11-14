@@ -498,7 +498,11 @@ When the manifest is read-only (an HTTPS URL, a pipe or FIFO such as `<(cmd)`,
 or a local file without write permission), install fails before attempting any
 manifest write and prints the exact entry to add to its source, including for a
 glob-covered repository whose first-install `tracker` default needs an explicit
-entry. `--dry-run`, live install and `repos status` agree.
+entry. `--dry-run`, live install and `repos status` agree. Trace signing keys
+follow their own rule on GitHub: from such a manifest, a fresh install without
+`--rotate-trace-signing-key` goes ahead without keys and says so, and any
+other install that must record a key stops the run before it writes one (see
+[Trace signing keys](../../cli/repos.md#trace-signing-keys)).
 
 ```bash
 fullsend repos status -f repos.yaml --json   # whole-file managed drift
@@ -871,7 +875,14 @@ fullsend repos install acme/new-api acme/new-web --dry-run
 To cover every repository in an org, declare a glob entry such as
 `fullsend repos set 'github.repos["acme/*"]' '{}'`. Naming a concrete
 repository the glob covers (`fullsend repos install acme/new-api`)
-installs it with the glob's settings without adding an explicit entry.
+installs it with the glob's settings. Naming it adds no explicit entry. Any
+install, whether it names the repository, passes `"acme/*"` or selects the
+whole manifest, gives a glob-covered repository its own entry, copied from the
+glob, when it writes that repository's first-install `tracker` default or, on
+GitHub, its `trace_context` block
+([Trace signing keys](../../cli/repos.md#trace-signing-keys)) to `repos.yaml`.
+Edits to the glob entry apply only to repositories that have no entry of their
+own.
 
 Per-repo settings live on the entry, never in install flags:
 `fullsend_ref`, `mint_url`, `app_set`, `inference.auth`, `vendor`,

@@ -103,6 +103,13 @@ type ConvergeConfig struct {
 	JiraClientID     string
 	JiraClientSecret string
 
+	// TraceKeyPlans holds the trace signing key writes planned by
+	// EnsureTraceSigningKeys, keyed "owner/repo" (ADR 0154). A repository
+	// with a plan gets FULLSEND_TRACE_SIGNING_KEY and
+	// FULLSEND_TRACE_SIGNING_KEY_ID before its scaffold or config commit
+	// (convergeTraceSigningKey). Never logged or reported.
+	TraceKeyPlans map[string]*TraceKeyPlan
+
 	// ReviewAppClientID is the OAuth client ID of the review agent's
 	// GitHub App, pre-resolved by the caller for ReviewAppClientIDAppSet.
 	// It seeds the per-repo resolution cache so repos on that app set
@@ -1800,6 +1807,17 @@ func convergeRepo(ctx context.Context,
 			_, staleVendoredActions = applyStaleVendoredPlan(installFiles, plan, cfg.DryRun, repoFullName, progress)
 		}
 
+		// The trace signing key is written before Install, so the seed never
+		// trails the commit that delivers the config naming its key
+		// (ADR 0154). A dry run reports it; a failure stops the repository
+		// before Install.
+		traceActions := convergeTraceSigningKey(ctx, d, cfg, progress)
+		cr.Actions = append(cr.Actions, traceActions...)
+		if actionsError(traceActions) != nil {
+			cr.Error = actionsError(cr.Actions)
+			return cr
+		}
+
 		if cfg.DryRun {
 			cr.Installed = true
 			if resolved.Forge == ForgeGitLab {
@@ -1937,6 +1955,15 @@ func convergeRepo(ctx context.Context,
 		jiraDelivery.render = scaffold.RenderOptions{UpstreamRef: rref.ref, UpstreamTag: rref.tag}
 	}
 	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, jiraDelivery, progress)...)
+
+	// 2d'': The trace signing key (ADR 0154), before the commit that delivers
+	// the config naming it. A failure stops the repository here.
+	traceActions := convergeTraceSigningKey(ctx, d, cfg, progress)
+	cr.Actions = append(cr.Actions, traceActions...)
+	if actionsError(traceActions) != nil {
+		cr.Error = actionsError(cr.Actions)
+		return cr
+	}
 
 	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;

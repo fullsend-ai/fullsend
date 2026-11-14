@@ -227,6 +227,12 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 	for _, s := range managedInferenceSecrets() {
 		managedNames[s] = true
 	}
+	// Install records the trace signing key's key ID in this variable on
+	// GitHub (ADR 0154). It is managed but, like FULLSEND_DISPATCH_SECRET,
+	// not required.
+	if cfg.Forge != ForgeGitLab {
+		managedNames[forge.VarTraceSigningKeyID] = true
+	}
 	// FULLSEND_DISPATCH_SECRET is auto-provisioned by install/converge
 	// to sign poll state. It is managed, not an orphan, but is
 	// intentionally not in requiredSecretsForForge — that would mark

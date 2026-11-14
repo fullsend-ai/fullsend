@@ -103,27 +103,32 @@ github:
 // FULLSEND_MINT_URL 3 → 2, FULLSEND_APP_SET 4 → 3. The remaining reads of
 // each key are convergence's own, made after the manifest write. Since
 // #9109 convergence also reads the managed Jira poll caller once, to keep
-// it absent while Jira polling is disabled (27 and 26).
+// it absent while Jira polling is disabled. The trace signing key
+// preflight reads FULLSEND_TRACE_SIGNING_KEY_ID once, and an install reads
+// it again right before it writes the key (ADR 0154): 29 reads for an
+// install and 27 for a dry run.
 func TestRunReposInstall_PreflightReadsOnceConvergenceRechecks(t *testing.T) {
 	overlayKey := "file:acme/api/" + preset.OverlayPath
 	baseKey := "file:acme/api/" + preset.BasePath
 	workflowKey := "file:acme/api/.github/workflows/fullsend.yaml"
 	mintVarKey := "var:acme/api/" + forge.VarMintURL
 	regionKey := "var:acme/api/" + forge.VarGCPRegion
+	keyIDVarKey := "var:acme/api/" + forge.VarTraceSigningKeyID
 
 	cases := []struct {
 		name     string
 		manifest string
 		dryRun   bool
-		// writeback is whether the install persists the initial
-		// tracking default (a manifest write before convergence).
+		// writeback is whether the install persists a manifest edit
+		// before convergence: the initial tracking default, or the
+		// trace_context every fresh install records (ADR 0154).
 		writeback bool
 		total     int
 	}{
-		{name: "pristine no-preset install", manifest: githubUnmanagedManifestYAML, writeback: true, total: 27},
-		{name: "pristine no-preset dry run", manifest: githubUnmanagedManifestYAML, dryRun: true, writeback: true, total: 26},
-		{name: "behaviour-test manifest", manifest: behaviourTestManifestYAML, total: 27},
-		{name: "behaviour-test manifest dry run", manifest: behaviourTestManifestYAML, dryRun: true, total: 26},
+		{name: "pristine no-preset install", manifest: githubUnmanagedManifestYAML, writeback: true, total: 29},
+		{name: "pristine no-preset dry run", manifest: githubUnmanagedManifestYAML, dryRun: true, writeback: true, total: 27},
+		{name: "behaviour-test manifest", manifest: behaviourTestManifestYAML, writeback: true, total: 29},
+		{name: "behaviour-test manifest dry run", manifest: behaviourTestManifestYAML, dryRun: true, writeback: true, total: 27},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,6 +148,13 @@ func TestRunReposInstall_PreflightReadsOnceConvergenceRechecks(t *testing.T) {
 			assert.Equal(t, tc.total, counter.total(), "all reads: %v", counter.calls)
 			// The undeclared region is looked up once, by convergence.
 			assert.Equal(t, 1, counter.count(regionKey), "region reads: %v", counter.calls)
+			// The key ID variable is read once by the preflight and, before
+			// the key write, once more by an install.
+			wantKeyIDReads := 2
+			if tc.dryRun {
+				wantKeyIDReads = 1
+			}
+			assert.Equal(t, wantKeyIDReads, counter.count(keyIDVarKey), "key ID variable reads: %v", counter.calls)
 
 			overlay := string(fc.FileContents[overlayPath("acme/api")])
 			reloaded, err := repos.LoadManifest(context.Background(), manifestPath)

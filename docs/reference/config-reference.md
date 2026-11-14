@@ -1041,24 +1041,30 @@ The repository's trace-context keys
 ([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)):
 its installation ID, the public keys that verify its trace-context envelopes,
 and the name of the secret that holds its private signing key. Every value in
-the block is public. No fullsend command generates these keys or creates the
-secret, and nothing signs or verifies an envelope with them; the
-[Trace Context Reference](trace-context.md#implementation-scope) lists what is
-implemented.
+the block is public. `fullsend repos install` generates the keys of GitHub
+repositories (see
+[Trace Context Reference — Key lifecycle](trace-context.md#key-lifecycle)).
+Nothing signs or verifies an envelope with them yet.
 
 - **`installation_id`** — Identifies the repository's key set: exactly 32
-  lowercase hex characters (128 bits), not all zero.
+  lowercase hex characters (128 bits), not all zero. Install keeps it through
+  recovery, rotation and reinstall while the `repos.yaml` entry keeps its
+  `trace_context`; a fully uninstalled repository declared again without it
+  starts a new installation.
 - **`signing_key.secret`** — The secret that holds the private signing key. It
   must be exactly `FULLSEND_TRACE_SIGNING_KEY`. The key itself never appears in
   configuration.
 - **`verification_keys.active`** — The public key of the current signing key:
   standard base64, with padding, of a 32-byte Ed25519 public key.
 - **`verification_keys.retained`** — Optional. Earlier public keys, in the same
-  form, so that envelopes signed with their private keys still verify.
+  form, so that envelopes signed with their private keys still verify. Within
+  an installation, install never removes one; enrolling a fully uninstalled
+  repository again replaces the whole block.
 
-A concrete repository entry in `repos.yaml` declares the block as
-`config.trace_context`, and `fullsend repos install` renders it into the managed
-`.fullsend/config.yaml`. Only a concrete repository entry may declare it:
+On GitHub, `fullsend repos install` records the block in the repository's
+concrete `repos.yaml` entry as `config.trace_context`. Install renders the
+block into the managed `.fullsend/config.yaml`. Commit the `repos.yaml`
+changes install makes. Only a concrete repository entry may declare it:
 manifest validation rejects it in `defaults.config`, `github.config`,
 `gitlab.config` and glob entries. `repos install` also rejects a configuration
 preset or an existing `.fullsend/config.base.yaml` that contains it, and

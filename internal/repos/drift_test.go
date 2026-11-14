@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -383,6 +384,54 @@ func TestCheckOrphanVars_GitLabWebhookVarsManagedButGenuineOrphanReported(t *tes
 	}
 	if len(orphans) != 1 || orphans[0].Name != "FULLSEND_UNKNOWN_LEFTOVER" {
 		t.Errorf("expected only the genuine orphan, got %v", orphans)
+	}
+}
+
+// Install writes FULLSEND_TRACE_SIGNING_KEY_ID on GitHub only (ADR 0154), so
+// status counts it as managed there, while an unknown FULLSEND_ variable
+// beside it is still an orphan. On GitLab install writes no such variable,
+// and one found there is reported.
+func TestCheckOrphanVars_TraceSigningKeyIDManagedOnGitHub(t *testing.T) {
+	cases := []struct {
+		forgeName, mintURL string
+		want               []string
+	}{
+		{ForgeGitHub, "https://mint.example.com", []string{"FULLSEND_UNKNOWN_LEFTOVER"}},
+		{ForgeGitLab, "", []string{forge.VarTraceSigningKeyID, "FULLSEND_UNKNOWN_LEFTOVER"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.forgeName, func(t *testing.T) {
+			fc := forge.NewFakeClient()
+			fc.VariableValues["owner/repo/"+forge.VarTraceSigningKeyID] = "x"
+			fc.VariableValues["owner/repo/FULLSEND_UNKNOWN_LEFTOVER"] = "x"
+
+			orphans, err := CheckOrphanVars(context.Background(), fc, "owner", "repo",
+				InstallConfig{Forge: tc.forgeName, MintURL: tc.mintURL}, tc.mintURL)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			var names []string
+			for _, o := range orphans {
+				names = append(names, o.Name)
+			}
+			slices.Sort(names)
+			if !slices.Equal(names, tc.want) {
+				t.Errorf("orphans = %v, want %v", names, tc.want)
+			}
+		})
+	}
+}
+
+// Guard: the trace signing key and its key ID variable are managed but never
+// required, so an install without them is not incomplete.
+func TestTraceSigningKeyNamesNotRequired(t *testing.T) {
+	for _, forgeName := range []string{ForgeGitHub, ForgeGitLab} {
+		if slices.Contains(requiredVarsForForge(forgeName), forge.VarTraceSigningKeyID) {
+			t.Errorf("requiredVarsForForge(%s) must not include %s", forgeName, forge.VarTraceSigningKeyID)
+		}
+		if slices.Contains(requiredSecretsForForge(forgeName), forge.SecretTraceSigningKey) {
+			t.Errorf("requiredSecretsForForge(%s) must not include %s", forgeName, forge.SecretTraceSigningKey)
+		}
 	}
 }
 
