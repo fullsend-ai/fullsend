@@ -386,6 +386,28 @@ func IsRateLimitError(err error) bool {
 	return false
 }
 
+// graphQLServerErrorPrefix starts the message GitHub sends, with an
+// empty type, when a GraphQL query fails on its side ("Something went
+// wrong while executing your query on <time>. Please include `<id>`
+// when reporting this issue.").
+const graphQLServerErrorPrefix = "Something went wrong while executing your query"
+
+// IsServerError reports whether err itself is a GitHub server error: an
+// *APIError with status 500–504 and no context cause (the condition
+// APIError.IsTransient uses for those statuses), or a GraphQL error
+// with an empty type and GitHub's generic server-error message. It does
+// not unwrap err, so callers that walk an error tree node by node keep
+// each errors.Join branch independent.
+func IsServerError(err error) bool {
+	switch e := err.(type) {
+	case *APIError:
+		return e != nil && e.cause == nil && e.StatusCode >= 500 && e.StatusCode <= 504
+	case *graphQLError:
+		return e != nil && e.Type == "" && strings.HasPrefix(strings.TrimSpace(e.Message), graphQLServerErrorPrefix)
+	}
+	return false
+}
+
 // isRateLimitMessage reports whether a 403 response body or error message
 // names a GitHub rate limit. Primary limits say "API rate limit exceeded"
 // and secondary limits usually say "secondary rate limit", but the

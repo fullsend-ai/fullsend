@@ -1,12 +1,16 @@
 package failclass
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -14,6 +18,74 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 )
+
+// githubGraphQLServerError is the generic message GitHub sent, with an
+// empty type, for a createCommitOnBranch that failed on its side (#9472).
+const githubGraphQLServerError = "Something went wrong while executing your query on 2026-11-13T17:32:20Z. Please include `04B1:1E1739:4F83F3:FCF283:6AF7499B` when reporting this issue."
+
+// commitGraphQLError returns the error the GitHub forge client's
+// CommitFiles produces when createCommitOnBranch answers HTTP 200 with
+// one GraphQL error of the given type and message. The GraphQL error
+// type is unexported, so the test drives the real client against a
+// stub server instead of constructing it.
+func commitGraphQLError(t *testing.T, typ, message string) error {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "abc123"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/org/repo/git/commits/abc123":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/org/repo/git/trees/tree000":
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			json.NewEncoder(w).Encode(map[string]any{
+				"data":   map[string]any{"createCommitOnBranch": nil},
+				"errors": []map[string]any{{"type": typ, "message": message, "path": []string{"createCommitOnBranch"}}},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := gh.New("test-token").WithBaseURL(srv.URL).CommitFiles(context.Background(), "org", "repo", "msg",
+		[]forge.TreeFile{{Path: "f.txt", Content: []byte("x"), Mode: "100644"}})
+	require.Error(t, err)
+	return err
+}
+
+// TestClassifyGitHubServerErrors covers the server-error rule (#9472):
+// GitHub's generic GraphQL server error and a REST 5xx left after the
+// client's retries are infrastructure, while typed GraphQL errors and
+// non-rate-limit 4xx stay scenario.
+func TestClassifyGitHubServerErrors(t *testing.T) {
+	t.Parallel()
+
+	agentPath := ".fullsend/agents/triage.md"
+	serverErr := commitGraphQLError(t, "", githubGraphQLServerError)
+	// Wrapped as steps/dispatch.go wraps a failed agent-resource commit.
+	dispatchErr := fmt.Errorf("committing agent resource %s: %w", agentPath, serverErr)
+	assert.Equal(t, behaviourfail.Infrastructure, Classify(dispatchErr))
+
+	assert.Equal(t, behaviourfail.Infrastructure,
+		Classify(fmt.Errorf("get repo: %w", &gh.APIError{StatusCode: http.StatusBadGateway, Message: "Bad Gateway"})))
+
+	forbidden := commitGraphQLError(t, "FORBIDDEN", "Resource not accessible by integration")
+	assert.Equal(t, behaviourfail.Scenario, Classify(fmt.Errorf("committing agent resource %s: %w", agentPath, forbidden)))
+
+	staleHead := commitGraphQLError(t, "FORBIDDEN", "is at 98ad40bffbd1e5fb27d3636e7f7b6cbce85113c2 but expected 23ab78126def5042fe61d7e66dcbf5d9f35b589a")
+	assert.Equal(t, behaviourfail.Scenario, Classify(staleHead))
+
+	assert.Equal(t, behaviourfail.Scenario,
+		Classify(&gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"}))
+
+	assertion := errors.New("issue 42 missing label")
+	assert.Equal(t, behaviourfail.Scenario, Classify(errors.Join(dispatchErr, assertion)))
+	assert.Equal(t, behaviourfail.Scenario, Classify(errors.Join(assertion, dispatchErr)))
+}
 
 // TestClassifyInfrastructure covers every mode the allowlist
 // recognizes as infrastructure: the #8036 acceptance criteria (429
@@ -74,8 +146,9 @@ func TestClassifyInfrastructure(t *testing.T) {
 }
 
 // TestClassifyScenario covers the conservative default: the #8036
-// negative criteria (plain assertion error, unrecognized 500 APIError,
-// an error merely containing "429") plus nil and a 403 that is a
+// negative criteria (plain assertion error, an unrecognized APIError
+// — a 404 here, since a 5xx is a server error (#9472) — an error
+// merely containing "429") plus nil and a 403 that is a
 // permission denial rather than a secondary rate limit. None of these
 // may be retried or masked by an infrastructure label.
 func TestClassifyScenario(t *testing.T) {
@@ -88,8 +161,8 @@ func TestClassifyScenario(t *testing.T) {
 		"plain assertion error": {
 			err: errors.New("issue 42 missing label"),
 		},
-		"unrecognized api error 500": {
-			err: &gh.APIError{StatusCode: http.StatusInternalServerError, Message: "boom"},
+		"unrecognized api error 404": {
+			err: &gh.APIError{StatusCode: http.StatusNotFound, Message: "Not Found"},
 		},
 		"message merely containing 429": {
 			err: errors.New("workflow run 429 missing expected annotation"),

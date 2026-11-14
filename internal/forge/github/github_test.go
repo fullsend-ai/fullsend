@@ -3616,6 +3616,43 @@ func TestIsRateLimitError(t *testing.T) {
 	}
 }
 
+func TestIsServerError(t *testing.T) {
+	t.Parallel()
+
+	serverGraphQL := &graphQLError{Message: "Something went wrong while executing your query on 2026-11-13T17:32:20Z. Please include `04B1:1E1739:4F83F3:FCF283:6AF7499B` when reporting this issue."}
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "500 internal server error", err: &APIError{StatusCode: 500, Message: "boom"}, want: true},
+		{name: "502 bad gateway", err: &APIError{StatusCode: 502, Message: "Bad Gateway"}, want: true},
+		{name: "504 gateway timeout", err: &APIError{StatusCode: 504, Message: "Gateway Timeout"}, want: true},
+		{name: "505 not in transient range", err: &APIError{StatusCode: 505, Message: "HTTP Version Not Supported"}, want: false},
+		{name: "500 with context cause", err: &APIError{StatusCode: 500, Message: "boom", cause: context.DeadlineExceeded}, want: false},
+		{name: "429 rate limit", err: &APIError{StatusCode: 429, Message: "too many requests"}, want: false},
+		{name: "404 not found", err: &APIError{StatusCode: 404, Message: "Not Found"}, want: false},
+		{name: "nil APIError", err: (*APIError)(nil), want: false},
+		{name: "graphql generic server error", err: serverGraphQL, want: true},
+		{name: "graphql generic server error with leading space", err: &graphQLError{Message: " " + serverGraphQL.Message}, want: true},
+		{name: "graphql typed error with server message", err: &graphQLError{Type: "INTERNAL", Message: serverGraphQL.Message}, want: false},
+		{name: "graphql forbidden", err: &graphQLError{Type: "FORBIDDEN", Message: "Resource not accessible by integration"}, want: false},
+		{name: "graphql stale head", err: &graphQLError{Type: "STALE_DATA", Message: "Expected branch to point to \"abc123\" but it did not."}, want: false},
+		{name: "graphql untyped other message", err: &graphQLError{Message: "Could not resolve to a Repository"}, want: false},
+		{name: "nil graphQLError", err: (*graphQLError)(nil), want: false},
+		{name: "wrapped 502 is not unwrapped", err: fmt.Errorf("get repo: %w", &APIError{StatusCode: 502}), want: false},
+		{name: "wrapped graphql server error is not unwrapped", err: fmt.Errorf("create commit on branch: %w", serverGraphQL), want: false},
+		{name: "plain error", err: errors.New("network error"), want: false},
+		{name: "nil", err: nil, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, IsServerError(tt.err))
+		})
+	}
+}
+
 func TestIsRetryable_403NotRateLimit(t *testing.T) {
 	// A 403 that is NOT a rate limit (e.g. insufficient permissions)
 	// should not be retryable.

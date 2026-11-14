@@ -1096,3 +1096,23 @@ func TestIsRetriableCommitError(t *testing.T) {
 	assert.False(t, isRetriableCommitError(&APIError{StatusCode: http.StatusNotFound, Message: "Not Found"}))
 	assert.False(t, isRetriableCommitError(nil))
 }
+
+// githubGraphQLServerError is the generic message GitHub sent, with an
+// empty type, for a createCommitOnBranch that failed on its side (#9472).
+const githubGraphQLServerError = "Something went wrong while executing your query on 2026-11-13T17:32:20Z. Please include `04B1:1E1739:4F83F3:FCF283:6AF7499B` when reporting this issue."
+
+func TestCommitFiles_GraphQL_GenericServerErrorIsServerError(t *testing.T) {
+	var mutations int
+	srv, _ := graphqlCommitServer(t, "main", nil, func(w http.ResponseWriter, _ commitMutationInput) {
+		mutations++
+		graphqlCommitError(w, "", githubGraphQLServerError)
+	})
+
+	_, err := newTestClient(t, srv).CommitFiles(context.Background(), "org", "repo", "msg", regularFile)
+	require.Error(t, err)
+	assert.Equal(t, 1, mutations, "a generic server error is not retried")
+	assert.False(t, IsServerError(err), "IsServerError must not unwrap")
+	var gqlErr *graphQLError
+	require.ErrorAs(t, err, &gqlErr)
+	assert.True(t, IsServerError(gqlErr))
+}
