@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -833,7 +834,7 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 
 	var buf bytes.Buffer
 	called := false
-	status := runTargetRepoSync(true, true, true, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", nil, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string) error {
+	status := runTargetRepoSync(true, true, true, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", nil, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string, _ *ui.Printer) error {
 		called = true
 		return nil
 	})
@@ -842,7 +843,7 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 	assert.Contains(t, buf.String(), "Skipping target repository synchronization: validation did not pass")
 
 	buf.Reset()
-	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", []string{"AGENTS.md"}, map[string]string{}, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string) error {
+	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", []string{"AGENTS.md"}, map[string]string{}, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string, _ *ui.Printer) error {
 		return errors.New("boom")
 	})
 	assert.Equal(t, "failed (boom)", status)
@@ -850,7 +851,7 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 
 	buf.Reset()
 	called = false
-	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", nil, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string) error {
+	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", "/dst", "/dst/out", nil, nil, ui.New(&buf), func(_, _ string, _ []string, _ map[string]string, _ *ui.Printer) error {
 		called = true
 		return nil
 	})
@@ -863,7 +864,7 @@ func TestSyncTargetRepoSkipReason_And_RunTargetRepoSync(t *testing.T) {
 	var gotManifest map[string]string
 	manifest := map[string]string{"a.txt": "sha256:test"}
 	targetDir := t.TempDir()
-	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", targetDir, filepath.Join(targetDir, "output"), []string{"AGENTS.md", "CLAUDE.md"}, manifest, ui.New(&buf), func(_, _ string, excludes []string, preRun map[string]string) error {
+	status = runTargetRepoSync(true, true, false, false, false, false, 0, "", 0, 1, "/src", targetDir, filepath.Join(targetDir, "output"), []string{"AGENTS.md", "CLAUDE.md"}, manifest, ui.New(&buf), func(_, _ string, excludes []string, preRun map[string]string, _ *ui.Printer) error {
 		gotExcludes = excludes
 		gotManifest = preRun
 		return nil
@@ -995,7 +996,7 @@ func TestRunAgent_SyncTargetRepo_SyncFailureStillRunsPostScript(t *testing.T) {
 	t.Cleanup(func() {
 		syncTargetRepoDirFn = origSyncFn
 	})
-	syncTargetRepoDirFn = func(_, _ string, _ []string, _ map[string]string) error {
+	syncTargetRepoDirFn = func(_, _ string, _ []string, _ map[string]string, _ *ui.Printer) error {
 		return errors.New("disk full")
 	}
 
@@ -1152,8 +1153,15 @@ func TestSyncTargetRepoDirWithManifest_CaseInsensitiveGitAndExcludes(t *testing.
 
 	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git", "out"}, manifest))
 
-	_, err = os.Lstat(filepath.Join(dstDir, ".GIT"))
-	assert.True(t, os.IsNotExist(err), ".GIT directory must not be copied")
+	entries, err := os.ReadDir(dstDir)
+	require.NoError(t, err)
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	assert.Contains(t, names, ".git", ".git directory must be preserved")
+	assert.NotContains(t, names, ".GIT", ".GIT directory must not be copied")
+	assert.NotContains(t, names, "OUT", "OUT directory must not be copied")
 	assert.True(t, isExcludedPath(filepath.Join(".GIT", "config"), []string{".git"}))
 	assert.True(t, isExcludedPath(filepath.Join("sub", ".Git", "hooks", "pre-commit"), []string{".git"}))
 	assert.True(t, isAncestorOfExcludedPath("SUB", []string{"sub/.Git"}))
@@ -1364,4 +1372,274 @@ func TestSyncTargetRepoDirWithManifest_RestoresReadOnlyDirsOnMidWalkError(t *tes
 	roDirInfo, statErr := os.Stat(filepath.Join(dstDir, "rodir"))
 	require.NoError(t, statErr)
 	assert.Equal(t, os.FileMode(0o555), roDirInfo.Mode().Perm(), "deferred cleanup must restore read-only directory on error")
+}
+
+func TestSyncTargetRepoDirWithManifest_SkipsNonRegularFilesWithoutBlocking(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX FIFOs are not supported on Windows")
+	}
+
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "existing.txt"), []byte("v1"), 0o644))
+	manifest, err := recordTargetRepoManifest(dstDir)
+	require.NoError(t, err)
+
+	fifoPath := filepath.Join(srcDir, "test.fifo")
+	require.NoError(t, syscall.Mkfifo(fifoPath, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "regular.txt"), []byte("ok"), 0o644))
+
+	var buf bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- syncTargetRepoDirWithPrinter(srcDir, dstDir, []string{".git"}, manifest, ui.New(&buf))
+	}()
+
+	select {
+	case err = <-done:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("syncTargetRepoDirWithPrinter hung while encountering a FIFO in srcDir")
+	}
+
+	assert.Contains(t, buf.String(), "Skipping non-regular file during target repo sync: test.fifo")
+	_, statErr := os.Lstat(filepath.Join(dstDir, "test.fifo"))
+	assert.True(t, os.IsNotExist(statErr), "FIFO must not be copied to dstDir")
+
+	data, readErr := os.ReadFile(filepath.Join(dstDir, "regular.txt"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "ok", string(data))
+}
+
+func TestRecordTargetRepoManifest_SkipsExcludesAndUnreadableFiles(t *testing.T) {
+	repoDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(repoDir, "output"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "output", "run.log"), []byte("big log"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "normal.txt"), []byte("hello"), 0o644))
+	require.NoError(t, os.Symlink("normal.txt", filepath.Join(repoDir, "safe-link")))
+	require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(repoDir, "abs-link")))
+	require.NoError(t, os.Symlink("nonexistent", filepath.Join(repoDir, "dangling-link")))
+
+	unreadablePath := filepath.Join(repoDir, "unreadable.txt")
+	unreadableDir := filepath.Join(repoDir, "unreadable-dir")
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		require.NoError(t, os.WriteFile(unreadablePath, []byte("secret"), 0o000))
+		t.Cleanup(func() { _ = os.Chmod(unreadablePath, 0o644) })
+		require.NoError(t, os.MkdirAll(unreadableDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(unreadableDir, "hidden.txt"), []byte("x"), 0o644))
+		require.NoError(t, os.Chmod(unreadableDir, 0o000))
+		t.Cleanup(func() { _ = os.Chmod(unreadableDir, 0o755) })
+	}
+
+	manifest, err := recordTargetRepoManifest(repoDir, "output")
+	require.NoError(t, err)
+
+	assert.Contains(t, manifest, "normal.txt")
+	assert.Equal(t, "symlink:normal.txt", manifest["safe-link"])
+	assert.Equal(t, "symlink-stripped:/etc/passwd", manifest["abs-link"])
+	assert.Equal(t, "symlink-stripped:nonexistent", manifest["dangling-link"])
+	assert.NotContains(t, manifest, "output")
+	assert.NotContains(t, manifest, filepath.Join("output", "run.log"))
+	assert.NotContains(t, manifest, ".git")
+	assert.NotContains(t, manifest, filepath.Join(".git", "HEAD"))
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		assert.NotContains(t, manifest, "unreadable.txt")
+		assert.NotContains(t, manifest, filepath.Join("unreadable-dir", "hidden.txt"))
+	}
+}
+
+func TestSyncTargetRepoDirWithManifest_PruneSymlinkWalkOrderIndependent(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	// Create both lexical orders:
+	// 1. Target sorts before symlink: aaa.txt, link -> aaa.txt (both deleted in sandbox)
+	// 2. Symlink sorts before target: a-link -> zzz.txt, zzz.txt (both deleted in sandbox)
+	// Plus pre-existing unsafe symlinks that SafeDownload strips.
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "aaa.txt"), []byte("target1"), 0o644))
+	require.NoError(t, os.Symlink("aaa.txt", filepath.Join(dstDir, "link")))
+	require.NoError(t, os.WriteFile(filepath.Join(dstDir, "zzz.txt"), []byte("target2"), 0o644))
+	require.NoError(t, os.Symlink("zzz.txt", filepath.Join(dstDir, "a-link")))
+	require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(dstDir, "abs-link")))
+	require.NoError(t, os.Symlink("../../outside", filepath.Join(dstDir, "esc-link")))
+
+	manifest, err := recordTargetRepoManifest(dstDir)
+	require.NoError(t, err)
+	assert.Equal(t, "symlink:aaa.txt", manifest["link"])
+	assert.Equal(t, "symlink:zzz.txt", manifest["a-link"])
+	assert.True(t, strings.HasPrefix(manifest["abs-link"], "symlink-stripped:"))
+	assert.True(t, strings.HasPrefix(manifest["esc-link"], "symlink-stripped:"))
+
+	// Agent leaves keep.txt, deletes aaa.txt, link, zzz.txt, a-link; SafeDownload strips abs-link/esc-link.
+	require.NoError(t, os.WriteFile(filepath.Join(srcDir, "keep.txt"), []byte("kept"), 0o644))
+
+	require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest))
+
+	for _, pruned := range []string{"aaa.txt", "link", "zzz.txt", "a-link"} {
+		_, lerr := os.Lstat(filepath.Join(dstDir, pruned))
+		assert.True(t, os.IsNotExist(lerr), "%s must be pruned regardless of lexical walk order", pruned)
+	}
+	absTarget, err := os.Readlink(filepath.Join(dstDir, "abs-link"))
+	require.NoError(t, err, "pre-existing unsafe abs-link stripped by SafeDownload must be preserved")
+	assert.Equal(t, "/etc/passwd", absTarget)
+
+	escTarget, err := os.Readlink(filepath.Join(dstDir, "esc-link"))
+	require.NoError(t, err, "pre-existing unsafe esc-link stripped by SafeDownload must be preserved")
+	assert.Equal(t, "../../outside", escTarget)
+}
+
+func dirEntryNames(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+func TestSyncTargetRepoDirWithManifest_CaseOnlyRename(t *testing.T) {
+	caseInsensitive := true
+
+	t.Run("identical content renames casing", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := t.TempDir()
+
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "Foo.go"), []byte("package foo\n"), 0o644))
+		manifest, err := recordTargetRepoManifest(dstDir)
+		require.NoError(t, err)
+
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "foo.go"), []byte("package foo\n"), 0o644))
+		require.NoError(t, syncTargetRepoDirInternal(srcDir, dstDir, []string{".git"}, manifest, nil, &caseInsensitive))
+
+		assert.Equal(t, []string{"foo.go"}, dirEntryNames(t, dstDir))
+	})
+
+	t.Run("modified content and read-only directory rename", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := t.TempDir()
+
+		roPkg := filepath.Join(dstDir, "Pkg")
+		t.Cleanup(func() { _ = os.Chmod(roPkg, 0o755); _ = os.Chmod(filepath.Join(dstDir, "pkg"), 0o755) })
+		require.NoError(t, os.MkdirAll(roPkg, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(roPkg, "Bar.go"), []byte("old"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(roPkg, "stale.txt"), []byte("stale"), 0o644))
+		require.NoError(t, os.Chmod(roPkg, 0o555))
+		manifest, err := recordTargetRepoManifest(dstDir)
+		require.NoError(t, err)
+
+		require.NoError(t, os.MkdirAll(filepath.Join(srcDir, "pkg"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "pkg", "bar.go"), []byte("new"), 0o644))
+		require.NoError(t, syncTargetRepoDirInternal(srcDir, dstDir, []string{".git"}, manifest, nil, &caseInsensitive))
+
+		assert.Equal(t, []string{"pkg"}, dirEntryNames(t, dstDir))
+		assert.Equal(t, []string{"bar.go"}, dirEntryNames(t, filepath.Join(dstDir, "pkg")))
+
+		data, err := os.ReadFile(filepath.Join(dstDir, "pkg", "bar.go"))
+		require.NoError(t, err)
+		assert.Equal(t, "new", string(data))
+
+		pkgInfo, err := os.Stat(filepath.Join(dstDir, "pkg"))
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o555), pkgInfo.Mode().Perm())
+	})
+
+	t.Run("case-only symlink rename and unchanged deletion", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := t.TempDir()
+
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "target.txt"), []byte("t"), 0o644))
+		require.NoError(t, os.Symlink("target.txt", filepath.Join(dstDir, "OldLink")))
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "Gone.go"), []byte("gone"), 0o644))
+		manifest, err := recordTargetRepoManifest(dstDir)
+		require.NoError(t, err)
+
+		// Delete Gone.go concurrently on host while sandbox renames it with unchanged bytes.
+		require.NoError(t, os.Remove(filepath.Join(dstDir, "Gone.go")))
+
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "target.txt"), []byte("t"), 0o644))
+		require.NoError(t, os.Symlink("target.txt", filepath.Join(srcDir, "oldlink")))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "gone.go"), []byte("gone"), 0o644))
+		require.NoError(t, syncTargetRepoDirInternal(srcDir, dstDir, []string{".git"}, manifest, nil, &caseInsensitive))
+
+		assert.Equal(t, []string{"oldlink", "target.txt"}, dirEntryNames(t, dstDir))
+	})
+
+	t.Run("refuses case-only rename over concurrently edited host file", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := t.TempDir()
+
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "Foo.go"), []byte("v1"), 0o644))
+		manifest, err := recordTargetRepoManifest(dstDir)
+		require.NoError(t, err)
+
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "Foo.go"), []byte("host-edit"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "foo.go"), []byte("agent-edit"), 0o644))
+
+		err = syncTargetRepoDirInternal(srcDir, dstDir, []string{".git"}, manifest, nil, &caseInsensitive)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "refusing to overwrite concurrently modified host file")
+
+		data, readErr := os.ReadFile(filepath.Join(dstDir, "Foo.go"))
+		require.NoError(t, readErr)
+		assert.Equal(t, "host-edit", string(data))
+	})
+
+	t.Run("does not alias when both cases exist in source", func(t *testing.T) {
+		if detectCaseInsensitiveDir(t.TempDir()) {
+			t.Skip("source filesystem cannot hold both Foo.go and foo.go simultaneously")
+		}
+		srcDir := t.TempDir()
+		dstDir := t.TempDir()
+
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "Foo.go"), []byte("orig"), 0o644))
+		manifest, err := recordTargetRepoManifest(dstDir)
+		require.NoError(t, err)
+
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "Foo.go"), []byte("orig"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "foo.go"), []byte("second"), 0o644))
+		require.NoError(t, syncTargetRepoDirInternal(srcDir, dstDir, []string{".git"}, manifest, nil, &caseInsensitive))
+
+		assert.ElementsMatch(t, []string{"Foo.go", "foo.go"}, dirEntryNames(t, dstDir))
+	})
+
+	t.Run("ambiguous lowercase manifest keys skip folding", func(t *testing.T) {
+		lower := buildLowerManifestMap(map[string]string{
+			"Dup.go":  "sha256:1",
+			"dup.go":  "sha256:2",
+			"DUP.go":  "sha256:3",
+			"Uniq.go": "sha256:4",
+		})
+		assert.NotContains(t, lower, "dup.go")
+		assert.Equal(t, "Uniq.go", lower["uniq.go"])
+		assert.False(t, hasExactRelPath(t.TempDir(), filepath.Join("missing", "file.go")))
+	})
+
+	t.Run("default sync produces lowercase foo.go", func(t *testing.T) {
+		srcDir := t.TempDir()
+		dstDir := t.TempDir()
+
+		require.NoError(t, os.WriteFile(filepath.Join(dstDir, "Foo.go"), []byte("package foo\n"), 0o644))
+		manifest, err := recordTargetRepoManifest(dstDir)
+		require.NoError(t, err)
+
+		require.NoError(t, os.WriteFile(filepath.Join(srcDir, "foo.go"), []byte("package foo\n"), 0o644))
+		require.NoError(t, syncTargetRepoDirWithManifest(srcDir, dstDir, []string{".git"}, manifest))
+
+		assert.Equal(t, []string{"foo.go"}, dirEntryNames(t, dstDir))
+	})
+}
+
+func TestDetectCaseInsensitiveDir(t *testing.T) {
+	emptyDir := t.TempDir()
+	emptyRes := detectCaseInsensitiveDir(emptyDir)
+
+	populatedDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(populatedDir, "ProbeFile.txt"), []byte("x"), 0o644))
+	populatedRes := detectCaseInsensitiveDir(populatedDir)
+	assert.Equal(t, emptyRes, populatedRes)
 }

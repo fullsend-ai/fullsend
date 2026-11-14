@@ -2461,9 +2461,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var preRunSyncManifest map[string]string
 	var preRunSyncManifestErr error
 	if overrides.syncTargetRepo {
-		preRunSyncManifest, preRunSyncManifestErr = recordTargetRepoManifest(hostRepositoryDir)
+		manifestStart := time.Now()
+		var manifestExcludes []string
+		if rel, ok := syncOutputExcludeRel(hostRepositoryDir, outputBase); ok {
+			manifestExcludes = append(manifestExcludes, rel)
+		}
+		preRunSyncManifest, preRunSyncManifestErr = recordTargetRepoManifest(hostRepositoryDir, manifestExcludes...)
 		if preRunSyncManifestErr != nil {
 			printer.StepWarn("Could not snapshot target repo manifest before upload (disabling target repo sync): " + preRunSyncManifestErr.Error())
+		} else {
+			printer.StepDone(fmt.Sprintf("Target repo manifest captured (%d entries, %.1fs)", len(preRunSyncManifest), time.Since(manifestStart).Seconds()))
 		}
 	}
 
@@ -6266,7 +6273,7 @@ func syncOutputExcludeRel(hostRepositoryDir, outputBase string) (string, bool) {
 
 // syncTargetRepoDirFn is a package seam so tests can inject sync failures
 // without modifying the host filesystem permissions or failing upstream steps.
-var syncTargetRepoDirFn = syncTargetRepoDirWithManifest
+var syncTargetRepoDirFn = syncTargetRepoDirWithPrinter
 
 // shouldSyncTargetRepo returns whether sandbox changes should be synchronized
 // back to the host repository. Synchronization is strictly gated: the user must
@@ -6321,7 +6328,7 @@ func runTargetRepoSync(
 	downloadDir, targetDir, outputBase string,
 	runnerInjectedExcludes []string, preRunManifest map[string]string,
 	printer *ui.Printer,
-	syncFn func(srcDir, dstDir string, excludes []string, preRunManifest map[string]string) error,
+	syncFn func(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) error,
 ) string {
 	if !syncEnabled {
 		return ""
@@ -6344,7 +6351,7 @@ func runTargetRepoSync(
 		syncExcludes = append(syncExcludes, rel)
 	}
 	syncExcludes = append(syncExcludes, runnerInjectedExcludes...)
-	if err := syncFn(downloadDir, targetDir, syncExcludes, preRunManifest); err != nil {
+	if err := syncFn(downloadDir, targetDir, syncExcludes, preRunManifest, printer); err != nil {
 		printer.StepWarn("Target repository synchronization failed: " + err.Error())
 		return fmt.Sprintf("failed (%v)", err)
 	}
@@ -6353,39 +6360,60 @@ func runTargetRepoSync(
 }
 
 // recordTargetRepoManifest snapshots all relative paths inside repoDir (excluding
-// any .git subtree, matched case-insensitively) before sandbox upload so sync
-// can detect deletions, preserve host-only entries, and avoid overwriting concurrent host edits.
-func recordTargetRepoManifest(repoDir string) (map[string]string, error) {
+// any .git subtree and excluded paths, matched case-insensitively) before sandbox
+// upload so sync can detect deletions, preserve host-only entries and pre-existing
+// unsafe symlinks, and avoid overwriting concurrent host edits.
+func recordTargetRepoManifest(repoDir string, excludes ...string) (map[string]string, error) {
 	absRepo, err := filepath.Abs(repoDir)
 	if err != nil {
 		return nil, err
 	}
+	absRepoResolved := absRepo
+	if resolved, evalErr := filepath.EvalSymlinks(absRepo); evalErr == nil {
+		absRepoResolved = resolved
+	}
 	manifest := make(map[string]string)
 	err = filepath.WalkDir(absRepo, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
-		}
-		if strings.EqualFold(d.Name(), ".git") {
-			if d.IsDir() {
-				return filepath.SkipDir
+			if path != absRepo && (errors.Is(walkErr, os.ErrPermission) || errors.Is(walkErr, os.ErrNotExist)) {
+				if d != nil && d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
 			}
-			return nil
+			return walkErr
 		}
 		rel, err := filepath.Rel(absRepo, path)
 		if err != nil {
 			return err
 		}
-		if rel != "." {
-			info, infoErr := d.Info()
-			if infoErr != nil {
-				return infoErr
-			}
-			digest, digestErr := computeHostEntryDigest(path, info)
-			if digestErr != nil {
-				return digestErr
-			}
-			manifest[rel] = digest
+		if rel == "." {
+			return nil
 		}
+		if isExcludedPath(rel, excludes) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			if errors.Is(infoErr, os.ErrPermission) || errors.Is(infoErr, os.ErrNotExist) {
+				return nil
+			}
+			return infoErr
+		}
+		digest, digestErr := computeHostEntryDigest(path, info)
+		if digestErr != nil {
+			if errors.Is(digestErr, os.ErrPermission) || errors.Is(digestErr, os.ErrNotExist) {
+				return nil
+			}
+			return digestErr
+		}
+		if d.Type()&os.ModeSymlink != 0 && strings.HasPrefix(digest, "symlink:") && wouldSanitizeStripSymlink(path, absRepoResolved) {
+			digest = "symlink-stripped:" + strings.TrimPrefix(digest, "symlink:")
+		}
+		manifest[rel] = digest
 		return nil
 	})
 	if err != nil {
@@ -6394,9 +6422,11 @@ func recordTargetRepoManifest(repoDir string) (map[string]string, error) {
 	return manifest, nil
 }
 
-func sha256HexBytes(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+func normalizeManifestDigest(digest string) string {
+	if strings.HasPrefix(digest, "symlink-stripped:") {
+		return "symlink:" + strings.TrimPrefix(digest, "symlink-stripped:")
+	}
+	return digest
 }
 
 func computeHostEntryDigest(path string, info os.FileInfo) (string, error) {
@@ -6437,7 +6467,7 @@ func hasConcurrentHostEdit(targetPath, rel string, dstInfo os.FileInfo, preRunMa
 	if err != nil {
 		return false, err
 	}
-	return curDigest != recorded, nil
+	return curDigest != normalizeManifestDigest(recorded), nil
 }
 
 func checkCanReplaceHostTarget(targetPath, rel string, preRunManifest map[string]string) error {
@@ -6558,12 +6588,172 @@ type pruneDirEntry struct {
 	chmodded bool
 }
 
+func flipASCIICase(s string) (string, bool) {
+	b := []byte(s)
+	flipped := false
+	for i, c := range b {
+		switch {
+		case c >= 'a' && c <= 'z':
+			b[i] = c - ('a' - 'A')
+			flipped = true
+		case c >= 'A' && c <= 'Z':
+			b[i] = c + ('a' - 'A')
+			flipped = true
+		}
+	}
+	if !flipped {
+		return s, false
+	}
+	return string(b), true
+}
+
+func detectCaseInsensitiveDir(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err == nil {
+		names := make(map[string]bool, len(entries))
+		for _, entry := range entries {
+			names[entry.Name()] = true
+		}
+		for _, entry := range entries {
+			flipped, ok := flipASCIICase(entry.Name())
+			if !ok || names[flipped] {
+				continue
+			}
+			origInfo, origErr := os.Lstat(filepath.Join(dir, entry.Name()))
+			flipInfo, flipErr := os.Lstat(filepath.Join(dir, flipped))
+			if origErr == nil {
+				return flipErr == nil && os.SameFile(origInfo, flipInfo)
+			}
+		}
+	}
+	tmp, tmpErr := os.CreateTemp(dir, ".fullsend-case-probe-*")
+	if tmpErr != nil {
+		return false
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
+	flipped, ok := flipASCIICase(filepath.Base(tmpPath))
+	if !ok {
+		return false
+	}
+	origInfo, origErr := os.Lstat(tmpPath)
+	flipInfo, flipErr := os.Lstat(filepath.Join(dir, flipped))
+	return origErr == nil && flipErr == nil && os.SameFile(origInfo, flipInfo)
+}
+
+func hasExactRelPath(rootDir, rel string) bool {
+	cur := rootDir
+	for _, seg := range strings.Split(filepath.Clean(rel), string(filepath.Separator)) {
+		if seg == "" || seg == "." {
+			continue
+		}
+		entries, err := os.ReadDir(cur)
+		if err != nil {
+			return false
+		}
+		matched := false
+		for _, entry := range entries {
+			if entry.Name() == seg {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+		cur = filepath.Join(cur, seg)
+	}
+	return true
+}
+
+func buildLowerManifestMap(preRunManifest map[string]string) map[string]string {
+	if len(preRunManifest) == 0 {
+		return nil
+	}
+	lowerMap := make(map[string]string, len(preRunManifest))
+	ambiguous := make(map[string]bool)
+	for k := range preRunManifest {
+		lk := strings.ToLower(k)
+		if ambiguous[lk] {
+			continue
+		}
+		if existing, seen := lowerMap[lk]; seen && existing != k {
+			delete(lowerMap, lk)
+			ambiguous[lk] = true
+			continue
+		}
+		lowerMap[lk] = k
+	}
+	return lowerMap
+}
+
+func resolveManifestKeyAndCaseRename(absSrc, rel string, dstCaseInsensitive bool, preRunManifest, preRunLowerMap map[string]string) (string, bool) {
+	if !dstCaseInsensitive || preRunManifest == nil {
+		return rel, false
+	}
+	if _, exact := preRunManifest[rel]; exact {
+		return rel, false
+	}
+	origRel, ok := preRunLowerMap[strings.ToLower(rel)]
+	if !ok || origRel == rel || hasExactRelPath(absSrc, origRel) {
+		return rel, false
+	}
+	return origRel, true
+}
+
+func lookupPruneManifestEntry(rel string, dstCaseInsensitive bool, preRunManifest, preRunLowerMap map[string]string) (string, string, bool) {
+	if recorded, ok := preRunManifest[rel]; ok {
+		return rel, recorded, true
+	}
+	if dstCaseInsensitive && preRunLowerMap != nil {
+		if origRel, ok := preRunLowerMap[strings.ToLower(rel)]; ok {
+			if recorded, found := preRunManifest[origRel]; found {
+				return origRel, recorded, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+func renameCaseOnlyPath(oldPath, newPath string) error {
+	parent := filepath.Dir(newPath)
+	tmpFile, err := os.CreateTemp(parent, ".tmp-sync-case-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+	_ = tmpFile.Close()
+	if err := os.Remove(tmpPath); err != nil {
+		return err
+	}
+	if err := os.Rename(oldPath, tmpPath); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, newPath); err != nil {
+		_ = os.Rename(tmpPath, oldPath)
+		return err
+	}
+	return nil
+}
+
 // syncTargetRepoDirWithManifest mirrors additions, modifications, and deletions from
-// srcDir into dstDir. When preRunManifest is non-nil, entries absent from both srcDir
-// and preRunManifest (such as host-only files created during an agent run) are preserved,
-// and symlinks that sanitizeDownload strips are never pruned. When preRunManifest is nil,
-// pruning is disabled (fail-closed) so no host entries are deleted.
+// srcDir into dstDir without a UI printer.
 func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, preRunManifest map[string]string) error {
+	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, nil, nil)
+}
+
+// syncTargetRepoDirWithPrinter mirrors additions, modifications, and deletions from
+// srcDir into dstDir, warning through printer when skipping non-regular entries.
+func syncTargetRepoDirWithPrinter(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer) error {
+	return syncTargetRepoDirInternal(srcDir, dstDir, excludes, preRunManifest, printer, nil)
+}
+
+// syncTargetRepoDirInternal implements target repository sync. When preRunManifest is
+// non-nil, entries absent from both srcDir and preRunManifest (such as host-only files
+// created during an agent run) and symlinks recorded as "symlink-stripped:" at pre-run
+// are preserved. When preRunManifest is nil, pruning is disabled (fail-closed).
+func syncTargetRepoDirInternal(srcDir, dstDir string, excludes []string, preRunManifest map[string]string, printer *ui.Printer, forceDstCaseInsensitive *bool) error {
 	absSrc, err := filepath.Abs(srcDir)
 	if err != nil {
 		return fmt.Errorf("resolving source directory: %w", err)
@@ -6594,6 +6784,16 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 			_ = os.Chmod(absDst, origRootPerm)
 		}()
 	}
+
+	dstCaseInsensitive := false
+	if forceDstCaseInsensitive != nil {
+		dstCaseInsensitive = *forceDstCaseInsensitive
+	} else {
+		dstCaseInsensitive = detectCaseInsensitiveDir(absDst)
+	}
+	preRunLowerMap := buildLowerManifestMap(preRunManifest)
+	caseRenamedPreRun := make(map[string]bool)
+	srcEntries := make(map[string]bool)
 
 	absDstResolved := absDst
 	if resolved, evalErr := filepath.EvalSymlinks(absDst); evalErr == nil {
@@ -6670,30 +6870,50 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 		}
 
 		targetPath := filepath.Join(absDst, rel)
+		manifestKey, hasCaseRename := resolveManifestKeyAndCaseRename(absSrc, rel, dstCaseInsensitive, preRunManifest, preRunLowerMap)
+		baseCaseChanged := hasCaseRename && filepath.Base(manifestKey) != filepath.Base(rel)
+		hostCheckPath := targetPath
+		if baseCaseChanged {
+			hostCheckPath = filepath.Join(filepath.Dir(targetPath), filepath.Base(manifestKey))
+		}
 
 		if d.Type()&os.ModeSymlink != 0 {
 			if isAncestorOfExcludedPath(rel, allExcludes) {
 				return fmt.Errorf("cannot replace ancestor of excluded path %q with symlink", rel)
 			}
+			if hasCaseRename && isAncestorOfExcludedPath(manifestKey, allExcludes) {
+				return fmt.Errorf("cannot replace ancestor of excluded path %q with symlink", manifestKey)
+			}
 			if wouldSanitizeStripSymlink(path, absSrcResolved) {
 				return nil
 			}
+			srcEntries[rel] = true
 			if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
 				return err
+			}
+			if baseCaseChanged {
+				if err := checkPathNotUnderResolvedGit(absDstResolved, hostCheckPath, manifestKey); err != nil {
+					return err
+				}
 			}
 			target, readErr := os.Readlink(path)
 			if readErr != nil {
 				return readErr
 			}
-			if fi, statErr := os.Lstat(targetPath); statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
-				if curTarget, curErr := os.Readlink(targetPath); curErr == nil && curTarget == target {
-					return nil
+			if !baseCaseChanged {
+				if fi, statErr := os.Lstat(targetPath); statErr == nil && fi.Mode()&os.ModeSymlink != 0 {
+					if curTarget, curErr := os.Readlink(targetPath); curErr == nil && curTarget == target {
+						return nil
+					}
 				}
 			}
-			if err := checkCanReplaceHostTarget(targetPath, rel, preRunManifest); err != nil {
+			if err := checkCanReplaceHostTarget(hostCheckPath, manifestKey, preRunManifest); err != nil {
 				return err
 			}
-			if err := os.RemoveAll(targetPath); err != nil && !os.IsNotExist(err) {
+			if baseCaseChanged {
+				caseRenamedPreRun[manifestKey] = true
+			}
+			if err := os.RemoveAll(hostCheckPath); err != nil && !os.IsNotExist(err) {
 				return err
 			}
 			if err := os.Symlink(target, targetPath); err != nil {
@@ -6703,11 +6923,23 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 		}
 
 		if d.IsDir() {
+			srcEntries[rel] = true
 			if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
 				return err
 			}
-			if fi, statErr := os.Lstat(targetPath); statErr == nil {
+			if baseCaseChanged {
+				if err := checkPathNotUnderResolvedGit(absDstResolved, hostCheckPath, manifestKey); err != nil {
+					return err
+				}
+			}
+			if fi, statErr := os.Lstat(hostCheckPath); statErr == nil {
 				if fi.IsDir() {
+					if baseCaseChanged {
+						if err := renameCaseOnlyPath(hostCheckPath, targetPath); err != nil {
+							return err
+						}
+						caseRenamedPreRun[manifestKey] = true
+					}
 					origPerm := fi.Mode().Perm()
 					if origPerm&0o200 == 0 {
 						if err := os.Chmod(targetPath, origPerm|0o700); err != nil {
@@ -6720,10 +6952,16 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 				if isAncestorOfExcludedPath(rel, allExcludes) {
 					return fmt.Errorf("cannot replace ancestor of excluded path %q with directory", rel)
 				}
-				if err := checkCanReplaceHostTarget(targetPath, rel, preRunManifest); err != nil {
+				if hasCaseRename && isAncestorOfExcludedPath(manifestKey, allExcludes) {
+					return fmt.Errorf("cannot replace ancestor of excluded path %q with directory", manifestKey)
+				}
+				if err := checkCanReplaceHostTarget(hostCheckPath, manifestKey, preRunManifest); err != nil {
 					return err
 				}
-				if err := os.Remove(targetPath); err != nil {
+				if baseCaseChanged {
+					caseRenamedPreRun[manifestKey] = true
+				}
+				if err := os.Remove(hostCheckPath); err != nil {
 					return err
 				}
 			}
@@ -6747,30 +6985,62 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 			return nil
 		}
 
-		if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
-			return err
-		}
-		dstInfo, dstStatErr := os.Lstat(targetPath)
-		if dstStatErr == nil && !dstInfo.Mode().IsRegular() {
-			if isAncestorOfExcludedPath(rel, allExcludes) {
-				return fmt.Errorf("cannot replace ancestor of excluded path %q with file", rel)
+		// Guard against non-regular special files (FIFOs, sockets, device nodes)
+		// before opening or touching destination entries.
+		if !d.Type().IsRegular() {
+			srcEntries[rel] = true
+			if printer != nil {
+				printer.StepWarn(fmt.Sprintf("Skipping non-regular file during target repo sync: %s", rel))
 			}
-			if err := checkCanReplaceHostTarget(targetPath, rel, preRunManifest); err != nil {
-				return err
-			}
-			if err := os.RemoveAll(targetPath); err != nil {
-				return err
-			}
-			dstStatErr = os.ErrNotExist
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
+			return nil
 		}
 		info, err := d.Info()
 		if err != nil {
 			return err
 		}
+		if !info.Mode().IsRegular() {
+			srcEntries[rel] = true
+			if printer != nil {
+				printer.StepWarn(fmt.Sprintf("Skipping non-regular file during target repo sync: %s", rel))
+			}
+			return nil
+		}
+		srcEntries[rel] = true
+
+		if err := checkPathNotUnderResolvedGit(absDstResolved, targetPath, rel); err != nil {
+			return err
+		}
+		if baseCaseChanged {
+			if err := checkPathNotUnderResolvedGit(absDstResolved, hostCheckPath, manifestKey); err != nil {
+				return err
+			}
+		}
+
+		dstInfo, dstStatErr := os.Lstat(hostCheckPath)
+		if dstStatErr == nil && !dstInfo.Mode().IsRegular() {
+			if isAncestorOfExcludedPath(rel, allExcludes) {
+				return fmt.Errorf("cannot replace ancestor of excluded path %q with file", rel)
+			}
+			if hasCaseRename && isAncestorOfExcludedPath(manifestKey, allExcludes) {
+				return fmt.Errorf("cannot replace ancestor of excluded path %q with file", manifestKey)
+			}
+			if err := checkCanReplaceHostTarget(hostCheckPath, manifestKey, preRunManifest); err != nil {
+				return err
+			}
+			if baseCaseChanged {
+				caseRenamedPreRun[manifestKey] = true
+			}
+			if err := os.RemoveAll(hostCheckPath); err != nil {
+				return err
+			}
+			dstStatErr = os.ErrNotExist
+		}
+
+		srcDigest, err := computeHostEntryDigest(path, info)
+		if err != nil {
+			return err
+		}
+
 		wantPerm := info.Mode().Perm()
 		if dstStatErr == nil && dstInfo.Mode().IsRegular() {
 			// Git only tracks the executable bit; always keep the existing host file's
@@ -6782,40 +7052,56 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 				wantPerm |= 0o200
 			}
 		}
-		if os.IsNotExist(dstStatErr) && preRunManifest != nil {
-			if recorded, ok := preRunManifest[rel]; ok && strings.HasPrefix(recorded, "sha256:") {
-				if "sha256:"+sha256HexBytes(data) == recorded {
+
+		if os.IsNotExist(dstStatErr) {
+			if preRunManifest != nil {
+				if recorded, ok := preRunManifest[manifestKey]; ok && normalizeManifestDigest(recorded) == srcDigest {
 					// Sandbox copy is unchanged since upload while the user deleted the host file; preserve the host deletion.
 					return nil
 				}
 			}
+		} else if dstStatErr != nil {
+			return dstStatErr
 		}
-		if dstStatErr == nil && dstInfo.Mode().IsRegular() && dstInfo.Size() == info.Size() {
-			if dstData, dstErr := os.ReadFile(targetPath); dstErr == nil && bytes.Equal(data, dstData) {
+
+		removeOldPath := ""
+		if dstStatErr == nil && dstInfo.Mode().IsRegular() {
+			dstDigest, dstDigestErr := computeHostEntryDigest(hostCheckPath, dstInfo)
+			checkConcurrent := func() error {
+				if preRunManifest == nil {
+					return nil
+				}
+				recorded, ok := preRunManifest[manifestKey]
+				if !ok || dstDigestErr != nil || dstDigest != normalizeManifestDigest(recorded) {
+					return fmt.Errorf("refusing to overwrite concurrently modified host file %q", manifestKey)
+				}
+				return nil
+			}
+			if dstDigestErr == nil && dstDigest == srcDigest && !baseCaseChanged {
 				if dstInfo.Mode().Perm() == wantPerm {
 					return nil
 				}
-				if changed, chkErr := hasConcurrentHostEdit(targetPath, rel, dstInfo, preRunManifest); chkErr != nil {
-					return chkErr
-				} else if changed {
-					return fmt.Errorf("refusing to overwrite concurrently modified host file %q", rel)
+				if err := checkConcurrent(); err != nil {
+					return err
 				}
 				if !hasMultipleLinks(dstInfo) {
-					if err := os.Chmod(targetPath, wantPerm); err != nil {
+					if err := os.Chmod(hostCheckPath, wantPerm); err != nil {
 						return err
 					}
 					return nil
 				}
+			} else {
+				if err := checkConcurrent(); err != nil {
+					return err
+				}
+				if baseCaseChanged {
+					removeOldPath = hostCheckPath
+					caseRenamedPreRun[manifestKey] = true
+				}
 			}
 		}
-		if dstStatErr == nil && dstInfo.Mode().IsRegular() {
-			if changed, chkErr := hasConcurrentHostEdit(targetPath, rel, dstInfo, preRunManifest); chkErr != nil {
-				return chkErr
-			} else if changed {
-				return fmt.Errorf("refusing to overwrite concurrently modified host file %q", rel)
-			}
-		}
-		if err := writeAtomicFile(targetPath, data, wantPerm); err != nil {
+
+		if err := writeAtomicFile(targetPath, path, wantPerm, removeOldPath); err != nil {
 			return err
 		}
 		_ = os.Chtimes(targetPath, time.Now(), info.ModTime())
@@ -6850,18 +7136,18 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 				return nil
 			}
 
-			srcPath := filepath.Join(absSrc, rel)
-			if _, statErr := os.Lstat(srcPath); os.IsNotExist(statErr) {
+			if !srcEntries[rel] {
 				if isAncestorOfExcludedPath(rel, allExcludes) {
 					return nil
 				}
-				if d.Type()&os.ModeSymlink != 0 && wouldSanitizeStripSymlink(path, absDstResolved) {
-					return nil
-				}
-				if _, ok := preRunManifest[rel]; !ok {
+				manifestKey, recorded, ok := lookupPruneManifestEntry(rel, dstCaseInsensitive, preRunManifest, preRunLowerMap)
+				if !ok || caseRenamedPreRun[manifestKey] {
 					if d.IsDir() {
 						return filepath.SkipDir
 					}
+					return nil
+				}
+				if d.Type()&os.ModeSymlink != 0 && strings.HasPrefix(recorded, "symlink-stripped:") {
 					return nil
 				}
 				if err := checkPathNotUnderResolvedGit(absDstResolved, path, rel); err != nil {
@@ -6879,7 +7165,7 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 					return nil
 				}
 				if info, infoErr := d.Info(); infoErr == nil {
-					if changed, chkErr := hasConcurrentHostEdit(path, rel, info, preRunManifest); chkErr == nil && changed {
+					if changed, chkErr := hasConcurrentHostEdit(path, manifestKey, info, preRunManifest); chkErr == nil && changed {
 						return nil
 					}
 				}
@@ -6921,14 +7207,21 @@ func syncTargetRepoDirWithManifest(srcDir, dstDir string, excludes []string, pre
 	return nil
 }
 
-// writeAtomicFile writes data to targetPath atomically by writing to a temporary file
-// in the same directory, setting permissions, and renaming over targetPath.
-// This breaks existing hardlinks to prevent modifying inodes outside dstDir.
-func writeAtomicFile(targetPath string, data []byte, perm os.FileMode) error {
+// writeAtomicFile copies srcPath to targetPath atomically by streaming to a
+// temporary file in the same directory, setting permissions, optionally removing
+// an old case-variant entry, and renaming over targetPath. This breaks existing
+// hardlinks without buffering large files into memory.
+func writeAtomicFile(targetPath, srcPath string, perm os.FileMode, removeBeforeRename string) error {
 	dir := filepath.Dir(targetPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
 	tmp, err := os.CreateTemp(dir, ".tmp-sync-*")
 	if err != nil {
 		return err
@@ -6941,7 +7234,7 @@ func writeAtomicFile(targetPath string, data []byte, perm os.FileMode) error {
 		}
 	}()
 
-	if _, err := tmp.Write(data); err != nil {
+	if _, err := io.Copy(tmp, srcFile); err != nil {
 		_ = tmp.Close()
 		return err
 	}
@@ -6951,6 +7244,11 @@ func writeAtomicFile(targetPath string, data []byte, perm os.FileMode) error {
 	}
 	if err := tmp.Close(); err != nil {
 		return err
+	}
+	if removeBeforeRename != "" && removeBeforeRename != targetPath {
+		if err := os.Remove(removeBeforeRename); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	if err := os.Rename(tmpName, targetPath); err != nil {
 		return err
