@@ -539,13 +539,16 @@ func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
 	require.NoError(t, err)
-	// Every result is posted as its own comment: the review body first,
-	// then the deduplication marker once the formal approval succeeds.
-	require.Len(t, fc.IssueComments["o/r/1"], 2)
+	// An approve run leaves exactly one review-agent comment: the review
+	// body is posted once, and the deduplication markers are added to
+	// that same comment once the formal approval succeeds.
+	require.Len(t, fc.IssueComments["o/r/1"], 1)
+	lines := strings.Split(fc.IssueComments["o/r/1"][0].Body, "\n")
+	require.GreaterOrEqual(t, len(lines), 3)
+	assert.Equal(t, reviewMarker, lines[0])
+	assert.Regexp(t, reviewDiffHashMarkerRe, lines[1])
+	assert.Equal(t, "<!-- fullsend:review-head:abc123def456 -->", lines[2])
 	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "Looks good")
-	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
-	assert.Regexp(t, reviewDiffHashMarkerRe, strings.SplitN(fc.IssueComments["o/r/1"][1].Body, "\n", 3)[1])
-	assert.Contains(t, fc.IssueComments["o/r/1"][1].Body, "Looks good")
 }
 
 func TestPostReviewContent_PreservesHistoryWhenPublishingDiffHash(t *testing.T) {
@@ -580,18 +583,16 @@ Earlier review
 	require.NoError(t, err)
 
 	// The prior comment stands exactly as it was (nothing is folded into
-	// history any more), and the hash is published as a new comment.
-	require.Len(t, fc.IssueComments["o/r/1"], 3)
+	// history any more), and the hash is added to the comment this run
+	// created: one new comment per run, not one per publish.
+	require.Len(t, fc.IssueComments["o/r/1"], 2)
 	prior := fc.IssueComments["o/r/1"][0].Body
 	assert.Contains(t, prior, "Earlier review")
 	assert.Contains(t, prior, "Prior review")
 	assert.NotContains(t, prior, "Looks good")
 	reviewComment := fc.IssueComments["o/r/1"][1].Body
 	assert.Contains(t, reviewComment, "Looks good")
-	assert.NotContains(t, reviewComment, "fullsend:review-diff-hash:")
-	hashComment := fc.IssueComments["o/r/1"][2].Body
-	assert.Contains(t, hashComment, "Looks good")
-	assert.Contains(t, hashComment, "fullsend:review-diff-hash:")
+	assert.Contains(t, reviewComment, "fullsend:review-diff-hash:")
 }
 
 func TestPostReviewContent_PublishesDiffHashOnlyAfterApproval(t *testing.T) {
@@ -628,20 +629,16 @@ func TestPostReviewContent_PreservesGeneratedHashAndProjectionMarkers(t *testing
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
 	require.NoError(t, err)
-	// The review comment keeps the projection marker live on its first
-	// line, and the hash comment carries the generated hash, the reviewed
-	// head and the same projection marker unescaped.
-	require.Len(t, fc.IssueComments["o/r/1"], 2)
-	reviewLines := strings.Split(fc.IssueComments["o/r/1"][0].Body, "\n")
-	require.GreaterOrEqual(t, len(reviewLines), 2)
-	assert.Equal(t, reviewMarker, reviewLines[0])
-	assert.Equal(t, projection, reviewLines[1])
-	hashLines := strings.Split(fc.IssueComments["o/r/1"][1].Body, "\n")
-	require.GreaterOrEqual(t, len(hashLines), 4)
-	assert.Equal(t, reviewMarker, hashLines[0])
-	assert.Regexp(t, reviewDiffHashMarkerRe, hashLines[1])
-	assert.Regexp(t, reviewDiffHeadMarkerRe, hashLines[2])
-	assert.Equal(t, projection, hashLines[3])
+	// One comment: the marker on the first line, then the generated hash,
+	// the reviewed head and the projection marker live and unescaped (the
+	// prior-review fetchers read the newest review-agent comment).
+	require.Len(t, fc.IssueComments["o/r/1"], 1)
+	lines := strings.Split(fc.IssueComments["o/r/1"][0].Body, "\n")
+	require.GreaterOrEqual(t, len(lines), 4)
+	assert.Equal(t, reviewMarker, lines[0])
+	assert.Regexp(t, reviewDiffHashMarkerRe, lines[1])
+	assert.Regexp(t, reviewDiffHeadMarkerRe, lines[2])
+	assert.Equal(t, projection, lines[3])
 }
 
 func TestPostReviewContent_DoesNotTrustAgentHashWhenHashUnavailable(t *testing.T) {
@@ -701,19 +698,6 @@ func TestPostReviewContent_DoesNotPublishHashWhenHeadLookupFails(t *testing.T) {
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
 }
 
-type failSecondCommentCreateClient struct {
-	*forge.FakeClient
-	creates int
-}
-
-func (c *failSecondCommentCreateClient) CreateIssueComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error) {
-	c.creates++
-	if c.creates > 1 {
-		return nil, fmt.Errorf("hash marker post failed")
-	}
-	return c.FakeClient.CreateIssueComment(ctx, owner, repo, number, body)
-}
-
 func TestPostReviewContent_HashPublicationFailureIsBestEffort(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "bot"
@@ -721,14 +705,15 @@ func TestPostReviewContent_HashPublicationFailureIsBestEffort(t *testing.T) {
 	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
 		"o/r/1": {{Path: "README.md", Patch: "@@ -1 +1 @@\n-old\n+new"}},
 	}
-	client := &failSecondCommentCreateClient{FakeClient: fc}
+	fc.Errors["UpdateIssueComment"] = fmt.Errorf("hash marker update failed")
 
 	var buf bytes.Buffer
-	err := postReviewContent(context.Background(), client, "o", "r", 1,
+	err := postReviewContent(context.Background(), fc, "o", "r", 1,
 		ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"},
 		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(&buf))
 	require.NoError(t, err)
 	require.Len(t, fc.IssueComments["o/r/1"], 1)
+	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "Looks good")
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
 	assert.Contains(t, buf.String(), "Could not publish review diff hash after approval")
 }
