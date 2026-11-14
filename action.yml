@@ -145,8 +145,13 @@ runs:
       env:
         VERSION: ${{ inputs.version }}
         GH_TOKEN: ${{ inputs.github_token }}
+        # REST API of the host this job runs against (api.github.com on
+        # github.com). github_token is issued by that host, so it must not be
+        # sent anywhere else.
+        API_URL: ${{ github.api_url }}
       run: |
         set -euo pipefail
+        API_URL="${API_URL%/}"
 
         # retry_curl: retry a curl command up to MAX_ATTEMPTS times with exponential backoff.
         # Usage: retry_curl [curl args...]
@@ -194,9 +199,9 @@ runs:
           TAG="$(retry_curl -fsSL \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
-            "https://api.github.com/repos/fullsend-ai/fullsend/releases/latest" | jq -r '.tag_name')"
+            "${API_URL}/repos/fullsend-ai/fullsend/releases/latest" | jq -r '.tag_name')"
           if [[ -z "${TAG}" || "${TAG}" == "null" ]]; then
-            echo "::error::Could not resolve latest release tag"
+            echo "::error::Could not resolve latest release tag from ${API_URL}/repos/fullsend-ai/fullsend"
             exit 1
           fi
           VERSION="${TAG}"
@@ -209,7 +214,7 @@ runs:
           commit_sha=$(retry_curl -fsSL \
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${GH_TOKEN}" \
-            "https://api.github.com/repos/fullsend-ai/fullsend/git/tags/${VERSION}" 2>/dev/null \
+            "${API_URL}/repos/fullsend-ai/fullsend/git/tags/${VERSION}" 2>/dev/null \
             | jq -r '.object.sha // empty') || true
           if [[ -n "${commit_sha}" ]]; then
             echo "Dereferenced annotated tag object ${VERSION:0:12} to commit ${commit_sha:0:12}"
@@ -227,7 +232,7 @@ runs:
             resp=$(retry_curl -fsSL \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer ${GH_TOKEN}" \
-              "https://api.github.com/repos/fullsend-ai/fullsend/tags?per_page=100&page=${page}") \
+              "${API_URL}/repos/fullsend-ai/fullsend/tags?per_page=100&page=${page}") \
               || { echo "::warning::Tag lookup failed on page ${page}; skipping SHA-to-tag resolution"; break; }
             match=$(echo "${resp}" | jq -r --arg sha "${VERSION}" \
               '.[] | select(.commit.sha == $sha) | .name' \
@@ -259,7 +264,7 @@ runs:
         HTTP_STATUS="$(retry_curl -sL -o /dev/null -w "%{http_code}" \
           -H "Accept: application/vnd.github+json" \
           -H "Authorization: Bearer ${GH_TOKEN}" \
-          "https://api.github.com/repos/fullsend-ai/fullsend/releases/tags/${VERSION_URL}")"
+          "${API_URL}/repos/fullsend-ai/fullsend/releases/tags/${VERSION_URL}")"
 
         if [[ "${HTTP_STATUS}" == "200" ]]; then
           echo "Found release ${VERSION_URL}; downloading pre-built binary"
@@ -271,7 +276,7 @@ runs:
           echo "install-method=source" >> "${GITHUB_OUTPUT}"
           echo "source-ref=${VERSION}" >> "${GITHUB_OUTPUT}"
         else
-          echo "::error::Unexpected HTTP ${HTTP_STATUS} checking release ${VERSION_URL}; cannot proceed"
+          echo "::error::Unexpected HTTP ${HTTP_STATUS} checking release ${VERSION_URL} at ${API_URL}/repos/fullsend-ai/fullsend; cannot proceed"
           exit 1
         fi
 
@@ -298,8 +303,10 @@ runs:
         RUNNER_OS: ${{ runner.os }}
         RUNNER_ARCH: ${{ runner.arch }}
         GH_TOKEN: ${{ inputs.github_token }}
+        SERVER_URL: ${{ github.server_url }}
       run: |
         set -euo pipefail
+        SERVER_URL="${SERVER_URL%/}"
 
         # retry_curl: retry a curl command up to MAX_ATTEMPTS times with exponential backoff.
         # Usage: retry_curl [curl args...]
@@ -339,7 +346,7 @@ runs:
         esac
 
         ASSET_NAME="fullsend_${VERSION_ASSET}_${os}_${arch}.tar.gz"
-        URL="https://github.com/fullsend-ai/fullsend/releases/download/${VERSION_URL}/${ASSET_NAME}"
+        URL="${SERVER_URL}/fullsend-ai/fullsend/releases/download/${VERSION_URL}/${ASSET_NAME}"
 
         echo "Downloading from: ${URL}"
         retry_curl -fsSL "${URL}" -o "/tmp/${ASSET_NAME}"
@@ -354,8 +361,12 @@ runs:
         SOURCE_REF: ${{ steps.detect.outputs.source-ref || steps.detect.outputs.version-url }}
         GH_TOKEN: ${{ inputs.github_token }}
         DOWNLOAD_OUTCOME: ${{ steps.download-release.outcome }}
+        # Clone from the host this job runs against (github.com on github.com),
+        # the only host github_token is valid for.
+        SERVER_URL: ${{ github.server_url }}
       run: |
         set -euo pipefail
+        SERVER_URL="${SERVER_URL%/}"
 
         # retry_git: retry a git command up to max_attempts times with exponential
         # backoff for transient errors (e.g. HTTP 403/5xx). Permanent failures
@@ -395,7 +406,7 @@ runs:
         fi
         echo "::add-mask::${GH_TOKEN}"
         SRC="${RUNNER_TEMP}/fullsend-src"
-        REMOTE="https://x-access-token:${GH_TOKEN}@github.com/fullsend-ai/fullsend.git"
+        REMOTE="${SERVER_URL%%://*}://x-access-token:${GH_TOKEN}@${SERVER_URL#*://}/fullsend-ai/fullsend.git"
         echo "Cloning fullsend at ref: ${SOURCE_REF}"
         git init "${SRC}"
         git -C "${SRC}" remote add origin "${REMOTE}"
