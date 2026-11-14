@@ -28,7 +28,14 @@ The remaining prerequisites are forge-specific:
 **GitHub:**
 
 - **GitHub access** — admin or write access to the target repositories
-- **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
+- **GitHub token** — the CLI uses `GH_TOKEN`, then `GITHUB_TOKEN`, then
+  `gh auth token`. Either authenticate `gh` with the required scopes (see
+  [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference)),
+  or create a fine-grained PAT scoped to the target repositories and
+  `export GH_TOKEN=...`; see
+  [Configuring GitHub](configuring-github.md#prerequisites) for the required
+  permissions. Prefer `export GH_TOKEN` over `gh auth login --with-token`,
+  which replaces your stored `gh` login with the repo-scoped token.
 - **Vertex prerequisites** — if any agent will use Vertex, complete GCP WIF provisioning (`fullsend inference provision`) separately. For self-managed mints, mint enrollment (`fullsend mint enroll`) is also required. The hosted community mint needs no enrollment — install the shared Apps and use the CLI defaults. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
 
 An OpenAI-only repository can be installed without GCP inference inputs. Each
