@@ -113,6 +113,14 @@ Some bugs sit between the two categories — the pattern is somewhat mechanical 
 
 This is more expensive than either pure approach but avoids both the blast radius of incorrect broad fixes and the amnesia of purely narrow fixes.
 
+### Vulnerability assessment agent
+
+Decides whether one public vulnerability affects one branch of a repository, and proposes a plan when it does. Many findings need no code change, so its main output is a justified verdict on the tracker.
+
+- **Authority:** Comment and label on the work item; hand an affected verdict to the code agent
+- **Does not have:** Write access to code
+- **Decided:** a read-only `cve` agent assesses before the code agent acts ([ADR 0169](../ADRs/0169-assess-vulnerabilities-with-a-read-only-agent-before-the-code-agent.md)). Opening one work item per maintained branch, and finding a tracker's repository and branch, remain open.
+
 ### Backlog/priority agent
 
 Determines what should be worked on next based on priority, urgency, and available capacity.
