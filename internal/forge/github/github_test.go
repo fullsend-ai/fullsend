@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8027,4 +8028,279 @@ func TestGetIssuePullRequestMarker(t *testing.T) {
 			assert.Equal(t, tt.want, issue.IsPullRequest)
 		})
 	}
+}
+
+func TestGetRawFileContentAtRef_RawMediaType(t *testing.T) {
+	var gotAccept string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/repos/acme/widgets/contents/harness/triage.yaml", r.URL.Path)
+		require.Equal(t, "deadbeef", r.URL.Query().Get("ref"))
+		gotAccept = r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		_, _ = w.Write([]byte("role: triage\n"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "harness/triage.yaml", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, "application/vnd.github.raw", gotAccept,
+		"the raw media type is requested so files over the 1 MiB JSON limit are served")
+	assert.Equal(t, "role: triage\n", string(data))
+}
+
+func TestGetRawFileContentAtRef_JSONFallback(t *testing.T) {
+	// A server that ignores the raw media type and answers with the JSON
+	// representation (the GitHub API-compatible emulators do) still works.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":     "file",
+			"content":  base64.StdEncoding.EncodeToString([]byte("role: triage\n")),
+			"encoding": "base64",
+			"size":     len("role: triage\n"),
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "harness/triage.yaml", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, "role: triage\n", string(data))
+}
+
+func TestGetRawFileContentAtRef_EmptyContentForNonEmptyFileFails(t *testing.T) {
+	// The over-1-MiB JSON representation: GitHub returns encoding "none"
+	// and empty content. That must fail explicitly, not decode to empty
+	// bytes that then get cached as an empty file.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":     "file",
+			"content":  "",
+			"encoding": "none",
+			"size":     2 << 20,
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "big.bin", "deadbeef")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "raw media type")
+	assert.Contains(t, err.Error(), "encoding \"none\"")
+}
+
+func TestGetRawFileContentAtRef_RawJSONFileIsNotAnEnvelope(t *testing.T) {
+	// With the raw media type requested, a JSON Content-Type can also be a
+	// raw JSON file served with its own type. It must be returned as the
+	// file's bytes, not decoded as a (field-less) contents envelope that
+	// silently yields empty content.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"labels":["bug","documentation"],"count":2}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "config/labels.json", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, `{"labels":["bug","documentation"],"count":2}`, string(data))
+}
+
+func TestGetRawFileContentAtRef_JSONWithCommonKeysIsNotAnEnvelope(t *testing.T) {
+	// A top-level "type" or "size" key is common in ordinary JSON files
+	// (JSON schemas say "type":"object"; manifests carry sizes). With the
+	// raw media type requested such a file can be served as
+	// application/json; it must be returned verbatim, not decoded as a
+	// contents envelope that silently yields empty content.
+	body := `{"type":"object","properties":{"labels":{"type":"array"}},"size":3}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "schemas/labels.schema.json", "deadbeef")
+	require.NoError(t, err)
+	assert.Equal(t, body, string(data))
+}
+
+func TestGetRawFileContentAtRef_JSONNonFileOrRawFile(t *testing.T) {
+	// A server that ignores the raw media type answers a directory with a
+	// JSON array of entries, and a symlink or submodule with an object of
+	// that type and no content. Those must error, as they did before the
+	// raw media type, not come back as the file's bytes. Any other JSON
+	// body — arrays that are not entry listings, objects that are not
+	// type "file" envelopes — is a raw JSON file and returned verbatim.
+	tests := []struct {
+		name    string
+		body    string
+		wantErr string
+	}{
+		{
+			name:    "directory listing",
+			body:    `[{"type":"file","name":"a.md","path":"skills/a.md","sha":"abc"},{"type":"dir","name":"checks","path":"skills/checks","sha":"def"}]`,
+			wantErr: "is a directory",
+		},
+		{
+			name:    "symlink object",
+			body:    `{"type":"symlink","target":"../other","size":8,"name":"link","path":"skills/link","sha":"abc"}`,
+			wantErr: "is a symlink",
+		},
+		{
+			name:    "submodule object",
+			body:    `{"type":"submodule","submodule_git_url":"https://github.com/o/r.git","size":0,"name":"sub","path":"sub","sha":"abc"}`,
+			wantErr: "is a submodule",
+		},
+		{
+			name: "raw JSON file with an encoding key",
+			body: `{"encoding":"utf-8","labels":["bug"]}`,
+		},
+		{
+			name: "raw JSON file with encoding and content keys",
+			body: `{"encoding":"base64","content":"aGVsbG8=","note":"not a contents entry"}`,
+		},
+		{
+			name: "raw JSON array file",
+			body: `["bug","documentation"]`,
+		},
+		{
+			name: "raw JSON array of objects that are not entries",
+			body: `[{"type":"object","path":"x"}]`,
+		},
+		{
+			name: "empty raw JSON array file",
+			body: `[]`,
+		},
+		{
+			name: "raw JSON object typed as a dir without path and sha",
+			body: `{"type":"dir","name":"docs"}`,
+		},
+		{
+			name: "raw JSON array-like text that is not JSON",
+			body: `[not json`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			client := newTestClient(t, srv)
+			data, err := client.GetRawFileContentAtRef(context.Background(), "acme", "widgets", "skills/x", "deadbeef")
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Nil(t, data)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.body, string(data))
+		})
+	}
+}
+
+func TestSameOriginRedirect(t *testing.T) {
+	req := func(t *testing.T, raw string) *http.Request {
+		t.Helper()
+		r, err := http.NewRequest(http.MethodGet, raw, nil)
+		require.NoError(t, err)
+		return r
+	}
+	const from = "https://ghe.example.com/api/v3/repos/o/r/contents/a"
+	tests := []struct {
+		name string
+		to   string
+		ok   bool
+	}{
+		{name: "same origin, other path", to: "https://ghe.example.com/api/v3/repos/o/renamed/contents/a", ok: true},
+		{name: "host in another case", to: "https://GHE.Example.com/api/v3/x", ok: true},
+		{name: "explicit default port", to: "https://ghe.example.com:443/api/v3/x", ok: true},
+		{name: "another host", to: "https://evil.example.net/api/v3/x"},
+		{name: "subdomain", to: "https://cdn.ghe.example.com/x"},
+		{name: "parent domain", to: "https://example.com/x"},
+		{name: "http downgrade", to: "http://ghe.example.com/api/v3/x"},
+		{name: "other port", to: "https://ghe.example.com:8443/api/v3/x"},
+		{name: "internal address", to: "https://169.254.169.254/latest/meta-data"},
+		{name: "loopback IP literal", to: "https://127.0.0.1/api/v3/x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := sameOriginRedirect(req(t, tt.to), []*http.Request{req(t, from)})
+			if tt.ok {
+				assert.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not the same origin")
+		})
+	}
+
+	t.Run("each hop is checked", func(t *testing.T) {
+		via := []*http.Request{req(t, from), req(t, "https://ghe.example.com/api/v3/hop")}
+		assert.Error(t, sameOriginRedirect(req(t, "https://evil.example.net/x"), via))
+	})
+	t.Run("hop limit", func(t *testing.T) {
+		via := make([]*http.Request, maxSameOriginRedirects)
+		for i := range via {
+			via[i] = req(t, from)
+		}
+		assert.ErrorContains(t, sameOriginRedirect(req(t, from), via), "stopped after")
+	})
+}
+
+// TestWithSameOriginRedirects checks the policy on a live client: a
+// same-origin redirect (GitHub's renamed-repository 301) is followed with
+// the token, while a redirect to another host is refused before any request
+// reaches it, so the token never leaves the configured host.
+func TestWithSameOriginRedirects(t *testing.T) {
+	var otherHits []string
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		otherHits = append(otherHits, r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, "stolen")
+	}))
+	defer other.Close()
+	otherURL, err := url.Parse(other.URL)
+	require.NoError(t, err)
+
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		switch {
+		case strings.Contains(r.URL.Path, "/repos/o/old/"):
+			http.Redirect(w, r, strings.Replace(r.URL.RequestURI(), "/repos/o/old/", "/repos/o/new/", 1), http.StatusMovedPermanently)
+		case strings.Contains(r.URL.Path, "/repos/o/away/"):
+			// Same port, another host name: Go would keep the token on a
+			// same-host or subdomain hop, never on this one, but it must
+			// be refused outright either way.
+			http.Redirect(w, r, "http://localhost:"+otherURL.Port()+"/x", http.StatusFound)
+		default:
+			w.Header().Set("Content-Type", "application/vnd.github.raw")
+			_, _ = io.WriteString(w, "content")
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv).WithSameOriginRedirects()
+
+	data, err := client.GetRawFileContentAtRef(context.Background(), "o", "old", "a.md", "main")
+	require.NoError(t, err)
+	assert.Equal(t, "content", string(data))
+	assert.Equal(t, []string{"Bearer test-token", "Bearer test-token"}, auth)
+
+	_, err = client.GetRawFileContentAtRef(context.Background(), "o", "away", "a.md", "main")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not the same origin")
+	assert.Empty(t, otherHits, "a cross-origin redirect target must get no request")
+
+	// Without the policy the same redirect is followed (Go's default).
+	plain := newTestClient(t, srv)
+	_, err = plain.GetRawFileContentAtRef(context.Background(), "o", "away", "a.md", "main")
+	require.NoError(t, err)
+	assert.Len(t, otherHits, 1)
 }
