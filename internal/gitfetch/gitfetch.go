@@ -35,6 +35,16 @@ type TreeFetchFunc func(ctx context.Context, cloneURL, path, ref, token string) 
 // git sparse checkout. It creates a temporary shallow clone with only
 // tree objects, configures sparse checkout for the target path, then
 // reads the materialized files from disk.
+//
+// The token is sent only to the configured GitHub forge's origin: the
+// host in GITHUB_SERVER_URL (forge.ConfiguredGitHubURL), or github.com
+// when it is unset. Any other clone origin, a GitLab or Forgejo host
+// included, is fetched anonymously. This is a deliberate exception to the
+// forge-agnostic description of this package in ADR 0005 and ADR 0038:
+// the only token callers pass today comes from the GitHub credential
+// chain, and FetchTree is the one place every token-bearing tree fetch
+// (fetchsvc, resolve, harness composition) passes through, so the check
+// lives here rather than at each caller.
 func FetchTree(ctx context.Context, cloneURL, subpath, ref, token string) (map[string][]byte, error) {
 	if cloneURL == "" {
 		return nil, fmt.Errorf("gitfetch: clone URL is required")
