@@ -96,7 +96,7 @@ func TestEffectiveYAML_InheritsInferenceGateway(t *testing.T) {
 }
 
 func TestEffectiveYAML_ListsJiraAuthorizationProvider(t *testing.T) {
-	overlay, err := ParsePerRepoConfigWriter([]byte("authorization:\n  - provider: jira\n    write:\n      accounts: [acct]\n"))
+	overlay, err := ParsePerRepoConfigWriter([]byte("authorization:\n  - provider: jira\n    write:\n      accounts: [acct]\n    triage:\n      groups_from: TRIAGE_GROUPS\n"))
 	require.NoError(t, err)
 	layered, err := LayerOnBase(overlay, nil)
 	require.NoError(t, err)
@@ -107,6 +107,7 @@ func TestEffectiveYAML_ListsJiraAuthorizationProvider(t *testing.T) {
 	assert.Equal(t, []any{map[string]any{
 		"provider": "jira",
 		"write":    map[string]any{"accounts": []any{"acct"}},
+		"triage":   map[string]any{"groups_from": "TRIAGE_GROUPS"},
 		"labels":   JiraLabelsEditors,
 	}}, got["authorization"])
 }
@@ -137,6 +138,9 @@ func TestCloneAuthorizationSlice_DeepCopiesJiraLists(t *testing.T) {
 	out[0].Write.Groups[0] = "changed"
 	assert.Equal(t, "g", in[0].Write.Groups[0])
 	assert.Nil(t, out[0].Triage)
+
+	fromEnv := []AuthorizationProvider{{Provider: AuthProviderJira, Write: &JiraActorList{GroupsFrom: "G", AccountsFrom: "A"}}}
+	assert.Equal(t, &JiraActorList{GroupsFrom: "G", AccountsFrom: "A"}, cloneAuthorizationSlice(fromEnv)[0].Write)
 }
 
 func TestEffectiveYAML_CodeDefaultsAndNil(t *testing.T) {

@@ -843,7 +843,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			}
 			if presetErr != nil {
 				excludedUsesJira = true
-			} else if jira, jiraErr := effectiveJiraTracking(excludedResolved, excludedPreset); jiraErr != nil || jira.PollEnabled() {
+			} else if st, jiraErr := effectiveJiraPollState(excludedResolved, excludedPreset); jiraErr != nil || st.enabled {
 				excludedUsesJira = true
 			}
 		}
@@ -980,12 +980,11 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: inputErr}
 				return
 			}
-			jiraTracking, jiraErr := effectiveJiraTracking(resolved, presetData)
+			jiraState, jiraErr := effectiveJiraPollState(resolved, presetData)
 			if jiraErr != nil {
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: jiraErr}
 				return
 			}
-			jiraState := jiraPollState{jira: jiraTracking, enabled: jiraTracking.PollEnabled()}
 			repoFullName := rr.Owner + "/" + rr.Repo
 			progress(repoFullName, "discover", "Checking installation status")
 
@@ -1532,6 +1531,10 @@ func convergeRepo(ctx context.Context,
 			cr.Error = fmt.Errorf("matching pinned GitLab templates require an upstream GitHub client; refusing embedded-template fallback")
 			return cr
 		}
+	}
+	if err := checkJiraAuthorizationEnvSupport(ctx, d, cfg, refResolver); err != nil {
+		cr.Error = err
+		return cr
 	}
 	if err := checkGitHubJiraPollWorkflow(ctx, d, cfg, refResolver); err != nil {
 		cr.Error = err

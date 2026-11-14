@@ -87,9 +87,9 @@ authorization:                       # Extra sources of permission for triggerin
   - provider: jira                   # Jira (jira-poll): who may trigger agents from Jira events
     write:                           # Fullsend role write
       groups: [example-team-developers]  # Jira group names (or group IDs)
-      accounts: ["5f7c012e0b2a4c001f3d9876"]  # Jira account IDs
+      accounts: ["712020:00000000-0000-0000-0000-000000000000"]  # Jira account IDs
     triage:                          # Fullsend role triage
-      groups: [example-team]
+      groups_from: FULLSEND_JIRA_TRIAGE_GROUPS  # Or read a list from an environment variable (GitLab: use a name without the FULLSEND_ prefix)
       accounts: []
     labels: jira_editors             # Label-added events: jira_editors (default), allowlist, project_roles
 
@@ -586,6 +586,7 @@ GitLab authorization
 |---|---|
 | `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the fullsend `write` role |
 | `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the fullsend `triage` role |
+| `write.groups_from`, `write.accounts_from`, `triage.groups_from`, `triage.accounts_from` | The name of an environment variable that holds that list as comma-separated values, instead of the inline list |
 | `labels` | How a label-added event is authorized: `jira_editors` (default once the entry is present), `allowlist`, or `project_roles` |
 
 - **Slash commands and other non-label events:** when the entry sets a
@@ -612,14 +613,31 @@ GitLab authorization
   resolution calls the same API for an actor when a project role is granted
   to a group.
 
+- **Lists from the environment:** on a public repository, anyone can read
+  `config.yaml`, including the lists. `groups_from` and `accounts_from` name
+  an environment variable instead, such as a GitHub repository secret. The
+  poller reads it on every poll, splits it on commas and newlines, trims each
+  entry, and drops empty ones. It never prints the values. An unset or empty variable grants
+  no one, the list still counts as set, and the poller logs a warning that
+  names the variable. A role cannot set both `groups`
+  and `groups_from`, or both `accounts` and `accounts_from`. The variable
+  name must use letters, digits, and underscores, and must not start with a
+  digit. The managed GitHub poll workflow passes only
+  `FULLSEND_JIRA_WRITE_GROUPS`, `FULLSEND_JIRA_WRITE_ACCOUNTS`,
+  `FULLSEND_JIRA_TRIAGE_GROUPS`, and `FULLSEND_JIRA_TRIAGE_ACCOUNTS`. On
+  GitLab, use a name without the `FULLSEND_` prefix, such as
+  `JIRA_TRIAGE_GROUPS`
+  ([GitLab: CI/CD variables](../guides/user/jira-integration.md#gitlab-cicd-variables)). See
+  [Keeping the lists out of the repository](../guides/user/jira-integration.md#keeping-the-lists-out-of-the-repository).
+
 To keep today's behavior explicitly, use the two-line entry
 `- provider: jira` with `labels: project_roles` and no lists.
 
 The provider is opt-in. Without a `jira` entry, every Jira event, including
 label-added events, resolves through the project role lookup and takes the
 per-harness role threshold, which needs Administer Projects. Unknown keys in a `jira` entry, an
-unknown `labels` value, and empty group or account entries fail config
-loading. See
+unknown `labels` value, empty group or account entries, and an empty or
+invalid `*_from` variable name fail config loading. See
 [Jira integration](../guides/user/jira-integration.md#actor-role-resolution)
 for the permissions each setting needs.
 

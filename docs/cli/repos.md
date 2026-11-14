@@ -616,6 +616,16 @@ flag or environment variable supplies them.
   When install manages the caller, it checks that its upstream ref contains
   `reusable-poll-jira.yml`. An older pin fails with no credential or workflow
   changes; upgrade the pin to a ref that includes the workflow.
+  When the `jira` authorization entry reads a list with `groups_from` or
+  `accounts_from`, the poll job also receives the
+  `FULLSEND_JIRA_WRITE_GROUPS`, `FULLSEND_JIRA_WRITE_ACCOUNTS`,
+  `FULLSEND_JIRA_TRIAGE_GROUPS`, or `FULLSEND_JIRA_TRIAGE_ACCOUNTS` secret it
+  names. Install warns about any other name, which the caller cannot pass.
+  It also warns when a poll workflow you maintain calls
+  `reusable-poll-jira.yml` without passing a secret the entry names.
+  You set these secrets
+  yourself; install and uninstall never write or delete them. See
+  [Keeping the lists out of the repository](../guides/user/jira-integration.md#keeping-the-lists-out-of-the-repository).
   Install changes the file only when it carries the
   `# fullsend-component: jira-poll` marker line. A workflow at that path
   without the marker, such as one copied from the Jira guide, is reported and
@@ -631,7 +641,12 @@ flag or environment variable supplies them.
   environment variable available to all environments. The same rules apply
   to `--jira-client-secret` and an existing `FULLSEND_JIRA_CLIENT_SECRET`.
   Supplying any Jira credential flag when no selected repo enables polling
-  fails the run.
+  fails the run. When the `jira` authorization entry uses `groups_from` or
+  `accounts_from` and `fullsend_ref` pins a release that predates them, the
+  repo fails before any write, on GitHub and GitLab, with polling enabled or
+  not. On GitHub with polling enabled, it also fails when a poll workflow you
+  maintain calls a `reusable-poll-jira.yml` that predates them, unless the
+  install is vendored. `repos status` reports the same errors.
 - **Dry run.** `--dry-run` lists Jira secrets by name only and reports the
   poll-resource changes it would make.
 - **Command-line only.** `--jira-token`, `--jira-email`, `--jira-client-id`,

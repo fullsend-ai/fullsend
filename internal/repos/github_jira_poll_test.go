@@ -5,6 +5,7 @@ import (
 	"errors"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -61,15 +62,32 @@ func assertNoUnrelatedFiles(t *testing.T, spy *spyScaffoldCommit) {
 // runJiraConverge converges acme/api with raw as its repository config.
 func runJiraConverge(t *testing.T, fc *forge.FakeClient, raw string, mutate func(*ConvergeConfig)) (*ConvergeResult, *spyScaffoldCommit) {
 	t.Helper()
+	cr, spy, _ := runJiraConvergeWarnings(t, fc, raw, mutate)
+	return cr, spy
+}
+
+// runJiraConvergeWarnings is runJiraConverge that also returns the
+// warnings the run reported, one per line.
+func runJiraConvergeWarnings(t *testing.T, fc *forge.FakeClient, raw string, mutate func(*ConvergeConfig)) (*ConvergeResult, *spyScaffoldCommit, string) {
+	t.Helper()
 	cfg := withoutInferenceInputs(convergeCfgWithDefaults(jiraManifest(t, raw)))
 	if mutate != nil {
 		mutate(&cfg)
 	}
 	spy := &spyScaffoldCommit{}
-	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), spy.fn(), noopProgress)
+	var mu sync.Mutex
+	var warnings []string
+	progress := func(_, phase, message string) {
+		if phase == "warning" {
+			mu.Lock()
+			defer mu.Unlock()
+			warnings = append(warnings, message)
+		}
+	}
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), spy.fn(), progress)
 	require.NoError(t, err)
 	require.Len(t, result.Results, 1)
-	return &result.Results[0], spy
+	return &result.Results[0], spy, strings.Join(warnings, "\n")
 }
 
 func TestConverge_GitHubJiraPoll_FreshInstallCommitsCaller(t *testing.T) {
@@ -152,7 +170,7 @@ func TestConverge_GitHubJiraPoll_EstablishedInstallAddsThenIsIdempotent(t *testi
 
 func TestConverge_GitHubJiraPoll_StaleManagedCallerUpdated(t *testing.T) {
 	fc := installedJiraRepo(forge.SecretJiraToken)
-	stale, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{UpstreamRef: "v0.9.0"}, true, false)
+	stale, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{UpstreamRef: "v0.9.0"}, true, false, nil)
 	require.NoError(t, err)
 	fc.FileContents[jiraCallerKey] = stale
 
@@ -179,7 +197,7 @@ func TestConverge_GitHubJiraPoll_DisabledRemovesManagedCaller(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			fc := installedJiraRepo(forge.SecretJiraToken, forge.SecretJiraEmail)
-			managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false)
+			managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false, nil)
 			require.NoError(t, err)
 			fc.FileContents[jiraCallerKey] = managed
 			fc.FileContents[unrelatedKey] = []byte(unrelatedFlow)
@@ -246,7 +264,7 @@ func TestConverge_GitHubJiraPoll_DryRunStagesNothing(t *testing.T) {
 
 	t.Run("remove", func(t *testing.T) {
 		fc := installedJiraRepo()
-		managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false)
+		managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false, nil)
 		require.NoError(t, err)
 		fc.FileContents[jiraCallerKey] = managed
 		cr, spy := runJiraConverge(t, fc, "", func(c *ConvergeConfig) { c.DryRun = true })
@@ -435,7 +453,7 @@ func TestCheckGitHubJiraPollWorkflowUserOwnedCallerOAuth(t *testing.T) {
 
 func TestGitHubJiraPollReconciler_RequiresScaffoldCommit(t *testing.T) {
 	fc := forge.NewFakeClient()
-	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false)
+	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, false, false, nil)
 	require.NoError(t, err)
 	req := jiraPollRequest{Client: fc, Owner: "acme", Repo: "api"}
 
@@ -450,7 +468,7 @@ func TestGitHubJiraPollReconciler_RequiresScaffoldCommit(t *testing.T) {
 }
 
 func TestUninstall_RemovesManagedJiraPollCaller(t *testing.T) {
-	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, true, false)
+	managed, err := scaffold.RenderJiraPollCaller(scaffold.RenderOptions{}, true, false, nil)
 	require.NoError(t, err)
 
 	tests := []struct {
@@ -505,4 +523,128 @@ func TestUninstall_RemovesManagedJiraPollCaller(t *testing.T) {
 			}
 		})
 	}
+}
+
+// jiraAuthFromEnvConfig reads two lists from secrets the caller can forward.
+const jiraAuthFromEnvConfig = jiraPollEnabledConfig + `authorization:
+  - provider: jira
+    write:
+      groups_from: FULLSEND_JIRA_WRITE_GROUPS
+    triage:
+      accounts_from: FULLSEND_JIRA_TRIAGE_ACCOUNTS
+`
+
+func TestConverge_GitHubJiraPoll_ForwardsAuthorizationListSecrets(t *testing.T) {
+	fc := installedJiraRepo(forge.SecretJiraToken)
+
+	cr, spy, warnings := runJiraConvergeWarnings(t, fc, jiraAuthFromEnvConfig, nil)
+	require.NoError(t, cr.Error)
+	assert.Empty(t, warnings)
+	f, ok := stagedJiraCaller(t, spy)
+	require.True(t, ok)
+	var caller renderedJiraPollCaller
+	require.NoError(t, yaml.Unmarshal(f.Content, &caller))
+	poll := caller.Jobs["poll"].Secrets
+	assert.Contains(t, poll, "FULLSEND_JIRA_WRITE_GROUPS")
+	assert.Contains(t, poll, "FULLSEND_JIRA_TRIAGE_ACCOUNTS")
+	assert.NotContains(t, poll, "FULLSEND_JIRA_WRITE_ACCOUNTS")
+	assert.NotContains(t, poll, "FULLSEND_JIRA_TRIAGE_GROUPS")
+
+	// The poller reads the names from the committed config.
+	spy.mu.Lock()
+	defer spy.mu.Unlock()
+	var configYAML string
+	for _, file := range spy.files {
+		if file.Path == ".fullsend/config.yaml" {
+			configYAML = string(file.Content)
+		}
+	}
+	assert.Contains(t, configYAML, "groups_from: FULLSEND_JIRA_WRITE_GROUPS")
+	assert.Contains(t, configYAML, "accounts_from: FULLSEND_JIRA_TRIAGE_ACCOUNTS")
+}
+
+func TestConverge_JiraAuthorizationEnv_RejectsOldPinBeforeWrites(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@v0.54.0"] = []byte(jiraOAuthWorkflowFixture)
+	m := jiraManifest(t, jiraAuthFromEnvConfig)
+	m.GitHub.Repos[0].FullsendRef = "v0.54.0"
+	cfg := convergeCfgWithDefaults(m)
+	cfg.JiraToken = testJiraToken
+	spy := &spyScaffoldCommit{}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), spy.fn(), noopProgress)
+	require.NoError(t, err)
+	require.Len(t, result.Failed(), 1)
+	assert.ErrorContains(t, result.Results[0].Error, `pinned fullsend_ref "v0.54.0" does not support`)
+	assert.Empty(t, jiraSecretWrites(fc))
+	_, staged := stagedJiraCaller(t, spy)
+	assert.False(t, staged)
+}
+
+func TestStatus_JiraAuthorizationEnv_ReportsOldPin(t *testing.T) {
+	// Not installed: the schema check alone would call the config compatible.
+	for name, fc := range map[string]*forge.FakeClient{
+		"installed":     installedJiraRepo(forge.SecretJiraToken),
+		"not installed": newFakeClientForBatch("acme/api"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+reusableJiraPollWorkflowPath+"@v0.54.0"] = []byte(jiraOAuthWorkflowFixture)
+			m := jiraManifest(t, jiraAuthFromEnvConfig)
+			m.GitHub.Repos[0].FullsendRef = "v0.54.0"
+
+			status, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+			require.NoError(t, err)
+			require.Len(t, status.Repos, 1)
+			assert.Contains(t, status.Repos[0].Error, `pinned fullsend_ref "v0.54.0" does not support`)
+			assert.Empty(t, status.Repos[0].ConfigCompatibility)
+		})
+	}
+}
+
+func TestConverge_GitHubJiraPoll_WarnsAboutListVariableItCannotForward(t *testing.T) {
+	raw := jiraPollEnabledConfig + `authorization:
+  - provider: jira
+    write:
+      groups_from: MY_WRITE_GROUPS
+`
+	t.Run("managed caller", func(t *testing.T) {
+		cr, _, warnings := runJiraConvergeWarnings(t, installedJiraRepo(forge.SecretJiraToken), raw, nil)
+		require.NoError(t, cr.Error, "the runner may still set the variable")
+		assert.Contains(t, warnings, "reads MY_WRITE_GROUPS")
+	})
+
+	t.Run("user-owned caller", func(t *testing.T) {
+		fc := installedJiraRepo(forge.SecretJiraToken)
+		fc.FileContents[jiraCallerKey] = []byte(userJiraCaller)
+		cr, _, warnings := runJiraConvergeWarnings(t, fc, raw, nil)
+		require.NoError(t, cr.Error)
+		assert.Empty(t, warnings, "a workflow that runs the poller itself can set any variable")
+	})
+
+	t.Run("user-owned caller of the reusable workflow", func(t *testing.T) {
+		const job = "jobs:\n  poll:\n    uses: fullsend-ai/fullsend/.github/workflows/reusable-poll-jira.yml@v1.0.0\n"
+		const mapping = "    secrets:\n      FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}\n"
+		const rename = "reads MY_WRITE_GROUPS, which reusable-poll-jira.yml does not pass to the poller; rename it"
+		const add = "reads FULLSEND_JIRA_WRITE_GROUPS, which " + scaffold.JiraPollCallerPath + " does not pass to reusable-poll-jira.yml; add it"
+		for _, tc := range []struct{ name, variable, secrets, want string }{
+			{"other name, mapping", "MY_WRITE_GROUPS", mapping, rename},
+			{"other name, inherit", "MY_WRITE_GROUPS", "    secrets: inherit\n", rename},
+			{"fixed name, mapping without it", "FULLSEND_JIRA_WRITE_GROUPS", mapping, add},
+			{"fixed name, inherit", "FULLSEND_JIRA_WRITE_GROUPS", "    secrets: inherit\n", ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				fc := installedJiraRepo(forge.SecretJiraToken)
+				fc.FileContents[jiraCallerKey] = []byte(userJiraCaller + job + tc.secrets)
+				_, _, warnings := runJiraConvergeWarnings(t, fc, strings.Replace(raw, "MY_WRITE_GROUPS", tc.variable, 1), nil)
+				if tc.want == "" {
+					assert.Empty(t, warnings)
+					return
+				}
+				assert.Contains(t, warnings, tc.want)
+				if tc.want == rename {
+					assert.NotContains(t, warnings, "add it", "the poll workflow rejects a secret it does not declare")
+				}
+			})
+		}
+	})
 }

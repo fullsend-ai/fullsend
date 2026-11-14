@@ -156,7 +156,7 @@ func runJiraPollGitLab(cmd *cobra.Command, f jiraPollGitLabFlags) error {
 		ChildDispatchJobToken: childJobToken,
 	})
 
-	opts := jiraPollOptions(args, matcher)
+	opts := jiraPollOptions(args, matcher, os.Getenv)
 	opts.TargetForge = jirapoll.TargetForgeGitLab
 	opts.GitLabURL = gitlabURL
 	opts.Dispatcher = jiradispatch.GitLabDispatcher{Poller: glPoller}

@@ -13,7 +13,9 @@
 #
 # Security: Jira credentials reach the poll job and are passed to the agent
 # workflow only for Jira-originated status writes. They are never put in the
-# runner-secret bundle.
+# runner-secret bundle. The jira authorization list secrets, rendered only when
+# config.yaml reads them with groups_from or accounts_from, reach the poll job
+# alone.
 #
 # Concurrency: overlapping poll cycles queue rather than cancel each other.
 name: fullsend Jira poll
@@ -41,6 +43,10 @@ jobs:
       FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
       FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}
       FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}
+      FULLSEND_JIRA_WRITE_GROUPS: ${{ secrets.FULLSEND_JIRA_WRITE_GROUPS }}
+      FULLSEND_JIRA_WRITE_ACCOUNTS: ${{ secrets.FULLSEND_JIRA_WRITE_ACCOUNTS }}
+      FULLSEND_JIRA_TRIAGE_GROUPS: ${{ secrets.FULLSEND_JIRA_TRIAGE_GROUPS }}
+      FULLSEND_JIRA_TRIAGE_ACCOUNTS: ${{ secrets.FULLSEND_JIRA_TRIAGE_ACCOUNTS }}
 
   dispatch:
     needs: poll

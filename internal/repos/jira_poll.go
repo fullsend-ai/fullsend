@@ -1,8 +1,10 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -33,6 +35,15 @@ type jiraPollRequest struct {
 	// workflows pinned to a ref that predates OAuth support. Only
 	// meaningful for Ensure.
 	OAuthConfigured bool
+	// AuthorizationEnv names the environment variables the effective jira
+	// authorization lists read with groups_from and accounts_from (#9132).
+	// The GitHub caller forwards those in scaffold.JiraAuthorizationSecrets
+	// to the poll job and cannot pass any other. Only meaningful for Ensure.
+	AuthorizationEnv []string
+	// Warn reports a problem that does not fail the run, such as a list
+	// variable the managed caller cannot pass. It is nil when nothing
+	// listens.
+	Warn func(detail string)
 	// DryRun asks the reconciler to report the actions it would take
 	// without any forge write.
 	DryRun bool
@@ -108,6 +119,9 @@ type jiraPollState struct {
 	// clientSecretDefect names why an existing GitLab
 	// FULLSEND_JIRA_CLIENT_SECRET cannot be reused; empty when it can.
 	clientSecretDefect string
+	// authEnv names the environment variables the effective jira
+	// authorization lists read with groups_from and accounts_from, sorted.
+	authEnv []string
 }
 
 // jiraTokenSecrets and jiraOAuthSecrets are the two mutually exclusive Jira
@@ -135,27 +149,110 @@ func jiraUsesOAuth(st jiraPollState, cfg ConvergeConfig) bool {
 	return !st.tokenExists && (st.clientIDExists || st.clientSecretExists)
 }
 
-// effectiveJiraTracking returns the repository's effective tracker.jira
-// mapping, the managed configuration layered over the declared preset (the
-// same layers committed as the .fullsend files), or nil when the selected
-// tracker provider is not Jira. When polling is enabled the connection
-// settings are validated, so an incomplete mapping fails before any write.
-// URL, project and query never come from flags or the environment.
-func effectiveJiraTracking(resolved ResolvedConfig, preset []byte) (*config.JiraTrackingConfig, error) {
+// effectiveJiraPollState returns the Jira polling state that the effective
+// configuration sets: the managed configuration layered over the declared
+// preset (the same layers committed as the .fullsend files). It holds the
+// tracker.jira mapping, or nil when the selected tracker provider is not
+// Jira, whether polling is enabled, and the variables the jira authorization
+// lists read. When polling is enabled the connection settings are validated,
+// so an incomplete mapping fails before any write. URL, project and query
+// never come from flags or the environment. The secret probes are filled in
+// later by probeJiraPollSecrets.
+func effectiveJiraPollState(resolved ResolvedConfig, preset []byte) (jiraPollState, error) {
 	layered, err := config.LayerOnBase(resolved.Managed, preset)
 	if err != nil {
-		return nil, fmt.Errorf("%s/%s: reading the effective configuration: %w", resolved.Owner, resolved.Repo, err)
+		return jiraPollState{}, fmt.Errorf("%s/%s: reading the effective configuration: %w", resolved.Owner, resolved.Repo, err)
 	}
+	// Collected for any tracker: every job loads the config, not only the poller.
+	authEnv := layered.JiraAuthorization().JiraEnvNames()
 	tracking := layered.IssueTracking()
 	if tracking.Provider() != config.TrackingProviderJira {
-		return nil, nil
+		return jiraPollState{authEnv: authEnv}, nil
 	}
 	if tracking.Jira.PollEnabled() {
 		if err := tracking.Jira.ValidateConnection(); err != nil {
-			return nil, fmt.Errorf("%s/%s: tracker.jira.poll.enabled is true: %w", resolved.Owner, resolved.Repo, err)
+			return jiraPollState{}, fmt.Errorf("%s/%s: tracker.jira.poll.enabled is true: %w", resolved.Owner, resolved.Repo, err)
 		}
 	}
-	return tracking.Jira, nil
+	return jiraPollState{
+		jira:    tracking.Jira,
+		enabled: tracking.Jira.PollEnabled(),
+		authEnv: authEnv,
+	}, nil
+}
+
+// jiraAuthorizationEnvMarker appears in reusable-poll-jira.yml at every ref
+// whose CLI supports groups_from and accounts_from: both landed together
+// (#9132).
+const jiraAuthorizationEnvMarker = "FULLSEND_JIRA_WRITE_GROUPS"
+
+// checkJiraAuthorizationEnvSupport fails before any write when the config
+// reads a jira authorization list with groups_from or accounts_from and the
+// repository's jobs run a release that predates them. Every job runs the CLI
+// at the scaffold's ref, and an older CLI rejects the keys, so no job could
+// load the config. The ref checked is the pinned fullsend_ref, or the ref the
+// installed scaffold is stamped with when install will not refresh it (see
+// establishedScaffoldRef). Any other repository runs the current release.
+func checkJiraAuthorizationEnvSupport(ctx context.Context, d convergeDiscovery, cfg ConvergeConfig, refResolver *RefResolver) error {
+	if len(d.jira.authEnv) == 0 {
+		return nil
+	}
+	resolved := d.resolved
+	// A vendored install runs its own binary and workflows. Only the managed
+	// GitHub poll caller still calls upstream at that ref, and the workflow
+	// there must declare each list secret the caller passes.
+	if resolved.Vendor {
+		forwarded, _ := splitJiraAuthorizationEnv(d.jira.authEnv)
+		if resolved.Forge != ForgeGitHub || !d.jira.enabled || len(forwarded) == 0 {
+			return nil
+		}
+	}
+	if err := checkUserJiraCallerAuthorizationEnv(ctx, d, refResolver); err != nil {
+		return err
+	}
+	ref, source := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver).manifestRef, "pinned fullsend_ref"
+	if ref == "" {
+		// A stamped scaffold's ref cannot be read without an upstream GitHub
+		// client, so it is not checked, as in checkGitLabJiraOAuthSupport.
+		if refResolver == nil {
+			return nil
+		}
+		ref, source = establishedScaffoldRef(resolved, cfg, d.components), "the installed scaffold's ref"
+	}
+	if ref == "" {
+		return nil
+	}
+	names := strings.Join(d.jira.authEnv, ", ")
+	if refResolver == nil {
+		return fmt.Errorf("%s/%s: config.yaml reads %s with groups_from/accounts_from, and %s %q cannot be checked for support without an upstream GitHub client",
+			resolved.Owner, resolved.Repo, names, source, ref)
+	}
+	content, err := refResolver.client.GetFileContentAtRef(ctx, shimOwner, shimRepo, reusableJiraPollWorkflowPath, ref)
+	if err != nil && !forge.IsNotFound(err) {
+		return fmt.Errorf("%s/%s: checking %s %q for groups_from/accounts_from support: %w",
+			resolved.Owner, resolved.Repo, source, ref, err)
+	}
+	if err != nil || !bytes.Contains(content, []byte(jiraAuthorizationEnvMarker)) {
+		return fmt.Errorf("%s/%s: config.yaml reads %s with groups_from/accounts_from, which %s %q does not support; set fullsend_ref to a release that includes them",
+			resolved.Owner, resolved.Repo, names, source, ref)
+	}
+	return nil
+}
+
+// establishedScaffoldRef returns the ref an installed scaffold is stamped
+// with when this run will not move it: the manifest sets no fullsend_ref and
+// the build has no release ref. It returns "" for a missing or unstamped
+// scaffold, which convergence renders from the embedded templates.
+func establishedScaffoldRef(resolved ResolvedConfig, cfg ConvergeConfig, components []ComponentStatus) string {
+	if resolved.FullsendRef != "" || cfg.UpstreamRef != "" {
+		return ""
+	}
+	for _, c := range components {
+		if c.Name == "workflow" && c.Present && !isUnstampedInstallRef(resolved.Forge, c.Actual) {
+			return c.Actual
+		}
+	}
+	return ""
 }
 
 // probeJiraPollSecrets reads whether the Jira credential secrets exist. It
@@ -424,6 +521,8 @@ func convergeJiraPoll(ctx context.Context, d convergeDiscovery, cfg ConvergeConf
 	_, emailSupplied := values[forge.SecretJiraEmail]
 	req.EmailConfigured = !useOAuth && (d.jira.emailExists || emailSupplied)
 	req.OAuthConfigured = useOAuth
+	req.AuthorizationEnv = d.jira.authEnv
+	req.Warn = func(detail string) { progress(repoFullName, "warning", detail) }
 	ensured, err := reconciler.Ensure(ctx, req)
 	actions = append(actions, ensured...)
 	if err != nil {

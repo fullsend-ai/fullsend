@@ -850,7 +850,10 @@ commit or pull request as the rest of the installation. The workflow:
 - passes the selected Jira credential set to the poll job. For Jira-originated
   runs, it passes the same set to Fullsend's status writer; the values do not
   enter the runner-secret bundle or sandbox. The built-in agents' harnesses
-  map the same set in `env.runner` for their post-scripts' own Jira writes.
+  map the same set in `env.runner` for their post-scripts' own Jira writes;
+- passes the poll job the authorization list secrets that the `jira` entry
+  reads, if any (see
+  [Keeping the lists out of the repository](#keeping-the-lists-out-of-the-repository)).
 
 The workflow has no Jira URL, project, or query inputs. The poller reads them
 from the configuration. Both reusable workflows are pinned to the scaffold's
@@ -868,7 +871,8 @@ earlier version of this guide, it has no marker: install reports it and
 leaves it untouched. Delete that file and re-run `repos install` to switch to
 the managed workflow.
 
-**How this works:** The poll job queries Jira and builds a dispatch matrix in
+**How this works:** The poll job queries Jira and saves the dispatch records.
+A second job, which receives no secrets, turns them into a dispatch matrix in
 the format expected by `reusable-dispatch.yml`. When the `matrix` input is
 provided, `reusable-dispatch.yml` skips its routing and dispatch steps and
 goes directly to running harness agents with the pre-computed matrix. Because
@@ -1181,7 +1185,7 @@ The `event_payload` field is a structured execution payload object wrapping issu
       }
     },
     "actor": {
-      "id": "5f7c012e0b2a4c001f3d9876",
+      "id": "712020:00000000-0000-0000-0000-000000000000",
       "kind": "human",
       "role": "write",
       "is_entity_author": false,
@@ -1216,7 +1220,7 @@ authorization:
   - provider: jira
     write:            # Fullsend role write
       groups: [example-team-developers]
-      accounts: ["5f7c012e0b2a4c001f3d9876"]   # Jira account IDs
+      accounts: ["712020:00000000-0000-0000-0000-000000000000"]   # Jira account IDs
     triage:           # Fullsend role triage
       groups: [example-team]
       accounts: []
@@ -1268,6 +1272,183 @@ Group entries match a Jira group's name or group ID and are checked with
 Jira's user-groups API, once per actor per poll cycle. Account entries are
 compared with the actor's account ID directly. To find an account ID, open
 the user's Jira profile: the ID is the last part of its URL.
+
+### Keeping the lists out of the repository
+
+On a public repository, anyone can read `.fullsend/config.yaml`, and so the
+`jira` lists:
+
+- An account ID identifies a person on your Atlassian site.
+- A group name often describes the team.
+- Together, the lists show which accounts can make the agents change the
+  repository.
+
+List groups by group ID, not by name, and use groups rather than `accounts`.
+Jira returns a group's name or members only to a caller with the *Browse
+users and groups* global permission
+([Get users from group](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-groups/#api-rest-api-3-group-member-get)).
+A site does not grant it to people who are not signed in unless an admin
+chose to
+([Prevent or remove public access](https://confluence.atlassian.com/servicedeskcloud/prevent-or-remove-public-access-1097175896.html)).
+To keep the IDs private whatever the site's settings, read a list from an
+environment variable with `groups_from` or `accounts_from`:
+
+```yaml
+authorization:
+  - provider: jira
+    write:
+      groups_from: FULLSEND_JIRA_WRITE_GROUPS    # value: "<group-id-1>,<group-id-2>"
+    triage:
+      groups_from: FULLSEND_JIRA_TRIAGE_GROUPS
+    labels: allowlist
+```
+
+- The variable holds a comma-separated list. One entry per line also works.
+  The poller trims spaces around each entry and drops empty entries. Write
+  the entries bare, with no quotes or brackets. Entries match like the
+  inline list: a group name or group ID for `groups_from`, an account ID
+  for `accounts_from`.
+- The poller reads the variable on every poll, so a new value applies from
+  the next poll, with no change to the repository.
+- An unset or empty variable grants no one, like an empty inline list. The
+  list still counts as set, so Jira project roles do not decide instead. The
+  poller logs a warning that names the variable on every poll.
+- A role sets either `groups` or `groups_from`, and either `accounts` or
+  `accounts_from`. Config loading fails when a role sets both forms of one
+  field. Mixing fields is fine, for example `groups_from` with inline
+  `accounts`.
+- The poller never prints the values or the groups it resolves.
+- The lists stay out of the repository, but the account that acts is not
+  hidden. On GitHub, when an account triggers an agent, its account ID is in
+  that run's dispatch record. The record is in the poll run's artifact and in
+  the agent job's log, as it is with inline lists. Groups are never in it.
+- Every job runs the CLI at the repository's `fullsend_ref`, and a release
+  that predates `groups_from` and `accounts_from` can't load the config. When
+  the `jira` entry uses them and `fullsend_ref` pins such a release,
+  `fullsend repos install` fails before it changes anything. Upgrade
+  `fullsend_ref` and run install again.
+
+The poll job checks the roles, so the variable must be in the poll job's
+environment.
+
+#### GitHub: repository secrets
+
+The managed poll workflow can pass four repository secrets to the poller:
+`FULLSEND_JIRA_WRITE_GROUPS`, `FULLSEND_JIRA_WRITE_ACCOUNTS`,
+`FULLSEND_JIRA_TRIAGE_GROUPS`, and `FULLSEND_JIRA_TRIAGE_ACCOUNTS`.
+
+1. Store each list as a repository secret:
+
+   ```bash
+   gh secret set FULLSEND_JIRA_WRITE_GROUPS --repo <owner>/<repo> --body "<group-id-1>,<group-id-2>"
+   ```
+
+2. Name the secret in the `jira` entry, as in the example above.
+3. Run `fullsend repos install`. Install adds the secrets that the `jira`
+   entry names to `.github/workflows/fullsend-poll-jira.yml`, which passes
+   them to the poll job only. GitHub masks secret values in logs.
+
+To change who is authorized, update the secret. Install never writes or
+deletes these secrets, and `repos uninstall` leaves them in place.
+
+When the `jira` entry names any other variable, install warns: the managed
+workflow cannot pass it, so that list grants no one unless the runner's own
+environment sets the variable.
+
+#### GitHub: Vault or another secret store
+
+Fullsend does not read Vault or any other store itself. Choose one route:
+
+- Keep the managed workflow, and let the store keep the repository secret
+  above up to date. For example, Vault Enterprise secrets sync can write
+  GitHub repository secrets.
+- Maintain your own poll workflow (see [Scheduled workflow](#scheduled-workflow)
+  for how install treats a workflow without the marker line). Add a step
+  before the step that runs `fullsend poll --input-driver jira-poll`, and
+  give the variable any name.
+
+In your own workflow, `hashicorp/vault-action` can read Vault with GitHub's
+OIDC token, so GitHub stores no Vault token. The job needs
+`id-token: write`, and Vault needs a JWT role bound to the repository and
+workflow. The action exports each value as an environment variable and masks
+it in logs:
+
+```yaml
+      - name: Read the Jira lists from Vault
+        uses: hashicorp/vault-action@<commit-sha>   # pin to a release
+        with:
+          url: https://vault.example.com
+          method: jwt
+          role: fullsend-jira-poll
+          secrets: |
+            secret/data/fullsend/jira write_groups | FULLSEND_JIRA_WRITE_GROUPS ;
+            secret/data/fullsend/jira triage_groups | FULLSEND_JIRA_TRIAGE_GROUPS
+```
+
+Your workflow must install a fullsend release that supports `groups_from`
+and `accounts_from`. An older release rejects them as unknown fields.
+
+For a store with no GitHub Action:
+
+1. Fetch the value in a script step, as one line:
+
+   ```bash
+   VALUE="$(<command that prints the list> | tr -s '\r\n' ',')"
+   ```
+
+   `tr` joins a list stored one entry per line. Without it, step 2 masks
+   only the first line and prints the others.
+2. Mask it before anything else prints it:
+
+   ```bash
+   echo "::add-mask::$VALUE"
+   ```
+
+   GitHub then replaces the value with `***` in logs.
+3. Append `NAME=value` to `$GITHUB_ENV`:
+
+   ```bash
+   echo "FULLSEND_JIRA_WRITE_GROUPS=$VALUE" >> "$GITHUB_ENV"
+   ```
+
+   Later steps in the job, including the poll step, then see the variable.
+
+Set the dispatch matrix output in a job that does not receive the list
+secrets. GitHub drops a job output that contains a value of a secret the job
+has, and the matrix contains the ID of the account that acted, which can equal
+a list value. For example, save the dispatch file as an artifact in the poll
+job, and set the output from a second job that reads it.
+`reusable-poll-jira.yml` does it this way.
+
+#### GitLab: CI/CD variables
+
+The Jira poll job receives the project's CI/CD variables, so any variable
+name works. Use a name without the `FULLSEND_` prefix, for example
+`JIRA_WRITE_GROUPS`: `fullsend repos status` reports a `FULLSEND_` variable
+it does not manage as an orphan and exits with an error. Add one CI/CD
+variable per list, under the name the `jira` entry uses, set up like
+fullsend's own secrets:
+
+- **Type:** Variable, not File.
+- **Environments:** All (default).
+- **Visibility:** Masked and hidden (GitLab 17.4 or later), or Masked.
+- **Flags:** select **Protect variable** and clear **Expand variable
+  reference**. GitLab masks a value that contains a comma only when
+  expansion is off, and only in GitLab 15.9 or later. See
+  [Mask a CI/CD variable](https://docs.gitlab.com/ci/variables/#mask-a-cicd-variable).
+- **Value:** at least 8 characters, with no spaces, for example
+  `<group-id-1>,<group-id-2>`. A group name that contains a space can't be
+  masked, so use the group ID.
+
+GitLab gives the variable to every job in pipelines on protected branches or
+tags, not only the Jira poll job: agent jobs and the project's own jobs get it
+too. The poller never prints the value, and if another job does, the log
+shows `[MASKED]`.
+
+GitLab refuses to save a masked variable whose value breaks its masking
+rules. Before GitLab 15.9 a masked value can't contain a comma, so only a
+list with one entry can be masked there: upgrade GitLab to store a longer
+list. Do not save the list unmasked.
 
 ### Minimum Jira permissions
 
@@ -1417,6 +1598,9 @@ However, more pollers against the same Jira project means more API calls per cyc
 | `load project roles for PROJ: ... 401 You cannot edit the configuration of this project` | The poller read Jira project roles without Administer Projects. That happens with no `jira` entry in `.fullsend/config.yaml`, with `labels: project_roles`, or on a slash command when the entry sets no lists | Add a `jira` entry with `write`/`triage` lists so project roles are not read, or grant the poller account the **Administrators** project role. See [Minimum Jira permissions](#minimum-jira-permissions) |
 | `resolve jira list groups: ... get user groups` errors | The `jira` lists name groups, or project-role resolution found a role granted to a group, but the poller account lacks the Browse users and groups global permission | Grant Browse users and groups, or list account IDs instead of groups |
 | Slash command ignored (with `jira` lists) | Actor is not in the `write` list (or the `triage` list for triage-level agents) | Add the actor's account ID or one of their groups to the right list — see [Actor role resolution](#actor-role-resolution) |
+| Everyone is denied after a list moves to `groups_from` or `accounts_from`, and the poll log shows `<NAME> is unset or empty, so it grants no one` | The variable is unset or empty in the poll job: the secret is missing, or the managed GitHub workflow cannot pass its name (install warns) | Set the variable. On GitHub with the managed workflow, use one of the four `FULLSEND_JIRA_*` secret names and run `fullsend repos install` — see [Keeping the lists out of the repository](#keeping-the-lists-out-of-the-repository) |
+| `pinned fullsend_ref "..." does not support` or `the installed scaffold's ref "..." does not support` from `repos install` | The repository's jobs run a release that predates `groups_from` and `accounts_from` | Set `fullsend_ref` to a release that includes them and run install again |
+| `set groups or groups_from, not both` (or `accounts`) | One role sets both the inline list and its `*_from` form | Keep one form for that field |
 | Slash command ignored (without `jira` lists) | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Project role mapping](#project-role-mapping) if you use custom role names |
 | Issue opened or edited on Jira never dispatches triage | A `jira` entry is present but sets no `write` or `triage` list and not `labels: project_roles`, so opened and edited events are unresolved (with no `jira` entry, or with `labels: project_roles` and no lists, they resolve through project roles) | Add `write`/`triage` lists to the entry, or set `labels: project_roles`. See [Actor role resolution](#actor-role-resolution) |
 | Label added but nothing dispatched | There is no `jira` entry, or it sets `labels: allowlist` or `labels: project_roles`, and the label author is not authorized by it | Add the author to the lists, or add a `jira` entry with the default `labels: jira_editors` |

@@ -6,30 +6,36 @@
 # - Optional secrets: FULLSEND_JIRA_TOKEN / FULLSEND_JIRA_EMAIL for API-token
 #   authentication, or FULLSEND_JIRA_CLIENT_ID / FULLSEND_JIRA_CLIENT_SECRET
 #   for OAuth 2.0 client credentials. The Jira client validates the pair.
-# - Optional inputs: runner_image (runner for the poll job) and timeout_minutes
-#   (job timeout; defaults to 15 minutes and can be raised by the caller).
+# - Optional secrets FULLSEND_JIRA_WRITE_GROUPS, FULLSEND_JIRA_WRITE_ACCOUNTS,
+#   FULLSEND_JIRA_TRIAGE_GROUPS and FULLSEND_JIRA_TRIAGE_ACCOUNTS: the jira
+#   authorization lists that .fullsend/config.yaml reads with groups_from and
+#   accounts_from, so the lists stay out of a public repository (#9132).
+# - Optional inputs: runner_image (runner for both jobs) and timeout_minutes
+#   (timeout of each job; defaults to 15 minutes and can be raised by the
+#   caller).
 # - Output: matrix is the JSON include matrix for reusable-dispatch.yml; an
-#   empty include array means there were no Jira issues to dispatch.
+#   empty include array means there were no Jira issues to dispatch. The matrix
+#   job sets it, not the poll job (see the comment on that job).
 # Runs `fullsend poll --input-driver jira-poll` against the caller's
 # .fullsend/config.yaml and returns the dispatch matrix to the caller. The
 # caller passes it to reusable-dispatch.yml at the same ref (ADR 62).
 # The poll normally completes within 15 minutes; the caller controls the job
 # timeout through timeout_minutes to account for its runner and Jira latency.
 #
-# Security: Jira credentials reach only the poll step. They are never
-# forwarded to agents or the runner-secret bundle.
+# Security: Jira credentials reach only the poll and check steps. They are
+# never forwarded to agents or the runner-secret bundle.
 name: Jira poll
 
 on:
   workflow_call:
     inputs:
       runner_image:
-        description: GitHub Actions runner image for the poll job.
+        description: GitHub Actions runner image for the Jira poll jobs.
         type: string
         required: false
         default: "ubuntu-24.04"
       timeout_minutes:
-        description: Maximum runtime in minutes for the Jira poll job.
+        description: Maximum runtime in minutes for each Jira poll job.
         type: number
         required: false
         default: 15
@@ -42,10 +48,18 @@ on:
         required: false
       FULLSEND_JIRA_CLIENT_SECRET:
         required: false
+      FULLSEND_JIRA_WRITE_GROUPS:
+        required: false
+      FULLSEND_JIRA_WRITE_ACCOUNTS:
+        required: false
+      FULLSEND_JIRA_TRIAGE_GROUPS:
+        required: false
+      FULLSEND_JIRA_TRIAGE_ACCOUNTS:
+        required: false
     outputs:
       matrix:
         description: Dispatch matrix accepted by reusable-dispatch.yml.
-        value: ${{ jobs.poll.outputs.matrix }}
+        value: ${{ jobs.matrix.outputs.matrix || '{"include":[]}' }}
 
 jobs:
   poll:
@@ -55,7 +69,8 @@ jobs:
     permissions:
       contents: read
     outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
+      dispatch_count: ${{ steps.check.outputs.count }}
+      artifact_suffix: ${{ steps.check.outputs.artifact_suffix }}
     steps:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -104,6 +119,12 @@ jobs:
           FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
           FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}
           FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}
+          # The poller reads these only when config.yaml names them with
+          # groups_from or accounts_from, and never prints them.
+          FULLSEND_JIRA_WRITE_GROUPS: ${{ secrets.FULLSEND_JIRA_WRITE_GROUPS }}
+          FULLSEND_JIRA_WRITE_ACCOUNTS: ${{ secrets.FULLSEND_JIRA_WRITE_ACCOUNTS }}
+          FULLSEND_JIRA_TRIAGE_GROUPS: ${{ secrets.FULLSEND_JIRA_TRIAGE_GROUPS }}
+          FULLSEND_JIRA_TRIAGE_ACCOUNTS: ${{ secrets.FULLSEND_JIRA_TRIAGE_ACCOUNTS }}
           TARGET_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -113,16 +134,95 @@ jobs:
             --output dispatches.json \
             --fullsend-dir .fullsend
 
+      # The matrix job has no secrets, so GitHub no longer blocks a Jira
+      # credential in its output. Check for one here instead.
+      - name: Check dispatches
+        id: check
+        env:
+          FULLSEND_JIRA_TOKEN: ${{ secrets.FULLSEND_JIRA_TOKEN }}
+          FULLSEND_JIRA_EMAIL: ${{ secrets.FULLSEND_JIRA_EMAIL }}
+          FULLSEND_JIRA_CLIENT_ID: ${{ secrets.FULLSEND_JIRA_CLIENT_ID }}
+          FULLSEND_JIRA_CLIENT_SECRET: ${{ secrets.FULLSEND_JIRA_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          jq -e 'type == "array"' dispatches.json > /dev/null
+          # JSON escapes characters such as quotes, so search the decoded
+          # strings, not the file.
+          jq -r '.. | strings' dispatches.json > dispatch-strings.txt
+          for name in FULLSEND_JIRA_TOKEN FULLSEND_JIRA_EMAIL FULLSEND_JIRA_CLIENT_ID FULLSEND_JIRA_CLIENT_SECRET; do
+            # Trim the value as the CLI does. An empty grep pattern matches
+            # every line, and a padded one matches nothing.
+            value="$(sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d' <<< "${!name}")"
+            if [[ -n "${value}" ]] && grep -qF -f <(printf '%s\n' "${value}") dispatch-strings.txt; then
+              echo "::error::dispatches.json contains ${name}; not passing it on."
+              exit 1
+            fi
+          done
+          # A run can call this workflow more than once, and artifact names are
+          # unique per run, so each call names its artifact with its own suffix.
+          echo "artifact_suffix=$(openssl rand -hex 8)" >> "${GITHUB_OUTPUT}"
+          echo "count=$(jq length dispatches.json)" >> "${GITHUB_OUTPUT}"
+
+      # The poller has already advanced its Jira checkpoints, so a failed
+      # upload would lose this cycle's dispatches. Try it twice.
+      - name: Save dispatches
+        id: save
+        if: ${{ steps.check.outputs.count != '0' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fullsend-jira-dispatches-${{ steps.check.outputs.artifact_suffix }}
+          path: dispatches.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+      - name: Save dispatches (second try)
+        if: ${{ steps.save.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fullsend-jira-dispatches-${{ steps.check.outputs.artifact_suffix }}
+          path: dispatches.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  # Builds the matrix in a job without secrets. GitHub drops a job output that
+  # contains the value of a secret the job has, and the matrix holds the ID of
+  # the account that acted, which can equal a list secret such as
+  # FULLSEND_JIRA_WRITE_ACCOUNTS.
+  matrix:
+    name: Build dispatch matrix
+    needs: poll
+    # "!= '0'", not "> 0": an empty (dropped) count still runs this job.
+    if: ${{ needs.poll.outputs.dispatch_count != '0' }}
+    runs-on: ${{ inputs.runner_image }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions: {}
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      # If both tries fail, "Re-run failed jobs" reads the artifact again
+      # while it is kept (1 day). "Re-run all jobs" would poll again and find
+      # nothing.
+      - name: Read dispatches
+        id: read
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fullsend-jira-dispatches-${{ needs.poll.outputs.artifact_suffix }}
+
+      - name: Read dispatches (second try)
+        if: ${{ steps.read.outcome == 'failure' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: fullsend-jira-dispatches-${{ needs.poll.outputs.artifact_suffix }}
+
       - name: Build dispatch matrix
         id: matrix
         run: |
           set -euo pipefail
-          jq -e 'type == "array"' dispatches.json > /dev/null
-          if jq -e 'length == 0' dispatches.json > /dev/null; then
-            echo "No dispatches."
-            echo 'matrix={"include":[]}' >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
+          jq -e 'type == "array" and length > 0' dispatches.json > /dev/null
           MATRIX=$(jq -c '{include: .}' dispatches.json)
           DELIM="MATRIX_$(openssl rand -hex 8)"
           {
