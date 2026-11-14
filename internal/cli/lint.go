@@ -454,21 +454,25 @@ func (c lintScopedConfig) AgentEntries() []config.AgentEntry { return c.entries 
 // check, including duplicate detection, on the entry's name: validating
 // each name's entries on their own reports exactly the errors validating
 // the whole list would, without one agent's error masking the others.
+// Each entry's position in the full list is kept so errors name the same
+// agents[N] a full lint does.
 func selectLintAgent(entries []config.AgentEntry, name string, allowlist []string) ([]config.AgentEntry, int, error) {
 	groups := make(map[string][]config.AgentEntry)
+	positions := make(map[string][]int)
 	var order []string
-	for _, e := range entries {
+	for i, e := range entries {
 		key := strings.ToLower(e.DerivedName())
 		if _, ok := groups[key]; !ok {
 			order = append(order, key)
 		}
 		groups[key] = append(groups[key], e)
+		positions[key] = append(positions[key], i)
 	}
 
 	selectedKey := strings.ToLower(name)
 	siblingErrs := 0
 	for _, key := range order {
-		if key != selectedKey && config.ValidateAgentEntries(groups[key], allowlist) != nil {
+		if key != selectedKey && config.ValidateAgentEntriesAt(groups[key], positions[key], allowlist) != nil {
 			siblingErrs++
 		}
 	}
@@ -488,7 +492,7 @@ func selectLintAgent(entries []config.AgentEntry, name string, allowlist []strin
 		sort.Strings(enabled)
 		return nil, siblingErrs, fmt.Errorf("agent %q is not registered in config.yaml; registered agents that can be linted: %s", name, strings.Join(enabled, ", "))
 	}
-	if err := config.ValidateAgentEntries(selected, allowlist); err != nil {
+	if err := config.ValidateAgentEntriesAt(selected, positions[selectedKey], allowlist); err != nil {
 		return nil, siblingErrs, fmt.Errorf("invalid agent config: %w", err)
 	}
 	if config.IsAgentExplicitlyDisabled(selected, name) {
