@@ -75,37 +75,35 @@ func TestCodexGolden(t *testing.T) {
 	}{
 		{"config.toml", func(t *testing.T) string {
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("triage", def, nil), "", nil, "", "")
+				codexDeveloperInstructions("triage", def, nil, "v1"), "", nil, "", "", false)
 			require.NoError(t, err)
 			return string(data)
 		}},
 		{"config-gateway.toml", func(t *testing.T) string {
 			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("triage", def, nil), testCodexGatewayBaseURL, nil, "", "")
+				codexDeveloperInstructions("triage", def, nil, "v1"), testCodexGatewayBaseURL, nil, "", "", false)
 			require.NoError(t, err)
 			return string(data)
 		}},
-		{"config-delegating.toml", func(t *testing.T) string {
-			review, err := parsePiAgent([]byte(codexTestDelegatingAgentDef))
-			require.NoError(t, err)
-			roles, defaultModel, _, err := resolveCodexChildModels(codexGoldenRoles(t), nil, nil, "", "", codexTestCatalog())
-			require.NoError(t, err)
-			data, err := renderCodexConfig(sandbox.SandboxCodexConfig, repo,
-				codexDeveloperInstructions("review", review, roles), "", roles, defaultModel, "")
-			require.NoError(t, err)
-			return string(data)
-		}},
+		{"config-delegating.toml", func(t *testing.T) string { return codexGoldenDelegatingConfig(t, "v1") }},
+		{"config-delegating-v2.toml", func(t *testing.T) string { return codexGoldenDelegatingConfig(t, "v2") }},
 		{"launch-gateway.txt", func(t *testing.T) string {
 			return codexGoldenLaunch(buildCodexRunCommand(hooksOn, codexModel{ID: "vendor/org/model", Gateway: true}, "high", true, gatewayHooks))
 		}},
 		{"hooks-default.json", func(t *testing.T) string {
 			data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython,
-				security.SandboxHookConfigFromHarness(&harness.Harness{}))
+				security.SandboxHookConfigFromHarness(&harness.Harness{}), false)
+			require.NoError(t, err)
+			return string(data)
+		}},
+		{"hooks-delegating-v2.json", func(t *testing.T) string {
+			data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython,
+				security.SandboxHookConfigFromHarness(&harness.Harness{}), true)
 			require.NoError(t, err)
 			return string(data)
 		}},
 		{"hooks-all-off.json", func(t *testing.T) string {
-			data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, codexAllHooksOff())
+			data, _, err := codexHooksJSON(sandbox.SandboxCodexConfig, testCodexPython, codexAllHooksOff(), false)
 			require.NoError(t, err)
 			return string(data)
 		}},
@@ -155,13 +153,28 @@ func TestCodexGolden(t *testing.T) {
 	}
 }
 
+// codexGoldenDelegatingConfig renders config.toml as Bootstrap does for the
+// review agent with the golden roles on collaboration version: the
+// version's dispatch note and, for V2, the feature table on.
+func codexGoldenDelegatingConfig(t *testing.T, version string) string {
+	t.Helper()
+	review, err := parsePiAgent([]byte(codexTestDelegatingAgentDef))
+	require.NoError(t, err)
+	roles, defaultModel, _, err := resolveCodexChildModels(codexGoldenRoles(t), nil, nil, "", "", codexTestCatalog())
+	require.NoError(t, err)
+	data, err := renderCodexConfig(sandbox.SandboxCodexConfig, sandbox.SandboxWorkspace+"/repo",
+		codexDeveloperInstructions("review", review, roles, version), "", roles, defaultModel, "", version == "v2")
+	require.NoError(t, err)
+	return string(data)
+}
+
 // codexGoldenRoles renders the roles of a review agent with the test
 // correctness persona (codexTestPersona): three files, no model line.
 func codexGoldenRoles(t *testing.T) []codexRole {
 	t.Helper()
 	skill := t.TempDir()
 	writePersonaFile(t, skill, "correctness", codexTestPersona)
-	roles, _ := codexRoles([]string{skill}, "review")
+	roles, _ := codexRoles([]string{skill}, "review", "v1")
 	return roles
 }
 

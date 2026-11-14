@@ -162,8 +162,10 @@ in the sandbox) and fails naming the position that supplied an unlisted id: Code
 run-level default only at each spawn and a role-file model not at all. A listed model the provider
 does not serve still fails that child at its first request: it ends `errored`, no other model is
 substituted, and the parent treats that role as failed. The floor is `gpt-5.6-luna`, the cheap
-gpt-5.6 tier #6970 chose; it must be listed in the bundled catalog, and its collaboration version
-does not matter, because a child runs under its parent's. The runner reads `FULLSEND_CODEX_SUBAGENT_MODEL` from its own
+gpt-5.6 tier #6970 chose; it must be listed in the bundled catalog. Under a V1 parent a child
+model's collaboration version does not matter, because a child runs under its parent's; under a V2
+parent, a child model that selects V2 makes the parent run in one context (see
+[Sub-agents](#sub-agents)). The runner reads `FULLSEND_CODEX_SUBAGENT_MODEL` from its own
 environment: you set it for a local `fullsend run`, and on GitLab a project or group CI/CD variable
 reaches it, since the job runs `fullsend run` in its own environment. The GitHub fleet workflows do
 not pass it, and unlike `FULLSEND_CODEX_MODEL` it is not read from repository variables, so on that
@@ -189,8 +191,9 @@ subagents: effort → high (from the run's effort; every child)
 
 An agent whose `tools:` frontmatter includes `Agent` (or its alias `Task`), or declares no `tools:`
 at all, runs its sub-agents as native Codex children when harness security is enabled and Codex
-resolves its parent model to collaboration V1 on the direct route (see the end of this section). Bootstrap registers
-one role per persona it discovers under the uploaded skills' `sub-agents/*.md`, plus a generic
+resolves its parent model to collaboration V1 or V2 on the direct route (see the end of this
+section). Bootstrap registers one role per persona it discovers under the uploaded skills'
+`sub-agents/*.md`, plus a generic
 `default` role for a task that names no persona and an instruction-only `explore` role for a
 skill's `Explore` pass (nothing enforces read-only on a child). The roster is not a fixed list:
 the runtime note at the end of the agent's instructions names it (`Registered sub-agent roles:
@@ -198,28 +201,59 @@ the runtime note at the end of the agent's instructions names it (`Registered su
 `Agent` out, and any run with harness security disabled, keeps Codex's multi-agent tools off and
 runs in one context, as before.
 
-A child gets no copy of the parent's conversation (`fork_context: false`): it starts from its
-role's instructions and the message its parent sends. At most four are open at once, and the depth
-is one. A runner-owned hook admits a spawn only for a registered role with `fork_context:
-false` and no model or effort override; it denies resume, Codex's built-in `explorer` and
-`worker`, and any spawn from a child. A denied spawn is final for that role: the parent runs that
+A child gets no copy of the parent's conversation (`fork_context: false` on V1, `fork_turns:
+"none"` on V2): it starts from its role's instructions and the message its parent sends. At most
+four are open at once on V1, where a finished child holds its slot until it is closed, and four
+run at once on V2; the depth is one. A runner-owned hook admits a spawn only for a registered
+role with that fresh context and no model or effort override; it denies resume, V2's message and
+follow-up calls, Codex's built-in `explorer` and `worker`, and any spawn from a child. A denied
+spawn is final for that role: the parent runs that
 sub-agent definition itself. A spawn the hook did not admit fails the run after the fact, within
 the limits named in [Troubleshooting](#troubleshooting): per iteration the runner counts the
 spawns seen in the event stream or in the children's rollouts on disk, each child once, and
 compares the run's total with the admissions the hook recorded. Every child's rollout is saved and redacted like the
 parent's, and its tokens are in `metrics.json` (see [At a glance](#at-a-glance)).
 
-Delegation needs a parent model Codex resolves to collaboration V1: its entry in
-the pinned CLI's bundled catalog selects V1, or carries no version and Codex's
-`multi_agent` feature, on by default, supplies V1 (on the current pin
-`gpt-5.6-luna`, `gpt-5.5` and a hidden catalog entry). Bootstrap reads that
-catalog. [ADR 0159](../ADRs/0159-codex-subagents-on-collaboration-v2.md) admits
-a parent that selects V2 (`gpt-5.6-sol`, `gpt-6.1-sol` and most of the current
-catalog). Such a parent still runs in one context, because its child results
-would reach it outside the PostToolUse chain. Bootstrap prints one line saying
-so (`sub-agents: parent model "gpt-5.6-sol" selects collaboration "v2"; V2
-delegation is off until its child-result delivery path is verified live
-(ADR 0159), running in one context`). A model the catalog does not list runs
+Delegation needs a parent model Codex resolves to collaboration V1 or V2: its
+entry in the pinned CLI's bundled catalog selects V1 or V2, or carries no
+version and Codex's `multi_agent` feature, on by default, supplies V1. On the
+current pin `gpt-5.6-luna`, `gpt-5.5` and a hidden catalog entry are V1, and
+`gpt-5.6-sol`, `gpt-6.1-sol` and the rest are V2. Bootstrap reads that
+catalog ([ADR 0159](../ADRs/0159-codex-subagents-on-collaboration-v2.md)).
+
+On V2 a child's result reaches the parent as a message rather than as a tool
+result, so a `SubagentStop` hook runs the PostToolUse chain on the child's
+final message, as an `Agent` result, before Codex delivers it. When the chain
+blocks, the child does not finish: it continues with a fixed prompt to reply
+with exactly `RESULT WITHHELD BY FULLSEND`, which does not say what was
+flagged (the reason goes to the findings log), and for the rest of that turn
+only that exact notice passes, so the child cannot reword a flagged result
+until one gets through. The V2 parent's runtime note treats that notice as a
+coverage gap for that role. Three limits remain:
+
+- The gate fails open when the hook process itself fails (an exit other than 0
+  or 2, a timeout, or a failure to start), like every Codex hook, and a child
+  started by a spawn the spawn hook did not screen may run without it. A
+  script that fails inside the gate is a block, not a pass.
+- An errored child's result is the provider's error text, and no hook runs on
+  it.
+- A child that never replies with the notice keeps running, and spending
+  tokens, until the parent interrupts it or the run ends.
+
+Codex applies no `agents.max_depth` on V2, and gives a child of a V2 parent
+the multi-agent tools only when the child's own model selects V2. So a V2
+parent delegates only when neither the run-level child model nor any persona
+model selects V2; otherwise it runs in one context with a line that names the
+model (`sub-agents: child model "gpt-6.1-terra" (the run-level child model)
+selects collaboration "v2", so under a V2 parent its children would keep
+codex's spawn tool, running in one context`). The floor, `gpt-5.6-luna`,
+selects V1. A child the runner starts on a model off V2 holds no
+`spawn_agent`. A spawn the hook did not screen could still name a V2 model or
+use a rewritten role file; for such a spawn, depth one rests on the hook, as
+ADR 0159 accepts, and the admission check above finds a breach only after the
+fact.
+
+A parent model the catalog does not list runs
 in one context the same way (`sub-agents: parent model "gpt-5.6-nova" is not
 in the bundled catalog of the pinned codex, running in one context`), and so
 does an entry whose `multi_agent_version` is `disabled`, with a line that says
@@ -238,9 +272,9 @@ serve, and native children have not been run on that route.
 | Credentials | A runner-exchanged OpenAI WIF token in CI, or your `OPENAI_API_KEY` on the runner locally — never in the sandbox. Codex reads a placeholder from a runner-owned token file and re-reads it when the credential is refreshed ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). A `gateway/` model uses the inference gateway's credential the same way ([Models through an inference gateway](#models-through-an-inference-gateway-experimental)) |
 | Unattended | Approvals off; codex's own sandbox off, because OpenShell is the boundary. A missing credential exits before the agent starts |
 | Artifacts | `output.jsonl` (the `codex exec --json` stream), `transcripts/<agent>-<rollout>.jsonl` for the root thread and `transcripts/<agent>-sub<seq>-<role>.jsonl` for each native child (`generic` for the `default` role, which codex records as no role when the spawn names no `agent_type`; `explore` keeps its name), `metrics.json` with `runtime: codex` (and `per_model_usage` for a delegating agent), plus `codex-debug.log` with `--debug`. Only uncompressed rollouts are extracted — codex compresses older sessions, so a `.jsonl.zst` is never the run's own transcript. The agent's final message is in the stream; `--output-last-message` also drops it in the runner-owned config directory inside the sandbox, which is a convenience when inspecting a kept sandbox rather than a downloaded artifact |
-| Sub-agents | Native Codex children for an agent whose tools include `Agent` (or that declares no `tools:`), with harness security on, on a parent model Codex resolves to collaboration V1 on the direct route, under a runner-owned policy: registered roles only, fresh context, depth one, four open; see [Sub-agents](#sub-agents) |
+| Sub-agents | Native Codex children for an agent whose tools include `Agent` (or that declares no `tools:`), with harness security on, on a parent model Codex resolves to collaboration V1 or V2 on the direct route, under a runner-owned policy: registered roles only, fresh context, depth one, four at once, and on V2 each child's result checked before the parent receives it; see [Sub-agents](#sub-agents) |
 | Extra knobs | `FULLSEND_CODEX_MODEL` (the runner-side model default for codex runs; see [Models](#models)), `FULLSEND_CODEX_SUBAGENT_MODEL` (the run-level child model; the GitHub fleet workflows do not pass it; see [Child models](#child-models)) |
-| Not supported | `plugins:`, fallback chains, non-OpenAI providers (other than through a Responses-capable inference gateway), Chat Completions or Messages on a gateway, delegation from a parent model on collaboration V2 (ADR 0159 admits it; off until its child-result delivery path is implemented and verified live) or from a `gateway/` parent (see [Sub-agents](#sub-agents)) |
+| Not supported | `plugins:`, fallback chains, non-OpenAI providers (other than through a Responses-capable inference gateway), Chat Completions or Messages on a gateway, delegation from a `gateway/` parent, or from a V2 parent with a V2 child model (see [Sub-agents](#sub-agents)) |
 
 Cost is recorded as **zero** in `metrics.json` on codex: the
 `codex exec --json` stream carries no cost field, so the value stays `0`.
@@ -416,8 +450,13 @@ agents:
     runtime: claude
 ```
 
-**`code` and `fix` delegate too.** They declare no `tools:`, so on a V1 parent on the direct route with harness security
-on they get the `default` and `explore` roles, children with the parent's shell and `apply_patch`,
+**V2 delegation is experimental.** Review and retro have not yet run on a V2 parent, so neither its
+children nor the `SubagentStop` gate has been checked on a fleet-shaped run;
+[ADR 0159](../ADRs/0159-codex-subagents-on-collaboration-v2.md) keeps V2 delegation experimental
+until that run verifies the gate live.
+
+**`code` and `fix` delegate too.** They declare no `tools:`, so on a V1 or V2 parent on the
+direct route with harness security on they get the `default` and `explore` roles, children with the parent's shell and `apply_patch`,
 the spawn guard and the dispatch note, as `review` does. Both have run end to end that way on
 `gpt-5.6-luna` and chose not to spawn, so neither has run a native child yet.
 

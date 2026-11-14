@@ -333,7 +333,7 @@ func TestCodexDeveloperInstructions(t *testing.T) {
 
 	def, err := parsePiAgent([]byte(codexTestAgentDef))
 	require.NoError(t, err)
-	got := codexDeveloperInstructions("triage", def, nil)
+	got := codexDeveloperInstructions("triage", def, nil, "v1")
 
 	assert.Contains(t, got, "# Agent: triage")
 	assert.Contains(t, got, "Inspect an issue.")
@@ -927,7 +927,7 @@ func TestCodexRuntimeBootstrap_WritesRoleFilesForADelegatingAgent(t *testing.T) 
 
 	held, ok := lookupRunnerHeldDigests("sb")
 	require.True(t, ok)
-	want, _ := codexRoles([]string{skill}, "review")
+	want, _ := codexRoles([]string{skill}, "review", "v1")
 	require.Len(t, held.RoleFiles, len(want))
 	var names []string
 	for name := range held.RoleFiles {
@@ -943,13 +943,13 @@ func TestCodexRuntimeBootstrap_WritesRoleFilesForADelegatingAgent(t *testing.T) 
 }
 
 // len(RoleFiles) > 0 exactly when the delegation gate holds: part one
-// (security on, tools include Agent) and part two (the gate takes V1 from the
-// parent model's entry: it selects V1 or carries no version; a V2 parent is
-// declined until ADR 0159 decision 4 is met). With part one failed, no
-// catalog is read; with part two failed, the catalog was read and nothing
-// else happens: no directory is created, nothing is uploaded and the digest
-// set has no role entry. The gpt-5.5 case is the boundary: an entry without
-// a version delegates (ADR 0126), so its files are present.
+// (security on, tools include Agent) and part two (the gate takes V1 or V2
+// from the parent model's entry: V1 when it selects V1 or carries no
+// version; a V2 parent only while no child model selects V2). With part one
+// failed, no catalog is read; with part two failed, the catalog was read and
+// nothing else happens: no directory is created, nothing is uploaded and the
+// digest set has no role entry. The gpt-5.5 case is the boundary: an entry
+// without a version delegates (ADR 0126), so its files are present.
 func TestCodexRuntimeBootstrap_NoRoleFilesWhenTheGateFails(t *testing.T) {
 	t.Setenv(codexSubagentModelEnv, "")
 	skill := t.TempDir()
@@ -964,6 +964,10 @@ func TestCodexRuntimeBootstrap_NoRoleFilesWhenTheGateFails(t *testing.T) {
 	v2Def := strings.Replace(codexTestDelegatingAgentDef, "gpt-5.6-luna", "gpt-5.6-sol", 1)
 	unlistedDef := strings.Replace(codexTestDelegatingAgentDef, "gpt-5.6-luna", "gpt-5.6-nova", 1)
 	noVersionDef := strings.Replace(codexTestDelegatingAgentDef, "gpt-5.6-luna", "gpt-5.5", 1)
+	v2ChildModel := delegating(v2Def, "")
+	v2ChildModel.agentSubagents = map[string]*string{"default": strp("openai/gpt-6.1-terra")}
+	v2PersonaModel := delegating(v2Def, "")
+	v2PersonaModel.agentSubagents = map[string]*string{"correctness": strp("openai/gpt-6.1-terra")}
 	for name, tc := range map[string]struct {
 		input      BootstrapInput
 		preflight  bool
@@ -977,9 +981,11 @@ func TestCodexRuntimeBootstrap_NoRoleFilesWhenTheGateFails(t *testing.T) {
 		"security off, delegating agent": {bootstrapInput{
 			sandboxName: "sb", agentPath: writeAgentFile(t, codexTestDelegatingAgentDef), agentName: "review", skillDirs: []string{skill},
 		}, false, false, ""},
-		"security on, definition model selects V2":               {delegating(v2Def, ""), true, false, `parent model "gpt-5.6-sol" selects collaboration "v2"; V2 delegation is off until its child-result delivery path is verified live (ADR 0159)`},
+		"security on, definition model selects V2":               {delegating(v2Def, ""), true, true, ""},
+		"security on, V2 parent with a V2 child model":           {v2ChildModel, true, false, `child model "gpt-6.1-terra" (the run-level child model) selects collaboration "v2", so under a V2 parent its children would keep codex's spawn tool`},
+		"security on, V2 parent with a persona's own V2 model":   {v2PersonaModel, true, false, `child model "gpt-6.1-terra" (subagents.correctness) selects collaboration "v2", so under a V2 parent that child would keep codex's spawn tool`},
 		"security on, definition model not in the catalog":       {delegating(unlistedDef, ""), true, false, `parent model "gpt-5.6-nova" is not in the bundled catalog of the pinned codex`},
-		"security on, run-level V2 model beats a V1 definition":  {delegating(codexTestDelegatingAgentDef, "openai/gpt-5.6-sol"), true, false, `parent model "gpt-5.6-sol" selects collaboration "v2"; V2 delegation is off until its child-result delivery path is verified live (ADR 0159)`},
+		"security on, run-level V2 model beats a V1 definition":  {delegating(codexTestDelegatingAgentDef, "openai/gpt-5.6-sol"), true, true, ""},
 		"security on, run-level gateway route to a V1 id":        {delegating(codexTestDelegatingAgentDef, "gateway/gpt-5.6-luna"), true, false, `parent model "gateway/gpt-5.6-luna" takes the inference gateway route, where native sub-agents are not supported`},
 		"security on, definition model has no version (gpt-5.5)": {delegating(noVersionDef, ""), true, true, ""},
 	} {
@@ -1145,7 +1151,7 @@ func TestCodexRuntimeBootstrap_RejectsNonOpenAISubagentModel(t *testing.T) {
 
 // The check applies to a delegating agent only. An agent without the Agent
 // tool, any agent with harness security off, and a delegating agent whose
-// parent the gate declines (a V2, disabled, unknown-version, unlisted or
+// parent the gate declines (a disabled, unknown-version, unlisted or
 // gateway/ parent) keep codex's multi-agent tools off and ignore subagents
 // (ADR 0126: "Every other agent runs with Codex's multi-agent tools off").
 func TestCodexRuntimeBootstrap_NonDelegatingAgentIgnoresSubagents(t *testing.T) {
@@ -1166,9 +1172,9 @@ func TestCodexRuntimeBootstrap_NonDelegatingAgentIgnoresSubagents(t *testing.T) 
 		"Agent tool, security off": {bootstrapInput{
 			sandboxName: "sb", agentPath: writeAgentFile(t, codexTestDelegatingAgentDef), agentName: "review", skillDirs: []string{skill}, agentSubagents: bad,
 		}, false},
-		"Agent tool, security on, run-level parent selects V2": {codexHooksBootstrapInput{
+		"Agent tool, security on, run-level parent takes the gateway route": {codexHooksBootstrapInput{
 			bootstrapInput: bootstrapInput{sandboxName: "sb", agentPath: writeAgentFile(t, codexTestDelegatingAgentDef), agentName: "review",
-				skillDirs: []string{skill}, parentModel: "openai/gpt-5.6-sol", agentSubagents: bad},
+				skillDirs: []string{skill}, parentModel: "gateway/gpt-5.6-luna", agentSubagents: bad},
 			hooks: hooks,
 		}, true},
 	} {
@@ -1200,7 +1206,7 @@ func TestCodexSubagentNote_CarriesTheDispatchContract(t *testing.T) {
 	t.Parallel()
 
 	roles := []codexRole{{Name: "challenger"}, {Name: "correctness"}, {Name: "default"}, {Name: "explore"}, {Name: "security"}}
-	got := codexSubagentNote(roles)
+	got := codexSubagentNote(roles, "v1")
 
 	assert.True(t, strings.HasPrefix(got, "\n## Runtime note\n\n"), "the heading the pr-review skill looks for")
 	// The first sentence.
@@ -1231,6 +1237,89 @@ func TestCodexSubagentNote_CarriesTheDispatchContract(t *testing.T) {
 	assert.NotContains(t, got, "You are a sub-agent", "the child contract is the role file's (codexChildNote), not the parent's")
 }
 
+// TestCodexSubagentNote_V1IsUnchanged pins the V1 note byte for byte: the
+// V2 note changes nothing a V1 parent reads.
+func TestCodexSubagentNote_V1IsUnchanged(t *testing.T) {
+	t.Parallel()
+
+	roles := []codexRole{{Name: "correctness"}, {Name: "default"}, {Name: "explore"}}
+	want := "\n## Runtime note\n\n" +
+		"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). " +
+		"Registered sub-agent roles: correctness, default, explore. " +
+		"Sub-agents are native Codex children. When a skill says to dispatch a sub-agent, call " +
+		"`spawn_agent` with `agent_type` set to a role listed above — the persona's name, or `explore` " +
+		"where the skill asks for an `Explore` pass (instruction-only; nothing enforces read-only on " +
+		"a child); for a task that names no persona, omit `agent_type` — and `message` carrying that " +
+		"sub-agent's whole context package: a child starts with nothing but that message. Pass " +
+		"`fork_context: false` explicitly on every spawn, and never pass a `model` or " +
+		"`reasoning_effort` argument: the runner has bound each role's model. Use only the roles " +
+		"listed above; `explorer` and `worker` are not registered and are denied. Spawn only the " +
+		"sub-agents the skill selected; a role being registered is not a reason to spawn it.\n\n" +
+		"At most four children can be open at once, and a finished child keeps its slot until it " +
+		"is closed. Start up to four, `wait_agent` on one child at a time (one target id per call), " +
+		"`close_agent` each child once it has reported, then start the remaining ones. Close every " +
+		"child you spawned and never resume one. A `wait_agent` that returns `timed_out: true` and " +
+		"no status has timed out, not failed: call it again. A child whose status is `errored` is " +
+		"final for that role. " +
+		"A denied spawn is final for that role: do not retry it, execute that sub-agent " +
+		"definition yourself with the same context package, and treat the output as that " +
+		"sub-agent's result.\n\n" +
+		codexChunkedReadNote
+	assert.Equal(t, want, codexSubagentNote(roles, "v1"))
+	assert.NotContains(t, want, codexV2DispatchMarker)
+}
+
+// TestCodexSubagentNote_V2CarriesTheDispatchContract pins the V2 note (ADR
+// 0159 decision 5): the sentences the agents repository keys on unchanged,
+// the marker right after "Sub-agents are native Codex children.", V2's
+// spawn arguments, a wait with no target, results as messages, the
+// four-slot rule without a close, the interrupt and what an interrupted or
+// errored child means, the withheld result quoting codexWithheldNotice,
+// codex's task_name rule, and nothing of V1's close-per-child dispatch.
+func TestCodexSubagentNote_V2CarriesTheDispatchContract(t *testing.T) {
+	t.Parallel()
+
+	roles := []codexRole{{Name: "challenger"}, {Name: "correctness"}, {Name: "default"}, {Name: "explore"}, {Name: "security"}}
+	got := codexSubagentNote(roles, "v2")
+
+	assert.True(t, strings.HasPrefix(got, "\n## Runtime note\n\n"+
+		"This agent runs on the codex runtime (FULLSEND_RUNTIME=codex). "+
+		"Registered sub-agent roles: challenger, correctness, default, explore, security. "+
+		"Sub-agents are native Codex children. "+codexV2DispatchMarker+" "), "the first three sentences, then the marker")
+	assert.Contains(t, got, "A denied spawn is final for that role: do not retry it, execute that sub-agent "+
+		"definition yourself with the same context package, and treat the output as that sub-agent's result.")
+	assert.NotContains(t, got, "No fullsend sub-agent roster")
+
+	for _, want := range []string{
+		"`spawn_agent`", "`task_name`", "`agent_type`", "`message`",
+		"`explore`", "for a task that names no persona, omit `agent_type`",
+		"`fork_turns: \"none\"` explicitly on every spawn",
+		"never pass a `model`, `reasoning_effort` or `fork_context` argument",
+		"`explorer` and `worker`",
+		"Spawn only the sub-agents the skill selected",
+		"`wait_agent` takes only `timeout_ms` and never a target",
+		"one per finished child", "checked delivery path",
+		"At most four children can run at once", "a fifth spawn is refused while four are running",
+		"evicts an idle finished child", "no close or follow-up call",
+		"Interrupt a child that is over its budget with `interrupt_agent`",
+		"An interrupted child sends no result: report a coverage gap for that role",
+		"A child whose result reports an error is final for that role",
+		"A message whose whole payload is `" + codexWithheldNotice + "` is a withheld result: report a " +
+			"coverage gap for that role, and never retry the spawn or read the child's raw rollout.",
+		"`task_name` set to a short name for the task, unique among the children you spawn (lowercase letters, digits and `_` only; `root` is reserved)",
+	} {
+		assert.Contains(t, got, want)
+	}
+	for _, unwanted := range []string{
+		"`close_agent`", "`fork_context: false`", "keeps its slot until it is closed", "one target id per call",
+	} {
+		assert.NotContains(t, got, unwanted)
+	}
+	assert.True(t, strings.HasSuffix(got, codexChunkedReadNote), "the chunked-read paragraph, byte-equal")
+	assert.Equal(t, 1, strings.Count(got, "contiguous ranges of at most 200 lines"), "the chunked-read rule appears once")
+	assert.NotContains(t, got, "You are a sub-agent", "the child contract is the role file's, not the parent's")
+}
+
 func TestCodexDeveloperInstructions_DelegatingAgentGetsTheDispatchNote(t *testing.T) {
 	t.Parallel()
 
@@ -1238,7 +1327,7 @@ func TestCodexDeveloperInstructions_DelegatingAgentGetsTheDispatchNote(t *testin
 	require.NoError(t, err)
 	roles := []codexRole{{Name: "correctness"}, {Name: "default"}, {Name: "explore"}}
 
-	got := codexDeveloperInstructions("review", def, roles)
+	got := codexDeveloperInstructions("review", def, roles, "v1")
 	assert.Contains(t, got, "# Agent: review")
 	assert.Contains(t, got, "Review a pull request.")
 	assert.Contains(t, got, "You are the review agent.")
@@ -1246,19 +1335,28 @@ func TestCodexDeveloperInstructions_DelegatingAgentGetsTheDispatchNote(t *testin
 	assert.Contains(t, got, "A denied spawn is final for that role")
 	assert.Contains(t, got, "at most 200 lines")
 	assert.NotContains(t, got, "No fullsend sub-agent roster")
+	assert.NotContains(t, got, codexV2DispatchMarker)
 
-	single := codexDeveloperInstructions("review", def, nil)
+	single := codexDeveloperInstructions("review", def, nil, "v1")
 	assert.Contains(t, single, "No fullsend sub-agent roster is available")
 	assert.NotContains(t, single, "Registered sub-agent roles")
-	assert.Equal(t, strings.TrimSuffix(single, codexNoSubagentNote), strings.TrimSuffix(got, codexSubagentNote(roles)),
+	assert.Equal(t, strings.TrimSuffix(single, codexNoSubagentNote), strings.TrimSuffix(got, codexSubagentNote(roles, "v1")),
 		"the two notes are the only difference")
+
+	// The version picks the dispatch note and nothing else; without a
+	// roster there is no dispatch note to pick.
+	v2 := codexDeveloperInstructions("review", def, roles, "v2")
+	assert.Contains(t, v2, codexV2DispatchMarker)
+	assert.Equal(t, strings.TrimSuffix(got, codexSubagentNote(roles, "v1")), strings.TrimSuffix(v2, codexSubagentNote(roles, "v2")))
+	assert.Equal(t, single, codexDeveloperInstructions("review", def, nil, "v2"))
 }
 
 // TestCodexRuntimeBootstrap_DelegatingAgentRunsNativeChildren is the switch:
 // with the Agent tool, harness security on and a V1 parent (the ADR 0126
-// gate), config.toml turns the multi-agent tools on with the roster, the
-// persona's own model lands in its role file and in the runner-held digest,
-// and the dispatch note replaces the single-context note.
+// gate), config.toml keeps the V2 feature table off and turns the
+// multi-agent tools on with the roster, the persona's own model lands in its
+// role file and in the runner-held digest, and the V1 dispatch note replaces
+// the single-context note.
 func TestCodexRuntimeBootstrap_DelegatingAgentRunsNativeChildren(t *testing.T) {
 	t.Setenv(codexSubagentModelEnv, "")
 	storeDir := t.TempDir()
@@ -1267,6 +1365,8 @@ func TestCodexRuntimeBootstrap_DelegatingAgentRunsNativeChildren(t *testing.T) {
 
 	cfg := string(storedUpload(t, storeDir, r.codexConfigPath()))
 	assert.Contains(t, cfg, "[agents]\nenabled = true\nmax_concurrent_threads_per_session = 4\nmax_depth = 1\ndefault_subagent_model = \"gpt-5.6-luna\"\n")
+	assert.Contains(t, cfg, "[features.multi_agent_v2]\nenabled = false\n\n[agents]\nenabled = true\n", "a V1 parent's config keeps the V2 feature off")
+	assert.NotContains(t, cfg, codexV2DispatchMarker, "a V1 parent reads the V1 dispatch note")
 	for _, role := range []string{"correctness", "default", "explore"} {
 		assert.Contains(t, cfg, "[agents.\""+role+"\"]\n")
 		assert.Contains(t, cfg, "config_file = \""+r.codexRolesDir()+"/"+role+".toml\"\n")
@@ -1288,6 +1388,43 @@ func TestCodexRuntimeBootstrap_DelegatingAgentRunsNativeChildren(t *testing.T) {
 	assert.Equal(t, codexAssetSHA256(correctness), held.RoleFiles["correctness"], "the digest covers the model line")
 	assert.Equal(t, codexAssetSHA256([]byte(cfg)), held.ConfigTOML)
 	assert.Contains(t, readFileString(t, logPath), r.codexHooksPath(), "hooks.json is still written: the guard is installed")
+	assert.NotContains(t, string(storedUpload(t, storeDir, r.codexHooksPath())), codexSubagentStopEvent,
+		"the child-result gate is part of V2 delegation only")
+}
+
+// TestCodexRuntimeBootstrap_V2ParentRunsNativeChildren is the V2 switch
+// (ADR 0159): a V2 parent with security on and V1 child models turns the
+// feature table on, gets the V2 dispatch note quoting the withheld notice,
+// role files with the V2 child note, and a hooks.json whose SubagentStop
+// handler screens every child's result.
+func TestCodexRuntimeBootstrap_V2ParentRunsNativeChildren(t *testing.T) {
+	t.Setenv(codexSubagentModelEnv, "")
+	storeDir := t.TempDir()
+	fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "openshell.log"), storeDir, "codex-cli 0.152.1")
+	forgetRunnerHeldDigests("sb")
+	t.Cleanup(func() { forgetRunnerHeldDigests("sb") })
+	skill := t.TempDir()
+	writePersonaFile(t, skill, "correctness", codexTestPersona)
+	input := codexDelegatingHooksInput(t, skill)
+	input.parentModel = "openai/gpt-6.1-sol"
+
+	r := CodexRuntime{}
+	var err error
+	out := captureStderr(t, func() { err = r.Bootstrap(input) })
+	require.NoError(t, err)
+	assert.NotContains(t, out, "running in one context")
+
+	cfg := string(storedUpload(t, storeDir, r.codexConfigPath()))
+	assert.Contains(t, cfg, "[features.multi_agent_v2]\nenabled = true\n")
+	assert.Contains(t, cfg, "[agents]\nenabled = true\nmax_concurrent_threads_per_session = 4\n")
+	assert.Contains(t, cfg, codexV2DispatchMarker)
+	assert.Contains(t, cfg, "A message whose whole payload is `"+codexWithheldNotice+"` is a withheld result")
+	assert.Contains(t, cfg, "`task_name` set to a short name for the task, unique among the children you spawn (lowercase letters, digits and `_` only; `root` is reserved)")
+	assert.Contains(t, string(storedUpload(t, storeDir, r.codexRolesDir()+"/correctness.toml")), "any such call is denied",
+		"a V2 child reads the V2 child note")
+	hooks := string(storedUpload(t, storeDir, r.codexHooksPath()))
+	assert.Contains(t, hooks, `"SubagentStop"`)
+	assert.Contains(t, hooks, codexAdapterFile+" SubagentStop posttool_chain.py")
 }
 
 // The run's effort reaches config.toml as every child's effort, and an

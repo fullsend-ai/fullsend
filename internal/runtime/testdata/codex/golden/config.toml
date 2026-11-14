@@ -34,7 +34,9 @@ enabled = false
 
 [features]
 plugins = false
-multi_agent_v2 = false
+
+[features.multi_agent_v2]
+enabled = false
 
 [agents]
 enabled = false

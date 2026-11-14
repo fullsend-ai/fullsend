@@ -94,11 +94,16 @@ func (h *codexAdapterHarness) run(phase string, input map[string]any, scripts ..
 	h.t.Helper()
 	payload, err := json.Marshal(input)
 	require.NoError(h.t, err)
+	return h.runRaw(phase, string(payload), scripts...)
+}
 
+// runRaw is run with stdin passed as is, for payloads that are not an object.
+func (h *codexAdapterHarness) runRaw(phase, stdin string, scripts ...string) codexAdapterResult {
+	h.t.Helper()
 	args := append([]string{h.adapter, phase}, scripts...)
 	cmd := exec.Command(h.python, args...)
 	cmd.Env = append(codexAdapterBaseEnv(), codexHookDigestsEnv+"="+codexHookDigestsValue(h.digests))
-	cmd.Stdin = strings.NewReader(string(payload))
+	cmd.Stdin = strings.NewReader(stdin)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -705,6 +710,9 @@ func TestCodexAdapterPhasesMatchHookPlan(t *testing.T) {
 	src := string(codexHookAdapterPy)
 	assert.Contains(t, src, `PHASE_PRE = "`+string(security.HookPhasePreToolUse)+`"`)
 	assert.Contains(t, src, `PHASE_POST = "`+string(security.HookPhasePostToolUse)+`"`)
+	assert.Contains(t, src, `PHASE_SUBAGENT_STOP = "`+codexSubagentStopEvent+`"`)
+	assert.Contains(t, src, `WITHHELD_NOTICE = "`+codexWithheldNotice+`"`,
+		"the notice the V2 runtime note quotes is the one a blocked child is told to reply with")
 }
 
 func sortedKeys(m map[string]any) []string {
@@ -1260,7 +1268,10 @@ func TestCodexAdapterSpawnGuardConstantsMatchGo(t *testing.T) {
 	assert.Contains(t, src, `MODE_SPAWN_GUARD = "`+codexSpawnGuardMode+`"`)
 	assert.Contains(t, src, `SPAWN_DIGESTS_ENV = "`+codexSpawnDigestsEnv+`"`)
 	assert.Contains(t, src, `SPAWN_TOOL_V1 = "spawn_agent"`,
-		"the guard admits the V1 spawn under policy; every other matched name is passed through or denied by the handler")
+		"the guard admits the V1 spawn under policy")
+	assert.Contains(t, src, `SPAWN_TOOL_V2 = "collaborationspawn_agent"`,
+		"the guard admits the V2 spawn under policy, reached as its namespace joined with its name (ADR 0159); "+
+			"every other matched name is passed through or denied by the handler")
 	assert.Contains(t, src, `SPAWN_GUARD_DEADLINE_S = HANDLER_TIMEOUT_S - BUDGET_MARGIN_S`,
 		"the guard's own deadline is derived from the adapter's handler budget, so it stays below codex's timeout")
 	assert.Contains(t, src, `SPAWN_ADMIT_FINDING = "`+codexSpawnAdmitFinding+`"`,
@@ -1305,6 +1316,26 @@ func codexChildSpawnInput() map[string]any {
 	in["agent_id"] = "01a0ee89-1b2e-7c60-8812-87a59542808f"
 	in["agent_type"] = "correctness"
 	in["model"] = "gpt-5.6-terra"
+	return in
+}
+
+// codexSpawnInputV2 is the PreToolUse payload codex sends for a V2 spawn of
+// role from the root thread: the `collaboration` namespace joined with the
+// tool name, and task_name and fork_turns in place of fork_context. An empty
+// role omits agent_type, which asks codex for the default role.
+func codexSpawnInputV2(role string) map[string]any {
+	in := codexSpawnInput("")
+	in["model"] = "gpt-5.6-sol"
+	in["tool_name"] = "collaborationspawn_agent"
+	args := map[string]any{
+		"fork_turns": "none",
+		"message":    "Review the diff for correctness.",
+		"task_name":  "correctness",
+	}
+	if role != "" {
+		args["agent_type"] = role
+	}
+	in["tool_input"] = args
 	return in
 }
 
@@ -1400,9 +1431,10 @@ func (h *codexAdapterHarness) findingsLog() string {
 }
 
 // TestCodexAdapter_SpawnGuardAdmits covers what the guard lets through: a
-// root-thread V1 spawn of a registered role, and the V1 tools that act on a
-// child already admitted. An allow writes nothing, since stdout codex cannot
-// parse fails the hook; an admitted spawn is recorded in the findings log.
+// root-thread spawn of a registered role, V1 or V2, and the tools of either
+// version that act on a child already admitted. An allow writes nothing,
+// since stdout codex cannot parse fails the hook; an admitted spawn is
+// recorded in the findings log.
 func TestCodexAdapter_SpawnGuardAdmits(t *testing.T) {
 	unnamed := codexSpawnInput("")
 	delete(codexSpawnArgs(unnamed), "agent_type")
@@ -1410,6 +1442,17 @@ func TestCodexAdapter_SpawnGuardAdmits(t *testing.T) {
 		in := codexSpawnInput("correctness")
 		in["tool_name"] = tool
 		in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
+		return in
+	}
+	spacedNone := codexSpawnInputV2("correctness")
+	codexSpawnArgs(spacedNone)["fork_turns"] = " None "
+	upperNone := codexSpawnInputV2("correctness")
+	codexSpawnArgs(upperNone)["fork_turns"] = "NONE"
+	// The guard reads nothing of a pass-through's arguments.
+	passThroughV2 := func(tool string, input map[string]any) map[string]any {
+		in := codexSpawnInputV2("correctness")
+		in["tool_name"] = tool
+		in["tool_input"] = input
 		return in
 	}
 
@@ -1424,6 +1467,13 @@ func TestCodexAdapter_SpawnGuardAdmits(t *testing.T) {
 		{"V1 wait_agent passes through, no role registered", passThrough("multi_agent_v1wait_agent"), nil, ""},
 		{"V1 close_agent passes through", passThrough("multi_agent_v1close_agent"), []string{"correctness"}, ""},
 		{"V1 send_input passes through", passThrough("multi_agent_v1send_input"), []string{"correctness"}, ""},
+		{"V2 spawn of a registered role, fork_turns none, no override", codexSpawnInputV2("correctness"), []string{"correctness", "default"}, "admitted spawn tool_use_id=call_1_0 agent_type=correctness"},
+		{"V2 agent_type absent maps to default", codexSpawnInputV2(""), []string{"default"}, "admitted spawn tool_use_id=call_1_0 agent_type=default"},
+		{"V2 fork_turns trimmed as codex trims it", spacedNone, []string{"correctness"}, "admitted spawn tool_use_id=call_1_0 agent_type=correctness"},
+		{"V2 fork_turns compared case-insensitively", upperNone, []string{"correctness"}, "admitted spawn tool_use_id=call_1_0 agent_type=correctness"},
+		{"V2 wait_agent passes through, no role registered", passThroughV2("collaborationwait_agent", map[string]any{"timeout_ms": 60000}), nil, ""},
+		{"V2 list_agents passes through", passThroughV2("collaborationlist_agents", map[string]any{}), []string{"correctness"}, ""},
+		{"V2 interrupt_agent passes through", passThroughV2("collaborationinterrupt_agent", map[string]any{}), []string{"correctness"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1462,6 +1512,17 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 		edit(codexSpawnArgs(in))
 		return in
 	}
+	withArgsV2 := func(edit func(args map[string]any)) map[string]any {
+		in := codexSpawnInputV2("correctness")
+		edit(codexSpawnArgs(in))
+		return in
+	}
+	namedV2 := func(tool string, input map[string]any) map[string]any {
+		in := codexSpawnInputV2("correctness")
+		in["tool_name"] = tool
+		in["tool_input"] = input
+		return in
+	}
 	rules := []struct {
 		name string
 		run  func(t *testing.T, h *codexAdapterHarness) codexAdapterResult
@@ -1486,13 +1547,54 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 			in["tool_name"] = "multi_agent_v1resume_agent"
 			in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
 			return h.spawnGuard(in, "correctness")
-		}, "is not the V1 spawn tool"},
-		{"tool collaborationspawn_agent", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
-			in := codexSpawnInput("correctness")
-			in["tool_name"] = "collaborationspawn_agent"
-			in["model"] = "gpt-5.6-sol"
+		}, "is not a spawn tool the runner admits"},
+		{"V2 send_message reaches a child again", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(namedV2("collaborationsend_message", map[string]any{"target": "correctness", "message": "more"}), "correctness")
+		}, "is not a spawn tool the runner admits"},
+		{"V2 followup_task is the V2 resume", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(namedV2("collaborationfollowup_task", map[string]any{"target": "correctness", "message": "again"}), "correctness")
+		}, "is not a spawn tool the runner admits"},
+		{"V2 fork_turns absent forks the parent's whole history", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { delete(a, "fork_turns") }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_turns 0 is not none", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_turns"] = "0" }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_turns all", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_turns"] = "all" }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_turns a number", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_turns"] = 3 }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_turns null", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_turns"] = nil }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_turns whitespace only (codex maps it to all)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_turns"] = "   " }), "correctness")
+		}, `fork_turns: "none"`},
+		{"V2 fork_context present", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["fork_context"] = false }), "correctness")
+		}, "no fork_context"},
+		{"V2 model argument present", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["model"] = "gpt-5.6-sol" }), "correctness")
+		}, "must not pass model"},
+		{"V2 reasoning_effort argument null", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(withArgsV2(func(a map[string]any) { a["reasoning_effort"] = nil }), "correctness")
+		}, "must not pass reasoning_effort"},
+		{"V2 built-in explorer", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			return h.spawnGuard(codexSpawnInputV2("explorer"), "correctness", "default")
+		}, "'explorer' is not one the runner registered"},
+		{"V2 spawn from a child", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := codexSpawnInputV2("correctness")
+			in["agent_id"] = "01a0ee89-1b2e-7c60-8812-87a59542808f"
+			in["agent_type"] = "correctness"
 			return h.spawnGuard(in, "correctness")
-		}, "is not the V1 spawn tool"},
+		}, "a child may not spawn"},
+		{"V2 pass-through name from a child, agent_type only", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+			in := namedV2("collaborationwait_agent", map[string]any{"timeout_ms": 60000})
+			in["agent_type"] = "correctness"
+			return h.spawnGuard(in, "correctness")
+		}, "is not allowed from a child"},
 		{"spawn from a child (agent_id and agent_type present)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
 			return h.spawnGuard(codexChildSpawnInput(), "correctness")
 		}, "a child may not spawn"},
@@ -1599,16 +1701,13 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 			return h.spawnGuardRaw("   ", h.spawnEnv(h.spawnDigests("correctness")))
 		}, "cannot be scanned"},
 		{"unknown tool in the V2 namespace (deny-by-default)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
-			in := codexSpawnInput("correctness")
-			in["tool_name"] = "collaborationwait_agent"
-			in["tool_input"] = map[string]any{"target": "01a0ee84-2a04-7d03-b84f-ad297f46b50e"}
-			return h.spawnGuard(in, "correctness")
-		}, "is not the V1 spawn tool"},
+			return h.spawnGuard(namedV2("collaborationresume_agent", map[string]any{"target": "correctness"}), "correctness")
+		}, "is not a spawn tool the runner admits"},
 		{"unknown tool in the V1 namespace (deny-by-default)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
 			in := codexSpawnInput("correctness")
 			in["tool_name"] = "multi_agent_v1fork_agent"
 			return h.spawnGuard(in, "correctness")
-		}, "is not the V1 spawn tool"},
+		}, "is not a spawn tool the runner admits"},
 		{"role file swapped for a FIFO", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
 			// A plain open() of a FIFO would block until codex's timeout, which
 			// does not block the spawn; the guard must refuse it at once.
@@ -1677,4 +1776,225 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 			assert.Empty(t, got.stdout, "a deny writes nothing on stdout")
 		})
 	}
+}
+
+// codexSubagentStopInput is the SubagentStop payload codex sends from a
+// thread-spawned child (rust-v0.166.0 hooks/src/schema.rs
+// SubagentStopCommandInput), with message as last_assistant_message.
+func codexSubagentStopInput(message any) map[string]any {
+	return map[string]any{
+		"session_id":             "01a0eea5-cf24-7250-ae7b-df1cd9b70160",
+		"turn_id":                "t1",
+		"transcript_path":        nil,
+		"agent_transcript_path":  nil,
+		"cwd":                    "/sandbox/workspace/repo",
+		"hook_event_name":        "SubagentStop",
+		"model":                  "gpt-5.6-luna",
+		"permission_mode":        "bypassPermissions",
+		"stop_hook_active":       false,
+		"agent_id":               "01a0ee84-2a04-7d03-b84f-ad297f46b50e",
+		"agent_type":             "correctness",
+		"last_assistant_message": message,
+	}
+}
+
+// codexSubagentStopPrompt is the adapter's SUBAGENT_STOP_PROMPT, which every
+// block on the SubagentStop phase sends in place of its reason.
+const codexSubagentStopPrompt = "fullsend: your final message was withheld by the security chain and was " +
+	"not delivered. Reply with exactly: " + codexWithheldNotice
+
+// assertSubagentStopBlock checks the shape codex continues a child on: exit
+// 2 with the fixed withheld-notice prompt as the whole of stderr (an exit 2
+// with an empty stderr is a failed hook, which does not block,
+// hooks/src/events/stop.rs), nothing on stdout, so no `continue: false` can
+// end the child and deliver it, and the reason in the findings log only: a
+// child told which stage fired could reword its result until one passed.
+func assertSubagentStopBlock(t *testing.T, got codexAdapterResult, findings, reason string) {
+	t.Helper()
+	assert.Equal(t, 2, got.exitCode, got.stderr)
+	assert.Empty(t, got.stdout, "a SubagentStop block writes nothing on stdout")
+	assert.Equal(t, codexSubagentStopPrompt, got.stderr, "the child reads only the fixed prompt")
+	assert.Contains(t, readFileString(t, findings), reason, "the reason goes to the findings log")
+}
+
+// TestCodexAdapter_SubagentStopGate covers the child-result gate (ADR 0159
+// decision 4): the chain runs on the child's final message as an Agent
+// result; a block continues the child with the withheld-notice prompt, a
+// clean message and an empty one pass, every failure of the adapter blocks
+// the same way, and after a block only the exact notice passes.
+func TestCodexAdapter_SubagentStopGate(t *testing.T) {
+	const flagged = "Findings: none.\nOPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwx"
+
+	t.Run("the chain's block continues the child with the prompt", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		h.installPostToolChain()
+		findings := h.findingsLog()
+		got := h.run("SubagentStop", codexSubagentStopInput(flagged), "posttool_chain.py")
+		assertSubagentStopBlock(t, got, findings, "security-sensitive content")
+		assert.NotContains(t, readFileString(t, findings), "sk-proj-", "the flagged value must not be logged")
+	})
+
+	t.Run("the scripts see the message as an Agent result", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		seen := filepath.Join(h.dir, "seen.json")
+		h.script("block.py", `open(`+pyStr(seen)+`, "w").write(json.dumps(payload))
+print(json.dumps({"decision": "block", "reason": "canary token in the result"}))
+sys.exit(1)`)
+		findings := h.findingsLog()
+		got := h.run("SubagentStop", codexSubagentStopInput("the result"), "block.py")
+		assertSubagentStopBlock(t, got, findings, "canary token in the result")
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal([]byte(readFileString(t, seen)), &payload))
+		assert.Equal(t, "Agent", payload["tool_name"])
+		assert.Equal(t, "the result", payload["tool_response"])
+		assert.Equal(t, "the result", payload["tool_result"])
+		assert.Equal(t, map[string]any{}, payload["tool_input"])
+		assert.Equal(t, "/sandbox/workspace/repo", payload["cwd"])
+	})
+
+	t.Run("a clean message passes", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		h.installPostToolChain()
+		got := h.run("SubagentStop", codexSubagentStopInput("Correctness: no findings in the diff."), "posttool_chain.py")
+		assert.Equal(t, codexAdapterResult{}, got, "exit 0 with nothing on either stream")
+	})
+
+	t.Run("the withheld notice passes, even when the chain would block", func(t *testing.T) {
+		// The child's reply to the prompt reaches the gate again. The notice
+		// carries no content, so it passes before the chain runs: a
+		// compliant child can finish even when the chain blocks for a
+		// reason that is not the message (here, a script changed on disk).
+		h := newCodexAdapterHarness(t)
+		findings := h.findingsLog()
+		h.script("allow.py", "sys.exit(0)")
+		require.NoError(t, os.WriteFile(filepath.Join(h.hooksDir, "allow.py"), []byte("import sys\nsys.exit(0)\n"), 0o755))
+		for _, message := range []string{codexWithheldNotice, "\n" + codexWithheldNotice + "\n"} {
+			assert.Equal(t, codexAdapterResult{}, h.run("SubagentStop", codexSubagentStopInput(message), "allow.py"))
+		}
+		// Only ASCII whitespace may pad it: anything else, such as a hidden
+		// separator, goes through the chain, which here blocks.
+		for _, message := range []string{codexWithheldNotice + " and the result", codexWithheldNotice + "\u2028", "\x1c" + codexWithheldNotice} {
+			assertSubagentStopBlock(t, h.run("SubagentStop", codexSubagentStopInput(message), "allow.py"), findings, "changed since the run started")
+		}
+	})
+
+	t.Run("an empty or null message has nothing to screen", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		ran := filepath.Join(h.dir, "ran")
+		h.script("record.py", `open(`+pyStr(ran)+`, "w").close()
+sys.exit(1)`)
+		for name, input := range map[string]map[string]any{
+			"empty": codexSubagentStopInput(""),
+			"null":  codexSubagentStopInput(nil),
+		} {
+			t.Run(name, func(t *testing.T) {
+				got := h.run("SubagentStop", input, "record.py")
+				assert.Equal(t, codexAdapterResult{}, got)
+				assert.NoFileExists(t, ran, "no script runs on an empty message")
+			})
+		}
+	})
+
+	t.Run("an adapter failure blocks with the prompt", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			run  func(t *testing.T, h *codexAdapterHarness) codexAdapterResult
+			want string
+		}{
+			{"a script that crashes", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("crash.py", `raise RuntimeError("boom")`)
+				return h.run("SubagentStop", codexSubagentStopInput("the result"), "crash.py")
+			}, "fullsend: hook crash.py exited 1"},
+			{"a script changed since the run started", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("allow.py", "sys.exit(0)")
+				require.NoError(t, os.WriteFile(filepath.Join(h.hooksDir, "allow.py"), []byte("import sys\nsys.exit(0)\n"), 0o755))
+				return h.run("SubagentStop", codexSubagentStopInput("the result"), "allow.py")
+			}, "changed since the run started"},
+			{"no script on the command line", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				return h.run("SubagentStop", codexSubagentStopInput("the result"))
+			}, "needs <phase> and at least one script"},
+			{"a payload that is not a JSON object", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("allow.py", "sys.exit(0)")
+				return h.runRaw("SubagentStop", "[]", "allow.py")
+			}, "not a JSON object"},
+			{"an empty payload", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("allow.py", "sys.exit(0)")
+				return h.runRaw("SubagentStop", "  ", "allow.py")
+			}, "codex sent an empty SubagentStop payload"},
+			{"a payload without last_assistant_message", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("allow.py", "sys.exit(0)")
+				in := codexSubagentStopInput(nil)
+				delete(in, "last_assistant_message")
+				return h.run("SubagentStop", in, "allow.py")
+			}, "no last_assistant_message string"},
+			{"a last_assistant_message that is not a string", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("allow.py", "sys.exit(0)")
+				return h.run("SubagentStop", codexSubagentStopInput(map[string]any{"text": "the result"}), "allow.py")
+			}, "no last_assistant_message string"},
+			{"the adapter itself crashing", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				// json.loads raises RecursionError on deep nesting, which
+				// parse_json does not catch: the __main__ handler blocks.
+				h.script("allow.py", "sys.exit(0)")
+				return h.runRaw("SubagentStop", strings.Repeat("[", 200000)+strings.Repeat("]", 200000), "allow.py")
+			}, "RecursionError"},
+			{"a reason longer than the adapter's cap", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
+				h.script("block.py", `print(json.dumps({"decision": "block", "reason": "x" * 20000}))
+sys.exit(1)`)
+				return h.run("SubagentStop", codexSubagentStopInput("the result"), "block.py")
+			}, "xxx"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				h := newCodexAdapterHarness(t)
+				findings := h.findingsLog()
+				assertSubagentStopBlock(t, tc.run(t, h), findings, tc.want)
+			})
+		}
+	})
+
+	t.Run("after a block only the exact notice passes", func(t *testing.T) {
+		// codex sets stop_hook_active once a stop hook has blocked in the
+		// child's turn (core/src/session/turn.rs). The child must not get
+		// another try through the chain: anything but the notice blocks, even
+		// a clean message, and the chain does not run.
+		h := newCodexAdapterHarness(t)
+		ran := filepath.Join(h.dir, "ran")
+		h.script("record.py", `open(`+pyStr(ran)+`, "w").close()
+sys.exit(0)`)
+		findings := h.findingsLog()
+		retry := func(message any) map[string]any {
+			in := codexSubagentStopInput(message)
+			in["stop_hook_active"] = true
+			return in
+		}
+		for _, message := range []string{codexWithheldNotice, " \t" + codexWithheldNotice + "\r\n"} {
+			assert.Equal(t, codexAdapterResult{}, h.run("SubagentStop", retry(message), "record.py"))
+		}
+		missing := retry(nil)
+		delete(missing, "last_assistant_message")
+		for name, input := range map[string]map[string]any{
+			"a clean but different message":     retry("Correctness: no findings in the diff."),
+			"the notice with more text":         retry(codexWithheldNotice + " and the result"),
+			"the notice and a hidden separator": retry(codexWithheldNotice + "\u2028"),
+			"an empty message":                  retry(""),
+			"a null message":                    retry(nil),
+			"no message":                        missing,
+			"a message that is not a string":    retry(map[string]any{"text": "the result"}),
+		} {
+			t.Run(name, func(t *testing.T) {
+				assertSubagentStopBlock(t, h.run("SubagentStop", input, "record.py"), findings, "was not the withheld notice")
+			})
+		}
+		assert.NoFileExists(t, ran, "the chain does not run after a block")
+	})
+
+	t.Run("other phases carry no prompt", func(t *testing.T) {
+		h := newCodexAdapterHarness(t)
+		h.installPostToolChain()
+		input := codexBashInput("cat .env")
+		input["hook_event_name"] = "PostToolUse"
+		input["tool_response"] = flagged
+		got := h.run("PostToolUse", input, "posttool_chain.py")
+		assert.Equal(t, 2, got.exitCode)
+		assert.NotContains(t, got.stderr, codexWithheldNotice, "the prompt is the SubagentStop phase's only")
+	})
 }
