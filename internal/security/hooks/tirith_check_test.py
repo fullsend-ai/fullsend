@@ -1004,6 +1004,30 @@ class TestRealTirithBinary:
         blocked, reason = isolated_hook.check_command(command)
         assert not blocked, f"accepted dialect should pass, got: {reason}"
 
+    def test_policy_above_the_per_call_directory_is_not_read(self, isolated_hook, tmp_path):
+        """A .tirith policy in the temp root does not change the verdict.
+
+        The per-call directory sits directly under the temp root, so without
+        its own .git tirith's walk-up would reach a .git and .tirith/policy.yaml
+        placed there. The approval rule here would block `pip install
+        requests`; the verdict must stay an allow.
+        """
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".tirith").mkdir()
+        (tmp_path / ".tirith" / "policy.yaml").write_text(
+            "approval_rules:\n  - rule_ids: [package_lookup_incomplete]\n    timeout_secs: 1\n"
+        )
+        with mock.patch.object(isolated_hook, "TIRITH_TMP_ROOT", str(tmp_path)):
+            blocked, reason = isolated_hook.check_command("pip install requests")
+            assert not blocked, f"a policy above the per-call directory was read: {reason}"
+            # An unparseable policy there would make tirith fall back to its
+            # fail-closed policy and block everything.
+            (tmp_path / ".tirith" / "policy.yaml").write_text("rules: [unclosed\n")
+            blocked, reason = isolated_hook.check_command("echo hello")
+            assert not blocked, (
+                f"an unparseable policy above the per-call directory was read: {reason}"
+            )
+
     def test_repo_policy_in_working_directory_is_not_read(
         self, isolated_hook, tmp_path, monkeypatch
     ):
@@ -1122,11 +1146,10 @@ class TestRealTirithBinary:
         """Locks in that repo-scope tirith policies are tightening-only.
 
         cwd is pinned to a fresh dir under the temp root, which is agent-writable
-        in the sandbox, so tirith's walk-up for a repo-local .tirith policy can
-        reach a planted .git + .tirith at that root. The advisory's cwd claim —
-        that pinning cwd is safe — depends on such a policy being unable to
-        weaken a verdict. Assert a blocked command still blocks with a maximally
-        permissive repo policy in place.
+        in the sandbox. The per-call .git stops tirith's walk-up for a repo-local
+        .tirith policy before that root; this is the second layer, in case a
+        tirith version stops honouring that stop. Assert a blocked command still
+        blocks with a maximally permissive repo policy at the root.
         """
         (tmp_path / ".git").mkdir()
         (tmp_path / ".tirith").mkdir()

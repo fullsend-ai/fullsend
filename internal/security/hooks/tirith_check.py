@@ -184,6 +184,10 @@ def _tirith_env(config_home: str) -> dict[str, str]:
     # TIRITH_REQUIRED) if it expects them to exist.
     for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
         os.makedirs(env[key], mode=0o700, exist_ok=True)
+    # tirith looks for a repo-scope .tirith policy by walking up from its cwd to
+    # the nearest .git. An empty .git in the per-call directory ends that walk
+    # there, so nothing in the temp root or above it is read.
+    os.mkdir(os.path.join(config_home, ".git"), mode=0o700)
     # Suppress network lookups (OSV, deps.dev, threat-DB). The sandbox egress
     # policy already denies these, so this only drops the denied attempts.
     # The variable, not --offline: tirith exits 2 with no output on an unknown
