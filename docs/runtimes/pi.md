@@ -388,6 +388,67 @@ under it — that is what a declared `tools:` means. An agent whose `tools:` map
 provides gets `--no-builtin-tools`, and its extensions still load: `-e` is independent of `--tools`.
 An agent without `tools:` gets pi's default set plus whatever its extensions register.
 
+MCP tool names such as `mcp__docs__search` and patterns such as
+`mcp__docs__*` pass through the pi tool mapping. A bare server selector
+`mcp__docs` expands to `mcp__docs__*` in both parent and persona lists; exact
+tool names and existing patterns are unchanged. Selectors must start with
+`mcp__` and contain only ASCII letters, digits, underscores, hyphens and `*`,
+with a nonempty suffix. Invalid selectors (including commas and whitespace)
+are reported as unsupported rather than passed to pi's comma-delimited CLI.
+Names must match what the declared harness extension registers. Fullsend does
+not normalize server or tool names: Claude-style hyphenated names are preserved.
+Pi's built-in MCP naming rules do not apply automatically, because fullsend
+uses `--no-extensions`. Definitions shared with Claude Code need matching
+registered names on both runtimes; underscore-only names can avoid differences
+between extensions that normalize hyphens and those that preserve them.
+In parent and persona tool lists, Claude's `ListMcpResourcesTool` maps to
+`list_mcp_resources` and `list_mcp_resource_templates`; `ReadMcpResourceTool` maps to
+`read_mcp_resource`. Use the Claude names for definitions shared with Claude
+Code. The hook adapter translates both list operations back to
+`ListMcpResourcesTool` and reads back to `ReadMcpResourceTool`, so Claude-named
+hook matchers and `FULLSEND_TOOL_ALLOWLIST` entries apply to resource calls.
+Pi-native resource names and scoped patterns such as `list_mcp_*` or
+`read_mcp_*` also pass through, but those spellings are pi-only.
+Sub-agents load the same
+declared extensions, with their directory hashes checked before each launch.
+A persona's tools are intersected with the parent's permissions using the
+parent's callable permissions before each child launch: active names from
+`pi.getActiveTools()`, plus registered tools whose `pi.getAllTools()` exposure
+is `codemode` or `deferred`. Pi permits nested calls to those tools even when
+inactive. Inactive direct tools (including `defaultActive: false` direct tools)
+and other inactive registrations are not added. Explicit parent selections
+and persona patterns still restrict this union; registration alone is not a grant.
+The child registration allowlist retains the callable union, but a child-only
+loadout guard restores the inherited active subset before the first model
+request and again at agent/turn boundaries after MCP startup handlers. Inherited
+names not yet registered may remain pending; any active name outside the
+inherited subset terminates the child, as do parse, validation or setter
+failures. A thrown extension error alone would let pi continue. Inactive
+codemode/deferred tools remain nested-call permissions rather than becoming
+directly available to the model. The guard script is digest-checked before
+dispatch. An empty child allowlist hides both built-in and extension tools. Explicit
+nonempty parent and child selections without `mcp__` entries also get
+`--exclude-tools`: `mcp__*` plus each unselected MCP resource tool
+(`list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`).
+Selected resource names/patterns remain available. Pi otherwise retains these
+registrations, which can leave tools callable through codemode or deferred
+exposure even when inactive. Parents without `tools:` keep their defaults.
+Parents whose tools map to an empty list still use `--no-builtin-tools`, but
+cannot dispatch children: they have no `Agent` or `Task` tool.
+Direct-exposure MCP tools can reach the model through these tool lists.
+`codemode` and `deferred` tools need a separately reachable executor for nested
+calls. Fullsend uses `--no-extensions`, so pi's built-in MCP, codemode, and
+search extensions do not load automatically. The tool mapper does not accept
+`codemode` or `tool_search` in explicit frontmatter. The nested-call fixtures
+exercise pi's execution API; they are not examples of supported frontmatter.
+
+Parent and child resource exclusions originate from `mcp-resource-tools.json`.
+Bootstrap copies the names into the integrity-checked manifest; the child
+dispatcher never rereads a writable resource-list file. A parity
+test reads the complete upstream resource category and fails on drift.
+CI runs the offline real-pi regressions against `PI_VERSION` from
+`images/sandbox/Containerfile`, including nested execution and selected resources.
+
 The hook adapter treats an extension tool like any other — every PreToolUse and PostToolUse hook
 runs on it, with no bypass. If your org enables the optional `tool_allowlist_pretool.py` hook, list
 the extension's tool names in `FULLSEND_TOOL_ALLOWLIST` the same way `mcp__*` names are listed.
@@ -756,19 +817,31 @@ agent's system prompt says so, so a skill that asks for "dispatch these in paral
 
 ### What a child inherits, and what it does not
 
+A missing `toolMode` keeps explicit-list tool selection, not general compatibility
+with older manifests. Missing or malformed `mcpResourceTools` returns a structured
+`rejected` result before launch; the dispatcher does not infer resource permissions.
+
 A child starts with the parent's posture — `--no-approve`, `--no-extensions` with an explicit `-e`
 list, no prompt templates or themes, its own session dir, and a `--tools` allowlist
-(`--no-builtin-tools` when that allowlist is empty). It inherits:
+(`--tools ''` when that allowlist is empty, disabling extension tools too). It inherits:
 
 - **The sandbox hooks.** Its `-e` list carries the vendored provider extensions and the hook adapter,
   so PreToolUse/PostToolUse hooks and the Bash allowlist apply inside sub-agents too — as they do on
   Claude Code, where the same hooks run on `Agent` calls.
 - **The parent's tool set**, minus `Agent`/`Task`: a child cannot dispatch children of its own.
+  Each launch starts from the parent's active tools plus registered tools with
+  `codemode`/`deferred` exposure, which pi permits in nested calls even when
+  inactive. Other inactive registrations stay unavailable. Omitted parent
+  `tools:` retains these callable permissions;
+  explicit parent lists restrict them further. Persona patterns intersect
+  concrete names; Explore remains limited to read-only built-ins.
+- **Harness pi plugins.** Children load the same host-vetted declared extensions and arguments.
+  Before each launch (including retries), the dispatcher asynchronously re-hashes their trees and
+  refuses changed or unverifiable content. This detects drift, not concurrent tampering: a same-user
+  writer can still change a path between verification and the child's load.
 
 It does not inherit:
 
-- **Harness pi plugins.** A child's `-e` list is fixed at bootstrap, so a tool one of your
-  declared pi extensions (the pi-format `plugins:` entries) registers is not available inside a sub-agent.
 - **The parent's system prompt.** Children get a short sub-agent role note instead of the
   orchestrator persona, whose "make several `Agent` calls in one message" advice a child cannot act
   on.

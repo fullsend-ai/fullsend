@@ -416,6 +416,8 @@ func TestPiArgsProblem(t *testing.T) {
 		{"value after --flag=value", []string{"--a=one", "two"}, `args[1] "two" is a bare word`},
 		{"value starts with dash", []string{"--a=-e"}, `args[0] "--a=-e": the value after "=" must not start with '-' or '@'`},
 		{"value starts with at", []string{"--a=@/etc/passwd"}, `args[0] "--a=@/etc/passwd": the value after "=" must not start with '-' or '@'`},
+		{"child loadout separate", []string{"--fullsend-child-active-tools", "[]"}, `args[0] "--fullsend-child-active-tools" is one of pi's own options`},
+		{"child loadout equals", []string{"--fullsend-child-active-tools=[]"}, `args[0] "--fullsend-child-active-tools" is one of pi's own options`},
 		{"pi use-theme", []string{"--use-theme", "dark"}, `args[0] "--use-theme" is one of pi's own options`},
 		{"pi tui-mode", []string{"--tui-mode=fullscreen"}, `args[0] "--tui-mode" is one of pi's own options`},
 	}

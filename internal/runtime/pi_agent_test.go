@@ -1,6 +1,9 @@
 package runtime
 
 import (
+	"encoding/json"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/security"
@@ -157,6 +160,37 @@ func TestPiToolsFor(t *testing.T) {
 	tools, unsupported = piToolsFor([]string{"Skill"})
 	assert.Equal(t, []string{}, tools, "restriction with no pi tools stays non-nil")
 	assert.Nil(t, unsupported)
+
+	tools, unsupported = piToolsFor([]string{"Bash", "mcp__docs__search", "mcp__docs__*"})
+	assert.Equal(t, []string{"bash", "mcp__docs__search", "mcp__docs__*"}, tools, "MCP tool names pass through verbatim")
+	assert.Nil(t, unsupported)
+
+	tools, unsupported = piToolsFor([]string{"mcp__docs", "mcp__docs__*", "mcp__docs__search", "mcp__other*", "mcp__", "mcp__docs_api"})
+	assert.Equal(t, []string{"mcp__docs__*", "mcp__docs__search", "mcp__other*", "mcp__docs_api__*"}, tools, "bare servers expand and deduplicate without rewriting exact names or patterns")
+	assert.Equal(t, []string{"mcp__"}, unsupported)
+}
+
+func TestPiToolsFor_MCPSelectorValidation(t *testing.T) {
+	t.Parallel()
+	valid := []string{"mcp__docs-api__resolve-library-id", "mcp__Docs_2__*", "mcp__*"}
+	invalid := []string{"mcp__docs__search,bash,write", "mcp__x,*", "mcp__docs__search write", "mcp__docs__x\t", "mcp__docs__x\n", "mcp__docs__+write", "+mcp__docs__*", "-mcp__docs__*", "mcp__docs__é", "mcp__docs__x?", "mcp__"}
+	tools, unsupported := piToolsFor(append(append([]string{}, valid...), invalid...))
+	assert.Equal(t, valid, tools)
+	assert.Equal(t, invalid, unsupported)
+}
+
+func TestPiMCPResourceTools(t *testing.T) {
+	tools, unsupported := piToolsFor([]string{"ListMcpResourcesTool", "ReadMcpResourceTool"})
+	assert.Equal(t, []string{"list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"}, tools)
+	assert.Nil(t, unsupported)
+
+	tools, unsupported = piToolsFor([]string{"read_mcp_resource", "ReadMcpResourceTool", "ListMcpResourcesTool", "list_mcp_resources", "ListMcpResourcesTool"})
+	assert.Equal(t, []string{"read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates"}, tools)
+	assert.Nil(t, unsupported)
+
+	tools, unsupported = piToolsFor([]string{"read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates", "list_mcp_*", "read_mcp_*", "read_mcp_resource", "*", "list_mcp_unknown"})
+	assert.Equal(t, []string{"read_mcp_resource", "list_mcp_resources", "list_mcp_resource_templates", "list_mcp_*", "read_mcp_*"}, tools)
+	assert.Equal(t, []string{"*", "list_mcp_unknown"}, unsupported)
 }
 
 func TestPiAgentToolEnabled(t *testing.T) {
@@ -195,7 +229,45 @@ func TestPiToolNameMapsAreInverse(t *testing.T) {
 		assert.Equal(t, claude, claudeToolForPi[pi], "pi tool %q must map back to %q", pi, claude)
 	}
 	for pi, claude := range claudeToolForPi {
-		assert.Equal(t, pi, piToolForClaude[claude], "Claude tool %q must map back to %q", claude, pi)
+		mapped, unsupported := piToolsFor([]string{claude})
+		assert.Empty(t, unsupported)
+		assert.Contains(t, mapped, pi, "Claude tool %q must expand to pi tool %q", claude, pi)
+	}
+}
+
+func TestPiMCPResourceHookEnforcement(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not installed")
+	}
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not installed")
+	}
+	names, err := json.Marshal(claudeToolForPi)
+	require.NoError(t, err)
+	const marker = "FULLSEND_MCP_RESOURCE_HOOK_ENFORCEMENT_OK"
+	for _, tc := range []struct {
+		name, pattern, toolNames string
+		wantError, wantMarker    bool
+	}{
+		{"production map", "MCP resources:", string(names), false, true},
+		{"unmatched test name", "NO_MATCHING_MCP_HOOK_TEST", string(names), false, false},
+		{"incorrect production map", "MCP resources:", "{}", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command("node", "--test", "--test-name-pattern", tc.pattern, "pi_extension/fullsend-hooks.test.mjs")
+			cmd.Env = append(os.Environ(), "FULLSEND_TEST_HOOK_TOOL_NAMES="+tc.toolNames)
+			out, err := cmd.CombinedOutput()
+			if tc.wantError {
+				require.Error(t, err, string(out))
+			} else {
+				require.NoError(t, err, string(out))
+			}
+			if tc.wantMarker {
+				require.Contains(t, string(out), marker, "JS hook assertions must complete using the production map")
+			} else {
+				require.NotContains(t, string(out), marker, "an unexecuted or failed integration test must not acknowledge success")
+			}
+		})
 	}
 }
 

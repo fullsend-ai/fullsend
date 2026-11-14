@@ -3,11 +3,14 @@ package runtime
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"maps"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,6 +19,48 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
+
+// Shared with the child dispatcher; the real-pi parity test checks upstream.
+//
+//go:embed pi_extension/mcp-resource-tools.json
+var piMCPResourceJSON []byte
+
+var piMCPResourceTools = func() []string {
+	var names []string
+	if err := json.Unmarshal(piMCPResourceJSON, &names); err != nil {
+		panic(err) // Invalid embedded source data, not runtime input.
+	}
+	return names
+}()
+
+// piMCPResourcePattern accepts resource names and scoped resource patterns,
+// not broad wildcards that could accidentally select unrelated tools.
+func piMCPResourcePattern(pattern string) bool {
+	if !strings.HasPrefix(pattern, "list_mcp_") && !strings.HasPrefix(pattern, "read_mcp_") {
+		return false
+	}
+	matcher := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", ".*") + "$")
+	return slices.ContainsFunc(piMCPResourceTools, matcher.MatchString)
+}
+
+// piMCPExclusions closes pi 1.5.0's implicit MCP retention for explicit
+// non-MCP selections. Keep in sync with childArgs and the pinned-pi tests.
+func piMCPExclusions(tools []string) string {
+	if len(tools) == 0 || slices.ContainsFunc(tools, func(s string) bool { return strings.HasPrefix(s, "mcp__") }) {
+		return ""
+	}
+	excluded := []string{"mcp__*"}
+	for _, name := range piMCPResourceTools {
+		selected := slices.ContainsFunc(tools, func(pattern string) bool {
+			matcher := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", ".*") + "$")
+			return matcher.MatchString(name)
+		})
+		if !selected {
+			excluded = append(excluded, name)
+		}
+	}
+	return strings.Join(excluded, ",")
+}
 
 // Model selection for pi. The fleet's harnesses name Claude-style aliases
 // (opus, sonnet, ...), mapped onto pi's `provider/id` form here; a harness
@@ -653,7 +698,8 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 	if agentEnabled {
 		// After the adapter, so its PreToolUse hooks see Agent calls
 		// (Claude Code runs the same hooks on its Agent tool). Children
-		// get their own -e list from the manifest, never this file.
+		// get their -e list from the manifest; they load this file only
+		// in child-only mode to restore inherited active tools.
 		parts = append(parts, "-e "+shellQuote(agentExt))
 	}
 	if editRepair {
@@ -676,6 +722,9 @@ func buildPiRunCommand(params RunParams, m *piManifest, exts []piManifestExtensi
 			parts = append(parts, "--no-builtin-tools")
 		} else {
 			parts = append(parts, "--tools "+shellQuote(strings.Join(tools, ",")))
+			if excluded := piMCPExclusions(tools); excluded != "" {
+				parts = append(parts, "--exclude-tools "+shellQuote(excluded))
+			}
 		}
 	}
 
