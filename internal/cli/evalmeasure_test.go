@@ -454,6 +454,23 @@ func TestEvalMeasureFetchContext(t *testing.T) {
 	assert.True(t, opts2.FetchPolicy.Offline)
 }
 
+// TestEvalMeasureFetchContext_ConfiguredGitHubHost pins that eval-measure
+// passes the configured GitHub host to LoadWithBase, so base directories on
+// a GitHub Enterprise Server host parse as raw content (#9037).
+func TestEvalMeasureFetchContext_ConfiguredGitHubHost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	t.Setenv("GITHUB_SERVER_URL", "https://ghe.example.com")
+	opts, _ := evalMeasureFetchContext(t.TempDir(), true, ui.New(io.Discard))
+	assert.Equal(t, "https://ghe.example.com", opts.GitHubURL)
+
+	t.Setenv("GITHUB_SERVER_URL", "")
+	opts, _ = evalMeasureFetchContext(t.TempDir(), true, ui.New(io.Discard))
+	assert.Empty(t, opts.GitHubURL)
+}
+
 func TestEvalMeasureFetchContext_RejectedConfigDeniesRemote(t *testing.T) {
 	printer := ui.New(io.Discard)
 	home := t.TempDir()

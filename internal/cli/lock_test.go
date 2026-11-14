@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
@@ -2890,6 +2891,31 @@ func TestLockTreeDirName(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestLockTreeDirName_ConfiguredGitHubHost pins that a raw marker URL on the
+// configured GitHub host (GHES) names the skill or plugin directory, as
+// fetchBaseSkillDir does, rather than the marker file (#9037).
+func TestLockTreeDirName_ConfiguredGitHubHost(t *testing.T) {
+	skillURL := "https://ghe.example.com/org/repo/raw/abc123/skills/triage/SKILL.md"
+
+	t.Setenv(forge.GitHubServerURLEnv, "")
+	got, err := lockTreeDirName("skills[0]", skillURL)
+	require.NoError(t, err)
+	assert.Equal(t, "SKILL.md", got, "without the configured host the URL is not parsed as raw content")
+
+	t.Setenv(forge.GitHubServerURLEnv, "https://ghe.example.com")
+	got, err = lockTreeDirName("skills[0]", skillURL)
+	require.NoError(t, err)
+	assert.Equal(t, "triage", got)
+
+	got, err = lockTreeDirName("plugins[0]", "https://ghe.example.com/org/repo/raw/abc123/plugins/gopls-lsp/plugin.json")
+	require.NoError(t, err)
+	assert.Equal(t, "gopls-lsp", got)
+
+	_, err = lockTreeDirName("skills[0]", "https://ghe.example.com/org/repo/raw/abc123/SKILL.md")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must point to a marker file inside a directory")
 }
 
 func TestResolveFromLock_LocalPathsSurviveStrip(t *testing.T) {

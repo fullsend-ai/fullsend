@@ -11,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -53,12 +54,7 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		policy = *fetchPolicy
 	}
 
-	composeOpts := harness.ComposeOpts{
-		WorkspaceRoot: filepath.Dir(configDir),
-		OrgAllowlist:  allowlist,
-		FetchPolicy:   policy,
-		Config:        harness.BuildConfigMap(cfg),
-	}
+	composeOpts := newComposeOpts(configDir, cfg, allowlist, policy)
 
 	var out []TriggeredHarness
 	var loadErrs []error
@@ -101,6 +97,20 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		return nil, fmt.Errorf("no agents could be loaded: %w", errors.Join(loadErrs...))
 	}
 	return out, nil
+}
+
+// newComposeOpts builds the options ListTriggeredHarnesses resolves and loads
+// harnesses with. GitHubURL carries the configured GitHub host, so base
+// skill, plugin and script directories served by a GitHub Enterprise Server
+// instance parse as raw content, as they do for run, lint and lock.
+func newComposeOpts(configDir string, cfg config.ConfigReader, allowlist []string, policy fetch.FetchPolicy) harness.ComposeOpts {
+	return harness.ComposeOpts{
+		WorkspaceRoot: filepath.Dir(configDir),
+		OrgAllowlist:  allowlist,
+		FetchPolicy:   policy,
+		Config:        harness.BuildConfigMap(cfg),
+		GitHubURL:     forge.ConfiguredGitHubURL(),
+	}
 }
 
 // MatchHarnesses evaluates CEL triggers and returns matching harnesses.

@@ -244,6 +244,7 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		OrgAllowlist:  allowlist,
 		FetchPolicy:   policy,
 		Config:        harness.BuildConfigMap(cfg),
+		GitHubURL:     forge.ConfiguredGitHubURL(),
 	}
 	forgeClient := o.forgeClient
 	if forgeClient == nil {
