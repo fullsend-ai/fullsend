@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -45,17 +44,18 @@ func newForgeClient(forgeName, gitlabToken, baseURL string, glOpts ...gl.Option)
 				return nil, err
 			}
 		}
-		// Base URL precedence: explicit arg > env vars (via gl.URLEnvVars).
-		// The env-var precedence is shared with gl.ResolveForgeHostPort().
+		// Base URL precedence: explicit arg > env vars (via gl.ResolveURL,
+		// shared with the status client and the sandbox profile binding).
 		var opts []gl.Option
 		if baseURL != "" {
 			opts = append(opts, gl.WithBaseURL(baseURL))
 		} else {
-			for _, env := range gl.URLEnvVars {
-				if envURL := strings.TrimSpace(os.Getenv(env)); envURL != "" {
-					opts = append(opts, gl.WithBaseURL(envURL))
-					break
-				}
+			envURL, _, err := gl.ResolveURL()
+			if err != nil {
+				return nil, err
+			}
+			if envURL != "" {
+				opts = append(opts, gl.WithBaseURL(envURL))
 			}
 		}
 		opts = append(opts, glOpts...)

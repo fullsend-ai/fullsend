@@ -1894,5 +1894,16 @@ These two are described independently in four documents:
 - `CI_DEBUG_TRACE` remains forbidden on jobs that hold any of these
   variables. YAML `workflow:` and job `rules:` deny it before any admit
   rule so the job never starts; the script-level guard is defense-in-depth.
+- The sandbox placeholder for the selected role credential resolves
+  only at the run's GitLab host. `bindGitLabForgeHost` in
+  `internal/cli/gitlab_profile.go` limits every imported profile that
+  issues `GITLAB_TOKEN` to one endpoint, the host and port of the URL
+  from `gitlab.ResolveURL`. It stops the run when no valid URL is set,
+  and it refuses such a profile when it uses YAML merge keys, alias or
+  non-scalar keys, duplicate keys, or more than one document. Keep one
+  URL resolver for the forge client, the status client and the profile
+  binding, and add no default host. Operators set `FULLSEND_GITLAB_URL`
+  when the sandbox reaches GitLab under another host name; see
+  [GitLab host in the sandbox credential profile](../guides/getting-started/configuring-gitlab.md#gitlab-host-in-the-sandbox-credential-profile).
 - When changing credential routing or rotation, follow the
   [credential-routing security checklist](#credential-routing-security-checklist).

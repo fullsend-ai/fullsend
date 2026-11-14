@@ -124,7 +124,11 @@ it with `fullsend repos set gitlab.url <url>` before declaring the first
 GitLab repository. The env-var fallback chain
 (`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to
 gitlab.com) applies only to call paths without a manifest URL; it does
-not override manifest validation. Self-hosted
+not override manifest validation. A URL from these variables must use
+`https` (`http` only for a loopback host). `fullsend run` also limits
+each sandbox profile that issues `GITLAB_TOKEN` to this URL's host, with
+no gitlab.com default — see
+[GitLab host in the sandbox credential profile](configuring-gitlab.md#gitlab-host-in-the-sandbox-credential-profile). Self-hosted
 instances that use a private CA need runner `tls-ca-file` plus separate
 sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
 

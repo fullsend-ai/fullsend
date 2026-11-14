@@ -472,6 +472,8 @@ On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a G
 
 See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
 
+The run's GitLab URL is the first non-empty value of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL`. It must use `https` (`http` only for a loopback host). Before it imports provider profiles, `fullsend run` limits every profile that issues `GITLAB_TOKEN` to one endpoint: that URL's host and port. It removes the profile's other endpoints and prints one line per changed profile that names them. The run stops before setup, with an error that names `FULLSEND_GITLAB_URL`, when such a profile is imported and no valid GitLab URL is set. It also stops when such a profile uses YAML merge keys, alias or non-scalar keys, duplicate keys, or more than one document. When the sandbox reaches GitLab under another host name, set `FULLSEND_GITLAB_URL` to the URL with that host name. See [GitLab host in the sandbox credential profile](../guides/getting-started/configuring-gitlab.md#gitlab-host-in-the-sandbox-credential-profile).
+
 ## GitHub Packages credentials
 
 On GitHub Actions, `fullsend run` copies the pre-mint `GH_TOKEN` (the job's workflow token) to

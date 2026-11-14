@@ -59,15 +59,20 @@ func TestGenerateGitLabForgeProfile(t *testing.T) {
 			wantPort: "port: 443",
 		},
 		{
-			name:     "http scheme defaults to port 80",
-			env:      map[string]string{"CI_SERVER_URL": "http://gitlab.internal"},
-			wantHost: "host: gitlab.internal",
+			name:     "http on localhost defaults to port 80",
+			env:      map[string]string{"CI_SERVER_URL": "http://localhost"},
+			wantHost: "host: localhost",
 			wantPort: "port: 80",
 		},
 		{
-			name:      "invalid URL yields empty result",
-			env:       map[string]string{"CI_SERVER_URL": "https://gitlab.company.com:notaport"},
-			wantEmpty: true,
+			name:    "invalid URL is an error",
+			env:     map[string]string{"CI_SERVER_URL": "https://gitlab.company.com:notaport"},
+			wantErr: "CI_SERVER_URL",
+		},
+		{
+			name:    "http on a non-loopback host is an error",
+			env:     map[string]string{"FULLSEND_GITLAB_URL": "http://gitlab.internal"},
+			wantErr: "use https",
 		},
 	}
 	for _, tc := range tests {
@@ -215,7 +220,24 @@ func writeTestProfile(t *testing.T, dir, name, content string) string {
 	return path
 }
 
-func TestBindGitLabForgeHost_AddsForgeHostToCredentialProfiles(t *testing.T) {
+// bindForTest runs bindGitLabForgeHost and returns the report lines.
+func bindForTest(t *testing.T, in []resolve.ResolvedProfile, host, port string) ([]resolve.ResolvedProfile, []string, error) {
+	t.Helper()
+	var lines []string
+	out, cleanup, err := bindGitLabForgeHost(in, host, port, func(s string) { lines = append(lines, s) })
+	require.NotNil(t, cleanup)
+	t.Cleanup(cleanup)
+	return out, lines, err
+}
+
+func readBoundTestProfile(t *testing.T, path string) (boundTestProfile, string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	return parseBoundTestProfile(t, data), string(data)
+}
+
+func TestBindGitLabForgeHost_NarrowsCredentialProfilesToForgeHost(t *testing.T) {
 	dir := t.TempDir()
 	rwPath := writeTestProfile(t, dir, "rw.yaml", stockGitLabRWProfile)
 	codePath := writeTestProfile(t, dir, "code.yaml", stockGitLabCodeProfile)
@@ -226,7 +248,8 @@ func TestBindGitLabForgeHost_AddsForgeHostToCredentialProfiles(t *testing.T) {
 		{ID: "fullsend-vertex-ai", LocalPath: vertexPath},
 	}
 
-	out, cleanup, err := bindGitLabForgeHost(in, "gitlab.custom.example", "8443")
+	var lines []string
+	out, cleanup, err := bindGitLabForgeHost(in, "gitlab.custom.example", "8443", func(s string) { lines = append(lines, s) })
 	require.NoError(t, err)
 	require.NotNil(t, cleanup)
 	require.Len(t, out, 3)
@@ -237,82 +260,120 @@ func TestBindGitLabForgeHost_AddsForgeHostToCredentialProfiles(t *testing.T) {
 	assert.Equal(t, stockGitLabRWProfile, string(data))
 	assert.Equal(t, in[0].LocalPath, rwPath, "the input slice is not mutated")
 
-	// The read-write profile gains exactly the forge host, mirroring its
-	// existing endpoints' access and options, and keeps its credential,
-	// binaries, and the gitlab.com / named-host endpoints.
+	// The read-write profile keeps only the forge host, cloned from its
+	// first endpoint (no entry names the forge host), and keeps its
+	// credential and binaries.
 	assert.NotEqual(t, rwPath, out[0].LocalPath)
 	assert.Equal(t, "fullsend-gitlab-rw", out[0].ID)
 	assert.True(t, out[0].FromURL)
-	data, err = os.ReadFile(out[0].LocalPath)
-	require.NoError(t, err)
-	rw := parseBoundTestProfile(t, data)
+	rw, content := readBoundTestProfile(t, out[0].LocalPath)
 	assert.Equal(t, "fullsend-gitlab-rw", rw.ID)
 	require.Len(t, rw.Credentials, 1)
 	assert.Equal(t, []string{"GITLAB_TOKEN"}, rw.Credentials[0].EnvVars)
 	assert.Equal(t, []string{"**/curl", "**/node"}, rw.Binaries)
-	require.Len(t, rw.Endpoints, 3)
-	assert.Equal(t, "gitlab.com", rw.Endpoints[0].Host)
-	assert.Equal(t, "gitlab.named.example", rw.Endpoints[1].Host)
-	added := rw.Endpoints[2]
-	assert.Equal(t, "gitlab.custom.example", added.Host)
-	assert.Equal(t, 8443, added.Port)
-	assert.Equal(t, "rest", added.Protocol)
-	assert.Equal(t, "read-write", added.Access)
-	assert.Equal(t, "enforce", added.Enforcement)
-	assert.True(t, added.AllowEncodedSlash)
-	assert.NotContains(t, string(data), "*.", "no wildcard host is introduced")
-	assert.Equal(t, 1, strings.Count(string(data), "# Named self-managed host"),
-		"the template endpoint's comment is not copied onto the forge host")
+	require.Len(t, rw.Endpoints, 1)
+	ep := rw.Endpoints[0]
+	assert.Equal(t, "gitlab.custom.example", ep.Host)
+	assert.Equal(t, 8443, ep.Port)
+	assert.Equal(t, "rest", ep.Protocol)
+	assert.Equal(t, "read-write", ep.Access)
+	assert.Equal(t, "enforce", ep.Enforcement)
+	assert.True(t, ep.AllowEncodedSlash)
+	assert.NotContains(t, content, "gitlab.com")
+	assert.NotContains(t, content, "gitlab.named.example")
+	assert.NotContains(t, content, "# Named self-managed host")
 
 	// The read-only code profile stays read-only on the forge host.
-	data, err = os.ReadFile(out[1].LocalPath)
-	require.NoError(t, err)
-	code := parseBoundTestProfile(t, data)
-	require.Len(t, code.Endpoints, 2)
-	assert.Equal(t, "gitlab.custom.example", code.Endpoints[1].Host)
-	assert.Equal(t, 8443, code.Endpoints[1].Port)
-	assert.Equal(t, "read-only", code.Endpoints[1].Access)
+	code, _ := readBoundTestProfile(t, out[1].LocalPath)
+	require.Len(t, code.Endpoints, 1)
+	assert.Equal(t, "gitlab.custom.example", code.Endpoints[0].Host)
+	assert.Equal(t, 8443, code.Endpoints[0].Port)
+	assert.Equal(t, "read-only", code.Endpoints[0].Access)
 	assert.Equal(t, []string{"**/curl", "**/git", "**/node", "**/pre-commit"}, code.Binaries)
 
 	// A profile that does not issue GITLAB_TOKEN is left alone.
 	assert.Equal(t, vertexPath, out[2].LocalPath)
+
+	// One line per narrowed profile, naming the endpoints removed.
+	assert.Equal(t, []string{
+		`GitLab token profile "fullsend-gitlab-rw" limited to gitlab.custom.example:8443; removed endpoints: gitlab.com:443, gitlab.named.example:443`,
+		`GitLab token profile "fullsend-gitlab-code" limited to gitlab.custom.example:8443; removed endpoints: gitlab.com:443`,
+	}, lines)
 
 	cleanup()
 	_, err = os.Stat(out[0].LocalPath)
 	assert.True(t, os.IsNotExist(err), "cleanup removes the rewritten profiles")
 }
 
+func TestBindGitLabForgeHost_ClonesMatchingEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestProfile(t, dir, "p.yaml", `id: mixed
+credentials:
+  - name: api_token
+    env_vars: [GITLAB_TOKEN]
+endpoints:
+  - host: gitlab.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+  - host: GitLab.Custom.Example
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: audit
+    allow_encoded_slash: true
+`)
+	out, lines, err := bindForTest(t, []resolve.ResolvedProfile{{ID: "mixed", LocalPath: path}}, "gitlab.custom.example", "443")
+	require.NoError(t, err)
+	p, _ := readBoundTestProfile(t, out[0].LocalPath)
+	require.Len(t, p.Endpoints, 1)
+	ep := p.Endpoints[0]
+	assert.Equal(t, "gitlab.custom.example", ep.Host)
+	assert.Equal(t, 443, ep.Port)
+	assert.Equal(t, "read-only", ep.Access, "cloned from the profile's own entry for the forge host")
+	assert.Equal(t, "audit", ep.Enforcement)
+	assert.True(t, ep.AllowEncodedSlash)
+	assert.Equal(t, []string{`GitLab token profile "mixed" limited to gitlab.custom.example:443; removed endpoints: gitlab.com:443`}, lines)
+}
+
 func TestBindGitLabForgeHost_Unchanged(t *testing.T) {
 	dir := t.TempDir()
-	rwPath := writeTestProfile(t, dir, "rw.yaml", stockGitLabRWProfile)
-	in := []resolve.ResolvedProfile{{ID: "fullsend-gitlab-rw", LocalPath: rwPath}}
+	codePath := writeTestProfile(t, dir, "code.yaml", stockGitLabCodeProfile)
+	in := []resolve.ResolvedProfile{{ID: "fullsend-gitlab-code", LocalPath: codePath}}
 
 	for _, tc := range []struct {
 		name, host, port string
 	}{
-		{name: "no forge host", host: "", port: ""},
-		{name: "gitlab.com is already an endpoint", host: "gitlab.com", port: "443"},
-		{name: "host match is case-insensitive", host: "GitLab.Named.Example", port: "443"},
+		{name: "the only endpoint is the forge host", host: "gitlab.com", port: "443"},
+		{name: "host match is case-insensitive", host: "GitLab.com", port: "443"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, cleanup, err := bindGitLabForgeHost(in, tc.host, tc.port)
+			out, lines, err := bindForTest(t, in, tc.host, tc.port)
 			require.NoError(t, err)
-			require.NotNil(t, cleanup)
-			defer cleanup()
 			assert.Equal(t, in, out)
+			assert.Empty(t, lines)
 		})
 	}
 
-	t.Run("same host on another port is added", func(t *testing.T) {
-		out, cleanup, err := bindGitLabForgeHost(in, "gitlab.com", "8443")
+	t.Run("same host on another port replaces the endpoint", func(t *testing.T) {
+		out, lines, err := bindForTest(t, in, "gitlab.com", "8443")
 		require.NoError(t, err)
-		defer cleanup()
-		data, err := os.ReadFile(out[0].LocalPath)
+		p, _ := readBoundTestProfile(t, out[0].LocalPath)
+		require.Len(t, p.Endpoints, 1)
+		assert.Equal(t, "gitlab.com", p.Endpoints[0].Host)
+		assert.Equal(t, 8443, p.Endpoints[0].Port)
+		assert.Equal(t, []string{`GitLab token profile "fullsend-gitlab-code" limited to gitlab.com:8443; removed endpoints: gitlab.com:443`}, lines)
+	})
+
+	t.Run("stock read-write profile on gitlab.com drops the named host", func(t *testing.T) {
+		rwPath := writeTestProfile(t, dir, "rw.yaml", stockGitLabRWProfile)
+		out, lines, err := bindForTest(t, []resolve.ResolvedProfile{{ID: "fullsend-gitlab-rw", LocalPath: rwPath}}, "gitlab.com", "443")
 		require.NoError(t, err)
-		p := parseBoundTestProfile(t, data)
-		require.Len(t, p.Endpoints, 3)
-		assert.Equal(t, "gitlab.com", p.Endpoints[2].Host)
-		assert.Equal(t, 8443, p.Endpoints[2].Port)
+		p, _ := readBoundTestProfile(t, out[0].LocalPath)
+		require.Len(t, p.Endpoints, 1)
+		assert.Equal(t, "gitlab.com", p.Endpoints[0].Host)
+		assert.Equal(t, []string{`GitLab token profile "fullsend-gitlab-rw" limited to gitlab.com:443; removed endpoints: gitlab.named.example:443`}, lines)
 	})
 }
 
@@ -327,10 +388,153 @@ func TestBindGitLabForgeHost_NoEndpointsLeftUnchanged(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			path := writeTestProfile(t, dir, "p.yaml", content)
 			in := []resolve.ResolvedProfile{{ID: "my-gitlab", LocalPath: path}}
-			out, cleanup, err := bindGitLabForgeHost(in, "gitlab.custom.example", "443")
+			out, _, err := bindForTest(t, in, "gitlab.custom.example", "443")
 			require.NoError(t, err)
-			defer cleanup()
 			assert.Equal(t, in, out, "a profile with no endpoints never authorized access, so none is synthesized")
+		})
+	}
+}
+
+// TestBindGitLabForgeHost_IssuedKeys checks that a profile issues a key
+// the way OpenShell decides it: env_vars when non-empty, otherwise the
+// trimmed credential name.
+func TestBindGitLabForgeHost_IssuedKeys(t *testing.T) {
+	const eps = "endpoints:\n  - host: gitlab.com\n    port: 443\n    access: read-only\n"
+	for _, tc := range []struct {
+		name, creds string
+		narrowed    bool
+	}{
+		{"env_vars names the key", "credentials:\n  - name: api_token\n    env_vars: [OTHER, GITLAB_TOKEN]\n", true},
+		{"trimmed name without env_vars", "credentials:\n  - name: \" GITLAB_TOKEN \"\n", true},
+		{"trimmed name with empty env_vars", "credentials:\n  - name: GITLAB_TOKEN\n    env_vars: []\n", true},
+		{"name ignored when env_vars is non-empty", "credentials:\n  - name: GITLAB_TOKEN\n    env_vars: [OTHER_TOKEN]\n", false},
+		{"env_vars entries are not trimmed", "credentials:\n  - name: api_token\n    env_vars: [\" GITLAB_TOKEN\"]\n", false},
+		{"key only mentioned in a description", "description: uses GITLAB_TOKEN\ncredentials:\n  - name: api_token\n    env_vars: [OTHER_TOKEN]\n", false},
+		{"credentials not a list", "credentials: GITLAB_TOKEN\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTestProfile(t, t.TempDir(), "p.yaml", "id: keys\n"+tc.creds+eps)
+			in := []resolve.ResolvedProfile{{ID: "keys", LocalPath: path}}
+			out, _, err := bindForTest(t, in, "gitlab.custom.example", "443")
+			require.NoError(t, err)
+			if !tc.narrowed {
+				assert.Equal(t, in, out)
+				return
+			}
+			p, _ := readBoundTestProfile(t, out[0].LocalPath)
+			require.Len(t, p.Endpoints, 1)
+			assert.Equal(t, "gitlab.custom.example", p.Endpoints[0].Host)
+		})
+	}
+}
+
+func TestBindGitLabForgeHost_NoGitLabURL(t *testing.T) {
+	dir := t.TempDir()
+	rwPath := writeTestProfile(t, dir, "rw.yaml", stockGitLabRWProfile)
+	vertexPath := writeTestProfile(t, dir, "vertex.yaml", "id: fullsend-vertex-ai\nendpoints:\n  - host: aiplatform.googleapis.com\n    port: 443\n")
+	badPath := writeTestProfile(t, dir, "bad.yaml", "id: [unclosed\n")
+
+	t.Run("a GitLab token profile stops the run", func(t *testing.T) {
+		in := []resolve.ResolvedProfile{
+			{ID: "fullsend-vertex-ai", LocalPath: vertexPath},
+			{ID: "fullsend-gitlab-rw", LocalPath: rwPath},
+		}
+		out, _, err := bindForTest(t, in, "", "")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errGitLabURLRequired)
+		assert.Contains(t, err.Error(), "FULLSEND_GITLAB_URL")
+		assert.Contains(t, err.Error(), `"fullsend-gitlab-rw"`)
+		assert.Nil(t, out)
+	})
+
+	t.Run("other profiles are unchanged", func(t *testing.T) {
+		in := []resolve.ResolvedProfile{
+			{ID: "fullsend-vertex-ai", LocalPath: vertexPath},
+			{ID: "bad", LocalPath: badPath},
+		}
+		out, lines, err := bindForTest(t, in, "", "")
+		require.NoError(t, err)
+		assert.Equal(t, in, out)
+		assert.Empty(t, lines)
+	})
+}
+
+// TestBindGitLabForgeHost_StrictYAML checks that a profile naming
+// GITLAB_TOKEN is refused when parsers could read it differently, and
+// that the same constructs in another provider's profile do not stop the
+// run.
+func TestBindGitLabForgeHost_StrictYAML(t *testing.T) {
+	const cred = "credentials:\n  - name: api_token\n    env_vars: [GITLAB_TOKEN]\n"
+	const otherCred = "credentials:\n  - name: api_token\n    env_vars: [OTHER_TOKEN]\n"
+	const eps = "endpoints:\n  - host: gitlab.com\n    port: 443\n    access: read-only\n"
+	for _, tc := range []struct {
+		name    string
+		profile func(cred string) string
+		wantErr string
+	}{
+		{
+			name: "merge key",
+			profile: func(cred string) string {
+				return "x-ep: &ep\n  host: gitlab.com\n  port: 443\nid: p\n" + cred + "endpoints:\n  - <<: *ep\n    access: read-only\n"
+			},
+			wantErr: "merge key",
+		},
+		{
+			name: "alias key",
+			profile: func(cred string) string {
+				return "x-key: &k access\nid: p\n" + cred + "endpoints:\n  - host: gitlab.com\n    port: 443\n    *k : read-only\n"
+			},
+			wantErr: "alias used as a mapping key",
+		},
+		{
+			name: "non-scalar key",
+			profile: func(cred string) string {
+				return "id: p\n" + cred + eps + "? [a, b]\n: c\n"
+			},
+			wantErr: "non-scalar mapping key",
+		},
+		{
+			name: "duplicate key",
+			profile: func(cred string) string {
+				return "id: p\n" + cred + eps + "endpoints:\n  - host: gitlab.com\n    port: 443\n"
+			},
+			wantErr: `duplicate key "endpoints"`,
+		},
+		{
+			name: "duplicate nested key",
+			profile: func(cred string) string {
+				return "id: p\n" + cred + "endpoints:\n  - host: gitlab.com\n    host: evil.example\n    port: 443\n"
+			},
+			wantErr: `duplicate key "host"`,
+		},
+		{
+			name: "more than one document",
+			profile: func(cred string) string {
+				return "id: p\n" + cred + eps + "---\nid: q\n" + eps
+			},
+			wantErr: "2 YAML documents",
+		},
+		{
+			name: "does not parse",
+			profile: func(cred string) string {
+				return "id: [unclosed\n" + cred
+			},
+			wantErr: "parsing profile YAML",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writeTestProfile(t, dir, "p.yaml", tc.profile(cred))
+			out, _, err := bindForTest(t, []resolve.ResolvedProfile{{ID: "p", LocalPath: path}}, "gitlab.custom.example", "443")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), `"p"`)
+			assert.Nil(t, out)
+
+			other := []resolve.ResolvedProfile{{ID: "q", LocalPath: writeTestProfile(t, dir, "q.yaml", tc.profile(otherCred))}}
+			out, _, err = bindForTest(t, other, "gitlab.custom.example", "443")
+			require.NoError(t, err, "a malformed non-GitLab profile does not stop the run")
+			assert.Equal(t, other, out)
 		})
 	}
 }
@@ -350,14 +554,14 @@ endpoints:
     access: read-only
     enforcement: enforce
 `)
-	out, cleanup, err := bindGitLabForgeHost([]resolve.ResolvedProfile{{ID: "aliased", LocalPath: path}}, "gitlab.custom.example", "443")
+	out, _, err := bindForTest(t, []resolve.ResolvedProfile{{ID: "aliased", LocalPath: path}}, "gitlab.custom.example", "443")
 	require.NoError(t, err)
-	defer cleanup()
-	data, err := os.ReadFile(out[0].LocalPath)
-	require.NoError(t, err)
-	p := parseBoundTestProfile(t, data)
-	require.Len(t, p.Endpoints, 2)
-	assert.Equal(t, "gitlab.custom.example", p.Endpoints[1].Host)
+	p, content := readBoundTestProfile(t, out[0].LocalPath)
+	require.Len(t, p.Endpoints, 1)
+	assert.Equal(t, "gitlab.custom.example", p.Endpoints[0].Host)
+	require.Len(t, p.Credentials, 1)
+	assert.Equal(t, []string{"GITLAB_TOKEN"}, p.Credentials[0].EnvVars)
+	assert.NotContains(t, content, "*", "aliases are expanded in the rewritten profile")
 }
 
 func TestBindGitLabForgeHost_AliasedEndpointsList(t *testing.T) {
@@ -375,21 +579,20 @@ credentials:
     env_vars: [GITLAB_TOKEN]
 endpoints: *eps
 `)
-	out, cleanup, err := bindGitLabForgeHost([]resolve.ResolvedProfile{{ID: "aliased", LocalPath: path}}, "gitlab.custom.example", "443")
+	out, _, err := bindForTest(t, []resolve.ResolvedProfile{{ID: "aliased", LocalPath: path}}, "gitlab.custom.example", "443")
 	require.NoError(t, err)
-	defer cleanup()
 	data, err := os.ReadFile(out[0].LocalPath)
 	require.NoError(t, err)
 	p := parseBoundTestProfile(t, data)
-	require.Len(t, p.Endpoints, 2)
-	assert.Equal(t, "gitlab.com", p.Endpoints[0].Host)
-	assert.Equal(t, "gitlab.custom.example", p.Endpoints[1].Host)
-	assert.Equal(t, "read-only", p.Endpoints[1].Access)
+	require.Len(t, p.Endpoints, 1)
+	assert.Equal(t, "gitlab.custom.example", p.Endpoints[0].Host)
+	assert.Equal(t, "read-only", p.Endpoints[0].Access)
 
-	// The anchored list other nodes reference is not modified.
+	// The anchored list is copied, not modified.
 	var raw map[string]any
 	require.NoError(t, yaml.Unmarshal(data, &raw))
-	assert.Len(t, raw["x-endpoints"], 1)
+	require.Len(t, raw["x-endpoints"], 1)
+	assert.Equal(t, "gitlab.com", raw["x-endpoints"].([]any)[0].(map[string]any)["host"])
 }
 
 func TestBindGitLabForgeHost_AliasedEndpointEntries(t *testing.T) {
@@ -407,22 +610,66 @@ credentials:
 endpoints:
   - *ep
 `)
-	out, cleanup, err := bindGitLabForgeHost([]resolve.ResolvedProfile{{ID: "aliased", LocalPath: path}}, "gitlab.custom.example", "443")
+	out, _, err := bindForTest(t, []resolve.ResolvedProfile{{ID: "aliased", LocalPath: path}}, "gitlab.custom.example", "443")
 	require.NoError(t, err)
-	defer cleanup()
-	data, err := os.ReadFile(out[0].LocalPath)
-	require.NoError(t, err)
-	p := parseBoundTestProfile(t, data)
-	require.Len(t, p.Endpoints, 2)
-	assert.Equal(t, "gitlab.com", p.Endpoints[0].Host)
-	assert.Equal(t, "gitlab.custom.example", p.Endpoints[1].Host)
-	assert.Equal(t, "read-write", p.Endpoints[1].Access)
+	p, _ := readBoundTestProfile(t, out[0].LocalPath)
+	require.Len(t, p.Endpoints, 1)
+	assert.Equal(t, "gitlab.custom.example", p.Endpoints[0].Host)
+	assert.Equal(t, "read-write", p.Endpoints[0].Access)
 
-	// An aliased entry that already names the forge host is detected.
-	out, cleanup2, err := bindGitLabForgeHost([]resolve.ResolvedProfile{{ID: "aliased", LocalPath: path}}, "gitlab.com", "443")
+	// An aliased entry that already is the only forge endpoint is detected.
+	out, _, err = bindForTest(t, []resolve.ResolvedProfile{{ID: "aliased", LocalPath: path}}, "gitlab.com", "443")
 	require.NoError(t, err)
-	defer cleanup2()
 	assert.Equal(t, path, out[0].LocalPath)
+}
+
+// TestBindGitLabForgeHost_RemovedAnchorStillResolves checks that removing
+// an endpoint whose anchor another node references leaves valid YAML.
+func TestBindGitLabForgeHost_RemovedAnchorStillResolves(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTestProfile(t, dir, "p.yaml", `id: anchored
+credentials:
+  - name: api_token
+    env_vars: [GITLAB_TOKEN]
+endpoints:
+  - &named
+    host: gitlab.named.example
+    port: 443
+    access: &acc read-write
+  - host: gitlab.custom.example
+    port: 443
+    access: *acc
+x-copy: *named
+`)
+	out, _, err := bindForTest(t, []resolve.ResolvedProfile{{ID: "anchored", LocalPath: path}}, "gitlab.custom.example", "443")
+	require.NoError(t, err)
+	p, content := readBoundTestProfile(t, out[0].LocalPath)
+	require.Len(t, p.Endpoints, 1)
+	assert.Equal(t, "gitlab.custom.example", p.Endpoints[0].Host)
+	assert.Equal(t, "read-write", p.Endpoints[0].Access)
+	assert.NotContains(t, content, "&")
+	assert.NotContains(t, content, "*")
+}
+
+func TestBindGitLabForgeHost_AliasExpansionIsBounded(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("id: laughs\ncredentials:\n  - name: api_token\n    env_vars: [GITLAB_TOKEN]\n")
+	b.WriteString("l0: &l0 [x, x, x, x, x, x, x, x, x, x]\n")
+	for i := 1; i <= 6; i++ {
+		fmt.Fprintf(&b, "l%d: &l%d [", i, i)
+		for j := 0; j < 10; j++ {
+			if j > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "*l%d", i-1)
+		}
+		b.WriteString("]\n")
+	}
+	b.WriteString("endpoints:\n  - host: gitlab.com\n    port: 443\n")
+	path := writeTestProfile(t, t.TempDir(), "p.yaml", b.String())
+	_, _, err := bindForTest(t, []resolve.ResolvedProfile{{ID: "laughs", LocalPath: path}}, "gitlab.custom.example", "443")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "too large")
 }
 
 func TestBindGitLabForgeHost_RejectsNonConcreteDestination(t *testing.T) {
@@ -440,7 +687,7 @@ func TestBindGitLabForgeHost_RejectsNonConcreteDestination(t *testing.T) {
 		{"port too large", "gitlab.custom.example", "70000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, cleanup, err := bindGitLabForgeHost(in, tc.host, tc.port)
+			out, cleanup, err := bindGitLabForgeHost(in, tc.host, tc.port, nil)
 			require.Error(t, err)
 			assert.Nil(t, out)
 			require.NotNil(t, cleanup)
@@ -450,7 +697,7 @@ func TestBindGitLabForgeHost_RejectsNonConcreteDestination(t *testing.T) {
 
 	for _, host := range []string{"gitlab.custom.example", "gitlab_internal.corp", "10.0.0.5", "::1"} {
 		t.Run("accepts "+host, func(t *testing.T) {
-			_, cleanup, err := bindGitLabForgeHost(in, host, "443")
+			_, cleanup, err := bindGitLabForgeHost(in, host, "443", nil)
 			require.NoError(t, err)
 			cleanup()
 		})
@@ -470,13 +717,13 @@ func TestBindGitLabForgeHost_Errors(t *testing.T) {
 			profiles: []resolve.ResolvedProfile{{ID: "fullsend-gitlab-rw", LocalPath: good}}},
 		{name: "missing file", port: "443", wantErr: `reading profile "gone"`,
 			profiles: []resolve.ResolvedProfile{{ID: "fullsend-gitlab-rw", LocalPath: good}, {ID: "gone", LocalPath: filepath.Join(dir, "missing.yaml")}}},
-		{name: "malformed YAML", port: "443", wantErr: `profile "bad"`,
-			profiles: []resolve.ResolvedProfile{{ID: "bad", LocalPath: writeTestProfile(t, dir, "bad.yaml", "id: [unclosed\n")}}},
 		{name: "endpoints not a list", port: "443", wantErr: "endpoints is not a list",
 			profiles: []resolve.ResolvedProfile{{ID: "odd", LocalPath: writeTestProfile(t, dir, "odd.yaml", "id: odd\ncredentials:\n  - env_vars: [GITLAB_TOKEN]\nendpoints: nope\n")}}},
+		{name: "endpoint entry not a mapping", port: "443", wantErr: "endpoints entry 2 is not a mapping",
+			profiles: []resolve.ResolvedProfile{{ID: "odd", LocalPath: writeTestProfile(t, dir, "odd2.yaml", "id: odd\ncredentials:\n  - env_vars: [GITLAB_TOKEN]\nendpoints:\n  - host: gitlab.com\n    port: 443\n  - gitlab.named.example\n")}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, cleanup, err := bindGitLabForgeHost(tc.profiles, "gitlab.custom.example", tc.port)
+			out, cleanup, err := bindGitLabForgeHost(tc.profiles, "gitlab.custom.example", tc.port, nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantErr)
 			assert.Nil(t, out)
@@ -523,7 +770,7 @@ func capturingProfileImportStub(t *testing.T) (logPath, captureDir string) {
 // attached, so the sandbox's curl calls were denied. The run must attach
 // the stock provider, created with the role credential, and the profile
 // imported for that provider's type must allow curl to exactly the
-// configured forge host and port.
+// configured forge host and port, and to no other host (#9480).
 func TestRunAgent_GitLabCustomHostReachesAttachedProviderPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -544,21 +791,21 @@ func TestRunAgent_GitLabCustomHostReachesAttachedProviderPolicy(t *testing.T) {
 			provider: "gitlab-rw", profileID: "fullsend-gitlab-rw", profile: stockGitLabRWProfile,
 			forgeURL: "https://gitlab.custom.example", wantHost: "gitlab.custom.example", wantPort: 443,
 			wantAccess: "read-write", wantBinaries: []string{"**/curl", "**/node"},
-			wantHosts: []string{"gitlab.com", "gitlab.named.example", "gitlab.custom.example"},
+			wantHosts: []string{"gitlab.custom.example"},
 		},
 		{
 			name: "code on a custom HTTPS port", agent: "code", role: "coder",
 			provider: "gitlab-code", profileID: "fullsend-gitlab-code", profile: stockGitLabCodeProfile,
 			forgeURL: "https://gitlab.custom.example:8443", wantHost: "gitlab.custom.example", wantPort: 8443,
 			wantAccess: "read-only", wantBinaries: []string{"**/curl", "**/git", "**/node", "**/pre-commit"},
-			wantHosts: []string{"gitlab.com", "gitlab.custom.example"},
+			wantHosts: []string{"gitlab.custom.example"},
 		},
 		{
-			name: "gitlab.com keeps the stock profile", agent: "triage", role: "triage",
+			name: "gitlab.com drops the named host", agent: "triage", role: "triage",
 			provider: "gitlab-rw", profileID: "fullsend-gitlab-rw", profile: stockGitLabRWProfile,
 			forgeURL: "https://gitlab.com", wantHost: "gitlab.com", wantPort: 443,
 			wantAccess: "read-write", wantBinaries: []string{"**/curl", "**/node"},
-			wantHosts: []string{"gitlab.com", "gitlab.named.example"},
+			wantHosts: []string{"gitlab.com"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -638,7 +885,64 @@ func TestRunAgent_GitLabCustomHostReachesAttachedProviderPolicy(t *testing.T) {
 				}
 			}
 			assert.Equal(t, 1, matches, "exactly one endpoint for the configured forge host and port")
-			assert.Equal(t, tc.wantHosts, hosts, "only the configured forge host is added")
+			assert.Equal(t, tc.wantHosts, hosts, "the profile keeps only the configured forge host")
+		})
+	}
+}
+
+// TestRunAgent_GitLabTokenProfileNeedsGitLabURL checks that a GitLab run
+// importing a profile that issues GITLAB_TOKEN stops before any profile
+// is imported when no valid GitLab URL resolves, and that the error tells
+// the operator to set FULLSEND_GITLAB_URL (#9480).
+func TestRunAgent_GitLabTokenProfileNeedsGitLabURL(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		forgeURL string
+		wantErr  string
+	}{
+		{name: "no GitLab URL", forgeURL: "", wantErr: "no GitLab URL is set"},
+		{name: "http on a non-loopback host", forgeURL: "http://gitlab.custom.example", wantErr: "use https"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logPath, _ := capturingProfileImportStub(t)
+			for _, k := range []string{"FULLSEND_GITLAB_URL", "GITLAB_API_URL", "CI_SERVER_URL"} {
+				t.Setenv(k, "")
+			}
+			t.Setenv("CI_SERVER_URL", tc.forgeURL)
+			t.Setenv("REPO_FULL_NAME", "org/my-repo")
+			t.Setenv(forge.SecretForgeToken, "")
+			t.Setenv(forge.VarGitLabRoleRegistry, "")
+			t.Setenv(forge.SecretGitLabPollerToken, "glpat-test-poller")
+			t.Setenv(forge.SecretGitLabAnalystToken, "glpat-test-analyst")
+			t.Setenv(forge.SecretGitLabCoderToken, "glpat-test-coder")
+
+			dir := t.TempDir()
+			for _, d := range []string{"harness", "agents", "providers", "profiles"} {
+				require.NoError(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
+			}
+			writePolicyFixture(t, dir)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "triage.md"), []byte("You are an agent."), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "providers", "gitlab-rw.yaml"),
+				[]byte("name: gitlab-rw\ntype: fullsend-gitlab-rw\ncredentials:\n  GITLAB_TOKEN: \"${GITLAB_TOKEN}\"\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "profiles", "fullsend-gitlab-rw.yaml"), []byte(stockGitLabRWProfile), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "triage.yaml"), []byte(
+				"agent: agents/triage.md\nrole: triage\npolicy: policies/base.yaml\n"+
+					"providers:\n  - providers/gitlab-rw.yaml\n"+
+					"openshell:\n  profiles:\n    - profiles/fullsend-gitlab-rw.yaml\n"), 0o644))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
+				[]byte("version: \"1\"\nagents:\n  - harness/triage.yaml\n"), 0o644))
+
+			rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+			err := runAgent(context.Background(), "triage", dir, "", t.TempDir(), "", nil, false, "", "gitlab", "", rFlags, statusOpts{}, ui.New(io.Discard), false, runOverrideFlags{})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), "FULLSEND_GITLAB_URL")
+
+			data, readErr := os.ReadFile(logPath)
+			require.NoError(t, readErr)
+			log := string(data)
+			assert.NotContains(t, log, "provider profile import", "the run stops before any profile is imported")
+			assert.NotContains(t, log, "sandbox create")
 		})
 	}
 }

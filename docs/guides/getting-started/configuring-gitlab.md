@@ -2260,7 +2260,9 @@ fullsend repos install <group/project> --vertex-project "<gcp-project>"
 That env-var fallback (`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` →
 `CI_SERVER_URL`, then `gitlab.com`) is used by the agent's runtime
 forge-client construction inside CI jobs — it does **not** apply to
-`repos.yaml` manifest validation. `gitlab.url` must be set in the
+`repos.yaml` manifest validation. The sandbox credential profile has no
+`gitlab.com` default; see
+[GitLab host in the sandbox credential profile](#gitlab-host-in-the-sandbox-credential-profile). `gitlab.url` must be set in the
 manifest whenever GitLab repos are present; there is no default, and
 `repos install`/`repos status` fail with `gitlab.url is required when
 GitLab repos are present` otherwise. `repos install` has no
@@ -2277,6 +2279,44 @@ configure WIF. If agent jobs fail token exchange, confirm the
 instance is not reachable from the public internet, upload its JWKS to
 the provider and refresh it after key rotations; see
 [Private OIDC issuers (uploaded JWKS)](#private-oidc-issuers-uploaded-jwks).
+
+### GitLab host in the sandbox credential profile
+
+A run talks to one GitLab instance. `fullsend run` limits every
+provider profile that issues `GITLAB_TOKEN` to that instance. This
+covers the profiles of the stock `gitlab-ro`, `gitlab-rw` and
+`gitlab-code` providers, and any custom profile that issues the
+token. A profile issues a key when a credential lists it in `env_vars`,
+or, when `env_vars` is empty, when the credential's `name` is that key.
+
+Each such profile keeps exactly one endpoint: the host and port of the
+run's GitLab URL. The runner removes every other endpoint, including the
+stock `gitlab.com` and named self-managed hosts. It prints one line per
+changed profile that names the removed endpoints. The kept endpoint
+copies the access level, protocol and L7 options of the profile's own
+entry for that host and port, or of its first entry when it has none.
+The runner changes only the copy it imports, never your profile file.
+Profiles for other providers stay as they are.
+
+The run's GitLab URL is the first non-empty value of
+`FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL`. The runner's
+own GitLab client and status comments use the same URL. The URL must use
+`https`. Plain `http` works only for a loopback host such as
+`localhost`.
+
+The run stops before it imports any profile in these cases:
+
+| Case | Fix |
+| --- | --- |
+| A profile issues `GITLAB_TOKEN` and no GitLab URL is set | Set `FULLSEND_GITLAB_URL` to the `https` URL of the GitLab instance the run uses |
+| The GitLab URL does not parse, has no host, has a port outside 1-65535, or uses `http` for a host that is not loopback | Set an `https` URL in the variable the error names, or set `FULLSEND_GITLAB_URL`, which takes precedence |
+| A profile that names `GITLAB_TOKEN` uses YAML merge keys (`<<`), an alias or non-scalar mapping key, a duplicate key, or more than one YAML document, or does not parse | Rewrite the profile as one plain YAML document without those constructs |
+
+When the sandbox reaches GitLab under another host name, for example an
+internal name instead of the public `CI_SERVER_URL`, set
+`FULLSEND_GITLAB_URL` to the URL with that host name. It takes
+precedence over `CI_SERVER_URL`. The runner uses the same URL, so that
+host name must work from the runner as well as from the sandbox.
 
 ## Next steps
 
