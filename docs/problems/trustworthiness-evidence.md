@@ -116,6 +116,8 @@ The lab surfaced distinctions that any composition model has to keep:
 - **Status versus value.** Missing, stale, or malformed evidence was recorded
   as unknown and held, separately from a measured value below threshold. This
   is the same `status`-versus-`score` distinction as the scorecard below.
+  [Review finding evidence](review-finding-evidence.md#representing-unknown)
+  applies the distinction to individual review findings.
 - **Current-change versus historical evidence.** Review, risk, and check
   results were bound to the PR's exact revision, while the quality signal was
   experiment-wide history. Combining them with AND does not make either one

@@ -566,6 +566,7 @@ This is distinct from hallucination (generating incorrect facts). Self-report un
 **Where gaps remain:**
 
 - Review agents that assess code quality or security properties produce natural-language assessments that are, structurally, self-reports. If a review agent claims "no security issues found," the harness can validate the format of the output but cannot independently verify the claim's truth. This is where property-based testing, coverage metrics, and static analysis serve as independent verification — they check the code directly rather than trusting the reviewer's summary.
+- Structured evidence fields on review findings, such as reachability or deployment assumptions, are also self-reports unless the harness derives them. [Review finding evidence](review-finding-evidence.md#how-downstream-policy-could-use-evidence) discusses which values the harness can derive, such as whether the challenger pass completed.
 
 ## Cross-cutting concern: audit log integrity
 

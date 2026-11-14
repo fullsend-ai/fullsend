@@ -132,7 +132,7 @@ Based on the counter-evidence, the review agent struggles with:
 5. **Regex and string-processing logic** -- agents detect patterns but fail to reason about concrete impact (e.g., what inputs cause data loss).
 6. **Semver and version comparison** -- domain-specific edge cases (partial version refs, prerelease ordering) require specialized knowledge the agent does not reliably apply.
 7. **Cross-document consistency** -- verifying that ADRs, design docs, plan specs, and implementation agree requires holistic project understanding.
-8. **Security-relevant operational reasoning** -- understanding how a code change interacts with deployment constraints (SHA pinning, Actions enforcement) is beyond current agent capabilities.
+8. **Security-relevant operational reasoning** -- understanding how a code change interacts with deployment constraints (SHA pinning, Actions enforcement) is beyond current agent capabilities. [Review finding evidence](review-finding-evidence.md#deployment-assumptions-are-prose-only) proposes recording deployment assumptions and unknown deployment context on each finding, so the gap is visible rather than hidden in prose.
 
 ### Change types where agents perform well
 
