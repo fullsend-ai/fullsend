@@ -409,7 +409,7 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 	} else if !dryRun && strings.EqualFold(parsed.Action, "approve") {
 		printer.StepWarn("Reviewed PR HEAD is unavailable; re-review deduplication will be unavailable")
 	}
-	commentURL, err := sticky.Post(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
+	commentURL, commentID, err := sticky.PostComment(ctx, client, owner, repo, pr, parsed.Body, cfg, printer)
 	if err != nil {
 		return err
 	}
@@ -421,11 +421,16 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 		// Publish the deduplication marker only after the matching formal
 		// approval succeeds. A request-changes/comment result or a failed
 		// formal submission must never leave an approved-looking hash behind.
+		// The hash and head markers are added to the comment this run
+		// created (its ID from PostComment), so an approve run leaves
+		// exactly one review-agent comment: editing an earlier run's
+		// comment is the stickiness #9334 removed, and UpdateComment
+		// refuses a missing ID rather than guess one.
 		hashBody := fmt.Sprintf("<!-- fullsend:review-diff-hash:%s -->\n<!-- fullsend:review-head:%s -->\n%s", diffHash, parsed.HeadSHA, parsed.Body)
 		hashCfg := cfg
 		hashCfg.TrustedLeadingLine = reviewTrustedLeadingLineReForHash(diffHash, parsed.HeadSHA)
 		hashCfg.MaxTrustedLeadingLines = 3
-		if _, hashErr := sticky.Post(ctx, client, owner, repo, pr, hashBody, hashCfg, printer); hashErr != nil {
+		if hashErr := sticky.UpdateComment(ctx, client, owner, repo, commentID, hashBody, hashCfg, printer); hashErr != nil {
 			printer.StepWarn(fmt.Sprintf("Could not publish review diff hash after approval; re-review deduplication will be unavailable: %v", hashErr))
 		}
 	}
