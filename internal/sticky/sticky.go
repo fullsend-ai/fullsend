@@ -55,7 +55,77 @@ func (c Config) maxSize() int {
 // the history. The marker is still prepended so other steps can find this
 // agent's comments; readers looking for the newest result find it at the
 // bottom, where new activity is expected.
+//
+// Callers that need to edit the comment they just created — the review
+// door adding its diff hash once the formal approval succeeds — call
+// PostComment for the created comment's ID and pass it to UpdateComment.
 func Post(ctx context.Context, client forge.Client, owner, repo string, number int, body string, cfg Config, printer *ui.Printer) (string, error) {
+	url, _, err := PostComment(ctx, client, owner, repo, number, body, cfg, printer)
+	return url, err
+}
+
+// PostComment publishes an agent result as a new comment at the end of
+// the thread and returns the HTML URL and the ID of the created comment
+// (empty and zero on dry run). It never edits an existing comment: sticky
+// comments were removed (#9334), so every run appends its own comment and
+// the thread itself is the history. The marker is still prepended so
+// other steps can find this agent's comments; readers looking for the
+// newest result find it at the bottom, where new activity is expected.
+func PostComment(ctx context.Context, client forge.Client, owner, repo string, number int, body string, cfg Config, printer *ui.Printer) (string, int, error) {
+	markedBody, err := prepareBody(body, cfg)
+	if err != nil {
+		return "", 0, err
+	}
+
+	printer.StepStart("Posting comment")
+
+	if cfg.DryRun {
+		printer.StepInfo("Dry run — would create new comment")
+		printer.StepInfo("Body length: " + strconv.Itoa(len(markedBody)))
+		return "", 0, nil
+	}
+
+	created, err := client.CreateIssueComment(ctx, owner, repo, number, markedBody)
+	if err != nil {
+		return "", 0, fmt.Errorf("creating comment: %w", err)
+	}
+	printer.StepDone("Comment created")
+	return created.HTMLURL, created.ID, nil
+}
+
+// UpdateComment replaces the body of a comment created in this same run
+// (commentID from PostComment), never an earlier run's comment — that
+// find-and-edit is the stickiness #9334 removed. The body is assembled
+// exactly as on create: the runner's marker stays on the first line,
+// marker syntax in the rest is escaped (a trusted leading line
+// excepted), the size cap applies, and a trusted leading line the cap
+// would cut refuses the update instead of posting it partial.
+func UpdateComment(ctx context.Context, client forge.Client, owner, repo string, commentID int, body string, cfg Config, printer *ui.Printer) error {
+	if commentID == 0 {
+		return fmt.Errorf("comment ID is required")
+	}
+	markedBody, err := prepareBody(body, cfg)
+	if err != nil {
+		return err
+	}
+
+	if cfg.DryRun {
+		printer.StepInfo("Dry run — would update comment " + strconv.Itoa(commentID))
+		return nil
+	}
+
+	if err := client.UpdateIssueComment(ctx, owner, repo, commentID, markedBody); err != nil {
+		return fmt.Errorf("updating comment: %w", err)
+	}
+	printer.StepDone("Comment updated")
+	return nil
+}
+
+// prepareBody assembles the comment body the same way for create and
+// update: the runner's marker on the first line, the agent body with its
+// marker syntax escaped (a trusted leading line excepted), the whole
+// capped at the size limit.
+func prepareBody(body string, cfg Config) (string, error) {
 	if strings.TrimSpace(body) == "" {
 		return "", fmt.Errorf("comment body is empty")
 	}
@@ -83,21 +153,7 @@ func Post(ctx context.Context, client forge.Client, owner, repo string, number i
 			return "", fmt.Errorf("comment body exceeds the %d-byte size cap without room for the trusted leading line intact; refusing to post a partial marker line", cfg.maxSize())
 		}
 	}
-
-	printer.StepStart("Posting comment")
-
-	if cfg.DryRun {
-		printer.StepInfo("Dry run — would create new comment")
-		printer.StepInfo("Body length: " + strconv.Itoa(len(markedBody)))
-		return "", nil
-	}
-
-	created, err := client.CreateIssueComment(ctx, owner, repo, number, markedBody)
-	if err != nil {
-		return "", fmt.Errorf("creating comment: %w", err)
-	}
-	printer.StepDone("Comment created")
-	return created.HTMLURL, nil
+	return markedBody, nil
 }
 
 // neutralizeBody escapes fullsend marker syntax in body. When
