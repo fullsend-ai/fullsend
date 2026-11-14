@@ -30,7 +30,7 @@ A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, UR
 | `--keep-sandbox` | Skip sandbox deletion after the run |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
-| `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run stops, because its Jira API gateway address needs a network lookup |
+| `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run, or a run that mints a Jira token, stops, because resolving the Jira API gateway address needs a network lookup |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
 
 `--target-repo` accepts a plain directory or a valid checkout with a real root
@@ -407,8 +407,9 @@ in [`agent new`](agent.md#what-gets-written)) resolves to the
 definition and profile built into fullsend, locally and in CI, with nothing on disk. These names
 and their `fullsend-<name>` profile ids are reserved: a harness that still uses its own copy under
 one gets a warning and keeps the copy for now, and a later release rejects it. `fullsend-openai` is
-already rejected, and so is `fullsend-jira` when the run mints the Jira token. Give
-repository-specific providers and profiles their own names.
+already rejected, and so is `fullsend-jira` when the run mints the Jira token. A profile id made of
+`fullsend-jira-` and 12 hex digits is reserved for the per-site copy `fullsend run` renders, and is
+rejected in every mode. Give repository-specific providers and profiles their own names.
 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
@@ -421,7 +422,7 @@ read-only Jira access as `JIRA_TOKEN`. The runner environment picks the mode:
 | Runner environment | What `fullsend run` does |
 |---|---|
 | `FULLSEND_JIRA_TOKEN` set | Creates the provider from that static token, like any provider. No minting or refresh. |
-| `FULLSEND_JIRA_TOKEN` unset or empty, `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` both set | Mints a service account's OAuth 2.0 access token, gives it to a provider named after the run, refreshes it before it expires, keeps the current placeholder in `/sandbox/fullsend-jira/token`, and deletes the provider when the run ends. The client secret never reaches a provider value or the sandbox. |
+| `FULLSEND_JIRA_TOKEN` unset or empty, `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` both set | Mints a service account's OAuth 2.0 access token, gives it to a provider named after the run, refreshes it before it expires, keeps the current placeholder in `/sandbox/fullsend-jira/token`, and deletes the provider when the run ends. Through the API gateway (`api.atlassian.com`), the provider reaches only the site in `tracker.jira.base_url`. The run fails before minting when it cannot resolve that site's cloud ID: no `tracker.jira.base_url` or `project`, `--offline`, a failed lookup, or a custom `tracker.jira.api_url`. The client secret never reaches a provider value or the sandbox. |
 | Only one of the two client variables set | Fails the run. |
 
 See

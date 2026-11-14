@@ -372,7 +372,7 @@ you can tune resolution limits:
 | `--forge` | (auto-detect) | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
 | `--max-depth` | 10 | Maximum dependency depth for transitive resolution (0 disables) |
 | `--max-resources` | 50 | Maximum total remote resources fetched per harness |
-| `--offline` | false | Reject network fetches; only use cached remote resources. A Jira-sourced run stops, because its Jira API gateway address needs a network lookup |
+| `--offline` | false | Reject network fetches; only use cached remote resources. A Jira-sourced run, or a run that mints a Jira token, stops, because resolving the Jira API gateway address needs a network lookup |
 
 #### Lock files
 
