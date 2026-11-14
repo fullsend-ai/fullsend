@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -820,8 +821,10 @@ func TestFetchTree_AuthFallbackHTTP(t *testing.T) {
 	// Start HTTPS server that rejects requests carrying an Authorization
 	// header with 403, but serves unauthenticated requests via
 	// git-http-backend.
+	var sawAuth atomic.Bool
 	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" {
+			sawAuth.Store(true)
 			http.Error(w, "The requested URL returned error: 403", http.StatusForbidden)
 			return
 		}
@@ -846,10 +849,16 @@ func TestFetchTree_AuthFallbackHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("GIT_SSL_CAINFO", certFile)
+	// The token is sent only to the configured forge host, so configure
+	// the test server as the forge for the first, authenticated attempt.
+	t.Setenv("GITHUB_SERVER_URL", ts.URL)
 
 	files, err := FetchTree(context.Background(), ts.URL, "skills/review", sha, "bad-scope-token")
 	if err != nil {
 		t.Fatalf("expected auth fallback to succeed: %v", err)
+	}
+	if !sawAuth.Load() {
+		t.Error("expected a first attempt with the token before the anonymous retry")
 	}
 	if string(files["SKILL.md"]) != "# Auth Fallback" {
 		t.Errorf("unexpected content: %q", files["SKILL.md"])

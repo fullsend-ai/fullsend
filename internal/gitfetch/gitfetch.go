@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 const (
@@ -60,15 +62,16 @@ func FetchTree(ctx context.Context, cloneURL, subpath, ref, token string) (map[s
 	if err := runGit(ctx, tmpDir, "remote", "add", "origin", cloneURL); err != nil {
 		return nil, redactToken(fmt.Errorf("gitfetch: git remote add: %w", err), token)
 	}
+	authToken := tokenForCloneURL(cloneURL, token, forge.ConfiguredGitHubURL())
 	var authEnv []string
-	if token != "" {
-		if err := validateToken(token); err != nil {
+	if authToken != "" {
+		if err := validateToken(authToken); err != nil {
 			return nil, fmt.Errorf("gitfetch: %w", err)
 		}
 		authEnv = []string{
 			"GIT_CONFIG_COUNT=1",
 			"GIT_CONFIG_KEY_0=http.extraHeader",
-			"GIT_CONFIG_VALUE_0=Authorization: Bearer " + token,
+			"GIT_CONFIG_VALUE_0=Authorization: Bearer " + authToken,
 		}
 	}
 
@@ -82,7 +85,7 @@ func FetchTree(ctx context.Context, cloneURL, subpath, ref, token string) (map[s
 	}
 
 	fetchErr := runGitWithEnv(ctx, tmpDir, authEnv, "fetch", "--depth", "1", "--filter=blob:none", "origin", "--", ref)
-	if fetchErr != nil && token != "" && isAuthError(fetchErr) {
+	if fetchErr != nil && authToken != "" && isAuthError(fetchErr) {
 		// The token may be scoped to a different repo. Retry without
 		// authentication so public repos remain accessible.
 		fetchErr = runGitWithEnv(ctx, tmpDir, nil, "fetch", "--depth", "1", "--filter=blob:none", "origin", "--", ref)
@@ -330,4 +333,58 @@ func redactToken(err error, token string) error {
 		msg = strings.ReplaceAll(msg, encoded, "***")
 	}
 	return fmt.Errorf("%s", msg)
+}
+
+// githubOrigin is the origin key of github.com, the forge a token is sent
+// to when no other GitHub host is configured.
+const githubOrigin = "https://github.com:443"
+
+// tokenForCloneURL returns the token to send with a fetch from cloneURL,
+// or "" to fetch anonymously. The token is sent only to the configured
+// forge: the origin (scheme, host and port) of forgeURL when it names a
+// GitHub host other than github.com, otherwise github.com over https. Any
+// other clone URL, including one with userinfo, is fetched anonymously.
+//
+// forgeURL is forge.ConfiguredGitHubURL. As elsewhere in fullsend, a value
+// that is empty, has no scheme or host, or does not parse counts as
+// unset, so the default github.com scope applies.
+func tokenForCloneURL(cloneURL, token, forgeURL string) string {
+	if token == "" {
+		return ""
+	}
+	c, err := url.Parse(cloneURL)
+	if err != nil || c.User != nil {
+		return ""
+	}
+	if originKey(c) != configuredForgeOrigin(forgeURL) {
+		return ""
+	}
+	return token
+}
+
+// configuredForgeOrigin returns the origin key of a configured GitHub host
+// other than github.com, or githubOrigin when forgeURL is unset, names
+// github.com, or is not a URL with a scheme and host.
+func configuredForgeOrigin(forgeURL string) string {
+	f, err := url.Parse(strings.TrimSpace(forgeURL))
+	if err != nil || f.Scheme == "" || f.Hostname() == "" || strings.EqualFold(f.Hostname(), "github.com") {
+		return githubOrigin
+	}
+	return originKey(f)
+}
+
+// originKey returns "scheme://host:port" with the scheme and host
+// lowercased and the default port filled in for http and https.
+func originKey(u *url.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		}
+	}
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
 }
