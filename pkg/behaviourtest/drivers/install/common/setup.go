@@ -216,7 +216,9 @@ func RunReposInstallWithOpts(
 
 // githubSetupTransientSignatures are the anchored patterns that identify
 // a GitHub-side failure in the final "Error: " line of a failed
-// `fullsend repos install` run. Install runs in a subprocess, so the
+// `fullsend repos install` run, or in the per-repo "FAILED: <repo> —
+// <cause>" lines when that final line is only the "N repos failed"
+// summary (markGitHubSetupTransient). Install runs in a subprocess, so the
 // harness receives only its exit status and combined output: the typed
 // *gh.APIError that failclass.Classify recognizes in process is gone,
 // and the CLI's message is all that is left (#9497).
@@ -285,22 +287,78 @@ func githubSetupErrorLine(msg string) (string, bool) {
 	return last, found
 }
 
+// reposFailedLineRe matches the final error `fullsend repos install`
+// returns when one or more repos failed: the per-repo causes are printed
+// above it on "FAILED: <repo> — <cause>" lines, so the "Error: " line
+// itself carries none of them.
+var reposFailedLineRe = regexp.MustCompile(`^\d+ repos failed$`)
+
+// reposInstallFailedCauses returns the cause of every "FAILED: <repo> —
+// <cause>" line `repos install` printed for a failed repo in msg.
+func reposInstallFailedCauses(msg string) []string {
+	var causes []string
+	for line := range strings.SplitSeq(msg, "\n") {
+		line = strings.TrimSpace(line)
+		rest, ok := strings.CutPrefix(line, "FAILED: ")
+		if !ok {
+			continue
+		}
+		if _, cause, found := strings.Cut(rest, " — "); found {
+			causes = append(causes, cause)
+		}
+	}
+	return causes
+}
+
+// githubSetupTransientReason returns the reason of the first
+// githubSetupTransientSignatures pattern that matches text.
+func githubSetupTransientReason(text string) (string, bool) {
+	for _, sig := range githubSetupTransientSignatures {
+		if sig.re.MatchString(text) {
+			return sig.reason, true
+		}
+	}
+	return "", false
+}
+
 // markGitHubSetupTransient marks a failed `fullsend repos install` run as
 // an infrastructure failure when the CLI's final error matches one of
 // githubSetupTransientSignatures, and returns every other error —
 // including nil and already-marked errors — unchanged.
+//
+// repos install reports a per-repo failure on a "FAILED: <repo> — <cause>"
+// line and then ends with "Error: N repos failed", so when the final
+// error is that summary the signatures are matched against the causes
+// instead. Every cause must match: a run that also failed for another
+// reason stays scenario.
 func markGitHubSetupTransient(err error) error {
 	if err == nil || behaviourfail.Is(err) {
 		return err
 	}
-	line, ok := githubSetupErrorLine(err.Error())
+	msg := err.Error()
+	line, ok := githubSetupErrorLine(msg)
 	if !ok {
 		return err
 	}
-	for _, sig := range githubSetupTransientSignatures {
-		if sig.re.MatchString(line) {
-			return behaviourfail.Mark(err, sig.reason)
+	if reposFailedLineRe.MatchString(line) {
+		causes := reposInstallFailedCauses(msg)
+		if len(causes) == 0 {
+			return err
 		}
+		var reason string
+		for _, cause := range causes {
+			r, matched := githubSetupTransientReason(cause)
+			if !matched {
+				return err
+			}
+			if reason == "" {
+				reason = r
+			}
+		}
+		return behaviourfail.Mark(err, reason)
+	}
+	if reason, matched := githubSetupTransientReason(line); matched {
+		return behaviourfail.Mark(err, reason)
 	}
 	return err
 }

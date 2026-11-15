@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -188,6 +189,20 @@ func TestInfraClassSetupGitHubTransient(t *testing.T) {
 			cliOutput:  refs500,
 			wantClass:  behaviourfail.Infrastructure,
 			wantReason: "setup: github server error",
+		},
+		"500 on a FAILED line under the repos-failed summary": {
+			cliOutput:  "    Install complete: 0 installed, 0 converged, 0 already current, 1 failed\n      FAILED: org/repo — " + strings.TrimPrefix(refs500, "Error: ") + "\nError: 1 repos failed",
+			wantClass:  behaviourfail.Infrastructure,
+			wantReason: "setup: github server error",
+		},
+		"stream reset on a FAILED line under the repos-failed summary": {
+			cliOutput:  "      FAILED: org/repo — " + strings.TrimPrefix(streamReset, "Error: ") + "\nError: 1 repos failed",
+			wantClass:  behaviourfail.Infrastructure,
+			wantReason: "setup: github stream reset",
+		},
+		"422 on a FAILED line under the repos-failed summary": {
+			cliOutput: "      FAILED: org/repo — committing scaffold files: update ref: github api: 422 Validation Failed\nError: 1 repos failed",
+			wantClass: behaviourfail.Scenario,
 		},
 		"404": {
 			cliOutput: "Error: committing scaffold files: create tree: github api: 404 Not Found",

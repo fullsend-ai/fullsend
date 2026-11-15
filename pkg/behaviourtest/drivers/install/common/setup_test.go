@@ -771,6 +771,33 @@ func TestMarkGitHubSetupTransient(t *testing.T) {
 			err:        setupCLIErr("Error: committing scaffold files: update ref: github api: 503 retryable error after 5 attempts on PATCH /repos/org/repo/git/refs/heads/main (last delay: 16s)\r\n"),
 			wantReason: "setup: github server error",
 		},
+		"500 on a FAILED line under the repos-failed summary": {
+			err: setupCLIErr("    Install complete: 0 installed, 0 converged, 0 already current, 1 failed\n" +
+				"      FAILED: org/repo — committing scaffold files: update ref: github api: 500 retryable error after 5 attempts on PATCH /repos/org/repo/git/refs/heads/main (last delay: 16s)\n" +
+				"Error: 1 repos failed"),
+			wantReason: "setup: github server error",
+		},
+		"stream reset on a FAILED line under the repos-failed summary": {
+			err: setupCLIErr("      FAILED: org/repo — committing scaffold files: create blob for .fullsend/bin/fullsend: decode blob: stream error: stream ID 23; CANCEL; received from peer\n" +
+				"Error: 1 repos failed"),
+			wantReason: "setup: github stream reset",
+		},
+		"404 on a FAILED line under the repos-failed summary": {
+			err: setupCLIErr("      FAILED: org/repo — committing scaffold files: create tree: github api: 404 Not Found\n" +
+				"Error: 1 repos failed"),
+		},
+		"transient and other causes under the repos-failed summary": {
+			err: setupCLIErr("      FAILED: org/repo — committing scaffold files: update ref: github api: 500 retryable error after 5 attempts on PATCH /repos/org/repo/git/refs/heads/main (last delay: 16s)\n" +
+				"      FAILED: org/other — committing scaffold files: create tree: github api: 422 Validation Failed\n" +
+				"Error: 2 repos failed"),
+		},
+		"repos-failed summary without a FAILED line": {
+			err: setupCLIErr("Error: 1 repos failed"),
+		},
+		"transient FAILED line before a different final error": {
+			err: setupCLIErr("      FAILED: org/repo — committing scaffold files: update ref: github api: 500 retryable error after 5 attempts on PATCH /repos/org/repo/git/refs/heads/main (last delay: 16s)\n" +
+				"Error: loading config preset: open /tmp/preset.yaml: no such file or directory"),
+		},
 		"final error wins over an earlier 5xx line": {
 			err: setupCLIErr("Error: github api: 500 retryable error after 5 attempts on GET /repos/org/repo\n" +
 				"Error: committing scaffold files: update ref: github api: 422 Validation Failed (Reference update failed)"),
