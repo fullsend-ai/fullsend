@@ -124,6 +124,17 @@ func TestReportCIVariableCredentials(t *testing.T) {
 			want: "  ! provider \"gitlab-code\": credential GITLAB_TOKEN comes from CI/CD variable GITLAB_TOKEN, a long-lived value that masking hides only as an exact string; no keyless replacement on GitLab yet\n",
 		},
 		{
+			name:   "key that is not a variable name prints nothing",
+			policy: ciVariableCredentialPolicy{forge: "gitlab", gitlabCI: true},
+			defs: []harness.ProviderDef{{Name: "custom", Type: "custom-type", Credentials: map[string]string{
+				"A\n  ! forged": "${A_VAR}",
+				"B\rX":          "${A_VAR}",
+				"C\x1b[2K":      "${A_VAR}",
+			}}},
+			env:  map[string]string{"A_VAR": dummyValue},
+			want: "",
+		},
+		{
 			name:   "github forge prints nothing",
 			policy: ciVariableCredentialPolicy{forge: "github"},
 			defs:   []harness.ProviderDef{jiraDef("${FULLSEND_JIRA_TOKEN}")},

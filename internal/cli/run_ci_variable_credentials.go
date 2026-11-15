@@ -158,8 +158,9 @@ func ciVariableCredentialLines(defs []harness.ProviderDef, getenv func(string) s
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
+			// A key that is not a variable name is never printed.
 			variable, ok := credentialVariable(pd.Credentials[k])
-			if !ok || !fromCIVariable(variable, getenv) {
+			if !ok || !envVarName.MatchString(k) || !fromCIVariable(variable, getenv) {
 				continue
 			}
 			lines = append(lines, ciVariableCredentialLine(pd.Name, pd.Type, k, variable, getenv))
