@@ -55,7 +55,7 @@ type ComposeOpts struct {
 	// authenticated API instead of the default github.com-only fetch policy.
 	FetchFile func(ctx context.Context, rawURL string) ([]byte, error)
 
-	// ParseRawURL, when non-nil, replaces forge.ParseRawContentURL for the
+	// ParseRawURL, when non-nil, replaces forge.ParseRawContentURLOnHost for the
 	// directory resources (skills, plugins, script directories) resolved
 	// against SourceURL, so a run on a GitHub host other than github.com can
 	// describe its own raw-content URLs. The ForgeURLInfo it returns is handed
@@ -64,6 +64,13 @@ type ComposeOpts struct {
 
 	// TraceID is a correlation ID for audit log entries.
 	TraceID string
+
+	// GitHubURL is the URL of the GitHub instance the run is configured for
+	// (e.g. "https://ghe.example.com" on GitHub Enterprise Server). Raw-content
+	// URLs served by that host are accepted for directory fetches in addition
+	// to raw.githubusercontent.com URLs (see forge.ParseRawContentURLOnHost).
+	// Empty or github.com means only raw.githubusercontent.com is accepted.
+	GitHubURL string
 
 	// AuditLogPath is the path to the fetch audit log (JSONL).
 	// If empty, audit logging is skipped.
@@ -133,12 +140,13 @@ type ComposeOpts struct {
 var defaultTreeFetchFn gitfetch.TreeFetchFunc = gitfetch.FetchTree
 
 // parseRawURL describes a directory resource URL, through opts.ParseRawURL
-// when set, else forge.ParseRawContentURL.
+// when set, else forge.ParseRawContentURLOnHost with opts.GitHubURL, so raw-content
+// URLs on the configured GitHub host parse without a hook.
 func (opts ComposeOpts) parseRawURL(rawURL string) (*forge.ForgeURLInfo, error) {
 	if opts.ParseRawURL != nil {
 		return opts.ParseRawURL(rawURL)
 	}
-	return forge.ParseRawContentURL(rawURL)
+	return forge.ParseRawContentURLOnHost(rawURL, opts.GitHubURL)
 }
 
 func resolveTreeFetcher(opts ComposeOpts) gitfetch.TreeFetchFunc {

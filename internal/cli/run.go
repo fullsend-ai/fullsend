@@ -664,6 +664,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		OrgAllowlist:  orgAllowlist,
 		TreeFetcher:   rFlags.treeFetcher,
 		GitToken:      composeGitToken,
+		GitHubURL:     forge.ConfiguredGitHubURL(),
 		Event:         eventMap,
 		Config:        harness.BuildConfigMap(orgCfg),
 
@@ -8167,7 +8168,7 @@ func useAgentsRepoHostFetch(opts *harness.ComposeOpts, forgeClient forge.Client)
 	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
 	if hostPrefix != "" && strings.HasPrefix(opts.SourceURL, hostPrefix) {
 		opts.FetchFile = agentsRepoHostFileFetcher(forgeClient, hostPrefix, opts.FetchPolicy)
-		opts.ParseRawURL = agentsRepoHostURLParser(hostPrefix)
+		opts.ParseRawURL = agentsRepoHostURLParser(hostPrefix, opts.GitHubURL)
 		opts.TreeFetcher = agentsRepoHostTreeFetcher(forgeClient, hostPrefix, opts.FetchPolicy, opts.TreeFetcher)
 	}
 }
@@ -8236,12 +8237,13 @@ func agentsRepoHostForgeInfo(hostPrefix, ref, relPath string) (*forge.ForgeURLIn
 // agentsRepoHostURLParser returns the harness.ComposeOpts.ParseRawURL hook for
 // a harness fetched from fullsend-ai/agents on a GitHub host other than
 // github.com: URLs under hostPrefix describe a path of the agents repo at the
-// commit they name, and any other URL is parsed as a raw.githubusercontent.com
-// URL.
-func agentsRepoHostURLParser(hostPrefix string) func(string) (*forge.ForgeURLInfo, error) {
+// commit they name, and any other URL is parsed by
+// forge.ParseRawContentURLOnHost with githubURL, the run's configured GitHub
+// host, so other repositories on that host still parse.
+func agentsRepoHostURLParser(hostPrefix, githubURL string) func(string) (*forge.ForgeURLInfo, error) {
 	return func(rawURL string) (*forge.ForgeURLInfo, error) {
 		if !strings.HasPrefix(rawURL, hostPrefix) {
-			return forge.ParseRawContentURL(rawURL)
+			return forge.ParseRawContentURLOnHost(rawURL, githubURL)
 		}
 		sha, relPath, err := parseAgentsRepoHostURL(rawURL, hostPrefix)
 		if err != nil {
