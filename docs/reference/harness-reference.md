@@ -368,6 +368,22 @@ host_files:
     allow_durable: true
 ```
 
+A durable credential mount can sit next to a provider whose profile may
+permit a write method. That covers an endpoint `access` other than
+`read-only`, and an allow rule for a method other than `GET`, `HEAD` or
+`OPTIONS`. In that case, the run also prints a warning just before the
+sandbox is created. The warning does not fail the run, and it does not
+replace `allow_durable: true`:
+
+```text
+  ! host file dest /tmp/.gcp-credentials.json is a durable credential, and provider github (profile fullsend-github) permits write methods (access other than read-only); a provider whose profile is access: read-only is the narrower choice. The profile is a declaration: whether the gateway enforces it is a property of the deployment, which this run does not check
+```
+
+Each provider's resolved profile is printed earlier in the run (see
+[`fullsend run`](../cli/run.md)). A profile is a declaration of what the
+gateway should allow. Whether the gateway enforces it depends on the
+deployment.
+
 **`.env.d` host files** — A `host_files` entry with a `dest` in
 `/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.
 Claude, codex, pi and OpenCode launches, and the runner's own in-sandbox probes

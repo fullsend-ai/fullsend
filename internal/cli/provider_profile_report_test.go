@@ -1,0 +1,208 @@
+package cli
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/resolve"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/fullsend-ai/fullsend/internal/ui"
+)
+
+func embeddedProviderDef(t *testing.T, name string) harness.ProviderDef {
+	t.Helper()
+	data, err := scaffold.FullsendRepoFile("providers/" + name + ".yaml")
+	require.NoError(t, err)
+	def, err := harness.ParseProviderDef(data)
+	require.NoError(t, err)
+	return def
+}
+
+// TestPrintProviderProfiles_EmbeddedGolden pins the provider lines for the
+// profiles embedded in this binary.
+func TestPrintProviderProfiles_EmbeddedGolden(t *testing.T) {
+	var defs []harness.ProviderDef
+	for _, name := range []string{"github", "github-ro", "package-registries", "vertex-ai", "openai"} {
+		defs = append(defs, embeddedProviderDef(t, name))
+	}
+	reports := resolveProviderProfiles(defs, nil, nil)
+
+	var buf bytes.Buffer
+	printProviderProfiles(reports, ui.New(&buf))
+
+	want := "" +
+		"    provider github: profile fullsend-github (embedded) -> api.github.com rest read-write, github.com rest read-write; binaries gh, git, node, pre-commit\n" +
+		"    provider github-ro: profile fullsend-github-ro (embedded) -> api.github.com rest read-only, api.github.com graphql read-only, github.com rest read-only; binaries gh, node\n" +
+		"    provider package-registries: profile fullsend-package-registries (embedded) -> 7 endpoints: registry.npmjs.org, registry.yarnpkg.com, pypi.org, files.pythonhosted.org, proxy.golang.org, sum.golang.org, storage.googleapis.com (read-only); binaries npm, npx, yarn, yarnpkg, pnpm, node, pip, pip3, python, python3, python3.*, uv, uvx, go, pre-commit\n" +
+		"    provider vertex-ai: profile fullsend-vertex-ai (embedded) -> api.anthropic.com rest read-write, *.googleapis.com rest read-write; binaries claude, claude.exe, node, opencode, pi\n" +
+		"    provider openai: profile fullsend-openai (embedded) -> api.openai.com rest rules POST; binaries node, codex\n"
+	assert.Equal(t, want, buf.String())
+
+	write := map[string]bool{}
+	for _, r := range reports {
+		write[r.provider] = r.writeCapable
+	}
+	assert.Equal(t, map[string]bool{
+		"github":             true,
+		"github-ro":          false,
+		"package-registries": false,
+		"vertex-ai":          true,
+		"openai":             true,
+	}, write)
+}
+
+func TestResolveProviderProfiles_HarnessListed(t *testing.T) {
+	dir := t.TempDir()
+	listedPath := filepath.Join(dir, "fullsend-github.yaml")
+	require.NoError(t, os.WriteFile(listedPath, []byte(`id: fullsend-github
+endpoints:
+  - host: api.github.com
+    protocol: rest
+    access: read-only
+binaries: ["**/gh"]
+`), 0o600))
+	customPath := filepath.Join(dir, "myorg-api.yaml")
+	require.NoError(t, os.WriteFile(customPath, []byte(`id: myorg-api
+endpoints:
+  - host: api.example.invalid
+    protocol: rest
+    rules:
+      - allow:
+          method: GET
+      - allow:
+          method: head
+`), 0o600))
+	listed := []resolve.ResolvedProfile{
+		{ID: "fullsend-github", LocalPath: listedPath},
+		{ID: "myorg-api", LocalPath: customPath, FromURL: true},
+		{ID: "myorg-broken", LocalPath: filepath.Join(dir, "missing.yaml")},
+	}
+	defs := []harness.ProviderDef{
+		{Name: "github", Type: "fullsend-github"},
+		{Name: "api", Type: "myorg-api"},
+		{Name: "broken", Type: "myorg-broken"},
+		{Name: "elsewhere", Type: "myorg-on-gateway"},
+		{Name: "skipped", Type: "fullsend-openai"},
+		{Name: "jira", Type: "FULLSEND-JIRA"},
+	}
+	reports := resolveProviderProfiles(defs, listed, map[string]struct{}{"skipped": {}})
+	require.Len(t, reports, 5)
+
+	assert.Equal(t, "provider github: profile fullsend-github (harness) -> api.github.com rest read-only; binaries gh", reports[0].line)
+	assert.False(t, reports[0].writeCapable, "the listed copy, not the embedded one, decides")
+
+	assert.Equal(t, "provider api: profile myorg-api (harness) -> api.example.invalid rest rules GET/HEAD; no binaries listed", reports[1].line)
+	assert.False(t, reports[1].writeCapable)
+
+	assert.Equal(t, profileSourceHarness, reports[2].source)
+	assert.Contains(t, reports[2].line, "provider broken: profile myorg-broken (harness) could not be read:")
+	assert.False(t, reports[2].writeCapable)
+
+	assert.Equal(t, "", reports[3].source)
+	assert.Equal(t, "provider elsewhere: profile myorg-on-gateway (not imported by this run; what it permits is not known to the runner)", reports[3].line)
+
+	assert.Equal(t, "fullsend-jira", reports[4].profile, "the type is reported in its canonical form")
+	assert.Equal(t, profileSourceEmbedded, reports[4].source)
+}
+
+func TestProviderProfileEndpoint_WriteCapable(t *testing.T) {
+	allow := func(m string) providerProfileRule {
+		r := providerProfileRule{}
+		r.Allow = &struct {
+			Method string `yaml:"method"`
+		}{Method: m}
+		return r
+	}
+	tests := []struct {
+		name     string
+		endpoint providerProfileEndpoint
+		want     bool
+		access   string
+	}{
+		{"read-only", providerProfileEndpoint{Access: "read-only"}, false, "read-only"},
+		{"read-write", providerProfileEndpoint{Access: "read-write"}, true, "read-write"},
+		{"full", providerProfileEndpoint{Access: "full"}, true, "full"},
+		{"no preset, no rules", providerProfileEndpoint{}, true, "unspecified"},
+		{"GET rule", providerProfileEndpoint{Rules: []providerProfileRule{allow("GET")}}, false, "rules GET"},
+		{"POST rule", providerProfileEndpoint{Rules: []providerProfileRule{allow("GET"), allow("post")}}, true, "rules GET/POST"},
+		{"any-method rule", providerProfileEndpoint{Rules: []providerProfileRule{allow("")}}, true, "rules *"},
+		{"deny-only rule", providerProfileEndpoint{Rules: []providerProfileRule{{}}}, false, "unspecified"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.endpoint.writeCapable())
+			assert.Equal(t, tt.access, tt.endpoint.access())
+		})
+	}
+}
+
+func TestDescribeProfileEndpointsAndBinaries_Empty(t *testing.T) {
+	assert.Equal(t, "no endpoints", describeProfileEndpoints(nil))
+	assert.Equal(t, "no binaries listed", describeProfileBinaries(nil))
+}
+
+// TestDurableCredentialWriteWarnings covers the four combinations of a
+// durable credential host file and a write-capable provider.
+func TestDurableCredentialWriteWarnings(t *testing.T) {
+	writer := providerProfileReport{provider: "github", profile: "fullsend-github", writeCapable: true}
+	reader := providerProfileReport{provider: "github-ro", profile: "fullsend-github-ro"}
+	tests := []struct {
+		name    string
+		dests   []string
+		reports []providerProfileReport
+		warn    bool
+	}{
+		{"credential file and write provider", []string{"/tmp/sa.json"}, []providerProfileReport{reader, writer}, true},
+		{"credential file and read-only provider", []string{"/tmp/sa.json"}, []providerProfileReport{reader}, false},
+		{"no credential file and write provider", nil, []providerProfileReport{writer}, false},
+		{"no credential file and read-only provider", nil, []providerProfileReport{reader}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := durableCredentialWriteWarnings(tt.dests, tt.reports)
+			if !tt.warn {
+				assert.Empty(t, got)
+				return
+			}
+			require.Len(t, got, 1)
+			assert.Contains(t, got[0], "/tmp/sa.json")
+			assert.Contains(t, got[0], "github (profile fullsend-github)")
+			assert.NotContains(t, got[0], "github-ro")
+			assert.Contains(t, got[0], "access: read-only")
+			assert.Contains(t, got[0], "The profile is a declaration")
+		})
+	}
+}
+
+func TestWarnDurableCredentialWriteProviders(t *testing.T) {
+	sa := writeHostFileFixture(t, "service_account")
+	wif := writeHostFileFixture(t, "external_account")
+	h := &harness.Harness{HostFiles: []harness.HostFile{
+		{Src: sa, Dest: "/sandbox/sa.json", AllowDurable: true},
+		{Src: wif, Dest: "/sandbox/wif.json"},
+		{Src: filepath.Join(t.TempDir(), "absent"), Dest: "/sandbox/absent", Optional: true},
+	}}
+	assert.Equal(t, []string{"/sandbox/sa.json"}, durableHostFileDests(h))
+
+	writer := []providerProfileReport{{provider: "github", profile: "fullsend-github", writeCapable: true}}
+
+	var buf bytes.Buffer
+	warnDurableCredentialWriteProviders(h, writer, ui.New(&buf))
+	out := buf.String()
+	assert.Contains(t, out, "host file dest /sandbox/sa.json is a durable credential")
+	assert.NotContains(t, out, "/sandbox/wif.json")
+
+	buf.Reset()
+	warnDurableCredentialWriteProviders(h, nil, ui.New(&buf))
+	assert.Empty(t, buf.String(), "no providers, no warning")
+
+	buf.Reset()
+	warnDurableCredentialWriteProviders(&harness.Harness{}, writer, ui.New(&buf))
+	assert.Empty(t, buf.String(), "no credential host file, no warning")
+}

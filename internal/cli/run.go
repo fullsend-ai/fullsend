@@ -1744,6 +1744,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var jiraHandles []jiraProviderHandle
 	var stopJiraRefreshers []func()
 	allProviderNames := append([]string{}, h.Providers...)
+	// providerProfiles is the profile each provider resolved to, printed
+	// once the providers exist and read again by the durable-credential
+	// warning before the sandbox is created (#9510).
+	var providerProfiles []providerProfileReport
 	if len(h.Providers) > 0 || len(result.Providers) > 0 || len(result.Profiles) > 0 {
 		// Enable provider-backed policy composition on the gateway.
 		provV2Start := time.Now()
@@ -1822,6 +1826,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		warnReservedProfileCopies(result.Profiles, printer)
 		profileOverrides := profileOverridePaths(result.Profiles)
+		// Kept before the loop below normalizes types and narrows allDefs
+		// to the shared providers.
+		profileReportDefs := append([]harness.ProviderDef(nil), allDefs...)
 
 		// Run-scoped providers are created synchronously, before the
 		// shared ones: their credential is resolved in process (a WIF
@@ -1998,6 +2005,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		for _, pd := range allDefs {
 			created[pd.Name] = struct{}{}
 		}
+		// Name the profile each provider uses and what it permits, so the
+		// run output shows whether a provider may only read or may write.
+		providerProfiles = resolveProviderProfiles(profileReportDefs, result.Profiles, skippedProviders)
+		printProviderProfiles(providerProfiles, printer)
 		for _, p := range h.Providers {
 			if _, ok := created[p]; !ok {
 				printer.StepWarn(fmt.Sprintf("Provider %q declared in harness but no definition found in %s", p, providersDir))
@@ -2228,6 +2239,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err := reportHostFileCredentials(h, printer, reportedHostFiles); err != nil {
 		return err
 	}
+	// After the pre-script, which may write a host file source.
+	warnDurableCredentialWriteProviders(h, providerProfiles, printer)
 
 	// 4a. Create sandbox. A private ghcr.io harness image is pulled first
 	// with the workflow token; the gateway's own pull is anonymous (#9019).
