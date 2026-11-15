@@ -229,6 +229,8 @@ longer used; see the
 Configure each enabled agent's runtime and model for OpenAI before it runs.
 GitLab OpenAI runs use an API key, not GitHub Actions WIF; see
 [OpenAI Workload Identity](../infrastructure/openai-workload-identity.md).
+Each agent job reports that key, and its role token, as
+[CI/CD-variable credentials](../../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables).
 
 `gitlab.url` is required in every case, including gitlab.com: `repos.yaml`
 fails validation (`gitlab.url is required when GitLab repos are present`)
