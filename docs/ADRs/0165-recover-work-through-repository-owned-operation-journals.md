@@ -29,8 +29,10 @@ and external publication. Runtime workflow packaging in
 boundary: delivering a sequence to an agent runtime.
 
 [Durable work recovery](../problems/durable-work-recovery.md) describes the
-failure cases. This ADR aims to keep admitted work recoverable across hosts
-without making a model or a central daemon the coordination authority.
+failure cases. Workflows such as CVE resolution need durable state to track
+required work, continue after interruption and retain evidence within bounded
+retries. This ADR aims to keep admitted work recoverable across hosts without
+making a model or a central daemon the coordination authority.
 
 ## Options
 
@@ -53,7 +55,9 @@ effect intents and separate scheduling, execution and publication receipts.
 Conditional updates, integrity checks and ownership fencing prevent competing
 or superseded workers from accepting results or admitting new effects. An
 external request admitted before ownership loss remains in-flight until its
-outcome is reconciled.
+outcome is reconciled. Ownership expiry, supersession or result acceptance
+does not release a running attempt's concurrency reservation. Release requires
+reconciled scheduler termination.
 
 Trusted host adapters persist intent before external actions and confirm
 receipts after verified acceptance. They reconcile ambiguous outcomes before
