@@ -72,7 +72,8 @@ func TestApplyDryRunDefault(t *testing.T) {
 	}{
 		{name: "external, unset", src: external, want: "on", wantValue: "1"},
 		{name: "external, process env 0", src: external, env: map[string]string{"FULLSEND_DRY_RUN": "0"}, want: "off (FULLSEND_DRY_RUN is set)"},
-		{name: "external, process env empty", src: external, env: map[string]string{"FULLSEND_DRY_RUN": ""}, want: "off (FULLSEND_DRY_RUN is set)"},
+		{name: "external, process env empty counts as unset", src: external, env: map[string]string{"FULLSEND_DRY_RUN": ""}, want: "on", wantValue: "1"},
+		{name: "external, env.runner empty counts as unset", src: external, runnerEnv: map[string]string{"FULLSEND_DRY_RUN": ""}, want: "on", wantValue: "1"},
 		{name: "external, env.runner 0", src: external, runnerEnv: map[string]string{"FULLSEND_DRY_RUN": "0"}, want: "off (FULLSEND_DRY_RUN is set)", wantValue: "0"},
 		{name: "maintainer, unset", src: maintainer, want: "off"},
 		{name: "maintainer, process env 1", src: maintainer, env: map[string]string{"FULLSEND_DRY_RUN": "1"}, want: "off"},
@@ -112,7 +113,10 @@ func TestApplyInputSource_ForgeWriteGate(t *testing.T) {
 	dir := t.TempDir()
 	writeProviderDef(t, dir, "gitlab", "fullsend-gitlab-forge")
 	writeProviderDef(t, dir, "notes", "fullsend-notes")
+	writeProviderDef(t, dir, "gitlab-rw", "fullsend-gitlab-rw")
+	writeProviderDef(t, dir, "gitlab-ro", "fullsend-gitlab-ro")
 	const advice = "switch to github-ro (type fullsend-github-ro), or set allow_forge_write: true in the harness"
+	const gitlabForgeAdvice = "remove the provider, or set allow_forge_write: true in the harness"
 	for _, tc := range []struct {
 		name       string
 		providers  []string
@@ -123,20 +127,24 @@ func TestApplyInputSource_ForgeWriteGate(t *testing.T) {
 		wantLine   string
 	}{
 		{name: "github, external, no opt-in", providers: []string{"github"}, source: "external",
-			wantErr: `input_source is external (harness), but provider "github" (type fullsend-github) can write to the forge; ` + advice},
+			wantErr: "input_source is external (harness), but these providers can write to the forge:\n    provider \"github\" (type fullsend-github): " + advice},
 		{name: "github, external, opt-in", providers: []string{"github"}, source: "external", allowWrite: true,
 			wantLine: "input_source: external (harness); dry run default: on; forge write: github; durable host files: none"},
 		{name: "github-ro, external", providers: []string{"github-ro"}, source: "external",
 			wantLine: "input_source: external (harness); dry run default: on; forge write: github-ro; durable host files: none"},
 		{name: "gitlab forge, external, no opt-in", providers: []string{"gitlab"}, source: "external",
-			wantErr: `input_source is external (harness), but provider "gitlab" (type fullsend-gitlab-forge) can write to the forge; ` + advice},
+			wantErr: `provider "gitlab" (type fullsend-gitlab-forge): ` + gitlabForgeAdvice},
+		{name: "gitlab-rw, external, no opt-in", providers: []string{"gitlab-rw"}, source: "external",
+			wantErr: `provider "gitlab-rw" (type fullsend-gitlab-rw): switch to gitlab-ro (type fullsend-gitlab-ro), or set allow_forge_write: true in the harness`},
+		{name: "gitlab-ro, external", providers: []string{"gitlab-ro"}, source: "external",
+			wantLine: "input_source: external (harness); dry run default: on; forge write: gitlab-ro; durable host files: none"},
 		{name: "gitlab forge, external, opt-in", providers: []string{"gitlab"}, source: "external", allowWrite: true,
 			wantLine: "input_source: external (harness); dry run default: on; forge write: gitlab; durable host files: none"},
 		{name: "two write providers are both named", providers: []string{"github", "gitlab"}, source: "external",
-			wantErr: `but provider "gitlab" (type fullsend-gitlab-forge), provider "github" (type fullsend-github) can write`},
+			wantErr: "forge:\n    provider \"gitlab\" (type fullsend-gitlab-forge): " + gitlabForgeAdvice + "\n    provider \"github\" (type fullsend-github): " + advice},
 		{name: "URL-resolved github provider", source: "external",
 			resolved: []resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "org-github", Type: "fullsend-github"}}},
-			wantErr:  `provider "org-github" (type fullsend-github) can write to the forge`},
+			wantErr:  `provider "org-github" (type fullsend-github): ` + advice},
 		{name: "other provider types are unaffected", providers: []string{"notes"}, source: "external",
 			wantLine: "input_source: external (harness); dry run default: on; forge write: none; durable host files: none"},
 		{name: "github, maintainer", providers: []string{"github"}, source: "maintainer",
@@ -240,7 +248,7 @@ func TestRunAgent_InputSource(t *testing.T) {
 		{name: "forge-write provider fails before the pre-script",
 			extra:   "input_source: external\nproviders:\n  - github\n",
 			env:     map[string]string{"FULLSEND_INPUT_SOURCE": ""},
-			wantErr: `provider "github" (type fullsend-github) can write to the forge; switch to github-ro`},
+			wantErr: `provider "github" (type fullsend-github): switch to github-ro`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			usePreScriptStub(t)

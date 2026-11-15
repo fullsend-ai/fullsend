@@ -61,13 +61,13 @@ The **Runtime** line shows which runtime was selected and the config source it w
 
 ## Input source
 
-Every run prints one line before the pre-script that says who wrote the text the agent reads, and which defaults that changed:
+Every run prints one line before the pre-script. It names the input source and the defaults it changed:
 
 ```
 input_source: external (harness); dry run default: on; forge write: github-ro; durable host files: none
 ```
 
-The value comes from the harness `input_source` field, else the `FULLSEND_INPUT_SOURCE` environment variable (`external` or `maintainer`), else `maintainer`. Any other value of either one stops the run before the sandbox is created. For `external`, the run sets `FULLSEND_DRY_RUN=1` for the pre-script, post-script and validation script when the runner environment and `env.runner` leave it unset. It also stops before the pre-script when a provider of type `fullsend-github` or `fullsend-gitlab-forge` is attached without `allow_forge_write: true`. See [Harness Field Reference § `input_source`](../reference/harness-reference.md#field-details).
+The value comes from the harness `input_source` field, else the `FULLSEND_INPUT_SOURCE` environment variable (`external` or `maintainer`; empty counts as unset), else `maintainer`. Any other value of either one stops the run before the sandbox is created. For `external`, the run sets `FULLSEND_DRY_RUN=1` for the pre-script, post-script and validation script when neither the host process environment nor `env.runner` sets it to a non-empty value. It also stops before the pre-script when a provider that can write to the forge (type `fullsend-github`, `fullsend-gitlab-rw` or `fullsend-gitlab-forge`) is attached without `allow_forge_write: true`. See [Harness Field Reference § `input_source`](../reference/harness-reference.md#field-details).
 
 ## Runtime selection
 

@@ -58,6 +58,8 @@ func TestMergeBaseIntoChild_InputSource(t *testing.T) {
 	}{
 		{name: "child inherits base input_source",
 			base: Harness{InputSource: InputSourceExternal}, wantSource: InputSourceExternal},
+		{name: "base maintainer is not inherited, so FULLSEND_INPUT_SOURCE still applies",
+			base: Harness{InputSource: InputSourceMaintainer}, wantSource: ""},
 		{name: "child input_source wins",
 			base: Harness{InputSource: InputSourceExternal}, child: Harness{InputSource: InputSourceMaintainer}, wantSource: InputSourceMaintainer},
 		{name: "base allow_forge_write is not inherited",

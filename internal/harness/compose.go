@@ -926,11 +926,12 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	if child.Trigger == "" {
 		child.Trigger = base.Trigger
 	}
-	// InputSource (#9509) inherits like the other scalars, so a base that
-	// declares external input keeps its children external unless they say
-	// otherwise. Top level only, not a ForgeConfig field, so
-	// mergeForgeConfig needs no matching slot.
-	if child.InputSource == "" {
+	// InputSource (#9509) inherits only when the base declares external, so
+	// a base keeps its children external unless they say otherwise, but a
+	// base that declares maintainer cannot override FULLSEND_INPUT_SOURCE
+	// for a child that leaves the field unset. Top level only, not a
+	// ForgeConfig field, so mergeForgeConfig needs no matching slot.
+	if child.InputSource == "" && base.InputSource == InputSourceExternal {
 		child.InputSource = base.InputSource
 	}
 	if child.PreScript == "" {

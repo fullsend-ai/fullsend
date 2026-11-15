@@ -20,14 +20,32 @@ const (
 	dryRunEnvVar = "FULLSEND_DRY_RUN"
 )
 
-// Provider types that reach the forge. The first two can write; the
-// read-only one is listed in the run output but needs no opt-in.
-const (
-	providerTypeGitHub       = "fullsend-github"
-	providerTypeGitHubRO     = "fullsend-github-ro"
-	providerTypeGitLabForge  = "fullsend-gitlab-forge"
-	forgeWriteProviderAdvice = "switch to github-ro (type " + providerTypeGitHubRO + "), or set allow_forge_write: true in the harness"
-)
+// forgeWriteProviderTypes maps each provider type that can write to the
+// forge to the read-only alternative the gate suggests ("" when there is
+// none). An external-input run needs allow_forge_write: true to attach one.
+var forgeWriteProviderTypes = map[string]string{
+	"fullsend-github":       "github-ro (type fullsend-github-ro)",
+	"fullsend-gitlab-rw":    "gitlab-ro (type fullsend-gitlab-ro)",
+	"fullsend-gitlab-forge": "",
+}
+
+// forgeReadProviderTypes are provider types that reach the forge without
+// write access. They are listed in the run output but need no opt-in.
+var forgeReadProviderTypes = map[string]bool{
+	"fullsend-github-ro":        true,
+	"fullsend-github-public-ro": true,
+	"fullsend-github-code":      true,
+	"fullsend-gitlab-ro":        true,
+	"fullsend-gitlab-code":      true,
+}
+
+// forgeWriteAdvice names both ways past the gate for one provider type.
+func forgeWriteAdvice(typ string) string {
+	if alt := forgeWriteProviderTypes[typ]; alt != "" {
+		return "switch to " + alt + ", or set allow_forge_write: true in the harness"
+	}
+	return "remove the provider, or set allow_forge_write: true in the harness"
+}
 
 // inputSource is the effective input source of a run and where it came
 // from: "harness", "env" or "default".
@@ -64,17 +82,19 @@ func resolveInputSource(h *harness.Harness, lookup func(string) (string, bool)) 
 
 // applyDryRunDefault sets FULLSEND_DRY_RUN=1 in the runner environment of an
 // external-input run when neither the process environment nor env.runner
-// sets it, so host-side scripts that read it do not write. A value that is
-// already set, such as an explicit 0, is left as is. It returns the
-// dry-run segment of the run output line.
+// sets it, so host-side scripts that read it do not write. A non-empty
+// value, such as an explicit 0, is left as is; an empty one counts as unset,
+// as it does for FULLSEND_INPUT_SOURCE, so a blank workflow input cannot
+// turn the default off. It returns the dry-run segment of the run output
+// line.
 func applyDryRunDefault(h *harness.Harness, src inputSource, lookup func(string) (string, bool)) string {
 	if !src.external() {
 		return "off"
 	}
-	if _, ok := h.RunnerEnv[dryRunEnvVar]; ok {
+	if v := h.RunnerEnv[dryRunEnvVar]; v != "" {
 		return "off (" + dryRunEnvVar + " is set)"
 	}
-	if _, ok := lookup(dryRunEnvVar); ok {
+	if v, ok := lookup(dryRunEnvVar); ok && v != "" {
 		return "off (" + dryRunEnvVar + " is set)"
 	}
 	if h.RunnerEnv == nil {
@@ -113,11 +133,10 @@ func runProviderDefs(absFullsendDir string, declared []string, resolved []resolv
 // those among them that can write to it.
 func forgeProviders(defs []harness.ProviderDef) (forge, write []harness.ProviderDef) {
 	for _, d := range defs {
-		switch d.Type {
-		case providerTypeGitHub, providerTypeGitLabForge:
+		if _, ok := forgeWriteProviderTypes[d.Type]; ok {
 			forge = append(forge, d)
 			write = append(write, d)
-		case providerTypeGitHubRO:
+		} else if forgeReadProviderTypes[d.Type] {
 			forge = append(forge, d)
 		}
 	}
@@ -132,10 +151,10 @@ func checkForgeWrite(h *harness.Harness, src inputSource, write []harness.Provid
 	}
 	names := make([]string, len(write))
 	for i, d := range write {
-		names[i] = fmt.Sprintf("provider %q (type %s)", d.Name, d.Type)
+		names[i] = fmt.Sprintf("provider %q (type %s): %s", d.Name, d.Type, forgeWriteAdvice(d.Type))
 	}
-	return fmt.Errorf("input_source is external (%s), but %s can write to the forge; %s",
-		src.origin, strings.Join(names, ", "), forgeWriteProviderAdvice)
+	return fmt.Errorf("input_source is external (%s), but these providers can write to the forge:\n    %s",
+		src.origin, strings.Join(names, "\n    "))
 }
 
 // durableHostFileDests returns the dest of each host_files entry whose
