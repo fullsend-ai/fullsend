@@ -207,11 +207,12 @@ What counts as a CI/CD-variable credential:
 - `VAR` is set, and its value is not a GitLab `id_tokens` JWT (a JWT whose
   `iss` claim equals `CI_SERVER_URL`; only the claims are decoded).
 
-To print the line as info instead of a warning, for example on a self-managed
-instance without `id_tokens:` support, set `allow_ci_variable_credential: true`
-in the harness. The field is not inherited, so for a stock agent add it to a
-local harness that sets `base:` to the stock one (see the
-[harness reference](../reference/harness-reference.md#field-details)).
+Where the table says "none yet", there is nothing to change: the line stays
+until GitLab offers a keyless route for that credential. To print it as info
+instead of a warning, set `allow_ci_variable_credential: true` in the harness.
+The field is not inherited, so for a stock agent set it in a local child
+harness; see
+[Configuration with `base:` composition](../guides/user/customizing-agents.md#configuration-with-base-composition).
 
 ### Project access token names
 
