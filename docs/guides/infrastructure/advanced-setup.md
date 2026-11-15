@@ -131,11 +131,17 @@ and sandboxes are created on the remote gateway. The gateway must
 already be registered on the runner: `openshell gateway add` stores the
 gateway's mTLS or authentication material, and the action never
 registers a gateway itself. Set the variable to the endpoint exactly as
-it was registered — OpenShell matches the configured endpoint against
-the registered gateways, and a value that does not match (for example
-`https://gw:443` where `https://gw` is registered) makes the sandbox
-fail later at the TLS or authentication handshake, with an error that
-does not point at the mismatch. The runner operator who registered the
+it was registered, as an `https://` URL — plaintext `http://` gateways
+are rejected. When `OPENSHELL_GATEWAY` is not set on the runner,
+OpenShell matches the configured endpoint against the registered
+gateways, and a value that does not match (for example `https://gw:443`
+where `https://gw` is registered) makes the sandbox fail later at the
+TLS or authentication handshake, with an error that does not point at
+the mismatch. When a fleet image sets `OPENSHELL_GATEWAY`, no endpoint
+matching happens: the named gateway's registered material is used with
+whatever endpoint the variable holds, so on a runner pool shared across
+repositories, a repository variable from any one repository decides
+where that gateway is used. The runner operator who registered the
 gateway can confirm the exact registered value. A non-empty repository
 or organization variable deliberately takes precedence over a value
 configured in the runner's process environment: repository
