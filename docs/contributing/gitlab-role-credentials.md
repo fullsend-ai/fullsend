@@ -190,7 +190,8 @@ token prints:
 The line never contains the value, and the run continues. It is there because
 a CI/CD variable is weaker than an `id_tokens:` OIDC token: masking misses a
 base64 or concatenated copy, `protected: true` does not help on the default
-branch, and the value never expires.
+branch, and the variable sets no expiry of its own: the value lives until its
+issuer expires it or someone rotates it.
 
 | Credential | CI/CD variable | Keyless `id_tokens:` replacement |
 | --- | --- | --- |
