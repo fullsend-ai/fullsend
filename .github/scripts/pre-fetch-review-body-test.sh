@@ -129,7 +129,7 @@ run_test() {
     return
   fi
 
-  if ! grep -qx "policy_skip=${expected_policy}" "${TMPDIR}/github-output"; then
+  if [[ "$(grep '^policy_skip=' "${TMPDIR}/github-output" | tail -n 1)" != "policy_skip=${expected_policy}" ]]; then
     echo "FAIL: ${name} — expected policy_skip=${expected_policy} output"
     FAILURES=$((FAILURES + 1))
     return

@@ -688,9 +688,12 @@ GitHub-originated events. Pre-agent failures from Jira- and GitLab-originated
 events are currently not reported by this fallback; tracker-specific
 startup-failure reporting is tracked in [#9256](https://github.com/fullsend-ai/fullsend/issues/9256).
 Retries of the same workflow run update the existing startup-failure comment
-instead of creating duplicates. A later workflow run posts a new comment so
-the historical failure and its workflow-run link are preserved; a later
-successful run does not remove that historical comment.
+instead of creating duplicates. A later workflow run normally posts a new
+comment so the historical failure and its workflow-run link are preserved; a
+later successful run does not remove that historical comment. Harness-dispatch
+failures are the exception: because they can recur on every forwarded event
+before any agent is selected, they update one stable comment per issue or PR
+with neutral wording that agents may not have run.
 
 The standalone prioritize workflow also supplies the status target and, for
 GitHub-originated calls targeting a different repository, mints a

@@ -2557,8 +2557,6 @@ jobs:
           export FULLSEND_FAILURE_AGENT="prioritize"
           export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
           export FULLSEND_FAILURE_CATEGORY="workflow setup"
-          export FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"
-          export FULLSEND_FAILURE_STABLE_MARKER="true"
           bash "${script}"
 
   harness-dispatch:
@@ -2755,6 +2753,8 @@ jobs:
           export FULLSEND_FAILURE_ROLE="harness"
           export FULLSEND_FAILURE_RUN_URL="${RUN_URL}"
           export FULLSEND_FAILURE_CATEGORY="workflow setup"
+          export FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"
+          export FULLSEND_FAILURE_STABLE_MARKER="true"
           bash "${script}"
 
   harness-run:

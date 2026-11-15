@@ -67,8 +67,12 @@ func TestStartupFailureReportingGuards(t *testing.T) {
 	assert.Contains(t, dispatchText, "steps.fork_guard.outputs.policy_skip != 'true'")
 	assert.Contains(t, dispatchText, "steps.eligibility.outputs.policy_skip != 'true'")
 	assert.Contains(t, dispatchText, "steps.review-body.outputs.policy_skip != 'true'")
-	assert.Contains(t, dispatchText, `FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"`)
-	assert.Contains(t, dispatchText, `FULLSEND_FAILURE_STABLE_MARKER="true"`)
+	harnessFailureSection := extractStepSection(t, dispatchText, "Report harness dispatch failure")
+	assert.Contains(t, harnessFailureSection, `FULLSEND_FAILURE_SUMMARY="Harness dispatch failed; agents may not have run"`)
+	assert.Contains(t, harnessFailureSection, `FULLSEND_FAILURE_STABLE_MARKER="true"`)
+	prioritizeFailureSection := extractStepSection(t, dispatchText, "Report prioritize launch failure")
+	assert.NotContains(t, prioritizeFailureSection, "FULLSEND_FAILURE_SUMMARY=")
+	assert.NotContains(t, prioritizeFailureSection, "FULLSEND_FAILURE_STABLE_MARKER=")
 	assert.GreaterOrEqual(t, strings.Count(dispatchText, `export FULLSEND_FAILURE_ROLE="coder"`), 2,
 		"code and fix reporters must use the shared coder bot role")
 
