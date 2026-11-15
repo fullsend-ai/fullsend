@@ -67,7 +67,21 @@ Every run prints one line before the pre-script. It names the input source and t
 input_source: external (harness); dry run default: on; forge write: github-ro; durable host files: none
 ```
 
-The value comes from the harness `input_source` field, else the `FULLSEND_INPUT_SOURCE` environment variable (`external` or `maintainer`; empty counts as unset), else `maintainer`. Any other value of either one stops the run before the sandbox is created. For `external`, the run sets `FULLSEND_DRY_RUN=1` for the pre-script, post-script and validation script when neither the host process environment nor `env.runner` sets it to a non-empty value. It also stops before the pre-script when a provider that can write to the forge (type `fullsend-github`, `fullsend-gitlab-rw` or `fullsend-gitlab-forge`) is attached without `allow_forge_write: true`, and when a declared provider has no definition, because its type cannot be checked. See [Harness Field Reference § `input_source`](../reference/harness-reference.md#field-details).
+The value comes from the harness `input_source` field, then the `FULLSEND_INPUT_SOURCE` environment variable (`external` or `maintainer`; empty counts as unset), then `maintainer`. Any other value stops the run before the pre-script and before the sandbox is created.
+
+The line has four parts:
+
+- `(harness)`, `(env)` or `(default)`: where the value came from.
+- `dry run default`: `on` when the run set `FULLSEND_DRY_RUN=1`, `off (FULLSEND_DRY_RUN is set)` when an external run found a non-empty value already set, and `off` otherwise.
+- `forge write`: the names of the attached forge providers, read-only ones included, or `none`.
+- `durable host files`: the `dest` of each attached durable credential, or `none`.
+
+When the input source is `external`:
+
+- **Dry run is the default.** Unless the host process environment or `env.runner` sets `FULLSEND_DRY_RUN` to a non-empty value, the run sets `FULLSEND_DRY_RUN=1` for the pre-script, post-script and validation script. Scripts that honour it print what they would write instead of writing. Set `FULLSEND_DRY_RUN=0` to write for real.
+- **Forge write needs `allow_forge_write: true`.** Without it, the run stops before the pre-script when it attaches a provider that can write to the forge (type `fullsend-github`, `fullsend-gitlab-rw` or `fullsend-gitlab-forge`), or a declared provider with no definition, whose type cannot be checked.
+
+See [Harness Field Reference § `input_source`](../reference/harness-reference.md#field-details).
 
 ## Runtime selection
 

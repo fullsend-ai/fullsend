@@ -417,8 +417,8 @@ wrote it. Any other value fails harness validation with
 1. The harness field, when set.
 2. The `FULLSEND_INPUT_SOURCE` environment variable (`external` or
    `maintainer`), so a workflow can pass a value it knows. An empty variable
-   counts as unset. Any other value fails the run before the sandbox is
-   created, even when the harness sets the field.
+   counts as unset. Any other value fails the run before the pre-script
+   and before the sandbox is created, even when the harness sets the field.
 3. Otherwise `maintainer`, which keeps the behaviour of a run without the
    field.
 
@@ -484,9 +484,10 @@ from its `base:`. A base that declares `maintainer` is not inherited, so a
 child without the field still reads `FULLSEND_INPUT_SOURCE`.
 
 **`allow_forge_write`** — Lets a run whose input source is `external` attach
-a provider that can write to the forge (see the table above). Set it only
-when an agent that reads external text must write back to the forge, for
-example to push a branch or open a pull request. It has no effect when the
+a provider that can write to the forge (see the table above), or a declared
+provider with no definition. Set it only when an agent that reads external
+text must write back to the forge, for example to push a branch or open a
+pull request, or when it needs a provider that has no definition. It has no effect when the
 input source is `maintainer`. **Top level only** (a key under
 `overlays:`/`forge:` is silently ignored), and not inherited from a
 `base:`, so a base cannot grant it to a child: the harness that runs

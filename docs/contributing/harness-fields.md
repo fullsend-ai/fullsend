@@ -78,7 +78,7 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `max_runtime_fetches` | Fetch cap                                       |
 | `trigger`          | CEL trigger expression, evaluated against normalized events (ADR-0061) |
 | `input_source`     | Who wrote the text the agent reads (`external` or `maintainer`); `fullsend run` falls back to `FULLSEND_INPUT_SOURCE`, then `maintainer` (#9509) |
-| `allow_forge_write` | Opt-in for an `external` run to attach a forge-write provider (type `fullsend-github`, `fullsend-gitlab-rw` or `fullsend-gitlab-forge`) (#9509) |
+| `allow_forge_write` | Opt-in for an `external` run to attach a forge-write provider (type `fullsend-github`, `fullsend-gitlab-rw` or `fullsend-gitlab-forge`) or a provider with no definition (#9509) |
 | `privilege_levels` | Mint privilege per run-stage (ADR-0073)            |
 | `schema_version`   | Schema contract version (ADR-0127); absent = `1`; malformed, zero, negative or unsupported values fail load |
 | `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** ([#8722](https://github.com/fullsend-ai/fullsend/issues/8722)) |
