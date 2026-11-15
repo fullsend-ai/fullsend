@@ -12,26 +12,24 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// GitLab CI/CD-variable credential report (#9511).
-//
-// On GitLab, a provider credential that comes from a CI/CD variable is a
-// long-lived value whose masking is exact-string log redaction and whose
-// lifetime is decided by whoever rotates it. fullsend cannot change those
-// semantics, but it can notice which route a run took and say so. The
-// report is advisory: it never blocks the run and never prints a value.
-
-// ciVariableCredentialPolicy carries what the report needs to know about
-// the run: the effective forge platform and the harness opt-out
-// (allow_ci_variable_credential), which downgrades the warning to an info
-// line.
+// ciVariableCredentialPolicy decides whether a run reports provider
+// credentials that come from GitLab CI/CD variables, and at which level.
+// The report never blocks the run and never prints a value.
 type ciVariableCredentialPolicy struct {
-	forge string
-	allow bool
+	forge    string // effective forge platform
+	gitlabCI bool   // GITLAB_CI=true: the runner is a GitLab CI job
+	allow    bool   // allow_ci_variable_credential: info line, not a warning
 }
 
 // gitLab reports whether the run's forge resolved to GitLab.
 func (p ciVariableCredentialPolicy) gitLab() bool {
 	return p.forge == "gitlab"
+}
+
+// reports reports whether CI/CD-variable credentials are reported: a
+// GitLab run inside a GitLab CI job. A local run has no CI/CD variables.
+func (p ciVariableCredentialPolicy) reports() bool {
+	return p.gitLab() && p.gitlabCI
 }
 
 // noKeylessReplacementOnGitLab ends a report line whose provider type has
@@ -40,11 +38,32 @@ const noKeylessReplacementOnGitLab = "no keyless replacement on GitLab yet"
 
 // gitLabKeylessReplacements maps a provider type to the keyless route that
 // replaces a CI/CD-variable credential on GitLab. Provider types without an
-// entry have no such route yet. Keep in sync with the table in
-// docs/contributing/gitlab-role-credentials.md.
+// entry have no such route yet. The shipped vertex-ai definition declares
+// no credentials, so the entry applies to custom Vertex definitions. Keep
+// in sync with the table in docs/contributing/gitlab-role-credentials.md.
 var gitLabKeylessReplacements = map[string]string{
 	"fullsend-vertex-ai": "an `id_tokens:` OIDC token (FULLSEND_ID_TOKEN) exchanged through the gitlab-oidc Workload Identity provider",
 }
+
+// ciVariableSource returns the CI/CD variable a runner variable is set
+// from. The GitLab agent job exports two credentials under a different
+// name: OPENAI_API_KEY from FULLSEND_OPENAI_API_KEY (run-agent-job.sh), and
+// GITLAB_TOKEN from the selected role secret, which fullsend run publishes
+// as FULLSEND_GITLAB_ROLE_SECRET. Other variables are their own source.
+func ciVariableSource(variable string, getenv func(string) string) string {
+	switch variable {
+	case openAIStaticKeyEnv:
+		return "FULLSEND_OPENAI_API_KEY"
+	case "GITLAB_TOKEN":
+		if s := getenv(envGitLabRoleSecret); envVarName.MatchString(s) {
+			return s
+		}
+	}
+	return variable
+}
+
+// envVarName matches a shell environment variable name.
+var envVarName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // ciVariableRef matches a credential value that is exactly one ${VAR} or
 // $VAR reference.
@@ -72,7 +91,7 @@ func isGitLabIDToken(v, ciServerURL string) bool {
 	if ciServerURL == "" {
 		return false
 	}
-	parts := strings.Split(v, ".")
+	parts := strings.Split(strings.TrimSpace(v), ".")
 	if len(parts) != 3 || parts[0] == "" || parts[1] == "" {
 		return false
 	}
@@ -112,13 +131,18 @@ func fromCIVariable(variable string, getenv func(string) string) bool {
 }
 
 // ciVariableCredentialLine is the report line for one credential. It names
-// the provider, the credential key and the variable, never the value.
-func ciVariableCredentialLine(provider, providerType, key, variable string) string {
+// the provider, the credential key, the CI/CD variable and, when it
+// differs, the runner variable, never the value.
+func ciVariableCredentialLine(provider, providerType, key, variable string, getenv func(string) string) string {
 	replacement := noKeylessReplacementOnGitLab
 	if r, ok := gitLabKeylessReplacements[strings.ToLower(providerType)]; ok {
 		replacement = "keyless replacement: " + r
 	}
-	return fmt.Sprintf("provider %q: credential %s comes from CI/CD variable %s, a long-lived value masked by exact match only; %s", provider, key, variable, replacement)
+	from := ciVariableSource(variable, getenv)
+	if from != variable {
+		from += " (runner variable " + variable + ")"
+	}
+	return fmt.Sprintf("provider %q: credential %s comes from CI/CD variable %s, a long-lived value that masking hides only as an exact string; %s", provider, key, from, replacement)
 }
 
 // ciVariableCredentialLines returns the report lines for the provider
@@ -138,7 +162,7 @@ func ciVariableCredentialLines(defs []harness.ProviderDef, getenv func(string) s
 			if !ok || !fromCIVariable(variable, getenv) {
 				continue
 			}
-			lines = append(lines, ciVariableCredentialLine(pd.Name, pd.Type, k, variable))
+			lines = append(lines, ciVariableCredentialLine(pd.Name, pd.Type, k, variable, getenv))
 		}
 	}
 	return lines
@@ -155,10 +179,9 @@ func reportCIVariableLine(policy ciVariableCredentialPolicy, line string, printe
 }
 
 // reportCIVariableCredentials prints a line for each provider credential
-// that comes from a CI/CD variable on a GitLab run. Other forges print
-// nothing. The run continues either way.
+// that comes from a CI/CD variable when policy.reports().
 func reportCIVariableCredentials(policy ciVariableCredentialPolicy, defs []harness.ProviderDef, getenv func(string) string, printer *ui.Printer) {
-	if !policy.gitLab() {
+	if !policy.reports() {
 		return
 	}
 	for _, line := range ciVariableCredentialLines(defs, getenv) {

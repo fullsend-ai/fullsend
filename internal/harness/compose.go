@@ -985,7 +985,7 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	// cannot inject arbitrary URL prefixes or enable runtime fetching in the
 	// child. The child must declare its own allowlist and fetch settings.
 	// AllowCIVariableCredential is not merged either, so a base cannot
-	// silence the GitLab CI/CD-variable credential warning (#9511).
+	// silence the GitLab CI/CD-variable credential warning.
 	if base.APIServers != nil {
 		merged := make([]APIServer, 0, len(base.APIServers)+len(child.APIServers))
 		merged = append(merged, base.APIServers...)

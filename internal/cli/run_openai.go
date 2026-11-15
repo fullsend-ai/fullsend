@@ -920,11 +920,9 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 	}
 	if cred.source == "static" {
 		if ciCreds.gitLab() {
-			// GitLab OpenAI runs use an API key (run-agent-job.sh exports
-			// the FULLSEND_OPENAI_API_KEY CI/CD variable as OPENAI_API_KEY);
-			// the WIF variables below are GitHub Actions only (#9511).
-			if fromCIVariable(openAIStaticKeyEnv, os.Getenv) {
-				reportCIVariableLine(ciCreds, ciVariableCredentialLine(pd.Name, pd.Type, openAIDefaultCredentialKey, openAIStaticKeyEnv), printer)
+			// The WIF variables below are GitHub Actions only.
+			if ciCreds.reports() && fromCIVariable(openAIStaticKeyEnv, os.Getenv) {
+				reportCIVariableLine(ciCreds, ciVariableCredentialLine(pd.Name, pd.Type, openAIDefaultCredentialKey, openAIStaticKeyEnv, os.Getenv), printer)
 			}
 		} else if os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("CI") != "" {
 			printer.StepWarn("OpenAI credential is a static OPENAI_API_KEY in CI; prefer Workload Identity Federation (FULLSEND_OPENAI_AUDIENCE, FULLSEND_OPENAI_IDENTITY_PROVIDER_ID, FULLSEND_OPENAI_SERVICE_ACCOUNT_ID) so no long-lived key is stored")

@@ -410,10 +410,8 @@ type Harness struct {
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
 
 	// AllowCIVariableCredential downgrades the GitLab CI/CD-variable
-	// provider credential warning to an info line (#9511), for
-	// installations that cannot use `id_tokens:`. Top level only, scalar
-	// (ADR 0127), default false, and not inherited from a base: harness,
-	// so a base cannot silence the warning for its children.
+	// provider credential warning to an info line. Top level only and not
+	// inherited from a base, so a base cannot silence it for its children.
 	AllowCIVariableCredential bool `yaml:"allow_ci_variable_credential,omitempty"`
 
 	// Runtime-only fields (not serialized to YAML)

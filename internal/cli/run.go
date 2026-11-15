@@ -1826,7 +1826,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Another JIRA_TOKEN provider next to the minted Jira provider")
 			return err
 		}
-		ciCreds := ciVariableCredentialPolicy{forge: forgePlatform, allow: h.AllowCIVariableCredential}
+		ciCreds := ciVariableCredentialPolicy{forge: forgePlatform, gitlabCI: os.Getenv("GITLAB_CI") == "true", allow: h.AllowCIVariableCredential}
 		created := make(map[string]struct{}, len(allDefs))
 		sharedDefs := allDefs[:0:0]
 		handledEmbeddedProfiles := make(map[string]struct{}, len(allDefs))
@@ -1962,10 +1962,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			defer stopAndWait()
 		}
 		allDefs = sharedDefs
-		// Shared providers expand their ${VAR} credentials from the runner
-		// environment; on GitLab, report the ones that come from a CI/CD
-		// variable (#9511). Run-scoped providers resolve their credential
-		// in process and are reported by their own path.
+		// Run-scoped providers (OpenAI above) report their own credential.
 		reportCIVariableCredentials(ciCreds, allDefs, os.Getenv, printer)
 
 		var (
