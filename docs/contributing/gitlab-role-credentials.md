@@ -204,7 +204,8 @@ What counts as a CI/CD-variable credential:
 
 - the run's forge is GitLab and `GITLAB_CI=true`;
 - a provider definition's `credentials:` value is exactly one `${VAR}` or
-  `$VAR`;
+  `$VAR`, or the credential is the OpenAI static key, read from the runner
+  variable `OPENAI_API_KEY`;
 - `VAR` is set and non-empty, and its value is not a GitLab `id_tokens` JWT (a
   JWT whose `iss` claim equals `CI_SERVER_URL`; only the claims are decoded).
 
