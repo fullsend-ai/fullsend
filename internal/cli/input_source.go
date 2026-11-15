@@ -94,11 +94,15 @@ func applyDryRunDefault(h *harness.Harness, src inputSource, lookup func(string)
 	if v := h.RunnerEnv[dryRunEnvVar]; v != "" {
 		return "off (" + dryRunEnvVar + " is set)"
 	}
-	if v, ok := lookup(dryRunEnvVar); ok && v != "" {
-		return "off (" + dryRunEnvVar + " is set)"
-	}
 	if h.RunnerEnv == nil {
 		h.RunnerEnv = map[string]string{}
+	}
+	// Copy a non-empty process value into the runner env, so an empty
+	// env.runner entry, which scripts see after the process env, cannot
+	// blank it out.
+	if v, ok := lookup(dryRunEnvVar); ok && v != "" {
+		h.RunnerEnv[dryRunEnvVar] = v
+		return "off (" + dryRunEnvVar + " is set)"
 	}
 	h.RunnerEnv[dryRunEnvVar] = "1"
 	return "on"

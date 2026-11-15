@@ -71,7 +71,8 @@ func TestApplyDryRunDefault(t *testing.T) {
 		wantValue string // FULLSEND_DRY_RUN in RunnerEnv afterwards; "" = absent
 	}{
 		{name: "external, unset", src: external, want: "on", wantValue: "1"},
-		{name: "external, process env 0", src: external, env: map[string]string{"FULLSEND_DRY_RUN": "0"}, want: "off (FULLSEND_DRY_RUN is set)"},
+		{name: "external, process env 0", src: external, env: map[string]string{"FULLSEND_DRY_RUN": "0"}, want: "off (FULLSEND_DRY_RUN is set)", wantValue: "0"},
+		{name: "external, process env 1 survives an empty env.runner entry", src: external, env: map[string]string{"FULLSEND_DRY_RUN": "1"}, runnerEnv: map[string]string{"FULLSEND_DRY_RUN": ""}, want: "off (FULLSEND_DRY_RUN is set)", wantValue: "1"},
 		{name: "external, process env empty counts as unset", src: external, env: map[string]string{"FULLSEND_DRY_RUN": ""}, want: "on", wantValue: "1"},
 		{name: "external, env.runner empty counts as unset", src: external, runnerEnv: map[string]string{"FULLSEND_DRY_RUN": ""}, want: "on", wantValue: "1"},
 		{name: "external, env.runner 0", src: external, runnerEnv: map[string]string{"FULLSEND_DRY_RUN": "0"}, want: "off (FULLSEND_DRY_RUN is set)", wantValue: "0"},
