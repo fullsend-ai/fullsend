@@ -177,6 +177,43 @@ generic forge secret list; role provisioning repairs an existing
 shared-token installation by provisioning the missing role credentials.
 It does not touch the leftover shared secret.
 
+### Provider credentials from CI/CD variables
+
+A CI/CD variable is a long-lived value. Masking redacts only the exact
+string, so base64 or concatenation gets past it. `protected: true` does not
+help on the default branch. The value has no expiry. On a GitLab run,
+`fullsend run` therefore reports each provider credential that comes from a
+CI/CD variable (`reportCIVariableCredentials` in
+[`internal/cli/run_ci_variable_credentials.go`](../../internal/cli/run_ci_variable_credentials.go)).
+A credential counts when its provider-definition value is exactly one
+`${VAR}` or `$VAR` reference and `VAR` is set and non-empty. It must also
+not be an `id_tokens` JWT, meaning three base64url segments whose `iss`
+claim equals `CI_SERVER_URL`. Only the claims are decoded. The OpenAI
+static key gets the same report. Literal values, unset variables and
+`id_tokens` JWTs print nothing.
+
+| Credential | CI/CD variable | Keyless `id_tokens:` replacement |
+| --- | --- | --- |
+| Vertex AI inference | none (already keyless) | `FULLSEND_ID_TOKEN`, exchanged through the `gitlab-oidc` WIF provider ([configuring GitLab](../guides/getting-started/configuring-gitlab.md)) |
+| OpenAI (`OPENAI_API_KEY`) | `FULLSEND_OPENAI_API_KEY`, exported as `OPENAI_API_KEY` by `run-agent-job.sh` | none on GitLab yet |
+| GitLab role tokens | `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` | none yet |
+
+A GitLab OpenAI run with an API key prints:
+
+```text
+  ! provider "openai": credential OPENAI_API_KEY comes from CI/CD variable OPENAI_API_KEY, a long-lived value masked by exact match only; no keyless replacement on GitLab yet
+```
+
+The line never contains the value, and the run continues. On GitLab, this
+line replaces the GitHub-only Workload Identity Federation advice that the
+OpenAI static-key warning gives on other CI. Installations that cannot use
+`id_tokens:` (self-managed runners, older instances) can set the harness
+field `allow_ci_variable_credential: true`, which prints the same text as an
+info line instead of a warning (see the
+[harness reference](../reference/harness-reference.md#field-details)). The
+keyless replacements live in `gitLabKeylessReplacements` in the same file;
+update this table when that map changes.
+
 ### Project access token names
 
 | Role | PAT name | Access | Scopes |

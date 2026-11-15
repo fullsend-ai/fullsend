@@ -23,6 +23,7 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
 # readonly_repo: true               # make the checkout read-only (chmod a-w, .git/ excluded); absent = inherit from base; false overrides a base true
+# allow_ci_variable_credential: true # GitLab: print the CI/CD-variable credential notice as info, not a warning (default false; not inherited)
 providers:                           # Network access via provider profiles
   - vertex-ai                       # Bare builtin name: resolves to fullsend's embedded definition
   - github                          # Same; or a providers/<name>.yaml path for a local/custom definition
@@ -414,6 +415,8 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
+**`allow_ci_variable_credential`** — On a GitLab run (`--forge gitlab`, `config.forge: gitlab`, or `GITLAB_CI=true`), `fullsend run` prints a warning for each provider credential that comes from a CI/CD variable: the value in the provider definition is exactly one `${VAR}` or `$VAR` reference, `VAR` is set and non-empty, and its value is not a GitLab `id_tokens` JWT (three base64url segments whose `iss` claim equals `CI_SERVER_URL`; only the claims are decoded). The OpenAI static key (`OPENAI_API_KEY`) gets the same line. The line names the provider, the credential key and the variable, never the value, and the run continues. Set `allow_ci_variable_credential: true` (default `false`) on installations that cannot use `id_tokens:`, such as self-managed runners or older instances; the same text is then printed as an info line instead of a warning. Other forges ignore the field. **Top level only**: a key placed under `overlays:`/`forge:` is silently ignored. It is **not inherited** from `base:`, so a base harness cannot silence the warning for its children. See [GitLab Role Credentials § Provider credentials from CI/CD variables](../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables).
+
 **`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
 
 ## Reserved `env.sandbox` names
@@ -598,6 +601,7 @@ More-specific entries go last so they override broader defaults.
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
 | `security` | Child replaces entirely |
+| `allow_ci_variable_credential` | NOT inherited (child must declare its own). Top-level only — a key under `overlays:`/`forge:` is silently ignored |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution and as the ceiling every harness-level `allowed_remote_resources` is validated against (see `allow_runtime_fetch` above) |
 
 ## Referencing resources: local vs. remote

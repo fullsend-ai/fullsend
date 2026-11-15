@@ -885,8 +885,9 @@ func (e openAICredentialError) Unwrap() error { return e.error }
 // refresh can hand the new placeholder to the running agent. A backend
 // without one (Claude Code, or a seeder still stubbed out) leaves both
 // empty and sandboxReady() stays false, so a refresh only updates the
-// provider.
-func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxName string, ids config.OpenAIWIFConfig, backend runtime.Backend, printer *ui.Printer) (openAIProviderHandle, error) {
+// provider. ciCreds selects the static-key notice: on GitLab it is the
+// CI/CD-variable credential line, elsewhere the WIF recommendation.
+func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxName string, ids config.OpenAIWIFConfig, backend runtime.Backend, ciCreds ciVariableCredentialPolicy, printer *ui.Printer) (openAIProviderHandle, error) {
 	name := runScopedProviderName(pd.Name, sandboxName)
 	printer.StepStart("Resolving OpenAI credential for provider: " + pd.Name)
 	cred, err := resolveOpenAICredential(ctx, os.Getenv, ids)
@@ -918,7 +919,14 @@ func ensureOpenAIProvider(ctx context.Context, pd harness.ProviderDef, sandboxNa
 		printer.StepWarn(fmt.Sprintf("provider %q: config keys %s are ignored — the run-scoped OpenAI provider carries only the credential", pd.Name, strings.Join(keys, ", ")))
 	}
 	if cred.source == "static" {
-		if os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("CI") != "" {
+		if ciCreds.gitLab() {
+			// GitLab OpenAI runs use an API key (run-agent-job.sh exports
+			// the FULLSEND_OPENAI_API_KEY CI/CD variable as OPENAI_API_KEY);
+			// the WIF variables below are GitHub Actions only (#9511).
+			if fromCIVariable(openAIStaticKeyEnv, os.Getenv) {
+				reportCIVariableLine(ciCreds, ciVariableCredentialLine(pd.Name, pd.Type, openAIDefaultCredentialKey, openAIStaticKeyEnv), printer)
+			}
+		} else if os.Getenv("GITHUB_ACTIONS") == "true" || os.Getenv("CI") != "" {
 			printer.StepWarn("OpenAI credential is a static OPENAI_API_KEY in CI; prefer Workload Identity Federation (FULLSEND_OPENAI_AUDIENCE, FULLSEND_OPENAI_IDENTITY_PROVIDER_ID, FULLSEND_OPENAI_SERVICE_ACCOUNT_ID) so no long-lived key is stored")
 		}
 		cred.expiresAt = time.Now().Add(openAIStaticKeyLifetime)
