@@ -202,8 +202,19 @@ A child gets no copy of the parent's conversation (`fork_context: false`): it st
 role's instructions and the message its parent sends. At most four are open at once, and the depth
 is one. A runner-owned hook admits a spawn only for a registered role with `fork_context:
 false` and no model or effort override; it denies resume, Codex's built-in `explorer` and
-`worker`, and any spawn from a child. A denied spawn is final for that role: the parent runs that
-sub-agent definition itself. A spawn the hook did not admit fails the run after the fact, within
+`worker`, and any spawn from a child.
+A spawn denied because its `agent_type` names no registered role denied no
+role: the reason lists the registered roles and the closest one (`did you mean
+'intent-coherence'?` for `intent`), and the parent retries once under the
+registered name. Any other denied spawn is final for that role: the parent runs
+that sub-agent definition itself. A selected sub-agent that ran neither way is
+reported in the agent's result as a failure. After each iteration the runner
+prints every spawn the hook denied in that iteration, with its reason, in the
+run's own output (`Spawn denied by the runner's spawn guard: ...`). It reads
+them from the hook's `codex_spawn_guard_block` lines in
+`/sandbox/workspace/.security/findings.jsonl`. That log is agent-writable, so
+the lines are a report, not a check.
+A spawn the hook did not admit fails the run after the fact, within
 the limits named in [Troubleshooting](#troubleshooting): per iteration the runner counts the
 spawns seen in the event stream or in the children's rollouts on disk, each child once, and
 compares the run's total with the admissions the hook recorded. Every child's rollout is saved and redacted like the

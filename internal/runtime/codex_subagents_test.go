@@ -371,7 +371,8 @@ func TestParseCodexStream_FailedCollabItem(t *testing.T) {
 // FULLSEND_TEST_CHILD_READ_FAIL=1 makes the usage read exit 1 (with
 // FULLSEND_TEST_CHILD_READ_STDERR on stderr), =after makes it time out after
 // printing; FULLSEND_TEST_ADMISSIONS_READ_FAIL does the same to the
-// admissions read; FULLSEND_TEST_CODEX_EXIT sets the launch's exit status (killed:
+// admissions read; FULLSEND_TEST_DENIALS_READ_FAIL=1 makes the denials read
+// exit 1; FULLSEND_TEST_CODEX_EXIT sets the launch's exit status (killed:
 // SIGKILL, as the budget's context kill ends it); FULLSEND_TEST_CODEX_DROP=1
 // prints codex's dropped-notification warning on stderr before the stream,
 // FULLSEND_TEST_CODEX_BACKFILL_FAIL=1 exec's failed-backfill warning;
@@ -402,6 +403,9 @@ if [ "$2" = "exec" ]; then
       sh -c "$(printf '%s' "$last" | sed 's#` + codexFindingsLogPath + `#` + filepath.Join(filepath.Dir(sessionsDir), ".security", "findings.jsonl") + `#g')"; rc=$?
       if [ "${FULLSEND_TEST_ADMISSIONS_READ_FAIL:-}" = after ]; then exit 124; fi
       exit $rc ;;
+    *` + codexSpawnDenyFinding + `*)
+      if [ "${FULLSEND_TEST_DENIALS_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the denials read${FULLSEND_TEST_CHILD_READ_STDERR:+ $FULLSEND_TEST_CHILD_READ_STDERR}" >&2; exit 1; fi
+      sh -c "$(printf '%s' "$last" | sed 's#` + codexFindingsLogPath + `#` + filepath.Join(filepath.Dir(sessionsDir), ".security", "findings.jsonl") + `#g')"; exit $? ;;
     *` + codexDebugLogFile + `*)
       if [ "${FULLSEND_TEST_DEBUG_LOG_READ_FAIL:-}" = 1 ]; then echo "fake openshell: refusing the log read" >&2; exit 1; fi
       if [ "${FULLSEND_TEST_DEBUG_LOG_READ_FAIL:-}" = garbled ]; then echo 7; exit 0; fi
@@ -1074,6 +1078,138 @@ func TestCodexRun_SpawnWithoutAdmissionFailsTheRun(t *testing.T) {
 			assert.Equal(t, codexTokenTotals{1018, 1348, 391, 22996, 41590}, codexTotalsOf(metrics))
 		})
 	}
+}
+
+// appendCodexSpawnDenials appends a deny line per detail, in the adapter's
+// json.dumps spacing, to the findings log beside the sessions tree.
+func appendCodexSpawnDenials(t *testing.T, sessions string, details ...string) {
+	t.Helper()
+	dir := filepath.Join(filepath.Dir(sessions), ".security")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	f, err := os.OpenFile(filepath.Join(dir, "findings.jsonl"), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0o600)
+	require.NoError(t, err)
+	defer f.Close()
+	for _, detail := range details {
+		line, err := json.Marshal(map[string]string{"name": codexSpawnDenyFinding, "detail": detail, "action": "block"})
+		require.NoError(t, err)
+		_, err = f.Write(append(line, '\n'))
+		require.NoError(t, err)
+	}
+}
+
+func TestParseCodexSpawnDenials(t *testing.T) {
+	t.Parallel()
+
+	data := string(readCodexFixture(t, "spawn_admissions.jsonl")) +
+		`{"name": "codex_spawn_guard_block", "detail": "fullsend: spawn_agent role 'intent' is not` // the head -c cut
+	assert.Equal(t, []string{"fullsend: spawn_agent must pass fork_context: false; a child starts without the parent's context"},
+		parseCodexSpawnDenials([]byte(data)), "the block line by name; the admit lines, the redact line and a cut line are not denials")
+	assert.Empty(t, parseCodexSpawnDenials(nil), "no findings log: the command prints nothing")
+}
+
+func TestCodexSpawnDenialsReadCommand_Executes(t *testing.T) {
+	t.Parallel()
+
+	findings := filepath.Join(t.TempDir(), "findings.jsonl")
+	require.NoError(t, os.WriteFile(findings, readCodexFixture(t, "spawn_admissions.jsonl"), 0o600))
+	cmd := codexSpawnDenialsReadCommand(findings)
+	assert.Contains(t, cmd, fmt.Sprintf("command -p head -c %d", codexChildUsageMaxBytes), "bounded inside the sandbox")
+
+	out, err := exec.Command("/bin/sh", "-c", cmd).Output()
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(out), "\n"), "only the deny lines leave the sandbox")
+	assert.Len(t, parseCodexSpawnDenials(out), 1)
+
+	out, err = exec.Command("/bin/sh", "-c", codexSpawnDenialsReadCommand(filepath.Join(t.TempDir(), "absent.jsonl"))).Output()
+	require.NoError(t, err, "a missing log is no denials, not a failure")
+	assert.Empty(t, out)
+}
+
+// reportCodexSpawnDenials through the fake: only the denials past the
+// reported count are printed, through the redactor, at most
+// codexSpawnDenialsPrinted of them, and a failed read is a warning.
+func TestReportCodexSpawnDenials_ThroughTheSandbox(t *testing.T) {
+	denied := "fullsend: spawn_agent role 'intent' is not one the runner registered; did you mean 'intent-coherence'?"
+	token := "ghp_" + strings.Repeat("C", 36)
+
+	t.Run("prints the new denials only", func(t *testing.T) {
+		sessions := writeCodexChildRollouts(t)
+		appendCodexSpawnDenials(t, sessions, "an earlier iteration's denial", denied, "fullsend: spawn_agent role "+token)
+		fakeOpenshellCodexChildren(t, filepath.Join(t.TempDir(), "openshell.log"), t.TempDir(), "", sessions)
+
+		var out bytes.Buffer
+		assert.Equal(t, 3, reportCodexSpawnDenials("sb", ui.New(&out), 1))
+		assert.NotContains(t, out.String(), "an earlier iteration's denial")
+		assert.Contains(t, out.String(), "! Spawn denied by the runner's spawn guard: "+denied)
+		assert.Equal(t, 2, strings.Count(out.String(), "Spawn denied by the runner's spawn guard"))
+		assert.NotContains(t, out.String(), token, "the detail is agent-writable and goes through the redactor")
+
+		out.Reset()
+		assert.Equal(t, 3, reportCodexSpawnDenials("sb", ui.New(&out), 3))
+		assert.Empty(t, out.String(), "nothing new, nothing printed")
+	})
+
+	t.Run("caps the lines printed", func(t *testing.T) {
+		sessions := writeCodexChildRollouts(t)
+		details := make([]string, codexSpawnDenialsPrinted+5)
+		for i := range details {
+			details[i] = fmt.Sprintf("denial %d", i)
+		}
+		appendCodexSpawnDenials(t, sessions, details...)
+		fakeOpenshellCodexChildren(t, filepath.Join(t.TempDir(), "openshell.log"), t.TempDir(), "", sessions)
+
+		var out bytes.Buffer
+		assert.Equal(t, len(details), reportCodexSpawnDenials("sb", ui.New(&out), 0))
+		assert.Equal(t, codexSpawnDenialsPrinted, strings.Count(out.String(), "Spawn denied by the runner's spawn guard"))
+		assert.Contains(t, out.String(), "! 5 more spawn(s) denied; see "+codexFindingsLogPath)
+	})
+
+	t.Run("the read exits non-zero", func(t *testing.T) {
+		fakeOpenshellCodexChildren(t, filepath.Join(t.TempDir(), "openshell.log"), t.TempDir(), "", t.TempDir())
+		t.Setenv("FULLSEND_TEST_DENIALS_READ_FAIL", "1")
+		t.Setenv("FULLSEND_TEST_CHILD_READ_STDERR", token)
+
+		var out bytes.Buffer
+		assert.Equal(t, 2, reportCodexSpawnDenials("sb", ui.New(&out), 2), "the reported count is kept")
+		assert.Contains(t, out.String(), "! Could not read the spawn guard's denials: exited 1: fake openshell: refusing the denials read")
+		assert.NotContains(t, out.String(), token, "stderr goes through the shared secret redactor")
+	})
+}
+
+// A denied spawn emits no stream item; Run prints the guard's denials in
+// the run's own output, each iteration only its own (#9073).
+func TestCodexRun_PrintsSpawnDenials(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	storeDir := t.TempDir()
+	r := CodexRuntime{}
+	seedCodexManifest(t, storeDir, r, nil)
+	d, ok := lookupRunnerHeldDigests("sb")
+	require.True(t, ok)
+	d.RoleFiles = map[string]string{"default": "d0d0", "intent-coherence": "i0i0"}
+	recordRunnerHeldDigests("sb", d)
+	sessions := writeCodexChildRollouts(t, codexChildSameModelID, codexChildOtherModelID, codexChildFailedID)
+	writeCodexSpawnAdmissions(t, sessions, 4)
+	first := "fullsend: spawn_agent role 'intent' is not one the runner registered; did you mean 'intent-coherence'?"
+	appendCodexSpawnDenials(t, sessions, first)
+	fakeOpenshellCodexChildren(t, logPath, storeDir, filepath.Join("testdata", "codex", "collab_spawn.ndjson"), sessions)
+
+	var out bytes.Buffer
+	_, err := r.Run(context.Background(), codexChildrenRunParams, ui.New(&out), time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "! Spawn denied by the runner's spawn guard: "+first)
+	assert.Equal(t, 1, strings.Count(readFileString(t, logPath), codexSpawnDenyFinding), "one denials read")
+	d, ok = lookupRunnerHeldDigests("sb")
+	require.True(t, ok)
+	assert.Equal(t, 1, d.ReportedDenials)
+
+	// The retry: the log keeps the first iteration's denial.
+	writeCodexSpawnAdmissions(t, sessions, 8)
+	appendCodexSpawnDenials(t, sessions, first, "fullsend: spawn_agent must pass fork_context: false; a child starts without the parent's context")
+	out.Reset()
+	_, err = r.Run(context.Background(), codexChildrenRunParams, ui.New(&out), time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(out.String(), "Spawn denied by the runner's spawn guard"), "only the retry's own denial")
+	assert.Contains(t, out.String(), "! Spawn denied by the runner's spawn guard: fullsend: spawn_agent must pass fork_context: false")
 }
 
 // The count spans the run: the findings log keeps the earlier iterations'
