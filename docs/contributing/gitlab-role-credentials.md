@@ -179,40 +179,39 @@ It does not touch the leftover shared secret.
 
 ### Provider credentials from CI/CD variables
 
-A CI/CD variable is a long-lived value. Masking redacts only the exact
-string, so base64 or concatenation gets past it. `protected: true` does not
-help on the default branch. The value has no expiry. On a GitLab run,
-`fullsend run` therefore reports each provider credential that comes from a
-CI/CD variable (`reportCIVariableCredentials` in
-[`internal/cli/run_ci_variable_credentials.go`](../../internal/cli/run_ci_variable_credentials.go)).
-A credential counts when its provider-definition value is exactly one
-`${VAR}` or `$VAR` reference and `VAR` is set and non-empty. It must also
-not be an `id_tokens` JWT, meaning three base64url segments whose `iss`
-claim equals `CI_SERVER_URL`. Only the claims are decoded. The OpenAI
-static key gets the same report. Literal values, unset variables and
-`id_tokens` JWTs print nothing.
+In a GitLab CI job, `fullsend run` prints one line for each provider
+credential that comes from a CI/CD variable. A stock agent job with a role
+token prints:
+
+```text
+  ! provider "gitlab-rw": credential GITLAB_TOKEN comes from CI/CD variable FULLSEND_GITLAB_ANALYST_TOKEN (runner variable GITLAB_TOKEN), a long-lived value that masking hides only as an exact string; no keyless replacement on GitLab yet
+```
+
+The line never contains the value, and the run continues. It is there because
+a CI/CD variable is weaker than an `id_tokens:` OIDC token: masking misses a
+base64 or concatenated copy, `protected: true` does not help on the default
+branch, and the value never expires.
 
 | Credential | CI/CD variable | Keyless `id_tokens:` replacement |
 | --- | --- | --- |
-| Vertex AI inference | none (already keyless) | `FULLSEND_ID_TOKEN`, exchanged through the `gitlab-oidc` WIF provider ([configuring GitLab](../guides/getting-started/configuring-gitlab.md)) |
-| OpenAI (`OPENAI_API_KEY`) | `FULLSEND_OPENAI_API_KEY`, exported as `OPENAI_API_KEY` by `run-agent-job.sh` | none on GitLab yet |
-| GitLab role tokens | `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` | none yet |
+| Vertex AI inference | none | already keyless: `FULLSEND_ID_TOKEN`, exchanged through the `gitlab-oidc` WIF provider ([configuring GitLab](../guides/getting-started/configuring-gitlab.md)) |
+| OpenAI | `FULLSEND_OPENAI_API_KEY` (runner variable `OPENAI_API_KEY`) | none on GitLab yet |
+| GitLab role tokens | `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` (runner variable `GITLAB_TOKEN`) | none yet |
+| Jira (static token) | `FULLSEND_JIRA_TOKEN` | none yet |
+| Inference gateway API key | `FULLSEND_INFERENCE_GATEWAY_API_KEY` | none yet; not reported, because it is not a provider `credentials:` value |
 
-A GitLab OpenAI run with an API key prints:
+What counts as a CI/CD-variable credential:
 
-```text
-  ! provider "openai": credential OPENAI_API_KEY comes from CI/CD variable OPENAI_API_KEY, a long-lived value masked by exact match only; no keyless replacement on GitLab yet
-```
+- the run's forge is GitLab and `GITLAB_CI=true`;
+- the provider definition's value is exactly one `${VAR}` or `$VAR`;
+- `VAR` is set, and its value is not a GitLab `id_tokens` JWT (a JWT whose
+  `iss` claim equals `CI_SERVER_URL`; only the claims are decoded).
 
-The line never contains the value, and the run continues. On GitLab, this
-line replaces the GitHub-only Workload Identity Federation advice that the
-OpenAI static-key warning gives on other CI. Installations that cannot use
-`id_tokens:` (self-managed runners, older instances) can set the harness
-field `allow_ci_variable_credential: true`, which prints the same text as an
-info line instead of a warning (see the
-[harness reference](../reference/harness-reference.md#field-details)). The
-keyless replacements live in `gitLabKeylessReplacements` in the same file;
-update this table when that map changes.
+To print the line as info instead of a warning, for example on a self-managed
+instance without `id_tokens:` support, set `allow_ci_variable_credential: true`
+in the harness. The field is not inherited, so for a stock agent add it to a
+local harness that sets `base:` to the stock one (see the
+[harness reference](../reference/harness-reference.md#field-details)).
 
 ### Project access token names
 

@@ -76,7 +76,7 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `readonly_repo`    | Repo access mode                                   |
 | `allow_runtime_fetch` | Runtime fetch opt-in                            |
 | `max_runtime_fetches` | Fetch cap                                       |
-| `allow_ci_variable_credential` | GitLab opt-out: the CI/CD-variable provider credential notice prints as info, not a warning (#9511); default `false` |
+| `allow_ci_variable_credential` | GitLab opt-out: the CI/CD-variable provider credential notice prints as info, not a warning; default `false` |
 | `trigger`          | CEL trigger expression, evaluated against normalized events (ADR-0061) |
 | `privilege_levels` | Mint privilege per run-stage (ADR-0073)            |
 | `schema_version`   | Schema contract version (ADR-0127); absent = `1`; malformed, zero, negative or unsupported values fail load |
