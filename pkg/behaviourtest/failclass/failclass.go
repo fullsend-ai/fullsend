@@ -31,7 +31,11 @@ import (
 //
 //   - behaviourfail.Is: an error a producer explicitly marked as
 //     infrastructure (setup-poll exhaustion, GCP WIF quota, token
-//     mint/download).
+//     mint/download, and a `fullsend github setup` subprocess whose
+//     final error is a GitHub 5xx the client gave up on or an HTTP/2
+//     CANCEL stream reset — the subprocess counterpart of the
+//     gh.IsServerError rule below, since the typed error does not
+//     cross the process boundary (#9497)).
 //   - a rate-limit gh.APIError: primary 429, or a 403 whose message
 //     says "rate limit" (secondary limit), per gh.IsRateLimitError.
 //   - a GitHub server error, per gh.IsServerError: a REST gh.APIError

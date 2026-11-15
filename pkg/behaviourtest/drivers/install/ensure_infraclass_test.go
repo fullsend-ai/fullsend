@@ -134,6 +134,26 @@ func InstallFullsendSetup404ExhaustedForTest(t *testing.T) error {
 	return e.installFullsend(context.Background(), "org/repo", nil)
 }
 
+// InstallFullsendSetupCLIErrorForTest runs the real installFullsend
+// against a runCLI stub whose github setup always fails with cliErr, and
+// returns the number of setup attempts it made together with the error
+// the ensurer surfaces.
+func InstallFullsendSetupCLIErrorForTest(t *testing.T, cliErr string) (int, error) {
+	t.Helper()
+	speedUpResetRetries(t)
+	attempts := 0
+	e := &repoEnsurer{
+		setupOpts: common.GitHubSetupOpts{Vendor: true},
+		runCLI: func(_, _ string, _ ...string) (string, error) {
+			attempts++
+			return "", errors.New(cliErr)
+		},
+		logf: t.Logf,
+	}
+	err := e.installFullsend(context.Background(), "org/repo", nil)
+	return attempts, err
+}
+
 // InstallFullsendSetupFailureForTest runs the real installFullsend
 // attempt against a runCLI stub whose github setup fails with a
 // non-404 error, and returns the unmarked error the ensurer surfaces

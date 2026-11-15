@@ -723,8 +723,10 @@ func (e *repoEnsurer) installFullsend(ctx context.Context, target string, stillO
 	// attempt (isGitHubSetupRepoInfo404 gated each retry above), so this
 	// is the known setup-404 exhaustion mode, marked infrastructure per
 	// design D3 so the suite's single automatic retry can clear it.
-	// Other setup failures return unmarked above and stay scenario;
-	// ownership-loss errors likewise stay unmarked (D3).
+	// Other setup failures return above as RunGitHubSetupWithOpts left
+	// them: marked only when the CLI's final error is a GitHub 5xx or
+	// HTTP/2 stream reset (markGitHubSetupTransient, #9497), otherwise
+	// unmarked and scenario. Ownership-loss errors stay unmarked (D3).
 	return behaviourfail.Mark(
 		fmt.Errorf("github setup for %s still hit the read-after-create 404 after %d attempts: %w", target, resetMaxAttempts, lastErr),
 		"setup: read-after-create 404",
