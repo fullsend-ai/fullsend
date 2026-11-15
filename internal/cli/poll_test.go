@@ -153,6 +153,71 @@ trigger: |
 	assert.Equal(t, "code", records[0].Agent)
 }
 
+// TestWarnNoJiraDispatchCandidates covers the startup warning for a Jira
+// poller that can dispatch nothing (#9503): a config written by setup with
+// roles: and no agents: yields a matcher with zero candidates, which must
+// not pass silently.
+func TestWarnNoJiraDispatchCandidates(t *testing.T) {
+	writeHarness := func(t *testing.T, dir, body string) {
+		t.Helper()
+		harnessDir := filepath.Join(dir, "harness")
+		require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(harnessDir, "code.yaml"), []byte(`agent: agents/code.md
+role: coder
+slug: fullsend-ai-coder
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+`+body), 0o644))
+	}
+	tests := map[string]struct {
+		config   string
+		trigger  string
+		wantWarn bool
+	}{
+		"roles only, no agents registered": {
+			config:   "version: \"1\"\nroles: [triage, code]\n",
+			wantWarn: true,
+		},
+		"agent registered without a trigger": {
+			config:   "version: \"1\"\nagents:\n  - name: code\n    source: harness/code.yaml\n",
+			wantWarn: true,
+		},
+		"agent registered with a trigger": {
+			config:  "version: \"1\"\nagents:\n  - name: code\n    source: harness/code.yaml\n",
+			trigger: "trigger: event.source.system == \"jira\"\n",
+		},
+		"kill switch active": {
+			config: "version: \"1\"\nkill_switch: true\nroles: [triage, code]\n",
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeHarness(t, dir, tt.trigger)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(tt.config), 0o644))
+
+			m, err := newCELMatcher(context.Background(), dir)
+			require.NoError(t, err)
+			var buf strings.Builder
+			warnNoJiraDispatchCandidates(&buf, m)
+			if !tt.wantWarn {
+				assert.Empty(t, buf.String())
+				return
+			}
+			out := buf.String()
+			assert.True(t, strings.HasPrefix(out, "::warning::jira-poll: no registered agent has a harness trigger"), out)
+			assert.Contains(t, out, "agents: in .fullsend/config.yaml")
+			assert.Contains(t, out, "fullsend agent add")
+		})
+	}
+
+	t.Run("nil matcher", func(t *testing.T) {
+		var buf strings.Builder
+		warnNoJiraDispatchCandidates(&buf, nil)
+		assert.Empty(t, buf.String())
+	})
+}
+
 func TestValidateJiraPollArgs(t *testing.T) {
 	fullsendDir := t.TempDir()
 
