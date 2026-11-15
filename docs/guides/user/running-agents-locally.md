@@ -223,13 +223,16 @@ source is `fullsend-ai/agents`. To learn more about custom agents visit
 git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agents/
 ```
 
-The service account key you created is a long-lived credential, so
-`fullsend run` mounts it only on a `host_files` entry with `allow_durable: true`
-(see [`host_files[].allow_durable`](../../reference/harness-reference.md)).
-Add that to the key's mount in every cloned harness:
+If you created a service account key in
+[Get Google Cloud Platform credentials](#get-google-cloud-platform-credentials),
+it is a long-lived credential: `fullsend run` mounts it only on a `host_files`
+entry with `allow_durable: true` (see
+[`host_files[].allow_durable`](../../reference/harness-reference.md)). Add that
+to the key's mount in every cloned harness. Skip this step if you only use the
+OpenAI key.
 
 ```bash
-perl -pi -e 's{^(\s+)dest: /tmp/\.gcp-credentials\.json\n}{$&$1allow_durable: true\n}' \
+perl -0pi -e 's{^(\s+)dest: /tmp/\.gcp-credentials\.json\n(?!\s+allow_durable:)}{$&$1allow_durable: true\n}mg' \
   /tmp/fullsend-agents/harness/*.yaml
 grep -c 'allow_durable: true' /tmp/fullsend-agents/harness/*.yaml
 ```
@@ -246,9 +249,13 @@ Each harness should report `1`:
 /tmp/fullsend-agents/harness/triage.yaml:1
 ```
 
-Each run then prints `host file ...: service_account key (lifetime not
-controlled by this run)`. Without this step, the run stops with `set
-allow_durable: true on the entry to mount it`.
+Each run then prints one warning for the key:
+
+```text
+host file ... (dest /tmp/.gcp-credentials.json): service_account key (lifetime not controlled by this run)
+```
+
+Without this step, the run stops with `Host file credential validation failed`.
 
 ## Run default agents
 

@@ -326,10 +326,11 @@ this run did not issue and cannot revoke. Once such a credential is in the
 sandbox, only the network policy constrains it (credential delivery tier 4 in
 [ADR 0025](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)).
 
-`fullsend run` classifies each source it will copy, on the host, before the
-pre-script and again before the sandbox is created, so a file the pre-script
-writes is checked too. An `expand: true` source is checked as it will be
-uploaded, after `${VAR}` expansion. These sources are durable:
+`fullsend run` classifies each source it will copy, on the host: before the
+pre-script, again before the sandbox is created, and once more as it uploads
+the file, so a file the pre-script writes is checked too. An `expand: true`
+source is checked as it will be uploaded, after `${VAR}` expansion. Only
+regular files are read. These sources are durable:
 
 - a Google `service_account` key;
 - an `authorized_user` or `external_account_authorized_user` file;
@@ -337,22 +338,27 @@ uploaded, after `${VAR}` expansion. These sources are durable:
   `external_account`;
 - a file with a PEM private key header (`-----BEGIN ... PRIVATE KEY-----`).
 
-Without `allow_durable: true`, a durable source stops the run:
+Without `allow_durable: true`, a durable source stops the run (the triage
+harness with a service account key; host path shortened):
 
 ```text
-host_files[1]: host file /home/me/key.json (src ${GOOGLE_APPLICATION_CREDENTIALS}, dest /tmp/.gcp-credentials.json): service_account key, whose lifetime this run does not control; set allow_durable: true on the entry to mount it
+  ✗ Host file credential validation failed
+Error: 1 durable credential host file(s) without allow_durable:
+    host_files[1]: host file .../key.json (src ${GOOGLE_APPLICATION_CREDENTIALS}, dest /tmp/.gcp-credentials.json): service_account key, whose lifetime this run does not control; set allow_durable: true on the entry to mount it
 ```
 
 With it, the run continues and prints one warning per mount:
 
 ```text
-host file /home/me/key.json: service_account key (lifetime not controlled by this run)
+  ! host file .../key.json (dest /tmp/.gcp-credentials.json): service_account key (lifetime not controlled by this run)
 ```
 
 An `external_account` file is short-lived, so it is mounted with no output.
-So is a file that is not a recognized credential. To opt in a mount that a
-`base:` harness declares, re-declare the entry with the same `dest` in your
-own harness; the entry with the same `dest` replaces the base one.
+A file that is not a recognized credential is mounted the same way.
+
+To opt in a mount that a `base:` harness declares, re-declare the entry in
+your own harness with the same `src`, the same `dest` and `allow_durable:
+true`. It replaces the base entry.
 
 **`.env.d` host files** — A `host_files` entry with a `dest` in
 `/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.
