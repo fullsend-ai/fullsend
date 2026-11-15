@@ -1,0 +1,282 @@
+#!/usr/bin/env bash
+# pad-e2e-org-repos — add empty filler repositories to a pool org so the
+# e2e App installation's hourly API limit rises to its 12,500 cap (#9414).
+#
+# Usage: hack/pad-e2e-org-repos.sh [--apply] [--target N] [--allow-large-target]
+#                                   [--max N] NN|ORG...
+#   NN       — org number, e.g. 07 (halfsend-07)
+#   ORG      — full org name, e.g. halfsend-07
+#   --apply  — create the repositories; without it the script only reports
+#              what it would create
+#   --target — permanent repositories the org should hold (default 170,
+#              also the most allowed without --allow-large-target)
+#   --max    — most repositories to create in this run, across all orgs
+#              (default 450, under GitHub's 500-an-hour content-creation limit)
+#
+# GitHub's docs: "Installations that have more than 20 repositories receive
+# another 50 requests per hour for each repository", on a 5,000 base and up
+# to 12,500. Whether "each repository" means each one over 20 or every one
+# is not settled: 150 repositories reach the cap on the second reading, 170
+# on the first. The default, 170, reaches it on either reading. Org users
+# add 50 each in the same way once there are more than 20; the script does
+# not count them, so an org with many users reaches the cap sooner.
+#
+# Slot repositories (test-repo-NN and names starting with it, such as
+# -fork, -mint-host, -mint-unapproved and -url-harness-host) come and go
+# with leases, so they do not count toward the target. A target above 170,
+# more than either reading needs, is refused as a likely typo.
+#
+# Padding has a cost: the slot allocator lists an org's repositories, 100 a
+# page, on every claim pass, so a padded org lists in two pages, and in
+# three once it holds 200 repositories. See the guide for the numbers.
+#
+# Filler repositories are private, empty and named quota-filler-NNN. The
+# slot driver and slot GC delete only slot repositories, names derived from
+# them, and their own lock repository, so they never touch these. Do not
+# delete them.
+#
+# Idempotent: existing filler names are skipped and an org already at the
+# target gets nothing. Creation is paced (FILLER_PACE_SECONDS, default 8) to
+# stay under 80 a minute and 500 an hour. A rate-limit error stops the run;
+# run it again later to continue where it stopped.
+#
+# Before touching an org, the script checks that the fullsend-ai-e2e App is
+# installed there on All repositories, and stops otherwise. That check and
+# the creation need gh authenticated as an owner of the pool org. GitHub's
+# docs say classic tokens also need an admin scope to list installations;
+# if the check fails, run gh auth refresh -h github.com -s admin:org.
+
+set -euo pipefail
+
+FILLER_PREFIX="quota-filler-"
+FILLER_DESCRIPTION="Quota filler for the e2e App installation rate limit (fullsend-ai/fullsend#9414). Do not delete."
+FILLER_PACE_SECONDS="${FILLER_PACE_SECONDS:-8}"
+# TARGET_CEILING is the most either reading of GitHub's docs needs (170);
+# anything above it is likely a typo.
+TARGET_CEILING=170
+E2E_APP_SLUG="fullsend-ai-e2e"
+
+# org_name turns NN into halfsend-NN and passes a full name through.
+org_name() {
+  if [[ "$1" =~ ^[0-9]{2}$ ]]; then
+    echo "halfsend-$1"
+  else
+    echo "$1"
+  fi
+}
+
+# is_slot_repo reports whether name is a lease-managed slot repository.
+is_slot_repo() {
+  [[ "$1" =~ ^test-repo-[0-9]{2}($|-) ]]
+}
+
+# list_repo_names prints every repository name in org, one per line.
+# Only gh's stdout is captured, so a warning on stderr cannot be counted as
+# a repository; stderr is shown only when the call fails.
+list_repo_names() {
+  local org="$1" out errfile
+  errfile=$(mktemp)
+  if ! out=$(gh api --paginate "/orgs/${org}/repos?type=all&per_page=100" --jq '.[].name' 2>"${errfile}"); then
+    echo "    ERROR: could not list repositories in ${org}: $(cat "${errfile}")" >&2
+    rm -f "${errfile}"
+    return 1
+  fi
+  rm -f "${errfile}"
+  [[ -n "${out}" ]] && echo "${out}"
+  return 0
+}
+
+# check_e2e_installation fails unless the e2e App is installed in org on
+# All repositories. On selected repositories the filler repositories would
+# not count toward its limit, and they are meant to stay. Listing an org's
+# installations needs an org owner.
+check_e2e_installation() {
+  local org="$1" out errfile selection
+  errfile=$(mktemp)
+  if ! out=$(gh api --paginate "/orgs/${org}/installations" \
+      --jq ".installations[] | select(.app_slug == \"${E2E_APP_SLUG}\") | .repository_selection" \
+      2>"${errfile}"); then
+    echo "    ERROR: could not list app installations in ${org} (needs an org owner; a classic token may need gh auth refresh -h github.com -s admin:org): $(cat "${errfile}")" >&2
+    rm -f "${errfile}"
+    return 1
+  fi
+  rm -f "${errfile}"
+  selection=$(head -1 <<< "${out}")
+  if [[ "${selection}" != all ]]; then
+    echo "    ERROR: ${E2E_APP_SLUG} in ${org} is installed on '${selection:-nothing}', not All repositories; filler repositories would not raise its limit" >&2
+    return 1
+  fi
+  return 0
+}
+
+# plan_fillers prints the filler names to create in org so its permanent
+# repositories reach target. Reads existing names from stdin.
+plan_fillers() {
+  local target="$1" names name permanent=0 need i candidate
+  names=$(cat)
+  while IFS= read -r name; do
+    [[ -z "${name}" ]] && continue
+    is_slot_repo "${name}" || permanent=$((permanent + 1))
+  done <<< "${names}"
+  need=$((target - permanent))
+  i=1
+  while (( need > 0 )); do
+    candidate=$(printf '%s%03d' "${FILLER_PREFIX}" "${i}")
+    if ! grep -qxF "${candidate}" <<< "${names}"; then
+      echo "${candidate}"
+      need=$((need - 1))
+    fi
+    i=$((i + 1))
+  done
+}
+
+# count_permanent prints how many names on stdin are not slot repositories.
+count_permanent() {
+  local name n=0
+  while IFS= read -r name; do
+    [[ -z "${name}" ]] && continue
+    is_slot_repo "${name}" || n=$((n + 1))
+  done
+  echo "${n}"
+}
+
+# create_filler creates one private, empty filler repository. Returns 0 when
+# created, 3 when the name already exists, 2 when GitHub rate limits the
+# request, and 1 on any other error.
+#
+# No --silent: gh prints only the top-level message ("Repository creation
+# failed.") to stderr, and the "name already exists" detail is in the JSON
+# body it writes to stdout.
+create_filler() {
+  local org="$1" name="$2" out
+  if out=$(gh api -X POST "/orgs/${org}/repos" \
+      -f name="${name}" -f description="${FILLER_DESCRIPTION}" \
+      -F private=true -F has_issues=false -F has_projects=false -F has_wiki=false \
+      2>&1); then
+    return 0
+  fi
+  if grep -qiE 'name already exists' <<< "${out}"; then
+    return 3
+  fi
+  if grep -qiE 'HTTP 429|rate limit' <<< "${out}"; then
+    echo "    ERROR: GitHub rate limited creating ${org}/${name}: ${out}" >&2
+    return 2
+  fi
+  echo "    ERROR: could not create ${org}/${name}: ${out}" >&2
+  return 1
+}
+
+# usage prints the header comment, up to its first blank line.
+usage() {
+  sed -n '2,/^$/{/^$/d;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
+}
+
+# whole_number prints a validated whole number in base 10, so a leading
+# zero is not read as octal. Returns 1 for anything else.
+whole_number() {
+  [[ "$1" =~ ^[0-9]+$ ]] || return 1
+  echo "$((10#$1))"
+}
+
+main() {
+  local apply=false target=170 max=450 allow_large=false orgs=() arg value org
+  while [[ $# -gt 0 ]]; do
+    arg="$1"
+    case "${arg}" in
+      --apply) apply=true; shift ;;
+      --allow-large-target) allow_large=true; shift ;;
+      --target|--max)
+        if [[ $# -lt 2 ]]; then
+          echo "${arg} needs a value" >&2
+          return 1
+        fi
+        if ! value=$(whole_number "$2"); then
+          echo "${arg} must be a whole number, got '$2'" >&2
+          return 1
+        fi
+        if [[ "${arg}" == --target ]]; then target="${value}"; else max="${value}"; fi
+        shift 2 ;;
+      -h|--help) usage; return 0 ;;
+      -*) echo "unknown option ${arg}" >&2; return 1 ;;
+      *)
+        org=$(org_name "${arg}")
+        # A mistyped argument must not fill an unintended org with
+        # permanent repositories (like setup-new-e2e-org.sh, but exactly two
+        # digits, as the pool layout names them).
+        if ! [[ "${org}" =~ ^halfsend(-[0-9]{2})?$ ]]; then
+          echo "${arg} is not a pool org (halfsend or halfsend-NN)" >&2
+          return 1
+        fi
+        orgs+=("${org}"); shift ;;
+    esac
+  done
+  if [[ ${#orgs[@]} -eq 0 ]]; then
+    echo "usage: hack/pad-e2e-org-repos.sh [--apply] [--target N] [--allow-large-target] [--max N] NN|ORG..." >&2
+    return 1
+  fi
+  # A mistyped target would create permanent repositories in bulk.
+  if (( target > TARGET_CEILING )) && [[ "${allow_large}" != true ]]; then
+    echo "--target ${target} is above ${TARGET_CEILING}; pass --allow-large-target if that is intended" >&2
+    return 1
+  fi
+
+  local names permanent fillers name created=0 skipped=0 planned=0 rc
+  for org in "${orgs[@]}"; do
+    echo "==> ${org}"
+    check_e2e_installation "${org}" || return 1
+    names=$(list_repo_names "${org}") || return 1
+    permanent=$(count_permanent <<< "${names}")
+    fillers=$(plan_fillers "${target}" <<< "${names}")
+    if [[ -z "${fillers}" ]]; then
+      echo "    ${permanent} permanent repositories, target ${target}: nothing to do"
+      continue
+    fi
+    echo "    ${permanent} permanent repositories, target ${target}: $(wc -l <<< "${fillers}" | tr -d ' ') to create"
+    if [[ "${apply}" != true ]]; then
+      # Preview what --apply would do, including where --max stops it.
+      # planned counts across orgs like created does in an --apply run.
+      local budget=$((max - planned)) total
+      total=$(wc -l <<< "${fillers}" | tr -d ' ')
+      if (( budget <= 0 )); then
+        echo "==> dry run: --max ${max} reached; an --apply run would stop here"
+        return 0
+      fi
+      (( total > budget )) && fillers=$(head -n "${budget}" <<< "${fillers}")
+      planned=$((planned + $(wc -l <<< "${fillers}" | tr -d ' ')))
+      echo "    dry run: would create $(head -1 <<< "${fillers}") … $(tail -1 <<< "${fillers}")"
+      if (( total > budget )); then
+        echo "==> dry run: --max ${max} reached; an --apply run would stop here"
+        return 0
+      fi
+      continue
+    fi
+    while IFS= read -r name; do
+      if (( created >= max )); then
+        echo "==> stopped at --max ${max}; run again to continue"
+        return 0
+      fi
+      rc=0
+      create_filler "${org}" "${name}" || rc=$?
+      case "${rc}" in
+        0) created=$((created + 1)); echo "    created ${org}/${name}" ;;
+        3) skipped=$((skipped + 1)); echo "    ${org}/${name} already exists, skipped" ;;
+        2) echo "==> stopped after ${created} repositories; run again later to continue" >&2; return 1 ;;
+        *) return 1 ;;
+      esac
+      sleep "${FILLER_PACE_SECONDS}"
+    done <<< "${fillers}"
+  done
+  if [[ "${apply}" == true ]]; then
+    echo "==> created ${created} repositories, skipped ${skipped} that already existed"
+  else
+    echo "==> dry run: would create ${planned} repositories; nothing was created"
+  fi
+}
+
+# Tests source this file for its function definitions; stop here when
+# sourced.
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  return 0
+fi
+
+main "$@"

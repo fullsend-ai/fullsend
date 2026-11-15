@@ -209,6 +209,98 @@ go run ./cmd/fullsend admin foreign list --org halfsend-NN --repo target-repo
 See [ADR 0083](../../ADRs/0083-repo-level-foreign-allow-list.md) for details
 on repo-level foreign grants.
 
+### Filler repositories for the API limit
+
+An App installation's hourly API limit starts at 5,000 and goes up to 12,500.
+[GitHub's docs](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#primary-rate-limit-for-github-app-installations)
+say that "installations that have more than 20 repositories receive another 50
+requests per hour for each repository", and the same for each org user once
+there are more than 20. It is not settled whether "each repository" means each
+one over 20 (170 repositories reach the cap) or every one (150 do), so the
+script defaults to 170. Slot repos exist only while leased, so a pool org with
+only its permanent repos holds the e2e installation token to about 5,000 calls
+an hour. Empty filler repositories raise the limit
+([#9414](https://github.com/fullsend-ai/fullsend/issues/9414)).
+
+**Risk.** This creates up to 170 empty repositories in each of 22 orgs (3,740 in
+all) only to raise an API limit. GitHub's Terms of Service and Acceptable Use
+Policies let GitHub decide at its discretion what counts as excessive API use or
+bulk automated activity, and remove repositories or suspend apps for it.
+Enforcement could suspend the e2e App or delete the filler repositories, which
+would stop the DEV pool. The alternative GitHub documents is GitHub Enterprise
+Cloud, where an App installation gets a flat 15,000 calls an hour. Record on
+#9414 that the risk is accepted, or GitHub Support's answer, before step 5.
+
+1. Authenticate `gh` as an owner of the pool orgs. GitHub's docs say a
+   classic token also needs an admin scope to list an org's App
+   installations. If the script's installation check fails, add it:
+
+   ```bash
+   gh auth refresh -h github.com -s admin:org
+   ```
+
+2. Check what the script would create:
+
+   ```bash
+   hack/pad-e2e-org-repos.sh 07
+   ```
+
+3. Create the filler repositories in one org:
+
+   ```bash
+   hack/pad-e2e-org-repos.sh --apply 07
+   ```
+
+4. Wait at least an hour after step 3, then find a DEV behaviour run
+   that leased a slot in that org. GitHub does not say when it
+   recalculates the limit, so an earlier run can still show the old one.
+   Its `[driver] per-org quota counters` log lines show
+   `remaining=<lowest>/<limit>` for each org. Compare the second number,
+   the limit. The first is the lowest remaining count during the run, so
+   it is lower after the run's own calls.
+   - A limit of `12500`: continue.
+   - A limit of `5000`: GitHub may not have recalculated it yet. Check
+     a later run before going further.
+   - Anything else: stop and report it on #9414.
+5. Fill the remaining orgs:
+
+   ```bash
+   hack/pad-e2e-org-repos.sh --apply 01 02 03 04 05 06 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22
+   ```
+
+   Each run creates at most 450 repositories (`--max`), so run it again
+   each hour until every org reports nothing to do.
+
+Before touching an org, the script checks that `fullsend-ai-e2e` is
+installed there on **All repositories**, and stops otherwise: on selected
+repositories the filler repositories would not count toward its limit. It
+only accepts `halfsend` and `halfsend-NN` orgs.
+
+The script counts every repository except slot repos (`test-repo-NN` and
+names starting with it) toward `--target`. It creates the missing ones as
+private, empty `quota-filler-NNN` repositories, one every 8 seconds
+(`FILLER_PACE_SECONDS`), to stay under GitHub's content-creation limits.
+Names that already exist are skipped. A rate-limit answer stops the run;
+run it again later to continue. The slot driver and slot GC never touch
+filler repositories. Do not delete them.
+
+The default `--target` of 170 reaches the cap on either reading. 150 would be
+enough if every repository counts, but a capped limit cannot show which reading
+holds: leased slot repositories and org users also count, so an org with 150
+permanent repositories can show 12,500 on either reading. A `--target` above 170
+needs `--allow-large-target`, so a typo cannot create permanent repositories in
+bulk.
+
+Padding makes the slot allocator's listing longer. It lists each org's
+repositories, 100 a page, on every claim pass, and a run waiting for a slot
+repeats the pass every 15 seconds. While leased, each slot can also hold
+repositories named after it (`test-repo-NN-` followed by `fork`, `mint-host`,
+`mint-unapproved`, `url-harness-host` or `base-harness-host`). A padded org
+lists in two pages, and in three once it holds 200 repositories, which takes 30
+slot repositories at the default target. Leased slots can reach that when many
+hold forks and probe hosts at once. Each extra page costs a waiting run about
+240 calls an hour per org, against the 7,500 an hour that padding adds.
+
 ### Test actor permissions
 
 Pool orgs grant three test actor accounts specific access levels for
