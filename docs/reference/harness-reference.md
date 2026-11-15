@@ -327,10 +327,10 @@ sandbox, only the network policy constrains it (credential delivery tier 4 in
 [ADR 0025](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)).
 
 `fullsend run` classifies each source it will copy, on the host: before the
-pre-script, again before the sandbox is created, and once more as it uploads
-the file, so a file the pre-script writes is checked too. An `expand: true`
-source is checked as it will be uploaded, after `${VAR}` expansion. Only
-regular files are read. These sources are durable:
+pre-script, again before the sandbox is created, and once more just before
+the upload, so a file the pre-script writes is checked too. An `expand: true`
+source is checked as it will be uploaded, after `${VAR}` expansion. The check
+reads only regular files. These sources are durable:
 
 - a Google `service_account` key;
 - an `authorized_user` or `external_account_authorized_user` file;
@@ -356,9 +356,17 @@ With it, the run continues and prints one warning per mount:
 An `external_account` file is short-lived, so it is mounted with no output.
 A file that is not a recognized credential is mounted the same way.
 
-To opt in a mount that a `base:` harness declares, re-declare the entry in
-your own harness with the same `src`, the same `dest` and `allow_durable:
-true`. It replaces the base entry.
+To opt in a mount that a `base:` harness declares, copy the whole entry into
+your own harness and add `allow_durable: true`. The copy replaces the base
+entry, so keep every field the base sets, such as `optional: true`:
+
+```yaml
+host_files:
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+    optional: true
+    allow_durable: true
+```
 
 **`.env.d` host files** — A `host_files` entry with a `dest` in
 `/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.
