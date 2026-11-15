@@ -75,6 +75,7 @@ host_files:
   - src: ${SOME_CREDENTIAL}
     dest: /tmp/.cred.json
     optional: true                   # Skip if missing
+    allow_durable: true              # Allow a credential the run cannot revoke
 
 # ── Environment ───────────────────────────────────────────────
 env:
@@ -319,6 +320,26 @@ keys](../cli/run.md#reserved-envsandbox-keys).
 **`agent_input`** — A local directory, not a file. When a URL `base:` harness declares it, the inherited value is cleared rather than fetched; supply the directory in the child harness if needed. See [Harness field semantic types](../contributing/harness-fields.md#semantic-types-adr-0127).
 
 **`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths the runner writes or puts on `PATH` ahead of the image are refused when the harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in `/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`, `fullsend-check-output`), and anything under `/sandbox/claude-config`, `/sandbox/codex-config`, `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path component is refused as well. The same rule applies to `host_files` under `overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs `/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a command but does not replace one the image provides. Codex and OpenCode runs restore the `PATH` from before `.env`, so `/sandbox/workspace/bin` and `.env.d` additions are not on the codex or OpenCode agent's `PATH`. See [Adding executables](../guides/user/customizing-agents.md#adding-executables).
+
+**`host_files[].allow_durable`** — Allows the entry to mount a credential that
+this run did not issue and cannot revoke. Before the pre-script runs and before
+the sandbox is created, `fullsend run` reads each `host_files` source that it
+will copy, on the host, and classifies it. A Google `service_account` key, an
+`authorized_user` or `impersonated_service_account` credential file, and a file
+with a PEM private key header (`-----BEGIN ... PRIVATE KEY-----`) are durable.
+Without `allow_durable: true`, a durable source fails the run with a message
+that names the `host_files` index, the host file, the `dest`, and the
+credential type. With it, the run continues and prints one warning for each
+such mount, for example `host file /tmp/example-key.json: service_account key
+(lifetime not controlled by this run)`. An `external_account` file is
+short-lived by construction and is mounted with no output, as is an
+`impersonated_service_account` file whose `source_credentials` is an
+`external_account`. A file that is not a recognized credential, or is empty, is
+copied as before. For an `expand: true` entry, the file is classified as it is
+on disk, before `${VAR}` expansion. Nothing inspects the file inside the
+sandbox. Once a durable credential is in the sandbox, only the network policy
+constrains it (credential delivery tier 4 in [ADR
+0025](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)).
 
 **`.env.d` host files** — A `host_files` entry with a `dest` in
 `/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.

@@ -1323,6 +1323,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Runner secret validation failed")
 		return err
 	}
+	// Classify host_files sources on the host before upload, so a durable
+	// credential reaches the sandbox only with allow_durable: true and the
+	// run output records each one that does (#9508).
+	durableLines, err := checkHostFileCredentials(h)
+	if err != nil {
+		printer.StepFail("Host file credential validation failed")
+		return err
+	}
+	for _, line := range durableLines {
+		printer.StepWarn(line)
+	}
 	// Ensure scripts are executable. The GitHub Contents API does not
 	// preserve file permissions, so scripts written via admin install
 	// may lack the execute bit.
