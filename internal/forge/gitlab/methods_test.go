@@ -4663,6 +4663,34 @@ func TestGetPullRequestInfo(t *testing.T) {
 	assert.Equal(t, "myorg/myrepo", info.BaseRepo)
 	assert.Equal(t, "contributor", info.AuthorID)
 	assert.False(t, info.IsFork)
+	assert.Empty(t, info.BaseSHA, "no diff_refs reports no base commit")
+}
+
+func TestGetPullRequestInfo_BaseSHAFromDiffRefs(t *testing.T) {
+	for name, tc := range map[string]struct {
+		diffRefs map[string]any
+		want     string
+	}{
+		"merge base preferred":   {map[string]any{"base_sha": "b1", "start_sha": "s1", "head_sha": "h1"}, "b1"},
+		"start_sha without base": {map[string]any{"base_sha": "", "start_sha": "s1", "head_sha": "h1"}, "s1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, mux := setupTest(t)
+			mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5", func(w http.ResponseWriter, r *http.Request) {
+				writeJSON(t, w, http.StatusOK, map[string]any{
+					"iid":               5,
+					"sha":               "h1",
+					"source_project_id": 100,
+					"target_project_id": 100,
+					"diff_refs":         tc.diffRefs,
+				})
+			})
+
+			info, err := client.GetPullRequestInfo(context.Background(), "myorg", "myrepo", 5)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, info.BaseSHA)
+		})
+	}
 }
 
 func TestGetPullRequestInfo_Fork(t *testing.T) {

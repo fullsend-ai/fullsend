@@ -101,12 +101,23 @@ type Notifier struct {
 	warnf                func(string, ...any)
 	runInfo              *RunInfo
 	cancellationGuidance string
+	completionNotes      []string
 }
 
 // SetCancellationGuidance sets optional caller-provided text appended to a
 // cancelled completion comment. Presentation policy belongs to the caller.
 func (n *Notifier) SetCancellationGuidance(guidance string) {
 	n.cancellationGuidance = guidance
+}
+
+// AddCompletionNote records a warning the operator should see, rendered on
+// its own line in the completion comment whatever the status. The note is
+// sanitized like a status detail. It is only shown when a completion
+// comment is posted.
+func (n *Notifier) AddCompletionNote(note string) {
+	if note != "" {
+		n.completionNotes = append(n.completionNotes, note)
+	}
 }
 
 // New creates a Notifier. The runID becomes either an invisible HTML marker
@@ -536,6 +547,12 @@ func (n *Notifier) buildCompletionBody(description, status, detail string, compl
 	if footer := BuildRunInfoFooter(n.runInfo); footer != "" {
 		b.WriteString("\n\n")
 		b.WriteString(footer)
+	}
+	for _, note := range n.completionNotes {
+		if s := sanitizeDetail(note); s != "" {
+			b.WriteString("\n\n⚠️ ")
+			b.WriteString(s)
+		}
 	}
 	if status == "cancelled" && n.cancellationGuidance != "" {
 		b.WriteString("\n\n")

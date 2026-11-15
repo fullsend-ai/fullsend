@@ -1078,6 +1078,7 @@ func TestGetPullRequestInfo(t *testing.T) {
 			},
 			"base": map[string]any{
 				"ref":  "main",
+				"sha":  "cafef00d",
 				"repo": map[string]any{"full_name": "owner/repo"},
 			},
 		})
@@ -1089,6 +1090,7 @@ func TestGetPullRequestInfo(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 42, info.Number)
 	assert.Equal(t, "feature", info.HeadRef)
+	assert.Equal(t, "cafef00d", info.BaseSHA)
 	assert.False(t, info.IsFork)
 }
 

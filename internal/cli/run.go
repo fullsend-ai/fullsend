@@ -1486,6 +1486,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Declared here so the status-notification defer (below) can read the
 	// final values for the completion comment footer.
 	var aggMetrics aggregateMetrics
+	// completionNotes are warnings the operator should see, rendered in the
+	// completion status comment (for example a repository tirith policy that
+	// could not be staged on a request run). Appended before the agent runs.
+	var completionNotes []string
 	var statusFinalizer func()
 	var statusFinalizerOnce sync.Once
 
@@ -1527,6 +1531,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Set RunInfo for the completion footer. aggMetrics
 				// is fully populated by now (after all iterations).
 				notifier.SetRunInfo(runInfoFor(aggMetrics, h.Effort))
+				for _, note := range completionNotes {
+					notifier.AddCompletionNote(note)
+				}
 				finalizeTimeout := 15 * time.Second
 				if status == "cancelled" && forgePlatform == repos.ForgeGitHub {
 					// The priority defer registered before the agent loop starts this
@@ -2579,13 +2586,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if targetRepo != "" {
 		repoForPolicy = hostRepositoryDir
 	}
-	policyNote, err := attachTirithRepoPolicy(ctx, boot, repoForPolicy, os.Getenv)
+	policyNote, err := attachTirithRepoPolicy(ctx, boot, repoForPolicy, os.Getenv, gitLabMergeRequestBaseResolver(forgePlatform, sOpts))
 	if err != nil {
 		printer.StepFail("Failed to bootstrap sandbox")
 		return fmt.Errorf("staging repository tirith policy: %w", err)
 	}
-	if policyNote != "" {
-		printer.StepInfo(policyNote)
+	switch {
+	case policyNote.omitted:
+		// A request run without the repository's tightening is reported
+		// where an operator looks, not only in the run log (#9493).
+		printer.StepWarn(policyNote.text)
+		if line := ciWarningAnnotation(os.Getenv, policyNote.text); line != "" {
+			fmt.Fprintln(os.Stdout, line)
+		}
+		completionNotes = append(completionNotes, policyNote.text)
+	case policyNote.text != "":
+		printer.StepInfo(policyNote.text)
 	}
 	if rt.Name() == "claude" {
 		warnRepoSkillCollisions(hostRepositoryDir, boot.SkillDirs(), printer)

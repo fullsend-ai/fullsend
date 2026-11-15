@@ -598,6 +598,12 @@ type PullRequestInfo struct {
 	HeadRef  string
 	BaseRef  string
 	HeadSHA  string
+	// BaseSHA is a commit on the base (target) branch the request is
+	// compared against: pull_request.base.sha on GitHub; on GitLab the
+	// merge request's diff_refs.base_sha (the merge base), or
+	// diff_refs.start_sha when base_sha is empty. Empty when the forge does
+	// not report it.
+	BaseSHA  string
 	AuthorID string
 	IsFork   bool
 }
