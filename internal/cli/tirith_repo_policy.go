@@ -293,8 +293,7 @@ func ciWarningAnnotation(getenv func(string) string, msg string) string {
 	if getenv("GITHUB_ACTIONS") != "true" {
 		return ""
 	}
-	escaped := strings.NewReplacer("%", "%25", "\r", "%0D", "\n", "%0A").Replace(msg)
-	return "::warning::" + escaped
+	return "::warning::" + actionsCommandEscaper.Replace(msg)
 }
 
 // fetchGitCommit fetches commit sha, which must be a full object name, from
