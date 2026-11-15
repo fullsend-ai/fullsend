@@ -418,6 +418,110 @@ func TestParsePiStream_OversizedLineSkipped(t *testing.T) {
 	assert.Equal(t, "after", texts[0].Text)
 }
 
+func TestParsePiStream_OversizedAgentEnd(t *testing.T) {
+	t.Parallel()
+
+	const messageEnd = `{"type":"message_end","message":{"role":"assistant","stopReason":"stop","usage":{"input":10,"output":5,"cost":{"total":0.01}}}}`
+	const settled = `{"type":"agent_settled","aborted":false}`
+	readResult := func(t *testing.T, r io.Reader) (ResultEvent, error) {
+		t.Helper()
+		var results []ResultEvent
+		_, err := parsePiStream(r, func(evt AgentEvent) {
+			if result, ok := evt.(ResultEvent); ok {
+				results = append(results, result)
+			}
+		})
+		require.Len(t, results, 1)
+		return results[0], err
+	}
+	parse := func(t *testing.T, lines ...string) ResultEvent {
+		t.Helper()
+		result, err := readResult(t, strings.NewReader(strings.Join(lines, "\n")))
+		require.NoError(t, err)
+		return result
+	}
+	end := func(history, stop string, retry bool) string {
+		return fmt.Sprintf(`{"type":"agent_end","messages":[{"role":"user","content":"%s"},{"role":"assistant","stopReason":"%s"}],"willRetry":%t}`, history, stop, retry)
+	}
+	history := strings.Repeat("x", 2*streamBufSize)
+
+	t.Run("settled run keeps its usage and stop reason", func(t *testing.T) {
+		want := parse(t, messageEnd, end("short", "stop", false), settled)
+		require.False(t, want.IsError)
+		require.Equal(t, 1, want.NumTurns)
+		require.Equal(t, 0.01, want.TotalCostUSD)
+		assert.Equal(t, want, parse(t, messageEnd, end(history, "stop", false), settled))
+	})
+	t.Run("206 turns with a history larger than the buffer", func(t *testing.T) {
+		const turns = 206
+		content := strings.Repeat("some \"text\" with ] and }, inside it ", 180)
+		msg := fmt.Sprintf(`{"role":"assistant","content":[{"type":"text","text":%q}],"stopReason":"stop","usage":{"input":10,"output":5,"cost":{"total":0.01}}}`, content)
+		var events, messages []string
+		for range turns {
+			events = append(events, `{"type":"message_end","message":`+msg+`}`)
+			messages = append(messages, msg)
+		}
+		terminal := `{"type":"agent_end","messages":[` + strings.Join(messages, ",") + `],"willRetry":false}`
+		require.Greater(t, len(terminal), streamBufSize)
+		got := parse(t, append(events, terminal, settled)...)
+		assert.False(t, got.IsError)
+		assert.Equal(t, "stop", got.Subtype)
+		assert.Equal(t, turns, got.NumTurns)
+		assert.Equal(t, 10*turns, got.InputTokens)
+		assert.Equal(t, 5*turns, got.OutputTokens)
+		assert.InDelta(t, 0.01*turns, got.TotalCostUSD, 0.000001)
+	})
+	t.Run("last assistant reports an error before a tool result", func(t *testing.T) {
+		terminal := `{"type":"agent_end","messages":[{"role":"user","content":"` + history +
+			`"},{"role":"assistant","stopReason":"error","errorMessage":"quota exhausted"},{"role":"toolResult"}],"willRetry":false}`
+		got := parse(t, messageEnd, terminal, settled)
+		assert.True(t, got.IsError)
+		assert.Equal(t, "error", got.Subtype)
+		assert.Equal(t, "quota exhausted", got.ErrorMessage)
+	})
+	t.Run("aborted settlement", func(t *testing.T) {
+		got := parse(t, messageEnd, end(history, "stop", false), `{"type":"agent_settled","aborted":true}`)
+		assert.True(t, got.IsError)
+		assert.Equal(t, "aborted", got.Subtype)
+	})
+	t.Run("successful retry clears the failed attempt", func(t *testing.T) {
+		got := parse(t, messageEnd, end(history, "error", true), `{"type":"agent_start"}`, messageEnd, end(history, "stop", false), settled)
+		assert.False(t, got.IsError)
+		assert.Equal(t, "stop", got.Subtype)
+		assert.Equal(t, 2, got.NumTurns)
+	})
+	t.Run("unreadable assistant outcome stays incomplete", func(t *testing.T) {
+		terminal := `{"type":"agent_end","messages":[{"role":"assistant","content":"` + history + `","stopReason":"error"}],"willRetry":false}`
+		got := parse(t, messageEnd, terminal, settled)
+		assert.True(t, got.IsError)
+		assert.Equal(t, "incomplete", got.Subtype)
+	})
+	t.Run("unsettled stream stays incomplete", func(t *testing.T) {
+		got := parse(t, messageEnd, end(history, "stop", false))
+		assert.True(t, got.IsError)
+		assert.Equal(t, "incomplete", got.Subtype)
+	})
+	t.Run("retry checkpoint does not complete the run", func(t *testing.T) {
+		got := parse(t, messageEnd, end(history, "stop", true))
+		assert.True(t, got.IsError)
+		assert.Equal(t, "incomplete", got.Subtype)
+	})
+	t.Run("read error while draining the history", func(t *testing.T) {
+		const prefix = `{"type":"agent_end","messages":[{"role":"user","content":"`
+		broken := errors.New("lost Pi stream")
+		reader := io.MultiReader(strings.NewReader(messageEnd+"\n"+prefix+strings.Repeat("x", streamBufSize-len(prefix))), iotest.ErrReader(broken))
+		result, err := readResult(t, reader)
+		require.ErrorIs(t, err, broken)
+		assert.True(t, result.IsError)
+		assert.Equal(t, "incomplete", result.Subtype)
+	})
+	t.Run("truncated history does not complete the run", func(t *testing.T) {
+		got := parse(t, messageEnd, `{"type":"agent_end","messages":[{"role":"user","content":"`+history)
+		assert.True(t, got.IsError)
+		assert.Equal(t, "incomplete", got.Subtype)
+	})
+}
+
 func TestParsePiStream_ToolExecutionStartAbsorbed(t *testing.T) {
 	t.Parallel()
 
