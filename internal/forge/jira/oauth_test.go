@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -210,39 +211,128 @@ func TestOAuth_UnauthorizedTriggersExactlyOneRefresh(t *testing.T) {
 	assert.Equal(t, int32(2), f.grants.Load())
 }
 
+// myselfGatewayPath is the gateway path GetMyself requests.
+const myselfGatewayPath = "/gw/ex/jira/" + testCloudID + "/rest/api/3/myself"
+
+// responseCounter is an http.RoundTripper that counts round-trips to path
+// that returned an HTTP response. A round-trip that fails with a transport
+// error is not counted, so a client's retry after a transient error (which
+// the server may already have seen) does not look like a retry after a
+// response.
+type responseCounter struct {
+	inner     http.RoundTripper
+	path      string
+	responses atomic.Int32
+}
+
+func (c *responseCounter) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := c.inner.RoundTrip(r)
+	if err == nil && resp != nil && r.URL.Path == c.path {
+		c.responses.Add(1)
+	}
+	return resp, err
+}
+
+// dropFirstResponse is an http.RoundTripper that sends the first request to
+// path through to the server, then discards the response and reports a
+// transient transport error, as a connection reset after the server handled
+// the request would.
+type dropFirstResponse struct {
+	inner   http.RoundTripper
+	path    string
+	dropped atomic.Bool
+}
+
+func (d *dropFirstResponse) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := d.inner.RoundTrip(r)
+	if err == nil && r.URL.Path == d.path && d.dropped.CompareAndSwap(false, true) {
+		_ = resp.Body.Close()
+		return nil, io.ErrUnexpectedEOF
+	}
+	return resp, err
+}
+
+// countingHTTPClient returns an HTTP client for f's server whose transport
+// wraps inner (the server's own transport when nil) with a responseCounter
+// for GetMyself's gateway path.
+func countingHTTPClient(f *gatewayFixture, inner http.RoundTripper) (*http.Client, *responseCounter) {
+	if inner == nil {
+		inner = f.srv.Client().Transport
+	}
+	rc := &responseCounter{inner: inner, path: myselfGatewayPath}
+	return &http.Client{Transport: rc, Timeout: 30 * time.Second, CheckRedirect: checkRedirect}, rc
+}
+
 func TestOAuth_PersistentUnauthorizedIsNotRetriedAgain(t *testing.T) {
 	t.Parallel()
 	f := newOAuthFixture(t)
-	var hits atomic.Int32
-	f.mux.HandleFunc("/gw/ex/jira/"+testCloudID+"/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
+	f.mux.HandleFunc(myselfGatewayPath, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
-	client := f.client(t)
+	httpClient, counter := countingHTTPClient(f.gatewayFixture, nil)
+	client, err := NewScoped(ScopedConfig{BaseURL: f.siteURL(), APIURL: f.gatewayURL()},
+		Credentials{ClientID: testClientID, ClientSecret: testClientSecret},
+		WithOAuthTokenURL(f.tokenURL()), WithHTTPClient(httpClient))
+	require.NoError(t, err)
 
-	_, err := client.GetMyself(context.Background())
+	_, err = client.GetMyself(context.Background())
 	require.Error(t, err)
 	var apiErr *APIError
 	require.ErrorAs(t, err, &apiErr)
 	assert.Equal(t, http.StatusUnauthorized, apiErr.StatusCode)
-	assert.Equal(t, int32(2), hits.Load())
+	// One 401 with the first token, one with the refreshed token, and no
+	// request after that. Only round-trips that got a response count, so a
+	// retry after a transient transport error cannot inflate the count.
+	assert.Equal(t, int32(2), counter.responses.Load())
 	assert.Equal(t, int32(2), f.grants.Load())
 }
 
 func TestToken_UnauthorizedIsNotRetried(t *testing.T) {
 	t.Parallel()
 	f := newGatewayFixture(t)
-	var hits atomic.Int32
-	f.mux.HandleFunc("/gw/ex/jira/"+testCloudID+"/rest/api/3/myself", func(w http.ResponseWriter, r *http.Request) {
-		hits.Add(1)
+	f.mux.HandleFunc(myselfGatewayPath, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	})
-	client, err := NewScoped(ScopedConfig{BaseURL: f.siteURL(), APIURL: f.gatewayURL()}, Credentials{Token: testToken})
+	httpClient, counter := countingHTTPClient(f, nil)
+	client, err := NewScoped(ScopedConfig{BaseURL: f.siteURL(), APIURL: f.gatewayURL()},
+		Credentials{Token: testToken}, WithHTTPClient(httpClient))
 	require.NoError(t, err)
 
 	_, err = client.GetMyself(context.Background())
 	require.Error(t, err)
-	assert.Equal(t, int32(1), hits.Load())
+	// One 401 received and no request after it. Only round-trips that got a
+	// response count, so a retry after a transient transport error cannot
+	// inflate the count.
+	assert.Equal(t, int32(1), counter.responses.Load())
+}
+
+// TestToken_UnauthorizedIsNotRetried_AfterTransientError pins the flake fix
+// for TestToken_UnauthorizedIsNotRetried: the server handles the first
+// request but the client sees a transport error, so the client retries the
+// GET once. The retry gets the 401, which is not retried, so exactly one
+// response is counted even though the server saw two requests.
+func TestToken_UnauthorizedIsNotRetried_AfterTransientError(t *testing.T) {
+	t.Parallel()
+	f := newGatewayFixture(t)
+	var hits atomic.Int32
+	f.mux.HandleFunc(myselfGatewayPath, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	drop := &dropFirstResponse{inner: f.srv.Client().Transport, path: myselfGatewayPath}
+	httpClient, counter := countingHTTPClient(f, drop)
+	client, err := NewScoped(ScopedConfig{BaseURL: f.siteURL(), APIURL: f.gatewayURL()},
+		Credentials{Token: testToken}, WithHTTPClient(httpClient))
+	require.NoError(t, err)
+
+	_, err = client.GetMyself(context.Background())
+	require.Error(t, err)
+	var apiErr *APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, http.StatusUnauthorized, apiErr.StatusCode)
+	assert.True(t, drop.dropped.Load())
+	assert.Equal(t, int32(2), hits.Load())
+	assert.Equal(t, int32(1), counter.responses.Load())
 }
 
 func TestOAuth_TokenEndpointErrors(t *testing.T) {
