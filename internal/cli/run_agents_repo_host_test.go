@@ -549,11 +549,12 @@ func TestAgentsRepoHostTreeFetcher(t *testing.T) {
 
 // TestAgentsRepoHostURLParser checks the directory URL hook: URLs under the
 // host prefix describe the agents repo on that host at the named commit, and
-// anything else is parsed as a raw.githubusercontent.com URL.
+// anything else is parsed on the configured GitHub host or as a
+// raw.githubusercontent.com URL.
 func TestAgentsRepoHostURLParser(t *testing.T) {
 	sha := "abcdef1234567890abcdef1234567890abcdef12"
 	prefix := "https://ghe.example.com/fullsend-ai/agents/raw/"
-	parse := agentsRepoHostURLParser(prefix)
+	parse := agentsRepoHostURLParser(prefix, "https://ghe.example.com")
 
 	info, err := parse(prefix + sha + "/skills/review")
 	require.NoError(t, err)
@@ -564,6 +565,16 @@ func TestAgentsRepoHostURLParser(t *testing.T) {
 	info, err = parse("https://raw.githubusercontent.com/o/r/main/skills/x")
 	require.NoError(t, err)
 	assert.Equal(t, "https://github.com/o/r.git", info.CloneURL())
+
+	// Another repository on the configured host still parses there.
+	info, err = parse("https://ghe.example.com/acme/harnesses/raw/" + sha + "/skills/x")
+	require.NoError(t, err)
+	assert.Equal(t, "skills/x", info.Path)
+	assert.Equal(t, "https://ghe.example.com/acme/harnesses.git", info.CloneURL())
+
+	// Without a configured host that URL is not raw content.
+	_, err = agentsRepoHostURLParser(prefix, "")("https://ghe.example.com/acme/harnesses/raw/" + sha + "/skills/x")
+	assert.Error(t, err)
 
 	for _, u := range []string{
 		prefix + "main/skills/review",
