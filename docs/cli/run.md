@@ -394,7 +394,8 @@ After the last iteration, `fullsend run` returns an error, and so exits non-zero
 
 ## Provider profiles in run output
 
-Once the providers exist, the run prints one line per harness provider. Each line names the
+Once the providers exist, the run prints one line per provider the harness uses; a provider the
+run skips (for example `openai` when no model needs it) gets no line. Each line names the
 profile the provider uses and where it came from: `embedded` for the copy built into fullsend, or
 `harness` for a copy listed in `openshell.profiles`. It then lists what that profile permits: each
 endpoint's host, protocol and `access` (or the methods its allow rules list), and the binaries

@@ -207,7 +207,7 @@ func TestDurableCredentialWriteWarnings(t *testing.T) {
 			assert.Contains(t, got[0], "provider github (profile fullsend-github) permits write methods")
 			assert.NotContains(t, got[0], "github-ro (profile")
 			assert.Contains(t, got[0], "access: read-only")
-			assert.Contains(t, got[0], "The profile is a declaration")
+			assert.Contains(t, got[0], "A profile is a declaration")
 		})
 	}
 }
@@ -223,21 +223,24 @@ func TestDurableCredentialWriteWarnings_InferenceAndUnknown(t *testing.T) {
 	unknown := providerProfileReport{provider: "api", profile: "myorg-api", unknown: true}
 	got := durableCredentialWriteWarnings(dests, []providerProfileReport{vertex, unknown})
 	require.Len(t, got, 1)
-	assert.Contains(t, got[0], "the profile of provider api (profile myorg-api) could not be checked")
+	assert.Contains(t, got[0], "provider api (profile myorg-api) could not be checked")
 	assert.NotContains(t, got[0], "vertex-ai")
 	assert.NotContains(t, got[0], "permits write methods")
+	assert.Contains(t, got[0], "Prefer a short-lived credential that does not need allow_durable or listing the unchecked profile in openshell.profiles", "an unchecked-only warning points at listing the profile")
+	assert.NotContains(t, got[0], "github-ro instead of github", "no read-only advice without a writer")
 
 	github := providerProfileReport{provider: "github", profile: "fullsend-github", writeCapable: true}
 	jira := providerProfileReport{provider: "atl", profile: "fullsend-atlassian-cloud", writeCapable: true}
 	got = durableCredentialWriteWarnings(dests, []providerProfileReport{github, jira, unknown})
 	require.Len(t, got, 1)
 	assert.Contains(t, got[0], "providers github (profile fullsend-github), atl (profile fullsend-atlassian-cloud) permit write methods")
-	assert.Contains(t, got[0], "; the profile of provider api (profile myorg-api) could not be checked")
+	assert.Contains(t, got[0], "; provider api (profile myorg-api) could not be checked")
+	assert.Contains(t, got[0], "allow_durable, a provider whose profile is access: read-only (for example github-ro instead of github), or listing the unchecked profile")
 
 	other := providerProfileReport{provider: "api2", profile: "myorg-api2", unknown: true}
 	got = durableCredentialWriteWarnings(dests, []providerProfileReport{unknown, other})
 	require.Len(t, got, 1)
-	assert.Contains(t, got[0], "the profiles of providers api (profile myorg-api), api2 (profile myorg-api2) could not be checked")
+	assert.Contains(t, got[0], "providers api (profile myorg-api), api2 (profile myorg-api2) could not be checked")
 	assert.True(t, strings.HasSuffix(got[0], "this run does not check that."), got[0])
 
 	got = durableCredentialWriteWarnings([]string{"/tmp/a.json", "/tmp/b.json"}, []providerProfileReport{github})

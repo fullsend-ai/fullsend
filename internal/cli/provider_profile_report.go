@@ -279,19 +279,29 @@ func durableCredentialWriteWarnings(durableDests []string, reports []providerPro
 		clauses = append(clauses, fmt.Sprintf("%s %s %s write methods", noun, strings.Join(writers, ", "), verb))
 	}
 	if len(unknown) > 0 {
-		profileWord, noun := "profile", "provider"
+		noun := "provider"
 		if len(unknown) > 1 {
-			profileWord, noun = "profiles", "providers"
+			noun = "providers"
 		}
-		clauses = append(clauses, fmt.Sprintf("the %s of %s %s could not be checked", profileWord, noun, strings.Join(unknown, ", ")))
+		clauses = append(clauses, fmt.Sprintf("%s %s could not be checked", noun, strings.Join(unknown, ", ")))
+	}
+	remedies := []string{"a short-lived credential that does not need allow_durable"}
+	if len(writers) > 0 {
+		remedies = append(remedies, "a provider whose profile is access: read-only (for example github-ro instead of github)")
+	}
+	if len(unknown) > 0 {
+		remedies = append(remedies, "listing the unchecked profile in openshell.profiles so the run can read it")
+	}
+	remedy := strings.Join(remedies[:len(remedies)-1], ", ") + ", or " + remedies[len(remedies)-1]
+	if len(remedies) == 2 {
+		remedy = remedies[0] + " or " + remedies[1]
 	}
 	warnings := make([]string, 0, len(durableDests))
 	for _, dest := range durableDests {
 		warnings = append(warnings, fmt.Sprintf(
-			"host file dest %s is a durable credential, and %s. "+
-				"Prefer a short-lived credential that does not need allow_durable, or a provider whose profile is access: read-only (for example github-ro instead of github). "+
-				"The profile is a declaration: whether the gateway enforces it depends on the deployment, and this run does not check that.",
-			dest, strings.Join(clauses, "; ")))
+			"host file dest %s is a durable credential, and %s. Prefer %s. "+
+				"A profile is a declaration: whether the gateway enforces it depends on the deployment, and this run does not check that.",
+			dest, strings.Join(clauses, "; "), remedy))
 	}
 	return warnings
 }

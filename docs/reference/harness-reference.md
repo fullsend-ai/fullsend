@@ -384,9 +384,9 @@ prints it on one line:
 ```text
   ! host file dest /tmp/.gcp-credentials.json is a durable credential, and
     provider github (profile fullsend-github) permits write methods. Prefer a
-    short-lived credential that does not need allow_durable, or a provider
+    short-lived credential that does not need allow_durable or a provider
     whose profile is access: read-only (for example github-ro instead of
-    github). The profile is a declaration: whether the gateway enforces it
+    github). A profile is a declaration: whether the gateway enforces it
     depends on the deployment, and this run does not check that.
 ```
 
