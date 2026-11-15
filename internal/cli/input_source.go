@@ -157,6 +157,31 @@ func checkForgeWrite(h *harness.Harness, src inputSource, write []harness.Provid
 		src.origin, strings.Join(names, "\n    "))
 }
 
+// checkUndefinedProviders fails an external-input run without
+// allow_forge_write when a declared provider has no definition. The run
+// still attaches such a name to the sandbox, and a gateway provider of that
+// name may write to the forge, so its type cannot be checked: fail closed.
+func checkUndefinedProviders(h *harness.Harness, src inputSource, declared []string, defs []harness.ProviderDef) error {
+	if !src.external() || h.AllowForgeWrite {
+		return nil
+	}
+	defined := make(map[string]bool, len(defs))
+	for _, d := range defs {
+		defined[d.Name] = true
+	}
+	var missing []string
+	for _, name := range declared {
+		if !defined[name] {
+			missing = append(missing, fmt.Sprintf("%q", name))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("input_source is external (%s), but provider %s has no definition, so the run cannot check whether it writes to the forge; add a definition under providers/, or set allow_forge_write: true in the harness",
+		src.origin, strings.Join(missing, ", "))
+}
+
 // durableHostFileDests returns the dest of each host_files entry whose
 // source checkHostFileCredentials classifies as a durable credential.
 func durableHostFileDests(h *harness.Harness) []string {
@@ -201,6 +226,9 @@ func applyInputSource(h *harness.Harness, absFullsendDir string, resolved []reso
 	}
 	defs, err := runProviderDefs(absFullsendDir, h.Providers, resolved)
 	if err != nil {
+		return "", err
+	}
+	if err := checkUndefinedProviders(h, src, h.Providers, defs); err != nil {
 		return "", err
 	}
 	forge, write := forgeProviders(defs)

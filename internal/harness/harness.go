@@ -419,12 +419,13 @@ type Harness struct {
 	// InputSourceExternal (someone outside the repository's maintainers) or
 	// InputSourceMaintainer. Empty leaves the choice to fullsend run, which
 	// reads FULLSEND_INPUT_SOURCE and otherwise uses maintainer. Top level
-	// only; a child inherits it from its base when it does not set it.
+	// only; a child that does not set it inherits external from its base (a
+	// base maintainer is not inherited).
 	InputSource string `yaml:"input_source,omitempty"`
 	// AllowForgeWrite lets a run whose input source is external attach a
-	// forge provider that can write (type fullsend-github or
-	// fullsend-gitlab-forge). Without it such a run fails before the sandbox
-	// is created. Top level only, and not inherited from a base, like
+	// forge provider that can write (type fullsend-github, fullsend-gitlab-rw
+	// or fullsend-gitlab-forge), or a provider with no definition. Without it
+	// such a run fails before the sandbox is created. Top level only, and not inherited from a base, like
 	// allow_runtime_fetch.
 	AllowForgeWrite bool `yaml:"allow_forge_write,omitempty"`
 
