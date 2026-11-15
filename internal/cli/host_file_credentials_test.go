@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -123,7 +125,7 @@ func TestCheckHostFileCredentials(t *testing.T) {
 			if tt.wantLine == "" {
 				assert.Empty(t, lines)
 			} else {
-				assert.Equal(t, []string{"host file " + path + ": " + tt.wantLine}, lines)
+				assert.Equal(t, []string{"host file " + path + " (dest " + dest + "): " + tt.wantLine}, lines)
 			}
 		})
 	}
@@ -164,7 +166,7 @@ func TestCheckHostFileCredentials(t *testing.T) {
 		assert.Contains(t, err.Error(), "host_files[2]: host file "+pem+" (dest /tmp/key.pem): PEM private key")
 		assert.NotContains(t, err.Error(), "host_files[1]")
 		assert.NotContains(t, err.Error(), "host_files[3]")
-		assert.Equal(t, []string{"host file " + allowed + ": authorized_user credential (lifetime not controlled by this run)"}, lines)
+		assert.Equal(t, []string{"host file " + allowed + " (dest /tmp/adc.json): authorized_user credential (lifetime not controlled by this run)"}, lines)
 	})
 }
 
@@ -239,7 +241,7 @@ func TestRunAgent_DurableHostFileGate(t *testing.T) {
 			wantErr: "set allow_durable: true on the entry"},
 		{name: "opt-in runs the pre-script and prints the line",
 			mount:         "  - src: " + sa + "\n    dest: /tmp/.gcp-credentials.json\n    allow_durable: true\n",
-			wantPreScript: true, wantLine: "host file " + sa + ": service_account key (lifetime not controlled by this run)"},
+			wantPreScript: true, wantLine: "host file " + sa + " (dest /tmp/.gcp-credentials.json): service_account key (lifetime not controlled by this run)"},
 		{name: "key written by the pre-script is caught before the sandbox",
 			mount:         "  - src: " + written + "\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n",
 			preScript:     "printf '%s' '" + hostFileFixtures["service_account"] + "' > " + written + "\n",
@@ -277,4 +279,54 @@ func TestRunAgent_DurableHostFileGate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// bootstrapEnv checks the bytes it is about to upload, so a source that
+// changed after the pre-sandbox checks is still refused.
+func TestBootstrapEnv_RefusesDurableHostFileAtUpload(t *testing.T) {
+	binDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", binDir+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FULLSEND_TEST_EXPAND_PEM", pemHeader)
+
+	sa := writeHostFileFixture(t, "service_account")
+	expand := writeHostFileFixture(t, "expand to pem")
+	for _, tc := range []struct {
+		name    string
+		hf      harness.HostFile
+		wantErr string
+	}{
+		{"plain key without opt-in", harness.HostFile{Src: sa, Dest: "/tmp/.cred.json"}, "service_account key"},
+		{"expanded key without opt-in", harness.HostFile{Src: expand, Dest: "/sandbox/workspace/.env.d/key.env", Expand: true}, "PEM private key"},
+		{"plain key with opt-in", harness.HostFile{Src: sa, Dest: "/tmp/.cred.json", AllowDurable: true}, ""},
+		{"expanded key with opt-in", harness.HostFile{Src: expand, Dest: "/sandbox/workspace/.env.d/key.env", Expand: true, AllowDurable: true}, ""},
+		{"expanded non-credential", harness.HostFile{Src: writeHostFileFixture(t, "plain text"), Dest: "/sandbox/workspace/.env.d/a.env", Expand: true}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &harness.Harness{Agent: "agents/test.md", HostFiles: []harness.HostFile{tc.hf}}
+			err := bootstrapEnv("test-sandbox", "/workspace/repo", h, nil)
+			if tc.wantErr == "" {
+				if err != nil {
+					assert.NotContains(t, err.Error(), "allow_durable")
+				}
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "host_files[0]")
+			assert.Contains(t, err.Error(), tc.wantErr)
+			assert.Contains(t, err.Error(), "set allow_durable: true on the entry")
+		})
+	}
+}
+
+func TestClassifyHostFileRefusesNonRegular(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("FIFOs need a POSIX system")
+	}
+	fifo := filepath.Join(t.TempDir(), "fifo")
+	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
+	shape, err := classifyHostFile(fifo, false)
+	require.Error(t, err, "a FIFO is not read, so the check cannot block")
+	assert.Contains(t, err.Error(), "not a regular file")
+	assert.Equal(t, hostFileUnknown, shape)
 }

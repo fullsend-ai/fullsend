@@ -4340,13 +4340,18 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	}
 
 	// Copy host files into the sandbox.
-	for _, hf := range h.HostFiles {
+	for i, hf := range h.HostFiles {
 		hostPath, copied := hostFileSource(hf)
 		if !copied {
 			if hf.Optional {
 				continue
 			}
 			return fmt.Errorf("host_files: src %q expanded to empty string", hf.Src)
+		}
+		if !hf.Expand {
+			if shape, err := classifyHostFile(hostPath, false); err == nil && shape.durable() && !hf.AllowDurable {
+				return durableHostFilesError([]string{durableHostFileError(i, hf, hostPath, shape)})
+			}
 		}
 
 		if hf.Expand {
@@ -4359,6 +4364,9 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 				return fmt.Errorf("reading host file %s for expansion: %w", hf.Src, err)
 			}
 			expanded := shellSafeExpandEnv(string(raw))
+			if err := checkHostFileUpload(i, hf, hostPath, []byte(expanded)); err != nil {
+				return err
+			}
 
 			tmp, err := os.CreateTemp("", "fullsend-expand-*")
 			if err != nil {

@@ -64,6 +64,12 @@ func (s hostFileShape) describe() string {
 // empty or not a recognized credential is hostFileUnknown. An error means the
 // file could not be read.
 func classifyHostFile(path string, expand bool) (hostFileShape, error) {
+	// A FIFO or device would block or never end; only regular files are read.
+	if info, err := os.Stat(path); err != nil {
+		return hostFileUnknown, err
+	} else if !info.Mode().IsRegular() {
+		return hostFileUnknown, fmt.Errorf("%s is not a regular file", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return hostFileUnknown, err
@@ -138,17 +144,39 @@ func checkHostFileCredentials(h *harness.Harness) ([]string, error) {
 			continue
 		}
 		if !hf.AllowDurable {
-			errs = append(errs, fmt.Sprintf(
-				"host_files[%d]: host file %s (%sdest %s): %s, whose lifetime this run does not control; set allow_durable: true on the entry to mount it",
-				i, path, srcNote(hf.Src, path), hf.Dest, shape.describe()))
+			errs = append(errs, durableHostFileError(i, hf, path, shape))
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("host file %s: %s (lifetime not controlled by this run)", path, shape.describe()))
+		lines = append(lines, fmt.Sprintf("host file %s (dest %s): %s (lifetime not controlled by this run)", path, hf.Dest, shape.describe()))
 	}
 	if len(errs) > 0 {
-		return lines, fmt.Errorf("%d durable credential host file(s) without allow_durable:\n    %s", len(errs), strings.Join(errs, "\n    "))
+		return lines, durableHostFilesError(errs)
 	}
 	return lines, nil
+}
+
+// checkHostFileUpload is the last check, on the bytes bootstrapEnv is about
+// to upload, so a source changed after the pre-sandbox checks cannot slip a
+// durable credential in without allow_durable.
+func checkHostFileUpload(i int, hf harness.HostFile, path string, data []byte) error {
+	if hf.AllowDurable {
+		return nil
+	}
+	shape := classifyHostFileContent(data)
+	if !shape.durable() {
+		return nil
+	}
+	return durableHostFilesError([]string{durableHostFileError(i, hf, path, shape)})
+}
+
+func durableHostFileError(i int, hf harness.HostFile, path string, shape hostFileShape) string {
+	return fmt.Sprintf(
+		"host_files[%d]: host file %s (%sdest %s): %s, whose lifetime this run does not control; set allow_durable: true on the entry to mount it",
+		i, path, srcNote(hf.Src, path), hf.Dest, shape.describe())
+}
+
+func durableHostFilesError(errs []string) error {
+	return fmt.Errorf("%d durable credential host file(s) without allow_durable:\n    %s", len(errs), strings.Join(errs, "\n    "))
 }
 
 // reportHostFileCredentials runs checkHostFileCredentials and prints each
