@@ -223,6 +223,33 @@ source is `fullsend-ai/agents`. To learn more about custom agents visit
 git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agents/
 ```
 
+The service account key you created is a long-lived credential, so
+`fullsend run` mounts it only on a `host_files` entry with `allow_durable: true`
+(see [`host_files[].allow_durable`](../../reference/harness-reference.md)).
+Add that to the key's mount in every cloned harness:
+
+```bash
+perl -pi -e 's{^(\s+)dest: /tmp/\.gcp-credentials\.json\n}{$&$1allow_durable: true\n}' \
+  /tmp/fullsend-agents/harness/*.yaml
+grep -c 'allow_durable: true' /tmp/fullsend-agents/harness/*.yaml
+```
+
+Each harness should report `1`:
+
+```text
+/tmp/fullsend-agents/harness/code.yaml:1
+/tmp/fullsend-agents/harness/fix.yaml:1
+/tmp/fullsend-agents/harness/prioritize.yaml:1
+/tmp/fullsend-agents/harness/retro.yaml:1
+/tmp/fullsend-agents/harness/review.yaml:1
+/tmp/fullsend-agents/harness/scribe.yaml:1
+/tmp/fullsend-agents/harness/triage.yaml:1
+```
+
+Each run then prints `host file ...: service_account key (lifetime not
+controlled by this run)`. Without this step, the run stops with `set
+allow_durable: true on the entry to mount it`.
+
 ## Run default agents
 
 Depending on the agent you want to run you need a different set of environment variables.

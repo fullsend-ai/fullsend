@@ -115,7 +115,10 @@ architecture:
   into the sandbox container. The GCP service account key
   (`GOOGLE_APPLICATION_CREDENTIALS`) is mounted into the sandbox at
   `/tmp/.gcp-credentials.json` for Vertex AI inference, so it could also access
-  Drive if granted; use a dedicated service account with minimal scope
+  Drive if granted. `fullsend run` mounts a key only when the entry sets
+  `allow_durable: true` (see
+  [`host_files[].allow_durable`](../reference/harness-reference.md)); use a
+  dedicated service account with minimal scope
   (invited calendar events only) and restrict sandbox egress to the required
   inference providers to minimize exfiltration risk.
 - **Host-side validation gates**: Output schema checks, confidence
