@@ -6,6 +6,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -76,27 +77,26 @@ func (e providerProfileEndpoint) access() string {
 
 // writeCapable reports whether the endpoint may permit a write method: an
 // access preset other than read-only, an allow rule for a method other than
-// GET, HEAD or OPTIONS, or neither a preset nor rules, which the profile
-// does not show to be read-only. A preset and rules on the same endpoint
-// are both checked.
+// GET, HEAD or OPTIONS, or neither a preset nor any allow rule (deny-only
+// rules included), which the profile does not show to be read-only. A
+// preset and rules on the same endpoint are both checked.
 func (e providerProfileEndpoint) writeCapable() bool {
 	if e.Access != "" && e.Access != "read-only" {
 		return true
 	}
-	if e.Access == "" && len(e.Rules) == 0 {
-		return true
-	}
+	allows := 0
 	for _, r := range e.Rules {
 		if r.Allow == nil {
 			continue
 		}
+		allows++
 		switch strings.ToUpper(strings.TrimSpace(r.Allow.Method)) {
 		case "GET", "HEAD", "OPTIONS":
 		default:
 			return true
 		}
 	}
-	return false
+	return e.Access == "" && allows == 0
 }
 
 // providerProfileReport is the profile a provider was resolved to for this
@@ -210,7 +210,12 @@ func describeProfileEndpoints(endpoints []providerProfileEndpoint) string {
 func describeProfileBinaries(binaries []string) string {
 	var names []string
 	for _, b := range binaries {
-		names = appendUnique(names, path.Base(b))
+		// Only a "**/" glob is shortened: an absolute path names one
+		// file and is printed as is.
+		if rest, ok := strings.CutPrefix(b, "**/"); ok {
+			b = path.Base(rest)
+		}
+		names = appendUnique(names, b)
 	}
 	if len(names) == 0 {
 		return "no binaries listed"
@@ -229,8 +234,20 @@ func appendUnique(list []string, s string) []string {
 // uses, where that profile came from, and what it permits.
 func printProviderProfiles(reports []providerProfileReport, printer *ui.Printer) {
 	for _, r := range reports {
-		printer.StepInfo(r.line)
+		printer.StepInfo(printableLine(r.line))
 	}
+}
+
+// printableLine replaces control characters (newlines, carriage returns,
+// escape sequences) with "?". Profile and host-file values come from
+// repository files, and a raw newline could start a CI log command.
+func printableLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 // durableCredentialWriteWarnings returns one warning per durable credential
@@ -259,21 +276,21 @@ func durableCredentialWriteWarnings(durableDests []string, reports []providerPro
 		if len(writers) > 1 {
 			noun, verb = "providers", "permit"
 		}
-		clauses = append(clauses, fmt.Sprintf("%s %s %s write methods (access other than read-only)", noun, strings.Join(writers, ", "), verb))
+		clauses = append(clauses, fmt.Sprintf("%s %s %s write methods", noun, strings.Join(writers, ", "), verb))
 	}
 	if len(unknown) > 0 {
-		noun := "provider"
+		profileWord, noun := "profile", "provider"
 		if len(unknown) > 1 {
-			noun = "providers"
+			profileWord, noun = "profiles", "providers"
 		}
-		clauses = append(clauses, fmt.Sprintf("the profile of %s %s could not be checked", noun, strings.Join(unknown, ", ")))
+		clauses = append(clauses, fmt.Sprintf("the %s of %s %s could not be checked", profileWord, noun, strings.Join(unknown, ", ")))
 	}
 	warnings := make([]string, 0, len(durableDests))
 	for _, dest := range durableDests {
 		warnings = append(warnings, fmt.Sprintf(
 			"host file dest %s is a durable credential, and %s. "+
 				"Prefer a short-lived credential that does not need allow_durable, or a provider whose profile is access: read-only (for example github-ro instead of github). "+
-				"The profile is a declaration: whether the gateway enforces it depends on the deployment, and this run does not check",
+				"The profile is a declaration: whether the gateway enforces it depends on the deployment, and this run does not check that.",
 			dest, strings.Join(clauses, "; ")))
 	}
 	return warnings
@@ -307,6 +324,6 @@ func warnDurableCredentialWriteProviders(h *harness.Harness, reports []providerP
 		return
 	}
 	for _, w := range durableCredentialWriteWarnings(durableHostFileDests(h), reports) {
-		printer.StepWarn(w)
+		printer.StepWarn(printableLine(w))
 	}
 }

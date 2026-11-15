@@ -398,7 +398,7 @@ Once the providers exist, the run prints one line per harness provider. Each lin
 profile the provider uses and where it came from: `embedded` for the copy built into fullsend, or
 `harness` for a copy listed in `openshell.profiles`. It then lists what that profile permits: each
 endpoint's host, protocol and `access` (or the methods its allow rules list), and the binaries
-allowlist by base name. A profile with more than three endpoints is summarised as
+allowlist: a `**/` glob by its base name (`**/gh` as `gh`), an absolute path as written. A profile with more than three endpoints is summarised as
 `<n> endpoints: <hosts> (<access values>)`.
 
 ```text
@@ -415,9 +415,8 @@ When the run cannot say what a profile permits, the line says so instead:
 
 A profile is a declaration of what the gateway should allow. Whether the gateway enforces it
 depends on the deployment, and the run does not check that. If the harness also mounts a durable
-credential file, the run may print a warning before the sandbox starts; see "Durable credentials
-next to write-capable providers" under `host_files` in the
-[harness reference](../reference/harness-reference.md#field-details).
+credential file, the run may print a warning before the sandbox starts; see
+[durable credentials next to write-capable providers](../reference/harness-reference.md#durable-credentials-next-to-write-capable-providers).
 
 ## OpenAI credentials on pi and codex
 

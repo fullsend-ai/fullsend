@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -144,7 +145,8 @@ func TestProviderProfileEndpoint_WriteCapable(t *testing.T) {
 		{"GET rule", providerProfileEndpoint{Rules: []providerProfileRule{allow("GET")}}, false, "rules GET"},
 		{"POST rule", providerProfileEndpoint{Rules: []providerProfileRule{allow("GET"), allow("post")}}, true, "rules GET/POST"},
 		{"any-method rule", providerProfileEndpoint{Rules: []providerProfileRule{allow("")}}, true, "rules *"},
-		{"deny-only rule", providerProfileEndpoint{Rules: []providerProfileRule{{}}}, false, "unspecified"},
+		{"deny-only rule", providerProfileEndpoint{Rules: []providerProfileRule{{}}}, true, "unspecified"},
+		{"read-only preset with a deny-only rule", providerProfileEndpoint{Access: "read-only", Rules: []providerProfileRule{{}}}, false, "read-only"},
 		{"read-only preset with a POST rule", providerProfileEndpoint{Access: "read-only", Rules: []providerProfileRule{allow("POST")}}, true, "read-only"},
 	}
 	for _, tt := range tests {
@@ -158,6 +160,23 @@ func TestProviderProfileEndpoint_WriteCapable(t *testing.T) {
 func TestDescribeProfileEndpointsAndBinaries_Empty(t *testing.T) {
 	assert.Equal(t, "no endpoints", describeProfileEndpoints(nil))
 	assert.Equal(t, "no binaries listed", describeProfileBinaries(nil))
+}
+
+// TestDescribeProfileBinaries_GlobsShortenedAbsolutePathsKept: a "**/"
+// glob prints as its base name, an absolute path prints as is, so the two
+// stay distinguishable.
+func TestDescribeProfileBinaries_GlobsShortenedAbsolutePathsKept(t *testing.T) {
+	assert.Equal(t, "binaries gate-query, /usr/local/bin/gate-query",
+		describeProfileBinaries([]string{"**/gate-query", "/usr/local/bin/gate-query", "**/gate-query"}))
+}
+
+func TestPrintableLine_ReplacesControlCharacters(t *testing.T) {
+	assert.Equal(t, "api.example.invalid?::error::x?[31m", printableLine("api.example.invalid\n::error::x\x1b[31m"))
+	assert.Equal(t, "provider github: profile fullsend-github", printableLine("provider github: profile fullsend-github"))
+
+	var buf bytes.Buffer
+	printProviderProfiles([]providerProfileReport{{line: "provider x: profile y (harness) -> a\nb rest read-only"}}, ui.New(&buf))
+	assert.Equal(t, 1, strings.Count(buf.String(), "\n"), "a value with a newline stays on one output line")
 }
 
 // TestDurableCredentialWriteWarnings covers the four combinations of a
@@ -214,6 +233,15 @@ func TestDurableCredentialWriteWarnings_InferenceAndUnknown(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Contains(t, got[0], "providers github (profile fullsend-github), atl (profile fullsend-atlassian-cloud) permit write methods")
 	assert.Contains(t, got[0], "; the profile of provider api (profile myorg-api) could not be checked")
+
+	other := providerProfileReport{provider: "api2", profile: "myorg-api2", unknown: true}
+	got = durableCredentialWriteWarnings(dests, []providerProfileReport{unknown, other})
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0], "the profiles of providers api (profile myorg-api), api2 (profile myorg-api2) could not be checked")
+	assert.True(t, strings.HasSuffix(got[0], "this run does not check that."), got[0])
+
+	got = durableCredentialWriteWarnings([]string{"/tmp/a.json", "/tmp/b.json"}, []providerProfileReport{github})
+	require.Len(t, got, 2, "one warning per durable destination")
 }
 
 func TestWarnDurableCredentialWriteProviders(t *testing.T) {
