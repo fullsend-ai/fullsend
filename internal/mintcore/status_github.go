@@ -59,7 +59,7 @@ func validateStatusGitHub(ctx context.Context, r *http.Request) error {
 // githubGetUser calls GET /user with the given token and returns the
 // login name. Uses mintHTTP for all outbound HTTP.
 func githubGetUser(ctx context.Context, token string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubAPIBaseURL()+"/user", nil)
 	if err != nil {
 		return "", fmt.Errorf("creating /user request: %w", err)
 	}
@@ -96,7 +96,7 @@ func githubGetUser(ctx context.Context, token string) (string, error) {
 // org/team. Uses the user's own token for the membership check
 // (GET /orgs/{org}/teams/{team}/memberships/{username}).
 func githubCheckTeamMembership(ctx context.Context, token, org, team, username string) error {
-	membershipURL := fmt.Sprintf("https://api.github.com/orgs/%s/teams/%s/memberships/%s",
+	membershipURL := fmt.Sprintf("%s/orgs/%s/teams/%s/memberships/%s", githubAPIBaseURL(),
 		url.PathEscape(org), url.PathEscape(team), url.PathEscape(username))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, membershipURL, nil)
 	if err != nil {
