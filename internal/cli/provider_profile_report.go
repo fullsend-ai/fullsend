@@ -25,9 +25,15 @@ const (
 // by one; longer lists are summarised by host and access value.
 const maxProfileEndpointsListed = 3
 
+// profileCategoryInference is the profile category of a model provider.
+// Its writes are model calls, not changes to remote state, so the durable
+// credential warning does not name it.
+const profileCategoryInference = "inference"
+
 // providerProfileFile is the part of a provider profile that says what the
 // provider permits: its endpoints and its binaries allowlist.
 type providerProfileFile struct {
+	Category  string                    `yaml:"category"`
 	Endpoints []providerProfileEndpoint `yaml:"endpoints"`
 	Binaries  []string                  `yaml:"binaries"`
 }
@@ -71,12 +77,13 @@ func (e providerProfileEndpoint) access() string {
 // writeCapable reports whether the endpoint may permit a write method: an
 // access preset other than read-only, an allow rule for a method other than
 // GET, HEAD or OPTIONS, or neither a preset nor rules, which the profile
-// does not show to be read-only.
+// does not show to be read-only. A preset and rules on the same endpoint
+// are both checked.
 func (e providerProfileEndpoint) writeCapable() bool {
-	if e.Access != "" {
-		return e.Access != "read-only"
+	if e.Access != "" && e.Access != "read-only" {
+		return true
 	}
-	if len(e.Rules) == 0 {
+	if e.Access == "" && len(e.Rules) == 0 {
 		return true
 	}
 	for _, r := range e.Rules {
@@ -105,6 +112,11 @@ type providerProfileReport struct {
 	// writeCapable is true when any endpoint of the profile may permit a
 	// write method.
 	writeCapable bool
+	// inference is true for a profile in the inference category.
+	inference bool
+	// unknown is true when the run could not read the profile, so what it
+	// permits is not known.
+	unknown bool
 }
 
 // resolveProviderProfiles reports the profile each provider in defs uses: a
@@ -149,6 +161,7 @@ func resolveProviderProfile(pd harness.ProviderDef, listed []resolve.ResolvedPro
 		found = true
 	}
 	if !found {
+		r.unknown = true
 		r.line = fmt.Sprintf("provider %s: profile %s (not imported by this run; what it permits is not known to the runner)", pd.Name, id)
 		return r
 	}
@@ -157,9 +170,11 @@ func resolveProviderProfile(pd harness.ProviderDef, listed []resolve.ResolvedPro
 		err = yaml.Unmarshal(data, &prof)
 	}
 	if err != nil {
+		r.unknown = true
 		r.line = fmt.Sprintf("provider %s: profile %s (%s) could not be read: %v", pd.Name, id, r.source, err)
 		return r
 	}
+	r.inference = prof.Category == profileCategoryInference
 	for _, e := range prof.Endpoints {
 		if e.writeCapable() {
 			r.writeCapable = true
@@ -220,25 +235,46 @@ func printProviderProfiles(reports []providerProfileReport, printer *ui.Printer)
 
 // durableCredentialWriteWarnings returns one warning per durable credential
 // host file destination when any provider's profile may permit a write
-// method. Both together mean a long-lived key whose lifetime the run does
-// not control sits next to a route that can change remote state.
+// method, or could not be read. Both together mean a long-lived key whose
+// lifetime the run does not control sits next to a route that can change
+// remote state. Inference profiles are left out: their writes are model
+// calls, and no read-only inference profile exists to point at.
 func durableCredentialWriteWarnings(durableDests []string, reports []providerProfileReport) []string {
-	var writers []string
+	var writers, unknown []string
 	for _, r := range reports {
-		if r.writeCapable {
-			writers = append(writers, fmt.Sprintf("%s (profile %s)", r.provider, r.profile))
+		named := fmt.Sprintf("%s (profile %s)", r.provider, r.profile)
+		switch {
+		case r.unknown:
+			unknown = append(unknown, named)
+		case r.writeCapable && !r.inference:
+			writers = append(writers, named)
 		}
 	}
-	if len(writers) == 0 {
+	if len(writers) == 0 && len(unknown) == 0 {
 		return nil
+	}
+	var clauses []string
+	if len(writers) > 0 {
+		noun, verb := "provider", "permits"
+		if len(writers) > 1 {
+			noun, verb = "providers", "permit"
+		}
+		clauses = append(clauses, fmt.Sprintf("%s %s %s write methods (access other than read-only)", noun, strings.Join(writers, ", "), verb))
+	}
+	if len(unknown) > 0 {
+		noun := "provider"
+		if len(unknown) > 1 {
+			noun = "providers"
+		}
+		clauses = append(clauses, fmt.Sprintf("the profile of %s %s could not be checked", noun, strings.Join(unknown, ", ")))
 	}
 	warnings := make([]string, 0, len(durableDests))
 	for _, dest := range durableDests {
 		warnings = append(warnings, fmt.Sprintf(
-			"host file dest %s is a durable credential, and provider %s permits write methods (access other than read-only); "+
-				"a provider whose profile is access: read-only is the narrower choice. "+
-				"The profile is a declaration: whether the gateway enforces it is a property of the deployment, which this run does not check",
-			dest, strings.Join(writers, ", ")))
+			"host file dest %s is a durable credential, and %s. "+
+				"Prefer a short-lived credential that does not need allow_durable, or a provider whose profile is access: read-only (for example github-ro instead of github). "+
+				"The profile is a declaration: whether the gateway enforces it depends on the deployment, and this run does not check",
+			dest, strings.Join(clauses, "; ")))
 	}
 	return warnings
 }

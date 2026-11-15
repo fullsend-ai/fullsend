@@ -1043,7 +1043,7 @@ func TestRunAgent_PrintsResolvedProviderProfiles(t *testing.T) {
 
 	assert.Contains(t, out, "provider github: profile fullsend-github (embedded) -> api.github.com rest read-write, github.com rest read-write; binaries gh, git, node, pre-commit")
 	assert.Contains(t, out, "provider github-ro: profile fullsend-github-ro (harness) -> api.github.com rest read-only; binaries gh")
-	warn := "host file dest /tmp/sa.json is a durable credential, and provider github (profile fullsend-github) permits write methods"
+	warn := "host file dest /tmp/sa.json is a durable credential, and provider github (profile fullsend-github) permits write methods (access other than read-only). Prefer a short-lived credential"
 	assert.Contains(t, out, warn)
 	assert.NotContains(t, out, "provider github-ro (profile", "a read-only provider is not named in the warning")
 	assert.Less(t, strings.Index(out, warn), strings.Index(out, "Creating sandbox"), "the warning comes before the sandbox is created")

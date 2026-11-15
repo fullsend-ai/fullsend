@@ -45,9 +45,19 @@ func TestPrintProviderProfiles_EmbeddedGolden(t *testing.T) {
 	assert.Equal(t, want, buf.String())
 
 	write := map[string]bool{}
+	inference := map[string]bool{}
 	for _, r := range reports {
 		write[r.provider] = r.writeCapable
+		inference[r.provider] = r.inference
+		assert.False(t, r.unknown, r.provider)
 	}
+	assert.Equal(t, map[string]bool{
+		"github":             false,
+		"github-ro":          false,
+		"package-registries": false,
+		"vertex-ai":          true,
+		"openai":             true,
+	}, inference, "inference profiles are recognised by their category")
 	assert.Equal(t, map[string]bool{
 		"github":             true,
 		"github-ro":          false,
@@ -103,9 +113,11 @@ endpoints:
 	assert.Equal(t, profileSourceHarness, reports[2].source)
 	assert.Contains(t, reports[2].line, "provider broken: profile myorg-broken (harness) could not be read:")
 	assert.False(t, reports[2].writeCapable)
+	assert.True(t, reports[2].unknown, "an unreadable profile is unknown, not read-only")
 
 	assert.Equal(t, "", reports[3].source)
 	assert.Equal(t, "provider elsewhere: profile myorg-on-gateway (not imported by this run; what it permits is not known to the runner)", reports[3].line)
+	assert.True(t, reports[3].unknown, "a profile the run did not import is unknown")
 
 	assert.Equal(t, "fullsend-jira", reports[4].profile, "the type is reported in its canonical form")
 	assert.Equal(t, profileSourceEmbedded, reports[4].source)
@@ -133,6 +145,7 @@ func TestProviderProfileEndpoint_WriteCapable(t *testing.T) {
 		{"POST rule", providerProfileEndpoint{Rules: []providerProfileRule{allow("GET"), allow("post")}}, true, "rules GET/POST"},
 		{"any-method rule", providerProfileEndpoint{Rules: []providerProfileRule{allow("")}}, true, "rules *"},
 		{"deny-only rule", providerProfileEndpoint{Rules: []providerProfileRule{{}}}, false, "unspecified"},
+		{"read-only preset with a POST rule", providerProfileEndpoint{Access: "read-only", Rules: []providerProfileRule{allow("POST")}}, true, "read-only"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -172,12 +185,35 @@ func TestDurableCredentialWriteWarnings(t *testing.T) {
 			}
 			require.Len(t, got, 1)
 			assert.Contains(t, got[0], "/tmp/sa.json")
-			assert.Contains(t, got[0], "github (profile fullsend-github)")
-			assert.NotContains(t, got[0], "github-ro")
+			assert.Contains(t, got[0], "provider github (profile fullsend-github) permits write methods")
+			assert.NotContains(t, got[0], "github-ro (profile")
 			assert.Contains(t, got[0], "access: read-only")
 			assert.Contains(t, got[0], "The profile is a declaration")
 		})
 	}
+}
+
+// TestDurableCredentialWriteWarnings_InferenceAndUnknown: an inference
+// profile does not trigger the warning; a profile the run could not read
+// does, and is named as unchecked rather than as a writer.
+func TestDurableCredentialWriteWarnings_InferenceAndUnknown(t *testing.T) {
+	dests := []string{"/tmp/sa.json"}
+	vertex := providerProfileReport{provider: "vertex-ai", profile: "fullsend-vertex-ai", writeCapable: true, inference: true}
+	assert.Empty(t, durableCredentialWriteWarnings(dests, []providerProfileReport{vertex}), "inference alone does not warn")
+
+	unknown := providerProfileReport{provider: "api", profile: "myorg-api", unknown: true}
+	got := durableCredentialWriteWarnings(dests, []providerProfileReport{vertex, unknown})
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0], "the profile of provider api (profile myorg-api) could not be checked")
+	assert.NotContains(t, got[0], "vertex-ai")
+	assert.NotContains(t, got[0], "permits write methods")
+
+	github := providerProfileReport{provider: "github", profile: "fullsend-github", writeCapable: true}
+	jira := providerProfileReport{provider: "atl", profile: "fullsend-atlassian-cloud", writeCapable: true}
+	got = durableCredentialWriteWarnings(dests, []providerProfileReport{github, jira, unknown})
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0], "providers github (profile fullsend-github), atl (profile fullsend-atlassian-cloud) permit write methods")
+	assert.Contains(t, got[0], "; the profile of provider api (profile myorg-api) could not be checked")
 }
 
 func TestWarnDurableCredentialWriteProviders(t *testing.T) {

@@ -368,21 +368,24 @@ host_files:
     allow_durable: true
 ```
 
-A durable credential mount can sit next to a provider whose profile may
-permit a write method. That covers an endpoint `access` other than
-`read-only`, and an allow rule for a method other than `GET`, `HEAD` or
-`OPTIONS`. In that case, the run also prints a warning just before the
-sandbox is created. The warning does not fail the run, and it does not
-replace `allow_durable: true`:
+**Durable credentials next to write-capable providers** — The run prints a warning just before the sandbox is created when a durable
+credential mount sits next to a provider whose profile may permit a write
+method, or whose profile the run could not read. A profile may permit a
+write method when an endpoint has an `access` other than `read-only`, an
+allow rule for a method other than `GET`, `HEAD` or `OPTIONS`, or neither.
+Inference profiles (`category: inference`, such as `vertex-ai` and
+`openai`) are left out, since their writes are model calls. The warning
+does not fail the run, and it does not replace `allow_durable: true`:
 
 ```text
-  ! host file dest /tmp/.gcp-credentials.json is a durable credential, and provider github (profile fullsend-github) permits write methods (access other than read-only); a provider whose profile is access: read-only is the narrower choice. The profile is a declaration: whether the gateway enforces it is a property of the deployment, which this run does not check
+  ! host file dest /tmp/.gcp-credentials.json is a durable credential, and provider github (profile fullsend-github) permits write methods (access other than read-only). Prefer a short-lived credential that does not need allow_durable, or a provider whose profile is access: read-only (for example github-ro instead of github). The profile is a declaration: whether the gateway enforces it depends on the deployment, and this run does not check
 ```
 
-Each provider's resolved profile is printed earlier in the run (see
-[`fullsend run`](../cli/run.md)). A profile is a declaration of what the
-gateway should allow. Whether the gateway enforces it depends on the
-deployment.
+To clear it, mount a short-lived credential instead (for example a Workload
+Identity Federation `external_account` file), or switch to a read-only
+provider such as `github-ro` if the agent does not need to write. Each
+provider's resolved profile is printed earlier in the run; see
+[provider profiles in run output](../cli/run.md#provider-profiles-in-run-output).
 
 **`.env.d` host files** — A `host_files` entry with a `dest` in
 `/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.
