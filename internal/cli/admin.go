@@ -128,6 +128,10 @@ type perRepoInstallConfig struct {
 	// Runtime is the --runtime value when the flag was given; empty keeps
 	// the per-repo config's code default.
 	Runtime string
+	// AgentsExplicit records whether --agents was passed explicitly, as
+	// opposed to carrying its flag default. Only an explicit value
+	// changes the roles of an existing .fullsend/config.yaml on a rerun.
+	AgentsExplicit bool
 
 	// Testing overrides — when non-nil, used instead of resolving from
 	// the environment. Not set by CLI flag parsing.
@@ -291,6 +295,7 @@ Inference authentication:
 				RepoFullName:         arg,
 				Runtime:              perRepoRuntime,
 				Agents:               agents,
+				AgentsExplicit:       cmd.Flags().Changed("agents"),
 				MintURL:              mintURL,
 				InferenceRegion:      inferenceRegion,
 				InferenceProject:     inferenceProject,
@@ -438,6 +443,21 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		printer.StepInfo(fmt.Sprintf("Setting up new per-repo installation for %s/%s", owner, repo))
 	}
 
+	// A rerun must not regenerate an existing .fullsend/config.yaml from
+	// defaults (that drops custom agents and settings). Read it before any
+	// provisioning so an unparseable file fails the run instead of being
+	// overwritten.
+	existingConfig, err := existingInstallConfig(ctx, client, printer, owner, repo, roles, c)
+	if err != nil {
+		if !dryRun {
+			return err
+		}
+		// Dry runs may lack credentials for the repo; report and plan as
+		// a first install rather than failing before printing the plan.
+		printer.StepWarn("Could not read existing .fullsend/config.yaml (planning as a first install): " + err.Error())
+		existingConfig = nil
+	}
+
 	// Phase 1: Discover existing infrastructure (read-only, safe for dry-run).
 	var mintFound bool
 	var appsFound bool
@@ -577,6 +597,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			WIFProvider:      inferenceWIFProvider,
 			VendorBinary:     vendor,
 			Direct:           c.Direct,
+			ExistingConfig:   existingConfig,
 		})
 		if dryRunErr != nil {
 			return fmt.Errorf("generating scaffold files for dry run: %w", dryRunErr)
@@ -825,6 +846,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		VendorBinary:          vendor,
 		Direct:                c.Direct,
 		SkipScaffoldAndConfig: vendor,
+		ExistingConfig:        existingConfig,
 	}
 
 	progressFn := func(_ string, phase, msg string) {
@@ -895,6 +917,46 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	printer.Blank()
 	printer.StepDone(fmt.Sprintf("Per-repo installation complete for %s/%s", owner, repo))
 	return nil
+}
+
+// existingInstallConfig returns the bytes a rerun of admin install writes
+// as .fullsend/config.yaml, or nil when the repo has no such file (first
+// install: the scaffold generates it from defaults). Mirroring github
+// setup, the existing file is kept verbatim unless --runtime or an
+// explicit --agents targets one of its keys; then only those keys change
+// on the loaded config. An existing file that cannot be parsed is an
+// error, never regenerated over.
+func existingInstallConfig(ctx context.Context, client forge.Client, printer *ui.Printer,
+	owner, repo string, roles []string, c perRepoInstallConfig) ([]byte, error) {
+	existing, data, _, err := loadExistingPerRepoConfigData(ctx, client, owner, repo)
+	if err != nil {
+		return nil, err
+	}
+	if existing == nil {
+		return nil, nil
+	}
+	var changed []string
+	if c.Runtime != "" {
+		existing.SetRuntime(c.Runtime)
+		changed = append(changed, "runtime")
+	}
+	if c.AgentsExplicit {
+		existing.SetRoles(roles)
+		changed = append(changed, "roles")
+	}
+	if len(changed) == 0 {
+		printer.StepInfo("Keeping existing .fullsend/config.yaml unchanged (pass --runtime or --agents to change a key)")
+		return data, nil
+	}
+	if err := existing.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	out, err := existing.Marshal()
+	if err != nil {
+		return nil, fmt.Errorf("marshaling per-repo config: %w", err)
+	}
+	printer.StepInfo("Updating existing .fullsend/config.yaml: " + strings.Join(changed, ", ") + " (other keys kept; comments are not preserved)")
+	return out, nil
 }
 
 // gcfProvisionerAdapter wraps a gcf.Provisioner to implement adminWIFProvisioner,
