@@ -10,18 +10,20 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // hostFileShape is what classifyHostFile finds in a host_files source.
 type hostFileShape string
 
 const (
-	hostFileServiceAccount  hostFileShape = "service_account"
-	hostFileAuthorizedUser  hostFileShape = "authorized_user"
-	hostFileExternalAccount hostFileShape = "external_account"
-	hostFileImpersonatedSA  hostFileShape = "impersonated_service_account"
-	hostFilePrivateKey      hostFileShape = "private_key"
-	hostFileUnknown         hostFileShape = "unknown"
+	hostFileServiceAccount   hostFileShape = "service_account"
+	hostFileAuthorizedUser   hostFileShape = "authorized_user"
+	hostFileExternalAuthUser hostFileShape = "external_account_authorized_user"
+	hostFileExternalAccount  hostFileShape = "external_account"
+	hostFileImpersonatedSA   hostFileShape = "impersonated_service_account"
+	hostFilePrivateKey       hostFileShape = "private_key"
+	hostFileUnknown          hostFileShape = "unknown"
 )
 
 // maxHostFileClassifyBytes bounds how much of a host file is read to
@@ -38,7 +40,7 @@ var pemPrivateKeyRe = regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----`
 // are not treated as credentials.
 func (s hostFileShape) durable() bool {
 	switch s {
-	case hostFileServiceAccount, hostFileAuthorizedUser, hostFileImpersonatedSA, hostFilePrivateKey:
+	case hostFileServiceAccount, hostFileAuthorizedUser, hostFileExternalAuthUser, hostFileImpersonatedSA, hostFilePrivateKey:
 		return true
 	}
 	return false
@@ -56,10 +58,12 @@ func (s hostFileShape) describe() string {
 }
 
 // classifyHostFile reads the start of the host file at path and returns its
-// credential shape. It runs on the host before upload; nothing inspects the
-// file inside the sandbox. A file that is empty or not a recognized
-// credential is hostFileUnknown. An error means the file could not be read.
-func classifyHostFile(path string) (hostFileShape, error) {
+// credential shape. With expand, it classifies the content as bootstrapEnv
+// will upload it, after ${VAR} expansion, in memory. It runs on the host
+// before upload; nothing inspects the file inside the sandbox. A file that is
+// empty or not a recognized credential is hostFileUnknown. An error means the
+// file could not be read.
+func classifyHostFile(path string, expand bool) (hostFileShape, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return hostFileUnknown, err
@@ -69,12 +73,15 @@ func classifyHostFile(path string) (hostFileShape, error) {
 	if err != nil {
 		return hostFileUnknown, err
 	}
+	if expand {
+		data = []byte(shellSafeExpandEnv(string(data)))
+	}
 	return classifyHostFileContent(data), nil
 }
 
 // classifyHostFileContent returns the credential shape of data.
 func classifyHostFileContent(data []byte) hostFileShape {
-	trimmed := bytes.TrimSpace(data)
+	trimmed := bytes.TrimSpace(bytes.TrimPrefix(data, []byte("\uFEFF")))
 	if bytes.HasPrefix(trimmed, []byte("{")) {
 		var creds hostFileCredentialJSON
 		if json.Unmarshal(trimmed, &creds) == nil {
@@ -102,7 +109,7 @@ type hostFileCredentialJSON struct {
 // external_account is classified as external_account.
 func (c *hostFileCredentialJSON) shape() hostFileShape {
 	switch shape := hostFileShape(strings.TrimSpace(c.Type)); shape {
-	case hostFileServiceAccount, hostFileAuthorizedUser, hostFileExternalAccount:
+	case hostFileServiceAccount, hostFileAuthorizedUser, hostFileExternalAuthUser, hostFileExternalAccount:
 		return shape
 	case hostFileImpersonatedSA:
 		if c.SourceCredentials != nil && c.SourceCredentials.shape() == hostFileExternalAccount {
@@ -126,14 +133,14 @@ func checkHostFileCredentials(h *harness.Harness) ([]string, error) {
 		if !copied {
 			continue
 		}
-		shape, err := classifyHostFile(path)
+		shape, err := classifyHostFile(path, hf.Expand)
 		if err != nil || !shape.durable() {
 			continue
 		}
 		if !hf.AllowDurable {
 			errs = append(errs, fmt.Sprintf(
-				"host_files[%d]: host file %s (dest %s): %s, whose lifetime this run does not control; set allow_durable: true on the entry to mount it",
-				i, path, hf.Dest, shape.describe()))
+				"host_files[%d]: host file %s (%sdest %s): %s, whose lifetime this run does not control; set allow_durable: true on the entry to mount it",
+				i, path, srcNote(hf.Src, path), hf.Dest, shape.describe()))
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("host file %s: %s (lifetime not controlled by this run)", path, shape.describe()))
@@ -142,4 +149,30 @@ func checkHostFileCredentials(h *harness.Harness) ([]string, error) {
 		return lines, fmt.Errorf("%d durable credential host file(s) without allow_durable:\n    %s", len(errs), strings.Join(errs, "\n    "))
 	}
 	return lines, nil
+}
+
+// reportHostFileCredentials runs checkHostFileCredentials and prints each
+// report line that reported does not hold yet, recording it there.
+func reportHostFileCredentials(h *harness.Harness, printer *ui.Printer, reported map[string]bool) error {
+	lines, err := checkHostFileCredentials(h)
+	if err != nil {
+		printer.StepFail("Host file credential validation failed")
+		return err
+	}
+	for _, line := range lines {
+		if !reported[line] {
+			reported[line] = true
+			printer.StepWarn(line)
+		}
+	}
+	return nil
+}
+
+// srcNote names the src as the harness wrote it when expansion changed it,
+// so an error can be traced to the YAML entry.
+func srcNote(src, path string) string {
+	if src == path {
+		return ""
+	}
+	return "src " + src + ", "
 }

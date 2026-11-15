@@ -1325,14 +1325,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	// Classify host_files sources on the host before upload, so a durable
 	// credential reaches the sandbox only with allow_durable: true and the
-	// run output records each one that does (#9508).
-	durableLines, err := checkHostFileCredentials(h)
-	if err != nil {
-		printer.StepFail("Host file credential validation failed")
+	// run output records each one that does (#9508). Checked again after
+	// the pre-script, which may write or replace a source.
+	reportedHostFiles := map[string]bool{}
+	if err := reportHostFileCredentials(h, printer, reportedHostFiles); err != nil {
 		return err
-	}
-	for _, line := range durableLines {
-		printer.StepWarn(line)
 	}
 	// Ensure scripts are executable. The GitHub Contents API does not
 	// preserve file permissions, so scripts written via admin install
@@ -2226,6 +2223,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		printer.StepDone("Run skipped by pre-script: " + reason)
 		return nil
+	}
+
+	if err := reportHostFileCredentials(h, printer, reportedHostFiles); err != nil {
+		return err
 	}
 
 	// 4a. Create sandbox. A private ghcr.io harness image is pulled first

@@ -1,30 +1,38 @@
 package cli
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // pemHeader is assembled so the fixture is not itself a PEM block.
 const pemHeader = "-----BEGIN " + "PRIVATE KEY-----"
 
 var hostFileFixtures = map[string]string{
-	"service_account":              `{"type": "service_account", "project_id": "example", "private_key_id": "dummy", "private_key": "dummy", "client_email": "agent@example.invalid"}`,
-	"authorized_user":              `{"type": "authorized_user", "client_id": "dummy", "client_secret": "dummy", "refresh_token": "dummy"}`,
-	"external_account":             `{"type": "external_account", "audience": "example", "credential_source": {"file": "/tmp/token"}}`,
-	"impersonated_service_account": `{"type": "impersonated_service_account", "service_account_impersonation_url": "https://example.invalid", "source_credentials": {"type": "authorized_user"}}`,
-	"impersonated over external":   `{"type": "impersonated_service_account", "source_credentials": {"type": "impersonated_service_account", "source_credentials": {"type": "external_account", "credential_source": {"file": "/tmp/token"}}}}`,
-	"impersonated without source":  `{"type": "impersonated_service_account"}`,
-	"pem":                          "# key\n" + pemHeader + "\nZHVtbXk=\n-----END " + "PRIVATE KEY-----\n",
-	"plain text":                   "export FOO=bar\n",
-	"empty":                        "",
-	"other json":                   `{"type": "something_else", "project_id": "example"}`,
+	"service_account":                  `{"type": "service_account", "project_id": "example", "private_key_id": "dummy", "private_key": "dummy", "client_email": "agent@example.invalid"}`,
+	"authorized_user":                  `{"type": "authorized_user", "client_id": "dummy", "client_secret": "dummy", "refresh_token": "dummy"}`,
+	"external_account":                 `{"type": "external_account", "audience": "example", "credential_source": {"file": "/tmp/token"}}`,
+	"impersonated_service_account":     `{"type": "impersonated_service_account", "service_account_impersonation_url": "https://example.invalid", "source_credentials": {"type": "authorized_user"}}`,
+	"impersonated over external":       `{"type": "impersonated_service_account", "source_credentials": {"type": "impersonated_service_account", "source_credentials": {"type": "external_account", "credential_source": {"file": "/tmp/token"}}}}`,
+	"impersonated without source":      `{"type": "impersonated_service_account"}`,
+	"pem":                              "# key\n" + pemHeader + "\nZHVtbXk=\n-----END " + "PRIVATE KEY-----\n",
+	"plain text":                       "export FOO=bar\n",
+	"empty":                            "",
+	"other json":                       `{"type": "something_else", "project_id": "example"}`,
+	"external_account_authorized_user": `{"type": "external_account_authorized_user", "audience": "example", "client_id": "dummy", "client_secret": "dummy", "refresh_token": "dummy"}`,
+	"authorized_user with BOM":         "\uFEFF" + `{"type": "authorized_user", "client_id": "dummy", "client_secret": "dummy", "refresh_token": "dummy"}`,
+	"expand to pem":                    "KEY=\"${FULLSEND_TEST_EXPAND_PEM}\"\n",
 }
 
 func writeHostFileFixture(t *testing.T, name string) string {
@@ -50,10 +58,13 @@ func TestClassifyHostFile(t *testing.T) {
 		{"plain text", hostFileUnknown, false},
 		{"empty", hostFileUnknown, false},
 		{"other json", hostFileUnknown, false},
+		{"external_account_authorized_user", hostFileExternalAuthUser, true},
+		{"authorized_user with BOM", hostFileAuthorizedUser, true},
+		{"expand to pem", hostFileUnknown, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.fixture, func(t *testing.T) {
-			got, err := classifyHostFile(writeHostFileFixture(t, tt.fixture))
+			got, err := classifyHostFile(writeHostFileFixture(t, tt.fixture), false)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 			assert.Equal(t, tt.durable, got.durable())
@@ -61,13 +72,13 @@ func TestClassifyHostFile(t *testing.T) {
 	}
 
 	t.Run("unreadable path", func(t *testing.T) {
-		got, err := classifyHostFile(filepath.Join(t.TempDir(), "missing.json"))
+		got, err := classifyHostFile(filepath.Join(t.TempDir(), "missing.json"), false)
 		require.Error(t, err)
 		assert.Equal(t, hostFileUnknown, got)
 	})
 
 	t.Run("directory", func(t *testing.T) {
-		got, err := classifyHostFile(t.TempDir())
+		got, err := classifyHostFile(t.TempDir(), false)
 		require.Error(t, err)
 		assert.Equal(t, hostFileUnknown, got)
 	})
@@ -149,7 +160,7 @@ func TestCheckHostFileCredentials(t *testing.T) {
 		lines, err := checkHostFileCredentials(h)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "2 durable credential host file(s)")
-		assert.Contains(t, err.Error(), "host_files[0]: host file "+sa+" (dest /tmp/.gcp-credentials.json): service_account key")
+		assert.Contains(t, err.Error(), "host_files[0]: host file "+sa+" (src ${FULLSEND_TEST_SA_HOST_FILE}, dest /tmp/.gcp-credentials.json): service_account key")
 		assert.Contains(t, err.Error(), "host_files[2]: host file "+pem+" (dest /tmp/key.pem): PEM private key")
 		assert.NotContains(t, err.Error(), "host_files[1]")
 		assert.NotContains(t, err.Error(), "host_files[3]")
@@ -173,4 +184,97 @@ host_files:
 	require.Len(t, h.HostFiles, 2)
 	assert.True(t, h.HostFiles[0].AllowDurable)
 	assert.False(t, h.HostFiles[1].AllowDurable)
+}
+
+func TestClassifyHostFileExpand(t *testing.T) {
+	t.Setenv("FULLSEND_TEST_EXPAND_PEM", pemHeader)
+	path := writeHostFileFixture(t, "expand to pem")
+
+	raw, err := classifyHostFile(path, false)
+	require.NoError(t, err)
+	assert.Equal(t, hostFileUnknown, raw)
+
+	expanded, err := classifyHostFile(path, true)
+	require.NoError(t, err)
+	assert.Equal(t, hostFilePrivateKey, expanded, "expand: true is classified as uploaded")
+}
+
+func TestCheckHostFileCredentialsNamesSrc(t *testing.T) {
+	sa := writeHostFileFixture(t, "service_account")
+	t.Setenv("FULLSEND_TEST_SA_SRC", sa)
+	h := &harness.Harness{HostFiles: []harness.HostFile{{Src: "${FULLSEND_TEST_SA_SRC}", Dest: "/tmp/.cred.json"}}}
+	_, err := checkHostFileCredentials(h)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "host file "+sa+" (src ${FULLSEND_TEST_SA_SRC}, dest /tmp/.cred.json)")
+}
+
+func TestReportHostFileCredentialsPrintsEachLineOnce(t *testing.T) {
+	sa := writeHostFileFixture(t, "service_account")
+	h := &harness.Harness{HostFiles: []harness.HostFile{{Src: sa, Dest: "/tmp/.cred.json", AllowDurable: true}}}
+	var out bytes.Buffer
+	printer := ui.New(&out)
+	reported := map[string]bool{}
+	require.NoError(t, reportHostFileCredentials(h, printer, reported))
+	require.NoError(t, reportHostFileCredentials(h, printer, reported))
+	assert.Equal(t, 1, strings.Count(out.String(), "service_account key (lifetime not controlled by this run)"), out.String())
+
+	h.HostFiles[0].AllowDurable = false
+	require.Error(t, reportHostFileCredentials(h, printer, reported))
+	assert.Contains(t, out.String(), "Host file credential validation failed")
+}
+
+// A durable mount without allow_durable stops runAgent before the
+// pre-script; a key the pre-script writes is caught before the sandbox.
+func TestRunAgent_DurableHostFileGate(t *testing.T) {
+	sa := writeHostFileFixture(t, "service_account")
+	written := filepath.Join(t.TempDir(), "written-key.json")
+	for _, tc := range []struct {
+		name, mount, preScript string
+		wantErr                string
+		wantPreScript          bool
+		wantLine               string
+	}{
+		{name: "durable mount without opt-in fails before the pre-script",
+			mount:   "  - src: " + sa + "\n    dest: /tmp/.gcp-credentials.json\n",
+			wantErr: "set allow_durable: true on the entry"},
+		{name: "opt-in runs the pre-script and prints the line",
+			mount:         "  - src: " + sa + "\n    dest: /tmp/.gcp-credentials.json\n    allow_durable: true\n",
+			wantPreScript: true, wantLine: "host file " + sa + ": service_account key (lifetime not controlled by this run)"},
+		{name: "key written by the pre-script is caught before the sandbox",
+			mount:         "  - src: " + written + "\n    dest: /tmp/.gcp-credentials.json\n    optional: true\n",
+			preScript:     "printf '%s' '" + hostFileFixtures["service_account"] + "' > " + written + "\n",
+			wantPreScript: true, wantErr: "set allow_durable: true on the entry"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePreScriptStub(t)
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+			t.Setenv("FULLSEND_RUNTIME", "")
+			marker := filepath.Join(t.TempDir(), "pre-script-ran")
+			dir := newVertexChildDir(t, marker, "dummy", "openai/gpt-5.6-luna", "host_files:\n"+tc.mount, "")
+			harnessPath := filepath.Join(dir, "harness", "code.yaml")
+			data, err := os.ReadFile(harnessPath)
+			require.NoError(t, err)
+			pre := writePreScript(t, "touch "+marker+"\n"+tc.preScript)
+			data = []byte(regexp.MustCompile(`(?m)^pre_script: .*$`).ReplaceAllString(string(data), "pre_script: "+pre))
+			require.NoError(t, os.WriteFile(harnessPath, data, 0o644))
+
+			var out bytes.Buffer
+			err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "", "",
+				resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+			require.Error(t, err, "the stub never creates a sandbox")
+			if tc.wantErr != "" {
+				assert.Contains(t, err.Error(), tc.wantErr)
+			} else {
+				assert.NotContains(t, err.Error(), "allow_durable")
+			}
+			if tc.wantPreScript {
+				assert.FileExists(t, marker)
+			} else {
+				assert.NoFileExists(t, marker)
+			}
+			if tc.wantLine != "" {
+				assert.Equal(t, 1, strings.Count(out.String(), tc.wantLine), out.String())
+			}
+		})
+	}
 }
