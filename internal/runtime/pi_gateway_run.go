@@ -147,7 +147,7 @@ func validatePiGatewayRun(g *PiGatewayRun, plugins []PluginInput) error {
 func piAgentProviderExtensions(probed []string, gateway bool) []string {
 	exts := []string{}
 	for _, e := range probed {
-		if e == piInferenceGatewayExtensionPath && !gateway {
+		if (e == piInferenceGatewayExtensionPath || e == piLegacyGatewayExtensionPath) && !gateway {
 			continue
 		}
 		exts = append(exts, e)

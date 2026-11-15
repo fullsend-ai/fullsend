@@ -67,8 +67,8 @@ if [ "$2" = "exec" ]; then
     "test -f '/tmp/fs-upload-"*)
       sh -c 'mkdir() { :; }; mv() { shift; shift; cp -- "$1" '\''` + storeDir + `/'\''"$(printf "%s" "$2" | tr / _)"; }; '"$last"
       exit $? ;;
-    "codex --version") echo "` + versionOutput + `"; exit 0 ;;
-    "codex debug models --bundled") cat "${FULLSEND_TEST_CATALOG:-testdata/codex/models-bundled-0.166.0.json}"; exit 0 ;;
+    *"codex --version"*) echo "` + versionOutput + `"; exit 0 ;;
+    *"codex debug models --bundled") cat "${FULLSEND_TEST_CATALOG:-testdata/codex/models-bundled-0.166.0.json}"; exit 0 ;;
     *"` + hookInterpreterSep + `"*) printf '%s` + hookInterpreterSep + `%s\n' /usr/bin/python3 /usr/local/bin:/usr/bin:/bin; exit 0 ;;
     # What a plain PATH lookup finds in the fleet image; Bootstrap must not use it.
     "command -v python3") echo "/sandbox/.venv/bin/python3"; exit 0 ;;
@@ -299,7 +299,7 @@ func TestCodexRuntimeBootstrap_PreflightFailureIsReportedEarly(t *testing.T) {
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    "codex --version") echo "codex: command not found" >&2; exit 127 ;;
+    *"codex --version"*) echo "codex: command not found" >&2; exit 127 ;;
   esac
 fi
 exit 0
@@ -860,10 +860,14 @@ func TestHomeAgentsMDPath(t *testing.T) {
 // Bootstrap with their own message rather than leaving the gate half decided.
 func TestCodexPreflightCatalog(t *testing.T) {
 	t.Run("reads the fixture", func(t *testing.T) {
-		fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")
+		logPath := filepath.Join(t.TempDir(), "log")
+		fakeOpenshellCodex(t, logPath, t.TempDir(), "codex-cli 0.152.1")
 		catalog, err := codexPreflightCatalog("sb")
 		require.NoError(t, err)
 		assert.Equal(t, "v1", catalog.collabVersion("gpt-5.6-luna"))
+		log, err := os.ReadFile(logPath)
+		require.NoError(t, err)
+		assert.Contains(t, string(log), "PATH='/opt/fullsend/usr/local/bin:/opt/fullsend/usr/bin'${PATH:+:$PATH} codex debug models --bundled")
 	})
 	t.Run("command fails", func(t *testing.T) {
 		fakeOpenshellCodex(t, filepath.Join(t.TempDir(), "log"), t.TempDir(), "codex-cli 0.152.1")

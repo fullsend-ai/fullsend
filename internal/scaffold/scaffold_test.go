@@ -21,6 +21,9 @@ func TestFileModeMatchesFilesystem(t *testing.T) {
 	var onDiskExecutable []string
 	err := filepath.WalkDir(scaffoldRoot, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {
+			if walkErr == nil && d.IsDir() && d.Name() == ".fullsend-cache" {
+				return filepath.SkipDir
+			}
 			return walkErr
 		}
 		info, infoErr := d.Info()

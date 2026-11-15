@@ -306,6 +306,16 @@ func openCodeBinaryPin() string {
 const openCodeCloudLocationExport = `{ _gcl="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"; [ -n "$_gcl" ] && export GOOGLE_CLOUD_LOCATION="$_gcl" || unset GOOGLE_CLOUD_LOCATION; }`
 
 func openCodeUtilityPin() string {
+	return openCodeUtilityPinFromDirs(
+		sandbox.SandboxFullsendLocalBinDir,
+		sandbox.SandboxFullsendBinDir,
+		"/usr/local/bin",
+		"/usr/bin",
+		"/bin",
+	)
+}
+
+func openCodeUtilityPinFromDirs(dirs ...string) string {
 	utilities := []struct {
 		variable string
 		name     string
@@ -321,7 +331,11 @@ func openCodeUtilityPin() string {
 	assignments := make([]string, 0, len(utilities))
 	individualChecks := make([]string, 0, len(utilities))
 	for _, utility := range utilities {
-		assignments = append(assignments, utility.variable+`=$(for d in /usr/local/bin /usr/bin /bin; do if test -x "$d/`+utility.name+`"; then printf '%s' "$d/`+utility.name+`"; break; fi; done)`)
+		quotedDirs := make([]string, 0, len(dirs))
+		for _, dir := range dirs {
+			quotedDirs = append(quotedDirs, shellQuote(dir))
+		}
+		assignments = append(assignments, utility.variable+`=$(for d in `+strings.Join(quotedDirs, " ")+`; do if test -x "$d/`+utility.name+`"; then printf '%s' "$d/`+utility.name+`"; break; fi; done)`)
 		individualChecks = append(individualChecks,
 			`if ! test -n "$`+utility.variable+`"; then echo 'fullsend: required opencode utility not found: `+utility.name+`' >&2; exit 127; fi`)
 	}

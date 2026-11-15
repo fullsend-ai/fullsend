@@ -87,6 +87,7 @@ func setupImagePull(t *testing.T) (*fakePodman, *bytes.Buffer, *ui.Printer) {
 	})
 
 	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "")
 	t.Setenv(workflowTokenEnv, testWorkflowToken)
 	t.Setenv("TMPDIR", t.TempDir())
 
@@ -138,7 +139,7 @@ func TestPrePullGHCRImage_PullsWithRunScopedAuthFile(t *testing.T) {
 	_, err = os.Stat(filepath.Dir(fake.authFiles[0]))
 	assert.True(t, os.IsNotExist(err), "auth directory must be removed after a successful pull")
 
-	assert.Contains(t, buf.String(), "Pulled sandbox image")
+	assert.Contains(t, buf.String(), "Pulled image")
 	assert.NotContains(t, buf.String(), testWorkflowToken)
 }
 
@@ -203,6 +204,20 @@ func TestPrePullGHCRImage_PodmanMissing(t *testing.T) {
 
 	assert.Empty(t, fake.calls)
 	assert.Contains(t, buf.String(), "podman not found")
+}
+
+func TestPrePullGHCRImage_RemoteGatewaySkipsLocalPodman(t *testing.T) {
+	fake, buf, printer := setupImagePull(t)
+	t.Setenv("OPENSHELL_GATEWAY_ENDPOINT", "https://gateway.example.test")
+	t.Setenv(workflowTokenEnv, "")
+
+	prePullGHCRImage(context.Background(), privateImage, printer)
+
+	assert.Empty(t, fake.calls)
+	assert.Contains(t, buf.String(), "gateway is remote")
+	assert.Contains(t, buf.String(), "gateway-host registry authentication or an image already cached there")
+	assert.Contains(t, buf.String(), "public images can still be pulled")
+	assert.NotContains(t, buf.String(), testWorkflowToken)
 }
 
 func TestPrePullGHCRImage_TempDirFailure(t *testing.T) {

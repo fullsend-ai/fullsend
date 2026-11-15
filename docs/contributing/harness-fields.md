@@ -48,7 +48,14 @@ These fields can appear at the harness top level (as defaults) and inside
 | `providers`        | Providers may need forge-specific entries (e.g., different API endpoints per platform); concatenated (top-level + forge) |
 | `openshell`        | OpenShell profiles may need forge-specific configuration; `profiles` concatenated (top-level + forge) |
 | `host_files`       | Host files may need forge-specific entries (e.g., different credential files per platform); deduplicated by `dest` path (child wins) |
+| `image_mounts`     | Additional OCI images may provide forge-specific sandbox tools; deduplicated by `dest` path (later entry wins while retaining the first destination's position) |
 | `env`              | Env config (`runner` and `sandbox` sub-maps) may need forge-specific entries (e.g., different token names per forge); sub-maps merged independently, forge/child keys win (ADR-0055) |
+
+Image mount destinations must be clean absolute non-root paths and may not
+overlap runner-owned paths, `host_files` destinations, or other distinct image
+mount destinations. Validation runs on top-level, forge, overlay, and final
+composed values; same-destination entries are deduplicated before the final
+overlap check, with the later value winning at the first entry's position.
 
 ### Fields that stay at top level only
 
@@ -111,10 +118,11 @@ references are scalar values, not shell commands.
 | inline command | Executed via `sh -c` on the host against the allowlisted preflight environment (credential-safe), not resource-resolved | `validation_loop.preflight_check`; top-level `preflight_check` (planned) |
 | runtime local path | Path to a file or directory in the local configuration, not a command | `pre_script`, `post_script`, `validation_loop.script`, `validation_loop.schema`, `agent_input` (directory), `host_files[].src` (host path, optional `${VAR}` expansion), `api_servers[].script` (path resolved, server startup planned) |
 | resource reference | Local path or pinned URL resolved/fetched as applicable | `agent`, `base`, `policy`, `skills[].source`, `plugins[].path`, `openshell.profiles[]`; `providers[]` has additional identifier semantics below |
+| OCI image reference | Container image pulled by the sandbox backend and mounted at `dest`; the image's environment and entrypoint are ignored | `image_mounts[].image` |
 | skill override | Key is a path within the skill; value is a local file, pinned URL, or `null` to remove the file | `skills[].overrides[<path>]` |
 | source metadata path | Describes a path in the source repository; not runtime-resolved or delivered | `doc` |
-| destination path | Names a location inside the sandbox, not a host file to resolve | `host_files[].dest` |
-| structural | Contains nested fields, lists, maps, or conditions | `forge`, `overlays[]`, `validation_loop`, `host_files[]`, `api_servers[]`, `skills[]`, `plugins[]`, `plugins[].pi`, `openshell`, `security` and its nested scanner/hook/escalation/trace blocks, `runner_env`, `env`, `env.runner`, `env.sandbox`, `privilege_levels`, `api_servers[].env`, `plugins[].env`, `allowed_remote_resources`, `providers` |
+| destination path | Names a location inside the sandbox, not a host file to resolve | `host_files[].dest`, `image_mounts[].dest` |
+| structural | Contains nested fields, lists, maps, or conditions | `forge`, `overlays[]`, `validation_loop`, `host_files[]`, `image_mounts[]`, `api_servers[]`, `skills[]`, `plugins[]`, `plugins[].pi`, `openshell`, `security` and its nested scanner/hook/escalation/trace blocks, `runner_env`, `env`, `env.runner`, `env.sandbox`, `privilege_levels`, `api_servers[].env`, `plugins[].env`, `allowed_remote_resources`, `providers` |
 | scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `trigger` (CEL expression), `schema_version`; `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
 
 For local harnesses, relative runtime paths resolve from the `.fullsend`
@@ -186,6 +194,7 @@ Two independent precedence axes govern field resolution
 | `providers`      | Concatenated (top-level/base + forge/child)           | Absent (nil) = inherit; `providers: []` = no forge-specific additions (top-level providers still apply) |
 | `openshell`      | `profiles` concatenated (top-level/base + forge/child) | Absent (nil) = inherit; empty `profiles: []` = no forge-specific additions |
 | `host_files`     | Concatenated (base + child); deduplicated by `dest` path (child wins) | Absent (nil) = inherit |
+| `image_mounts`   | Concatenated (base + child); deduplicated by `dest` path (child wins) | Absent (nil) = inherit; an empty list adds nothing and cannot remove an inherited mount |
 | `plugins`        | Concatenated (base + child)                          | Absent (nil) = inherit |
 | `api_servers`    | Concatenated (base + child)                          | Absent (nil) = inherit |
 | `env`            | Sub-maps (`runner`, `sandbox`) merged independently; forge/child keys win (ADR-0055) | Absent (nil) = inherit |
@@ -204,7 +213,7 @@ use `mergeForgeConfig` to apply their fields onto harness top-level values.
 ```go
 // ForgeConfig holds platform-specific harness configuration.
 // This is purely declarative YAML config — it selects which
-// scripts, skills, host files, and env vars to use per platform. It is
+// scripts, skills, host files, image mounts, and env vars to use per platform. It is
 // distinct from the forge.Client interface (internal/forge/),
 // which is the runtime abstraction for forge API operations.
 type ForgeConfig struct {
@@ -215,6 +224,7 @@ type ForgeConfig struct {
     Providers      []string          `yaml:"providers,omitempty"`
     OpenShell      *OpenShellConfig  `yaml:"openshell,omitempty"`
     HostFiles      []HostFile        `yaml:"host_files,omitempty"`
+    ImageMounts    []ImageMount      `yaml:"image_mounts,omitempty"`
     ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
     RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
     Env            *EnvConfig        `yaml:"env,omitempty"`

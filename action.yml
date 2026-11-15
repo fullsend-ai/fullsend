@@ -75,6 +75,13 @@ inputs:
     description: GCP project ID, used only when the selected agent resolves to Vertex inference.
     required: false
     default: ""
+  allow-image-mounts:
+    description: >-
+      Opt in to read-only Podman image mounts on the action's locally generated
+      OpenShell gateway. This enables caller driver config and disables Podman
+      resource admission for that local gateway. It does not change remote gateways.
+    required: false
+    default: "false"
   runner_secrets:
     description: >-
       JSON object of name → value (the FULLSEND_GITHUB_RUNNER_SECRETS secret).
@@ -475,7 +482,14 @@ runs:
     - name: Configure OpenShell gateway
       if: steps.sandbox-host.outputs.local == 'true'
       shell: bash
+      env:
+        ALLOW_IMAGE_MOUNTS: ${{ inputs.allow-image-mounts }}
       run: |
+        set -euo pipefail
+        case "${ALLOW_IMAGE_MOUNTS}" in
+          true|false) ;;
+          *) echo "::error::allow-image-mounts must be true or false"; exit 1 ;;
+        esac
         source "$GITHUB_ACTION_PATH/.github/scripts/openshell-version.sh"
         mkdir -p $HOME/.config/openshell/
         cat > $HOME/.config/openshell/gateway.env << EOF
@@ -492,6 +506,14 @@ runs:
         supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
         health_check_interval_secs = 10
         EOF
+        if [[ "${ALLOW_IMAGE_MOUNTS}" == "true" ]]; then
+          cat >> "$HOME/.config/openshell/gateway.toml" << EOF
+        allow_driver_config = true
+
+        [openshell.drivers.podman.resource_admission]
+        enabled = false
+        EOF
+        fi
 
     # The upstream installer needs sudo and starts a local gateway service, so
     # a remote-gateway runner that already has the CLI skips it.

@@ -30,7 +30,9 @@ func TestSandboxImagePiDefaults(t *testing.T) {
 		//  runtime.piXaiVertexExtensionPath = SandboxPiExtensionsDir + "/xai-vertex",
 		//  runtime.piInferenceGatewayExtensionPath = SandboxPiExtensionsDir + "/inference-gateway",
 		//  installed but not loaded until #7480).
-		`ARG PI_EXTENSIONS_DIR=` + SandboxPiExtensionsDir,
+		`ARG PI_EXTENSIONS_DIR=/usr/local/share/pi-extensions`,
+		`ln -s /usr /opt/fullsend/usr`,
+		`RUN rm /opt/fullsend/usr`,
 		`"${PI_EXTENSIONS_DIR}/anthropic-vertex"`,
 		`"${PI_EXTENSIONS_DIR}/xai-vertex"`,
 		`"${PI_EXTENSIONS_DIR}/inference-gateway"`,

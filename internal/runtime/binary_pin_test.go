@@ -213,6 +213,39 @@ func TestBinaryPin_PinsNodeForNodeScripts(t *testing.T) {
 	}
 }
 
+func TestBinaryPin_PrefersMountedCLIAndNode(t *testing.T) {
+	t.Parallel()
+	for _, shell := range pinShells() {
+		for _, c := range cliPins {
+			t.Run(filepath.Base(shell)+"/"+c.name, func(t *testing.T) {
+				t.Parallel()
+				root := t.TempDir()
+				mountedLocal := filepath.Join(root, "mounted", "usr", "local", "bin")
+				mountedSystem := filepath.Join(root, "mounted", "usr", "bin")
+				projectBin := filepath.Join(root, "project", "bin")
+				for _, dir := range []string{mountedLocal, mountedSystem, projectBin} {
+					require.NoError(t, os.MkdirAll(dir, 0o755))
+				}
+				mountedCLI := filepath.Join(mountedLocal, c.name)
+				require.NoError(t, os.WriteFile(mountedCLI, []byte(nodeShebangInterpreter+"\nconsole.log('mounted cli')\n"), 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(mountedSystem, "node"), []byte("#!/bin/sh\necho MOUNTED-NODE \"$@\"\n"), 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(projectBin, c.name), []byte("#!/bin/sh\necho PROJECT-CLI\n"), 0o755))
+				require.NoError(t, os.WriteFile(filepath.Join(projectBin, "node"), []byte("#!/bin/sh\necho PROJECT-NODE\n"), 0o755))
+
+				toolPath := mountedLocal + ":" + mountedSystem
+				pin := strings.Replace(c.pin(), envDataTrustedPath(), envDataTrustedPathFor(toolPath), 1)
+				command := protectedDirsShell(t, filepath.Join(root, "mounted"), filepath.Join(root, "project")) +
+					pin + " && " + cliLaunch(c.binVar, c.nodeVar)
+				cmd := exec.Command(shell, "-c", command)
+				cmd.Env = []string{"PATH=" + projectBin + ":" + os.Getenv("PATH"), "HOME=" + root}
+				out, err := cmd.CombinedOutput()
+				require.NoError(t, err, string(out))
+				assert.Equal(t, "MOUNTED-NODE "+mountedCLI+"\n", string(out), "both the CLI and its /usr/bin/env node interpreter come from the mount")
+			})
+		}
+	}
+}
+
 // A CLI that starts through env with any other first line is refused: env
 // would look its interpreter up on the PATH the launch has by then. A CLI
 // with an absolute interpreter starts directly.

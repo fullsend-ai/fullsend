@@ -418,7 +418,9 @@ func recordingProvidersStub(t *testing.T) string {
 		"  'sandbox delete') rm -f " + shellQuoteForTest(logPath+".sandbox") + "; exit 0 ;;\n" +
 		"  'sandbox ready') exit 0 ;;\n" +
 		"  'sandbox get') printf 'Status: Ready\nPolicy source: sandbox\nPolicy:\n  version: 1\n'; exit 0 ;;\n" +
-		"  'policy get') printf 'Version: 1\\nStatus: Effective\\n---\\nversion: 1\\nnetwork_policies:\\n  _provider_openai:\\n    endpoints:\\n    - host: api.openai.com\\n      port: 443\\n      protocol: rest\\n'; exit 0 ;;\n" +
+		"  'policy get')\n" +
+		"    if [ -n \"${FULLSEND_TEST_EFFECTIVE_POLICY:-}\" ]; then printf 'Version: 1\\nStatus: Effective\\n---\\n%s\\n' \"$FULLSEND_TEST_EFFECTIVE_POLICY\"; exit 0; fi\n" +
+		"    printf 'Version: 1\\nStatus: Effective\\n---\\nversion: 1\\nnetwork_policies:\\n  _provider_openai:\\n    endpoints:\\n    - host: api.openai.com\\n      port: 443\\n      protocol: rest\\n'; exit 0 ;;\n" +
 		// The first in-sandbox command fails so the run stops right after
 		// sandbox creation and the deferred cleanup runs.
 		"  'sandbox exec') echo 'stub: no sandbox' >&2; exit 1 ;;\n" +
@@ -549,6 +551,53 @@ func TestRunAgent_OpenAIProviderSkippedWhenRuntimeDoesNotNeedIt(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunAgent_ImageMountPolicyDeniedStopsBeforeBootstrap(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+	dir := writeOpenAIFullsendDirFor(t, false, "claude", "opus")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	harnessYAML, err := os.ReadFile(harnessPath)
+	require.NoError(t, err)
+	harnessYAML = append(harnessYAML, []byte("image_mounts:\n  - image: ghcr.io/example/tools:latest\n    dest: /opt/fullsend\n")...)
+	require.NoError(t, os.WriteFile(harnessPath, harnessYAML, 0o644))
+
+	var out strings.Builder
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `policies/base.yaml`)
+	assert.Contains(t, err.Error(), `/opt/fullsend`)
+	assert.Contains(t, out.String(), "Image mount filesystem policy check failed")
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	log := string(data)
+	assert.Contains(t, log, "sandbox create")
+	assert.Contains(t, log, "policy get")
+	assert.Contains(t, log, "sandbox delete", "failed policy preflight deletes the sandbox")
+	assert.NotContains(t, log, "sandbox exec", "the agent must not bootstrap after the policy check fails")
+}
+
+func TestRunAgent_ImageMountPolicyAllowsAncestor(t *testing.T) {
+	logPath := recordingProvidersStub(t)
+	t.Setenv("FULLSEND_TEST_EFFECTIVE_POLICY", "version: 1\nfilesystem_policy:\n  read_only: [/opt]\n")
+	dir := writeOpenAIFullsendDirFor(t, false, "claude", "opus")
+	harnessPath := filepath.Join(dir, "harness", "code.yaml")
+	harnessYAML, err := os.ReadFile(harnessPath)
+	require.NoError(t, err)
+	harnessYAML = append(harnessYAML, []byte("image_mounts:\n  - image: ghcr.io/example/tools:latest\n    dest: /opt/fullsend\n")...)
+	require.NoError(t, os.WriteFile(harnessPath, harnessYAML, 0o644))
+
+	var out strings.Builder
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	err = runAgent(context.Background(), "code", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "", "", rFlags, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+	require.Error(t, err, "the fake gateway stops the run after sandbox preflight")
+	assert.Contains(t, out.String(), "Image mount filesystem access is allowed")
+
+	data, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(data), "policy get")
 }
 
 // TestRunAgent_OpenAIProviderNeededBySubagent covers #7981: a pi parent on

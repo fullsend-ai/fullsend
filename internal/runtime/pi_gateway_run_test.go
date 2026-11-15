@@ -32,7 +32,7 @@ func registerPiGatewayRun(t *testing.T, sandboxName string, run *PiGatewayRun) {
 func TestBuildPiRunCommand_GatewayExtension(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	t.Setenv("FULLSEND_PI_PROVIDER", "")
-	gwExt := "-e " + shellQuote(piInferenceGatewayExtensionPath)
+	gwExt := `-e "$` + piGatewayExtensionVar + `"`
 
 	params := piTestParams()
 	params.SandboxName = "sb-gw-ext"
@@ -42,7 +42,7 @@ func TestBuildPiRunCommand_GatewayExtension(t *testing.T) {
 		params.Model = model
 		cmd := buildPiRunCommand(params, &piManifest{}, nil, "")
 		assert.Contains(t, cmd, gwExt, "model %s loads the extension (prefix is case-folded)", model)
-		assert.NotContains(t, cmd, "-e "+shellQuote(piVertexExtensionPath))
+		assert.NotContains(t, cmd, `-e "$`+piVertexExtensionVar+`"`)
 	}
 
 	// Parent on Vertex, children admitted on the gateway: the parent loads
@@ -63,7 +63,7 @@ func TestBuildPiRunCommand_GatewayUnchangedWithoutBlock(t *testing.T) {
 	for _, model := range []string{"gateway/m1", "anthropic-vertex/claude-opus-4-6"} {
 		params.Model = model
 		cmd := buildPiRunCommand(params, &piManifest{}, exts, "")
-		assert.NotContains(t, cmd, "-e "+shellQuote(piInferenceGatewayExtensionPath), "no block: the runner does not own the route")
+		assert.NotContains(t, cmd, `-e "$`+piGatewayExtensionVar+`"`, "no block: the runner does not own the route")
 		assert.NotContains(t, cmd, PiInferenceGatewayConfigFile)
 		assert.NotContains(t, cmd, "unset $(command -p env")
 		assert.Contains(t, cmd, "export INFERENCE_GATEWAY_BASE_URL='http://local'", "plugin env is exported as today")

@@ -858,9 +858,15 @@ func piAgentThinking() string {
 // run and which vendored provider extension directories the image has:
 // one line for the binary, then one per existing directory.
 func piAgentProbeCommand() string {
-	return "command -v pi; for d in " + shellQuote(piVertexExtensionPath) + " " + shellQuote(piXaiVertexExtensionPath) +
-		" " + shellQuote(piInferenceGatewayExtensionPath) +
-		`; do test -d "$d" && echo "$d"; done; true`
+	return sandboxFullsendToolPathCommand("command -v pi") + "; " +
+		piAgentProbeExtension(piVertexExtensionPath, piLegacyVertexExtensionPath) + "; " +
+		piAgentProbeExtension(piXaiVertexExtensionPath, piLegacyXaiVertexExtensionPath) + "; " +
+		piAgentProbeExtension(piInferenceGatewayExtensionPath, piLegacyGatewayExtensionPath) + "; true"
+}
+
+func piAgentProbeExtension(primary, legacy string) string {
+	return "for d in " + shellQuote(primary) + " " + shellQuote(legacy) +
+		`; do if test -d "$d"; then echo "$d"; break; fi; done`
 }
 
 // parsePiAgentProbe reads the probe output. Only the known provider
@@ -877,7 +883,8 @@ func parsePiAgentProbe(stdout string) (piBin string, exts []string) {
 		line = strings.TrimSpace(sanitizeOutput(line))
 		switch {
 		case line == "":
-		case line == piVertexExtensionPath || line == piXaiVertexExtensionPath || line == piInferenceGatewayExtensionPath:
+		case line == piVertexExtensionPath || line == piXaiVertexExtensionPath || line == piInferenceGatewayExtensionPath ||
+			line == piLegacyVertexExtensionPath || line == piLegacyXaiVertexExtensionPath || line == piLegacyGatewayExtensionPath:
 			// When `command -v pi` printed nothing the first line is an
 			// extension path; never mistake it for the binary.
 			exts = append(exts, line)
@@ -968,7 +975,7 @@ func piHooksManifestFor(hooksDir string, hooks security.SandboxHookConfig) *piHo
 // the pinned binary is missing or broken in the image, which is reported
 // before any iteration rather than as an empty transcript.
 func piPreflightVersion(sandboxName string) (string, error) {
-	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, "pi --version", 30*time.Second)
+	stdout, stderr, exitCode, err := sandbox.Exec(sandboxName, sandboxFullsendToolPathCommand("pi --version"), 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("pi preflight: %w", err)
 	}

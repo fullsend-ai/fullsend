@@ -100,6 +100,10 @@ each target repository's **`.fullsend/`** directory
 **Decided:**
 
 - Provider-backed policy composition: network access is granted through provider profiles declared in harness files. Policy files define only non-composable sandbox restrictions (filesystem, landlock, process). A single `base.yaml` replaces per-agent policy files in the scaffold. Inline `network_policies` continue to work but providers are the recommended approach ([ADR 0065](ADRs/0065-provider-backed-policy-composition.md)).
+- Project tool images: harnesses may mount user-selected OCI images read-only
+  in the sandbox, separately from the sandbox image, so repositories can
+  provide coding tools without composing them with Fullsend's dependencies
+  ([ADR 0173](ADRs/0173-compose-multiple-images-into-agent-sandboxes.md)).
 
 ## Agent Harness
 
