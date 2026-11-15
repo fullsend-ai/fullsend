@@ -203,14 +203,16 @@ branch, and the value never expires.
 What counts as a CI/CD-variable credential:
 
 - the run's forge is GitLab and `GITLAB_CI=true`;
-- the provider definition's value is exactly one `${VAR}` or `$VAR`;
-- `VAR` is set, and its value is not a GitLab `id_tokens` JWT (a JWT whose
-  `iss` claim equals `CI_SERVER_URL`; only the claims are decoded).
+- a provider definition's `credentials:` value is exactly one `${VAR}` or
+  `$VAR`;
+- `VAR` is set and non-empty, and its value is not a GitLab `id_tokens` JWT (a
+  JWT whose `iss` claim equals `CI_SERVER_URL`; only the claims are decoded).
 
 Where the table says "none yet", there is nothing to change: the line stays
 until GitLab offers a keyless route for that credential. To print it as info
-instead of a warning, set `allow_ci_variable_credential: true` in the harness.
-The field is not inherited, so for a stock agent set it in a local child
+instead of a warning, set `allow_ci_variable_credential: true` at the top
+level of the harness. It is ignored under `forge:` or `overlays:`, and it is
+not inherited from `base:`. For a stock agent, set it in a local child
 harness; see
 [Configuration with `base:` composition](../guides/user/customizing-agents.md#configuration-with-base-composition).
 
