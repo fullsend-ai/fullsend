@@ -157,8 +157,10 @@ depend on the process cwd.
 | `runtime_source` | Where `requested_runtime` came from (`--runtime flag`, `FULLSEND_RUNTIME`, the config file path — suffixed ` agents.<name>` when the agent's entry decided — or `default (config not found)`) |
 | `total_cost_usd` | Total inference cost in USD, as reported by the runtime (raw floating-point aggregate across all iterations; no fullsend-side pricing-table fallback). See [Cost data contract](../guides/infrastructure/distributed-tracing.md#cost-data-contract) |
 | `token_usage` | Run-level token counts: `input`, `output`, `cache_creation`, `cache_read`, and `reasoning` (always serialized, `0` when none). Reasoning is separate from output for Codex and included in output for Claude and the pinned pi version. Counts can survive interruption even when reported cost is zero. Prefer per-iteration `run-telemetry.jsonl` for pricing; see [Computing dollar cost from token telemetry](../guides/infrastructure/distributed-tracing.md#computing-dollar-cost-from-token-telemetry). |
+| `duration_seconds` | Wall-clock agent execution time in seconds, summed across retry iterations. Each iteration is measured from agent start to runtime return, so the aggregate reflects agent time, not sandbox setup or extraction overhead. Omitted when zero |
+| `over_budget` | Present (as `true`) only when the harness's `max_cost_usd` cap suppressed a retry that was otherwise due — after a failed validation or a failed repo extraction. It records why retries stopped and implies nothing about the final validation state (the post-loop sweep may still pass a completed iteration); a run whose final iteration merely crossed the cap while ending anyway is not marked. Enforcement depends on runtime-reported cost — an iteration that reports zero/no cost cannot be counted against the cap (the run log warns). See the [harness budget contract](../normative/harness-budget/v1/README.md) |
 | `num_turns` | Number of conversation turns |
-| `iterations` | Number of agent iterations run; an iteration killed at the budget is not retried (see [Budget and deadline](#budget-and-deadline)) |
+| `iterations` | Number of agent iterations run; an iteration killed at `timeout_minutes` is not retried (see [Budget and deadline](#budget-and-deadline)). This is the wall-clock deadline, distinct from the `max_cost_usd` spend cap in the `over_budget` row above |
 | `per_model_usage` | Per-model breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled, `claude` when Claude Code's result carries `modelUsage`, and `codex` for an agent with registered sub-agent roles or a spawn in its stream). See below |
 | `fallback_from` | Models the run moved off, in the order tried, before `model` took over: models the Vertex project did not serve, and on `claude` any model Claude Code's own `--fallback-model` handling left, for example on overload (`claude` and `pi`; see [Claude Code](../runtimes/claude.md#models)). Absent when the first model ran |
 | `fallback_reasons` | Why the run moved off each `fallback_from` entry, at the same index: `not_served` when the runner retried because the Vertex project does not serve the model, `claude_code:<trigger>` when Claude Code switched models itself (its `model_fallback` trigger, for example `claude_code:last_resort`). Absent when the first model ran |
@@ -211,6 +213,12 @@ differences in the last bullet.
   cancel or a timeout the run warns that usage recorded after the read is not counted.
 
 ## Budget and deadline
+
+This section is about the wall-clock deadline (`timeout_minutes`) only — a
+hard kill of the running iteration. The separate `max_cost_usd` spend cap
+never interrupts an iteration; it only refuses to start the next one. See
+the [`over_budget`](#metricsjson-fields) metric and the
+[harness budget contract](../normative/harness-budget/v1/README.md).
 
 Each agent iteration gets the harness's `timeout_minutes` (30 when it sets none). When the budget
 is spent the runner ends the iteration and sweeps the processes the agent left running in the

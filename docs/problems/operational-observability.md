@@ -83,6 +83,8 @@ LLM-based agents have real per-invocation costs. At org scale across dozens of r
 
 Cost observability is not just a finance concern. Cost anomalies are often symptoms of other problems: an agent in a retry loop, a prompt that causes excessive tool calls, or a context window that is being filled with irrelevant content.
 
+Partly answered: a harness can cap one run's spend with `max_cost_usd`, decided in [ADR 0097](../ADRs/0097-harness-max-cost-usd-budget-cap.md). That bounds the retry-loop anomaly per run and marks the halted runs (`over_budget` in `metrics.json`); the questions above about cross-run aggregation, attribution and trend remain open.
+
 ## Debuggability as a first-class concern
 
 Traditional software systems become debuggable through a combination of structured logging, distributed tracing, error reporting, and reproducibility. Autonomous agent systems need equivalents for each, but adapted to the unique challenges.
