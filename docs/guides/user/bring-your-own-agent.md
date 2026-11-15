@@ -60,6 +60,10 @@ Next:
    ```
 
    This runs the real sandbox and prints the comment instead of posting it.
+   The generated post-script also treats `FULLSEND_DRY_RUN=1` as a dry run
+   when `POST_LINT_DOCS_DRY_RUN` is unset. `fullsend run` sets it for a
+   harness with `input_source: external` (see
+   [Harness Field Reference § `input_source`](../../reference/harness-reference.md#field-details)).
    A run that finds nothing to report ends like this:
 
    ```text

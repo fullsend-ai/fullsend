@@ -59,6 +59,16 @@ Image:     fullsend-sandbox:latest
 
 The **Runtime** line shows which runtime was selected and the config source it was read from. When no `config.yaml` exists, the source reads `default (config not found)`.
 
+## Input source
+
+Every run prints one line before the pre-script that says who wrote the text the agent reads, and which defaults that changed:
+
+```
+input_source: external (harness); dry run default: on; forge write: github-ro; durable host files: none
+```
+
+The value comes from the harness `input_source` field, else the `FULLSEND_INPUT_SOURCE` environment variable (`external` or `maintainer`), else `maintainer`. Any other value of either one stops the run before the sandbox is created. For `external`, the run sets `FULLSEND_DRY_RUN=1` for the pre-script, post-script and validation script when the runner environment and `env.runner` leave it unset. It also stops before the pre-script when a provider of type `fullsend-github` or `fullsend-gitlab-forge` is attached without `allow_forge_write: true`. See [Harness Field Reference § `input_source`](../reference/harness-reference.md#field-details).
+
 ## Runtime selection
 
 The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` on pi and `FULLSEND_CODEX_MODEL` on codex are lower-precedence aliases, each read only when that runtime is the one selected) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi uses it for aliased models on the top-level run when Vertex does not serve the model (two specific 404/403 messages, same provider only; sub-agent children get none); codex ignores it with a warning.

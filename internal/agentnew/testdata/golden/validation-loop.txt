@@ -189,6 +189,11 @@ trigger: |
 #     it is independent of the post-script cwd. When present it names the
 #     iteration whose output was validated, which is not necessarily the last
 #     one, so it wins over the scan below.
+#   POST_LINT_DOCS_DRY_RUN — 1 prints the comment instead of posting it. When it is
+#     set, it wins over FULLSEND_DRY_RUN.
+#   FULLSEND_DRY_RUN — 1 is a dry run when POST_LINT_DOCS_DRY_RUN is unset.
+#     fullsend run sets it to 1 when the harness input_source is external and
+#     the runner has not set it.
 #
 # Treat the result file as untrusted: it is model output. Only the three
 # fields below are ever read, each must be a string, and the comment body is
@@ -205,6 +210,9 @@ export LC_ALL="${LC_ALL:-C.UTF-8}"
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
 : "${GH_TOKEN:?GH_TOKEN must be set}"
+
+# The per-agent variable wins whenever it is set, even to 0 or empty.
+dry_run="${POST_LINT_DOCS_DRY_RUN-${FULLSEND_DRY_RUN:-}}"
 
 MARKER="<!-- fullsend:lint-docs-agent -->"
 MAX_SUMMARY_CHARS=200
@@ -311,7 +319,7 @@ NUMBER="${BASH_REMATCH[3]}"
 # posting; under `set -e` this script, and so the run, then fails
 # visibly — rerun it.
 if [[ "${status}" == "ok" ]]; then
-  if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
+  if [[ "${dry_run}" == "1" ]]; then
     echo "post-lint-docs: status=ok, nothing to post (dry run: did not check for an earlier findings comment to replace)" >&2
     exit 0
   fi
@@ -349,7 +357,7 @@ if [[ "${status}" == "ok" ]]; then
   exit 0
 fi
 
-if [[ "${POST_LINT_DOCS_DRY_RUN:-}" == "1" ]]; then
+if [[ "${dry_run}" == "1" ]]; then
   # The preview prints model output. Under GitHub Actions a line starting
   # with "::" is a workflow command (the runner even trims leading spaces
   # first), so wrap the preview in a stop-commands block whose token the

@@ -926,6 +926,13 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	if child.Trigger == "" {
 		child.Trigger = base.Trigger
 	}
+	// InputSource (#9509) inherits like the other scalars, so a base that
+	// declares external input keeps its children external unless they say
+	// otherwise. Top level only, not a ForgeConfig field, so
+	// mergeForgeConfig needs no matching slot.
+	if child.InputSource == "" {
+		child.InputSource = base.InputSource
+	}
 	if child.PreScript == "" {
 		child.PreScript = base.PreScript
 	}
@@ -984,6 +991,8 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	// NOT merged from base harnesses to prevent privilege escalation: a base
 	// cannot inject arbitrary URL prefixes or enable runtime fetching in the
 	// child. The child must declare its own allowlist and fetch settings.
+	// AllowForgeWrite (#9509) is not merged for the same reason: a base
+	// cannot grant an external-input child a forge-write provider.
 	if base.APIServers != nil {
 		merged := make([]APIServer, 0, len(base.APIServers)+len(child.APIServers))
 		merged = append(merged, base.APIServers...)

@@ -415,6 +415,18 @@ type Harness struct {
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
+	// InputSource records who wrote the text the agent reads (#9509):
+	// InputSourceExternal (someone outside the repository's maintainers) or
+	// InputSourceMaintainer. Empty leaves the choice to fullsend run, which
+	// reads FULLSEND_INPUT_SOURCE and otherwise uses maintainer. Top level
+	// only; a child inherits it from its base when it does not set it.
+	InputSource string `yaml:"input_source,omitempty"`
+	// AllowForgeWrite lets a run whose input source is external attach a
+	// forge provider that can write (type fullsend-github or
+	// fullsend-gitlab-forge). Without it such a run fails before the sandbox
+	// is created. Top level only, and not inherited from a base, like
+	// allow_runtime_fetch.
+	AllowForgeWrite bool `yaml:"allow_forge_write,omitempty"`
 
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
@@ -426,6 +438,21 @@ type Harness struct {
 	// issueURLDiagsCaptured is true.
 	issueURLDiags         []Diagnostic `yaml:"-"`
 	issueURLDiagsCaptured bool         `yaml:"-"`
+}
+
+// Input source values for the input_source field and FULLSEND_INPUT_SOURCE
+// (#9509).
+const (
+	// InputSourceExternal means the text the agent reads was written by
+	// someone outside the repository's maintainers.
+	InputSourceExternal = "external"
+	// InputSourceMaintainer means a maintainer wrote it. It is the default.
+	InputSourceMaintainer = "maintainer"
+)
+
+// ValidInputSource reports whether s is an accepted input_source value.
+func ValidInputSource(s string) bool {
+	return s == InputSourceExternal || s == InputSourceMaintainer
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -546,6 +573,9 @@ func (h *Harness) Validate() error {
 	}
 	if h.Model != "" && !config.ValidModelRef(h.Model) {
 		return fmt.Errorf("model %q contains invalid characters (allowed: segments of a-z, A-Z, 0-9, _, -, ., @ joined by /)", h.Model)
+	}
+	if h.InputSource != "" && !ValidInputSource(h.InputSource) {
+		return fmt.Errorf("input_source %q is not valid (allowed: %s, %s)", h.InputSource, InputSourceExternal, InputSourceMaintainer)
 	}
 	if h.Effort != "" && !validEffortLevel(h.Effort) {
 		return fmt.Errorf("effort %q is not valid (allowed: %s)", h.Effort, strings.Join(validEffortLevels, ", "))
