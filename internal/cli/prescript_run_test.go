@@ -1264,7 +1264,7 @@ func newVertexChildDir(t *testing.T, marker, runtimeName, model, extra, subagent
 // Every other case passes and is judged at dispatch (#7980).
 func TestRunAgent_VertexSubagentCredentials(t *testing.T) {
 	credFile := filepath.Join(t.TempDir(), "creds.json")
-	require.NoError(t, os.WriteFile(credFile, []byte(`{"type":"service_account"}`), 0o600))
+	require.NoError(t, os.WriteFile(credFile, []byte(`{"type":"external_account","credential_source":{"file":"/tmp/token"}}`), 0o600))
 	emptyFile := filepath.Join(t.TempDir(), "empty.json")
 	require.NoError(t, os.WriteFile(emptyFile, nil, 0o600))
 	gacEnvFile := filepath.Join(t.TempDir(), "gcp.env")

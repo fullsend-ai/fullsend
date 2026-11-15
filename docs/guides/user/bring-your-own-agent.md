@@ -257,6 +257,7 @@ in the code block below the table, not in a cell.
 | The same error on your machine, with bare names and no `fullsend-github*` profile left | The OpenShell gateway still holds an older profile with that id; `fullsend run` cannot replace a profile while a provider uses it | Delete and re-create the providers — see the command below |
 | `provider profile 'fullsend-github-ro' requires static credentials: GH_TOKEN` at `fullsend run` | `GH_TOKEN` is unset or empty on the machine running `fullsend run` | Put a real token in your env file, e.g. `echo "GH_TOKEN=$(gh auth token)" >> .env.local` |
 | `Vertex inference requires GOOGLE_APPLICATION_CREDENTIALS to point to an existing file` (or `a regular/non-empty file`) | The variable is unset or points at a missing path, directory, or empty file | Point it at a real file — [Get GCP credentials](running-agents-locally.md#get-google-cloud-platform-credentials) |
+| `Host file credential validation failed`, then `<N> durable credential host file(s) without allow_durable` | A `host_files` source is a long-lived credential, such as a service account key | Prefer short-lived Workload Identity Federation credentials — see [How Fullsend Authenticates](how-fullsend-authenticates.md). To keep the key, add `allow_durable: true` to that entry; see [`host_files[].allow_durable`](../../reference/harness-reference.md) |
 | `reading behaviour script .../behaviour/current-scenario.yaml: ... no such file or directory` | `--runtime dummy` with no scripted result | Write `.fullsend/behaviour/current-scenario.yaml` — see [Testing locally](#testing-locally) |
 | `sub-agent model resolves to Vertex, but GOOGLE_APPLICATION_CREDENTIALS is not set` at `fullsend run`, or `provider "anthropic-vertex" is not available in this run (Vertex sub-agents need GOOGLE_APPLICATION_CREDENTIALS ...` in a sub-agent's result | pi on `openai/` dispatched a Vertex sub-agent with no credentials file in the sandbox: the variable is unset, or the harness has no `host_files` mount for it | Set `GOOGLE_APPLICATION_CREDENTIALS` and use the overlay from [Pick a route](#pick-a-route), or keep sub-agents on `openai/` models; see [pi › Vertex sub-agents under an OpenAI parent](../../runtimes/pi.md#vertex-sub-agents-under-an-openai-parent) |
 | Agent can't find input files | Pre-script output paths don't match `host_files` entries | Align the two |
@@ -509,6 +510,11 @@ overlays:
 
 New agents should map `ISSUE_URL` from `FULLSEND_WORK_ITEM_URL`; the example
 above shows the current built-in GitHub overlay before that migration.
+
+The `${GOOGLE_APPLICATION_CREDENTIALS}` mount expects a short-lived
+`external_account` file, as CI provides. With a service account key, add
+`allow_durable: true` to that entry; see
+[`host_files[].allow_durable`](../../reference/harness-reference.md).
 
 Key patterns to note:
 
@@ -1136,6 +1142,8 @@ fullsend run my-agent \
 ```
 
 The `--env-file` supplies variables your harness references: `GH_TOKEN` and the GitHub variables on every route, plus `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION` and `GOOGLE_APPLICATION_CREDENTIALS` on the Vertex route or `OPENAI_API_KEY` on the OpenAI route (see [Pick a route](#pick-a-route)). See [Running agents locally](running-agents-locally.md) for prerequisites and troubleshooting.
+
+If `GOOGLE_APPLICATION_CREDENTIALS` points at a service account key, add `allow_durable: true` to the generated `${GOOGLE_APPLICATION_CREDENTIALS}` entry under `host_files:`; otherwise the run stops with `Host file credential validation failed`. See [`host_files[].allow_durable`](../../reference/harness-reference.md).
 
 Most agents need additional flags for credentials and target repo — see [Running agents locally](running-agents-locally.md) for the full list.
 

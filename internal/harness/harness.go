@@ -82,11 +82,18 @@ func ChmodPluginDir(dir string) error {
 // content are expanded from the host environment before copying to the sandbox.
 // Use this for env files that contain variable references which must be resolved
 // on the host (because the sandbox does not have those variables set).
+//
+// AllowDurable opts the entry into mounting a credential the run cannot
+// revoke (a service_account key, an authorized_user file, an
+// impersonated_service_account file whose source is not an
+// external_account, or a PEM private key). Without it, fullsend run fails
+// before the sandbox is created when Src holds one.
 type HostFile struct {
-	Src      string `yaml:"src"`                // host path (may use ${VAR} expansion)
-	Dest     string `yaml:"dest"`               // destination path inside the sandbox
-	Expand   bool   `yaml:"expand,omitempty"`   // expand ${VAR} in file content before copying
-	Optional bool   `yaml:"optional,omitempty"` // skip if src path is missing or expands to empty
+	Src          string `yaml:"src"`                     // host path (may use ${VAR} expansion)
+	Dest         string `yaml:"dest"`                    // destination path inside the sandbox
+	Expand       bool   `yaml:"expand,omitempty"`        // expand ${VAR} in file content before copying
+	Optional     bool   `yaml:"optional,omitempty"`      // skip if src path is missing or expands to empty
+	AllowDurable bool   `yaml:"allow_durable,omitempty"` // allow a durable credential the run cannot revoke
 }
 
 // ProviderDef is a declarative definition of an OpenShell provider. Files in
