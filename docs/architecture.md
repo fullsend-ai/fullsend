@@ -384,9 +384,8 @@ flowchart TB
   fixed withheld notice, and nothing else passes for the rest of its turn.
   That gate fails open when its hook process fails, an errored child's error
   text is not screened, and a child that never replies with the notice runs,
-  and spends tokens, until the parent interrupts it or the run ends. V2
-  delegation is experimental until a live review and retro run verifies the
-  gate. Aggregate spawn/admission reconciliation remains after-the-fact
+  and spends tokens, until the parent interrupts it or the run ends.
+  Aggregate spawn/admission reconciliation remains after-the-fact
   detection: unused admissions or missing/altered child session logs can hide
   unauthorized spawns
   ([ADR 0126](ADRs/0126-fullsend-owned-codex-subagents.md),

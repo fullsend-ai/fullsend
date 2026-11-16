@@ -450,11 +450,6 @@ agents:
     runtime: claude
 ```
 
-**V2 delegation is experimental.** Review and retro have not yet run on a V2 parent, so neither its
-children nor the `SubagentStop` gate has been checked on a fleet-shaped run;
-[ADR 0159](../ADRs/0159-codex-subagents-on-collaboration-v2.md) keeps V2 delegation experimental
-until that run verifies the gate live.
-
 **`code` and `fix` delegate too.** They declare no `tools:`, so on a V1 or V2 parent on the
 direct route with harness security on they get the `default` and `explore` roles, children with the parent's shell and `apply_patch`,
 the spawn guard and the dispatch note, as `review` does. Both have run end to end that way on
