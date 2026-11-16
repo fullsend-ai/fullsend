@@ -219,8 +219,15 @@ func (r ClaudeRuntime) claudeGatewaySettingsArg(sandboxName string) string {
 	if len(gw.settings) > 0 {
 		return string(gw.settings)
 	}
+	// Without hooks claudeRunnerSettings never ran, so pin the background-wait
+	// ceiling here too: a repository settings env block would otherwise
+	// restore the default (#9149).
+	settings := r.claudeGatewaySettings(sandboxName)
+	if env, ok := settings["env"].(map[string]any); ok {
+		env[claudeBgWaitCeilingEnv] = "0"
+	}
 	// A map of strings always encodes.
-	inline, _ := json.Marshal(r.claudeGatewaySettings(sandboxName))
+	inline, _ := json.Marshal(settings)
 	return string(inline)
 }
 
