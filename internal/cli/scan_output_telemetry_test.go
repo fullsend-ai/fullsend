@@ -84,20 +84,42 @@ func TestScanOutputFiles_SkipsStagedSkillsAndPersonaManifest(t *testing.T) {
 }
 
 // TestScanOutputFiles_PreservesJSONStructuralValidity pins that if an output
-// file was valid JSON before sanitization, scanOutputFiles will ensure that the
-// resulting file on disk remains structurally valid JSON (#5705).
+// file was valid JSON before sanitization, scanOutputFiles structurally sanitizes
+// string leaves so that the file on disk remains structurally valid JSON and
+// secrets are completely redacted (fail-closed, #5705).
 func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	dir := t.TempDir()
-	jsonFile := filepath.Join(dir, "agent-result.json")
-	validJSON := `{"action":"comment","body":"Token: ghp_FAKEtesttoken000000000000000000000000\n"}`
-	require.NoError(t, os.WriteFile(jsonFile, []byte(validJSON), 0o644))
+
+	// Case 1: Standard secret token in string field.
+	jsonFile1 := filepath.Join(dir, "agent-result.json")
+	validJSON1 := `{"action":"comment","body":"Token: ghp_FAKEtesttoken000000000000000000000000\n"}`
+	require.NoError(t, os.WriteFile(jsonFile1, []byte(validJSON1), 0o644))
+
+	// Case 2: json_field with an embedded escaped quote and secret.
+	jsonFile2 := filepath.Join(dir, "escaped.json")
+	validJSON2 := `{"findings":[{"password":"secret_password_1234\"rest"}]}`
+	require.NoError(t, os.WriteFile(jsonFile2, []byte(validJSON2), 0o644))
+
+	// Case 3: A secret containing a backslash / newline split.
+	jsonFile3 := filepath.Join(dir, "split.json")
+	validJSON3 := `{"auth":"Authorization: Bearer abc\ndefghijkl1234"}`
+	require.NoError(t, os.WriteFile(jsonFile3, []byte(validJSON3), 0o644))
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
 
-	content, err := os.ReadFile(jsonFile)
-	require.NoError(t, err)
-	assert.True(t, json.Valid(content), "sanitized output must remain valid JSON: %s", string(content))
-	assert.NotContains(t, string(content), "ghp_FAKEtest")
+	for _, p := range []struct {
+		path   string
+		secret string
+	}{
+		{jsonFile1, "ghp_FAKEtest"},
+		{jsonFile2, "secret_password_1234"},
+		{jsonFile3, "abcdefghijkl1234"},
+	} {
+		content, err := os.ReadFile(p.path)
+		require.NoError(t, err)
+		assert.True(t, json.Valid(content), "sanitized %s must remain valid JSON: %s", filepath.Base(p.path), string(content))
+		assert.NotContains(t, string(content), p.secret, "secret must be redacted from %s", filepath.Base(p.path))
+	}
 }

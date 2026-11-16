@@ -6797,11 +6797,43 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			return nil
 		}
 
+		relPath, _ := filepath.Rel(outputDir, path)
+
+		// If the file is valid JSON, structurally sanitize string leaves to guarantee
+		// that redaction never breaks JSON syntax and fails closed (#5705).
+		var jsonVal any
+		if json.Unmarshal(content, &jsonVal) == nil {
+			sanitizedVal, findings := sanitizeJSONStructure(jsonVal, pipeline)
+			if len(findings) > 0 {
+				findingCount += len(findings)
+				for _, f := range findings {
+					printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
+					security.AppendFinding(findingsPath,
+						security.TracedFinding{
+							TraceID:   traceID,
+							Timestamp: time.Now().UTC().Format(time.RFC3339),
+							Phase:     "host_output",
+							Finding:   f,
+						})
+				}
+				marshaled, err := json.MarshalIndent(sanitizedVal, "", "  ")
+				if err != nil {
+					printer.StepWarn(fmt.Sprintf("Could not marshal sanitized JSON %s: %v", relPath, err))
+					return nil
+				}
+				marshaled = append(marshaled, '\n')
+				if writeErr := os.WriteFile(path, marshaled, 0o644); writeErr != nil {
+					printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
+				}
+			}
+			return nil
+		}
+
+		// Non-JSON files: run plain text pipeline scan.
 		text := string(content)
 		result := pipeline.Scan(text)
 		if len(result.Findings) > 0 {
 			findingCount += len(result.Findings)
-			relPath, _ := filepath.Rel(outputDir, path)
 			for _, f := range result.Findings {
 				printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
 				security.AppendFinding(findingsPath,
@@ -6814,9 +6846,7 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			}
 			// Sanitized may be empty when all content was invisible characters.
 			out := result.Sanitized
-			if json.Valid(content) && !json.Valid([]byte(out)) {
-				printer.StepWarn(fmt.Sprintf("Sanitization broke JSON structural validity in %s; retaining original file to preserve structure", relPath))
-			} else if writeErr := os.WriteFile(path, []byte(out), 0o644); writeErr != nil {
+			if writeErr := os.WriteFile(path, []byte(out), 0o644); writeErr != nil {
 				printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
 			}
 		}
@@ -6832,6 +6862,70 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 		printer.StepDone("Output files clean — no issues found")
 	}
 	return nil
+}
+
+var sensitiveJSONKeyRegex = regexp.MustCompile(`(?i)(?:key|token|secret|password|credential|auth)`)
+
+func maskSecretValue(value string) string {
+	if len(value) < 10 {
+		return "***"
+	}
+	prefix := value[:4]
+	if strings.Contains(prefix, "\\") {
+		return "***"
+	}
+	return prefix + "..."
+}
+
+// sanitizeJSONStructure recursively visits all string values in parsed JSON data,
+// scans each string leaf using the pipeline, and collects any findings.
+func sanitizeJSONStructure(v any, pipeline *security.Pipeline) (any, []security.Finding) {
+	var findings []security.Finding
+	switch val := v.(type) {
+	case string:
+		res := pipeline.Scan(val)
+		if len(res.Findings) > 0 {
+			findings = append(findings, res.Findings...)
+			if res.Sanitized != "" {
+				return res.Sanitized, findings
+			}
+			return "", findings
+		}
+		return val, nil
+	case map[string]any:
+		newMap := make(map[string]any, len(val))
+		for k, item := range val {
+			if strVal, ok := item.(string); ok && sensitiveJSONKeyRegex.MatchString(k) && len(strVal) >= 8 {
+				masked := maskSecretValue(strVal)
+				findings = append(findings, security.Finding{
+					Scanner:  "secret_redactor",
+					Name:     "json_field",
+					Severity: "high",
+					Detail:   fmt.Sprintf("Redacted json_field (%d chars) -> %s", len(strVal), masked),
+				})
+				newMap[k] = masked
+				continue
+			}
+			newVal, f := sanitizeJSONStructure(item, pipeline)
+			if len(f) > 0 {
+				findings = append(findings, f...)
+			}
+			newMap[k] = newVal
+		}
+		return newMap, findings
+	case []any:
+		newSlice := make([]any, len(val))
+		for i, item := range val {
+			newVal, f := sanitizeJSONStructure(item, pipeline)
+			if len(f) > 0 {
+				findings = append(findings, f...)
+			}
+			newSlice[i] = newVal
+		}
+		return newSlice, findings
+	default:
+		return val, nil
+	}
 }
 
 // injectTraceID appends the FULLSEND_TRACE_ID to the sandbox .env file.

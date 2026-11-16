@@ -198,7 +198,11 @@ func mask(value string) string {
 	if len(value) < 10 {
 		return "***"
 	}
-	return value[:4] + "..."
+	prefix := value[:4]
+	if strings.Contains(prefix, "\\") {
+		return "***"
+	}
+	return prefix + "..."
 }
 
 func defaultPrefixPatterns() []secretPattern {
@@ -260,7 +264,7 @@ func defaultStructuralPatterns() []secretPattern {
 		// the mask keeps it visible. A bare value still ends at the first
 		// space, as in the PostToolUse hook.
 		{"env_assignment", `(?i)(?:^|\s)(?:export\s+)?((?:[A-Za-z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)(?:_[A-Za-z0-9]+)*)\s*=\s*(?:['"](?:(?:basic|bearer|token)[ \t]+)?)?(` + valChar + `{8,})['"]?`},
-		{"json_field", `(?:"[^"]*(?i:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?i:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"([^"]{8,})"|'([^']{8,})')`},
+		{"json_field", `(?:"[^"]*(?i:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?i:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"((?:\\.|[^"\\]){8,})"|'((?:\\.|[^'\\]){8,})')`},
 		// The optional quote covers YAML: authorization: "Bearer <token>".
 		{"auth_header", `(?i)(?:Authorization|X-Api-Key|X-Auth-Token)\s*:\s*['"]?(?:(?:Basic|Bearer|Token)\s+)?(` + valChar + `{12,})`},
 		{"private_key", `-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----`},

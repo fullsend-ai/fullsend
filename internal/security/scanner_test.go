@@ -418,6 +418,28 @@ func TestSecretRedactor(t *testing.T) {
 		assert.True(t, hasFinding(result, "auth_header"))
 		assert.NotContains(t, result.Sanitized, `ab\cdEFGHijkl1234`)
 	})
+
+	t.Run("json_field with embedded escaped quote preserves valid JSON", func(t *testing.T) {
+		input := `{"password": "abcdefghijkl\"rest"}`
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.True(t, json.Valid([]byte(result.Sanitized)),
+			"output must remain valid JSON: %s", result.Sanitized)
+		assert.NotContains(t, result.Sanitized, "abcdefghijkl")
+	})
+
+	t.Run("mask does not leave dangling escape sequence", func(t *testing.T) {
+		input1 := `Authorization: Bearer abc\ndefghijkl`
+		result1 := r.Scan(input1)
+		assert.False(t, result1.Safe)
+		assert.Equal(t, "Authorization: Bearer ***", result1.Sanitized)
+
+		input2 := `Authorization: Bearer \u1234efghijkl`
+		result2 := r.Scan(input2)
+		assert.False(t, result2.Safe)
+		assert.Equal(t, "Authorization: Bearer ***", result2.Sanitized)
+	})
 }
 
 func TestSSRFValidator(t *testing.T) {
