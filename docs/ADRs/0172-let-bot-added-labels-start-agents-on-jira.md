@@ -97,12 +97,18 @@ Jira the second implementation of ADR 0107's label grant.
    of the repository's `jira` entry. Any other author that the poller
    classifies as a bot, whether by Jira's `app` account type or by display
    name, such as Jira Automation's actor or an installed app, stays dropped
-   until the entry lists its account ID. The display-name test therefore stays
-   on the dropped path only, where it grants nothing, and a rename cannot
-   admit an event or bypass
-   [ADR 0151](0151-harness-human-role-minimums.md)'s harness minimum. An
-   author that no test classifies as a bot is a human and takes the human
-   rules.
+   until the entry lists its account ID. The display-name test therefore only
+   ever drops events; it never admits one, so it grants nothing. It is not an
+   enforced boundary, though. An author that no test classifies as a bot is a
+   human and takes the human rules, so an unlisted automation account that is
+   not of type `app` and has an ordinary name, or that is renamed to one,
+   moves from the dropped path to the human path. Under `jira_editors`, its
+   label addition can then dispatch without its account ID being listed. It
+   still needs Jira's permission to edit the issue, and this path exists
+   before this ADR. The guarantee is that the poller's own account and listed
+   accounts are admitted by account ID, not that every automation account is
+   kept out. A repository that needs a firm boundary uses `allowlist` or
+   `project_roles`.
 4. **Loop safety** is the harness author's responsibility, as on GitHub. Only
    a new label addition dispatches, so re-adding a label that is present
    triggers nothing. A loop needs a label to be removed and added again. For
@@ -119,9 +125,11 @@ Jira the second implementation of ADR 0107's label grant.
    The count is kept per issue beside the checkpoint (`lastCheck`) the poller
    already holds, so it applies to Jira only and changes nothing on other
    forges. Past the limit, further admitted label additions on that issue are
-   dropped with a warning until the window passes or a human-authored event
-   arrives. The limit, window, and setting are decided in the follow-up
-   implementation.
+   dropped with a warning until the window passes. Ordinary human activity,
+   such as a comment, does not reset the count, because the author of that
+   activity need not be authorized to dispatch. Only the rolling window
+   restores the budget. The limit, window, and setting are decided in the
+   follow-up implementation.
 6. **Untrusted content.** Jira is at parity with GitHub. An agent that reads
    issue text and adds a triggering label gives that text's author an indirect
    way to trigger the next agent. The label authorizes only its exact
@@ -164,5 +172,7 @@ Forgejo event handling are unchanged; ADR 0107 governs their bot events.
   additions stay dropped, as today, unless the entry lists the actor's account
   ID, and a repository that lists one accepts that anyone who can fire its
   rules can start agents. The security threat model notes this.
-- The display-name test no longer affects whether a label-added event is
-  admitted.
+- The display-name test never admits a label-added event; it can only drop
+  one. It is not an enforced boundary: an unlisted, non-`app` account with an
+  ordinary or renamed display name is classified as human and takes the
+  human rules.
