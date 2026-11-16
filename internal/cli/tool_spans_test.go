@@ -232,7 +232,9 @@ func TestToolSpanTracker_StartIsStampedBeforeTheNameScan(t *testing.T) {
 }
 
 func TestToolSpanTracker_EventsWithoutIDProduceNoSpan(t *testing.T) {
-	// pi and codex emit ToolUseEvent without an id and never a result.
+	// codex emits ToolUseEvent without an id and never a result. pi leaves
+	// the id off a call whose start line it never saw, so its result
+	// matches no call.
 	tr, rec, _ := toolSpanFixture(t)
 
 	tr.Handle(agentruntime.ToolUseEvent{Name: "bash", Summary: "ls"})

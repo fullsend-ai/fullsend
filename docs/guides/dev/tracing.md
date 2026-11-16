@@ -32,11 +32,15 @@ internal/telemetry/
 ├── telemetry.go          Setup, TracerProvider wiring, env parsing
 ├── fileexporter.go       Synchronous OTLP JSON file exporter
 ├── trace.go              W3C traceparent formatting helpers
+├── content.go            Level 3 content-capture opt-in (env var check)
 ├── main_test.go
 ├── telemetry_test.go
 ├── fileexporter_test.go
 ├── otlpsink_test.go
-└── trace_test.go
+├── trace_test.go
+├── content_test.go
+└── tracecontext/         Work-item identity and signed trace-context
+                          envelope (ADR 0154)
 ```
 
 ## TracerProvider setup
