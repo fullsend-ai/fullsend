@@ -7,12 +7,14 @@ import (
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	fj "github.com/fullsend-ai/fullsend/internal/forge/forgejo"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/spf13/cobra"
 )
 
 var errGitLabTokenMissing = errors.New("no GitLab token found: set GITLAB_TOKEN or pass --gitlab-token")
+var errForgejoTokenMissing = errors.New("no Forgejo token found: set FORGEJO_TOKEN or GITEA_TOKEN")
 
 // resolveGitLabToken returns a GitLab personal or project access token
 // from the environment. Unlike GitHub tokens, there is no `glab auth
@@ -24,15 +26,28 @@ func resolveGitLabToken() (string, error) {
 	return "", errGitLabTokenMissing
 }
 
+// resolveForgejoToken returns a Forgejo/Gitea access token from the
+// environment (FORGEJO_TOKEN preferred, then GITEA_TOKEN).
+func resolveForgejoToken() (string, error) {
+	if token := os.Getenv("FORGEJO_TOKEN"); token != "" {
+		return token, nil
+	}
+	if token := os.Getenv("GITEA_TOKEN"); token != "" {
+		return token, nil
+	}
+	return "", errForgejoTokenMissing
+}
+
 // newForgeClient creates a forge.Client for the given forge type.
 // For GitHub, it delegates to newAuthenticatedGitHubClient (GH_TOKEN,
 // GITHUB_TOKEN, gh auth token). For GitLab, it uses GITLAB_TOKEN or
-// the provided gitlabToken override.
+// the provided gitlabToken override. For Forgejo, it uses FORGEJO_TOKEN
+// or GITEA_TOKEN (gitlabToken override is ignored).
 //
 // The baseURL parameter, when non-empty, sets the forge instance URL
 // (from the manifest's forge section). It takes precedence over the
-// GITLAB_API_URL / GITHUB_API_URL environment variables, which are
-// kept as a fallback for callers that don't have a manifest yet.
+// GITLAB_API_URL / GITHUB_API_URL / FORGEJO_API_URL environment variables,
+// which are kept as a fallback for callers that don't have a manifest yet.
 func newForgeClient(forgeName, gitlabToken, baseURL string, glOpts ...gl.Option) (forge.Client, error) {
 	switch forgeName {
 	case repos.ForgeGitLab:
@@ -54,6 +69,23 @@ func newForgeClient(forgeName, gitlabToken, baseURL string, glOpts ...gl.Option)
 		}
 		opts = append(opts, glOpts...)
 		return gl.New(token, opts...)
+	case repos.ForgeForgejo:
+		token, err := resolveForgejoToken()
+		if err != nil {
+			return nil, err
+		}
+		var opts []fj.Option
+		raw := baseURL
+		if raw == "" {
+			raw = os.Getenv("FORGEJO_API_URL")
+		}
+		if raw == "" {
+			raw = os.Getenv("GITEA_API_URL")
+		}
+		if raw != "" {
+			opts = append(opts, fj.WithBaseURL(raw))
+		}
+		return fj.New(token, opts...), nil
 	case repos.ForgeGitHub, "":
 		return newAuthenticatedGitHubClient("", baseURL)
 	default:

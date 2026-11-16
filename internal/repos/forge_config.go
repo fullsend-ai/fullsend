@@ -97,6 +97,9 @@ func ForgeConfigFor(forgeName string) ForgeConfig {
 	switch forgeName {
 	case ForgeGitLab:
 		return GitLabForgeConfig()
+	case ForgeForgejo:
+		// Forgejo Actions is GitHub Actions–compatible; reuse GitHub shim paths.
+		return GitHubForgeConfig()
 	default:
 		return GitHubForgeConfig()
 	}

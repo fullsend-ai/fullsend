@@ -3,6 +3,7 @@ package cli
 import (
 	"testing"
 
+	fj "github.com/fullsend-ai/fullsend/internal/forge/forgejo"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/spf13/cobra"
@@ -100,6 +101,25 @@ func TestNewForgeClient_Unsupported(t *testing.T) {
 	_, err := newForgeClient("bitbucket", "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported forge")
+}
+
+func TestNewForgeClient_Forgejo_FromEnv(t *testing.T) {
+	t.Setenv("FORGEJO_TOKEN", "fj-test-token")
+	t.Setenv("GITEA_TOKEN", "")
+	client, err := newForgeClient(repos.ForgeForgejo, "", "https://git.forge.internal")
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	fjClient, ok := client.(*fj.LiveClient)
+	require.True(t, ok)
+	assert.Equal(t, "https://git.forge.internal/api/v1", fjClient.BaseURL())
+}
+
+func TestNewForgeClient_Forgejo_NoToken(t *testing.T) {
+	t.Setenv("FORGEJO_TOKEN", "")
+	t.Setenv("GITEA_TOKEN", "")
+	_, err := newForgeClient(repos.ForgeForgejo, "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no Forgejo token found")
 }
 
 func TestNewForgeClientFactory_GitHub(t *testing.T) {

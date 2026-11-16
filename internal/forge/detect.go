@@ -7,7 +7,7 @@ import (
 )
 
 // DetectForge identifies which forge platform a git remote URL points to.
-// Returns "github" or "gitlab". Returns an error for unknown hosts
+// Returns "github", "gitlab", or "forgejo". Returns an error for unknown hosts
 // with a suggestion to use the --forge flag.
 //
 // Note: this detects the forge from a remote URL, which is distinct from
@@ -25,7 +25,13 @@ func DetectForge(remoteURL string) (string, error) {
 		return "github", nil
 	case "gitlab.com":
 		return "gitlab", nil
+	case "git.forge.internal", "codeberg.org", "gitea.com":
+		return "forgejo", nil
 	default:
+		// Common self-hosted Forgejo/Gitea hostnames.
+		if strings.Contains(strings.ToLower(host), "forgejo") || strings.Contains(strings.ToLower(host), "gitea") {
+			return "forgejo", nil
+		}
 		return "", fmt.Errorf("unknown forge host %q: use --forge flag for self-hosted instances", host)
 	}
 }

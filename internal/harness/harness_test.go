@@ -2291,6 +2291,7 @@ func TestValidForgePlatform(t *testing.T) {
 	assert.True(t, ValidForgePlatform("github"))
 	assert.True(t, ValidForgePlatform("gitlab"))
 	assert.True(t, ValidForgePlatform("jira"))
+	assert.True(t, ValidForgePlatform("forgejo"))
 	assert.False(t, ValidForgePlatform("bitbucket"))
 	assert.False(t, ValidForgePlatform(""))
 }
