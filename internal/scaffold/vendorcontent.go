@@ -180,6 +180,7 @@ var vendoredDefaultsScripts = map[string]bool{
 	".github/scripts/install-podman.sh":        true,
 	".github/scripts/openshell-version.sh":     true,
 	".github/scripts/pre-fetch-review-body.sh": true,
+	".github/scripts/review-diff-hash.sh":      true,
 	".github/scripts/retry-with-backoff.sh":    true,
 }
 

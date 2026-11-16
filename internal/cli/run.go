@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,6 +95,10 @@ const (
 	// lint/type-check diagnostics without overwhelming the model's context.
 	maxFeedbackBytes = 10 * 1024
 
+	// Fixed feedback keeps sandbox errors and paths out of the prompt.
+	repoRejectedFeedback            = "Repository output was rejected because one or more repository requirements were not met. A plain directory is supported. For a checkout, keep a real root .git directory, avoid shared or redirected Git metadata such as commondir or alternate object stores, and do not introduce new shallow boundaries; if the needed history is missing, fetch full history when possible instead of editing shallow state directly. Downloaded .git/packed-refs must be at most 32 MiB and .git/shallow at most 4 MiB. Inspect the checkout, correct any requirement violation while preserving existing work, then retry."
+	repoValidationUncertainFeedback = "Repository output could not be validated. The checkout may be invalid, or Git, the runner, or the filesystem may have failed. Check the checkout and retry."
+
 	// Run-scoped inference providers resolved from the selected agent.
 	runProviderVertex = "vertex"
 	runProviderOpenAI = "openai"
@@ -165,9 +170,14 @@ var defaultAgentsRepoKnownAgents = func() map[string]bool {
 var statusMintToken = mintclient.MintToken
 
 // statusNewForgeClientFn constructs the GitHub client for status comments.
+// It stays on api.github.com unless GITHUB_SERVER_URL names another GitHub
+// instance and GITHUB_API_URL is that instance's API
+// (newConfiguredHostGitHubClient), so a run on such a host posts its status
+// there while the write-scoped token can never be redirected by
+// GITHUB_API_URL alone.
 // Override in tests to capture status writes without calling GitHub.
 var statusNewForgeClientFn = func(token string) forge.Client {
-	return gh.New(token)
+	return newConfiguredHostGitHubClient(token)
 }
 
 // agentWorkingDirExcludes lists fullsend-reserved directory patterns that
@@ -654,6 +664,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		OrgAllowlist:  orgAllowlist,
 		TreeFetcher:   rFlags.treeFetcher,
 		GitToken:      composeGitToken,
+		GitHubURL:     forge.ConfiguredGitHubURL(),
 		Event:         eventMap,
 		Config:        harness.BuildConfigMap(orgCfg),
 
@@ -663,8 +674,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Resolve agent source: config agents take precedence, then agents repo
 	// fallback. Always create a GitHub client for the agents-repo fallback —
 	// fullsend-ai/agents is public, so unauthenticated requests work when no
-	// GitHub token is available (e.g., on GitLab pipelines).
-	fallbackForgeClient := gh.New(composeGitToken)
+	// GitHub token is available (e.g., on GitLab pipelines). The client
+	// stays on api.github.com unless GITHUB_API_URL is the API of the
+	// GITHUB_SERVER_URL instance; then the fallback resolves and reads the
+	// agents repo there (agentsRepoHostURLPrefix). GITHUB_API_URL alone
+	// never receives the compose token or picks the fallback commit.
+	fallbackForgeClient := newConfiguredHostGitHubClient(composeGitToken)
+	// The configured host serves raw content from itself, so allow it in the
+	// fetch policy too; the default policy names only github.com hosts.
+	composeOpts.FetchPolicy = withAgentsRepoHostAllowed(composeOpts.FetchPolicy, fallbackForgeClient)
 	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
 	if err != nil {
 		return err
@@ -677,6 +695,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// field (ADR-0045 resource resolution for config-registered agents).
 	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 		composeOpts.SourceURL = fetchDeps[0].URL
+		useAgentsRepoHostFetch(&composeOpts, fallbackForgeClient)
 	}
 
 	// If the harness has a URL base and org config failed to load,
@@ -779,10 +798,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// later for profile import and provider resolution.
 	var result resolve.ResolveResult
 
-	if h.HasURLReferences() {
+	// The config-level subset check runs for URL-referencing harnesses (as
+	// before) and for every harness whose runtime fetch service can start
+	// (shouldStartFetchService: an explicit allow_runtime_fetch, URL-dir
+	// resources, or a bare allowed_remote_resources declaration): a harness
+	// whose fetch service starts would otherwise grant its agent fetch
+	// prefixes the organization never allowed (#9291). The service start
+	// below uses the same shouldStartFetchService, so the gate cannot drift
+	// from it.
+	if h.HasURLReferences() || shouldStartFetchService(h) {
 		if orgCfg == nil {
 			var err error
-			orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+			if h.HasURLReferences() {
+				orgCfg, err = requireOrgConfig(orgConfigPath, printer)
+			} else {
+				// A fetch-capable harness without URL references names its
+				// own requirement when the config is missing; an unreadable
+				// or unparsable config keeps its own error instead of being
+				// reported as missing.
+				orgCfg, err = requireOrgConfigFor(orgConfigPath, printer, "runtime fetch requires")
+			}
 			if err != nil {
 				return err
 			}
@@ -792,7 +827,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Remote resource allowlist validation failed")
 			return fmt.Errorf("validating allowed remote resources: %w", err)
 		}
+	}
 
+	if h.HasURLReferences() {
 		// Use a current lock entry for this harness; a stale entry or an
 		// unreadable lock file was reported before composition.
 		usedLock := false
@@ -1107,6 +1144,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail(err.Error())
 		return fmt.Errorf("%s: %w", runCfg.source, err)
 	}
+	// trace_context is checked the same way (ADR 0154): a malformed block
+	// fails the run before the sandbox exists.
+	if runCfg.perRepo != nil {
+		if err := config.ValidateTraceContext(runCfg.perRepo.TraceContext()); err != nil {
+			printer.StepFail(err.Error())
+			return fmt.Errorf("%s: %w", runCfg.source, err)
+		}
+	}
 	// resolvedModel is the alias-table target when models.aliases remaps
 	// h.Model, h.Model otherwise. It is what the echo and the Claude Code
 	// warning look at; pi still prefixes a bare id with its provider.
@@ -1278,6 +1323,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Runner secret validation failed")
 		return err
 	}
+	// Classify host_files sources on the host before upload, so a durable
+	// credential reaches the sandbox only with allow_durable: true and the
+	// run output records each one that does (#9508). Checked again after
+	// the pre-script, which may write or replace a source.
+	reportedHostFiles := map[string]bool{}
+	if err := reportHostFileCredentials(h, printer, reportedHostFiles); err != nil {
+		return err
+	}
 	// Ensure scripts are executable. The GitHub Contents API does not
 	// preserve file permissions, so scripts written via admin install
 	// may lack the execute bit.
@@ -1422,7 +1475,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Non-fatal: if the check fails (e.g., non-installation token), log a
 	// warning and continue.
 	if ghToken := envGHToken(); ghToken != "" {
-		repos, err := fetchTokenScope(context.Background(), ghToken, "https://api.github.com")
+		repos, err := fetchTokenScope(context.Background(), ghToken, githubAPIBaseURLFromEnv())
 		if err != nil {
 			printer.StepWarn("Token scope check: " + err.Error())
 		} else if len(repos) > 0 {
@@ -1444,6 +1497,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var aggMetrics aggregateMetrics
 	var statusFinalizer func()
 	var statusFinalizerOnce sync.Once
+
+	// Label independently of comment settings or status-notifier failures.
+	addJiraRunLabel(ctx, issueTracking, sOpts, printer)
 
 	// 1c. Set up status notifications (comments on the issue/PR).
 	// Lives in the CLI layer (not harness or post-script) so it wraps the
@@ -1591,12 +1647,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// The profile above is imported but attached only when a provider
 		// names its type, and it carries no credential. The stock GitLab
 		// providers attach their own profiles, whose GITLAB_TOKEN
-		// placeholder OpenShell resolves only at those profiles' endpoints,
-		// so the configured forge host must be one of them (#8683).
-		forgeHost, forgePort := gl.ResolveForgeHostPort()
-		boundProfiles, cleanupBound, err := bindGitLabForgeHost(result.Profiles, forgeHost, forgePort)
+		// placeholder OpenShell resolves at every endpoint of those
+		// profiles, so their endpoints are replaced with the configured
+		// forge host alone: the GitLab credential is bound only to the
+		// deployment's own GitLab instance (#8683).
+		// With no forge host, a profile that issues GITLAB_TOKEN stops the
+		// run rather than keep every endpoint it declares. A run loads no
+		// repos.yaml manifest, so, like the GitLab clients it builds (for
+		// example newForgeTrackerClient), it has no configured URL and reads
+		// the environment only.
+		forgeHost, forgePort, err := resolveGitLabCredentialForgeHost("")
 		if err != nil {
-			printer.StepFail("Failed to add the GitLab forge host to provider profiles")
+			printer.StepFail("Failed to resolve the GitLab forge host")
+			return err
+		}
+		boundProfiles, cleanupBound, err := bindGitLabCredentialToForgeHost(result.Profiles, forgeHost, forgePort, printer)
+		if errors.Is(err, errNoGitLabForgeHost) {
+			printer.StepFail("No GitLab forge host for an imported GitLab credential profile")
+			return err
+		}
+		if err != nil {
+			printer.StepFail("Failed to bind GitLab provider profiles to the forge host")
 			return fmt.Errorf("binding GitLab forge host to provider profiles: %w", err)
 		}
 		defer cleanupBound()
@@ -1666,7 +1737,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// goroutine-safe against a still-running refresher's os.Getenv calls.
 	// Both stopRefresh and refreshWg.Wait are safe to call more than once.
 	var stopOpenAIRefreshers []func()
+	// jiraHandles are the run-scoped jira providers whose token the runner
+	// mints (fullsend#9220). Their refreshers read no environment, so they
+	// need no pause around the token remints; the sandbox cleanup defer
+	// stops them before the sandbox they re-seed is deleted.
+	var jiraHandles []jiraProviderHandle
+	var stopJiraRefreshers []func()
 	allProviderNames := append([]string{}, h.Providers...)
+	// providerProfiles is the profile each provider resolved to, printed
+	// once the providers exist and read again by the durable-credential
+	// warning before the sandbox is created (#9510).
+	var providerProfiles []providerProfileReport
 	if len(h.Providers) > 0 || len(result.Providers) > 0 || len(result.Profiles) > 0 {
 		// Enable provider-backed policy composition on the gateway.
 		provV2Start := time.Now()
@@ -1676,6 +1757,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return fmt.Errorf("enabling providers v2: %w", err)
 		}
 		printer.StepDone(fmt.Sprintf("Providers v2 enabled (%.1fs)", time.Since(provV2Start).Seconds()))
+
+		// The per-site Jira profile ids are reserved in every mode, so no
+		// listed profile can stand on the gateway under one (#9492).
+		if err := rejectJiraSiteProfileIDs(result.Profiles); err != nil {
+			printer.StepFail("Reserved per-site Jira profile id listed")
+			return err
+		}
 
 		// Import URL-resolved profiles to the gateway. ImportProfileVerified
 		// drops the os.TempDir() content cache and confirms the gateway lists
@@ -1726,8 +1814,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		warnReservedProviderNameOverrides(localDefs, result.Providers, printer)
 		providerOverrides := providerOverridePaths(localDefs, selectedResolved)
+		// Only the embedded profile may govern a token the runner mints, so
+		// a listed fullsend-jira copy is refused, before anything is minted,
+		// when this run mints. With a static token it is warned about and
+		// kept like any other reserved copy.
+		if jiraRunMints(allDefs, os.Getenv) {
+			if err := rejectReservedProfileID(jiraProviderType, result.Profiles); err != nil {
+				printer.StepFail("Reserved fullsend-jira profile copy next to a minted Jira token")
+				return err
+			}
+		}
 		warnReservedProfileCopies(result.Profiles, printer)
 		profileOverrides := profileOverridePaths(result.Profiles)
+		// Kept before the loop below normalizes types and narrows allDefs
+		// to the shared providers.
+		profileReportDefs := append([]harness.ProviderDef(nil), allDefs...)
 
 		// Run-scoped providers are created synchronously, before the
 		// shared ones: their credential is resolved in process (a WIF
@@ -1736,10 +1837,55 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// never overwrite each other's token, and it is deleted when the
 		// run ends — even under --keep-sandbox, because a live-token
 		// provider must not outlive the run (#6689).
+		if err := rejectMultipleMintedJiraProviders(allDefs, os.Getenv); err != nil {
+			printer.StepFail("Another JIRA_TOKEN provider next to the minted Jira provider")
+			return err
+		}
+		ciCreds := ciVariableCredentialPolicy{forge: forgePlatform, gitlabCI: os.Getenv("GITLAB_CI") == "true", allow: h.AllowCIVariableCredential}
 		created := make(map[string]struct{}, len(allDefs))
 		sharedDefs := allDefs[:0:0]
 		handledEmbeddedProfiles := make(map[string]struct{}, len(allDefs))
 		for _, pd := range allDefs {
+			if strings.EqualFold(pd.Type, jiraProviderType) {
+				pd.Type = jiraProviderType
+				jiraCreds, mint, err := jiraMintCredentials(pd, os.Getenv)
+				if err != nil {
+					printer.StepFail("Jira credentials incomplete for provider " + pd.Name)
+					return err
+				}
+				if mint {
+					// The run-scoped provider reaches only this run's site
+					// through the gateway: its profile is the embedded one
+					// rendered with that site's path (#9492).
+					cloudID, err := resolveJiraMintCloudID(ctx, jiraEnv[envJiraAPIURL], issueTracking, rFlags.offline, jiraMintGatewayDiscoverFn)
+					if err != nil {
+						printer.StepFail("Cannot limit the minted Jira token to the run's own site")
+						return err
+					}
+					profileID, err := ensureJiraSiteProfile(ctx, cloudID, printer)
+					if err != nil {
+						printer.StepFail("Cannot render the per-site Jira profile")
+						return err
+					}
+					handle, err := ensureJiraProvider(ctx, pd, profileID, sandboxName, jiraCreds, printer)
+					if err != nil {
+						return err
+					}
+					created[pd.Name] = struct{}{}
+					runScopedProviders[pd.Name] = handle.name
+					jiraHandles = append(jiraHandles, handle)
+					// LIFO: the refresher stops before the provider is deleted.
+					defer cleanupRunScopedProvider(handle.name, []string{jiraCredentialKey}, keepSandbox, printer)
+					stops := startJiraRefreshers([]jiraProviderHandle{handle}, printer)
+					stopJiraRefreshers = append(stopJiraRefreshers, stops...)
+					for _, stop := range stops {
+						defer stop()
+					}
+					continue
+				}
+				// A static token, or no Jira credential at all: the
+				// provider is shared and expanded like any other below.
+			}
 			if !strings.EqualFold(pd.Type, openAIProviderType) {
 				if _, done := handledEmbeddedProfiles[pd.Type]; !done && isReservedProfileID(pd.Type) {
 					handledEmbeddedProfiles[pd.Type] = struct{}{}
@@ -1793,7 +1939,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
 				return err
 			}
-			handle, err := ensureOpenAIProvider(ctx, pd, sandboxName, openAIConfigIDs(runCfg), runtimeBackend, printer)
+			handle, err := ensureOpenAIProvider(ctx, pd, sandboxName, openAIConfigIDs(runCfg), runtimeBackend, ciCreds, printer)
 			var credErr openAICredentialError
 			if err != nil && !parentNeedsOpenAIProvider && !anyConfiguredOpenAIChild(openAIChildren) && errors.As(err, &credErr) {
 				// Only a persona's own frontmatter wanted openai. Before
@@ -1831,6 +1977,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			defer stopAndWait()
 		}
 		allDefs = sharedDefs
+		// Run-scoped providers (OpenAI above) report their own credential.
+		reportCIVariableCredentials(ciCreds, allDefs, os.Getenv, printer)
 
 		var (
 			mu   sync.Mutex
@@ -1860,6 +2008,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		for _, pd := range allDefs {
 			created[pd.Name] = struct{}{}
 		}
+		// Name the profile each provider uses and what it permits, so the
+		// run output shows whether a provider may only read or may write.
+		providerProfiles = resolveProviderProfiles(profileReportDefs, result.Profiles, skippedProviders)
+		printProviderProfiles(providerProfiles, printer)
 		for _, p := range h.Providers {
 			if _, ok := created[p]; !ok {
 				printer.StepWarn(fmt.Sprintf("Provider %q declared in harness but no definition found in %s", p, providersDir))
@@ -2087,6 +2239,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return nil
 	}
 
+	if err := reportHostFileCredentials(h, printer, reportedHostFiles); err != nil {
+		return err
+	}
+	// After the pre-script, which may write a host file source.
+	warnDurableCredentialWriteProviders(h, providerProfiles, printer)
+
 	// 4a. Create sandbox. A private ghcr.io harness image is pulled first
 	// with the workflow token; the gateway's own pull is anonymous (#9019).
 	prePullGHCRImage(ctx, h.Image, printer)
@@ -2108,7 +2266,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	finalizeSandboxSpan(sandboxSpan, nil)
 
-	if len(runScopedProviders) > 0 {
+	if len(openAIHandles) > 0 {
 		// The OpenAI credential only reaches api.openai.com through an
 		// inspected route; fail here, with the rule named, rather than
 		// after the agent has retried its first request.
@@ -2123,6 +2281,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// only reaches it through an inspected route.
 		if err := checkGatewayEgressInspected(ctx, sandboxName, gatewayPlan.host); err != nil {
 			printer.StepFail("Sandbox policy cannot deliver the inference gateway credential")
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
+			return err
+		}
+	}
+	// A minted Jira token only reaches the Atlassian gateway through an
+	// inspected route, and the running agent only follows a refresh
+	// through the token file, so check the route and seed the file before
+	// the agent starts.
+	if len(jiraHandles) > 0 {
+		if err := checkJiraEgressInspected(ctx, sandboxName); err != nil {
+			printer.StepFail("Sandbox policy cannot deliver the Jira access token")
+			discardSandbox(sandboxName, runDir, keepSandbox, printer)
+			return err
+		}
+	}
+	// At most one minted Jira handle (rejectMultipleMintedJiraProviders),
+	// so marking it up with its seed leaves no later preflight to fail.
+	for _, jh := range jiraHandles {
+		if err := seedJiraAndMarkReady(ctx, jh, printer); err != nil {
+			printer.StepFail("Failed to seed the sandbox's Jira token file")
 			discardSandbox(sandboxName, runDir, keepSandbox, printer)
 			return err
 		}
@@ -2305,8 +2483,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	defer func() {
 		// The gateway refreshers re-seed this sandbox; stop them before it
-		// goes, and before the post-script and its remint run.
+		// goes, and before the post-script and its remint run. The Jira
+		// refreshers re-seed it too.
 		for _, stop := range stopGatewayRefreshers {
+			stop()
+		}
+		for _, stop := range stopJiraRefreshers {
 			stop()
 		}
 		// Collect OpenShell logs before sandbox deletion for post-mortem debugging.
@@ -2418,6 +2600,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Failed to bootstrap sandbox")
 		return err
 	}
+	// Stage the repository's .tirith/policy.yaml from the ref the run trusts
+	// so the tirith hook can tighten scanning with it (#9486). Read from git
+	// objects on the runner before the agent starts; the hooks bootstrap
+	// installs and digests it with the hook scripts.
+	repoForPolicy := ""
+	if targetRepo != "" {
+		repoForPolicy = hostRepositoryDir
+	}
+	policyNote, err := attachTirithRepoPolicy(ctx, boot, repoForPolicy, os.Getenv)
+	if err != nil {
+		printer.StepFail("Failed to bootstrap sandbox")
+		return fmt.Errorf("staging repository tirith policy: %w", err)
+	}
+	if policyNote != "" {
+		printer.StepInfo(policyNote)
+	}
 	if rt.Name() == "claude" {
 		warnRepoSkillCollisions(hostRepositoryDir, boot.SkillDirs(), printer)
 	}
@@ -2459,6 +2657,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if rel, ok := outputDirExcludeRel(hostRepositoryDir, outputBase); ok {
 		uploadExcludes = append(uploadExcludes, rel)
 		gitExtraExcludes = append(gitExtraExcludes, rel+"/")
+	}
+	// Freeze the trusted host repository state once, after the pre-script
+	// (which may unshallow the checkout) and immediately before the only
+	// upload. Every later download and validation iteration is reconciled
+	// to it.
+	hostRepositorySnapshot, err := captureRepositorySnapshot(hostRepositoryDir)
+	if err != nil {
+		printer.StepFail("Failed to copy project code")
+		return fmt.Errorf("validating target repository before upload: %w", err)
 	}
 	if err := sandbox.UploadDir(sandboxName, hostRepositoryDir, remoteRepositoryDir, uploadExcludes...); err != nil {
 		printer.StepFail("Failed to copy project code")
@@ -2531,7 +2738,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 8c. Make the target repo read-only if the harness opts in.
 	// Runs after all repo-directory writes (8a, 8a-2) are complete.
 	// Excludes .git/ so git operations (index.lock, etc.) still work.
-	if h.ReadonlyRepo {
+	if h.RepoReadonly() {
 		// -prune skips .git traversal entirely; -not -type l prevents symlink traversal.
 		// chown ensures the sandbox user (run_as_user) owns .git/ after root-owned extraction.
 		chmodCmd := fmt.Sprintf(
@@ -2650,7 +2857,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// no iteration passed inline. This is the #5393 fix: it catches the
 	// case where an iteration produced valid output but its inline
 	// validation was skipped because SafeDownload failed on that same
-	// iteration (extraction failure triggers `continue`, bypassing 9e).
+	// iteration (an extraction failure skips 9e with `continue`; a rejected
+	// repository can also `break`).
 	// The sweep re-validates all completed iteration directories, latest
 	// first, using only the output files (TARGET_REPO_DIR is empty because
 	// hostRepositoryDownloadDir may not correspond to the validated
@@ -2987,6 +3195,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// always treated as fatal for the current iteration's repo state —
 		// we clean up the directory and skip to the next iteration.
 		//
+		// Repository-validation failures instead get feedback-driven retries or
+		// stop the loop; the post-loop sweep still validates this iteration's
+		// output.
+		//
 		// The forceRemoveAll pre-clear guards against a stale destination:
 		// whether "openshell sandbox download" fully replaces a non-empty
 		// destination directory or merges onto it is not verified anywhere
@@ -3010,7 +3222,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		repoExtractStart := time.Now()
 		printer.StepStart("Extracting target repo")
-		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir); err != nil {
+		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir, hostRepositorySnapshot); err != nil {
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				tx.EmitTranscriptErrors(os.Stderr, es)
 			}
@@ -3019,13 +3231,36 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// unsanitized content (sanitizeDownload aborts on first
 				// error, leaving subsequent dangerous symlinks intact).
 				// Clean up to prevent unsanitized content from reaching
-				// validation or the post-script, then continue the retry
-				// loop. Output files (extracted in 9b) are unaffected.
+				// validation or the post-script. Output files (extracted in
+				// 9b) are unaffected.
 				printer.StepWarn(fmt.Sprintf("Failed to extract target repo (cleaning up): %v", err))
 				if rmErr := forceRemoveAll(hostRepositoryDownloadDir); rmErr != nil {
 					printer.StepWarn(fmt.Sprintf("Failed to clean up repo dir after extraction failure: %v", rmErr))
 				}
 				repoExtractedOK = false
+				validationFailed := errors.Is(err, sandbox.ErrRepositoryValidation)
+				rejected := errors.Is(err, sandbox.ErrRepositoryRejected)
+				if validationFailed && !lastIterTimedOut {
+					if feedbackEnabled && iteration < maxIterations {
+						feedback := repoValidationUncertainFeedback
+						if rejected {
+							feedback = repoRejectedFeedback
+						}
+						validationFeedback = writeValidationFeedback(iterDir, []byte(feedback), nil, h.RunnerEnv, printer)
+						printer.StepWarn("Repository validation failed; retrying with validation feedback")
+						printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
+						continue
+					}
+					if feedbackEnabled {
+						printer.StepWarn("Repository validation failed; no iterations remain (the post-loop sweep still validates this iteration's output)")
+						continue
+					}
+					if rejected {
+						printer.StepWarn("Repository output rejected; stopping agent retries (feedback_mode is not append)")
+						break
+					}
+					continue
+				}
 				if lastIterTimedOut {
 					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
 					break
@@ -3047,9 +3282,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
 		// At this point repoExtractedOK is always true: SafeDownload
-		// failure sets it to false and continues (skipping step 9e),
-		// while success sets it to true immediately above. Pass the
-		// repo dir directly.
+		// failure sets it to false and skips step 9e (with `continue`, or
+		// with `break` when the repository is rejected), while success sets
+		// it to true immediately above. Pass the repo dir directly.
 		// Strip OIDC credential vars from the full composed env so keys
 		// injected via h.RunnerEnv are also removed (#5832), and drop
 		// inherited named workflow secrets (#8154).
@@ -3392,6 +3627,13 @@ var oidcDenyKeys = map[string]bool{
 	"FULLSEND_TRIGGER_TOKEN":                true,
 	"FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN": true,
 	"FULLSEND_WEBHOOK_SECRET":               true,
+	// The trace-context signing seed (ADR 0154). On GitLab a protected,
+	// wildcard-scoped CI/CD variable reaches every job on a protected ref.
+	// No run reads the seed, and fullsend's GitLab jobs unset it on their
+	// first before_script line; listing it here keeps a harness from
+	// expanding it and strips it from host-side scripts if it is ever
+	// present.
+	forge.SecretTraceSigningKey: true,
 	// The runner secrets bundle and its file path (ADR 0136).
 	// loadRunnerSecrets unsets both at start-up; listing them here keeps a
 	// harness from expanding the whole bundle and strips them from child
@@ -3535,6 +3777,13 @@ var sandboxDeniedKeys = map[string]bool{
 	jira.ClientSecretEnvVar: true,
 }
 
+// providerCredentialJiraKeys are the sandboxDeniedKeys that provider
+// credential values may still expand (#9411). Every sandbox-bound harness
+// site and provider config value keeps refusing them.
+var providerCredentialJiraKeys = map[string]bool{
+	jira.TokenEnvVar: true,
+}
+
 // expandSandboxEnvValue expands ${VAR} references in an env.sandbox value
 // with expander, refusing sandboxDeniedKeys (they expand empty).
 func expandSandboxEnvValue(v string, expander func(string) string) string {
@@ -3622,8 +3871,21 @@ func init() {
 	}
 	// The Jira repository secrets are host-script-only (#9079): provider
 	// definitions may not expand them in config values (argv) or credential
-	// values, the same as the sandbox-bound harness sites above.
+	// values, the same as the sandbox-bound harness sites above. The one
+	// exception is FULLSEND_JIRA_TOKEN in provider credential values: they
+	// reach only the provider proxy through the openshell child
+	// environment, never the sandbox, so the jira-ro provider can read the
+	// token without a second, differently named secret (#9411). Config
+	// values still refuse it. As with providerOnlyKeys below, expansion is
+	// not scoped by provider type: any provider definition's credential
+	// can reference the token, and its profile decides which hosts the
+	// proxy sends it to. That is safe only because provider and profile
+	// definitions are read from the trusted ref.
 	for k := range sandboxDeniedKeys {
+		if providerCredentialJiraKeys[k] {
+			sandbox.CredentialOnlyExpansionKeys(k)
+			continue
+		}
 		sandbox.DenyExpansionKeys(k)
 	}
 	// Provider-only keys are reserved in the sandbox (env.sandbox cannot
@@ -4094,13 +4356,18 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	}
 
 	// Copy host files into the sandbox.
-	for _, hf := range h.HostFiles {
+	for i, hf := range h.HostFiles {
 		hostPath, copied := hostFileSource(hf)
 		if !copied {
 			if hf.Optional {
 				continue
 			}
 			return fmt.Errorf("host_files: src %q expanded to empty string", hf.Src)
+		}
+		if !hf.Expand {
+			if shape, err := classifyHostFile(hostPath, false); err == nil && shape.durable() && !hf.AllowDurable {
+				return durableHostFilesError([]string{durableHostFileError(i, hf, hostPath, shape)})
+			}
 		}
 
 		if hf.Expand {
@@ -4113,6 +4380,9 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 				return fmt.Errorf("reading host file %s for expansion: %w", hf.Src, err)
 			}
 			expanded := shellSafeExpandEnv(string(raw))
+			if err := checkHostFileUpload(i, hf, hostPath, []byte(expanded)); err != nil {
+				return err
+			}
 
 			tmp, err := os.CreateTemp("", "fullsend-expand-*")
 			if err != nil {
@@ -4197,6 +4467,17 @@ func validationFailMessage(output []byte, execErr error) string {
 		return msg
 	}
 	return execErr.Error()
+}
+
+// redactedValidationFailMessage is validationFailMessage with the
+// redaction a trust boundary needs. The raw capture is redacted before
+// validationFailMessage trims it (#8165): a literal secret with leading
+// or trailing whitespace, printed at the very start or end of the output,
+// would lose that whitespace to the trim and no longer match. The result
+// is redacted again, because the exec error it falls back to was not.
+func redactedValidationFailMessage(output []byte, execErr error, runnerEnv map[string]string) string {
+	redactedOut := []byte(redactFeedback(string(output), runnerEnv))
+	return redactFeedback(validationFailMessage(redactedOut, execErr), runnerEnv)
 }
 
 // feedbackDelimiterOpen and feedbackDelimiterClose fence validation output
@@ -4452,8 +4733,7 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 	// RunnerEnv, provider-only keys kept out of it (#6649), and Jira
 	// repository secrets; registered runtime secrets, such as runner secrets
 	// referenced under a key sensitiveEnvKey does not match, join the same pass.
-	type literal struct{ value, mask string }
-	var literals []literal
+	var literals []secretLiteral
 	seen := map[string]bool{}
 	add := func(value, mask string) {
 		if len(value) < minRedactableSecretLen {
@@ -4467,7 +4747,7 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 			// An eligible original may normalize to a short sensitive value.
 			if value != "" && !seen[value] {
 				seen[value] = true
-				literals = append(literals, literal{value, mask})
+				literals = append(literals, secretLiteral{value, mask})
 			}
 		}
 	}
@@ -4477,11 +4757,95 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 	for _, value := range security.RuntimeSecrets() {
 		add(value, "***")
 	}
-	slices.SortStableFunc(literals, func(a, b literal) int { return cmp.Compare(len(b.value), len(a.value)) })
-	for _, l := range literals {
-		feedback = strings.ReplaceAll(feedback, l.value, l.mask)
-	}
+	slices.SortStableFunc(literals, func(a, b secretLiteral) int { return cmp.Compare(len(b.value), len(a.value)) })
+	feedback, _ = maskSecretLiterals(feedback, literals)
 	return feedback
+}
+
+// secretLiteral is one exact value the literal pass masks, with the text
+// that replaces it.
+type secretLiteral struct{ value, mask string }
+
+// maskSecretLiterals masks every occurrence of each literal in text and
+// reports, by index, which literals occurred. literals must be sorted
+// longest first.
+//
+// Match ranges are located in the original text before anything is
+// replaced, overlapping ranges are merged, and each merged range is
+// masked once (#8165). Replacing one literal at a time would leave a
+// fragment of two values that overlap in the text without either
+// containing the other: masking the first breaks the second's match. A
+// merged range takes the mask of the longest literal in it (the earliest
+// in literals on a tie), so a value inside a longer one is masked as the
+// longer one. Ranges that only touch are not merged and keep their own
+// masks.
+//
+// The output is unbounded (a script can print 100 MB of one repeated
+// secret), so matches are merged as they are found instead of being
+// collected: each literal keeps one cursor at its next match, and only the
+// range being built is held. Memory beyond the result is O(len(literals)).
+func maskSecretLiterals(text string, literals []secretLiteral) (string, []bool) {
+	found := make([]bool, len(literals))
+	// next[i] is the start of literal i's first match not yet consumed,
+	// or -1 when it has none left.
+	next := make([]int, len(literals))
+	nextMatch := func(i, from int) int {
+		if literals[i].value == "" || from > len(text) {
+			return -1
+		}
+		j := strings.Index(text[from:], literals[i].value)
+		if j < 0 {
+			return -1
+		}
+		return from + j
+	}
+	for i := range literals {
+		next[i] = nextMatch(i, 0)
+	}
+	var b strings.Builder
+	last := 0
+	for {
+		first := -1
+		for i, s := range next {
+			if s >= 0 && (first < 0 || s < next[first]) {
+				first = i
+			}
+		}
+		if first < 0 {
+			break
+		}
+		start := next[first]
+		end := start + len(literals[first].value)
+		lit := first
+		// Consume every match that starts inside the range, growing it.
+		// The search resumes one byte past each match start, not past the
+		// match, so a value that overlaps itself in the text ("aaaa" in
+		// "aaaaa") is covered whole. Repeat until a pass leaves the end
+		// where it was: a literal visited early may match inside a range
+		// a later one has since grown.
+		for grew := true; grew; {
+			grew = false
+			for i := range next {
+				for next[i] >= 0 && next[i] < end {
+					found[i] = true
+					if e := next[i] + len(literals[i].value); e > end {
+						end = e
+						grew = true
+					}
+					lit = min(lit, i)
+					next[i] = nextMatch(i, next[i]+1)
+				}
+			}
+		}
+		b.WriteString(text[last:start])
+		b.WriteString(literals[lit].mask)
+		last = end
+	}
+	if last == 0 {
+		return text, found
+	}
+	b.WriteString(text[last:])
+	return b.String(), found
 }
 
 // replaceEnvSecrets is the literal pass: the value of each sensitive runner
@@ -4492,13 +4856,17 @@ func redactSecretLiteralsWithNormalizer(feedback string, runnerEnv map[string]st
 // contains another is replaced whole, whichever source holds it, and the text
 // is the same on every run.
 func replaceEnvSecrets(text string, runnerEnv map[string]string) (string, []string) {
+	envLits := envLiterals(runnerEnv)
+	literals := make([]secretLiteral, len(envLits))
+	for i, l := range envLits {
+		literals[i] = secretLiteral{l.value, "[REDACTED:" + l.key + "]"}
+	}
+	text, found := maskSecretLiterals(text, literals)
 	var replaced []string
-	for _, l := range envLiterals(runnerEnv) {
-		if !strings.Contains(text, l.value) {
-			continue
+	for i, ok := range found {
+		if ok {
+			replaced = append(replaced, envLits[i].key)
 		}
-		text = strings.ReplaceAll(text, l.value, "[REDACTED:"+l.key+"]")
-		replaced = append(replaced, l.key)
 	}
 	return text, replaced
 }
@@ -4547,7 +4915,7 @@ func envLiterals(runnerEnv map[string]string) []envLiteral {
 // credentials either. The write is best-effort: failures are logged but do
 // not block the retry loop.
 func writeValidationFeedback(iterDir string, valOut []byte, valErr error, runnerEnv map[string]string, printer *ui.Printer) string {
-	feedback := redactFeedback(validationFailMessage(valOut, valErr), runnerEnv)
+	feedback := redactedValidationFailMessage(valOut, valErr, runnerEnv)
 	feedbackPath := filepath.Join(iterDir, validationFeedbackFile)
 	if err := os.WriteFile(feedbackPath, []byte(feedback), 0o600); err != nil {
 		printer.StepWarn("Failed to write validation feedback: " + err.Error())
@@ -4611,7 +4979,7 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 			}
 			return sweepResult{passed: true, validatedIter: i, repoExtractedOK: repoOK}
 		}
-		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactFeedback(validationFailMessage(valOut, valErr), h.RunnerEnv)))
+		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactedValidationFailMessage(valOut, valErr, h.RunnerEnv)))
 	}
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
 }
@@ -7056,7 +7424,13 @@ type tokenVar struct {
 // the minted token for every role. GITHUB_TOKEN is included so a caller
 // workflow that exports it does not leave the job token in place for tools
 // that read it instead of GH_TOKEN, or for pre/post scripts (#8530).
-var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN"}
+// GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN are included because gh
+// reads those instead of GH_TOKEN/GITHUB_TOKEN for any host other than
+// github.com and *.ghe.com (GitHub Enterprise Server); without them gh on
+// such a host keeps the caller's credential after the mint (#8952). They
+// are set unconditionally, so no host detection is needed; gh ignores them
+// for github.com.
+var agentTokenEnvVars = []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"}
 
 // roleTokenVars maps canonical role names to the additional env vars they
 // require beyond agentTokenEnvVars. These match the vars declared in
@@ -7258,9 +7632,10 @@ func mintAgentToken(ctx context.Context, role, mintURL, forgePlatform string, pr
 // The caller should defer cleanup() to clear tokens from the process env.
 // forgePlatform controls platform-specific env vars: PUSH_TOKEN_SOURCE is
 // set to "github-app" for GitHub and "pat" for GitLab.
-// The minted token replaces every agentTokenEnvVars name (GH_TOKEN and
-// GITHUB_TOKEN); cleanup restores each to its value before this call, or
-// unsets it if it was unset (#8530).
+// The minted token replaces every agentTokenEnvVars name (GH_TOKEN,
+// GITHUB_TOKEN, GH_ENTERPRISE_TOKEN and GITHUB_ENTERPRISE_TOKEN); cleanup
+// restores each to its value before this call, or unsets it if it was
+// unset (#8530, #8952).
 // On GitHub Actions the pre-mint GH_TOKEN (or, when that is unset or empty,
 // the pre-mint GITHUB_TOKEN) is copied to GH_WORKFLOW_TOKEN for provider
 // credential expansion (#6649) and the runner's ghcr.io image pull (#9019);
@@ -7361,8 +7736,9 @@ func mintAgentTokenAtLevel(ctx context.Context, role, mintURL, forgePlatform, le
 			}
 		}
 	}
-	// GITHUB_TOKEN is set even when the caller did not export it, so no
-	// tool that reads it instead of GH_TOKEN keeps the job token (#8530).
+	// GITHUB_TOKEN and the enterprise names are set even when the caller
+	// did not export them, so no tool that reads one instead of GH_TOKEN
+	// keeps the job token (#8530), whichever host gh targets (#8952).
 	for _, name := range agentTokenEnvVars {
 		os.Setenv(name, result.Token)
 	}
@@ -7530,7 +7906,11 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		return "", nil, fmt.Errorf("resolving agent %q: no config and agents-repo fallback unavailable", agentName)
 	}
 
-	if err := config.ValidateAgentEntries(orgCfg.AgentEntries(), orgCfg.AllowedResources()); err != nil {
+	// A caller may hand a raw layered config (dispatch --route); the
+	// helper resolves the same list as the loaders that ensure the
+	// defaults.
+	allowlist := config.EffectiveAllowedResources(orgCfg)
+	if err := config.ValidateAgentEntries(orgCfg.AgentEntries(), allowlist); err != nil {
 		return "", nil, fmt.Errorf("invalid agent config: %w", err)
 	}
 
@@ -7559,7 +7939,7 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 	if harness.IsURL(entry.Source) {
 		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agentName))
 	}
-	resolved, err := harness.ResolveRegisteredPath(ctx, fullsendDir, *entry, orgCfg.AllowedResources(), composeOpts)
+	resolved, err := harness.ResolveRegisteredPath(ctx, fullsendDir, *entry, allowlist, composeOpts)
 	if err != nil {
 		if harness.IsURL(entry.Source) {
 			printer.StepFail("Failed to fetch agent harness")
@@ -7659,7 +8039,11 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 		return "", none, false
 	}
 
+	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
 	rawURL := defaultAgentsRepoURLPrefix + resolvedSHA + "/" + relPath
+	if hostPrefix != "" {
+		rawURL = hostPrefix + resolvedSHA + "/" + relPath
+	}
 
 	if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
 		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", noun))
@@ -7672,9 +8056,16 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 	}
 	printer.StepStart(fmt.Sprintf("Fetching %s from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
 
-	content, err := fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
+	var content []byte
+	if hostPrefix != "" {
+		// A host other than github.com has no raw.githubusercontent.com,
+		// so read the file through the same client that resolved the ref.
+		content, err = readAgentsRepoFileAtRef(ctx, forgeClient, relPath, resolvedSHA, composeOpts.FetchPolicy)
+	} else {
+		content, err = fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
+	}
 	if err != nil {
-		if isFetchHTTPStatus(err, http.StatusNotFound) {
+		if isFetchHTTPStatus(err, http.StatusNotFound) || forge.IsNotFound(err) {
 			printer.StepInfo(fmt.Sprintf("No %s at %s/%s@%s (HTTP 404); skipping", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
 		} else {
 			printer.StepWarn(fmt.Sprintf("Failed to fetch %s from agents repo: %v", noun, err))
@@ -7725,6 +8116,238 @@ func fetchPinnedAgentsRepoFile(ctx context.Context, relPath string, forgeClient 
 
 	printer.StepDone(fmt.Sprintf("%s resolved from %s/%s@%s", noun, defaultAgentsRepoOwner, defaultAgentsRepoName, displayRef))
 	return localPath, dep, true
+}
+
+// agentsRepoHostURLPrefix returns the raw-content URL prefix of
+// fullsend-ai/agents on the GitHub host forgeClient addresses, in the
+// https://<host>/<owner>/<repo>/raw/ form that host serves raw files from.
+// The host is the GITHUB_SERVER_URL instance (githubServerBaseURLFn), the
+// same value the default allowed_remote_resources entries are built from,
+// so the prefix, the fetch-policy host and the allowlist agree. It returns
+// "" — the agents repo is then fetched from defaultAgentsRepoURLPrefix —
+// when no non-github.com instance is configured, when forgeClient is not a
+// GitHub API client, or when the client's API is not that instance's API
+// (<server>/api/v3 or api.<host>).
+func agentsRepoHostURLPrefix(forgeClient forge.Client) string {
+	client, ok := forgeClient.(*gh.LiveClient)
+	if !ok || client == nil {
+		return ""
+	}
+	server := githubServerBaseURLFn()
+	if githubAPIURLForServer(server, client.BaseURL()) == "" {
+		return ""
+	}
+	return server + "/" + defaultAgentsRepoOwner + "/" + defaultAgentsRepoName + "/raw/"
+}
+
+// withAgentsRepoHostAllowed returns policy extended to permit fetching from
+// the GitHub host forgeClient addresses, when that host is not github.com. The
+// host serves raw content from itself, so without this the default policy
+// (github.com and raw.githubusercontent.com only) refuses a base harness or
+// companion file whose URL is on it. A host with an explicit port also has
+// that port allowed. The returned policy does not share slices with policy,
+// and policy is returned unchanged for github.com or a non-GitHub client.
+func withAgentsRepoHostAllowed(policy fetch.FetchPolicy, forgeClient forge.Client) fetch.FetchPolicy {
+	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
+	if hostPrefix == "" {
+		return policy
+	}
+	u, err := url.Parse(hostPrefix)
+	if err != nil || u.Hostname() == "" {
+		return policy
+	}
+	policy.AllowedDomains = append(slices.Clone(policy.AllowedDomains), u.Hostname())
+	if port := u.Port(); port != "" {
+		ports := policy.AllowedPorts
+		if len(ports) == 0 {
+			ports = []string{"443"}
+		}
+		policy.AllowedPorts = append(slices.Clone(ports), port)
+	}
+	return policy
+}
+
+// rawFileContentReader is implemented by forge clients that can read a
+// file in full through the contents API's raw media type
+// (gh.LiveClient.GetRawFileContentAtRef). It is kept local to the
+// agents-repo host path rather than added to forge.Client.
+type rawFileContentReader interface {
+	GetRawFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
+}
+
+// readAgentsRepoFileAtRef reads relPath of fullsend-ai/agents at sha through
+// forgeClient. It bypasses fetch.FetchURL, so it applies the same size bound.
+// A client that can read raw media (the GitHub client this path is used
+// with) reads the file that way, so files over the contents API's 1 MiB
+// JSON limit are returned and non-file paths fail; any other client falls
+// back to GetFileContentAtRef.
+func readAgentsRepoFileAtRef(ctx context.Context, forgeClient forge.Client, relPath, sha string, policy fetch.FetchPolicy) ([]byte, error) {
+	read := forgeClient.GetFileContentAtRef
+	if raw, ok := forgeClient.(rawFileContentReader); ok {
+		read = raw.GetRawFileContentAtRef
+	}
+	content, err := read(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, relPath, sha)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(content)) > policy.MaxSizeBytes {
+		return nil, fmt.Errorf("response exceeds the %d-byte fetch size limit", policy.MaxSizeBytes)
+	}
+	return content, nil
+}
+
+// useAgentsRepoHostFetch makes opts read the companion files and directory
+// resources of a harness whose SourceURL is on the configured non-github.com
+// host through that host (see agentsRepoHostFileFetcher and
+// agentsRepoHostTreeFetcher). It leaves opts unchanged otherwise.
+func useAgentsRepoHostFetch(opts *harness.ComposeOpts, forgeClient forge.Client) {
+	hostPrefix := agentsRepoHostURLPrefix(forgeClient)
+	if hostPrefix != "" && strings.HasPrefix(opts.SourceURL, hostPrefix) {
+		opts.FetchFile = agentsRepoHostFileFetcher(forgeClient, hostPrefix, opts.FetchPolicy)
+		opts.ParseRawURL = agentsRepoHostURLParser(hostPrefix, opts.GitHubURL)
+		opts.TreeFetcher = agentsRepoHostTreeFetcher(forgeClient, hostPrefix, opts.FetchPolicy, opts.TreeFetcher)
+	}
+}
+
+// parseAgentsRepoHostURL splits a URL under hostPrefix
+// (<prefix><sha>/<path>) into its commit SHA and repo-relative path. It
+// accepts only a full commit SHA and a clean path with no traversal, query, or
+// fragment, so what it returns is safe to hand to the forge API.
+func parseAgentsRepoHostURL(rawURL, hostPrefix string) (sha, relPath string, err error) {
+	rest, ok := strings.CutPrefix(rawURL, hostPrefix)
+	if !ok {
+		return "", "", fmt.Errorf("not an agents repo URL on this host: %q", rawURL)
+	}
+	sha, relPath, found := strings.Cut(rest, "/")
+	if !found || !commitSHAPattern.MatchString(sha) || relPath == "" ||
+		strings.ContainsAny(relPath, "?#") || strings.HasPrefix(relPath, "/") {
+		return "", "", fmt.Errorf("unsupported agents repo URL %q", rawURL)
+	}
+	for _, seg := range strings.Split(relPath, "/") {
+		if seg == ".." || seg == "." || seg == "" {
+			return "", "", fmt.Errorf("unsupported agents repo URL %q", rawURL)
+		}
+	}
+	return sha, relPath, nil
+}
+
+// agentsRepoHostFileFetcher returns the harness.ComposeOpts.FetchFile hook for
+// a harness fetched from fullsend-ai/agents on a GitHub host other than
+// github.com. URLs under hostPrefix (<prefix><sha>/<path>, as recorded for the
+// harness itself) are read through forgeClient at the commit they name, so
+// companion files stay pinned to the harness's commit and are fetched from the
+// configured host with its token. The caller's allowlist check has already
+// run. Any other URL goes through fetch.FetchURL under policy.
+func agentsRepoHostFileFetcher(forgeClient forge.Client, hostPrefix string, policy fetch.FetchPolicy) func(context.Context, string) ([]byte, error) {
+	return func(ctx context.Context, rawURL string) ([]byte, error) {
+		if !strings.HasPrefix(rawURL, hostPrefix) {
+			return fetch.FetchURL(ctx, rawURL, policy)
+		}
+		sha, relPath, err := parseAgentsRepoHostURL(rawURL, hostPrefix)
+		if err != nil {
+			return nil, err
+		}
+		return readAgentsRepoFileAtRef(ctx, forgeClient, relPath, sha, policy)
+	}
+}
+
+// agentsRepoHostForgeInfo describes a path of the agents repo on the
+// configured host. Its Forge is the host itself, so CloneURL names that host;
+// the clone URL is how agentsRepoHostTreeFetcher recognises the requests that
+// are for it.
+func agentsRepoHostForgeInfo(hostPrefix, ref, relPath string) (*forge.ForgeURLInfo, error) {
+	u, err := url.Parse(hostPrefix)
+	if err != nil || u.Host == "" {
+		return nil, fmt.Errorf("invalid agents repo host prefix %q", hostPrefix)
+	}
+	return &forge.ForgeURLInfo{
+		Forge:    u.Host,
+		Owner:    defaultAgentsRepoOwner,
+		Repo:     defaultAgentsRepoName,
+		Path:     relPath,
+		Ref:      ref,
+		PathType: "tree",
+	}, nil
+}
+
+// agentsRepoHostURLParser returns the harness.ComposeOpts.ParseRawURL hook for
+// a harness fetched from fullsend-ai/agents on a GitHub host other than
+// github.com: URLs under hostPrefix describe a path of the agents repo at the
+// commit they name, and any other URL is parsed by
+// forge.ParseRawContentURLOnHost with githubURL, the run's configured GitHub
+// host, so other repositories on that host still parse.
+func agentsRepoHostURLParser(hostPrefix, githubURL string) func(string) (*forge.ForgeURLInfo, error) {
+	return func(rawURL string) (*forge.ForgeURLInfo, error) {
+		if !strings.HasPrefix(rawURL, hostPrefix) {
+			return forge.ParseRawContentURLOnHost(rawURL, githubURL)
+		}
+		sha, relPath, err := parseAgentsRepoHostURL(rawURL, hostPrefix)
+		if err != nil {
+			return nil, err
+		}
+		return agentsRepoHostForgeInfo(hostPrefix, sha, relPath)
+	}
+}
+
+// maxAgentsRepoHostTreeBytes bounds the total size of a directory read from
+// the configured host, matching the limit git sparse checkout applies.
+const maxAgentsRepoHostTreeBytes = 50 << 20
+
+// agentsRepoHostTreeFetcher returns the harness.ComposeOpts.TreeFetcher hook
+// for a harness fetched from fullsend-ai/agents on a GitHub host other than
+// github.com. A directory of the agents repo (a skill, plugin, or script
+// directory) is listed and read through forgeClient at the commit it is
+// pinned to, so it is fetched from the configured host with its token rather
+// than by git sparse checkout from github.com. Entries are bounded in count,
+// per-file size (policy.MaxSizeBytes), and total size. Any other repository
+// goes to next, or to git sparse checkout when next is nil.
+func agentsRepoHostTreeFetcher(forgeClient forge.Client, hostPrefix string, policy fetch.FetchPolicy, next gitfetch.TreeFetchFunc) gitfetch.TreeFetchFunc {
+	if next == nil {
+		next = gitfetch.FetchTree
+	}
+	hostInfo, infoErr := agentsRepoHostForgeInfo(hostPrefix, "", "")
+	return func(ctx context.Context, cloneURL, dirPath, ref, token string) (map[string][]byte, error) {
+		if infoErr != nil || cloneURL != hostInfo.CloneURL() {
+			return next(ctx, cloneURL, dirPath, ref, token)
+		}
+		if !commitSHAPattern.MatchString(ref) || dirPath == "" {
+			return nil, fmt.Errorf("unsupported agents repo directory %q at %q", dirPath, ref)
+		}
+		for _, seg := range strings.Split(dirPath, "/") {
+			if seg == ".." || seg == "." || seg == "" {
+				return nil, fmt.Errorf("unsupported agents repo directory %q", dirPath)
+			}
+		}
+		entries, err := forgeClient.ListDirectoryContents(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, dirPath, ref, true)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) > gitfetch.MaxFiles {
+			return nil, fmt.Errorf("directory %q exceeds the %d-file limit", dirPath, gitfetch.MaxFiles)
+		}
+		files := make(map[string][]byte, len(entries))
+		total := 0
+		for _, e := range entries {
+			if e.Type != "file" {
+				continue
+			}
+			for _, seg := range strings.Split(e.Path, "/") {
+				if seg == ".." || seg == "." || seg == "" {
+					return nil, fmt.Errorf("unsupported path %q in agents repo directory %q", e.Path, dirPath)
+				}
+			}
+			content, err := readAgentsRepoFileAtRef(ctx, forgeClient, dirPath+"/"+e.Path, ref, policy)
+			if err != nil {
+				return nil, fmt.Errorf("reading %q/%q: %w", dirPath, e.Path, err)
+			}
+			total += len(content)
+			if total > maxAgentsRepoHostTreeBytes {
+				return nil, fmt.Errorf("directory %q exceeds the %d MiB total size limit", dirPath, maxAgentsRepoHostTreeBytes>>20)
+			}
+			files[e.Path] = content
+		}
+		return files, nil
+	}
 }
 
 // cachedPinnedAgentsRepoFile is the offline counterpart of
@@ -7967,7 +8590,7 @@ func quotePathForLog(path string) string {
 // warnReservedProviderNameOverrides, ensureEmbeddedProfile).
 var builtinProviderNames = []string{
 	"vertex-ai", "github", "github-ro", "github-artifacts",
-	"gitleaks", "package-registries", "atlassian-cloud", "openai",
+	"gitleaks", "package-registries", "atlassian-cloud", "openai", "jira",
 }
 
 // isBuiltinProviderName reports whether name is one fullsend ships an
@@ -8052,7 +8675,8 @@ func rejectReservedProfileID(id string, resolved []resolve.ResolvedProfile) erro
 // deduplicated by the caller using dedupResolvedProfiles. For one release the
 // listed copy stays live: the caller does not import the embedded profile over
 // it. fullsend-openai is skipped here because it is already an error
-// (rejectReservedProfileID) (#7268).
+// (rejectReservedProfileID) (#7268). fullsend-jira is an error only when the
+// run mints the Jira token, which the caller checks first (#9220).
 func warnReservedProfileCopies(resolved []resolve.ResolvedProfile, printer *ui.Printer) {
 	for _, rp := range resolved {
 		if rp.ID == openAIProviderType || !isReservedProfileID(rp.ID) {
@@ -8203,6 +8827,45 @@ func forceRemoveAll(path string) error {
 		return nil
 	})
 	return os.RemoveAll(path)
+}
+
+// captureRepositorySnapshot validates and captures the trusted shallow state
+// after the pre-script and before the only upload, so every later download is
+// reconciled to it. A plain input returns a zero snapshot without Git
+// discovery, so a parent checkout is never captured. A materialized checkout
+// records IsCheckout so the downloaded root must remain a checkout.
+func captureRepositorySnapshot(repoDir string) (sandbox.RepositorySnapshot, error) {
+	plain, err := sandbox.ValidateRepositoryRoot(repoDir)
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("validating target repository: %w", err)
+	}
+	if plain {
+		return sandbox.RepositorySnapshot{}, nil
+	}
+	snapshot := sandbox.RepositorySnapshot{IsCheckout: true}
+
+	// Validation proved .git is a real directory that resolves as itself, so
+	// the boundary lives directly there. Resolving it with a Git query would
+	// honor inherited selectors such as GIT_DIR or GIT_COMMON_DIR and could
+	// capture another repository's boundary.
+	shallowPath := filepath.Join(repoDir, ".git", "shallow")
+
+	info, err := os.Stat(shallowPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return snapshot, nil
+	}
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("inspecting git shallow metadata: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("git shallow metadata %s is not a regular file", shallowPath)
+	}
+	data, err := os.ReadFile(shallowPath)
+	if err != nil {
+		return sandbox.RepositorySnapshot{}, fmt.Errorf("reading git shallow metadata %s: %w", shallowPath, err)
+	}
+	snapshot.Shallow = sandbox.ShallowState{Present: true, Data: data}
+	return snapshot, nil
 }
 
 // checkProviderProfileIntegrity validates that every provider references a

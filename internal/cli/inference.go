@@ -69,12 +69,15 @@ func newInferenceProvisionCmd() *cobra.Command {
 	var pool string
 	var provider string
 	var dryRun bool
+	var forgeName string
+	var gitlabProjectID string
+	var gitlabURL string
 
 	cmd := &cobra.Command{
-		Use:   "provision <org|owner/repo>",
+		Use:   "provision <org|owner/repo|group/project>",
 		Short: "Create WIF infrastructure for inference",
 		Long: `Provisions Workload Identity Federation infrastructure in a GCP project
-for GitHub Actions to authenticate and access Agent Platform.
+for GitHub Actions or GitLab CI to authenticate and access Agent Platform.
 
 Org-scoped mode (e.g. 'fullsend inference provision acme'):
   Creates a WIF pool and provider scoped to all repos in the org.
@@ -82,8 +85,17 @@ Org-scoped mode (e.g. 'fullsend inference provision acme'):
 Repo-scoped mode (e.g. 'fullsend inference provision acme/widget'):
   Creates a WIF pool and a dedicated provider scoped to a single repo.
 
+GitLab mode (e.g. 'fullsend inference provision acme/team/app --forge gitlab
+--gitlab-project-id 12345'):
+  Creates a WIF pool and a dedicated provider (gl-<project-path>) trusting
+  the GitLab instance at --gitlab-url, with google.subject mapped to the
+  numeric project_id, allowed audience "fullsend", and a condition binding
+  both the project ID and the project path. Grants roles/aiplatform.user
+  on attribute.project_path/<project-path>. --gitlab-project-id is
+  required (Settings → General → Project ID); no GitLab token is needed.
+
 After provisioning, prints the WIF provider resource name for handoff
-to the GitHub admin who runs 'fullsend github setup'.
+to the admin who runs 'fullsend github setup' or 'fullsend repos install'.
 
 WIF pools are always created at locations/global.
 
@@ -102,6 +114,32 @@ Required IAM roles on the target project:
 			}
 			if !gcpProjectPattern.MatchString(project) {
 				return fmt.Errorf("invalid GCP project ID %q: must be 6-30 lowercase letters, digits, and hyphens", project)
+			}
+
+			switch forgeName {
+			case "github":
+				if cmd.Flags().Changed("gitlab-project-id") || cmd.Flags().Changed("gitlab-url") {
+					return fmt.Errorf("--gitlab-project-id and --gitlab-url require --forge gitlab")
+				}
+			case "gitlab":
+				if cmd.Flags().Changed("provider") {
+					return fmt.Errorf("--provider is not supported with --forge gitlab (provider ID is auto-generated from the project path)")
+				}
+				if gitlabProjectID == "" {
+					return fmt.Errorf("--gitlab-project-id is required with --forge gitlab (Settings → General → Project ID)")
+				}
+				gl := gcf.GitLabProject{Path: args[0], ID: gitlabProjectID, IssuerURL: gitlabURL}
+				plan, err := gcf.PlanGitLabWIF(gl)
+				if err != nil {
+					return err
+				}
+				printer := ui.New(cmd.OutOrStdout())
+				if dryRun {
+					return runInferenceProvisionGitLabDryRun(printer, gl, plan, project, pool)
+				}
+				return runInferenceProvisionGitLab(cmd, printer, gl, project, pool, nil)
+			default:
+				return fmt.Errorf("--forge must be one of: github, gitlab (got %q)", forgeName)
 			}
 
 			org, repo, err := parseOrgOrRepo(args[0])
@@ -129,10 +167,72 @@ Required IAM roles on the target project:
 
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID for Agent Platform (required)")
 	cmd.Flags().StringVar(&pool, "pool", gcf.DefaultInferencePool, "WIF pool name")
-	cmd.Flags().StringVar(&provider, "provider", "github-oidc", "WIF provider name (org-scoped only)")
+	cmd.Flags().StringVar(&provider, "provider", "github-oidc", "WIF provider name (GitHub org-scoped only)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
+	cmd.Flags().StringVar(&forgeName, "forge", "github", "forge whose CI identities the provider trusts: github or gitlab")
+	cmd.Flags().StringVar(&gitlabProjectID, "gitlab-project-id", "", "numeric GitLab project ID (required with --forge gitlab)")
+	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", gcf.DefaultGitLabURL, "GitLab instance URL used as the OIDC issuer (--forge gitlab only)")
 
 	return cmd
+}
+
+func runInferenceProvisionGitLabDryRun(printer *ui.Printer, gl gcf.GitLabProject, plan *gcf.GitLabProviderPlan, project, pool string) error {
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header("Dry run: provision WIF for GitLab project inference")
+	printer.Blank()
+	printer.StepInfo(fmt.Sprintf("GitLab project: %s (ID %s)", gl.Path, gl.ID))
+	printer.StepInfo(fmt.Sprintf("WIF provider:   %s", plan.ProviderID))
+	printer.StepInfo(fmt.Sprintf("Issuer:         %s", plan.Config.IssuerURI))
+	printer.StepInfo(fmt.Sprintf("Audience:       %s", strings.Join(plan.Config.AllowedAudiences, ",")))
+	printer.StepInfo("Subject:        google.subject=assertion.project_id")
+	printer.StepInfo(fmt.Sprintf("Condition:      %s", plan.Config.AttributeCondition))
+	printer.Blank()
+	printer.StepInfo(fmt.Sprintf("GCP project:    %s", project))
+	printer.StepInfo(fmt.Sprintf("WIF pool:       %s", pool))
+	printer.Blank()
+	printer.StepInfo("Would create/update:")
+	printer.StepInfo(fmt.Sprintf("  - WIF pool: %s", pool))
+	printer.StepInfo(fmt.Sprintf("  - WIF OIDC provider: %s", plan.ProviderID))
+	printer.StepInfo(fmt.Sprintf("  - IAM binding: roles/aiplatform.user on %s", plan.PrincipalSetSuffix))
+	printer.Blank()
+	return nil
+}
+
+func runInferenceProvisionGitLab(cmd *cobra.Command, printer *ui.Printer, gl gcf.GitLabProject, project, pool string, client gcf.GCFClient) error {
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header("Provisioning WIF for GitLab project inference: " + gl.Path)
+	printer.Blank()
+
+	gcpClient := client
+	if gcpClient == nil {
+		gcpClient = gcf.NewLiveGCFClient(project)
+	}
+	provisioner := gcf.NewProvisioner(gcf.Config{
+		ProjectID:   project,
+		WIFPoolName: pool,
+	}, gcpClient)
+
+	printer.StepStart("Provisioning WIF infrastructure")
+	wifProvider, err := provisioner.ProvisionGitLabWIF(cmd.Context(), gl)
+	if err != nil {
+		printer.StepFail("WIF provisioning failed")
+		return fmt.Errorf("provisioning WIF for inference: %w", err)
+	}
+	printer.StepDone("WIF infrastructure ready")
+	printer.Blank()
+
+	printer.KeyValue("WIF Provider", wifProvider)
+	printer.Blank()
+	printer.StepInfo("Pass this value to the GitLab install command:")
+	printer.StepInfo(fmt.Sprintf("  fullsend repos install %s \\", gl.Path))
+	printer.StepInfo(fmt.Sprintf("    --vertex-project=%s \\", project))
+	printer.StepInfo(fmt.Sprintf("    --vertex-wif-provider=%s", wifProvider))
+	printer.Blank()
+	printer.StepWarn("IAM policy changes may take up to 7 minutes to propagate")
+	printer.Blank()
+	return nil
 }
 
 func runInferenceProvisionDryRun(cmd *cobra.Command, printer *ui.Printer, org, repo, project, pool, provider string) error {

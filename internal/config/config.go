@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"slices"
@@ -640,13 +642,64 @@ func PerRepoDefaultRoles() []string {
 	return []string{"triage", "coder", "review", "fix", "retro", "prioritize"}
 }
 
+// defaultAllowedRepos are the repositories whose raw content the default
+// allowlist admits.
+var defaultAllowedRepos = []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}
+
 // DefaultAllowedRemoteResources returns the standard allowlist prefixes
 // for base composition and agent registration URLs.
+//
+// The raw.githubusercontent.com prefixes are always included. When
+// GITHUB_SERVER_URL names a GitHub host other than github.com (for
+// example GitHub Enterprise Server), the raw-content prefixes for the
+// same repositories on that host (https://<host>/<owner>/<repo>/raw/)
+// are appended, so their copies on the configured host are admitted too.
 func DefaultAllowedRemoteResources() []string {
-	return []string{
-		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
-		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	prefixes := make([]string, 0, 2*len(defaultAllowedRepos))
+	for _, repo := range defaultAllowedRepos {
+		prefixes = append(prefixes, "https://raw.githubusercontent.com/"+repo+"/")
 	}
+	if base := GitHubServerBaseURL(os.Getenv("GITHUB_SERVER_URL")); base != "" {
+		for _, repo := range defaultAllowedRepos {
+			prefixes = append(prefixes, base+"/"+repo+"/raw/")
+		}
+	}
+	return prefixes
+}
+
+// GitHubServerBaseURL returns "https://<host>" for a GitHub server URL
+// naming a host other than github.com. It returns "" for empty input,
+// github.com, and any value that is not a bare HTTPS origin (userinfo,
+// a path, a query or a fragment), so a malformed value never widens
+// the default allowlist. The CLI derives the agents-repo fallback host
+// from it too, so that host and the allowlist entries always agree.
+func GitHubServerBaseURL(serverURL string) string {
+	serverURL = strings.TrimSpace(serverURL)
+	if serverURL == "" {
+		return ""
+	}
+	u, err := url.Parse(serverURL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return ""
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return ""
+	}
+	if strings.EqualFold(u.Hostname(), "github.com") {
+		return ""
+	}
+	return "https://" + strings.ToLower(u.Host)
+}
+
+// EffectiveAllowedResources returns the config-level allowlist the command
+// families that run or edit agents resolve — run/lint/lock, harness
+// dispatch, dispatch --route, the Jira poll and the agent-editing commands
+// (agent set/add/update/remove): the layered chain as-is (an omitted key
+// falls through to the parent, an explicit [] denies all remote resources,
+// a non-empty list unions with the parent's), then fullsend's default
+// prefixes ensured on top of a non-empty result.
+func EffectiveAllowedResources(cfg ConfigReader) []string {
+	return EnsureDefaultAllowedRemoteResources(cfg.AllowedResources())
 }
 
 // EnsureDefaultAllowedRemoteResources returns a new slice with default
@@ -947,6 +1000,15 @@ type perRepoConfig struct {
 	// overrides of fullsend's pinned alias table (#6882, #6527 item 2).
 	Models *ModelsConfig `yaml:"models,omitempty"`
 
+	// Artifacts limits what the run artifact publishes (ADR 0161).
+	// content overrides the parent layer; by_source merges per key.
+	Artifacts *ArtifactsConfig `yaml:"artifacts,omitempty"`
+
+	// TraceContextBlock is the trace_context block (ADR 0154). It backs
+	// the TraceContext() accessor and is named distinctly from it because
+	// Go forbids a field and method sharing a name on the same type.
+	TraceContextBlock *TraceContextConfig `yaml:"trace_context,omitempty"`
+
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
 	// serialization so Marshal emits only locally-set values.
@@ -1080,6 +1142,8 @@ type perRepoConfigMarshal struct {
 	MintURL                string                    `yaml:"mint_url,omitempty"`
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
 	Models                 *ModelsConfig             `yaml:"models,omitempty"`
+	Artifacts              *ArtifactsConfig          `yaml:"artifacts,omitempty"`
+	TraceContext           *TraceContextConfig       `yaml:"trace_context,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -1099,6 +1163,7 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Agents:              c.Agents,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
+		TraceContext:        c.TraceContextBlock,
 	}
 	// Only emit inference block when at least one field is set locally.
 	if c.Inference != nil && *c.Inference != (PerRepoInferenceConfig{}) {
@@ -1106,6 +1171,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	}
 	if c.Models != nil && len(c.Models.Aliases) > 0 {
 		h.Models = c.Models
+	}
+	if !c.Artifacts.IsZero() {
+		h.Artifacts = c.Artifacts
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -1127,12 +1195,16 @@ func (c *perRepoConfig) Validate() error {
 	if err := c.validateLocalFields(); err != nil {
 		return err
 	}
-	// Agents are validated against the resolved allowlist (including
-	// parent resources) so that URL agents covered by a parent or
-	// default prefix pass validation.
+	// Agents are validated against the effective allowlist — the
+	// resolved chain with fullsend's default prefixes ensured on a
+	// non-empty result — the same list every command family that runs
+	// or edits agents resolves through EffectiveAllowedResources, so a
+	// config one of those commands accepts validates here too. An
+	// explicit [] as the resolved value still denies all remote
+	// resources.
 	// The merged set is validated so an overlay entry that only tunes an
 	// agent registered in the base layer sees that agent's source.
-	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true)
+	return validateAgentEntries(c.AgentEntries(), EffectiveAllowedResources(c), true, true)
 }
 
 // ValidateGlobal runs Validate's checks except the agents[] entry
@@ -1182,7 +1254,7 @@ func ValidateRuntimeAuthorization(r ConfigReader) error {
 }
 
 // validateLocalFields checks the fields that do not need a resolved
-// parent chain: version, roles, tracker, runtime,
+// parent chain: version, roles, tracker, runtime, trace_context,
 // status_notifications, inference provider, authorization providers,
 // and model aliases. It is split out of Validate so a repos.yaml config
 // managed-configuration layer (ADR 0122) can be checked without pulling in
@@ -1239,6 +1311,12 @@ func (c *perRepoConfig) validateLocalFields() error {
 	if err := c.ValidateAuthorization(); err != nil {
 		return err
 	}
+	if err := validateArtifacts(c.Artifacts); err != nil {
+		return err
+	}
+	if err := ValidateTraceContext(c.TraceContextBlock); err != nil {
+		return err
+	}
 	// Validate the merged view, as ValidateAgentEntries does above: a bad
 	// key in config.base.yaml must not slip through because the overlay
 	// omits models:. Currently the parent chain never actually carries a
@@ -1275,13 +1353,25 @@ func ValidateManagedLayer(w PerRepoConfigWriter) error {
 
 // ValidateMergedManaged validates a repos.yaml managed configuration
 // (ADR 0122) after defaults.config, the platform config, and the
-// repository config have been merged (mergeManagedConfig). The resolved
-// allowlist is now correct, so
-// a URL-sourced agent entry is checked against it; an override-only entry
-// is still not required to name a compiled-in agent, since
-// config.base.yaml — which may register the agent it tunes — is not
-// layered on until the managed file is written and later read through
-// LayeredConfig.
+// repository config have been merged (mergeManagedConfig). A URL-sourced
+// agent entry is checked against the effective allowlist — the resolved
+// list with fullsend's default prefixes ensured on a non-empty result,
+// the same list every command family resolves through
+// EffectiveAllowedResources; an explicit [] as the resolved value still
+// denies all remote resources. Every writer reaching this function
+// carries the perRepoDefaults terminal parent, so the accessor already
+// resolves the defaults and the explicit call records the rule. A
+// managed block that declares its list validates the same for the
+// prefixes the merged managed blocks resolve once it is written and
+// read through LayeredConfig; a prefix declared only in
+// config.base.yaml or a config_base preset is not visible here, so
+// validation is stricter than the read for that shape. A block that
+// omits the key validates against the defaults alone and still
+// inherits a base [] (deny-all) at LayeredConfig read time, which
+// this validation cannot see. An override-only entry is still not required to name a
+// compiled-in agent, since config.base.yaml — which may register the
+// agent it tunes — is not layered on until the managed file is written
+// and later read through LayeredConfig.
 func ValidateMergedManaged(w PerRepoConfigWriter) error {
 	c := asPerRepo(w)
 	if c == nil {
@@ -1290,7 +1380,7 @@ func ValidateMergedManaged(w PerRepoConfigWriter) error {
 	if err := c.validateLocalFields(); err != nil {
 		return err
 	}
-	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, false)
+	return validateAgentEntries(c.AgentEntries(), EffectiveAllowedResources(c), true, false)
 }
 
 // ValidateModelAliases checks a models.aliases map: every key is one of

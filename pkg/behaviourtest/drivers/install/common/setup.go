@@ -3,9 +3,14 @@ package common
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
 
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
@@ -124,15 +129,173 @@ func RunGitHubSetupWithOpts(
 
 	logf("[install] running fullsend %s", strings.Join(args, " "))
 	if _, err := runCLI(binary, token, args...); err != nil {
-		return fmt.Errorf("github setup %s: %w", target, err)
+		return markGitHubSetupTransient(fmt.Errorf("github setup %s: %w", target, err))
 	}
 	return nil
+}
+
+// githubSetupTransientSignatures are the anchored patterns that identify
+// a GitHub-side failure in the final "Error: " line of a failed
+// `fullsend github setup` run. Setup runs in a subprocess, so the
+// harness receives only its exit status and combined output: the typed
+// *gh.APIError that failclass.Classify recognizes in process is gone,
+// and the CLI's message is all that is left (#9497).
+//
+// Each pattern names a failure the behaviour suite has observed while
+// setting up a pool repo:
+//
+//   - "setup: github server error" — the forge client gave up on a
+//     500–504 response. Its APIError renders as "github api: <status>
+//     <message>", and a retryable 5xx it stops on always carries one of
+//     its retry loop's two give-up messages: "retryable error after N
+//     attempts on ..." (retries used up) or "server error on ... (not
+//     retried: the request may have been applied)". Observed: HTTP 500 on PATCH
+//     git/refs during setup. This is the subprocess counterpart of
+//     gh.IsServerError's REST rule. The pattern is built from the
+//     client's gh.RetryGiveUpPrefix and gh.ServerErrorNotRetriedPrefix,
+//     so rewording those messages cannot silently stop the match. A
+//     GraphQL server error ("Something went wrong while executing your
+//     query", from createCommitOnBranch) is deliberately not matched:
+//     only the REST 5xx and the CANCEL reset were observed (#9497), so
+//     it stays scenario.
+//   - "setup: github stream reset" — GitHub reset the HTTP/2 stream with
+//     CANCEL while the client read a response, rendered by the Go HTTP/2
+//     transport as "stream error: stream ID N; CANCEL; received from
+//     peer". Observed: on create blob, while committing scaffold files.
+//     Other reset codes, connection resets and unexpected EOFs have not
+//     been observed here and stay scenario.
+//
+// A GitHub 4xx, a validation error, a panic, or any other message
+// matches neither pattern and stays scenario, so a real `github setup`
+// regression still fails the run without the automatic retry.
+var githubSetupTransientSignatures = []struct {
+	re     *regexp.Regexp
+	reason string
+}{
+	{
+		re: regexp.MustCompile(`\bgithub api: 50[0-4] (?:` +
+			regexp.QuoteMeta(gh.RetryGiveUpPrefix) + `\d+ attempts on |` +
+			regexp.QuoteMeta(gh.ServerErrorNotRetriedPrefix) + `)`),
+		reason: "setup: github server error",
+	},
+	{
+		re:     regexp.MustCompile(`\bstream error: stream ID \d+; CANCEL; received from peer\b`),
+		reason: "setup: github stream reset",
+	},
+}
+
+// githubSetupErrorLine returns the message of the last line in msg that
+// starts with "Error: " — the line cmd/fullsend's main prints for the
+// error that ended the run — and false when there is none. Matching
+// only that line keeps a warning the CLI logged earlier, and recovered
+// from, from deciding the class. Output with a Go panic has no
+// trustworthy final error and returns false.
+func githubSetupErrorLine(msg string) (string, bool) {
+	var last string
+	found := false
+	for line := range strings.SplitSeq(msg, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "panic: ") {
+			return "", false
+		}
+		if rest, ok := strings.CutPrefix(line, "Error: "); ok {
+			last, found = rest, true
+		}
+	}
+	return last, found
+}
+
+// markGitHubSetupTransient marks a failed `fullsend github setup` run as
+// an infrastructure failure when the CLI's final error matches one of
+// githubSetupTransientSignatures, and returns every other error —
+// including nil and already-marked errors — unchanged.
+func markGitHubSetupTransient(err error) error {
+	if err == nil || behaviourfail.Is(err) {
+		return err
+	}
+	line, ok := githubSetupErrorLine(err.Error())
+	if !ok {
+		return err
+	}
+	for _, sig := range githubSetupTransientSignatures {
+		if sig.re.MatchString(line) {
+			return behaviourfail.Mark(err, sig.reason)
+		}
+	}
+	return err
+}
+
+// gcpWIFQuotaSignatures are the lowercase substrings that identify a GCP
+// quota or rate-limit rejection as it surfaces in errors from the
+// `inference provision` and `inference status` CLI calls. The CLI runner
+// embeds the command's combined output — cobra's "Error:" line carrying
+// GCP's message — in the error string, so signatures are matched against
+// the whole lowercased error message.
+//
+// The known texts, per the GCP client producers in internal/dispatch/gcf:
+//
+//   - "rate limit" — doWIFRequestWithRetry's IAM-write exhaustion message
+//     ("rate limited (HTTP 429) after N attempts") and GCP rate-limit
+//     bodies ("Rate limit exceeded ...").
+//   - "quota exceeded" — GCP quota bodies ("Quota exceeded for quota
+//     project ... of service 'iam.googleapis.com' ...").
+//   - "status 429" / "returned 429" — IAM calls without the retry wrapper
+//     surface the status directly ("unexpected status 429 deleting WIF
+//     pool: ...", "getting WIF provider returned 429: ...").
+//
+// String matching is acceptable here because it is bounded to the
+// inference provision/status call sites — RunInferenceProvision,
+// ResolveInferenceWIFProvider and WaitInferenceHealthy (design D3 of the
+// behaviour-infra-retry change): a drifted GCP message stops matching and
+// degrades to scenario — no retry — which is the safe direction.
+var gcpWIFQuotaSignatures = []string{
+	"rate limit",
+	"quota exceeded",
+	"status 429",
+	"returned 429",
+}
+
+// isGCPWIFQuotaError reports whether err's message carries one of the
+// known GCP quota/rate-limit signatures from the WIF provisioning path.
+func isGCPWIFQuotaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, sig := range gcpWIFQuotaSignatures {
+		if strings.Contains(msg, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+// markGCPWIFQuota marks err as an infrastructure failure ("setup: gcp wif
+// quota") when its message carries a known GCP WIF quota signature, and
+// returns every other error — including nil — unchanged. An error that
+// already carries a behaviourfail mark passes through unwrapped so marking
+// is never doubled: RunInferenceProvision's and WaitInferenceHealthy's
+// marked errors reach ResolveInferenceWIFProvider again through
+// ProvisionInference. A cancelled or expired context also passes through
+// unmarked: the caller stopped the wait, and an earlier status error
+// quoted in its message is not the cause.
+func markGCPWIFQuota(err error) error {
+	if err == nil || behaviourfail.Is(err) || !isGCPWIFQuotaError(err) {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return behaviourfail.Mark(err, "setup: gcp wif quota")
 }
 
 // ResolveInferenceWIFProvider returns the healthy WIF provider for target.
 // It reads "inference status" first and runs "inference provision" only
 // when the provider is missing or not healthy, so an enrolled repo costs
-// no IAM writes.
+// no IAM writes. A returned error whose message carries a GCP
+// quota/rate-limit signature is marked as an infrastructure failure
+// (markGCPWIFQuota), so the suite retries the run instead of failing the
+// scenario.
 func ResolveInferenceWIFProvider(
 	binary, token, target, project string,
 	runCLI CLIRunnerFunc,
@@ -143,7 +306,8 @@ func ResolveInferenceWIFProvider(
 		return wifProvider, nil
 	}
 	logf("[install] no healthy WIF provider for %s, provisioning: %v", target, err)
-	return ProvisionInference(binary, token, target, project, runCLI, logf)
+	wifProvider, err = ProvisionInference(binary, token, target, project, runCLI, logf)
+	return wifProvider, markGCPWIFQuota(err)
 }
 
 // InferenceStatusWIFProvider runs "inference status" and returns the WIF
@@ -211,7 +375,17 @@ func ProvisionInference(
 
 // RunInferenceProvision runs "inference provision" for target. Callers
 // that serialise provisions (the ensurer's provisionGate) hold their gate
-// only around this call, not around WaitInferenceHealthy.
+// only around this call, not around WaitInferenceHealthy. A returned
+// error whose message carries a GCP quota/rate-limit signature is marked
+// as an infrastructure failure (markGCPWIFQuota), so a quota-rejected
+// provision classifies as infrastructure on every path that runs it: the
+// ensurer calls this directly from its provision gate, bypassing
+// ResolveInferenceWIFProvider. The mark lives here — the single producer
+// of provision-phase CLI errors — rather than at that call site, keeping
+// the signature predicate bounded to this file's inference call sites
+// (design D3) and avoiding an exported marker from common (design D1);
+// it is never doubled, because ResolveInferenceWIFProvider passes marked
+// errors through unwrapped.
 func RunInferenceProvision(
 	binary, token, target, project string,
 	runCLI CLIRunnerFunc,
@@ -220,7 +394,7 @@ func RunInferenceProvision(
 	provisionArgs := []string{"inference", "provision", target, "--project", project}
 	logf("[install] running fullsend %s", strings.Join(provisionArgs, " "))
 	if _, err := runCLI(binary, token, provisionArgs...); err != nil {
-		return fmt.Errorf("inference provision %s: %w", target, err)
+		return markGCPWIFQuota(fmt.Errorf("inference provision %s: %w", target, err))
 	}
 	return nil
 }
@@ -229,7 +403,10 @@ func RunInferenceProvision(
 // provision with a bounded backoff (postProvisionStatusDelays) until the
 // provider is healthy, and returns the WIF provider resource name. It fails
 // with the last status error once the budget is spent, or with ctx's error
-// when ctx is done during a wait.
+// when ctx is done during a wait. A returned error whose message carries a
+// GCP quota/rate-limit signature is marked as an infrastructure failure
+// (markGCPWIFQuota), so the suite retries the run instead of failing the
+// scenario.
 func WaitInferenceHealthy(
 	ctx context.Context,
 	binary, token, target, project string,
@@ -255,11 +432,12 @@ func WaitInferenceHealthy(
 		delay := postProvisionStatusDelays[attempt-1]
 		logf("[install] inference for %s not healthy yet, retrying in %s: %v", target, delay, err)
 		if err := PostProvisionSleep(ctx, delay); err != nil {
-			return "", fmt.Errorf("waiting for inference for %s to become healthy: %w (last status: %v)", target, err, lastErr)
+			waitErr := fmt.Errorf("waiting for inference for %s to become healthy: %w (last status: %v)", target, err, lastErr)
+			return "", markGCPWIFQuota(waitErr)
 		}
 	}
-	return "", fmt.Errorf("inference for %s not healthy after provision (%d status reads, %s of backoff): %w",
-		target, attempts, budget, lastErr)
+	return "", markGCPWIFQuota(fmt.Errorf("inference for %s not healthy after provision (%d status reads, %s of backoff): %w",
+		target, attempts, budget, lastErr))
 }
 
 // ParseInferenceStatusWIFProvider extracts the WIF provider from fullsend

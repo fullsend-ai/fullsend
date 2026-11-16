@@ -46,6 +46,25 @@ func TestClaudeHookDigests_RoundTripAndKeyedBySandbox(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestClaudeHookDigestsFor_RecordsTirithRepoPolicy(t *testing.T) {
+	t.Parallel()
+
+	policy := []byte("approval_rules:\n  - rule_ids: [package_lookup_incomplete]\n")
+	hooks := security.SandboxHookConfigFromHarness(&harness.Harness{}).WithTirithRepoPolicy(policy)
+	hooksJSON, err := security.GenerateHooksConfig(hooks)
+	require.NoError(t, err)
+
+	d := claudeHookDigestsFor(hooks, hooksJSON)
+	assert.Equal(t, codexAssetSHA256(policy), d.HookScripts[security.TirithRepoPolicyFile],
+		"the staged policy must be in the runner-held digest set the launch guard checks")
+	guard := claudeHooksGuard(d, true)
+	assert.Contains(t, guard, security.TirithRepoPolicyFile)
+	assert.Contains(t, guard, codexAssetSHA256(policy))
+
+	none := claudeHookDigestsFor(security.SandboxHookConfigFromHarness(&harness.Harness{}), hooksJSON)
+	assert.NotContains(t, none.HookScripts, security.TirithRepoPolicyFile)
+}
+
 func TestClaudeHookDigestsFor(t *testing.T) {
 	t.Parallel()
 
@@ -342,6 +361,7 @@ func TestClaudeLaunch_RefusesHooksChangedBetweenIterations(t *testing.T) {
 // A .env that exports a preload library must not reach the second guard's
 // hashing tools, nor claude itself.
 func TestClaudeLaunch_ClearsLDVariablesSetByEnv(t *testing.T) {
+	skipUnlessShellUnsetsBracket(t)
 	f := newClaudeGuardFixture(t)
 	require.NoError(t, os.WriteFile(filepath.Join(f.binDir, "claude"),
 		[]byte("#!/bin/sh\necho \"CLAUDE_RAN LD=[$LD_PRELOAD$LD_LIBRARY_PATH$LD_AUDIT]\"\n"), 0o755))
@@ -361,6 +381,7 @@ func TestClaudeLaunch_HooksIgnorePathAndPythonPathFromEnv(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not available")
 	}
+	skipUnlessShellUnsetsBracket(t)
 	f := newClaudeGuardFixture(t)
 
 	evil := t.TempDir()
@@ -397,6 +418,7 @@ func TestClaudeLaunch_HooksIgnorePathAndPythonPathFromEnv(t *testing.T) {
 }
 
 func TestClaudeLaunch_ClearsPythonVariablesSetByEnv(t *testing.T) {
+	skipUnlessShellUnsetsBracket(t)
 	f := newClaudeGuardFixture(t)
 	require.NoError(t, os.WriteFile(filepath.Join(f.binDir, "claude"),
 		[]byte("#!/bin/sh\necho \"CLAUDE_RAN PY=[$PYTHONPATH$PYTHONHOME$PYTHONSTARTUP$PYTHONUSERBASE]\"\n"), 0o755))
@@ -474,6 +496,7 @@ func TestClaudeLaunch_ClearsSettingsVariablesSetByEnv(t *testing.T) {
 // place of the real CLI and could rewrite hooks.json before --settings loads
 // it. The launch goes through the binary pinned before .env instead.
 func TestClaudeLaunch_EnvCannotReplaceClaude(t *testing.T) {
+	skipUnlessShellUnsetsBracket(t)
 	cases := map[string]func(t *testing.T, f *claudeGuardFixture, hooksJSON string) string{
 		"shell function": func(t *testing.T, f *claudeGuardFixture, hooksJSON string) string {
 			return "claude() { printf '{}' > '" + hooksJSON + "'; echo FAKE_CLAUDE; }\n"
@@ -509,6 +532,7 @@ func TestClaudeLaunch_HookRunDoesNotTripTheGuard(t *testing.T) {
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("python3 not available")
 	}
+	skipUnlessShellUnsetsBracket(t)
 	f := newClaudeGuardFixture(t)
 	f.assertRuns(t)
 

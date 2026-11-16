@@ -26,6 +26,7 @@ for filter in "${filters[@]}"; do
     .github/scripts/install-openshell.sh \
     .github/scripts/openshell-version.sh \
     e2e/behaviour/features/playback.feature \
+    e2e/org-pool/setup-org.sh \
     internal/security/hooks/check.sh \
     internal/scaffold/fullsend-repo/template.yaml \
     internal/dispatch/gcf/mintsrc/go.mod \
@@ -34,6 +35,7 @@ for filter in "${filters[@]}"; do
     .github/workflows/reusable-prioritize.yml \
     .github/actions/check-e2e-authorization/action.yml \
     scripts/check-e2e-authorization.sh \
+    scripts/run-with-infra-retry.sh \
     Makefile; do
     if ! printf '%s\n' "$path" | grep -qE "$filter"; then
       printf 'Expected live-test relevance for %s\n' "$path" >&2

@@ -255,3 +255,13 @@ func TestFindPlatformTelemetry_NewFormatPrefersRunDirOverPlantedRoot(t *testing.
 	require.NoError(t, err)
 	require.Equal(t, []string{platform}, got)
 }
+
+func TestIsHostRunDir(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"agent-review-3311-1", "fs-cod-0a1b2c"} {
+		assert.True(t, IsHostRunDir(name), name)
+	}
+	for _, name := range []string{"iteration-1", "security", "output", "fs-code-0a1b", "agent-review"} {
+		assert.False(t, IsHostRunDir(name), name)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -283,4 +284,16 @@ func NewFakeJiraClientWithFake(baseURL string) (*JiraClient, *FakeJiraClient, er
 		return nil, nil, err
 	}
 	return tc, fc, nil
+}
+
+// AddIssueLabel mirrors Jira's additive label operation.
+func (f *FakeJiraClient) AddIssueLabel(ctx context.Context, issueIDOrKey, label string) error {
+	issue, err := f.GetIssue(ctx, issueIDOrKey)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(issue.Fields.Labels, label) {
+		issue.Fields.Labels = append(issue.Fields.Labels, label)
+	}
+	return nil
 }

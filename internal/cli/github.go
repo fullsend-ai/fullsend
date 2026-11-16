@@ -14,7 +14,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/preset"
@@ -147,7 +146,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 				return err
 			}
 
-			client := gh.New(token)
+			client := newGitHubLiveClient(token, "")
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
 
@@ -853,8 +852,9 @@ func fetchAndValidatePreset(ctx context.Context, cfg githubSetupConfig, printer 
 }
 
 // validatePresetLayer parses the --config preset as a per-repo config
-// layer, runs its structural Validate, and checks its mint URL and
-// inference WIF provider formats. data is the raw preset YAML.
+// layer, refuses trace_context, runs its structural Validate, and checks
+// its mint URL and inference WIF provider formats. data is the raw preset
+// YAML.
 func validatePresetLayer(data []byte) error {
 	if !config.IsPerRepoYAML(data) {
 		return fmt.Errorf("preset is not a per-repo configuration")
@@ -862,6 +862,13 @@ func validatePresetLayer(data []byte) error {
 	w, err := config.ParsePerRepoConfigWriter(data)
 	if err != nil {
 		return fmt.Errorf("parsing preset: %w", err)
+	}
+	// The preset becomes config.base.yaml, which never supplies
+	// trace_context (ADR 0154); repos install refuses it there too. This
+	// check runs before Validate, so it also refuses a block that parses
+	// but has invalid fields.
+	if w.TraceContext() != nil {
+		return fmt.Errorf("invalid preset: trace_context belongs to one repository; set it only in that repository's repos.yaml entry")
 	}
 	if err := w.Validate(); err != nil {
 		return fmt.Errorf("invalid preset: %w", err)
@@ -1162,7 +1169,7 @@ Valid keys:
 				return err
 			}
 
-			client := gh.New(token)
+			client := newGitHubLiveClient(token, "")
 			printer := ui.New(os.Stdout)
 
 			return runGitHubSet(cmd.Context(), client, printer, target, key, value)

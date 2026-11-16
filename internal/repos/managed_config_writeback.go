@@ -483,7 +483,8 @@ func installDefaultsPossible(resolved ResolvedConfig) bool {
 }
 
 // ManifestReadOnly reports whether the manifest at path cannot be written:
-// an HTTP(S) source or a local file without write permission.
+// an HTTP(S) source, a pipe, FIFO or device (as -f <(cmd) gives), or a
+// local file without write permission.
 func ManifestReadOnly(m *Manifest, path string) bool {
 	lower := strings.ToLower(path)
 	if m.sourceRemote || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://") {
@@ -495,8 +496,13 @@ func ManifestReadOnly(m *Manifest, path string) bool {
 	// A local manifest without write permission cannot take the edit
 	// either; detect it before any write is attempted.
 	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil || info.IsDir() {
 		return false
+	}
+	// A pipe, FIFO or device is a stream: it can be read only once and
+	// cannot take a rewrite.
+	if !info.Mode().IsRegular() {
+		return true
 	}
 	if info.Mode().Perm()&0o222 == 0 {
 		return true

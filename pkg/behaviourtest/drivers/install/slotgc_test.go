@@ -282,8 +282,14 @@ func TestSlotGC_PolicyConstants(t *testing.T) {
 
 // TestSlotReclaimAgeCoversJobLimits ties slotJobTimeLimit to the actual
 // execution limits of the suites that hold slot leases: the Makefile
-// targets' go test -timeout and the CI jobs' timeout-minutes. Raising either
-// past slotJobTimeLimit would let GC reclaim a live slot.
+// targets' go test -timeout (the per-attempt bound that panics every
+// claiming process) and the CI jobs' timeout-minutes. The job budget may
+// reach two attempts because scripts/run-with-infra-retry.sh re-runs an
+// infrastructure-classified failed suite once, sequentially; each attempt
+// keeps its own -timeout, so a slot repository's life stays bounded by
+// slotJobTimeLimit regardless of the larger job budget. Raising the
+// per-attempt -timeout past slotJobTimeLimit, or a job budget past the two
+// attempts it may run, would let GC reclaim a live slot.
 func TestSlotReclaimAgeCoversJobLimits(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
 
@@ -323,7 +329,11 @@ func TestSlotReclaimAgeCoversJobLimits(t *testing.T) {
 	for _, j := range []string{"behaviour", "playback"} {
 		limit, ok := limits[j]
 		require.True(t, ok, "e2e.yml job %q must set timeout-minutes", j)
-		assert.LessOrEqual(t, limit, slotJobTimeLimit, "e2e.yml job %q timeout-minutes", j)
+		// Two attempts, not one: the infra-retry wrapper runs a second
+		// sequential go test process, each bounded by its own -timeout
+		// (asserted above against the Makefile), so the job budget may
+		// cover two attempts but no more.
+		assert.LessOrEqual(t, limit, 2*slotJobTimeLimit, "e2e.yml job %q timeout-minutes", j)
 	}
 }
 

@@ -265,6 +265,66 @@ func (c *LiveClient) BaseURL() string {
 	return c.baseURL
 }
 
+// WithSameOriginRedirects makes the client follow an HTTP redirect only to
+// the same scheme, host (compared lowercased) and port as the request that
+// was redirected, as GitHub does with same-host 301s for renamed
+// repositories, and refuse any other redirect — another host, a
+// subdomain, a different port or an https-to-http downgrade — with an
+// error. Go's default policy follows those and keeps the Authorization
+// header on same-host and subdomain hops, so a client sending its token
+// to a host other than github.com uses this. The client's transport and
+// timeout are kept.
+func (c *LiveClient) WithSameOriginRedirects() *LiveClient {
+	hc := *c.http
+	hc.CheckRedirect = sameOriginRedirect
+	c.http = &hc
+	return c
+}
+
+// maxSameOriginRedirects matches the hop limit of Go's default redirect
+// policy.
+const maxSameOriginRedirects = 10
+
+// sameOriginRedirect is the http.Client.CheckRedirect of
+// WithSameOriginRedirects.
+func sameOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxSameOriginRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxSameOriginRedirects)
+	}
+	from := via[len(via)-1].URL
+	if !sameOrigin(from, req.URL) {
+		return fmt.Errorf("refusing redirect from %q to %q: not the same origin", originOf(from), originOf(req.URL))
+	}
+	return nil
+}
+
+// sameOrigin reports whether a and b have the same scheme, lowercased
+// host and port, with the scheme's default port filled in.
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	}
+	return ""
+}
+
+// originOf returns scheme://host of u, without path, query or userinfo,
+// for error messages.
+func originOf(u *url.URL) string {
+	return strings.ToLower(u.Scheme) + "://" + u.Host
+}
+
 // WithAfterFunc sets a custom delay function (for testing without real sleeps).
 func (c *LiveClient) WithAfterFunc(f func(time.Duration) <-chan time.Time) *LiveClient {
 	c.afterFunc = f
@@ -303,6 +363,11 @@ type APIErrorDetail struct {
 	Code     string `json:"code"`
 	Message  string `json:"message"`
 }
+
+// ErrInvitationPending reports that AddCollaborator's PUT answered
+// 201: GitHub sent an invitation, and access starts only once the
+// invitee accepts it. Match it with errors.Is.
+var ErrInvitationPending = errors.New("invitation pending")
 
 func (e *APIError) Error() string {
 	s := fmt.Sprintf("github api: %d %s", e.StatusCode, e.Message)
@@ -376,10 +441,41 @@ func IsRateLimitError(err error) bool {
 		return true
 	}
 	if apiErr.StatusCode == http.StatusForbidden {
-		lower := strings.ToLower(apiErr.Message)
-		return strings.Contains(lower, "rate limit")
+		return isRateLimitMessage(apiErr.Message)
 	}
 	return false
+}
+
+// graphQLServerErrorPrefix starts the message GitHub sends, with an
+// empty type, when a GraphQL query fails on its side ("Something went
+// wrong while executing your query on <time>. Please include `<id>`
+// when reporting this issue.").
+const graphQLServerErrorPrefix = "Something went wrong while executing your query"
+
+// IsServerError reports whether err itself is a GitHub server error: an
+// *APIError with status 500–504 and no context cause (the condition
+// APIError.IsTransient uses for those statuses), or a GraphQL error
+// with an empty type and GitHub's generic server-error message. It does
+// not unwrap err, so callers that walk an error tree node by node keep
+// each errors.Join branch independent.
+func IsServerError(err error) bool {
+	switch e := err.(type) {
+	case *APIError:
+		return e != nil && e.cause == nil && e.StatusCode >= 500 && e.StatusCode <= 504
+	case *graphQLError:
+		return e != nil && e.Type == "" && strings.HasPrefix(strings.TrimSpace(e.Message), graphQLServerErrorPrefix)
+	}
+	return false
+}
+
+// isRateLimitMessage reports whether a 403 response body or error message
+// names a GitHub rate limit. Primary limits say "API rate limit exceeded"
+// and secondary limits usually say "secondary rate limit", but the
+// content-creation throttle on some endpoints (fork creation, for one)
+// says only "was submitted too quickly", with no Retry-After header.
+func isRateLimitMessage(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "rate limit") || strings.Contains(lower, "submitted too quickly")
 }
 
 // IsPATForbiddenError reports whether err is a GitHub 403 indicating
@@ -396,6 +492,19 @@ func IsPATForbiddenError(err error) bool {
 }
 
 const maxRetries = 5
+
+// do() ends a retryable failure it stops on with a message that starts
+// with one of these prefixes: RetryGiveUpPrefix when its retries are
+// used up, and ServerErrorNotRetriedPrefix when it does not resend a
+// 5xx because the request may already have been applied
+// (forge.WithoutAmbiguousRetry). The behaviour harness matches this
+// wording in `fullsend github setup` output, where no typed APIError
+// survives the subprocess boundary, so reword these only together with
+// the tests that pin them.
+const (
+	RetryGiveUpPrefix           = "retryable error after "
+	ServerErrorNotRetriedPrefix = "server error on "
+)
 
 func ambiguousRetryDisabled(ctx context.Context) bool {
 	return forge.AmbiguousRetryDisabled(ctx)
@@ -555,7 +664,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		if resp.StatusCode >= 500 && ambiguousRetryDisabled(ctx) {
 			return nil, &APIError{
 				StatusCode: resp.StatusCode,
-				Message:    fmt.Sprintf("server error on %s %s (not retried: the request may have been applied)", method, path),
+				Message:    fmt.Sprintf(ServerErrorNotRetriedPrefix+"%s %s (not retried: the request may have been applied)", method, path),
 			}
 		}
 
@@ -577,7 +686,7 @@ func (c *LiveClient) doRequest(ctx context.Context, method, path string, content
 		}
 
 		if attempt == maxRetries-1 {
-			msg := fmt.Sprintf("retryable error after %d attempts on %s %s (last delay: %s", maxRetries, method, path, delay)
+			msg := fmt.Sprintf(RetryGiveUpPrefix+"%d attempts on %s %s (last delay: %s", maxRetries, method, path, delay)
 			if retryAfter != "" {
 				msg += fmt.Sprintf(", Retry-After: %s", retryAfter)
 			}
@@ -680,7 +789,7 @@ func primaryResetWait(resp *http.Response, now time.Time) (time.Duration, bool) 
 // isRetryable returns true for responses that should trigger a retry.
 // GitHub uses 429 for primary rate limits and 403 for both primary and
 // secondary rate limits. Rate-limit 403s may include a Retry-After header,
-// or may only be identifiable by the response body containing "rate limit".
+// or may only be identifiable by the response body (see isRateLimitMessage).
 // Server errors (500, 502, 503, 504) are also retried as transient failures.
 func isRetryable(resp *http.Response) (bool, []byte) {
 	if resp.StatusCode == http.StatusTooManyRequests {
@@ -699,12 +808,13 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 		}
 		// Check body for rate limit indicators without Retry-After header.
 		// GitHub returns primary rate limits as 403 with "API rate limit
-		// exceeded" and secondary rate limits with "secondary rate limit".
+		// exceeded" and secondary rate limits with "secondary rate limit"
+		// or, for content creation such as forks, "was submitted too quickly".
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<16)) // 64KB max
 		if readErr != nil {
 			return false, nil
 		}
-		if strings.Contains(strings.ToLower(string(data)), "rate limit") {
+		if isRateLimitMessage(string(data)) {
 			return true, nil
 		}
 		// Not a rate limit — return the body so the caller can still use it.
@@ -810,8 +920,8 @@ func checkStatus(resp *http.Response, acceptable ...int) error {
 }
 
 // get performs a GET request and checks for success.
-func (c *LiveClient) get(ctx context.Context, path string) (*http.Response, error) {
-	resp, err := c.do(ctx, http.MethodGet, path, nil)
+func (c *LiveClient) get(ctx context.Context, path string, headers ...requestHeader) (*http.Response, error) {
+	resp, err := c.do(ctx, http.MethodGet, path, nil, headers...)
 	if err != nil {
 		return nil, err
 	}
@@ -1606,14 +1716,15 @@ func (c *LiveClient) commitFilesWithRetry(ctx context.Context, owner, repo, bran
 
 // retryCommitOp runs op up to three times while it fails with a retriable
 // commit error (see isRetriableCommitError), with a jittered delay between
-// attempts.
+// attempts that doubles on each retry (100-500ms, then 200-1000ms) so
+// replication lag has longer to settle before the last attempt.
 func retryCommitOp[T any](ctx context.Context, c *LiveClient, label string, op func() (T, error)) (T, error) {
 	const maxAttempts = 3
 	var result T
 	var err error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		if attempt > 0 {
-			jitter := time.Duration(100+randutil.IntN(400)) * time.Millisecond
+			jitter := time.Duration(100+randutil.IntN(400)) * time.Millisecond << (attempt - 1)
 			select {
 			case <-ctx.Done():
 				var zero T
@@ -1808,12 +1919,13 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 	newTreeResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/trees", owner, repo), treePayload)
 	if err != nil {
-		// A 422 "Tree SHA does not exist" means the base_tree SHA went
-		// stale between when we read it and now — same class of race as
+		// A transient 422 (see isTransientTreeError) — a base_tree SHA
+		// that went stale, a just-created blob not yet visible, or a
+		// GitHub-side timeout — is the same class of race as a
 		// non-fast-forward on the ref update. Wrap it so
 		// commitFilesWithRetry retries the entire operation from scratch.
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isTransientTreeError(apiErr) {
 			return false, fmt.Errorf("create tree: %w: %w", forge.ErrNonFastForward, err)
 		}
 		return false, fmt.Errorf("create tree: %w", wrapForbidden(err))
@@ -1833,9 +1945,9 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 	newCommitResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo), commitPayload)
 	if err != nil {
-		// Same stale-SHA race as the create-tree step above.
+		// Same transient 422s as the create-tree step above.
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isTransientTreeError(apiErr) {
 			return false, fmt.Errorf("create commit: %w: %w", forge.ErrNonFastForward, err)
 		}
 		return false, fmt.Errorf("create commit: %w", wrapForbidden(err))
@@ -2015,6 +2127,23 @@ func isNonFastForwardError(apiErr *APIError) bool {
 // update and should be retried from scratch.
 func isStaleTreeSHAError(apiErr *APIError) bool {
 	return strings.Contains(lowerAPIErrorText(apiErr), "tree sha does not exist")
+}
+
+// isTransientTreeError checks whether a 422 APIError from the create-tree
+// or create-commit step is transient and worth retrying from scratch:
+//   - a stale tree SHA (see isStaleTreeSHAError);
+//   - "tree.sha <sha> is not a valid blob": a blob created moments earlier
+//     is not yet visible to the tree endpoint (replication lag);
+//   - "Sorry, your request timed out": a GitHub-side timeout.
+//
+// Other 422s (validation failures) are not transient.
+func isTransientTreeError(apiErr *APIError) bool {
+	if isStaleTreeSHAError(apiErr) {
+		return true
+	}
+	msg := lowerAPIErrorText(apiErr)
+	return strings.Contains(msg, "is not a valid blob") ||
+		strings.Contains(msg, "request timed out")
 }
 
 func isAlreadyExistsError(apiErr *APIError) bool {
@@ -2215,6 +2344,109 @@ func (c *LiveClient) GetFileContentAtRef(ctx context.Context, owner, repo, path,
 	}
 	return data, nil
 }
+
+// GetRawFileContentAtRef retrieves the content of a file at a specific
+// ref like GetFileContentAtRef, but requests the raw media type and
+// rejects paths that are not files. It is used where a file must be read
+// through a GitHub host's contents API in full, for example the
+// agents-repo fallback on a GitHub host other than github.com.
+//
+// The file is requested with the raw media type, so files the base64
+// JSON representation cannot carry (GitHub serves those as content: "",
+// encoding: "none" — every file over 1 MiB) are still returned.
+//
+// On github.com a raw file is never served as application/json, so the
+// JSON handling below is defensive, for servers that ignore the raw media
+// type and answer with the JSON representation instead. Such a body is
+// read as that representation only when it unmistakably is one: a
+// directory listing (a non-empty array of entries, each with type, path
+// and sha) or a symlink or submodule entry errors, as it did before the
+// raw media type; a type "file" object with an encoding of base64 or none
+// and a content key is decoded as the contents envelope. Any other JSON
+// body — a raw JSON file such as a schema, a manifest or ["bug"] — is
+// returned as the file's own bytes, never decoded into empty content.
+func (c *LiveClient) GetRawFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/contents/%s?ref=%s",
+		url.PathEscape(owner), url.PathEscape(repo), escapePathSegments(path), url.QueryEscape(ref)),
+		withHeader("Accept", "application/vnd.github.raw"))
+	if err != nil {
+		return nil, fmt.Errorf("get file content at ref: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := readLimitedBytes(resp.Body, maxFileContentBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read file content at ref: %w", err)
+	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "json") {
+		return body, nil
+	}
+
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '[' {
+		// A directory listing is a non-empty array of entries, each an
+		// object with type, path and sha. Any other array is a raw JSON
+		// file.
+		var entries []contentsJSONEntry
+		if err := json.Unmarshal(trimmed, &entries); err == nil && len(entries) > 0 &&
+			slices.IndexFunc(entries, func(e contentsJSONEntry) bool { return !e.isEntry() }) < 0 {
+			return nil, fmt.Errorf("file %q at %q: the path is a directory, not a file", path, ref)
+		}
+		return body, nil
+	}
+
+	var file contentsJSONEntry
+	if err := json.Unmarshal(body, &file); err != nil || file.Type == nil {
+		// Not a contents entry: a raw JSON file served with its own type.
+		return body, nil
+	}
+	// A bare "type" key is common in ordinary JSON files (JSON schemas say
+	// "type":"object"), so a non-file entry also needs its path and sha.
+	if file.isEntry() {
+		switch *file.Type {
+		case "dir", "symlink", "submodule":
+			return nil, fmt.Errorf("file %q at %q: the path is a %s, not a file", path, ref, *file.Type)
+		}
+	}
+	// The envelope is a type "file" object with its encoding ("base64", or
+	// "none" over 1 MiB) and a content key. Anything else is the file's
+	// own bytes, served as JSON because the raw media type was requested.
+	if *file.Type != "file" || file.Encoding == nil || file.Content == nil ||
+		(*file.Encoding != "base64" && *file.Encoding != "none") {
+		return body, nil
+	}
+	if *file.Encoding != "base64" || (*file.Content == "" && file.Size > 0) {
+		return nil, fmt.Errorf("file %s at %s: the contents response carries no base64 content (encoding %q, size %d); files over 1 MiB need the raw media type", path, ref, *file.Encoding, file.Size)
+	}
+
+	cleaned := strings.ReplaceAll(strings.ReplaceAll(*file.Content, "\n", ""), "\r", "")
+	data, err := base64.StdEncoding.DecodeString(cleaned)
+	if err != nil {
+		return nil, fmt.Errorf("decode base64 content: %w", err)
+	}
+	return data, nil
+}
+
+// contentsJSONEntry is one entry of the contents API's JSON
+// representation: a file, directory, symlink or submodule.
+type contentsJSONEntry struct {
+	Type     *string `json:"type"`
+	SHA      *string `json:"sha"`
+	Path     *string `json:"path"`
+	Content  *string `json:"content"`
+	Encoding *string `json:"encoding"`
+	Size     int64   `json:"size"`
+}
+
+// isEntry reports whether e carries the type, path and sha keys every
+// contents entry has.
+func (e contentsJSONEntry) isEntry() bool {
+	return e.Type != nil && e.Path != nil && e.SHA != nil
+}
+
+// maxFileContentBytes bounds a raw-media file read, matching the 100 MiB
+// ceiling GitHub documents for raw contents requests; callers apply their
+// own policy bounds on top.
+const maxFileContentBytes = 100 << 20
 
 const (
 	maxDirDepth    = 10
@@ -3439,6 +3671,40 @@ func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, num
 	return nil
 }
 
+// newLabelColor is the color EnsureLabel gives a label it creates, the
+// same default GitHub uses for labels created by applying them to an issue.
+const newLabelColor = "ededed"
+
+// EnsureLabel creates a repository label. GitHub answers 422 with an
+// already_exists validation error when the label exists; that is success.
+func (c *LiveClient) EnsureLabel(ctx context.Context, owner, repo, name string) error {
+	path := fmt.Sprintf("/repos/%s/%s/labels", url.PathEscape(owner), url.PathEscape(repo))
+	resp, err := c.post(ctx, path, map[string]string{"name": name, "color": newLabelColor})
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && isAlreadyExistsValidationError(apiErr) {
+			return nil
+		}
+		return fmt.Errorf("create label %q: %w", name, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// isAlreadyExistsValidationError reports whether err is a 422 whose
+// validation errors include an already_exists entry.
+func isAlreadyExistsValidationError(err *APIError) bool {
+	if err.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	for _, detail := range err.Errors {
+		if detail.Code == "already_exists" {
+			return true
+		}
+	}
+	return false
+}
+
 // CloseIssue closes an issue by number.
 func (c *LiveClient) CloseIssue(ctx context.Context, owner, repo string, number int) error {
 	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number), map[string]string{"state": "closed"})
@@ -3468,21 +3734,25 @@ func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number in
 		Labels  []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
-		State       string `json:"state"`
-		StateReason string `json:"state_reason"`
+		State       string    `json:"state"`
+		StateReason string    `json:"state_reason"`
+		CreatedAt   string    `json:"created_at"`
+		PullRequest *struct{} `json:"pull_request"`
 	}
 	if err := decodeJSON(resp, &result); err != nil {
 		return nil, fmt.Errorf("decode issue #%d: %w", number, err)
 	}
 	return &forge.Issue{
-		ID:          result.ID,
-		Number:      result.Number,
-		Title:       result.Title,
-		Body:        result.Body,
-		URL:         result.HTMLURL,
-		Labels:      labelNames(result.Labels),
-		State:       result.State,
-		StateReason: result.StateReason,
+		ID:            result.ID,
+		Number:        result.Number,
+		Title:         result.Title,
+		Body:          result.Body,
+		URL:           result.HTMLURL,
+		Labels:        labelNames(result.Labels),
+		State:         result.State,
+		StateReason:   result.StateReason,
+		CreatedAt:     result.CreatedAt,
+		IsPullRequest: result.PullRequest != nil,
 	}, nil
 }
 
@@ -3983,6 +4253,83 @@ func (c *LiveClient) ListPullRequestFiles(ctx context.Context, owner, repo strin
 	return files, nil
 }
 
+// pullRequestFileModesResult holds blob modes keyed by path for the old and
+// new trees used in the review-deduplication identity.
+type pullRequestFileModesResult struct {
+	old map[string]string
+	new map[string]string
+}
+
+// pullRequestFileModes returns Git tree modes keyed by path. GitHub's PR file
+// endpoint omits mode changes, so the base and head trees are the source of
+// truth for the review-deduplication identity.
+func (c *LiveClient) pullRequestFileModes(ctx context.Context, owner, repo string, number int) (pullRequestFileModesResult, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))
+	if err != nil {
+		return pullRequestFileModesResult{}, err
+	}
+	var pr struct {
+		Base struct {
+			SHA string `json:"sha"`
+		} `json:"base"`
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := decodeJSON(resp, &pr); err != nil {
+		return pullRequestFileModesResult{}, err
+	}
+	if pr.Base.SHA == "" || pr.Head.SHA == "" {
+		return pullRequestFileModesResult{}, fmt.Errorf("pull request is missing base or head SHA")
+	}
+	compareResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/compare/%s...%s", owner, repo, pr.Base.SHA, pr.Head.SHA))
+	if err != nil {
+		return pullRequestFileModesResult{}, fmt.Errorf("finding pull request merge base: %w", err)
+	}
+	var comparison struct {
+		MergeBaseCommit struct {
+			SHA string `json:"sha"`
+		} `json:"merge_base_commit"`
+	}
+	if err := decodeJSON(compareResp, &comparison); err != nil {
+		return pullRequestFileModesResult{}, fmt.Errorf("decoding pull request merge base: %w", err)
+	}
+	if comparison.MergeBaseCommit.SHA == "" {
+		return pullRequestFileModesResult{}, fmt.Errorf("compare response is missing merge base SHA")
+	}
+	result := pullRequestFileModesResult{old: make(map[string]string), new: make(map[string]string)}
+	for i, sha := range []string{comparison.MergeBaseCommit.SHA, pr.Head.SHA} {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, sha))
+		if err != nil {
+			return pullRequestFileModesResult{}, err
+		}
+		var tree struct {
+			Truncated bool `json:"truncated"`
+			Tree      []struct {
+				Path string `json:"path"`
+				Mode string `json:"mode"`
+				Type string `json:"type"`
+			} `json:"tree"`
+		}
+		if err := decodeJSON(resp, &tree); err != nil {
+			return pullRequestFileModesResult{}, err
+		}
+		if tree.Truncated {
+			return pullRequestFileModesResult{}, fmt.Errorf("git tree is truncated")
+		}
+		for _, entry := range tree.Tree {
+			if entry.Type == "blob" && entry.Path != "" && entry.Mode != "" {
+				if i == 0 {
+					result.old[entry.Path] = entry.Mode
+				} else {
+					result.new[entry.Path] = entry.Mode
+				}
+			}
+		}
+	}
+	return result, nil
+}
+
 // ListPullRequestCommits returns the commit SHAs on a pull request,
 // oldest first (the order GitHub's API reports them in). GitHub caps PR
 // commit lists at 250 commits regardless of pagination.
@@ -4020,21 +4367,57 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 			return nil, fmt.Errorf("list pull request file diffs page %d: %w", page, err)
 		}
 		var raw []struct {
-			Filename string `json:"filename"`
-			Patch    string `json:"patch"`
+			Filename         string `json:"filename"`
+			PreviousFilename string `json:"previous_filename"`
+			Status           string `json:"status"`
+			Patch            string `json:"patch"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decoding pull request file diffs page %d: %w", page, err)
 		}
 		for _, f := range raw {
 			files = append(files, forge.PullRequestFileDiff{
-				Path:  f.Filename,
-				Patch: f.Patch,
+				Path:         f.Filename,
+				PreviousPath: f.PreviousFilename,
+				Status:       f.Status,
+				Patch:        f.Patch,
 			})
+		}
+		// GitHub may cap the files endpoint at 3,000 entries. Return the
+		// available entries with a typed error so inline-comment validation
+		// can still use their hunks while hash consumers fail open.
+		if len(files) >= 3000 {
+			return files, fmt.Errorf("%w at 3000 files", forge.ErrDiffListingTruncated)
 		}
 		if len(raw) < 100 {
 			break
 		}
+	}
+	// The pull-files endpoint does not expose Git tree modes. Enrich the
+	// listing from the base and head trees when possible; if that metadata is
+	// unavailable, hash consumers fail open rather than suppressing a review.
+	if modes, err := c.pullRequestFileModes(ctx, owner, repo, number); err == nil {
+		for i := range files {
+			oldPath := files[i].PreviousPath
+			if oldPath == "" && files[i].Status != "added" {
+				oldPath = files[i].Path
+			}
+			newPath := files[i].Path
+			if files[i].Status == "removed" {
+				newPath = ""
+			}
+			files[i].OldMode = modes.old[oldPath]
+			files[i].NewMode = modes.new[newPath]
+			files[i].ModesVerified = true
+			if files[i].Status != "added" && files[i].OldMode == "" {
+				files[i].ModesVerified = false
+			}
+			if files[i].Status != "removed" && files[i].NewMode == "" {
+				files[i].ModesVerified = false
+			}
+		}
+	} else {
+		log.Printf("could not enrich pull request file diffs with verified modes for %s/%s#%d: %v", owner, repo, number, err)
 	}
 	return files, nil
 }
@@ -4560,6 +4943,7 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 			Conclusion string `json:"conclusion"`
 			HTMLURL    string `json:"html_url"`
 			CreatedAt  string `json:"created_at"`
+			Path       string `json:"path"`
 		} `json:"workflow_runs"`
 	}
 	if err := c.getCachedJSON(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage), &result); err != nil {
@@ -4576,6 +4960,7 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 			Conclusion: r.Conclusion,
 			HTMLURL:    r.HTMLURL,
 			CreatedAt:  r.CreatedAt,
+			Path:       r.Path,
 		}
 	}
 	return runs, nil
@@ -4795,22 +5180,22 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 		// Download logs for each job (returns plain text, 302 redirect to download URL).
 		jobResp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/actions/jobs/%d/logs", owner, repo, job.ID), nil)
 		if err != nil {
-			fmt.Fprintf(&buf, "[failed to fetch logs: %v]\n\n", err)
+			fmt.Fprintf(&buf, "%s %v]\n\n", forge.LogNoteFailedToFetchLogs, err)
 			continue
 		}
 		if jobResp.StatusCode < 200 || jobResp.StatusCode >= 300 {
 			jobResp.Body.Close()
-			fmt.Fprintf(&buf, "[logs unavailable: HTTP %d]\n\n", jobResp.StatusCode)
+			fmt.Fprintf(&buf, "%s HTTP %d]\n\n", forge.LogNoteLogsUnavailable, jobResp.StatusCode)
 			continue
 		}
 		logData, readErr := io.ReadAll(io.LimitReader(jobResp.Body, maxJobLogBytes+1))
 		jobResp.Body.Close()
 		if readErr != nil {
-			fmt.Fprintf(&buf, "[failed to read logs: %v]\n\n", readErr)
+			fmt.Fprintf(&buf, "%s %v]\n\n", forge.LogNoteFailedToReadLogs, readErr)
 			continue
 		}
 		if len(logData) > maxJobLogBytes {
-			fmt.Fprintf(&buf, "%s\n[log truncated: job %d exceeds %d bytes]\n", string(logData[:maxJobLogBytes]), job.ID, maxJobLogBytes)
+			fmt.Fprintf(&buf, "%s\n%s job %d exceeds %d bytes]\n", string(logData[:maxJobLogBytes]), forge.LogNoteLogTruncated, job.ID, maxJobLogBytes)
 			continue
 		}
 		fmt.Fprintf(&buf, "%s\n", string(logData))
@@ -4818,7 +5203,7 @@ func (c *LiveClient) GetWorkflowRunLogs(ctx context.Context, owner, repo string,
 	// The jobs listing is a single page; say so when jobs were left out so
 	// callers do not mistake the snapshot for a complete one.
 	if jobsResult.TotalCount > len(jobsResult.Jobs) {
-		fmt.Fprintf(&buf, "[job list truncated: %d of %d jobs included]\n", len(jobsResult.Jobs), jobsResult.TotalCount)
+		fmt.Fprintf(&buf, "%s %d of %d jobs included]\n", forge.LogNoteJobListTruncated, len(jobsResult.Jobs), jobsResult.TotalCount)
 	}
 	return buf.String(), nil
 }
@@ -5041,7 +5426,7 @@ func (c *LiveClient) AddCollaborator(ctx context.Context, owner, repo, username,
 	resp.Body.Close()
 	// 201 means GitHub sent an invitation; access starts only once it is accepted.
 	if resp.StatusCode == http.StatusCreated {
-		return fmt.Errorf("add collaborator %s: invitation pending, access not granted", username)
+		return fmt.Errorf("add collaborator %s: %w, access not granted", username, ErrInvitationPending)
 	}
 	return nil
 }

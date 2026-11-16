@@ -10,7 +10,7 @@ Code review specialist that evaluates pull requests for correctness, security, i
 
 ## How the agent works
 
-The review agent is triggered when a PR is opened or updated. It follows the same pre-script / sandbox / post-script pipeline as the other agents.
+The review agent is triggered when a PR is opened or updated, subject to the synchronize diff guard described below. It follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
 1. **Pre-script** validates inputs and fetches PR metadata.
 2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator triages the change, then dispatches specialized sub-agents in parallel — each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
@@ -35,8 +35,12 @@ Requires triage-level repository permission or higher (triage, write,
 maintain, or admin). Mutation stages such as `/fs-fix` still require
 write or higher.
 
-The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
-synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
+The `/fs-review` command does not accept arguments and always forces a review. The review agent also runs automatically when a PR is opened,
+when its effective diff changes on a synchronize event, or when it is moved out of draft by a user with triage-level repository permission or higher.
+For GitHub `pull_request_target` synchronize events, the review is skipped when the complete effective diff matches the previous app-verified approved review. The guard posts or updates one PR-visible `fullsend:review-skip` status comment linking the previous approved review. GitLab diff metadata uses the same normalized model, but the GitLab poller does not consume this marker yet and continues to review synchronized merge requests.
+The deduplication check runs before final Bash/CEL stage selection, so CEL-selected review routes participate as well. File modes are part of the compared effective diff identity, so executable-bit changes cannot be hidden by an otherwise identical textual patch.
+The guard fails open and runs the review when there is no prior diff hash, the prior review cannot be verified, a required hash/head or base/head tree-mode API call fails,
+the file listing is incomplete or truncated, or any file has no representable patch (for example, a binary or rename-only change).
 If a built-in GitHub review run is cancelled while its commit is still the
 pull request HEAD, its GitHub status comment identifies that commit and directs
 maintainers to review or retry with `/fs-review` before merging. If a newer

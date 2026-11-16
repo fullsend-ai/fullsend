@@ -1113,3 +1113,20 @@ func TestJiraClient_CreateIssue_UnexpectedKey(t *testing.T) {
 		}
 	}
 }
+
+func TestJiraClient_AddIssueLabel(t *testing.T) {
+	fake := &FakeJiraClient{Issues: map[string]*jira.Issue{"PROJ-7": {Fields: jira.IssueFields{Labels: []string{"existing"}}}}}
+	client := newTestJiraClient(t, fake, "https://example.atlassian.net")
+	for range 2 {
+		if err := client.AddIssueLabel(context.Background(), "PROJ", 7, "ai-coding-agent"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	labels := fake.Issues["PROJ-7"].Fields.Labels
+	if len(labels) != 2 || labels[0] != "existing" || labels[1] != "ai-coding-agent" {
+		t.Fatalf("labels = %v", labels)
+	}
+	if err := client.AddIssueLabel(context.Background(), "PROJ", 999, "ai-coding-agent"); err == nil {
+		t.Fatal("expected missing issue error")
+	}
+}

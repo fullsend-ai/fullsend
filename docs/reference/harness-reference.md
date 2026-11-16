@@ -22,7 +22,8 @@ base: harness/common-base.yaml      # Inherit from another harness (local or URL
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
-readonly_repo: false                # Mount repo as read-only in sandbox
+# readonly_repo: true               # make the checkout read-only (chmod a-w, .git/ excluded); absent = inherit from base; false overrides a base true
+# allow_ci_variable_credential: true # GitLab: print the CI/CD-variable credential notice as info, not a warning (default false; not inherited)
 providers:                           # Network access via provider profiles
   - vertex-ai                       # Bare builtin name: resolves to fullsend's embedded definition
   - github                          # Same; or a providers/<name>.yaml path for a local/custom definition
@@ -64,8 +65,8 @@ validation_loop:
   preflight_check: 'python3 -c "import jsonschema"'  # Literal sh -c command (NOT a script path); runs before sandbox creation in the allowlisted preflight environment
   max_iterations: 2
   feedback_mode: append              # "none" (default) or "append" — append the
-                                     # previous iteration's validation failure to
-                                     # the agent prompt on retry
+                                     # previous validation feedback to the agent
+                                     # prompt on retry
 
 # ── Host files ────────────────────────────────────────────────
 host_files:
@@ -75,6 +76,7 @@ host_files:
   - src: ${SOME_CREDENTIAL}
     dest: /tmp/.cred.json
     optional: true                   # Skip if missing
+    # allow_durable: true            # Only for a key the run cannot revoke
 
 # ── Environment ───────────────────────────────────────────────
 env:
@@ -112,7 +114,8 @@ overlays:
   env:
     runner:
       GH_TOKEN: "${GH_TOKEN}"
-      JIRA_TOKEN: "${JIRA_TOKEN}"
+      FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"
+      FULLSEND_JIRA_EMAIL: "${FULLSEND_JIRA_EMAIL}"
 - when: 'runtime.forge == "github"'
   pre_script: scripts/pre-gh.sh
   post_script: scripts/post-gh.sh
@@ -147,6 +150,8 @@ security:
 Most fields are self-explanatory from the inline comments above. This section expands on fields where additional context helps.
 
 **`image`** — The sandbox container image. On GitHub Actions a private `ghcr.io` package works on code and fix harnesses, whose shipped workflows grant `packages: read`; see [GitHub Packages credentials](../cli/run.md#github-packages-credentials).
+
+**`readonly_repo`** — When `true`, the runner makes the checkout read-only in the sandbox before the agent starts: it removes write permission (`chmod a-w`) from every file and directory in the checkout except `.git/`. A harness that leaves the field out inherits it from its `base:`, and gets a writable checkout when no base sets it. An explicit `false` keeps the checkout writable, even when the base sets `true`. **Top level only** — a `readonly_repo` key placed under `overlays:`/`forge:` is silently ignored. The step also runs `chown -R sandbox:sandbox` on `.git/`. If the step fails, for example on an image that has no `sandbox` user, the run stops with `read-only repo enforcement failed`. That applies to a harness that inherits `true` as well. To fix it, build the image on the fullsend sandbox image, which has that user (see [Extending the sandbox image](../guides/user/customizing-agents.md#extending-the-sandbox-image)), or set `readonly_repo: false` in the harness to keep a writable checkout.
 
 **`role`** — The agent's identity within fullsend. Dispatch uses the role to match config-registered agents to built-in defaults (same-name config agents take precedence). The role also determines which GitHub App credentials **and permissions** the mint service issues. It must be a role the mint serves: on the hosted mint that is the fixed built-in set (`triage`, `coder`, `review`, `retro`, `prioritize`, `fullsend`); custom roles require your own mint. An unserved role returns `403`. See [Custom Agent Identity](../guides/user/custom-agent-identity.md).
 
@@ -193,42 +198,65 @@ harness keeps the child's own declaration — an absent child stays absent
 (version `1`).
 See [ADR 0127](../ADRs/0127-harness-schema-versioning-and-field-types.md).
 
-**`validation_loop.feedback_mode`** — Controls how validation script output reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation failure is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
+**`validation_loop.feedback_mode`** — Controls how validation feedback reaches the agent for its next iteration. `none` (default): no feedback; `append`: the previous iteration's validation feedback is appended to the agent prompt on retry. See [Configuring agent behavior](../guides/user/customizing-agents.md) for examples.
 
-**`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). A second run happens only when the agent finished and its output failed validation; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
+**`validation_loop.max_iterations`** — The maximum number of agent runs in one invocation (default 1). An unsuccessful iteration may be retried; an iteration the runner killed at `timeout_minutes` is not retried. See [`fullsend run` § Budget and deadline](../cli/run.md#budget-and-deadline) and [ADR 0105](../ADRs/0105-timed-out-iteration-ends-the-run.md).
 
-**`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory. The probe runs in a minimal allowlisted environment: the host `PATH`, `HOME`, and `TMPDIR` (when set), the runner-forced `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and non-credential variables declared under `env.runner`/`runner_env` — nothing else is inherited from the process environment. Credential names (`GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, the minted role tokens `PUSH_TOKEN` and `REVIEW_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_FETCH_TOKEN`, `FULLSEND_GITLAB_*` role tokens, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the OIDC/trigger/runner-secret names) are excluded even when declared under `env.runner`. Plain `${VAR}` references are validated and expanded before the command runs: a plain reference to a name outside the allowlisted environment fails the run before any shell executes, naming the variable (never its value) and pointing to the allowlist and the `env.runner` declaration channel. Non-plain brace forms such as `${VAR:-default}` are not validated and silently expand to empty rather than failing the run. On failure or timeout, diagnostics carry only redacted command text and output. When the command contains no `${...}` reference, bare `$VAR` references are left to the shell, where every non-allowlisted name is unset; once a brace reference is present, bare references are also resolved against the preflight environment before the shell runs, and a bare reference to a name outside it expands to empty, matching the shell's unset semantics.
+**`validation_loop.preflight_check`** — A host-dependency probe run before sandbox creation as a literal `sh -c` command ([ADR 0128](../ADRs/0128-preflight-check-literal-command.md)). It uses the host process's working directory and is not resolved through the resource-fetch pipeline. Prefer a self-contained probe such as `python3 -c "import jsonschema"`; a relative script command works only if its file is present in that host working directory. The probe runs in a minimal allowlisted environment: the host `PATH`, `HOME`, and `TMPDIR` (when set), the runner-forced `FULLSEND_DIR` and `PYTHONDONTWRITEBYTECODE`, and non-credential variables declared under `env.runner`/`runner_env` — nothing else is inherited from the process environment. Credential names (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GITLAB_TOKEN`, the minted role tokens `PUSH_TOKEN` and `REVIEW_TOKEN`, `FULLSEND_FORGE_TOKEN`, `FULLSEND_FETCH_TOKEN`, `FULLSEND_GITLAB_*` role tokens, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, and the OIDC/trigger/runner-secret names) are excluded even when declared under `env.runner`. Plain `${VAR}` references are validated and expanded before the command runs: a plain reference to a name outside the allowlisted environment fails the run before any shell executes, naming the variable (never its value) and pointing to the allowlist and the `env.runner` declaration channel. Non-plain brace forms such as `${VAR:-default}` are not validated and silently expand to empty rather than failing the run. On failure or timeout, diagnostics carry only redacted command text and output. When the command contains no `${...}` reference, bare `$VAR` references are left to the shell, where every non-allowlisted name is unset; once a brace reference is present, bare references are also resolved against the preflight environment before the shell runs, and a bare reference to a name outside it expands to empty, matching the shell's unset semantics.
 
 **`env.runner`** — Variables passed to host-side scripts (`pre_script`, `post_script`,
 and `validation_loop.script`), layered over the `fullsend run`
 process environment. (`validation_loop.preflight_check` also reads `env.runner`
 declarations, but atop its own allowlisted environment — see above, not the
-process environment.) A few named workflow secrets are **not** inherited from that environment:
-`JIRA_TOKEN`, `JIRA_USER_EMAIL`, `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, `FULLSEND_JIRA_CLIENT_SECRET`, and the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` /
-`OTEL_EXPORTER_OTLP_*_HEADERS` (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`). A script
-receives one only when the harness declares it, e.g. `JIRA_TOKEN: "${JIRA_TOKEN}"` under
-`env.runner`. `fullsend run` itself still reads them for its own Jira client and trace export.
-Earlier releases passed them to every script unconditionally; a harness whose scripts read
-`JIRA_TOKEN` or `JIRA_USER_EMAIL` without declaring them must add them to `env.runner`. The
-Jira repository secrets `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` follow the same rule (see
-[Jira integration § Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs)).
+process environment.) These names are **not** inherited from that environment:
+
+- the Jira repository secrets `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`,
+  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`;
+- the reserved names `JIRA_TOKEN` and `JIRA_USER_EMAIL`;
+- the OTLP collector headers `OTEL_EXPORTER_OTLP_HEADERS` and `OTEL_EXPORTER_OTLP_*_HEADERS`
+  (for example `OTEL_EXPORTER_OTLP_TRACES_HEADERS`).
+
+A script receives one only when the harness declares it under `env.runner`, for example
+`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`. A script that reads the `JIRA_*` names gets them
+mapped from the Jira repository secrets: `JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`,
+`JIRA_USER_EMAIL: "${FULLSEND_JIRA_EMAIL}"`. `fullsend run` itself still reads these names for its
+own Jira client and trace export. Earlier releases passed them to every script. See
+[Jira integration § Jira repository secrets in agent runs](../guides/user/jira-integration.md#jira-repository-secrets-in-agent-runs).
 `FULLSEND_JIRA_EMAIL` is optional: a `${FULLSEND_JIRA_EMAIL}` reference does not fail validation
 when the variable is unset, and an `env.runner` entry for it that resolves empty is omitted, so
 the script sees no variable rather than an empty one. `FULLSEND_JIRA_CLIENT_ID` and
 `FULLSEND_JIRA_CLIENT_SECRET` (a service account's OAuth 2.0 credential) are optional the same
 way, and `FULLSEND_JIRA_TOKEN` is optional too while the client credentials are set. A harness can
-therefore declare both credential types. Scripts
-always run with `PYTHONDONTWRITEBYTECODE=1`, overriding any `env.runner` value, so bytecode never
-breaks the hash-verified fetch cache.
+therefore declare both credential types. Scripts always run with `PYTHONDONTWRITEBYTECODE=1`,
+overriding any `env.runner` value, so bytecode never breaks the hash-verified fetch cache.
 
-For a Jira-sourced run, `fullsend run` sets `JIRA_BASE_URL` to `tracker.jira.base_url` and
-`JIRA_API_URL` to the API gateway base `{tracker.jira.api_url}/ex/jira/{cloudId}` before env
-expansion, replacing any inherited `JIRA_BASE_URL`. A `${JIRA_BASE_URL}` or `${JIRA_API_URL}`
-reference in `env.runner`, `env.sandbox`, or a `host_files` entry with `expand: true` resolves to
-these values. A Jira-sourced run stops before the sandbox starts when cloud-ID discovery fails,
-when the run is `--offline`, or when the `tracker.jira` connection settings are missing or invalid,
-instead of letting agents fall back to the site URL. A runner secret cannot override either name. Runs from other sources do not get these variables from `fullsend run`, so
-reference them only in an overlay guarded on `event.source.system == "jira"`: an unset reference
+Outside `env.runner`, the Jira repository secrets expand as follows:
+
+- **Sandbox-bound sites** (`env.sandbox`, expanded `host_files` content, `FULLSEND_OUTPUT_FILE`
+  and provider config values): all four expand empty.
+- **Provider credential values:** `${FULLSEND_JIRA_TOKEN}` expands, because credential values
+  reach only the provider proxy and never the sandbox. `FULLSEND_JIRA_EMAIL`,
+  `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` expand empty.
+
+For a Jira-sourced run, `fullsend run` sets three connection variables before env expansion,
+replacing any inherited value:
+
+- `JIRA_BASE_URL`: `tracker.jira.base_url`.
+- `JIRA_API_URL`: the API gateway base `{tracker.jira.api_url}/ex/jira/{cloudId}`.
+- `JIRA_USER_EMAIL`: the trimmed `FULLSEND_JIRA_EMAIL`, or empty when that is unset or blank.
+
+A `${JIRA_BASE_URL}`, `${JIRA_API_URL}` or `${JIRA_USER_EMAIL}` reference in `env.runner`,
+`env.sandbox`, or a `host_files` entry with `expand: true` resolves to these values. A key in the
+`FULLSEND_GITHUB_RUNNER_SECRETS` object (described below) cannot override any of these names.
+
+A Jira-sourced run stops before the sandbox starts when it cannot build `JIRA_API_URL`, instead
+of letting agents fall back to the site URL:
+
+- cloud-ID discovery fails;
+- the run is `--offline`;
+- the `tracker.jira` connection settings are missing or invalid.
+
+Runs from other sources do not get these variables from `fullsend run`, so reference them only in an overlay guarded on `event.source.system == "jira"`: an unset reference
 fails env validation on a GitHub or GitLab run. See
 [Jira integration § Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
 
@@ -240,13 +268,19 @@ These rules make a run fail before `pre_script` starts:
   covers `GH_WORKFLOW_TOKEN`, the OIDC request variables, provider-only keys
   such as `OPENAI_API_KEY`, the `FULLSEND_*`, `GITHUB_*`, `ACTIONS_*`,
   `RUNNER_*`, `CI_*`, `LD_*`, `DYLD_*`, `OTEL_*`, `GOOGLE_*` and `CLOUDSDK_*`
-  families, the minted role tokens (`GH_TOKEN`, `PUSH_TOKEN`,
-  `PUSH_TOKEN_SOURCE`, `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
+  families, the minted role tokens (`GH_TOKEN`, `GH_ENTERPRISE_TOKEN`,
+  `GITHUB_ENTERPRISE_TOKEN`, `PUSH_TOKEN`, `PUSH_TOKEN_SOURCE`,
+  `REVIEW_TOKEN`, `GITLAB_TOKEN`), `PATH`, the
   runner-infrastructure names (`HOME`, `SHELL`, `BASH_ENV`, `ENV`,
   `TRACEPARENT`), and every name the reusable workflow sets on the `fullsend
-  run` step, such as the named `JIRA_TOKEN`, `JIRA_USER_EMAIL` and
-  `JIRA_BASE_URL` on `harness-run`. An `env.runner` key with one of those names
-  may not receive a value from the object either. Credential-class names beyond
+  run` step, such as `JIRA_BASE_URL` on `harness-run`, plus `JIRA_TOKEN` and
+  `JIRA_USER_EMAIL`, which fullsend reserves for the Jira sandbox provider and
+  email. An `env.runner` key with one of those names
+  may not receive a value from the object either. `GH_ENTERPRISE_TOKEN` is
+  refused because the mint now owns it; a repository that stores an enterprise
+  credential under that name must store it under a different name and
+  reference it from `env.runner` under a name the runner does not own.
+  Credential-class names beyond
   the runner-infrastructure names, `PATH`, and the `LD_*`/`DYLD_*` families —
   proxy, TLS trust, Git, interpreter and shell-behavior variables such as
   `HTTPS_PROXY`, `SSL_CERT_FILE`, `GIT_SSH_COMMAND`, `NODE_OPTIONS` and
@@ -288,6 +322,87 @@ keys](../cli/run.md#reserved-envsandbox-keys).
 
 **`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths the runner writes or puts on `PATH` ahead of the image are refused when the harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in `/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`, `fullsend-check-output`), and anything under `/sandbox/claude-config`, `/sandbox/codex-config`, `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path component is refused as well. The same rule applies to `host_files` under `overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs `/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a command but does not replace one the image provides. Codex and OpenCode runs restore the `PATH` from before `.env`, so `/sandbox/workspace/bin` and `.env.d` additions are not on the codex or OpenCode agent's `PATH`. See [Adding executables](../guides/user/customizing-agents.md#adding-executables).
 
+**`host_files[].allow_durable`** — Allows the entry to mount a credential that
+this run did not issue and cannot revoke. Once such a credential is in the
+sandbox, only the network policy constrains it (credential delivery tier 4 in
+[ADR 0025](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)).
+
+`fullsend run` classifies each source it will copy, on the host: before the
+pre-script, again before the sandbox is created, and once more just before
+the upload, so a file the pre-script writes is checked too. An `expand: true`
+source is checked as it will be uploaded, after `${VAR}` expansion. The check
+reads only regular files. These sources are durable:
+
+- a Google `service_account` key;
+- an `authorized_user` or `external_account_authorized_user` file;
+- an `impersonated_service_account` file whose source is not an
+  `external_account`;
+- a file with a PEM private key header (`-----BEGIN ... PRIVATE KEY-----`).
+
+Without `allow_durable: true`, a durable source stops the run (the triage
+harness with a service account key; host path shortened):
+
+```text
+  ✗ Host file credential validation failed
+Error: 1 durable credential host file(s) without allow_durable:
+    host_files[1]: host file .../key.json (src ${GOOGLE_APPLICATION_CREDENTIALS}, dest /tmp/.gcp-credentials.json): service_account key, whose lifetime this run does not control; set allow_durable: true on the entry to mount it
+```
+
+With it, the run continues and prints one warning per mount:
+
+```text
+  ! host file .../key.json (dest /tmp/.gcp-credentials.json): service_account key (lifetime not controlled by this run)
+```
+
+An `external_account` file is short-lived, so it is mounted with no output.
+A file that is not a recognized credential is mounted the same way.
+
+To opt in a mount that a `base:` harness declares, copy the whole entry into
+your own harness and add `allow_durable: true`. The copy replaces the base
+entry, so keep every field the base sets, such as `optional: true`:
+
+```yaml
+host_files:
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+    optional: true
+    allow_durable: true
+```
+
+<a id="durable-credentials-next-to-write-capable-providers"></a>
+**Durable credentials next to write-capable providers** — The run prints a
+warning just before the sandbox is created when a durable credential mount
+sits next to a provider whose profile may permit a write method, or whose
+profile could not be checked (the run did not import it, or could not read
+it). A profile may permit a write method when an endpoint has an `access`
+other than `read-only`, an allow rule for a method other than `GET`, `HEAD`
+or `OPTIONS`, or neither an `access` preset nor any allow rule. Inference
+profiles (`category: inference`, such as `vertex-ai` and `openai`) are left
+out, since their writes are model calls. The warning does not fail the run,
+and it does not replace `allow_durable: true`. Shown wrapped here; the run
+prints it on one line:
+
+```text
+  ! host file dest /tmp/.gcp-credentials.json is a durable credential, and
+    provider github (profile fullsend-github) permits write methods. Prefer a
+    short-lived credential that does not need allow_durable or a provider
+    whose profile is access: read-only (for example github-ro instead of
+    github). A profile is a declaration: whether the gateway enforces it
+    depends on the deployment, and this run does not check that.
+```
+
+To clear it:
+
+- Mount a short-lived credential instead, for example a Workload Identity
+  Federation `external_account` file.
+- Or switch to a read-only provider, such as `github-ro`, if the agent does
+  not need to write.
+- For a profile that could not be checked, list it in `openshell.profiles`
+  so the run can read it.
+
+Each provider's resolved profile is printed earlier in the run; see
+[provider profiles in run output](../cli/run.md#provider-profiles-in-run-output).
+
 **`.env.d` host files** — A `host_files` entry with a `dest` in
 `/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.
 Claude, codex, pi and OpenCode launches, and the runner's own in-sandbox probes
@@ -323,7 +438,7 @@ runtimes.
 
 **`security.fail_mode`** — Determines what happens when a pre-run security scan finds issues or fails to complete. `closed` (default): the run aborts on scan failure or critical findings. `open`: the run continues with a warning. Omitting the `security` block is equivalent to `fail_mode: closed`.
 
-**`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
+**`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`. The subset check runs for URL-referencing harnesses (as before) and whenever the runtime fetch service can start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories, or a bare, deprecated `allowed_remote_resources` declaration): every `allowed_remote_resources` prefix must be covered by the config-level allowlist — `config.yaml`'s `allowed_remote_resources` plus the built-in default prefixes (the defaults are included when the list is omitted or non-empty; an explicit `allowed_remote_resources: []` stays deny-all and excludes them) — and `fullsend run`, `fullsend lint` and `fullsend lock` fail naming the uncovered entry; without a repository config (`config.yaml` or `config.base.yaml`) they fail closed rather than fall back to the built-in defaults.
 
 **`skills`** — Skill directories to upload. Each entry is a source string (a
 local path or a forge tree URL pinned with `#sha256=`), or a single-key map
@@ -382,6 +497,8 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
+**`allow_ci_variable_credential`** — Set to `true` (default `false`) to print the GitLab CI/CD-variable credential line as info instead of a warning. Use it when a credential has no keyless replacement yet. Other forges ignore it. **Top level only**: a key under `overlays:`/`forge:` is silently ignored. **Not inherited** from `base:`, so a base harness cannot silence the warning for its children. For a stock agent, set it in a local child harness; see [Configuration with `base:` composition](../guides/user/customizing-agents.md#configuration-with-base-composition). For the message text and what counts, see [GitLab Role Credentials](../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables).
+
 **`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
 
 ## Reserved `env.sandbox` names
@@ -400,7 +517,8 @@ sandbox environment, case-insensitively:
   sets.
 - **Credentials it mints or receives:** `FULLSEND_GCP_OIDC_AUTH_FILE`,
   `FULLSEND_TRIGGER_TOKEN`, `FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN`,
-  `FULLSEND_WEBHOOK_SECRET`, `FULLSEND_INFERENCE_GATEWAY_API_KEY`,
+  `FULLSEND_WEBHOOK_SECRET`, the trace-context signing key
+  `FULLSEND_TRACE_SIGNING_KEY`, `FULLSEND_INFERENCE_GATEWAY_API_KEY`,
   `FULLSEND_OPENAI_API_KEY`, `OPENAI_API_KEY`, `GH_WORKFLOW_TOKEN`, the
   runner-secret bundle and its staging path (`FULLSEND_GITHUB_RUNNER_SECRETS`,
   `FULLSEND_GITHUB_RUNNER_SECRETS_FILE`), and the GitHub Actions OpenID Connect
@@ -555,6 +673,7 @@ More-specific entries go last so they override broader defaults.
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
+| `readonly_repo` | Child wins if set, including `false`; inherited when absent. Top-level only — a `readonly_repo` key under `overlays:`/`forge:` is silently ignored |
 | `schema_version` | NOT inherited — the merged harness keeps the child's own declaration (absent stays absent, version `1`). Every composed `base:` layer must share one effective version, or the load fails naming both versions and the layer. Top-level only — a `schema_version` key under `overlays:`/`forge:` is silently ignored |
 | `skills` | Merged with deduplication by skill identity (declared `SKILL.md` name when on disk, otherwise basename). Child overrides a matching base entry; sibling nested dirs that share a leaf name are kept; two entries with one identity in a single list are both kept and fail at bootstrap; when a child entry replaces a base entry, their per-file override maps merge (child keys win); a map-form child entry whose path has no `SKILL.md` keeps the base entry's source (and, with no other match, the one pinned-URL base entry of its name; two or more such entries are an error that asks for the full base URL as the map key) |
 | `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
@@ -564,7 +683,8 @@ More-specific entries go last so they override broader defaults.
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
 | `security` | Child replaces entirely |
-| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution |
+| `allow_ci_variable_credential` | NOT inherited (child must declare its own). Top-level only — a key under `overlays:`/`forge:` is silently ignored |
+| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution and as the ceiling every harness-level `allowed_remote_resources` is validated against (see `allow_runtime_fetch` above) |
 
 ## Referencing resources: local vs. remote
 
