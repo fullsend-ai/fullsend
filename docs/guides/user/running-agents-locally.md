@@ -449,20 +449,22 @@ normal network resolution and prints a warning suggesting you re-run
 `fullsend lock <agent>` — a plain lock re-composes the changed entry from the
 URL index's cached copies, so it needs no `--update` (which would re-resolve
 every un-pinned base file from its source). If a cached artifact is missing, the
-error names `fullsend lock <agent> --update` instead, which re-fetches the
-missing content.
+error names `fullsend lock <agent> --update` instead, which re-resolves from the
+source and may change the pins — rerunning without `--offline` fetches the
+pinned content and checks it against the lock.
 
 A current lock entry also pins the files a URL `base:` (or an agent fetched from
 a URL) names by relative path: agent, policy, skills, skill file overrides,
 scripts, plugins and the rest. They resolve to the locked content even when the
 cache has since fetched newer content for the same URL. `fullsend run` prints
 `Pinning N dependencies from lock file` when it applies these pins. If locked
-content is missing from the cache, an `--offline` run fails and its error names
-the command to run (`fullsend lock <agent> --update`, with `--fullsend-dir` when
-the directory is not the default, and `--forge <platform>` when the run composed
-forge-specific files for a child with no `forge:` block), and an online run
-re-fetches it and fails if
-it no longer matches the lock (the same command re-pins it). A lock entry for
+content is missing from the cache, an `--offline` run fails and its error
+suggests rerunning without `--offline` to fetch the pinned content, naming
+`fullsend lock <agent> --update` (with `--fullsend-dir` when the directory is
+not the default, and `--forge <platform>` when the run composed forge-specific
+files for a child with no `forge:` block) only as the way to re-pin to what the
+source now serves, and an online run re-fetches it and fails if it no longer
+matches the lock (the same command re-pins it). A lock entry for
 an agent fetched from a URL that was written before fullsend recorded these
 files does not pin them; run `fullsend lock <agent> --update` to add them.
 `fullsend run` warns when a current lock entry leaves any of these files
