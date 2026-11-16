@@ -34,6 +34,31 @@ const PerRepoGuardVar = "FULLSEND_PER_REPO_INSTALL"
 // silently diverge.
 const ChangesRequestedMarker = "<!-- fullsend:changes-requested -->"
 
+// Log-note markers the forge clients embed in the text returned by
+// GetWorkflowRunLogs (the behaviour-test ci.Driver exposes the same
+// call as GetRunLogs), in band and without an error, when a single job's log (or
+// the whole aggregate) could not be fetched in full. The GitHub and
+// GitLab clients write these prefixes and pkg/behaviourtest/steps
+// matches them (partialLogNotes) to tell a fetch failure or size cap
+// from a complete snapshot, so the markers live in this package — the
+// one both the writers and the reader import — to keep them from
+// drifting apart: a renamed marker is a compile error, not a silent
+// misdiagnosis of a run's logs.
+const (
+	// GitHub job-log notes.
+	LogNoteFailedToFetchLogs = "[failed to fetch logs:" // a job's logs could not be fetched
+	LogNoteLogsUnavailable   = "[logs unavailable:"     // the log endpoint answered non-200
+	LogNoteFailedToReadLogs  = "[failed to read logs:"  // the fetched body could not be read
+	LogNoteJobListTruncated  = "[job list truncated:"   // only one page of jobs was read
+	LogNoteLogTruncated      = "[log truncated:"        // a job log was cut at the byte cap
+
+	// GitLab trace notes.
+	LogNoteErrorFetchingTrace  = "error fetching trace:" // a job's trace could not be fetched
+	LogNoteErrorReadingTrace   = "error reading trace:"  // the fetched trace could not be read
+	LogNoteAggregateTraceLimit = "aggregate trace limit" // the aggregate byte cap was reached
+	LogNoteTraceTruncated      = "trace truncated at"    // a trace was cut at the remaining budget
+)
+
 // Repo management variable and secret names.
 //
 // These constants cover every FULLSEND_* name used by repos install,
@@ -150,6 +175,10 @@ const (
 	// never stored unmasked.
 	SecretJiraClientID     = "FULLSEND_JIRA_CLIENT_ID"
 	SecretJiraClientSecret = "FULLSEND_JIRA_CLIENT_SECRET"
+
+	// SecretTraceSigningKey is the trace-context signing key (ADR 0154).
+	// config.TraceSigningKeySecret is the same literal.
+	SecretTraceSigningKey = "FULLSEND_TRACE_SIGNING_KEY"
 
 	// Legacy uninstall-only variables — GitLab.
 	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"
@@ -395,6 +424,12 @@ func IsTreeTruncated(err error) bool {
 	return errors.Is(err, ErrTreeTruncated)
 }
 
+// ErrDiffListingTruncated indicates that a forge returned a safety-capped
+// file-diff listing. Callers that need a complete diff must fail open, while
+// callers that only need the available hunks may still use the returned
+// entries.
+var ErrDiffListingTruncated = errors.New("pull request file diff listing truncated")
+
 // ErrNoChanges indicates that a change proposal could not be created
 // because there are no differences between the head and base branches.
 var ErrNoChanges = errors.New("no changes between branches")
@@ -577,6 +612,10 @@ type WorkflowRun struct {
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
 	CreatedAt  string
+	// Path is the run's workflow file, e.g. ".github/workflows/fullsend.yaml".
+	// Only populated by ListRecentWorkflowRuns, which lists runs of every
+	// workflow; other run reads leave it empty.
+	Path string
 }
 
 // WorkflowJob represents a job within a workflow run.
@@ -619,6 +658,9 @@ type Annotation struct {
 
 // Issue represents a forge issue.
 type Issue struct {
+	// IsPullRequest identifies pull requests returned by GitHub's issues
+	// endpoint. Populated by GetIssue; issue lifecycle operations must reject them.
+	IsPullRequest bool
 	// Number is the display number: GitHub's per-repo issue number or
 	// GitLab's per-project IID. It is not a stable identity.
 	Number int
@@ -641,6 +683,9 @@ type Issue struct {
 	// or "duplicate" for a closed issue, "reopened" or empty otherwise.
 	// GitLab does not report one. Only populated by GetIssue.
 	StateReason string
+	// CreatedAt is the issue's creation time as the forge reports it
+	// (RFC 3339). Only populated by GitHub's GetIssue.
+	CreatedAt string
 }
 
 // PullRequestAuthorizationContext carries PR fields used by the e2e CI
@@ -790,9 +835,22 @@ type ReviewThreadPage struct {
 
 // PullRequestFileDiff represents a file changed in a pull request along
 // with its unified diff patch. The patch may be empty for binary files,
-// rename-only changes, or when GitHub truncates large diffs.
+// rename-only changes, or when the forge cannot represent the full diff.
+// PreviousPath is populated only for renames. Status is normalized across
+// forges to added, removed, renamed, or modified.
 type PullRequestFileDiff struct {
-	Path  string
+	Path string
+	// PreviousPath is set only when the file was renamed.
+	PreviousPath string
+	// Status is normalized across forges to added, removed, renamed, or modified.
+	Status string
+	// OldMode and NewMode are the Git tree modes for the old and new paths.
+	// ModesVerified is false when the forge could not provide mode metadata;
+	// hash consumers must fail open in that case.
+	OldMode       string
+	NewMode       string
+	ModesVerified bool
+	// Patch is the unified diff, when the forge can represent it.
 	Patch string
 }
 
@@ -1387,6 +1445,10 @@ type Client interface {
 	// ListPullRequestFileDiffs returns the files changed by a pull request
 	// along with their unified diff patches. Use this when you need to
 	// determine which lines are within diff hunks (e.g. for inline comments).
+	// When a forge reaches its safety cap, it returns the entries collected so
+	// far together with forge.ErrDiffListingTruncated; callers that require a
+	// complete listing must fail open, while callers that can use partial hunks
+	// may continue with the returned entries.
 	ListPullRequestFileDiffs(ctx context.Context, owner, repo string, number int) ([]PullRequestFileDiff, error)
 
 	// Pull request review operations.
@@ -1433,8 +1495,8 @@ type Client interface {
 	ListRepositoryArtifacts(ctx context.Context, owner, repo string, perPage int) ([]RepositoryArtifact, error)
 
 	// GetWorkflowRunLogs downloads the logs for a workflow run as plain text.
-	// On GitHub, this fetches the log of each job in the run that was not
-	// skipped.
+	// It fetches the log of each job in the run that was not skipped; a
+	// skipped job never ran and has no log to fetch.
 	GetWorkflowRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
 
 	// GetWorkflowRunAnnotations returns annotations (::notice::, ::warning::,

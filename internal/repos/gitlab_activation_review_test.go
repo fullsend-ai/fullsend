@@ -31,6 +31,8 @@ func TestTypedDeliveryRequiresVerifiedRestriction(t *testing.T) {
 					return nil
 				}, noopProgress)
 				require.ErrorContains(t, err, "refusing to deliver runnable typed GitLab jobs")
+				require.ErrorContains(t, err, "not no_one_allowed")
+				require.ErrorContains(t, err, `Settings > CI/CD > Variables and set "Minimum role to use pipeline variables" to "No one allowed"`)
 				assert.False(t, committed)
 				assert.Equal(t, role, fc.PipelineVarOverrideRoles["acme/widgets"])
 				assert.Equal(t, "slash", fc.PipelineSchedules["acme/widgets"][0].Variables[forge.VarPollMode])

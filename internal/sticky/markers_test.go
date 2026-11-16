@@ -194,6 +194,14 @@ func TestNeutralizeBody_TrustedLeadingLine(t *testing.T) {
 	}
 }
 
+func TestNeutralizeBody_TrustedLeadingLines(t *testing.T) {
+	second := "<!-- fullsend:review-diff-hash:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef -->"
+	cfg := Config{TrustedLeadingLine: regexp.MustCompile(`^(?:<!-- fullsend:review-findings-v2:[A-Za-z0-9+/]+={0,2} -->|<!-- fullsend:review-diff-hash:[0-9a-f]{64} -->)$`), MaxTrustedLeadingLines: 2}
+	body := trustedLine + "\n" + second + "\n\nReview <!-- fullsend:agent-status:1 -->"
+
+	assert.Equal(t, trustedLine+"\n"+second+"\n\nReview &lt;!-- fullsend:agent-status:1 -->", neutralizeBody(body, cfg))
+}
+
 // A trusted leading line stays live in the current body across updates,
 // while each earlier copy is escaped as it moves into history.
 func TestPost_TrustedLeadingLine_AcrossUpdates(t *testing.T) {

@@ -143,6 +143,33 @@ func (s *State) SetUserGroups(accountID string, groupIDs ...string) {
 	s.userGroups[accountID] = groupIDs
 }
 
+// Labels returns the issue's current label list.
+func (s *State) Labels(issueKey string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	issue, ok := s.issues[issueKey]
+	if !ok {
+		return nil
+	}
+	return issue.Fields.Labels
+}
+
+// SetIssueLabels replaces an issue's label list without recording a
+// changelog entry. Scenarios that need a large label state (for example the
+// dispatch transport's labels bound) use it to place the labels at issue
+// creation time rather than emitting one label-change event per label.
+func (s *State) SetIssueLabels(issueKey string, labels []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	issue, ok := s.issues[issueKey]
+	if !ok {
+		return
+	}
+	issue.Fields.Labels = labels
+}
+
 // AddLabelChange appends a changelog entry representing a label addition
 // and updates the issue's label list.
 func (s *State) AddLabelChange(issueKey, label string) {

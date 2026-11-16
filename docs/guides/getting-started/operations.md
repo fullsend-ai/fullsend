@@ -43,6 +43,7 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 | `FULLSEND_JIRA_TOKEN` | Repo secret | Jira API token for polling and Jira-originated agent status updates when effective `tracker.jira.poll.enabled` is `true`, written by `repos install --jira-token` (required on the first install unless client credentials are supplied; an omitted flag keeps the existing secret; `repos uninstall` deletes it) | (Jira API token) |
 | `FULLSEND_JIRA_EMAIL` | Repo secret | Optional Jira account email for the same poller and agent status calls, written by `repos install --jira-email`; an omitted flag keeps the existing secret; `repos uninstall` deletes it | `poller@example.com` |
 | `FULLSEND_JIRA_CLIENT_ID` / `FULLSEND_JIRA_CLIENT_SECRET` | Repo secret | A service account's OAuth 2.0 credential, used instead of `FULLSEND_JIRA_TOKEN` (never both). GitHub poll and Jira-originated dispatch workflows forward them to the Jira client; `repos install` writes them on GitHub and GitLab. `repos uninstall` deletes them | (OAuth client credentials) |
+| `FULLSEND_TRACE_SIGNING_KEY` | Repo secret | Reserved for the trace-context signing key ([ADR 0154](../../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)). Fullsend does not provision it yet. `fullsend run` keeps it from harnesses. `repos uninstall` deletes it | — |
 | `FULLSEND_GITHUB_RUNNER_SECRETS` | Repo or org secret (optional) | JSON object of name → value for host-side scripts, read through each harness's `env.runner`. Set with `gh secret set`, not `fullsend github set`; see [Pass secrets to host-side scripts](../user/bring-your-own-agent.md#pass-secrets-to-host-side-scripts-github) | `{"JIRA_API_TOKEN":"..."}` |
 
 Repositories selecting `inference.auth: openai-wif` need no inference secrets unless
@@ -95,6 +96,7 @@ being written. See
 | `FULLSEND_JIRA_TOKEN` | CI/CD secret (protected, masked) | Jira API token for polling and Jira-originated agent status updates for projects whose effective `tracker.jira.poll.enabled` is `true`, written by `repos install --jira-token` (required on the first install unless client credentials are supplied; an omitted flag keeps the existing variable). The dispatcher job, and the poll job in slash and event mode, clear it; only the Jira poll job started by the `fullsend jira poll` schedule keeps it. `repos uninstall` deletes it | (masked) |
 | `FULLSEND_JIRA_EMAIL` | CI/CD secret (protected, masked) | Optional Jira account email for those poller and agent status calls, written by `repos install --jira-email`; an omitted flag keeps the existing variable. The dispatcher job, and the poll job in slash and event mode, clear it; only the Jira poll job started by the `fullsend jira poll` schedule keeps it. `repos uninstall` deletes it | (masked) |
 | `FULLSEND_JIRA_CLIENT_ID` / `FULLSEND_JIRA_CLIENT_SECRET` | CI/CD secret (protected; the secret is masked) | A service account's OAuth 2.0 credential, used instead of `FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL`, written by `repos install --jira-client-id --jira-client-secret`. Supplying them removes an existing token and email, and supplying `--jira-token` removes them. Cleared like the token outside the Jira poll job. `repos uninstall` deletes them | (masked) |
+| `FULLSEND_TRACE_SIGNING_KEY` | CI/CD secret | Reserved for the trace-context signing key ([ADR 0154](../../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)). Fullsend does not provision it yet. The poll, dispatcher, and agent jobs unset it on the first line of their `before_script`. `fullsend run` keeps it from harnesses. `repos uninstall` deletes it | — |
 
 `repos install` provisions and rotates the registered role credentials directly. There is no migration gate and no shared-token runtime path. Neither install nor uninstall removes a leftover `FULLSEND_FORGE_TOKEN` from a repository installed before the role-only rollout — clean that up manually.
 
@@ -327,14 +329,26 @@ On GitLab CI, the agent reads status notification context from standard CI/CD en
 | Variable | Description |
 |----------|-------------|
 | `FULLSEND_FORGE_TOKEN` | Legacy shared credential; no longer selected by runtime or CI routing. Neither `repos install` nor `repos uninstall` removes a leftover copy from a repository installed before the role-only rollout — clean it up manually. The agent job exports `GITLAB_TOKEN` from `FULLSEND_JOB_TOKEN`, resolved by `.gitlab/ci/scripts/select-gitlab-role-token.sh`, which always resolves the registered role credential and fails closed if that secret is missing. See [gitlab-role-credentials.md](../../contributing/gitlab-role-credentials.md). |
-| `CI_SERVER_URL` | GitLab instance URL (set automatically by GitLab CI). Fallback when `FULLSEND_GITLAB_URL` and `GITLAB_API_URL` are unset. |
+| `CI_SERVER_URL` | GitLab instance URL (set automatically by GitLab CI). Fallback when `FULLSEND_GITLAB_URL` and `GITLAB_API_URL` are unset. On agent jobs, `CI_SERVER_URL` and `CI_SERVER_HOST` must agree with the pinned instance URL derived from `CI_API_V4_URL`; a mismatch stops the job before the agent runs. |
 | `CI_COMMIT_SHA` | Commit SHA shown in the status comment. |
 | `CI_MERGE_REQUEST_SOURCE_BRANCH_SHA` | Preferred over `CI_COMMIT_SHA` in merge request pipelines. |
 | `CI_PIPELINE_ID` | Used as the run ID for status comment markers. |
 | `CI_MERGE_REQUEST_IID` | When set, status comments target the merge request notes API instead of issues. |
-| `FULLSEND_GITLAB_URL` | Override for `GITLAB_API_URL` and `CI_SERVER_URL` (e.g., for self-hosted instances). |
+| `FULLSEND_GITLAB_URL` | Instance URL for local runs and custom CI jobs, for example `https://gitlab.example.com`. Wins over `GITLAB_API_URL` and `CI_SERVER_URL`. Scaffolded GitLab CI agent jobs set it for you from `CI_API_V4_URL`, so a value you set there is ignored. |
 | `FULLSEND_NOTE_TARGET` | Set to `merge_requests` to force MR note targeting when `CI_MERGE_REQUEST_IID` is unavailable (e.g., child pipelines, scheduled jobs). |
 | `CI_SERVER_TLS_CA_FILE` | GitLab Runner predefined path to a job-local PEM CA bundle when `tls-ca-file` is set. Consumed by poll/agent jobs and the GitLab Go client. See [Private CA](#private-ca-self-hosted-gitlab). |
+
+A *provider profile* is an OpenShell file that names a credential and
+the hosts it may be sent to. `fullsend run` limits every provider
+profile that issues `GITLAB_TOKEN` to the host and port of the GitLab
+URL. It stops before setup if that URL is invalid, or missing while
+such a profile is imported. For a local run, set the URL:
+
+```bash
+export FULLSEND_GITLAB_URL=https://gitlab.example.com
+```
+
+For each stop and its fix, see [Self-Hosted GitLab Instances](configuring-gitlab.md#self-hosted-gitlab-instances).
 
 For a generated scaffold, `repos install` provisions the protected
 role-credential secrets (`FULLSEND_GITLAB_POLLER_TOKEN`,

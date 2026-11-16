@@ -33,6 +33,7 @@ The repos subcommand group provides bulk operations for platform administrators
 managing fullsend across many repositories and organizations.`,
 	}
 	cmd.PersistentFlags().String("gitlab-token", "", "GitLab personal or project access token (overrides GITLAB_TOKEN env var)")
+	cmd.PersistentFlags().Bool(reposVerboseFlag, false, "show the underlying API error text (HTTP status and server message, with credentials redacted) instead of withholding it, and log each GitLab API request (method, path, status) to stderr")
 	cmd.AddCommand(newReposInstallCmd())
 	cmd.AddCommand(newReposUninstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
@@ -146,6 +147,9 @@ func newReposStatusCmd() *cobra.Command {
 		Short: "Compare manifest against actual repo state",
 		Long:  "Read-only comparison of the repos.yaml manifest against actual forge state. Reports installation status and configuration drift for each repo, including declared configuration-preset drift against .fullsend/config.base.yaml and managed configuration drift against .fullsend/config.yaml.",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, restore := reposVerboseContext(cmd, getGitLabToken(cmd))
+			defer restore()
+			cmd.SetContext(ctx)
 			return runReposStatus(cmd, opts)
 		},
 	}
@@ -309,6 +313,20 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 				fmt.Fprintf(out, "  %s\n", line)
 			}
 		}
+	}
+
+	// Managed configuration that the effective fullsend_ref may not read
+	// (#9292).
+	for _, s := range result.Repos {
+		if s.ConfigCompatibility != repos.ConfigIncompatible && s.ConfigCompatibility != repos.ConfigUnknown {
+			continue
+		}
+		ref := s.ConfigSchemaRef
+		if ref == "" {
+			ref = "running release"
+		}
+		fmt.Fprintf(out, "\n%s config compatibility (fullsend_ref %s): %s\n", s.Owner+"/"+s.Repo, ref, s.ConfigCompatibility)
+		fmt.Fprintf(out, "  %s\n", s.ConfigCompatibilityReason)
 	}
 
 	for _, s := range result.Repos {
@@ -518,7 +536,10 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.repoFilter = args
 			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposInstall(cmd.Context(), opts)
+			secrets := append([]string{opts.gitlabToken, opts.openAIAPIKey, opts.jiraToken, opts.jiraClientSecret}, roleTokenValues(opts.gitlabRoleTokens)...)
+			ctx, restore := reposVerboseContext(cmd, secrets...)
+			defer restore()
+			return runReposInstall(ctx, opts)
 		},
 	}
 	cmd.SetFlagErrorFunc(removedReposInstallFlagError)
@@ -1254,9 +1275,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			// replacement Poller is verified, which surfaces here as an opaque
 			// provisioning failure). The failure stays the repo's recorded
 			// error and the dispatch-route stages below remain skipped, so
-			// it is counted once. The callback still refreshes an existing
-			// webhook after the lifecycle: ordinary repair can replace the
-			// account token even without a requested rotation.
+			// it is counted once. After the lifecycle the callback
+			// provisions or converges the account-route webhook: it creates
+			// a missing webhook and secret from scratch and repairs a stale
+			// one, but never builds a Poller-route webhook or trigger.
 			convergeTriggerAfterPollerFailure := func(pollerErr error) error {
 				// Do not force rotation on a failed Poller stage, but do repair
 				// the webhook if normal account convergence changed its token.
@@ -1309,8 +1331,8 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 				// grant. The trigger account does not use that grant, so its
 				// resource preparation still runs. The Poller failure stays the
 				// repo's recorded error. The full dispatch-route stages below
-				// remain skipped; the callback only refreshes an existing webhook
-				// route after account repair. The failure is counted once.
+				// remain skipped; the callback provisions or converges only the
+				// account-route webhook. The failure is counted once.
 				if pollerMergeGrantRejected(err) {
 					err = convergeTriggerAfterPollerFailure(err)
 				}
@@ -1491,7 +1513,9 @@ prompt for confirmation unless --yes is set.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.gitlabToken = getGitLabToken(cmd)
-			return runReposUninstall(cmd.Context(), opts, args)
+			ctx, restore := reposVerboseContext(cmd, opts.gitlabToken)
+			defer restore()
+			return runReposUninstall(ctx, opts, args)
 		},
 	}
 

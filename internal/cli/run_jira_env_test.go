@@ -46,15 +46,51 @@ func TestResolveJiraRunEnv_Jira(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(jira.EmailEnvVar, "bot@example.com")
 			var gotCfg jira.ScopedConfig
 			env, err := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, tt.apiURL), false,
 				stubJiraGateway(&gotCfg))
 			require.NoError(t, err)
 			assert.Equal(t, map[string]string{
-				envJiraBaseURL: testJiraSite,
-				envJiraAPIURL:  tt.wantAPIURL,
+				envJiraBaseURL:   testJiraSite,
+				envJiraAPIURL:    tt.wantAPIURL,
+				envJiraUserEmail: "bot@example.com",
 			}, env)
 			assert.Equal(t, testJiraSite, gotCfg.BaseURL)
+		})
+	}
+}
+
+// TestResolveJiraRunEnv_UserEmail checks that a Jira-sourced run sets
+// JIRA_USER_EMAIL from the trimmed FULLSEND_JIRA_EMAIL, empty when that is
+// unset or blank, and never from an inherited JIRA_USER_EMAIL (#9411).
+func TestResolveJiraRunEnv_UserEmail(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		email *string
+		want  string
+	}{
+		{name: "set", email: strPtr("bot@example.com"), want: "bot@example.com"},
+		{name: "trimmed", email: strPtr("  bot@example.com\n"), want: "bot@example.com"},
+		{name: "unset", email: nil, want: ""},
+		{name: "empty", email: strPtr(""), want: ""},
+		{name: "whitespace", email: strPtr(" \t "), want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(envJiraUserEmail, "inherited@example.com")
+			t.Setenv(jira.EmailEnvVar, "")
+			if tt.email == nil {
+				require.NoError(t, os.Unsetenv(jira.EmailEnvVar))
+			} else {
+				t.Setenv(jira.EmailEnvVar, *tt.email)
+			}
+			var gotCfg jira.ScopedConfig
+			env, err := resolveJiraRunEnv(context.Background(), "jira", jiraTracking(testJiraSite, ""), false,
+				stubJiraGateway(&gotCfg))
+			require.NoError(t, err)
+			got, ok := env[envJiraUserEmail]
+			require.True(t, ok, "a Jira-sourced run always sets JIRA_USER_EMAIL, replacing the inherited value")
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -68,9 +104,10 @@ func TestResolveJiraRunEnv_NonJiraSource(t *testing.T) {
 				return jira.DefaultAPIURL + "/ex/jira/x", nil
 			}
 			// Even with no usable Jira config, non-Jira runs never fail here.
+			t.Setenv(jira.EmailEnvVar, "bot@example.com")
 			env, err := resolveJiraRunEnv(context.Background(), source, nil, true, discover)
 			require.NoError(t, err)
-			assert.Nil(t, env)
+			assert.Nil(t, env, "no JIRA_USER_EMAIL or other Jira variables for non-Jira runs")
 			assert.False(t, called, "no discovery for non-Jira runs")
 		})
 	}
@@ -149,6 +186,7 @@ func TestResolveJiraRunEnv_TrimsTrailingSlash(t *testing.T) {
 func TestRunnerSecretNameRefused_JiraAPIURL(t *testing.T) {
 	assert.True(t, runnerSecretNameRefused(envJiraAPIURL), "fullsend run sets JIRA_API_URL; a runner secret must not override it")
 	assert.True(t, runnerSecretNameRefused(envJiraBaseURL))
+	assert.True(t, runnerSecretNameRefused(envJiraUserEmail), "fullsend run sets JIRA_USER_EMAIL on Jira runs")
 }
 
 // TestDiscoverJiraGatewayURL checks that the production discoverer uses the
@@ -204,14 +242,14 @@ func useJiraScopedTestClient(t *testing.T, srv *httptest.Server) {
 }
 
 // writeJiraEnvHarnessFixture writes a code harness whose runner_env
-// references JIRA_API_URL and JIRA_BASE_URL, with tracker.jira.base_url
-// pointing at baseURL.
+// references JIRA_API_URL, JIRA_BASE_URL and JIRA_USER_EMAIL, with
+// tracker.jira.base_url pointing at baseURL.
 func writeJiraEnvHarnessFixture(t *testing.T, baseURL string) string {
 	t.Helper()
 	dir := writeCodeHarnessFixture(t)
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\nrunner_env:\n  MY_API: ${JIRA_API_URL}\n  MY_BASE: ${JIRA_BASE_URL}\n"),
+		[]byte("agent: agents/code.md\nrole: coder\npolicy: policies/base.yaml\nrunner_env:\n  MY_API: ${JIRA_API_URL}\n  MY_BASE: ${JIRA_BASE_URL}\n  MY_EMAIL: ${JIRA_USER_EMAIL}\n"),
 		0o644,
 	))
 	writeJiraTrackerConfig(t, dir, baseURL)
@@ -229,9 +267,11 @@ func writeJiraTrackerConfig(t *testing.T, dir, baseURL string) {
 const jiraCodeDispatchPayload = `{"_normalized_event":{"repo":"org/repo","entity":{"kind":"work_item","id":10042,"key":"PROJ-1","url":"https://example.atlassian.net/browse/PROJ-1"},"transition":{"kind":"comment_added","comment":{"body":"/fs-code","command":"/fs-code"}},"actor":{"id":"u1","kind":"human","role":"write","is_entity_author":false},"state":{"labels":[]},"source":{"system":"jira","raw_type":"comment"}}}`
 
 // TestRunAgent_JiraRunEnvExported verifies that a Jira-sourced run exports
-// JIRA_API_URL and JIRA_BASE_URL from tracker.jira before harness env
-// validation, overriding an inherited JIRA_BASE_URL, and restores the
-// inherited values afterwards.
+// JIRA_API_URL and JIRA_BASE_URL from tracker.jira, and JIRA_USER_EMAIL,
+// before harness env validation, overriding an inherited JIRA_BASE_URL, and
+// restores the inherited values afterwards. JIRA_USER_EMAIL starts unset and
+// FULLSEND_JIRA_EMAIL is absent, so validation passes only because the run
+// exports it empty.
 func TestRunAgent_JiraRunEnvExported(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -250,6 +290,10 @@ func TestRunAgent_JiraRunEnvExported(t *testing.T) {
 			t.Setenv(envJiraBaseURL, "https://stale.atlassian.net")
 			t.Setenv(envJiraAPIURL, "")
 			require.NoError(t, os.Unsetenv(envJiraAPIURL))
+			for _, key := range []string{envJiraUserEmail, jira.EmailEnvVar} {
+				t.Setenv(key, "")
+				require.NoError(t, os.Unsetenv(key))
+			}
 
 			var hits atomic.Int32
 			srv := newTenantInfoServer(t, tt.status, &hits)
@@ -267,6 +311,8 @@ func TestRunAgent_JiraRunEnvExported(t *testing.T) {
 			assert.Equal(t, "https://stale.atlassian.net", os.Getenv(envJiraBaseURL))
 			_, set := os.LookupEnv(envJiraAPIURL)
 			assert.False(t, set)
+			_, set = os.LookupEnv(envJiraUserEmail)
+			assert.False(t, set)
 		})
 	}
 }
@@ -280,6 +326,8 @@ func TestRunAgent_ForgeRunLeavesJiraEnvUnset(t *testing.T) {
 	t.Setenv(envJiraBaseURL, testJiraSite)
 	t.Setenv(envJiraAPIURL, "")
 	require.NoError(t, os.Unsetenv(envJiraAPIURL))
+	t.Setenv(envJiraUserEmail, "inherited@example.com")
+	t.Setenv(jira.EmailEnvVar, "bot@example.com")
 
 	var hits atomic.Int32
 	srv := newTenantInfoServer(t, http.StatusOK, &hits)
@@ -291,5 +339,7 @@ func TestRunAgent_ForgeRunLeavesJiraEnvUnset(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "validating env")
 	assert.Contains(t, err.Error(), envJiraAPIURL)
+	assert.NotContains(t, err.Error(), envJiraUserEmail, "a forge run keeps the inherited JIRA_USER_EMAIL")
+	assert.Equal(t, "inherited@example.com", os.Getenv(envJiraUserEmail))
 	assert.Zero(t, hits.Load(), "no cloud-ID discovery for forge runs")
 }

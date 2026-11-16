@@ -350,8 +350,8 @@ func TestLoadRunnerSecrets_InvalidName(t *testing.T) {
 }
 
 // Every name the reusable workflows and the composite action set on a
-// fullsend run step is refused, so a runner secret never shadows a named
-// workflow secret (JIRA_TOKEN on harness-run) or a workflow-provided value.
+// fullsend run step is refused, so a runner secret never shadows a
+// workflow-provided value (JIRA_BASE_URL on harness-run).
 func TestRunnerSecretNameRefused_CoversWorkflowSetNames(t *testing.T) {
 	type step struct {
 		Name string            `yaml:"name"`
@@ -395,7 +395,9 @@ func TestRunnerSecretNameRefused_CoversWorkflowSetNames(t *testing.T) {
 	require.Contains(t, actionNames, "STATUS_RUN_URL", "action.yml must have a Run fullsend step with its env")
 	names = append(names, actionNames...)
 
-	require.Contains(t, names, "JIRA_TOKEN", "harness-run must still set the named JIRA_TOKEN secret")
+	require.Contains(t, names, "JIRA_BASE_URL", "harness-run must still set JIRA_BASE_URL")
+	require.NotContains(t, names, "JIRA_TOKEN", "the retired JIRA_TOKEN secret must not be forwarded")
+	require.NotContains(t, names, "JIRA_USER_EMAIL", "the retired JIRA_USER_EMAIL secret must not be forwarded")
 	for _, name := range names {
 		assert.True(t, runnerSecretNameRefused(name), "%s is set on a fullsend run step but not refused as a runner secret name", name)
 	}

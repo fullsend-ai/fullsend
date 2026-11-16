@@ -70,7 +70,8 @@ func overlayRunnerSecretRefs(fc *ForgeConfig, names map[string]bool) []string {
 //
 // The check is syntactic and conservative: any reference to event, to
 // runtime other than through the .forge field, or a compile failure counts
-// as reading something else.
+// as reading something else. Any new variable declared in NewOverlayEnv
+// must be handled here, or it passes this guard unchecked.
 func overlayGuardReadsOnlyForgeOrConfig(when string) bool {
 	env, err := NewOverlayEnv()
 	if err != nil {

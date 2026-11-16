@@ -39,6 +39,11 @@ Leverage infrastructure the organization already runs — e.g. CI runners, inter
 
 **Cons:** Internal platforms may not be designed for long-running or bursty agent workloads; we may need to add isolation, scaling, and tooling; ownership and SLOs may be unclear.
 
+Private execution infrastructure does not itself restrict the audience of
+console logs, artifacts or forge writes. See
+[Private Context in Public Agent Workflows](private-context-public-workflows.md)
+for the separate output boundary when an agent uses protected external data.
+
 **Open questions:**
 
 - What internal platforms exist that could host agent workloads (e.g. OpenShift, internal CI, shared Kube)?

@@ -393,8 +393,9 @@ func printGitLabWebhookDetails(printer *ui.Printer, repoFullName string, res rep
 
 // refreshGitLabWebhookAfterPollerFailure skips Poller-route provisioning after
 // a failed Poller stage, even if an old account hook appears stale after
-// activation was withdrawn. It may repair or
-// create a hook only if account convergence restored the active account route.
+// activation was withdrawn. It repairs a stale hook or creates a missing one
+// (and its secret) from scratch, only if account convergence left the active
+// account route.
 func refreshGitLabWebhookAfterPollerFailure(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, dryRun bool) error {
 	if dryRun {
 		return nil

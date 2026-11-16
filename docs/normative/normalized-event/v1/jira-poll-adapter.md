@@ -59,6 +59,7 @@ versioning note in [README.md](README.md)).
 | `entity.linked_change_proposal` | Omitted — Jira poll emits work-item events only |
 | `actor` | Comment/changelog author (see below) |
 | `transition` | Mapped semantic transition (see below) |
+| `state.issue_type` | Current issue type `{id, name, is_subtask}` from `fields.issuetype`; omitted when unavailable |
 | `state.labels` | Current Jira label names at event time |
 
 ## Transition mapping
@@ -126,9 +127,39 @@ than depending on either.
 
 ## State
 
+- `state.issue_type` — optional current Jira issue type: `id` and `name` are
+  strings of 1–255 characters; `is_subtask` is a boolean (Jira's `subtask`). The adapter omits the
+  object if either string is empty or exceeds that limit. The ID is stable within the Jira instance;
+  the name may be customized or renamed. This is the search snapshot, not the
+  historical type at the transition timestamp. Type-only changes do not emit
+  events. CEL rules SHOULD guard access with `has(event.state.issue_type)`.
+
 - `state.labels` — label names from `fields.labels` at event time; see
   [Validation and skipping](#validation-and-skipping) for how an issue served
-  without the field is treated.
+  without the field is treated. The
+  dispatch door bounds them to a 1024-byte JSON prefix, like the
+  [GitLab dispatch payload](README.md#gitlab-dispatch-payload), so user
+  labels past the bound never reach the harness on this transport
+  (fullsend's own control labels, `fullsend-fix` and `fullsend-no-fix`,
+  are kept past the bound, like on the GitLab transport); an `/fs-*`
+  command body that does not fit the dispatch budget fails the dispatch
+  instead of arriving shortened. On the GitLab target a command body is
+  carried whole through normalization so the door measures the complete
+  body; the GitHub target's transport has no fail-closed budget door
+  (its records travel whole through the dispatch file into the poll
+  job's matrix output), so there every body, command or not, keeps the
+  schema's 4096-code-point cap at normalization. A raw non-command body
+  past that cap is cut at normalization on both targets, before the
+  dispatch door sees it, so that guarantee covers what the schema
+  carries. Body-keyed triggers see the
+  adapter-truncated body, while the transported non-command body is
+  shortened further (the shortening ladder on the GitLab target; the
+  GitHub target carries the adapter-truncated body). On
+  the GitLab target the same labels bound is
+  applied before trigger matching, so a trigger keyed on a label past the
+  bound does not match: the matcher and the transported payload agree on
+  the work item's labels. The GitHub target matches on the full label
+  set.
 - `state.change_proposal` — omitted. Change-proposal stages (`fix`, PR-linked
   `review`, merge `retro`) are forge-scoped; harness CEL triggers for those
   stages MUST require `entity.kind == 'change_proposal'` or equivalent guards.

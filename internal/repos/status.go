@@ -127,6 +127,17 @@ type RepoStatus struct {
 	Drifts          []Drift `json:"drifts,omitempty"`
 	Error           string  `json:"error,omitempty"`
 
+	// ConfigCompatibility reports whether the installed
+	// .fullsend/config.yaml is readable at the repository's effective
+	// fullsend_ref (#9292): ConfigCompatible, ConfigIncompatible or
+	// ConfigUnknown; empty when no overlay is installed.
+	// ConfigCompatibilityReason explains an incompatible or unknown result,
+	// and ConfigSchemaRef names the pinned ref it was assessed against
+	// (empty when the repository follows the running release).
+	ConfigCompatibility       string `json:"config_compatibility,omitempty"`
+	ConfigCompatibilityReason string `json:"config_compatibility_reason,omitempty"`
+	ConfigSchemaRef           string `json:"config_schema_ref,omitempty"`
+
 	// ConfigRejected marks a repo whose manifest configuration was rejected
 	// before any forge state was inspected (for example a missing
 	// inference.auth selection). Callers that enrich status with further
@@ -306,6 +317,14 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 			cfg.ProposedBase = data
 			presetLoaded = true
 		}
+	}
+	// Assess managed configuration against the schema of the repository's
+	// effective fullsend_ref, as install renders it (#9292).
+	// The installed overlay is read here only for a pinned ref; a read
+	// error is reported by checkManagedConfigDrift.
+	if cfg.ConfigManaged && pinnedFullsendRef(cfg.FullsendRef, dcfg.UpstreamRef, dcfg.UpstreamTag) {
+		existing, _, _ := readManagedConfigOverlayFile(ctx, cfg)
+		cfg.ConfigSchema = selectManagedConfigSchema(ctx, cfg, existing, dcfg.UpstreamRef, dcfg.UpstreamTag, resolver)
 	}
 	// Resolve the mint URL and region from the effective configuration, as
 	// install and dry run do (#8220). Without the declared preset the

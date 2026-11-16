@@ -13,6 +13,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -247,6 +248,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		OrgAllowlist:  cfg.AllowedResources(),
 		Config:        harness.BuildConfigMap(cfg),
 		GitToken:      composeGitToken,
+		GitHubURL:     forge.ConfiguredGitHubURL(),
 	}
 
 	// Always create a GitHub client for the agents-repo fallback —

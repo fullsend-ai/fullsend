@@ -12,7 +12,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
@@ -146,7 +145,9 @@ type routeOpts struct {
 	// forgeClient resolves the agents-repo ref for the fallback. When nil,
 	// an unauthenticated GitHub client is used (fullsend-ai/agents is public).
 	forgeClient forge.Client
-	// fetchPolicy overrides fetch.DefaultPolicy (tests).
+	// fetchPolicy overrides fetch.DefaultPolicy. The dispatch command
+	// passes its host-admitting policy (newDispatchFetchPolicy); tests
+	// inject their own.
 	fetchPolicy *fetch.FetchPolicy
 	printer     *ui.Printer
 }
@@ -223,19 +224,17 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		return withDecision(d, routeSkip, "bot comments do not start "+o.agent), nil
 	}
 
+	allowlist := config.EffectiveAllowedResources(cfg)
+
 	// Same check as resolveAgentSource, so an invalid entry is an error
 	// rather than a failed harness resolution.
-	if err := config.ValidateAgentEntries(cfg.AgentEntries(), cfg.AllowedResources()); err != nil {
+	if err := config.ValidateAgentEntries(cfg.AgentEntries(), allowlist); err != nil {
 		return d, fmt.Errorf("invalid agent config: %w", err)
 	}
 
 	absConfigDir, err := filepath.Abs(o.configDir)
 	if err != nil {
 		return d, fmt.Errorf("resolving config dir: %w", err)
-	}
-	allowlist := cfg.AllowedResources()
-	if allowlist == nil {
-		allowlist = config.DefaultAllowedRemoteResources()
 	}
 	policy := fetch.DefaultPolicy
 	if o.fetchPolicy != nil {
@@ -246,10 +245,15 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		OrgAllowlist:  allowlist,
 		FetchPolicy:   policy,
 		Config:        harness.BuildConfigMap(cfg),
+		GitHubURL:     forge.ConfiguredGitHubURL(),
 	}
 	forgeClient := o.forgeClient
 	if forgeClient == nil {
-		forgeClient = gh.New("")
+		// Unauthenticated, as the agents repository is public, and on the
+		// configured host when GITHUB_SERVER_URL and GITHUB_API_URL agree
+		// (newConfiguredHostGitHubClient), so the route reads the harness
+		// from the same host fullsend run does; otherwise api.github.com.
+		forgeClient = newConfiguredHostGitHubClient("")
 	}
 	printer := o.printer
 	if printer == nil {
@@ -265,6 +269,11 @@ func routeBuiltinAgent(ctx context.Context, o routeOpts) (routeDecision, error) 
 		d.Harness = routeHarnessLabel(cfg, o.agent, deps)
 		if len(deps) > 0 && deps[0].URL != "" {
 			composeOpts.SourceURL = deps[0].URL
+			// Same as runAgent: a harness resolved from the agents repo on
+			// the configured host reads its relative companion files and
+			// directory resources through that host's API, or composition
+			// fails and the route's threshold wrongly fails closed.
+			useAgentsRepoHostFetch(&composeOpts, forgeClient)
 		}
 		if h, _, err := harness.LoadWithBase(ctx, path, composeOpts); err == nil {
 			harnessRole = h.Role

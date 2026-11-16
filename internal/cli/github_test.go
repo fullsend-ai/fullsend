@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -735,6 +738,57 @@ func TestRunGitHubSet_RejectsOrgOnlyTarget(t *testing.T) {
 	}
 	assert.Empty(t, client.Variables, "no variable may be written for an org-only target")
 	assert.Empty(t, client.CreatedSecrets, "no secret may be written for an org-only target")
+}
+
+// recordingGitHubAPI starts a test server that records request paths and
+// refuses every request, standing in for a GitHub host other than
+// github.com.
+func recordingGitHubAPI(t *testing.T) (*httptest.Server, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), paths...)
+	}
+}
+
+func TestGitHubSetCmd_UsesGitHubAPIURL(t *testing.T) {
+	srv, paths := recordingGitHubAPI(t)
+	t.Setenv("GH_TOKEN", "test-token")
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "set", "acme/widget", "FULLSEND_GCP_REGION", "us-east5"})
+	err := cmd.Execute()
+	require.Error(t, err, "the test server refuses every request")
+	assert.NotEmpty(t, paths(), "set must address the host named by GITHUB_API_URL")
+}
+
+func TestGitHubSetupCmd_UsesGitHubAPIURL(t *testing.T) {
+	srv, paths := recordingGitHubAPI(t)
+	t.Setenv("GH_TOKEN", "test-token")
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--runtime", "claude"})
+	err := cmd.Execute()
+	require.Error(t, err, "the test server refuses every request")
+	assert.NotEmpty(t, paths(), "setup must address the host named by GITHUB_API_URL")
 }
 
 func TestGitHubSetCmd_RejectsOrgOnlyTarget(t *testing.T) {

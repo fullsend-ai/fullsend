@@ -13,6 +13,34 @@ These flags are inherited by all `repos` subcommands:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--gitlab-token` | | GitLab personal or project access token (overrides `GITLAB_TOKEN` env var) |
+| `--verbose` | `false` | Show the underlying API error text (for example the GitLab HTTP status and server message) instead of `(server error text withheld)`, and log each GitLab API request to stderr as `gitlab api: <METHOD> <path> -> <status>` |
+
+### Verbose output
+
+By default, API failures from credential-bearing calls are reported without
+the server's error text (`... request failed (server error text withheld)`),
+because a failure can occur before Fullsend knows which credential values to
+redact. `--verbose` appends the underlying error text instead. Before it is
+shown, the text is scrubbed of the token flags and environment variables
+the command was given (`--gitlab-token`, `GITLAB_TOKEN`,
+`--gitlab-role-token`, `--openai-api-key`, `--jira-token`,
+`--jira-client-secret`), credential values Fullsend generated during the
+run, GitLab, GitHub and other known token shapes (for example `glpat-`,
+`glptt-` and `ghp_` tokens), `token=` URL parameters, URL user info, and hex strings
+of 32 or more characters (which also hides commit SHAs). The request log
+shows only the method, the API path without its query string, and the
+response status (`no response` when the request did not complete); it
+never includes headers or bodies. Only failed calls contribute error text,
+so newly minted credentials in successful responses are never shown.
+
+Even without `--verbose`, an error reporting that a supplied role
+credential's ownership is unresolved is shown in full: it contains recovery
+instructions such as "re-enroll the credential with `--gitlab-role-token`"
+and no server text.
+
+```bash
+fullsend repos install acme/api --verbose
+```
 
 ## Commands
 
@@ -171,6 +199,30 @@ fullsend repos install --dry-run
 fullsend repos install acme/api acme/web
 fullsend repos install "acme/*" --direct --concurrency 8
 ```
+
+### Configuration schema of a pinned ref
+
+The managed `.fullsend/config.yaml` is read by the Fullsend runtime at the
+repository's effective `fullsend_ref`, which can be older than the CLI that
+renders it. For an explicitly pinned `fullsend_ref` (one that differs from the
+running release), install, converge and `repos status` use the configuration
+schema that ref declares in `internal/config/managed-config-schema` in
+fullsend-ai/fullsend. A ref without that file uses the legacy schema unless it
+contains the commit that introduced the `tracker` mapping. In the legacy schema
+the managed `tracker` mapping is rendered as the scalar `tracker: <provider>`
+key plus `create_issues.allow_targets`. A setting that schema cannot express
+(GitLab `allowed_targets.groups`, or any `tracker.jira` setting) fails that
+repository with an error that names the setting. The ownership marker is the
+same in every schema.
+
+The pinned ref is looked up only when the managed configuration or the
+installed file declares `tracker` or `create_issues`, the only keys whose shape
+differs between known schemas. Looking it up needs the upstream GitHub client.
+When the ref or its schema cannot be determined (the ref does not resolve, no
+upstream client is available, or the ref declares a schema version this CLI
+does not know), install leaves `.fullsend/config.yaml` unchanged and fails that
+repository with the ref and the reason, and `repos status` reports
+compatibility as `unknown`.
 
 ### Selecting repositories
 
@@ -428,7 +480,18 @@ Upgrade the scaffold and the poller or webhook dispatcher CLI together:
 
 The reverse skew behaves the same way: a new scaffold paired with an old poller finds no body at the canonical path and drops the instruction.
 
-A `/fs-*` command body is also no longer truncated to 800 characters in transport. The dispatcher refuses to dispatch a command whose payload exceeds the chunk budget instead of running the agent on a shortened instruction. Other bodies, such as bot review notes, keep the 800-character bound and the truncation marker.
+The payload's top-level `labels` key is form-dependent: the complete
+`_normalized_event` form drops it (labels travel only at
+`_normalized_event.state.labels`), while the comment-only fallback carries
+the bounded top-level `labels` list.
+
+A `/fs-*` command body is also no longer truncated to 800 characters in
+transport. The dispatcher refuses to dispatch a command whose payload exceeds
+the chunk budget instead of running the agent on a shortened instruction. Other
+bodies, such as bot review notes, are now bounded to 270 characters (down from
+the 800 of earlier releases), so less of a long review note reaches the agent;
+the `[…truncated]` marker is appended when it is cut (see the normalized event
+spec).
 
 #### `runtime` and `allowed_remote_resources` moved into `config` (breaking)
 
@@ -512,7 +575,7 @@ flag or environment variable supplies them.
   any write, until `--jira-token` is supplied or `FULLSEND_JIRA_TOKEN` already
   exists. Re-runs, CI jobs, and scripted installs that previously succeeded
   need the flag added, for example
-  `fullsend repos install --jira-token "$JIRA_TOKEN"`. Setting
+  `fullsend repos install --jira-token "$FULLSEND_JIRA_TOKEN"`. Setting
   `poll.enabled: false` also avoids the requirement.
 - **Disabled (`poll.enabled: false`, or `poll`/`poll.enabled` omitted).**
   Install removes the Fullsend-owned Jira poll resources. `FULLSEND_JIRA_TOKEN`
@@ -683,10 +746,12 @@ reports the result of a containment as drift (the published trigger token was
 removed or revoked) until `repos install` publishes a replacement. The
 account lifecycle does not publish a replacement until those checks pass. If a
 Poller role stage fails, a requested trigger-account rotation waits so the
-existing webhook is not left pointing at a revoked token. The installer still
-refreshes the webhook after ordinary account repair in that failure path when
-the account route is active, because repair can replace its token. It does not
-move an account webhook onto an unverified Poller route. The poller,
+existing webhook is not left pointing at a revoked token. When the account
+route is active, the installer still provisions or converges the account's
+webhook in that same run: it creates a missing webhook and its secret from
+scratch, and repairs a stale one, on the trigger account's token. It never
+creates a webhook or trigger on the Poller route while the Poller stage has
+failed. The poller,
 dispatcher, and agent job scripts unset both trigger-token variables before
 running, and `fullsend run` excludes them from harness expansion.
 
@@ -1025,7 +1090,19 @@ an error; polling stays in place) when the default branch has only a wildcard
 protected-branch rule, project service accounts are unavailable,
 `ci_pipeline_variables_minimum_override_role` is not `no_one_allowed`, or the
 default branch differs from the recorded one (run `repos uninstall`, then
-install). A deferral for the override role that is weakened or cannot be
+install). The service-account deferral names the minimum version: the
+trigger-account route needs GitLab 18.11 or later, where project service
+accounts (generally available on Free in 18.11) and protected-branch
+deploy-key push access (on Free since 18.10) exist on every tier. Upgrade an
+older self-managed instance; install does not promote an account or widen
+branch access in their place. GitLab offers no read-only probe for the
+deploy-key push capability, so install detects a missing capability when it
+adds the account's exact-branch deploy-key push entry: a refusal that says the
+feature is absent or gated by tier or license, or a request GitLab accepts but
+does not record, defers with the same upgrade message. The account then never
+becomes ready, so no route is activated and no other access is granted. The
+account, its key and its trigger stay recorded in the ledger for the next run
+or `repos uninstall`. A deferral for the override role that is weakened or cannot be
 read also removes an already published token variable and revokes the
 account's triggers; `repos status` reports the live role. Install fails, before the account is raised
 to Maintainer, when the account owns an SSH key, a pipeline schedule, or a
@@ -1042,8 +1119,8 @@ direct membership already says Developer.
 Whenever install leaves the trigger account ready, including after GitLab
 refuses the Poller protected-ref grant, it also rechecks the dispatch
 activation gate (`CheckGitLabTriggerDispatchGate`) and reports either
-`GitLab trigger dispatch activation deferred: <reasons>` or
-`GitLab trigger dispatch prerequisites verified`. The recheck lists every
+`GitLab trigger dispatch activation deferred`, followed by one line per
+unmet prerequisite, or `GitLab trigger dispatch prerequisites verified`. The recheck lists every
 unmet prerequisite: managed scheduled polling no longer uses
 pipeline variables (the canonical schedule specs and every live managed
 schedule; a failed schedule read defers), the live
@@ -1072,12 +1149,22 @@ overrides a dispatch or pre-authorization value such as `CI_PIPELINE_SOURCE`,
 `CI_PIPELINE_SCHEDULE_DESCRIPTION`, `FULLSEND_POLL_MODE`, or an agent input
 bridge, or when either
 inventory cannot be read (group and instance scopes the installing credential
-may not read are skipped). GitLab also requires a protected-branch schedule
-owner to have merge permission. If the Developer trigger account lacks it,
-the schedules stay installer-owned on the Poller route. GitLab Free cannot
-grant merge access to just that account; a project whose protected branch
-allows only Maintainers to merge therefore uses the fallback without widening
-merge access. An exact-name managed schedule left by a previous installer
+may not read are skipped). Schedule ownership is evaluated separately from
+activation ([#9343](https://github.com/fullsend-ai/fullsend/issues/9343)).
+GitLab requires a protected-branch schedule owner to have merge permission,
+but a pipeline the trigger account starts through its trigger token needs only
+push or merge access, which its recorded deploy-key push grant gives it. If
+the Developer trigger account lacks merge permission (or it cannot be
+verified), the schedules stay installer-owned on the Poller route, and
+install reports that without deferring activation or the webhook route.
+GitLab Free cannot grant merge access to just that account; a project whose
+protected branch allows only Maintainers to merge therefore uses the fallback
+without widening merge access. When the gate passes, install reports the
+trigger account's name and user ID, the protected branch, and the deploy key
+in that branch's push-access list. That grant also permits direct pushes to
+the branch through the key, and it grants no merge permission. While
+activation is recorded and the account lacks merge permission, `repos status`
+does not report the installer-owned schedules as drift. An exact-name managed schedule left by a previous installer
 credential remains eligible for adoption or hand-back when its reported owner
 still has project Maintainer access. An unknown or lower-privilege owner
 requires manual reconciliation.
@@ -1086,9 +1173,11 @@ Every converge, rotate, containment or uninstall run first deletes the
 When the gate passes, `repos install` records that variable, bound to the exact
 `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger generation, which activates the
 CI_JOB_TOKEN child-pipeline (`source=pipeline`) dispatch route; install fails
-if recording the activation fails. Install then recreates the managed polling
+if recording the activation fails. When the account also has merge permission
+on the protected default branch, install then recreates the managed polling
 schedules (`fullsend slash poll`, `fullsend event poll`) under the trigger
-account, so scheduled polls run as the account and use that route. After this
+account, so scheduled polls run as the account and use that route; otherwise
+they stay installer-owned and poll through the Poller `api` route. After this
 ownership move, use this release or newer for `repos install`,
 `repos status`, and `repos uninstall`. Once this release writes the
 `trigger_token_digest` or `publication_pending` ledger key, older strict CLI
@@ -1474,6 +1563,17 @@ is reported when any active Poller identity is missing.
 For the service-account diagnostics, see
 [GitLab project service-account lifecycle § Service-account status](#service-account-status).
 
+Managed `.fullsend/config.yaml` is checked against the configuration schema of
+the repo's pinned `fullsend_ref` (see
+[Configuration schema of a pinned ref](#configuration-schema-of-a-pinned-ref)).
+A repo whose installed file that ref cannot read is listed with
+`config compatibility (fullsend_ref <ref>): incompatible` and the reason. A
+repo whose schema cannot be determined is listed as `unknown` with the ref and
+reason, and its `.fullsend/config.yaml` is reported as drift rather than
+current. JSON output carries the same result in `config_compatibility`
+(`compatible`, `incompatible`, or `unknown`), `config_compatibility_reason`,
+and `config_schema_ref`.
+
 **JSON output** (`--json`) returns the full `StatusResult` object with per-repo details and aggregate summary counts.
 
 ### Exit codes
@@ -1537,6 +1637,11 @@ When multiple repos are targeted (via globs or explicit bulk lists), the command
 Uninstall removes every fullsend-managed inference credential, whatever the repo's `inference.auth` is (or whether it is set or valid at all): `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, and `FULLSEND_OPENAI_API_KEY`, plus the `FULLSEND_GCP_REGION` variable (and, on GitLab, `FULLSEND_GCP_SERVICE_ACCOUNT`). Leftovers from an earlier method and partially installed repos are cleaned up the same way. A credential that is already absent is skipped, so re-running uninstall is safe. Uninstall never deletes an unprefixed `OPENAI_API_KEY` secret or CI/CD variable, or any other credential fullsend does not manage. It also leaves the user-managed `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID` and `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` identifier variables in place. Remove `OPENAI_API_KEY` yourself if nothing else uses it.
 
 **Upgrade behavior change.** Uninstall also deletes `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` on both forges, mirroring [Jira polling](#jira-polling) install. Earlier releases never touched these credentials, so a repo that provisioned them by hand for another Jira consumer loses them when you uninstall with this release. Back them up or re-provision them afterward if something else depends on them.
+
+Uninstall also deletes `FULLSEND_TRACE_SIGNING_KEY`, the trace signing key
+secret, on both forges
+([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)).
+A repository without it still uninstalls.
 
 ```bash
 fullsend repos uninstall acme/old-api

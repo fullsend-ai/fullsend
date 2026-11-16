@@ -76,10 +76,25 @@ them under `forge:` or `overlays:` is ignored, not an error:
 | `readonly_repo`    | Repo access mode                                   |
 | `allow_runtime_fetch` | Runtime fetch opt-in                            |
 | `max_runtime_fetches` | Fetch cap                                       |
+| `allow_ci_variable_credential` | GitLab only: print the CI/CD-variable provider credential line as info instead of a warning; default `false` |
 | `trigger`          | CEL trigger expression, evaluated against normalized events (ADR-0061) |
 | `privilege_levels` | Mint privilege per run-stage (ADR-0073)            |
 | `schema_version`   | Schema contract version (ADR-0127); absent = `1`; malformed, zero, negative or unsupported values fail load |
 | `preflight_check`  | Single host-dependency gate run once before sandbox creation for `pre_script`/`post_script`/`validation_loop`; a literal `sh -c` command, not a script path (ADR-0128, ADR-0129). **Planned, not yet implemented** ([#8722](https://github.com/fullsend-ai/fullsend/issues/8722)) |
+
+The config-level `allowed_remote_resources` (the `config.yaml` layer over
+`config.base.yaml`) bounds the harness-level field, and every command
+family resolves it by one rule: the layered chain is resolved as-is (an
+omitted key falls through to the parent, an explicit `[]` denies all remote
+resources with no fallthrough, a non-empty list unions with the parent's),
+then fullsend's default prefixes are ensured on top of a non-empty result.
+`fullsend run`, `lint`, `lock` and eval-measure (`loadLockConfig`), harness
+dispatch (`ListTriggeredHarnesses`), `fullsend dispatch --route`
+(`routeBuiltinAgent`), the Jira poll and the agent-editing commands
+(`agent set/add/update/remove`) therefore resolve the same list: a
+non-empty `config.yaml` list over a base layer's `allowed_remote_resources:
+[]` carries the default prefixes everywhere alike, and an explicit `[]` as
+the resolved effective value stays deny-all everywhere alike.
 
 ## Semantic types (ADR 0127)
 
@@ -101,7 +116,7 @@ references are scalar values, not shell commands.
 | source metadata path | Describes a path in the source repository; not runtime-resolved or delivered | `doc` |
 | destination path | Names a location inside the sandbox, not a host file to resolve | `host_files[].dest` |
 | structural | Contains nested fields, lists, maps, or conditions | `forge`, `overlays[]`, `validation_loop`, `host_files[]`, `api_servers[]`, `skills[]`, `plugins[]`, `plugins[].pi`, `openshell`, `security` and its nested scanner/hook/escalation/trace blocks, `runner_env`, `env`, `env.runner`, `env.sandbox`, `privilege_levels`, `api_servers[].env`, `plugins[].env`, `allowed_remote_resources`, `providers` |
-| scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `trigger` (CEL expression), `schema_version`; `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
+| scalar | Interpreted as a configuration value, never as a path solely because it resembles one | `role`, `slug`, `description`, `image`, `model`, `effort`, `timeout_minutes`, `readonly_repo`, `sandbox_timeout_seconds`, `allow_runtime_fetch`, `max_runtime_fetches`, `allow_ci_variable_credential`, `trigger` (CEL expression), `schema_version`; `validation_loop.max_iterations`, `validation_loop.feedback_mode`, `host_files[].expand`, `host_files[].optional`, `host_files[].allow_durable`, `api_servers[].name`, `api_servers[].port`, `api_servers[].env[<key>]`, `plugins[].env[<key>]`, `plugins[].pi.args[]`, `runner_env[<key>]`, `env.runner[<key>]`, `env.sandbox[<key>]`, `privilege_levels[<stage>]`, `allowed_remote_resources[]`, `overlays[].when` (CEL expression); all leaf values under `security` |
 
 For local harnesses, relative runtime paths resolve from the `.fullsend`
 configuration root (the parent of `harness/`), **not** from the YAML file's
@@ -164,6 +179,8 @@ Two independent precedence axes govern field resolution
 |------------------|------------------------------------------------------|-------------------------------------------------------|
 | Scalar fields    | Forge/child value overrides top-level/base value     | Absent = inherit from top level / base                |
 | `schema_version` | Not inherited, and an exception to the Scalar row: the merged harness keeps the child's own declaration. Every composed `base:` layer must share one effective version, or the load fails naming both versions and the layer (ADR-0127). Top level only (not in `ForgeConfig`, so no forge/overlay override) | Absent = version `1`; an absent child stays absent after the merge rather than inheriting the base's value |
+| `readonly_repo`  | Child wins if set, including `false`. Top level only (not in `ForgeConfig`, so a `readonly_repo` key under `overlays:`/`forge:` is silently ignored) | Absent (nil) = inherit from base; `readonly_repo: false` = explicit value (`*bool`), wins over a base `true` |
+| `allow_ci_variable_credential` | Not inherited, and an exception to the Scalar row: the merged harness keeps the child's own value, so a base cannot silence the GitLab CI/CD-variable credential warning for its children. Top level only (not in `ForgeConfig`, so a key under `overlays:`/`forge:` is silently ignored) | Absent = `false` |
 | `skills`         | Merged with deduplication by skill identity (declared `SKILL.md` name, otherwise directory basename; `skill.SandboxName`). Relative entries are resolved against the fullsend directory before the merge, so a local override matches by declared name too. Two entries with one identity in a single list are both kept and fail at bootstrap. A relative entry reached through a symlink that leaves the fullsend directory, or that has an absolute target, at any component including the marker file, keeps its directory basename as its merge identity. Forge/child overrides a matching top-level/base entry, and the two entries' per-file override maps merge (`mergeOverrides`; forge/child keys win). A map-form forge/child entry whose path has no `SKILL.md` keeps the matched entry's source and adds only its overrides (#6158); If such an entry matches no key, it can match the one pinned-URL entry of its name (ignoring `#fragment` and `?query`); two or more candidates are an error that names them and asks for the full base URL as the map key (#8973). Sibling nested dirs that share a leaf name are kept. | Absent (nil) = inherit; `skills: []` = empty list merged with base (base entries are returned) |
 | `runner_env`     | Top-level/base map merged with forge/child map; forge/child keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `privilege_levels` | Top-level/base map merged with child map; child keys win (not in `ForgeConfig`, so no forge/overlay override) | Absent (nil) = inherit from base; omitted entirely at every layer defaults every run-stage to `write` |
@@ -241,9 +258,30 @@ Overlay `when` expressions are evaluated with:
 
 | Variable | Type | Source |
 |---|---|---|
-| `event` | `normevent.Event` | The triggering event — fields like `source.system`, `entity.kind`, `transition.kind`. The ADR 0107 fields `actor.bot_role` and `actor.role_verified` are present only when an adapter performed a bot-role lookup; guard them with `has()` |
+| `event` | `map[string]any` | The triggering event (the serialized `normevent.Event`) — fields like `source.system`, `entity.kind`, `transition.kind`. The ADR 0107 fields `actor.bot_role` and `actor.role_verified` are present only when an adapter performed a bot-role lookup; guard them with `has()`. Optional `state.issue_type` carries the current Jira type (`id`, `name`, `is_subtask`); guard with `has(event.state.issue_type)`. It is preserved in `_normalized_event` without a separate legacy payload field |
 | `runtime.forge` | `string` | Effective forge platform (precedence: CLI flag > config.forge > CI env vars) |
-| `config` | `map[string]any` | Full per-repo config from `config.yaml` |
+| `config` | `map[string]any` | Full per-repo config from `config.yaml`, with `allowed_remote_resources` as the effective list the command families that run or edit agents resolve — run/lint/lock, harness dispatch, `dispatch --route`, the Jira poll and the agent-editing commands (the layered chain with fullsend's default prefixes ensured on a non-empty result); the key is omitted when the resolved list is empty, so an explicit `[]` stays deny-all |
+
+#### Why the default prefixes are ensured
+
+`config.allowed_remote_resources` resolves to the layered chain with
+fullsend's default prefixes ensured on top of a non-empty result. The
+defaults are ensured because the default prefixes are what make
+first-party agent sources resolvable with no configuration: `run`, `lint`
+and `lock` resolve them, and the other command families that run or edit
+agents (harness dispatch, `dispatch --route`, the Jira poll, `agent
+set/add/update/remove`) resolve the same value rather than a
+stricter one; tightening `run`/`lint`/`lock` to respect a base `[]`
+instead would change the behaviour of the family that already worked. A
+deny-all that must stay authoritative is declared in a managed
+`repos.yaml` block (`defaults.config`, the forge config or the repo's
+`config`), whose reset rejects a non-empty list declared below it
+([Layered Config
+Reference](../guides/infrastructure/layered-config-reference.md)); a
+`[]` in a `config_base` preset or a hand-edited `config.base.yaml` does
+not stay authoritative over a non-empty `config.yaml` list, because the
+reset compares only the managed blocks and `config.base.yaml` is layered
+in after the check.
 
 ### Mutual exclusion
 
@@ -261,20 +299,42 @@ This payload provides backwards-compatible legacy forge fields (`issue`,
 GitLab has a second, separate builder: `buildEventPayload` in
 `internal/poll/dispatch.go`, shared by the poller and the webhook dispatcher.
 It emits a minimal payload. Its `_normalized_event` is the complete event when
-that validates and fits the transport budget, and otherwise a partial map that
-carries only `transition.comment.body` (see
-`docs/normative/normalized-event/v1/README.md`). Its unit tests are in
-`internal/poll/dispatch_test.go`, `internal/poll/dispatch_normalized_test.go`
-and `internal/poll/webhook_dispatch_test.go`;
-`run-agent-job.sh` reads the body in
+that validates and fits the transport budget; a missing or invalid normalized
+event falls back to a partial map that carries only `transition.comment.body`
+for any note, command or not, and an over-budget complete form falls back the
+same way for a non-command note (see
+`docs/normative/normalized-event/v1/README.md`); a `/fs-*` command body whose
+complete event does not fit the budget fails the dispatch closed instead of
+falling back.
+In the complete form the
+event's `state.labels` is bounded to a 1024-byte JSON prefix; entries past
+the bound are dropped, except fullsend's own control labels (`fullsend-fix`,
+`fullsend-no-fix`), which the bound keeps so the fix kill switch survives it.
+A non-command comment body is bounded to 270 runes.
+Each other attacker-shaped single string (branch refs, the
+head_repo/base_repo paths, logins, the label name) is bounded to a 258-byte
+JSON prefix — a same-project MR carries the project's own path in
+head_repo/base_repo, and it stays cut there even though `repo` travels
+whole; the
+config-derived `repo`, `entity.url` and
+`entity.linked_change_proposal.url` travel whole, and a config whose
+lengths push the payload past the budget fails closed. Together
+these bounds keep the worst attacker-shaped payload at a plausible config
+inside the transport
+budget (`TestBuildEventPayload_WorstCaseFitsTransportBudget` pins it). Its
+unit tests
+are in `internal/poll/dispatch_test.go`,
+`internal/poll/dispatch_normalized_test.go` and
+`internal/poll/webhook_dispatch_test.go`; `run-agent-job.sh` reads the body in
 `internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/`, and
 `internal/scaffold/gitlab_fix_instruction_test.go` covers that script.
 
 When resolving CEL-guarded overlays via `ResolveOverlays(event, forgePlatform,
-config)`, the runtime passes the deserialized `normevent.Event` directly as
-the `event` variable in the CEL environment (see [CEL environment](#cel-environment)
-above). When adding, modifying, or removing fields in normalized event structures
-or `event_payload`:
+config)`, the runtime passes the normalized event as a map, or an empty map
+when the run has none (so `has()` guards are false and `event == null` never
+matches), as the `event` variable in the CEL environment (see
+[CEL environment](#cel-environment) above). When adding, modifying, or removing
+fields in normalized event structures or `event_payload`:
 
 1. Update `buildEventPayload` in `internal/harnessdispatch/project.go` and its
    unit tests in `internal/harnessdispatch/project_test.go`. If the change

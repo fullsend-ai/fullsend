@@ -788,8 +788,9 @@ func gitlabDispatcherTemplateProblem(template []byte, defaultBranch string) stri
 		return "defines a dispatcher job whose rules can be evaluated"
 	}
 	if rules != nil {
-		outcome, idx := evaluateRules(rules, triggerPipelineEnv(defaultBranch))
-		if p := rulesProblem(outcome, idx, "dispatcher job rule"); p != "" {
+		env := triggerPipelineEnv(defaultBranch)
+		outcome, idx := evaluateRules(rules, env)
+		if p := rulesProblem(rules, env, outcome, idx, "dispatcher job rule"); p != "" {
 			return "admits protected-default-branch trigger pipelines to the dispatcher job " + p
 		}
 		matched := resolveAlias(resolveAlias(rules).Content[idx-1])

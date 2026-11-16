@@ -321,6 +321,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			OrgAllowlist:  orgAllowlist,
 			TreeFetcher:   rFlags.treeFetcher,
 			GitToken:      composeGitToken,
+			GitHubURL:     forge.ConfiguredGitHubURL(),
 			Config:        harness.BuildConfigMap(orgCfg),
 			SourceURL:     sourceURL,
 		})
@@ -722,6 +723,7 @@ func resolveHarnessForLock(ctx context.Context, absFullsendDir, agentName string
 		FetchPolicy:   policy,
 		TreeFetcher:   rFlags.treeFetcher,
 		GitToken:      composeGitToken,
+		GitHubURL:     forge.ConfiguredGitHubURL(),
 	})
 	if resolveErr != nil {
 		if harness.IsURL(entry.Source) {
@@ -1510,6 +1512,9 @@ func isTreeLockField(field string) bool {
 // point at the SKILL.md marker; current plugins point at their directory.
 // Legacy pre-#6754 plugin locks point at plugin.json, so both marker names are
 // stripped. Any other raw URL keeps its last segment as the directory name.
+// Raw URLs on the configured GitHub host (forge.ConfiguredGitHubURL) are
+// parsed the same way, matching fetchBaseSkillDir, so a GHES SKILL.md marker
+// names its skill directory rather than "SKILL.md".
 func lockTreeDirName(field, lockURL string) (string, error) {
 	if forgeInfo, err := forge.ParseForgeURL(lockURL); err == nil {
 		if forgeInfo.Path == "" {
@@ -1517,7 +1522,7 @@ func lockTreeDirName(field, lockURL string) (string, error) {
 		}
 		return filepath.Base(forgeInfo.Path), nil
 	}
-	if rawInfo, err := forge.ParseRawContentURL(lockURL); err == nil {
+	if rawInfo, err := forge.ParseRawContentURLOnHost(lockURL, forge.ConfiguredGitHubURL()); err == nil {
 		if last := path.Base(rawInfo.Path); last == "SKILL.md" || last == "plugin.json" {
 			dir := path.Dir(rawInfo.Path)
 			if dir == "." {

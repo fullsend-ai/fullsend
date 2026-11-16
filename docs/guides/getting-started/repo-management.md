@@ -121,12 +121,24 @@ For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 (`repos install` and `repos status`) require `gitlab.url` whenever GitLab
 repos are present, including gitlab.com; there is no manifest default. Set
 it with `fullsend repos set gitlab.url <url>` before declaring the first
-GitLab repository. The env-var fallback chain
-(`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to
-gitlab.com) applies only to call paths without a manifest URL; it does
-not override manifest validation. Self-hosted
-instances that use a private CA need runner `tls-ca-file` plus separate
-sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
+GitLab repository.
+
+`fullsend run` does not read the manifest. It reads the GitLab URL from
+the first one set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and
+`CI_SERVER_URL`. These variables never override `gitlab.url` in
+manifest validation. `fullsend run` limits `GITLAB_TOKEN` in the
+sandbox to that URL's host and port. It stops before setup if the URL
+is invalid. With the stock GitLab agents, it also stops if no URL is
+set. For a local run, set it:
+
+```bash
+export FULLSEND_GITLAB_URL=https://gitlab.example.com
+```
+
+For each stop and its fix, see [Self-Hosted GitLab Instances](configuring-gitlab.md#self-hosted-gitlab-instances).
+
+Self-hosted instances that use a private CA need runner `tls-ca-file`
+plus separate sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
 
 Per-repo fields inherit from the platform-level default when omitted.
 To explicitly stop a field from inheriting, set it to the literal value
@@ -454,7 +466,10 @@ drop, or that changes only through the base layer, is visible first. A
 markerless file that is malformed or not a per-repo configuration is
 reported by `repos status` as an error instead. Once
 a file carries the marker, `repos install`
-writes the canonical sparse `.fullsend/config.yaml`, `repos status`
+writes the canonical sparse `.fullsend/config.yaml` (for an explicitly pinned
+`fullsend_ref`, rendered in the configuration schema that ref reads, and left
+unchanged with an error when that schema cannot be determined; see
+[Configuration schema of a pinned ref](../../cli/repos.md#configuration-schema-of-a-pinned-ref)), `repos status`
 reports any whole-file difference (including a single-key change) as
 drift, and convergence rewrites the file deterministically — unless the
 candidate would become less restrictive than the current effective
@@ -662,9 +677,12 @@ For GitLab repos, install also converges a dedicated trigger-only service
 account that owns a push-capable deploy key on the default branch's
 exact-name protected-branch rule and a pipeline trigger token. It uses only
 project-scoped authority, so it works on GitLab.com Free. Once the trigger
-dispatch activation is recorded, it also owns the managed polling schedules, so
-a scheduled poll runs as that account, and the managed webhook posts to its
-published trigger token instead of the Poller-owned one. Details are in
+dispatch activation is recorded, the managed webhook posts to its published
+trigger token instead of the Poller-owned one. The managed polling schedules
+move to that account, so a scheduled poll runs as it, only when the account
+also has merge permission on the protected default branch. Otherwise the
+schedules stay installer-owned on the Poller route while the webhook route is
+active. Details are in
 [Configuring GitLab](configuring-gitlab.md) and the
 [`repos install` reference](../../cli/repos.md).
 
@@ -737,8 +755,17 @@ For GitLab repos, status also reports the trigger-only service account as
 `cleanup-pending`, or `unreadable`, with the reason and resource IDs and never
 a token value. Every state except `not-installed`, `deferred`, and `ready` is
 drift. The managed `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET`
-variables are not reported as orphans; any other unrecognised `FULLSEND_`
-variable still is.
+variables and the reserved `FULLSEND_TRACE_SIGNING_KEY` are not reported as
+orphans; any other unrecognised `FULLSEND_` variable still is.
+
+For repos with a managed `.fullsend/config.yaml` and an explicitly pinned
+`fullsend_ref`, status also checks the installed file against the
+configuration schema that ref reads. It reports
+`config compatibility (fullsend_ref <ref>)` as `incompatible` when the ref
+cannot read the installed file, or as `unknown` (and the file as drift
+rather than current) when the schema cannot be determined. `--json` output
+carries `config_compatibility`, `config_compatibility_reason` and
+`config_schema_ref`. See [`repos status` output](../../cli/repos.md#output).
 
 For GitLab repos, status also reports the webhook fast path as a
 `gitlab_webhook` object with a `state`, the booleans `webhook_present`,
@@ -952,6 +979,22 @@ detect downgrades. If the ancestry check fails (e.g., API error), the
 upgrade proceeds rather than blocking — graceful degradation.
 
 ## Troubleshooting
+
+### Errors that say "server error text withheld"
+
+By default, `fullsend repos` reports a failed credential-bearing API call
+without the server's response, for example:
+
+```
+GitLab Poller membership reconciliation failed: resolving the GitLab Poller identity: request failed (server error text withheld)
+```
+
+Re-run the command with `--verbose` to see the scrubbed HTTP status and
+server message, and a stderr log line for each GitLab API request
+(method, path and status). This shows which call failed. Known credentials
+and token-shaped values are redacted; see
+[Verbose output](../../cli/repos.md#verbose-output) for what is shown and
+what is redacted.
 
 ### Unknown field errors in repos.yaml
 

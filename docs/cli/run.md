@@ -30,7 +30,7 @@ A harness whose runtime fetch service can start (`allow_runtime_fetch: true`, UR
 | `--keep-sandbox` | Skip sandbox deletion after the run |
 | `--debug [filter]` | Enable agent runtime debug logging with optional category filter (e.g. `"api,hooks"`) |
 | `--forge` | Forge platform to use (`github`, `gitlab`). When omitted, resolved from `forge:` in the `config.yaml` at the root of `--fullsend-dir`, then `GITHUB_ACTIONS`/`GITLAB_CI` |
-| `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run stops, because its Jira API gateway address needs a network lookup |
+| `--offline` | Reject network fetches; only use cached remote resources. A Jira-sourced run, or a run that mints a Jira token, stops, because resolving the Jira API gateway address needs a network lookup |
 | `--max-depth` | Maximum dependency depth for transitive resolution (0 disables) |
 
 `--target-repo` accepts a plain directory or a valid checkout with a real root
@@ -392,6 +392,33 @@ After the last iteration, `fullsend run` returns an error, and so exits non-zero
 - `<code>` is the `Agent exit code` value in the Results block. It is `1` when the agent exited 0
   but its transcript reported an error.
 
+## Provider profiles in run output
+
+Once the providers exist, the run prints one line per provider the harness uses; a provider the
+run skips (for example `openai` when no model needs it) gets no line. Each line names the
+profile the provider uses and where it came from: `embedded` for the copy built into fullsend, or
+`harness` for a copy listed in `openshell.profiles`. It then lists what that profile permits: each
+endpoint's host, protocol and `access` (or the methods its allow rules list), and the binaries
+allowlist: a `**/` glob by its base name (`**/gh` as `gh`), an absolute path as written. A profile with more than three endpoints is summarised as
+`<n> endpoints: <hosts> (<access values>)`.
+
+```text
+    provider github: profile fullsend-github (embedded) -> api.github.com rest read-write, github.com rest read-write; binaries gh, git, node, pre-commit
+    provider github-ro: profile fullsend-github-ro (embedded) -> api.github.com rest read-only, api.github.com graphql read-only, github.com rest read-only; binaries gh, node
+```
+
+When the run cannot say what a profile permits, the line says so instead:
+
+- `provider <name>: profile <id> (not imported by this run; what it permits is not known to the runner)`
+  when the profile is neither built into fullsend nor listed by the harness.
+- `provider <name>: profile <id> (harness) could not be read: <error>` when the listed file cannot
+  be read or parsed.
+
+A profile is a declaration of what the gateway should allow. Whether the gateway enforces it
+depends on the deployment, and the run does not check that. If the harness also mounts a durable
+credential file, the run may print a warning before the sandbox starts; see
+[durable credentials next to write-capable providers](../reference/harness-reference.md#durable-credentials-next-to-write-capable-providers).
+
 ## OpenAI credentials on pi and codex
 
 A `fullsend-openai` provider (`providers: [openai]` on the harness, `openai/<id>` models on pi or codex)
@@ -400,17 +427,33 @@ gets its credential from the runner, never from the harness or the sandbox:
 | Runner environment | Effect |
 |---|---|
 | `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID`, `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` | Workload Identity Federation (GitHub Actions only): the run exchanges the job's OIDC token for a short-lived OpenAI token, refreshes it before expiry, and refuses a token whose mapping grants more than model access. All three must be set together; when unset, the `inference.openai` block of `config.yaml` (written by `fullsend github setup --openai-*`) supplies them — except on a machine without a GitHub OIDC endpoint where `OPENAI_API_KEY` is set, which then wins. |
-| `OPENAI_API_KEY` | Static key for local runs, or CI when supplied by the `FULLSEND_OPENAI_API_KEY` repository secret (used only when the three above are unset). In harness YAML, `env.sandbox` and provider definitions `${OPENAI_API_KEY}` expands to the empty string (like the other runner-only variables), and it is never passed to pre/post scripts; the sandbox sees only the gateway placeholder. In CI the runner warns and WIF remains preferred. |
+| `OPENAI_API_KEY` | Static key for local runs, or CI when supplied by the `FULLSEND_OPENAI_API_KEY` repository secret (used only when the three above are unset). In harness YAML, `env.sandbox` and provider definitions `${OPENAI_API_KEY}` expands to the empty string (like the other runner-only variables), and it is never passed to pre/post scripts; the sandbox sees only the gateway placeholder. On GitHub Actions the runner warns about the static key and recommends WIF. In a GitLab CI job it reports the key as a [CI/CD-variable credential](../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables). |
 
 A bare provider name that fullsend ships (`openai`, `github-ro`, `vertex-ai`, and the others listed
 in [`agent new`](agent.md#what-gets-written)) resolves to the
 definition and profile built into fullsend, locally and in CI, with nothing on disk. These names
 and their `fullsend-<name>` profile ids are reserved: a harness that still uses its own copy under
-one gets a warning and keeps the copy for now, and a later release rejects it (`fullsend-openai`
-is already rejected). Give repository-specific providers and profiles their own names.
+one gets a warning and keeps the copy for now, and a later release rejects it. `fullsend-openai` is
+already rejected, and so is `fullsend-jira` when the run mints the Jira token. A profile id made of
+`fullsend-jira-` and 12 hex digits is reserved for the per-site copy `fullsend run` renders, and is
+rejected in every mode. Give repository-specific providers and profiles their own names.
 
 Both paths create a provider named after the run and remove it when the run ends. Setup and
 troubleshooting: [OpenAI Workload Identity](../guides/infrastructure/openai-workload-identity.md).
+
+## Jira access token in the sandbox
+
+The builtin `jira` provider (`providers: [jira]`, profile `fullsend-jira`) gives the sandbox
+read-only Jira access as `JIRA_TOKEN`. The runner environment picks the mode:
+
+| Runner environment | What `fullsend run` does |
+|---|---|
+| `FULLSEND_JIRA_TOKEN` set | Creates the provider from that static token, like any provider. No minting or refresh. |
+| `FULLSEND_JIRA_TOKEN` unset or empty, `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` both set | Mints a service account's OAuth 2.0 access token, gives it to a provider named after the run, refreshes it before it expires, keeps the current placeholder in `/sandbox/fullsend-jira/token`, and deletes the provider when the run ends. Through the API gateway (`api.atlassian.com`), the provider reaches only the site in `tracker.jira.base_url`. The run fails before minting when it cannot resolve that site's cloud ID: no `tracker.jira.base_url` or `project`, `--offline`, a failed lookup, or a custom `tracker.jira.api_url`. The client secret never reaches a provider value or the sandbox. |
+| Only one of the two client variables set | Fails the run. |
+
+See
+[Read-only Jira access from the sandbox](../guides/user/jira-integration.md#read-only-jira-access-from-the-sandbox-jira-provider).
 
 <a id="inference-gateway-credentials-on-pi"></a>
 <a id="inference-gateway-credentials-on-pi-and-codex"></a>
@@ -470,7 +513,24 @@ without an OIDC endpoint) is an error. Details:
 
 On `--forge gitlab` (or when `GITLAB_CI=true`), `fullsend run` does not mint a GitHub App token. It selects a registered GitLab role credential via `gitlabroles.SelectAgent` and exports `GITLAB_TOKEN` from that CI/CD variable. Poller/Analyst/Coder (or a registered custom role) is required unconditionally. A missing role secret fails closed; there is no shared-token fallback and no fallback to a directly-set `GITLAB_TOKEN`. Unregistered custom agents fail closed. Analyst jobs do not receive `PUSH_TOKEN`. A Coder identity cannot approve a merge request.
 
-See [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
+The GitLab URL is the first one set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and `CI_SERVER_URL`. A *provider profile* is an OpenShell file that names a credential and the hosts it may be sent to. The GitLab credential profile is bound only to the GitLab host and port: every imported provider profile that issues `GITLAB_TOKEN` is limited to the host and port of that URL. In scaffolded GitLab CI agent jobs, the job script sets `FULLSEND_GITLAB_URL` from `CI_API_V4_URL` before `fullsend run`, so a value you set there is not used.
+
+**Upgrading.** These GitLab setups need a change:
+
+| Who is affected | What you see | What to do |
+|-----------------|--------------|------------|
+| Local `--forge gitlab` runs that set none of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` or `CI_SERVER_URL` | The run stops: `cannot determine the GitLab forge host: ...` | `export FULLSEND_GITLAB_URL=https://gitlab.example.com`, or `https://gitlab.com` on gitlab.com |
+| Runs whose GitLab URL is `http://` for a host other than `localhost`, `127.0.0.1` or `::1` | The run stops: `GitLab forge URL from <variable> must use https ...` | Use the https URL, for example `export FULLSEND_GITLAB_URL=https://gitlab.example.com` |
+| Custom provider profiles with YAML merge keys (`<<`), alias keys, duplicate keys or more than one document | The run stops: `binding GitLab forge host to provider profiles: ...` | Write each key out once, with one document per file. |
+| Agents that call GitLab under a host name other than the URL's | No stop. Calls to the other host no longer get `GITLAB_TOKEN`. The run log lists the hosts removed: `GitLab credential profile "<id>" narrowed to gitlab.example.com:443; removed: ...` | Call GitLab at the URL's host and port. |
+
+The run stops before setup when:
+
+- the GitLab URL has no host, or is not https (other schemes only for `localhost`, `127.0.0.1` or `::1`);
+- no GitLab URL is set and an imported provider profile issues `GITLAB_TOKEN`;
+- an imported provider profile uses YAML merge keys, alias keys, duplicate keys or more than one document.
+
+For the exact errors and fixes, see [Self-Hosted GitLab Instances](../guides/getting-started/configuring-gitlab.md#self-hosted-gitlab-instances). For the credential contract, see [GitLab Role-Credential Contract](../contributing/gitlab-role-credentials.md).
 
 ## GitHub Packages credentials
 

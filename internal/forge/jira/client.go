@@ -101,11 +101,12 @@ func ValidateBaseURL(rawURL string) error {
 	// Credentials in the URL (https://user:token@host) would be stored
 	// verbatim, propagated into the issue browse URL that lands in every
 	// dispatched NormalizedEvent (and the Actions UI via the guide's
-	// script), and echoed into the error below. Require them via
-	// JIRA_USER_EMAIL/JIRA_TOKEN instead. u.Redacted() masks any password
-	// in error text.
+	// script), and echoed into the error below. Require them via the
+	// FULLSEND_JIRA_* credential variables instead. u.Redacted() masks any
+	// password in error text.
 	if u.User != nil {
-		return fmt.Errorf("base URL %q must not embed credentials; use JIRA_USER_EMAIL and JIRA_TOKEN", u.Redacted())
+		return fmt.Errorf("base URL %q must not embed credentials; use %s and %s, or %s and %s", u.Redacted(),
+			TokenEnvVar, EmailEnvVar, ClientIDEnvVar, ClientSecretEnvVar)
 	}
 	if u.Scheme == "https" {
 		return nil
@@ -525,8 +526,9 @@ type searchRequest struct {
 	NextPageToken string   `json:"nextPageToken,omitempty"`
 }
 
-// searchFields lists the issue fields SearchIssues requests. Of these,
-// the poller reads only "created", "labels", and "reporter". "project"
+// searchFields lists the issue fields SearchIssues requests. The poller
+// reads "created", "labels", "reporter", "assignee", and "issuetype"
+// (for normalized state.issue_type metadata). "project"
 // carries the immutable project database ID, the Jira container identity
 // for trace binding (ADR 0154), so search results hold the same identity
 // as issue reads; GetIssue fetches it through its own request.
@@ -536,7 +538,7 @@ type searchRequest struct {
 // plausibly exceed the client's 10MB decode cap — and since a failed
 // search aborts the whole cycle with the same data returning every time,
 // that failure mode would wedge the poller for the entire project.
-var searchFields = []string{"summary", "status", "labels", "reporter", "assignee", "created", "updated", "project"}
+var searchFields = []string{"summary", "status", "labels", "reporter", "assignee", "created", "updated", "project", "issuetype"}
 
 // maxSearchPages limits pagination to prevent unbounded memory growth
 // from overly broad JQL queries.
