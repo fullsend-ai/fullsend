@@ -245,11 +245,19 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 
 // ReviewResult represents a parsed review result file.
 type ReviewResult struct {
-	Body     string          `json:"body"`
-	Action   string          `json:"action"`   // "approve", "request-changes", "comment", "reject", "failure"
-	HeadSHA  string          `json:"head_sha"` // commit SHA the agent reviewed
-	Reason   string          `json:"reason"`   // failure reason (when action is "failure")
-	Findings []ReviewFinding `json:"findings"`
+	Body             string              `json:"body"`
+	Action           string              `json:"action"`   // "approve", "request-changes", "comment", "reject", "failure"
+	HeadSHA          string              `json:"head_sha"` // commit SHA the agent reviewed
+	Reason           string              `json:"reason"`   // failure reason (when action is "failure")
+	Findings         []ReviewFinding     `json:"findings"`
+	ResolvedFindings []string            `json:"resolved_findings,omitempty"`
+	Dispositions     []ReviewDisposition `json:"dispositions,omitempty"`
+}
+
+// ReviewDisposition represents a finding disposition emitted by the review agent.
+type ReviewDisposition struct {
+	ID     string `json:"id"`
+	Status string `json:"status"` // "open", "resolved_by_change", "reclassified", "dismissed_by_human"
 }
 
 // ReviewFinding is the structured form emitted by the review agent.
@@ -437,7 +445,7 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 		}
 	}
 
-	resolveFixedReviewThreads(ctx, client, owner, repo, pr, parsed.Findings, dryRun, printer)
+	resolveFixedReviewThreads(ctx, client, owner, repo, pr, parsed, dryRun, printer)
 
 	return postApprovedFollowUpIssues(ctx, owner, repo, pr, parsed, printer)
 }
@@ -506,15 +514,35 @@ func pullRequestDiffHashFromDiffs(diffs []forge.PullRequestFileDiff, err error) 
 }
 
 // resolveFixedReviewThreads fetches unresolved review threads and resolves
-// those corresponding to previously reported review agent findings that are
-// no longer present in current findings.
+// those corresponding to findings explicitly reported as resolved by change
+// in the review result (via resolved_findings or dispositions).
 //
 // Fail-closed safeguards:
-//   - Only threads whose root comment was authored by a bot and stamped with
-//     a valid finding marker (<!-- finding:f_xxx -->) are eligible.
-//   - Human-authored comments, discussions without finding markers, and
-//     threads where the finding is still active remain open.
-func resolveFixedReviewThreads(ctx context.Context, client forge.Client, owner, repo string, pr int, currentFindings []ReviewFinding, dryRun bool, printer *ui.Printer) {
+//   - Requires a non-empty reviewed HeadSHA.
+//   - Only threads whose comments were all authored by a bot and whose root
+//     comment is stamped on line 1 with a valid finding marker are eligible.
+//   - Threads containing any human comments or truncated comments remain open.
+//   - Only findings explicitly confirmed resolved by change are eligible.
+func resolveFixedReviewThreads(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, dryRun bool, printer *ui.Printer) {
+	if parsed.HeadSHA == "" {
+		return
+	}
+
+	resolvedIDs := make(map[string]struct{})
+	for _, id := range parsed.ResolvedFindings {
+		if findingIDRe.MatchString(id) {
+			resolvedIDs[id] = struct{}{}
+		}
+	}
+	for _, d := range parsed.Dispositions {
+		if d.Status == "resolved_by_change" && findingIDRe.MatchString(d.ID) {
+			resolvedIDs[d.ID] = struct{}{}
+		}
+	}
+	if len(resolvedIDs) == 0 {
+		return
+	}
+
 	page, err := client.ListPullRequestReviewThreads(ctx, owner, repo, pr)
 	if err != nil {
 		if errors.Is(err, forge.ErrNotSupported) {
@@ -524,29 +552,29 @@ func resolveFixedReviewThreads(ctx context.Context, client forge.Client, owner, 
 		return
 	}
 
-	activeFindings := make(map[string]struct{}, len(currentFindings))
-	for _, f := range currentFindings {
-		if f.ID != "" && findingIDRe.MatchString(string(f.ID)) {
-			activeFindings[string(f.ID)] = struct{}{}
-		}
-	}
-
 	resolvedCount := 0
 	for _, thread := range page.Threads {
-		if thread.IsResolved || len(thread.Comments) == 0 {
+		if thread.IsResolved || thread.CommentsTruncated || len(thread.Comments) == 0 {
 			continue
 		}
+		// Fail closed: only threads with exclusively bot-authored comments are resolvable.
+		hasNonBot := false
+		for _, c := range thread.Comments {
+			if c.AuthorType != "Bot" {
+				hasNonBot = true
+				break
+			}
+		}
+		if hasNonBot {
+			continue
+		}
+
 		root := thread.Comments[0]
-		// Fail closed: only verified bot-authored comments are resolvable.
-		if root.AuthorType != "Bot" {
-			continue
-		}
 		findingID := parseFindingStamp(root.Body)
 		if findingID == "" {
 			continue
 		}
-		// If finding is still reported in current review, keep thread open.
-		if _, stillActive := activeFindings[findingID]; stillActive {
+		if _, isResolved := resolvedIDs[findingID]; !isResolved {
 			continue
 		}
 
