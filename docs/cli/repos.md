@@ -1721,12 +1721,12 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (opening a PR to remove workflow files, then deleting variables and secrets via the API), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
 
 A manifest loaded from an HTTPS URL, read from a pipe or FIFO (as `-f <(cmd)`
-gives), or a local file without write permission, is read-only, so uninstall
-cannot remove entries from it. Uninstall refuses such a manifest before it
-tears anything down, `--manifest-only` refuses it too, and `--dry-run` reports
-the same refusal. To uninstall from one, run with `--uninstall-only`, which
-tears down without editing the manifest, then remove each torn-down entry from
-its source.
+gives), or a local file without write permission or on a read-only file
+system, is read-only, so uninstall cannot remove entries from it. Uninstall
+refuses such a manifest before it tears anything down, `--manifest-only`
+refuses it too, and `--dry-run` reports the same refusal. To uninstall from
+one, run with `--uninstall-only`, which tears down without editing the
+manifest, then remove each torn-down entry from its source.
 
 Uninstall rewrites the whole `repos.yaml` with its own formatting. When the
 rewritten file would exceed the 1 MB limit that loading a manifest enforces,
@@ -1844,7 +1844,7 @@ fullsend repos set --unset <path>
 
 Paths are resolved against the manifest schema, so every field the manifest accepts can be set and there is no separate list of keys. After each edit the whole resulting manifest is validated with the same checks `repos install` uses. A rejected edit leaves the file byte-identical. A successful edit changes only the edited lines and keeps unrelated values, comments, blank lines, and ordering. If the manifest does not exist, `repos set` creates it with `version: 1`. Missing optional parent mappings (for example `defaults.config`) are created as needed.
 
-A manifest loaded from an HTTPS URL, read from a pipe or FIFO (as `-f <(cmd)` gives), or a local file without write permission, is read-only: `repos set` reports `manifest <path> is read-only; apply the equivalent edit to its source, then re-run` and writes nothing.
+A manifest loaded from an HTTPS URL, read from a pipe or FIFO (as `-f <(cmd)` gives), or a local file without write permission or on a read-only file system, is read-only: `repos set` reports `manifest <path> is read-only; apply the equivalent edit to its source, then re-run` and writes nothing.
 
 ### Path syntax
 

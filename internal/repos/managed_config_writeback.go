@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -487,7 +488,7 @@ func installDefaultsPossible(resolved ResolvedConfig) bool {
 
 // ManifestReadOnly reports whether the manifest at path cannot be written:
 // an HTTP(S) source, a pipe, FIFO or device (as -f <(cmd) gives), or a
-// local file without write permission.
+// local file without write permission or on a read-only file system.
 func ManifestReadOnly(m *Manifest, path string) bool {
 	lower := strings.ToLower(path)
 	if m.sourceRemote || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://") {
@@ -512,10 +513,16 @@ func ManifestReadOnly(m *Manifest, path string) bool {
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
-		return errors.Is(err, fs.ErrPermission)
+		return isWriteDenied(err)
 	}
 	_ = f.Close()
 	return false
+}
+
+// isWriteDenied reports whether an open for writing failed because the file
+// cannot be written: no write permission, or a read-only file system.
+func isWriteDenied(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EROFS)
 }
 
 func findExplicitEntryIn(platform *PlatformConfig, name string) *RepoEntry {

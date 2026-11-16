@@ -495,9 +495,10 @@ replaced. `.fullsend/config.base.yaml` is managed as described under
 [Configuration presets](#configuration-presets).
 
 When the manifest is read-only (an HTTPS URL, a pipe or FIFO such as `<(cmd)`,
-or a local file without write permission), install fails before attempting any
-manifest write and prints the exact entry to add to its source, including for a
-glob-covered repository whose first-install `tracker` default needs an explicit
+or a local file without write permission or on a read-only file system),
+install fails before attempting any manifest write and prints the exact entry
+to add to its source, including for a glob-covered repository whose
+first-install `tracker` default needs an explicit
 entry. `--dry-run`, live install and `repos status` agree. Trace signing keys
 follow their own rule on GitHub: from such a manifest, a fresh install without
 `--rotate-trace-signing-key` goes ahead without keys and says so, and any
