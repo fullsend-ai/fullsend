@@ -494,7 +494,7 @@ func TestValidate_ForgeUnrecognizedKey(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unrecognized key")
 	assert.Contains(t, err.Error(), "gihub")
-	assert.Contains(t, err.Error(), "valid: github, gitlab, jira")
+	assert.Contains(t, err.Error(), "valid: forgejo, github, gitlab, jira")
 }
 
 func TestValidateForge_JiraBlock(t *testing.T) {

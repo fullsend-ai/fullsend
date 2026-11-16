@@ -1047,6 +1047,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if roleErr := applyGitLabAgentCredentials(agentName, h.Role, os.Getenv, setFlagEnv, printer); roleErr != nil {
 			return roleErr
 		}
+	} else if forgePlatform == repos.ForgeForgejo {
+		// Forgejo has no GitHub App mint endpoint; use FORGEJO_TOKEN / GITEA_TOKEN directly.
+		mintCleanup = func() {}
+		if mintURL != "" {
+			printer.StepWarn("mint_url is ignored for forgejo; using FORGEJO_TOKEN/GITEA_TOKEN")
+		}
 	} else {
 		var mintErr error
 		minted, mintCleanup, mintErr = mintAgentTokenAtLevel(ctx, h.Role, mintURL, forgePlatform, runtimeLevel, printer)
@@ -7066,6 +7072,9 @@ func setupStatusNotifier(fullsendDir string, role string, forgePlatform string, 
 	if forgePlatform == "gitlab" {
 		return setupStatusNotifierGitLab(notifyCfg, owner, repo, sOpts, printer)
 	}
+	if forgePlatform == repos.ForgeForgejo {
+		return nil, fmt.Errorf("status notifications are not supported for forgejo yet")
+	}
 	return setupStatusNotifierGitHub(notifyCfg, fsCfg, owner, repo, role, sOpts, printer)
 }
 
@@ -7471,7 +7480,7 @@ var roleTokenVars = map[string][]tokenVar{
 // the function, instead of at the call site, also means a test can pass
 // an already-cancelled ctx directly and still observe the remint run.
 func remintAgentTokenForPostScript(ctx context.Context, h *harness.Harness, mintURL, forgePlatform, currentLevel string, printer *ui.Printer) (func(), error) {
-	if forgePlatform == "gitlab" || mintURL == "" {
+	if forgePlatform == "gitlab" || forgePlatform == repos.ForgeForgejo || mintURL == "" {
 		return func() {}, nil
 	}
 	remintCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), remintForPostScriptTimeout)
@@ -7540,7 +7549,7 @@ func syncRunnerEnvTokens(h *harness.Harness) {
 // No-op when levels match, mintURL is empty, or the forge is GitLab.
 func maybeRemintAgentTokenForStage(ctx context.Context, h *harness.Harness, mintURL, forgePlatform, stage, currentLevel string, printer *ui.Printer) (func(), error) {
 	noop := func() {}
-	if h == nil || mintURL == "" || forgePlatform == "gitlab" {
+	if h == nil || mintURL == "" || forgePlatform == "gitlab" || forgePlatform == repos.ForgeForgejo {
 		return noop, nil
 	}
 	level := h.PrivilegeLevelForStage(stage)

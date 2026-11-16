@@ -47,6 +47,8 @@ var validForgeKeys = map[string]bool{
 	// JIRA issues. The code agent remains blocked on a longer-term forge
 	// abstraction design (see https://github.com/fullsend-ai/fullsend/pull/6237).
 	"jira": true,
+	// Forgejo/Gitea API client (ForgeOps FACTORY-FULLSEND-FORGEJO-CLIENT-001).
+	"forgejo": true,
 }
 
 // ValidForgePlatform reports whether platform is a recognized forge key.

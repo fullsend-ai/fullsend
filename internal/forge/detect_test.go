@@ -33,6 +33,16 @@ func TestDetectForge(t *testing.T) {
 			want:      "gitlab",
 		},
 		{
+			name:      "forgejo codeberg",
+			remoteURL: "https://codeberg.org/org/repo.git",
+			want:      "forgejo",
+		},
+		{
+			name:      "forgejo self-hosted hostname",
+			remoteURL: "https://forgejo.example.com/org/repo.git",
+			want:      "forgejo",
+		},
+		{
 			name:      "HTTPS GitLab without .git",
 			remoteURL: "https://gitlab.com/org/repo",
 			want:      "gitlab",

@@ -33,8 +33,9 @@ const maxManifestBytes = 1 << 20 // 1 MB
 
 // Forge type constants used in the manifest's platform sections.
 const (
-	ForgeGitHub = "github"
-	ForgeGitLab = "gitlab"
+	ForgeGitHub  = "github"
+	ForgeGitLab  = "gitlab"
+	ForgeForgejo = "forgejo"
 )
 
 // Mint mode constants control the default mint URL for GitHub repos.
@@ -95,8 +96,9 @@ type InferenceSettings struct {
 
 // validForges is the set of accepted forge values.
 var validForges = map[string]bool{
-	ForgeGitHub: true,
-	ForgeGitLab: true,
+	ForgeGitHub:  true,
+	ForgeGitLab:  true,
+	ForgeForgejo: true, // API client MVP (FACTORY-FULLSEND-FORGEJO-CLIENT-001); install/CI parity still GitHub/GitLab
 }
 
 // IsValidForge reports whether the given forge name is supported.
