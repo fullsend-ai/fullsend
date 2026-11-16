@@ -360,6 +360,10 @@ export default defineConfig({
             { text: "Config Reference", link: "/reference/config-reference" },
             { text: "Harness Field Reference", link: "/reference/harness-reference" },
             { text: "Trace Context Reference", link: "/reference/trace-context" },
+            {
+              text: "Platform Capability Matrix",
+              link: "/reference/platform-capability-matrix",
+            },
           ],
         },
         {

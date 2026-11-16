@@ -148,3 +148,6 @@ Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios aga
 - [x] GitLab CI driver (implemented; suite wiring currently uses a GitHub-backed `forge.Client` — not yet live-testable against real GitLab backends)
 - [ ] Tekton CI driver
 - [ ] Non-GitHub install backends
+
+For the current test coverage level of each platform, see
+[Test verification and CI coverage](../../reference/platform-capability-matrix.md#test-verification-and-ci-coverage).
