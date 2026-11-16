@@ -114,3 +114,24 @@ func TestFetchTokenScope_CancelledContext(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, repos)
 }
+
+// TestFetchTokenScope_HonoursGITHUBAPIURL covers the base URL that
+// fullsend run passes to fetchTokenScope: on a non-github.com host the
+// scope check must reach GITHUB_API_URL, not api.github.com (#9041).
+func TestFetchTokenScope_HonoursGITHUBAPIURL(t *testing.T) {
+	var gotPath string
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"total_count":  1,
+			"repositories": []map[string]string{{"full_name": "org-a/repo-one"}},
+		})
+	}))
+	defer github.Close()
+	t.Setenv("GITHUB_API_URL", github.URL+"/api/v3/")
+
+	repos, err := fetchTokenScope(context.Background(), "ghs_token", githubAPIBaseURLFromEnv())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"org-a/repo-one"}, repos)
+	assert.Equal(t, "/api/v3/installation/repositories", gotPath)
+}

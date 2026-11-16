@@ -297,6 +297,24 @@ omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
+That is the accessor-level value. Commands resolve one step further: the
+`run`/`lint`/`lock` family, harness dispatch, `dispatch --route`, the
+Jira poll and the agent-editing commands (`agent set/add/update/remove`)
+all resolve the list through `EffectiveAllowedResources`, which
+ensures fullsend's default prefixes on top of a non-empty result, so a
+first-party agent source covered only by a default prefix resolves with no
+configuration. `perRepoConfig.Validate` validates agents against the
+same effective list, so `github setup` re-runs and `repos install`
+admit the same shapes as the commands above; `config_base` preset
+validation parses the preset standalone (preset list plus the
+defaults, no overlay), so it is stricter than the read for
+overlay-only prefixes and for a preset `[]`, and looser over a runtime
+overlay `[]`; and managed `repos.yaml` validation
+(`ValidateMergedManaged`) checks merged managed agents against it too.
+A resolved empty list (an explicit `[]`) stays deny-all.
+The rendered effective config (`EffectiveYAML`) shows the accessor-level
+list, which may omit the ensured defaults.
+
 ### `tracker`
 
 The issue tracker, as a single provider-discriminated mapping. `tracker` holds
@@ -343,7 +361,12 @@ tracker:
 ```
 
 - **`tracker.jira.base_url`** — The Jira site URL. It must be an `https` URL
-  with no credentials, query, or fragment. It has no default.
+  with no credentials, query, or fragment. It has no default. When
+  `fullsend run` mints the sandbox's Jira token from OAuth 2.0 client
+  credentials, set `base_url` and `project`: the run looks up this site's
+  cloud ID and limits the `jira` provider to it, and fails before minting
+  without them. See
+  [Read-only Jira access from the sandbox](../guides/user/jira-integration.md#read-only-jira-access-from-the-sandbox-jira-provider).
 - **`tracker.jira.api_url`** — The Jira API gateway URL. It is optional and
   defaults to `https://api.atlassian.com`. It is validated like `base_url`.
   Fullsend's shared Jira client sends REST requests to
@@ -358,6 +381,9 @@ tracker:
   that agents append `/rest/api/3/...` to. For those runs `fullsend run` also
   sets `JIRA_BASE_URL` to `base_url`. See
   [Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
+  When `fullsend run` mints the sandbox's Jira token, leave `api_url` unset
+  or set it to `https://api.atlassian.com`. Any other value makes the run
+  fail before minting, because the `jira` provider allows only that gateway.
 - **`tracker.jira.project`** — The key of the single Jira project for this
   repository. It is not a fallback project, and it has no default.
 - **`tracker.jira.run_label`** — Optional label added to the source Jira issue
@@ -431,12 +457,13 @@ shared Jira client: `FULLSEND_JIRA_TOKEN` is required and
 `FULLSEND_JIRA_CLIENT_SECRET` replace both, as described above. The legacy
 `JIRA_TOKEN` and `JIRA_USER_EMAIL` variables are not used by the poller.
 
-The `fullsend issues` commands (`get`, `create`, `post-comment`, `link`),
+The `fullsend issues` commands (`get`, `create`, `post-comment`, `link`, `transition`),
 `fullsend run` Jira status updates, and `fullsend reconcile-status` read the
 Jira connection only from these settings, with no flag or environment
 fallback: `base_url` and `project` must be set, and Jira API calls fail
 without them. `project` is the default `--project` of the issues commands.
-`fullsend issues create` refuses any other Jira project unless it is listed
+`fullsend issues create` and `fullsend issues transition` refuse any other Jira
+project unless it is listed
 in `allowed_targets.projects`. See
 [Issue commands](../guides/user/issues-commands.md#jira-connection-settings).
 

@@ -248,6 +248,14 @@ repo baseline and overrides)
   paths; runtimes may inject ordered records as separate cacheable input blocks
   ([ADR 0141](ADRs/0141-deterministic-filtered-entity-context-staging.md),
   constrained by [ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md)).
+- Entity-context-snapshot v2 is the target model-facing field gate for every
+  normalized-entity provider/kind pair, including Jira issues and GitHub
+  Discussions. It uses normalized-entity names for shared identity, source,
+  actor, state, timestamp, and label fields, keys records by the canonical
+  entity ID, and reports a status for every applicable scope so an
+  uncollected source is never mistaken for a complete empty one
+  ([ADR 0170](ADRs/0170-align-entity-context-snapshot-with-normalized-entity.md);
+  contract: [`docs/normative/entity-context-snapshot/v2`](normative/entity-context-snapshot/v2/README.md)).
 - CEL-guarded overlays: an `overlays:` list of CEL-guarded config
   overlays generalizes the `forge:` block, letting harness authors
   condition scripts, skills, env vars, and other fields on any event
@@ -492,7 +500,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   default 50) from `tracker.jira.poll` within fixed bounds
   ([ADR 0160](ADRs/0160-spend-jira-poll-slots-only-on-candidates-with-new-activity.md)).
 - Jira poll actor authorization does not require the poller to administer the
-  Jira project once a repository opts in with a `jira` provider under
+  Jira project once a repository adds a `jira` provider under
   `authorization:`. With no `jira` entry, every Jira event resolves through the
   admin-only project role roster. The entry lists Jira groups and account IDs
   for the `write` and `triage` roles, which are authoritative for slash
@@ -502,11 +510,18 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `labels: project_roles` (which, with no lists, resolves every event through
   the roster, as with no entry)
   ([ADR 0153](ADRs/0153-authorize-jira-poll-actors-without-project-administration.md)).
+  Running the `jira-poll` driver with no `jira` entry is deprecated: the
+  poller warns at start, and a later release requires the entry, with the
+  two-line `labels: project_roles` entry as the migration
+  ([ADR 0157](ADRs/0157-require-jira-authorization-entry-for-jira-poll.md),
+  rollout in [#9005](https://github.com/fullsend-ai/fullsend/issues/9005)
+  and [#9006](https://github.com/fullsend-ai/fullsend/issues/9006)).
 - Jira bot label hand-off (target state): the Jira poller stops dropping
-  bot-authored label-added events, including its own account's. They take the
-  repository's `labels:` rule like a human's. Only the poller's account or
-  Jira's `app` account type classifies a label author as a bot, and other bot
-  events stay dropped. Harness authors keep hand-off chains acyclic
+  label-added events from its own account and from accounts the `jira` entry
+  lists by account ID. They take the repository's `labels:` rule like a
+  human's. Label additions from other bot accounts, such as Jira Automation,
+  and all other bot events stay dropped. Harness authors keep hand-off chains
+  acyclic, and a Jira-only per-issue limit backstops them
   ([ADR 0172](ADRs/0172-let-bot-added-labels-start-agents-on-jira.md)).
 - The Jira site URL is kept for links and cloud-ID discovery, and API calls
   go through the Atlassian API gateway for the site, whose host can be
@@ -787,7 +802,7 @@ the inheritance model: fullsend defaults, then repo baseline (`config.base.yaml`
 **Decided:**
 
 - Config-level agent registration: an `agents` list in the per-repo config declares agent harness sources as pinned URLs or local paths, replacing compiled-in agent discovery ([ADR 0058](ADRs/0058-agent-registration.md)).
-- Runtime resolution: `fullsend run <name>` resolves agents in two tiers: (1) entries from the config's `agents` list (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config. The agents-repo fallback is a transitional mechanism for the agent extraction; it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5).
+- Runtime resolution: `fullsend run <name>` resolves agents in two tiers: (1) entries from the config's `agents` list (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config. The agents-repo fallback is a transitional mechanism for the agent extraction; it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5). On a GitHub host other than github.com (`GITHUB_SERVER_URL`, with `GITHUB_API_URL` set to that instance's API), the fallback resolves the ref and reads the harness through that host's API, recording it under `https://<host>/fullsend-ai/agents/raw/<sha>/…`, which must be covered by `allowed_remote_resources`; that host is also added to the run's fetch policy, which otherwise admits only `github.com` and `raw.githubusercontent.com`. The relative companion files that harness references (agent, policy, scripts) are read the same way, pinned to the same commit and subject to the same allowlist. Directory resources (a relative skill or plugin directory, or the helper files next to a script) are read the same way: the directory is listed and its files are read through that host's API at the same commit, with the same token and allowlist check, instead of by git sparse checkout from `raw.githubusercontent.com`, and are bounded by the same file-count and size limits. The offline cache lookup does not yet resolve on such a host: it still uses the `raw.githubusercontent.com` prefix.
 - Config lookup: config entries are looked up directly via `findConfigAgentEntry`; the agents-repo fallback operates independently when the agent is not found in config. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
 - CLI management: `fullsend agent add|list|set|update|remove` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
 - Agent generation: `fullsend agent new <name>` writes a complete custom agent — harness, agent definition, result schema, post-script, and the base policy a per-repo install does not vendor; its built-in providers are bare names whose definitions and profiles come from the `fullsend` binary — validates it with the loader dispatch uses, and registers it through the `agent add` path above. A `trigger:` is mandatory, because a trigger-less harness registers and validates and is then silently never dispatched; `--role` is a closed table of the roles the hosted mint serves, so an unservable role fails locally rather than as a `403` at first dispatch ([ADR 0102](ADRs/0102-generate-custom-agents-from-the-cli.md)).

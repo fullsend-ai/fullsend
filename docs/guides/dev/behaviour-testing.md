@@ -113,7 +113,69 @@ And the agent will output issues.out with:
 Every scenario runs the stage under the dummy runtime selected at install time (`github setup … --runtime dummy`). The runtime layer gets two kinds of coverage without leasing extra repos or adding wall time:
 
 - **Core (every run):** `Then the run selected the "dummy" runtime` reads the `runtime` field the runner writes into `metrics.json`, proving the repo's `.fullsend/config.yaml` `runtime:` reached backend selection (or `config.base.yaml` when `BEHAVIOUR_CONFIG_PRESET` supplied a preset). Use it in one representative scenario per stage; the artifact is already downloaded for the other assertions.
-- **Runtime-specific (gated):** `Given the repository runtime is "<name>"` commits `runtime: <name>` to the leased repo's config for this scenario only (CleanupScenario restores `dummy` — slots are reused, so never set it any other way; the step refuses if the slot is not on `dummy` to begin with). The custom-harness step commits only a placeholder for a relative `agent:` path, which a real runtime cannot act on, so follow it with the agent step for the runtime under test (`And a pi agent "<name>" defined as:`, `And a codex agent "<name>" defined as:`, `And a claude agent "<name>" defined as:` — all commit the same file) and a docstring holding the full agent file (frontmatter + body) — `{{fixture:fixtures/<stage>/<file>.json}}` inlines a result fixture so the model has a concrete, deterministic file to write (the custom harness carries no post-script, so nothing validates it; the assertions are on the transcript and metrics). Then the scenario dispatches the harness and asserts on artifacts: `the run selected the "pi" runtime`, `the pi session transcript records at least one tool call` (the agent used a tool through pi; with security enabled the run refuses to start without the intact hook adapter, so the call was mediated by it — the step does not inspect hook output), `the run metrics report tokens`, and `the run used model "<id>" without a fallback` (the `model` in `metrics.json` is exactly that bare id, `fallback_from` is empty and a turn was recorded, so the alias reached a model the project serves without falling back). Such scenarios cost a real model run on the pool repo's repo-scoped Vertex WIF and must be tagged `@requires:capability:runtime-<name>` so they only run where the runner declares the capability; `make behaviour-test` declares `runtime-pi`, `inference-gateway` and `inference-gateway-api-key` by default (the two gateway capabilities reach no real model; see [Wiring it into the behaviour tests](e2e-testing.md#wiring-it-into-the-behaviour-tests)) (a `Makefile` variable, so a PR adding a gated scenario exercises it on its own run — a fork PR's `/ok-to-test <sha>` run takes `e2e.yml` from `main`, while the `Makefile` always comes from the PR head); `BEHAVIOUR_CAPABILITIES= make behaviour-test` skips them. See `features/runtime/pi.feature`. `features/runtime/pi-openai.feature` is the same shape on `openai/gpt-5.6-luna` with the `openai` provider instead of Vertex host files; it is gated on `runtime-pi-openai`, which is **not** declared by default because it needs an OpenAI organization mapped to the pool repositories plus their `FULLSEND_OPENAI_*` variables ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)). `features/runtime/codex-openai.feature` is that same shape on the codex runtime — `And a codex agent "<name>" defined as:` for the agent, and `the codex output stream records at least one tool call`, which reads the tee'd `codex exec --json` stream (`output.jsonl`) rather than a session transcript. It is gated on `runtime-codex-openai` for the same reason, and codex has no direct Vertex path, so — unlike pi, whose `runtime-pi` scenario runs on every job — codex has **no default behaviour coverage at all** until that organization exists; its evidence until then is unit tests, recorded fixtures, local smoke runs and the on-demand `runtime-codex-gateway` scenario. `features/runtime/codex-gateway.feature` is the same codex shape on a `gateway/` model through the test inference gateway (ADR 0137), pinned to `gateway/gpt-oss-120b`, which the test gateway serves on Responses (codex speaks nothing else, and fullsend renders no model catalog for it, so the id is pinned). Its token step is `the run metrics report tokens unless the requested model is "gateway/gpt-oss-120b"`: on the test gateway that model's usage arrives after the finish chunk, so codex records 0 tokens, and the step requires a recorded turn instead (the workflow and tool-call steps prove the model answered). It is gated on `runtime-codex-gateway`, also undeclared by default, because it costs a real model run on the test gateway's own Vertex service account. `features/runtime/claude-gateway.feature` runs Claude Code on `gateway/claude-haiku-5-5` through the test inference gateway in the `oidc` mode (no model list, no Vertex host files) and asserts the runtime and token metrics. It is gated on `runtime-claude-gateway`, which is **not** declared by default, skips when `E2E_INFERENCE_GATEWAY_URL` is unset, and should run against a sandbox image built from main.
+- **Runtime-specific (gated):** `Given the repository runtime is "<name>"`
+  commits `runtime: <name>` to the leased repo's config for this scenario only
+  (CleanupScenario restores `dummy` — slots are reused, so never set it any
+  other way; the step refuses if the slot is not on `dummy` to begin with). The
+  custom-harness step commits only a placeholder for a relative `agent:` path,
+  which a real runtime cannot act on, so follow it with the agent step for the
+  runtime under test (`And a pi agent "<name>" defined as:`, `And a codex agent
+  "<name>" defined as:`, `And a claude agent "<name>" defined as:` — all commit
+  the same file) and a docstring holding the full agent file (frontmatter +
+  body) — `{{fixture:fixtures/<stage>/<file>.json}}` inlines a result fixture so
+  the model has a concrete, deterministic file to write (the custom harness
+  carries no post-script, so nothing validates it; the assertions are on the
+  transcript and metrics). Then the scenario dispatches the harness and asserts
+  on artifacts: `the run selected the "pi" runtime`, `the pi session transcript
+  records at least one tool call` (the agent used a tool through pi; with
+  security enabled the run refuses to start without the intact hook adapter, so
+  the call was mediated by it — the step does not inspect hook output), `the run
+  metrics report tokens`, and `the run used model "<id>" without a fallback`
+  (the `model` in `metrics.json` is exactly that bare id, `fallback_from` is
+  empty and a turn was recorded, so the alias reached a model the project serves
+  without falling back). Such scenarios cost a real model run on the pool repo's
+  repo-scoped Vertex WIF and must be tagged
+  `@requires:capability:runtime-<name>` so they only run where the runner
+  declares the capability; `make behaviour-test` declares `runtime-pi`,
+  `inference-gateway`, `inference-gateway-api-key` and
+  `runner-secret-overlay-guard` by default (the two gateway capabilities and
+  `runner-secret-overlay-guard` reach no real model; see [Wiring it into the
+  behaviour tests](e2e-testing.md#wiring-it-into-the-behaviour-tests)) (a
+  `Makefile` variable, so a PR adding a gated scenario exercises it on its own
+  run — a fork PR's `/ok-to-test <sha>` run takes `e2e.yml` from `main`, while
+  the `Makefile` always comes from the PR head); `BEHAVIOUR_CAPABILITIES= make
+  behaviour-test` skips them. See `features/runtime/pi.feature`.
+  `features/runtime/pi-openai.feature` is the same shape on
+  `openai/gpt-5.6-luna` with the `openai` provider instead of Vertex host files;
+  it is gated on `runtime-pi-openai`, which is **not** declared by default
+  because it needs an OpenAI organization mapped to the pool repositories plus
+  their `FULLSEND_OPENAI_*` variables ([OpenAI Workload
+  Identity](../infrastructure/openai-workload-identity.md)).
+  `features/runtime/codex-openai.feature` is that same shape on the codex
+  runtime — `And a codex agent "<name>" defined as:` for the agent, and `the
+  codex output stream records at least one tool call`, which reads the tee'd
+  `codex exec --json` stream (`output.jsonl`) rather than a session transcript.
+  It is gated on `runtime-codex-openai` for the same reason, and codex has no
+  direct Vertex path, so — unlike pi, whose `runtime-pi` scenario runs on every
+  job — codex has **no default behaviour coverage at all** until that
+  organization exists; its evidence until then is unit tests, recorded fixtures,
+  local smoke runs and the on-demand `runtime-codex-gateway` scenario.
+  `features/runtime/codex-gateway.feature` is the same codex shape on a
+  `gateway/` model through the test inference gateway (ADR 0137), pinned to
+  `gateway/gpt-oss-120b`, which the test gateway serves on Responses (codex
+  speaks nothing else, and fullsend renders no model catalog for it, so the id
+  is pinned). Its token step is `the run metrics report tokens unless the
+  requested model is "gateway/gpt-oss-120b"`: on the test gateway that model's
+  usage arrives after the finish chunk, so codex records 0 tokens, and the step
+  requires a recorded turn instead (the workflow and tool-call steps prove the
+  model answered). It is gated on `runtime-codex-gateway`, also undeclared by
+  default, because it costs a real model run on the test gateway's own Vertex
+  service account. `features/runtime/claude-gateway.feature` runs Claude Code on
+  `gateway/claude-haiku-5-5` through the test inference gateway in the `oidc`
+  mode (no model list, no Vertex host files) and asserts the runtime and token
+  metrics. It is gated on `runtime-claude-gateway`, which is **not** declared by
+  default, skips when `E2E_INFERENCE_GATEWAY_URL` is unset, and should run
+  against a sandbox image built from main.
 - **Per-agent (every run):** `Given the repository agents are configured with:` with a YAML docstring (`triage:\n  runtime: dummy`) sets runtime/model/effort/trigger on the leased repo's `agents:` entries (a name-only entry for a built-in, the sourced entry for a custom agent; only the settings given change) — validated the way `fullsend run` validates them — and CleanupScenario restores the pre-scenario `agents:` list. Pair it with `the repository runtime is "<real runtime>"` and pin every agent the scenario can dispatch (triage hands off to `code` via `ready-to-code`) back to `dummy`, then assert `the run selected the "dummy" runtime from "agents.triage"`, which also checks `runtime_source` in `metrics.json` ends with that entry — proof the per-agent entry decided, at dummy cost. The gated second scenario in the same file leaves the repo on `dummy` and puts one custom agent on pi with `model: haiku` from its entry (the harness says `opus`); `the run requested model "haiku" from "agents.<name>" and the provider reported a "haiku" model` checks `requested_model`, `override_source`, the reported `model` and `num_turns` in `metrics.json`. See `features/runtime/agent-settings.feature`.
 
 Do not add runtime coverage behind new `fullsend admin` flags. Use the repository config steps above.
@@ -195,8 +257,9 @@ expects the run to complete and its logs to contain "Runner secrets", which
 shows the secret reached the run.
 
 The `@requires:capability:runner-secret-overlay-guard` tag gates the refused
-scenario. `make behaviour-test` skips it until that capability is declared.
-The Makefile's `BEHAVIOUR_CAPABILITIES` comment says why and when.
+scenario; the capability is declared in the Makefile's
+`BEHAVIOUR_CAPABILITIES`, so it runs in the default suite, and
+`BEHAVIOUR_CAPABILITIES=` still skips it on demand.
 
 ### Forge-state assertion steps
 
@@ -434,10 +497,13 @@ everything else stays `scenario` — never retried, never masked.
 | Infrastructure mode | Recognized by |
 |---------------------|---------------|
 | GitHub API rate limit: 429 or secondary-rate-limit 403 | `gh.IsRateLimitError` on the forge client's `APIError` |
+| GitHub server error: a REST 500–504 the client did not retry further (its retries were used up, or it did not resend because the request may already have been applied; the suite then retries the scenario, it does not resend the request), or an untyped GraphQL error whose message starts with GitHub's generic "Something went wrong while executing your query" | `gh.IsServerError` on the forge client's `APIError` or GraphQL error |
 | Pool capacity exhausted — every org rate-limited, denied or failed | `install.CapacityError` (all causes), when it reaches the classifier on its own |
 | Collaborator invitation pending (access requested, not yet granted) | the `gh.ErrInvitationPending` sentinel |
 | Terminal setup-poll exhaustion — repo never visible after creation, or dispatch workflow never settles | `behaviourfail.Mark` in the install ensure path |
+| Post-install validation reads a file setup has just committed and GitHub still answers 404 after every retry (5 attempts, backing off 2, 4, 8 and 16 seconds) | `behaviourfail.Mark` in `getFileWithRetry` (`drivers/install/validate.go`) |
 | GCP WIF quota or rate limit during inference provisioning (provision and status wait) | `behaviourfail.Mark` on matched CLI stderr signatures |
+| `fullsend github setup` fails during repo setup because the forge client gave up on a GitHub 500–504, or GitHub reset the HTTP/2 stream (`stream error: stream ID N; CANCEL; received from peer`). Setup runs as a subprocess, so `gh.IsServerError` cannot see a typed error. Any other setup failure, a 4xx or validation error for example, stays `scenario`. A GraphQL server error during setup also stays `scenario`, because none has been observed there (#9497). | `behaviourfail.Mark` on the CLI's final `Error:` line (`markGitHubSetupTransient` in `drivers/install/common/setup.go`) |
 | e2e auth-token mint or download failure at bootstrap: a transport error, or a 429 or 5xx response | `behaviourfail.Mark` at the e2etest token source |
 
 The bootstrap token mint is first-party, so a mint regression that answers
@@ -453,15 +519,37 @@ context error to the `CapacityError`, and that join stays `scenario`, so a
 full pool earns no retry on this path.
 
 Everything else classifies as `scenario`: assertion failures (expected
-state not observed), unrecognized API errors (a 500 is a product or forge
-defect, not an environment condition), lease races (`errLeaseLost`,
-`errForkReplaced`), unexplained failures of the test repo's workflow runs,
-and errors whose message merely mentions a rate limit without a structural
-match. Unexplained workflow-run failures stay scenario deliberately: a
-dispatch workflow failing without its artifact may be exactly the product
-regression a scenario exists to catch. The per-failure report below makes
-their frequency and shape measurable, so a follow-up can decide with data
+state not observed), unrecognized API errors (a 4xx other than a rate
+limit, a typed GraphQL error such as `FORBIDDEN`, or an untyped GraphQL
+error whose message does not start with GitHub's "Something went wrong
+while executing your query" server-error prefix), lease races
+(`errLeaseLost`, `errForkReplaced`), unexplained failures of the test
+repo's workflow runs, and errors whose message merely mentions a rate
+limit without a structural match. Unexplained workflow-run failures stay
+scenario deliberately: a dispatch workflow failing without its artifact
+may be exactly the product regression a scenario exists to catch. Other
+post-install validation failures (a wrong runtime in the config, for
+example) also stay scenario. The per-failure report below makes their
+frequency and shape measurable, so a follow-up can decide with data
 whether to classify them.
+
+A `WaitForWorkflow` timeout because no run appeared wraps
+`ci.ErrWorkflowNotDispatched` on every driver: `workflow <file> (<event>)
+was not dispatched` on GitHub Actions, `pipeline (<event>) was not
+dispatched` on GitLab CI. A wait for any event drops the ` (<event>)` part,
+for example `pipeline was not dispatched`. The issue-open and dispatch-run
+waits retry it once, allowing 30 s of clock skew. If the retry also times
+out, the failure stays `scenario` and gets no infrastructure retry. Whether
+the run arrives late or never is not yet established. To see what happened
+in a failing GitHub Actions job:
+
+1. Download the `behaviour-artifacts-*` artifact of the failing job.
+2. Open `debug-scenario-<name>-<suffix>/failure-summary.txt`.
+3. Read its `Dispatch diagnostics` section; see
+   [Dispatch diagnostics](#dispatch-diagnostics).
+
+The per-failure report counts these timeouts so a follow-up (#9469) can
+decide from data whether to classify them.
 
 The **run** class is decided at completion: `infrastructure` only when at
 least one failure was recorded and none of them is scenario. A mixed run —
@@ -597,6 +685,64 @@ its report, and releases its repos inside the job's `timeout-minutes: 90`
 The merge queue window is shorter than the job: a retry fits it only when
 attempt 1 plus the failed scenarios finish within 60 minutes.
 
+#### Dispatch diagnostics
+
+This applies to GitHub Actions only. Every driver's not-dispatched timeout
+wraps `ci.ErrWorkflowNotDispatched`, but only the GitHub Actions driver
+returns a `*ci.NotDispatchedError`, which records the workflow file and event
+these diagnostics look for. When a scenario fails with that error (no
+workflow run appeared), the After hook's `CollectFailureLogs` (see
+[Repo allocation via the shared slot driver](#repo-allocation-via-the-shared-slot-driver))
+first waits a 2-minute grace period, outside `failureLogBudget`. It then adds
+a `Dispatch diagnostics` section to `failure-summary.txt`, before teardown
+deletes the repository. The section shows, in this order:
+
+- a `grace wait:` note when the wait was skipped or shortened. Runs are
+  still listed unless the driver cannot list them
+  (`workflow runs: not listed: ...`). The wait is skipped when the total
+  grace wait time for the test process (about 6 minutes) is used up, or when
+  no verdict can be computed: the CI driver does not implement
+  `ci.RunLister`, or the error does not name the workflow. It is shortened
+  when that total runs out mid-wait;
+- `the grace period was cut short: <err>` when the scenario's context ended
+  before or during the wait;
+- the repository, the time of the listing (runner clock) and the real
+  elapsed grace wait;
+- the scenario's issue with its `created_at` and state;
+- every workflow run in the repository, with its workflow file, event,
+  `created_at`, status and conclusion;
+- the runs of the waited-for workflow and event. The gap from the issue's
+  `created_at` (both GitHub timestamps) is shown only for issue-triggered
+  waits (the `issues` event); for other events, such as `issue_comment`, the
+  issue is not the triggering event, so no gap is shown;
+- the verdict: whether a matching run was created after the scenario's wait
+  for the run timed out (counted from the start of the grace wait, allowing
+  30 s of clock skew). `yes` suggests a late dispatch, even if the grace
+  wait was shortened. When no late run appeared, the verdict is `no`. After
+  a full grace wait, `no` with no matching run suggests the event produced
+  no run, and `no` with only older matching runs says they predate the
+  wait. When the wait was skipped because the total grace wait time is used
+  up, shortened, cut short or not configured, the line reads
+  `no (inconclusive: <reason>; ...)` instead. When no verdict can be
+  computed, there is no verdict: the section says `workflow runs: not listed`
+  (no `ci.RunLister`) or `matching run after the wait: unknown` (the error
+  does not name the workflow). A `no` with no
+  matching run also reads `no (inconclusive: the listing was truncated;
+  ...)` when the run listing hit its limit.
+
+Whatever the verdict, the timeout stays a `scenario` failure; re-run the job
+as usual, and add the summary's verdict line to #9469 so the cause can be
+settled from data.
+
+Total grace wait time is bounded at about 6 minutes of wall-clock time per
+test process. Time already covered by another running wait is free, so a
+wait that overlaps a running wait, such as one in a burst of parallel
+failures, can still get its full 2 minutes, and a later isolated failure
+still gets its own wait. Once the budget is spent, a new wait ends where its
+uncovered time would exceed the budget, or is skipped if none is left. A
+wait cut short keeps the time it reserved. A scenario whose context is
+already cancelled skips the wait and uses none of the time.
+
 ### Repo allocation via the shared slot driver
 
 `RunSuite` and `RunPlaybackSuite` build one shared install driver (`install.Factory` over an `install.PoolConfig`) for the environment's pool. On `dev` the pool is the derived orgs `halfsend-01` … `halfsend-22`, and on `stage` it is the single unsuffixed `halfsend` org, each with `test-repo-01` … `test-repo-NN` slots (`install.PoolLayoutForEnvironment`; `BEHAVIOUR_POOL_SIZE` sets the slots per org). The driver resolves one installation token per org (`e2etest.TokenForOrg`, minted once per org and kept for the run, since a token outlives a 45-minute `go test` attempt; the infra-retry's fresh process mints its own). It builds one forge client per org from that token. The `Given the enrolled test repository` step calls `install.LeaseDriver.AllocateLease(ctx)`, which:
@@ -649,15 +795,20 @@ run. It always writes `debug-scenario-<name>-<suffix>/failure-summary.txt` with
 the scenario error and each run's outcome. A run whose logs cannot be fetched
 gets a `workflow-logs-unavailable.txt` stating why. The summary states when the
 run listing may be truncated or the per-scenario fetch cap was reached. A
-scenario that passes but whose repo deallocation fails also gets a failure
-summary. Everything is redacted and written `0600`, like the in-scenario logs;
-the redaction also masks the runner's `World.Token` and the values of
-credential-named environment variables (for example `*_TOKEN`, `*_PAT`,
-`*_KEY`), including in directory names. The next claim of that slot creates the
-repo from scratch. Mint enrollment of the numbered *names* can remain
-pre-provisioned; the GitHub repos themselves are ephemeral around a lease.
-`Driver.Finalize` releases outstanding leases with an error, tears down every
-org's mint, and stops the trace collector.
+scenario that passes, or is skipped, but whose repo deallocation fails also
+gets a failure summary. Everything is redacted and written `0600`, like the
+in-scenario logs; the redaction also masks the runner's `World.Token` and the
+values of credential-named environment variables (for example `*_TOKEN`,
+`*_PAT`, `*_KEY`), including in directory names. The next claim of that slot
+creates the repo from scratch. Mint enrollment of the numbered *names* can
+remain pre-provisioned; the GitHub repos themselves are ephemeral around a
+lease. `Driver.Finalize` releases outstanding leases with an error, tears down
+every org's mint, and stops the trace collector.
+
+**Step failure vs. teardown failure.** The After hook returns only a
+repo-deallocation error, never the scenario's step error. A failing step
+therefore appears in CI output as the bare step error. The
+`after scenario hook failed:` prefix means cleanup (repo release) failed.
 
 Concurrent ensures of the same repo are serialized via `singleflight.Group`, so only one goroutine runs the install while others wait. The numbered `test-repo-NN` repos do not need to be pre-provisioned in the pool orgs.
 
@@ -1230,7 +1381,11 @@ more claim and `github setup`
 This happens rarely, so it is not budgeted per lease, but it reduces the slack
 for the whole suite. The behaviour job's `timeout-minutes` in `e2e.yml` and the
 `go test -timeout` in the Makefile must account for this overhead across all
-leases in the suite.
+leases in the suite. A not-dispatched scenario's grace wait runs before, and
+outside, `failureLogBudget`, so it can add up to 2 minutes of After-hook time
+on top of the 2-minute log-collection budget. Total grace wait time across
+the test process is bounded at about 6 minutes
+([Dispatch diagnostics](#dispatch-diagnostics)).
 
 Current budget: **45 minutes per `go test` attempt** and **90 minutes for the CI job**. The job budget carries one [infrastructure-classified retry](#failure-classification-and-infrastructure-retry): both Make targets run through `scripts/run-with-infra-retry.sh`, and a retried run executes a second `go test`, for the failed scenarios only, with its own 45-minute `-timeout`. The wrapper refuses the retry when attempt 1 ran longer than `INFRA_RETRY_MAX_ATTEMPT1_SECONDS` (2400 in CI), so attempt 2 always has 45 minutes left in the job. Keep `go test -timeout` at or below 45 minutes — it is the per-attempt bound the [repo-slot GC](#repo-slot-gc) age guarantee rests on — and never above the job's `timeout-minutes`, or the Go process is killed mid-test with no artifact collection. If adding scenarios that lease additional repos (or increase reuse of the 12-slot pool), verify that the total provisioning overhead plus test execution time fits within one attempt's budget. The [GitHub mint scope scenarios](#github-mint-scope-scenarios) and the [GitHub bot-role lookup scenarios](#github-bot-role-lookup-scenarios) lease one repo per Examples row. The same rule applies to the `playback-test` target and to any CI job that runs it.
 

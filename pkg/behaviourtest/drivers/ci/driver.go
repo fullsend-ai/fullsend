@@ -2,10 +2,51 @@ package ci
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
+
+// ErrWorkflowNotDispatched marks any driver's WaitForWorkflow timeout
+// when no matching workflow run or pipeline appeared within the dispatch
+// window. A driver wraps it with %w; steps detect it with errors.Is
+// through any wraps they add and retry such a timeout once. Its text
+// completes the driver's own prefix, so the message still reads, for
+// example, "workflow <file> (<event>) was not dispatched" (GitHub
+// Actions) or "pipeline (<event>) was not dispatched" (GitLab CI). The
+// timeout stays scenario-classified: whether the run arrives late or
+// never is not yet established (#9469). The details the dispatch
+// diagnostics use are carried only by *NotDispatchedError.
+var ErrWorkflowNotDispatched = errors.New("was not dispatched")
+
+// NotDispatchedError is the GitHub Actions driver's WaitForWorkflow
+// timeout when no matching run appeared. It records the workflow file and
+// event that were waited for, so the failure diagnostics, which run only
+// for this type, can look for exactly that run. It unwraps to
+// ErrWorkflowNotDispatched.
+type NotDispatchedError struct {
+	// WorkflowFile is the base name of the workflow file, e.g.
+	// "fullsend.yaml".
+	WorkflowFile string
+	// Event is the triggering event waited for, or empty for any event.
+	Event string
+	// Detail is appended verbatim to the message, e.g. the poll-error
+	// summary " (failed on 3 of 40 polls ...)"; empty when every poll
+	// succeeded.
+	Detail string
+}
+
+func (e *NotDispatchedError) Error() string {
+	if e.Event != "" {
+		return fmt.Sprintf("workflow %s (%s) %v%s", e.WorkflowFile, e.Event, ErrWorkflowNotDispatched, e.Detail)
+	}
+	return fmt.Sprintf("workflow %s %v%s", e.WorkflowFile, ErrWorkflowNotDispatched, e.Detail)
+}
+
+// Unwrap lets errors.Is(err, ErrWorkflowNotDispatched) match.
+func (e *NotDispatchedError) Unwrap() error { return ErrWorkflowNotDispatched }
 
 // Driver abstracts CI workflow operations for behaviour tests.
 //
@@ -22,6 +63,11 @@ import (
 // buffers), it must synchronize access or be deep-copied per scenario
 // in World.Clone.
 type Driver interface {
+	// WaitForWorkflow waits for a run of workflowFile triggered by event
+	// (any event when empty) at or after the given time. A timeout with no
+	// matching run must wrap ErrWorkflowNotDispatched, so steps retry
+	// once with the clock-skew buffer. Only a *NotDispatchedError enables
+	// the dispatch diagnostics.
 	WaitForWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error)
 	FindCompletedWorkflowRun(ctx context.Context, owner, repo, workflowFile string, after time.Time) (*forge.WorkflowRun, error)
 	AssertNoWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time) error

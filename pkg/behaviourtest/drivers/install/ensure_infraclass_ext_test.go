@@ -1,6 +1,8 @@
 package install_test
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -116,9 +118,9 @@ func TestInfraClassWorkflowGetErrorSurfaced(t *testing.T) {
 			wantMarked: false,
 			wantMsg:    "polling fullsend.yaml on org/repo failed",
 		},
-		"server 500 stays unmarked and classifies scenario": {
+		"server 500 stays unmarked and classifies infra": {
 			err:        &gh.APIError{StatusCode: http.StatusInternalServerError, Message: "boom"},
-			wantClass:  behaviourfail.Scenario,
+			wantClass:  behaviourfail.Infrastructure,
 			wantMarked: false,
 			wantMsg:    "polling fullsend.yaml on org/repo failed",
 		},
@@ -159,5 +161,80 @@ func TestInfraClassSetup404Exhaustion(t *testing.T) {
 		assert.Equal(t, behaviourfail.Scenario, failclass.Classify(err),
 			"unrecognized setup failures stay scenario so a retry cannot mask them")
 		assert.False(t, behaviourfail.Is(err), "non-404 setup failures are not marked")
+	})
+}
+
+// TestInfraClassSetupGitHubTransient pins #9497: a `github setup`
+// subprocess that fails on a GitHub 5xx the client gave up on, or on an
+// HTTP/2 CANCEL stream reset, is infrastructure, in a single attempt.
+// Any other setup failure stays scenario, and the same texts outside
+// setup — or beside a scenario cause in a join — stay scenario too.
+func TestInfraClassSetupGitHubTransient(t *testing.T) {
+	const cliPrefix = "[cli] fullsend github setup org/repo --direct --mint-url https://mint.test --runtime dummy --vendor failed: exit status 1\n"
+	const streamReset = "Error: committing scaffold files: create blob for .fullsend/bin/fullsend: decode blob: stream error: stream ID 23; CANCEL; received from peer"
+	const refs500 = "Error: committing scaffold files: update ref: github api: 500 retryable error after 5 attempts on PATCH /repos/halfsend-07/test-repo-05/git/refs/heads/main (last delay: 16s)"
+
+	for name, tc := range map[string]struct {
+		cliOutput  string
+		wantClass  behaviourfail.Class
+		wantReason string
+	}{
+		"stream reset on create blob": {
+			cliOutput:  streamReset,
+			wantClass:  behaviourfail.Infrastructure,
+			wantReason: "setup: github stream reset",
+		},
+		"500 on PATCH git/refs after the client's retries": {
+			cliOutput:  refs500,
+			wantClass:  behaviourfail.Infrastructure,
+			wantReason: "setup: github server error",
+		},
+		"404": {
+			cliOutput: "Error: committing scaffold files: create tree: github api: 404 Not Found",
+			wantClass: behaviourfail.Scenario,
+		},
+		"422 validation": {
+			cliOutput: "Error: committing scaffold files: update ref: github api: 422 Validation Failed (Reference update failed)",
+			wantClass: behaviourfail.Scenario,
+		},
+		"non-github error": {
+			cliOutput: "Error: loading config preset: open /tmp/preset.yaml: no such file or directory",
+			wantClass: behaviourfail.Scenario,
+		},
+		"panic": {
+			cliOutput: "panic: runtime error: invalid memory address or nil pointer dereference\n\ngoroutine 1 [running]:",
+			wantClass: behaviourfail.Scenario,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			attempts, err := install.InstallFullsendSetupCLIErrorForTest(t, cliPrefix+tc.cliOutput)
+			require.Error(t, err)
+			assert.Equal(t, 1, attempts, "only the read-after-create 404 re-runs setup in the driver")
+			assert.Equal(t, tc.wantClass, failclass.Classify(err))
+			if tc.wantReason == "" {
+				assert.False(t, behaviourfail.Is(err), "unrecognized setup failures stay unmarked")
+				return
+			}
+			var infra *behaviourfail.InfraError
+			require.ErrorAs(t, err, &infra)
+			assert.Equal(t, tc.wantReason, infra.Reason)
+			assert.Contains(t, err.Error(), "github setup org/repo", "the setup call stays named for diagnosis")
+		})
+	}
+
+	t.Run("same texts outside setup stay scenario", func(t *testing.T) {
+		for _, out := range []string{streamReset, refs500} {
+			err := fmt.Errorf("[cli] fullsend admin status org/repo failed: exit status 1\n%s", out)
+			assert.Equal(t, behaviourfail.Scenario, failclass.Classify(err),
+				"only the setup path marks CLI text; a scenario step's CLI failure has no typed error to match")
+		}
+	})
+
+	t.Run("joined with a scenario branch stays scenario", func(t *testing.T) {
+		_, setupErr := install.InstallFullsendSetupCLIErrorForTest(t, cliPrefix+streamReset)
+		require.Equal(t, behaviourfail.Infrastructure, failclass.Classify(setupErr))
+		joined := errors.Join(setupErr, errors.New("expected label ready-to-code, got none"))
+		assert.Equal(t, behaviourfail.Scenario, failclass.Classify(joined),
+			"a scenario cause beside the setup failure keeps the whole error scenario")
 	})
 }

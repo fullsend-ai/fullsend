@@ -18,9 +18,17 @@ Date: 2026-10-28
 
 Accepted
 
+The opt-in rule (a repository with no `jira` entry keeps the previous
+behaviour) is superseded by
+[ADR 0157](0157-require-jira-authorization-entry-for-jira-poll.md), which
+deprecates running the `jira-poll` driver without an entry and makes the
+entry required. The lists, `labels:` rules and roster loading decided here
+are unchanged.
+
 [ADR 0172](0172-let-bot-added-labels-start-agents-on-jira.md) stops the
-poller from dropping bot-authored label-added events, including its own
-account's. They take the `labels:` rule below; other bot events stay dropped.
+poller from dropping label-added events from its own account and from
+accounts the `jira` entry lists. They take the `labels:` rule below; other bot
+events stay dropped.
 
 ## Context
 

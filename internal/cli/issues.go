@@ -59,6 +59,7 @@ FULLSEND_JIRA_CLIENT_SECRET.`,
 	cmd.AddCommand(newIssuesCreateCmd())
 	cmd.AddCommand(newIssuesPostCommentCmd())
 	cmd.AddCommand(newIssuesLinkCmd())
+	cmd.AddCommand(newIssuesTransitionCmd())
 	return cmd
 }
 

@@ -46,6 +46,25 @@ func TestClaudeHookDigests_RoundTripAndKeyedBySandbox(t *testing.T) {
 	assert.False(t, ok)
 }
 
+func TestClaudeHookDigestsFor_RecordsTirithRepoPolicy(t *testing.T) {
+	t.Parallel()
+
+	policy := []byte("approval_rules:\n  - rule_ids: [package_lookup_incomplete]\n")
+	hooks := security.SandboxHookConfigFromHarness(&harness.Harness{}).WithTirithRepoPolicy(policy)
+	hooksJSON, err := security.GenerateHooksConfig(hooks)
+	require.NoError(t, err)
+
+	d := claudeHookDigestsFor(hooks, hooksJSON)
+	assert.Equal(t, codexAssetSHA256(policy), d.HookScripts[security.TirithRepoPolicyFile],
+		"the staged policy must be in the runner-held digest set the launch guard checks")
+	guard := claudeHooksGuard(d, true)
+	assert.Contains(t, guard, security.TirithRepoPolicyFile)
+	assert.Contains(t, guard, codexAssetSHA256(policy))
+
+	none := claudeHookDigestsFor(security.SandboxHookConfigFromHarness(&harness.Harness{}), hooksJSON)
+	assert.NotContains(t, none.HookScripts, security.TirithRepoPolicyFile)
+}
+
 func TestClaudeHookDigestsFor(t *testing.T) {
 	t.Parallel()
 

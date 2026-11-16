@@ -1778,6 +1778,7 @@ func (r *credentialRedactor) add(values ...string) {
 			continue
 		}
 		r.values = append(r.values, v, url.QueryEscape(v), url.PathEscape(v))
+		rememberVerboseSecrets(v, url.QueryEscape(v), url.PathEscape(v))
 	}
 }
 
@@ -1791,6 +1792,11 @@ func (r *credentialRedactor) addHookURL(hookURL string) {
 // text. Use it for credential-bearing calls made before the credential
 // values are known to the redactor. errors.Is and errors.As still see
 // the original error.
+//
+// An unresolved supplied-credential error is shown as built (see
+// suppliedUnresolvedText), since it holds recovery instructions and no
+// server text. With verbose API errors enabled (EnableVerboseAPIErrors)
+// the scrubbed underlying error text is shown instead of being withheld.
 func safeAPIError(op string, err error) error {
 	reason := "request failed"
 	switch {
@@ -1804,6 +1810,12 @@ func safeAPIError(op string, err error) error {
 		reason = "forbidden"
 	case forge.IsTransient(err):
 		reason = "transient server error"
+	}
+	if detail := verboseDetail(err); detail != "" {
+		return &redactedError{msg: op + ": " + reason + ": " + detail, err: err}
+	}
+	if text := suppliedUnresolvedText(err); text != "" {
+		return &redactedError{msg: op + ": " + scrubVerboseDetail(text, nil, nil), err: err}
 	}
 	return &redactedError{msg: op + ": " + reason + " (server error text withheld)", err: err}
 }

@@ -196,6 +196,7 @@ script-test:
 	$(call run-timed,bash .github/scripts/check-fix-eligibility-test.sh)
 	$(call run-timed,bash .github/scripts/count-fix-commits-test.sh)
 	$(call run-timed,bash .github/scripts/pre-fetch-review-body-test.sh)
+	$(call run-timed,bash .github/scripts/review-diff-hash-test.sh)
 	$(call run-timed,bash .github/scripts/retry-with-backoff-test.sh)
 	$(call run-timed,bash scripts/check-agents-gate-pin-test.sh)
 	$(call run-timed,bash scripts/semgrep-scan-test.sh)
@@ -203,7 +204,7 @@ script-test:
 	$(call run-timed,bash skills/cutting-releases/scripts/prepend-release-highlights-test.sh)
 	$(call run-timed,bash skills/e2e-health/scripts/scan-ratelimit-evidence_test.sh)
 	$(call run-timed,bash scripts/renovate/update-go-checksums-test.sh)
-	$(call run-timed,bash scripts/renovate/update-fd-checksums-test.sh)
+	$(call run-timed,bash scripts/renovate/update-pin-checksums-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/.github/scripts/setup-agent-env-test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/executor/prepare_validation_test.sh)
@@ -217,7 +218,7 @@ script-test:
 	$(call run-timed,bash hack/gitlab-runner-vm/os-update_test.sh)
 	$(call run-timed,bash hack/gitlab-runner-vm/grow-root-fs_test.sh)
 	$(call run-timed,bash hack/setup-e2e-inference-gateway_test.sh)
-	$(call run-timed,bash hack/setup-new-e2e-org_test.sh)
+	$(call run-timed,bash e2e/org-pool/setup-org_test.sh)
 	$(call run-timed,bash internal/runtime/kill_stray_processes_test.sh)
 	$(call run-timed,bash hack/ci-local/ci-local_test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
@@ -260,7 +261,7 @@ ci-local:
 # model runs) and inference-gateway-reseed (holds the sandbox for a 330 s
 # wait) are deliberately not declared; run them on demand with the full list
 # (docs/guides/dev/e2e-testing.md), e.g.
-#   BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runtime-pi-gateway,runtime-codex-gateway,runtime-claude-gateway,inference-gateway-reseed
+#   BEHAVIOUR_CAPABILITIES=runtime-pi,inference-gateway,inference-gateway-api-key,runner-secret-overlay-guard,runtime-pi-gateway,runtime-codex-gateway,runtime-claude-gateway,inference-gateway-reseed
 # runtime-pi-openai (features/runtime/pi-openai.feature) is deliberately not
 # declared: it needs an OpenAI organization mapped to the pool repositories
 # (docs/guides/infrastructure/openai-workload-identity.md). Add it here once
@@ -272,14 +273,12 @@ ci-local:
 # fullsend-sandbox:latest ships OpenCode, i.e. after the image change is
 # published from main; then add it here (one small haiku run on Vertex).
 # runner-secret-overlay-guard
-# (features/dispatch/runner-secret-overlay-guard.feature) is not declared
-# until its refused scenario has passed one live run. A dev run (an
-# authorized PR or the merge queue) installs the PR head's fullsend
-# binary; a stage run (push to main) takes main's. Run make behaviour-test
-# on demand with runner-secret-overlay-guard added to
-# BEHAVIOUR_CAPABILITIES, on dev against the fix or on stage once it is on
-# main; when that passes, declare it here. Jira AISDLC-654 tracks that
-# step and the harnessLogPollWindow confirmation.
+# (features/dispatch/runner-secret-overlay-guard.feature) is declared so
+# both scenarios run in the default suite and a guard regression fails it
+# instead of passing unnoticed. The eight live runs behind
+# harnessLogPollWindow's 5s measurement exercised the allowed scenario
+# only. The gate stays so BEHAVIOUR_CAPABILITIES= can still skip the
+# refused scenario on demand.
 # fetch-allowlist-gate (features/dispatch/fetch-allowlist-gate.feature) is
 # not declared until its scenario has passed one live run. A dev run (an
 # authorized PR or the merge queue) installs the PR head's fullsend
@@ -287,7 +286,7 @@ ci-local:
 # on demand with fetch-allowlist-gate added to BEHAVIOUR_CAPABILITIES, on
 # dev against the fix or on stage once it is on main; when that passes,
 # declare it here (#9291).
-BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
+BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key,runner-secret-overlay-guard
 
 # Runs through scripts/run-with-infra-retry.sh: a failed attempt whose
 # failure-class report classifies the run as infrastructure is re-run

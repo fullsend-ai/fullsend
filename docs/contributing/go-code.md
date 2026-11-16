@@ -704,6 +704,10 @@ Everything install writes must be deleted on uninstall. The reverse is
 false by design: the uninstall lists deliberately retain names install no
 longer writes, so repositories installed by earlier versions are still
 cleaned up — `gitlabRetiredLegacyVars` and the `forge.VarLegacy*` names.
+The uninstall lists also carry the trace signing key,
+`FULLSEND_TRACE_SIGNING_KEY`
+([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)),
+which install does not write.
 Two omissions are also deliberate and documented where they are defined:
 `gitlabUninstallVars` excludes the legacy shared forge token, and
 `gitlabUninstallSecrets` excludes the unprefixed `OPENAI_API_KEY`, which

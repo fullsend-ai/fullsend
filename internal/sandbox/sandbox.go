@@ -65,6 +65,19 @@ const (
 	// (the hook plugin adapter lives under this dir at plugins/, integrity-
 	// gated before .env is sourced, mirroring pi's piHooksGuard).
 	SandboxOpenCodeConfig = "/sandbox/opencode-config" //nolint:gosec // not a credential
+	// SandboxJiraDir holds SandboxJiraTokenFile. Outside the cloned repo
+	// tree, so the target repo cannot pre-seed it and a workspace reset does
+	// not clear it.
+	SandboxJiraDir = "/sandbox/fullsend-jira" //nolint:gosec // not a credential
+	// SandboxJiraTokenFile holds the current JIRA_TOKEN placeholder when the
+	// runner mints the sandbox's Jira access token (the fullsend-jira
+	// provider with OAuth 2.0 client credentials, fullsend#9220). The runner
+	// rewrites it after every refresh, because a running process keeps the
+	// placeholder it started with and OpenShell resolves that one to the
+	// old, expired token (ADR 0092). Jira skills read the token from this
+	// file per call and fall back to $JIRA_TOKEN when it is absent. It holds
+	// only the placeholder, never the token.
+	SandboxJiraTokenFile = SandboxJiraDir + "/token" //nolint:gosec // not a credential
 
 	// KeepAliveCommand is the sandbox's canonical main process, started by
 	// createOnce so the sandbox stays Ready between `sandbox exec` calls
@@ -1265,6 +1278,15 @@ func expandProviderValue(v string) string {
 		}
 		return os.Getenv(k)
 	})
+}
+
+// ProviderCredentialEmpty reports whether a provider credential value
+// expands, as EnsureProvider would expand it, to nothing but whitespace.
+// The runner uses it to tell whether a definition has a static value or
+// needs one resolved in process (the fullsend-jira provider, fullsend#9220).
+// The expanded value itself is not returned.
+func ProviderCredentialEmpty(v string) bool {
+	return strings.TrimSpace(expandProviderValue(v)) == ""
 }
 
 // CredentialOnlyExpansionKeys marks environment variable names that provider

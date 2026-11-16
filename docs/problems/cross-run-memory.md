@@ -74,6 +74,12 @@ These splits suggest that "memory" may not be one feature. It may be several fee
 - **Memory must be attributable.** Future agents and human reviewers should be able to see where a remembered fact came from: which run, which role, which issue or PR, and whether it was system-derived or agent-authored.
 - **Memory must decay.** Some lessons become wrong. A useful memory system needs a way to expire, supersede, or promote entries.
 
+Scope also covers audience. A run that reads private context can record
+lessons, summaries or evidence that a later run repeats in a public
+repository. [Private Context in Public Agent Workflows](private-context-public-workflows.md)
+examines that publication boundary for retro, fix and other agents that
+consume evidence from earlier runs.
+
 ## Relationship to other problem areas
 
 - **[Security Threat Model](security-threat-model.md)** — Memory is a persistence mechanism, so it expands the prompt-injection surface. The key risk is poisoned context moving from one agent run to another.
@@ -146,7 +152,7 @@ Most of the triggers above cannot be evaluated from an attempt count at all. The
 - **Regressions** need the failing set from the current attempt compared against the previous one, to separate "still broken" from "newly broken."
 - **Cumulative cost** needs per-attempt cost summed across the task, independent of any per-run ceiling.
 
-[ADR 0141](../ADRs/0141-deterministic-filtered-entity-context-staging.md) and the [entity-context-snapshot specification](../normative/entity-context-snapshot/v1/README.md) already specify forge-observable, per-entity run receipts in `history/agent-runs.json`, alongside check metadata. These contracts provide outcome and revision information, but do not define failure signatures, per-attempt cost, or a task identity spanning multiple entities.
+[ADR 0141](../ADRs/0141-deterministic-filtered-entity-context-staging.md) and the [entity-context-snapshot v2 specification](../normative/entity-context-snapshot/v2/README.md) (which [ADR 0170](../ADRs/0170-align-entity-context-snapshot-with-normalized-entity.md) makes the contract for new producers; [v1](../normative/entity-context-snapshot/v1/README.md) defines the same receipts) already specify forge-observable, per-entity run receipts in `history/agent-runs.json`, alongside check metadata. These contracts provide outcome and revision information, but do not define failure signatures, per-attempt cost, or a task identity spanning multiple entities.
 
 Two properties constrain how that history can be gathered. The signature has to be derived from system evidence such as check names, exit reasons, and structured results, rather than from the agent's own account of what went wrong, because history written by one agent and trusted by a later one is the poisoning path described in [Memory as an attack surface](#memory-as-an-attack-surface). And the history needs a stable task identity that survives across runs: an attempt count scoped to a PR and a failure history scoped to an issue would disagree about what "the same task" is.
 

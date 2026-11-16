@@ -368,7 +368,7 @@ func TestRunAgent_FetchOnlyHarnessRemoteResourcesNotSubset(t *testing.T) {
 	// (allow_runtime_fetch + allowed_remote_resources) still starts the
 	// fetch service, so its allowlist must be checked against
 	// config.yaml's — the subset check must not be gated on
-	// HasURLReferences (#7395801).
+	// HasURLReferences (#9291).
 	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -1026,6 +1026,27 @@ func TestRunAgent_CustomNamedProviderOverrideWins(t *testing.T) {
 	require.Len(t, imports, 1, "%q", log)
 	assert.Equal(t, filepath.Join(dir, "profiles", "myorg-github-ro.yaml"), imports[0][1])
 	assert.Contains(t, log, "provider create --name myorg-github-ro --type myorg-github-ro")
+}
+
+// TestRunAgent_PrintsResolvedProviderProfiles: the run names the profile
+// each provider uses, embedded or listed by the harness, and warns before
+// the sandbox is created when a durable credential host file sits next to a
+// write-capable provider (#9510).
+func TestRunAgent_PrintsResolvedProviderProfiles(t *testing.T) {
+	t.Setenv("GH_TOKEN", "dummy")
+	sa := writeHostFileFixture(t, "service_account")
+	_, _, out := runAgentWithProviderFiles(t,
+		"agent: agents/code.md\nrole: test\nproviders:\n  - github\n  - github-ro\n"+
+			"host_files:\n  - src: "+sa+"\n    dest: /tmp/sa.json\n    allow_durable: true\n"+
+			"openshell:\n  profiles:\n    - profiles/fullsend-github-ro.yaml\n",
+		map[string]string{"profiles/fullsend-github-ro.yaml": "id: fullsend-github-ro\nendpoints:\n  - host: api.github.com\n    protocol: rest\n    access: read-only\nbinaries: [\"**/gh\"]\n"})
+
+	assert.Contains(t, out, "provider github: profile fullsend-github (embedded) -> api.github.com rest read-write, github.com rest read-write; binaries gh, git, node, pre-commit")
+	assert.Contains(t, out, "provider github-ro: profile fullsend-github-ro (harness) -> api.github.com rest read-only; binaries gh")
+	warn := "host file dest /tmp/sa.json is a durable credential, and provider github (profile fullsend-github) permits write methods. Prefer a short-lived credential"
+	assert.Contains(t, out, warn)
+	assert.NotContains(t, out, "provider github-ro (profile", "a read-only provider is not named in the warning")
+	assert.Less(t, strings.Index(out, warn), strings.Index(out, "Creating sandbox"), "the warning comes before the sandbox is created")
 }
 
 // TestRunAgent_UnlistedProfileDirectoryFileIsNotImported guards the #7095
@@ -2759,6 +2780,8 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 		"FULLSEND_TRIGGER_TOKEN",
 		"FULLSEND_GITLAB_TRIGGER_ACCOUNT_TOKEN",
 		"FULLSEND_WEBHOOK_SECRET",
+		// So must the trace-context signing seed (ADR 0154).
+		"FULLSEND_TRACE_SIGNING_KEY",
 		// The runner secrets bundle must never be expandable as a whole (ADR 0136).
 		"FULLSEND_GITHUB_RUNNER_SECRETS",
 		// Nor may a harness or script learn where the bundle file was staged.
@@ -2771,14 +2794,15 @@ func TestOIDCDenyKeys_Completeness(t *testing.T) {
 	assert.False(t, oidcDenyKeys[workflowTokenEnv], "GH_WORKFLOW_TOKEN must stay expandable by provider credentials (#6649)")
 }
 
-// TestGitLabWebhookCredentials_RunnerOnly checks each webhook fast-path
-// credential independently: neither may reach host-side scripts, validation
-// commands, harness ${VAR} expansion, or sandbox injection, even if GitLab
-// injected the protected variable into the runner process.
-func TestGitLabWebhookCredentials_RunnerOnly(t *testing.T) {
-	for _, key := range []string{forge.SecretTriggerToken, forge.SecretGitLabTriggerAccountToken, forge.SecretWebhookSecret} {
+// TestGitLabProtectedCredentials_RunnerOnly checks each webhook fast-path
+// credential and the trace-context signing seed independently: none may reach
+// host-side scripts, validation commands, harness ${VAR} expansion, or sandbox
+// injection, even if GitLab injected the protected variable into the runner
+// process.
+func TestGitLabProtectedCredentials_RunnerOnly(t *testing.T) {
+	for _, key := range []string{forge.SecretTriggerToken, forge.SecretGitLabTriggerAccountToken, forge.SecretWebhookSecret, forge.SecretTraceSigningKey} {
 		t.Run(key, func(t *testing.T) {
-			const value = "webhook-credential-value"
+			const value = "protected-credential-value"
 			t.Setenv(key, value)
 
 			assert.True(t, oidcDenyKeys[key])
@@ -9595,6 +9619,43 @@ func TestRunAgent_CancelledReviewLeavesCommentPendingWhenHeadLookupFails(t *test
 	assert.Contains(t, comments[0].Body, "fullsend:agent-status:run-42")
 	assert.NotContains(t, comments[0].Body, "fullsend:status:terminal")
 	assert.Empty(t, fc.UpdatedComments, "failed head lookup must not terminalize the comment without guidance")
+}
+
+// A child of a read-only base reaches the read-only step, and a child that
+// says readonly_repo: false skips it (#7360).
+func TestRunAgent_ReadonlyRepoFromBase(t *testing.T) {
+	for _, tc := range []struct {
+		name, child string
+		want        bool
+	}{
+		{"child is silent", "base: review-base.yaml\n", true},
+		{"child says false", "base: review-base.yaml\nreadonly_repo: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			useFakeOpenshellProviders(t)
+			t.Setenv("FULLSEND_RUNTIME", "dummy")
+			dir := t.TempDir()
+			for path, content := range map[string]string{
+				"agents/review.md":         "You are a review agent.",
+				"harness/review-base.yaml": "agent: agents/review.md\nrole: review\npolicy: policies/base.yaml\nreadonly_repo: true\n",
+				"harness/review.yaml":      tc.child,
+				"policies/base.yaml":       "version: 1\n",
+				"config.yaml":              "agents:\n  - harness/review.yaml\n",
+			} {
+				file := filepath.Join(dir, path)
+				require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+				require.NoError(t, os.WriteFile(file, []byte(content), 0o644))
+			}
+
+			var buf bytes.Buffer
+			// The run fails later, when the dummy runtime finds no scenario; only the steps before that matter.
+			_ = runAgent(context.Background(), "review", dir, "", t.TempDir(), fakeSandboxBinary(t), nil, false, "", "github", "", resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&buf), false, runOverrideFlags{})
+
+			out := buf.String()
+			require.Contains(t, out, "Scanning target repo context files", "the run must get past the read-only step")
+			assert.Equal(t, tc.want, strings.Contains(out, "Target repo set to read-only"))
+		})
+	}
 }
 
 func TestBackendFromConfigFile_MissingUsesDefault(t *testing.T) {

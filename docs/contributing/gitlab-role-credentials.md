@@ -177,6 +177,47 @@ generic forge secret list; role provisioning repairs an existing
 shared-token installation by provisioning the missing role credentials.
 It does not touch the leftover shared secret.
 
+### Provider credentials from CI/CD variables
+
+In a GitLab CI job, `fullsend run` prints one line for each provider
+credential that comes from a CI/CD variable. A stock agent job with a role
+token prints:
+
+```text
+  ! provider "gitlab-rw": credential GITLAB_TOKEN comes from CI/CD variable FULLSEND_GITLAB_ANALYST_TOKEN (runner variable GITLAB_TOKEN), a long-lived value that masking hides only as an exact string; no keyless replacement on GitLab yet
+```
+
+The line never contains the value, and the run continues. It is there because
+a CI/CD variable is weaker than an `id_tokens:` OIDC token: masking misses a
+base64 or concatenated copy, `protected: true` does not help on the default
+branch, and the variable sets no expiry of its own: the value lives until its
+issuer expires it or someone rotates it.
+
+| Credential | CI/CD variable | Keyless `id_tokens:` replacement |
+| --- | --- | --- |
+| Vertex AI inference | none | already keyless: `FULLSEND_ID_TOKEN`, exchanged through the `gitlab-oidc` WIF provider ([configuring GitLab](../guides/getting-started/configuring-gitlab.md)) |
+| OpenAI | `FULLSEND_OPENAI_API_KEY` (runner variable `OPENAI_API_KEY`) | none on GitLab yet |
+| GitLab role tokens | `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` (runner variable `GITLAB_TOKEN`) | none yet |
+| Jira (static token) | `FULLSEND_JIRA_TOKEN` | none yet |
+| Inference gateway API key | `FULLSEND_INFERENCE_GATEWAY_API_KEY` | none yet; not reported, because it is not a provider `credentials:` value |
+
+What counts as a CI/CD-variable credential:
+
+- the run's forge is GitLab and `GITLAB_CI=true`;
+- a provider definition's `credentials:` value is exactly one `${VAR}` or
+  `$VAR`, or the credential is the OpenAI static key, read from the runner
+  variable `OPENAI_API_KEY`;
+- `VAR` is set and non-empty, and its value is not a GitLab `id_tokens` JWT (a
+  JWT whose `iss` claim equals `CI_SERVER_URL`; only the claims are decoded).
+
+Where the table says "none yet", there is nothing to change: the line stays
+until GitLab offers a keyless route for that credential. To print it as info
+instead of a warning, set `allow_ci_variable_credential: true` at the top
+level of the harness. It is ignored under `forge:` or `overlays:`, and it is
+not inherited from `base:`. For a stock agent, set it in a local child
+harness; see
+[Configuration with `base:` composition](../guides/user/customizing-agents.md#configuration-with-base-composition).
+
 ### Project access token names
 
 | Role | PAT name | Access | Scopes |
@@ -1205,7 +1246,12 @@ while the dispatch activation is recorded (`scheduleOwnershipDrift`). For
 that last case the reason tells the operator to re-run install when install
 can adopt the schedule's owner, and otherwise that an administrator must
 remove or reassign the schedule; an owner or schedule list that could not be
-read is reported as unverified. Anything other than
+read is reported as unverified. There is one exception: while the
+protected-branch rule shows the trigger account lacks merge permission,
+verified installer-owned schedules are expected and are not reported as
+drift. The schedule listing and owner checks still run then. A schedule the
+account owns is reported as needing hand-back, and a schedule with an
+unverified or unadoptable owner keeps its diagnostic. Anything other than
 `not-installed`, `deferred`, and `ready` is reported as drift.
 
 GitLab.com Free rejects per-user protected-branch merge grants, but it
@@ -1767,7 +1813,7 @@ Leave these to the follow-up issues.
 
 ## Credential-routing security checklist
 
-Hold these four code invariants and the documentation-terminology rule
+Hold these five code invariants and the documentation-terminology rule
 below when changing `internal/gitlabroles` or GitLab credential handling
 in `internal/cli`. They are
 the review findings from [PR #7510](https://github.com/fullsend-ai/fullsend/pull/7510)
@@ -1847,6 +1893,43 @@ step on a repository installed before the role-only rollout.
       `FULLSEND_FORGE_TOKEN`.
 - [ ] Missing role secrets fail closed as `ErrUnconfigured`.
 
+### Bind the GitLab credential profile to the GitLab host only
+
+A *provider profile* is an OpenShell file that names a credential and
+the hosts it may be sent to. OpenShell resolves a provider's
+`GITLAB_TOKEN` placeholder at every endpoint of the provider profile
+that issues it. `fullsend run --forge gitlab` therefore limits each
+imported profile that issues `GITLAB_TOKEN` to the one GitLab host and
+port it resolves from the first one set of `FULLSEND_GITLAB_URL`,
+`GITLAB_API_URL` and `CI_SERVER_URL` (`gl.ResolveBaseURL`, shared with
+the GitLab clients).
+
+The run stops before setup when:
+
+- the GitLab URL has no host, or is not https (other schemes only for
+  localhost, 127.0.0.1 or ::1);
+- no GitLab URL is set and an imported profile issues `GITLAB_TOKEN`;
+- any imported profile, GitLab or not, uses YAML merge keys (`<<`),
+  alias keys, duplicate keys or more than one document. OpenShell
+  applies merge and alias keys when it reads a profile, so a credential
+  or endpoint added through them could be hidden from the check.
+
+The fix for both URL stops is to set the URL, for example:
+
+```bash
+export FULLSEND_GITLAB_URL=https://gitlab.example.com
+```
+
+The operator-facing error table is in
+[Self-Hosted GitLab Instances](../guides/getting-started/configuring-gitlab.md#self-hosted-gitlab-instances).
+See `bindGitLabCredentialToForgeHost` in `internal/cli/gitlab_profile.go`.
+
+- [ ] The GitLab credential profile is bound only to the GitLab host and
+      port; no change adds a second host to a profile that issues
+      `GITLAB_TOKEN`.
+- [ ] New code that reads the GitLab URL goes through
+      `gl.ResolveBaseURL`.
+
 ### Keep fallback terminology consistent across docs
 
 Two distinct leftover terms share similar wording and are easy to
@@ -1862,15 +1945,26 @@ conflate. Use these terms, and do not mix them:
   run --forge gitlab` now fails closed unless the matching role secret
   is present.
 
-These two are described independently in four documents:
+These two, and the GitLab host binding above, are described
+independently in four documents:
 
 - this file (`docs/contributing/gitlab-role-credentials.md`)
 - [`docs/cli/run.md`](../cli/run.md)
 - [`docs/guides/user/running-agents-locally.md`](../guides/user/running-agents-locally.md)
 - [`docs/problems/security-threat-model.md`](../problems/security-threat-model.md)
 
+The GitLab host binding is also described in five more documents, nine
+in all:
+
+- [`docs/guides/getting-started/operations.md`](../guides/getting-started/operations.md)
+- [`docs/guides/getting-started/configuring-gitlab.md`](../guides/getting-started/configuring-gitlab.md)
+- [`docs/guides/getting-started/repo-management.md`](../guides/getting-started/repo-management.md)
+- [`docs/contributing/runtime-implementation.md`](runtime-implementation.md)
+- [`docs/guides/dev/cli-internals.md`](../guides/dev/cli-internals.md)
+
 - [ ] Any change that touches credential selection or fallback behavior
-      re-reads all four documents and updates them with the same
+      re-reads the first four documents, and any change to the GitLab
+      host binding re-reads all nine, and updates them with the same
       terms. Do not edit only the file under your cursor.
 
 ## Security notes

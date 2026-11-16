@@ -248,13 +248,25 @@ func (m *Manifest) RenderManagedConfig(forgeName string, entry RepoEntry) (data 
 // bytes, so the marker is part of both the write and the whole-file
 // compare; only the source-manifest line is ignored by that compare
 // (managedConfigEquivalent).
+//
+// The body is rendered in the configuration schema of the repository's
+// effective fullsend_ref (resolved.ConfigSchema, #9292). An unknown schema
+// is an error, so the installed file is left unchanged rather than
+// rewritten in a shape that ref may not read.
 func desiredManagedConfig(resolved ResolvedConfig) (data []byte, ok bool, err error) {
 	if !resolved.ConfigManaged {
 		return nil, false, nil
 	}
+	if err := resolved.ConfigSchema.unknownError(); err != nil {
+		return nil, true, err
+	}
 	body, err := marshalManagedConfig(resolved.Managed)
 	if err != nil {
 		return nil, true, err
+	}
+	body, err = config.RenderManagedConfigSchema(body, resolved.ConfigSchema.version())
+	if err != nil {
+		return nil, true, fmt.Errorf("fullsend_ref %q: %w", resolved.ConfigSchema.Ref, err)
 	}
 	return append([]byte(managedConfigHeader(resolved.ManifestSource)), body...), true, nil
 }

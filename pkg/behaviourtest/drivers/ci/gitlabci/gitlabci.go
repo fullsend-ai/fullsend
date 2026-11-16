@@ -175,10 +175,13 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		}
 	}
 	if matchedRun == nil {
+		// Wrap the shared sentinel so steps retry this timeout like the
+		// GitHub Actions one. It is not a *ci.NotDispatchedError, so the
+		// GitHub Actions dispatch diagnostics do not run for it.
 		if event != "" {
-			return nil, fmt.Errorf("pipeline (%s) was not dispatched%s", event, listErrs.describe(nil, "polls"))
+			return nil, fmt.Errorf("pipeline (%s) %w%s", event, ci.ErrWorkflowNotDispatched, listErrs.describe(nil, "polls"))
 		}
-		return nil, fmt.Errorf("pipeline was not dispatched%s", listErrs.describe(nil, "polls"))
+		return nil, fmt.Errorf("pipeline %w%s", ci.ErrWorkflowNotDispatched, listErrs.describe(nil, "polls"))
 	}
 
 	// Wait for the pipeline to complete.

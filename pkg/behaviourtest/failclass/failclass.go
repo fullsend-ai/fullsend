@@ -31,9 +31,20 @@ import (
 //
 //   - behaviourfail.Is: an error a producer explicitly marked as
 //     infrastructure (setup-poll exhaustion, GCP WIF quota, token
-//     mint/download).
+//     mint/download, and a `fullsend github setup` subprocess whose
+//     final error is a GitHub 5xx the client gave up on or an HTTP/2
+//     CANCEL stream reset — the subprocess counterpart of the
+//     gh.IsServerError rule below, since the typed error does not
+//     cross the process boundary (#9497)).
 //   - a rate-limit gh.APIError: primary 429, or a 403 whose message
 //     says "rate limit" (secondary limit), per gh.IsRateLimitError.
+//   - a GitHub server error, per gh.IsServerError: a REST gh.APIError
+//     with status 500–504 that the client did not retry further (its
+//     retries were used up, or it did not resend because the request
+//     may already have been applied; the suite then retries the
+//     scenario, it does not resend the request), or a GraphQL error
+//     with no type whose message starts with GitHub's generic
+//     "Something went wrong while executing your query" (#9472).
 //   - an install.CapacityError: the slot pool could not provide
 //     capacity — every cause (rate-limited, denied, or failed orgs)
 //     is an environment condition, not a product assertion. A slot
@@ -54,8 +65,8 @@ import (
 // failure is environmental.
 //
 // Everything else classifies as scenario: nil, plain assertion
-// failures, unrecognized API errors (a 500 is a product or forge
-// defect, not an environment condition), and errors whose message
+// failures, unrecognized API errors (a 4xx other than a rate limit, or
+// a typed GraphQL error such as FORBIDDEN), and errors whose message
 // merely mentions rate limits. This conservative default is what
 // makes the single automatic retry safe — an infrastructure-classified
 // run is retried exactly once, so a broader allowlist would risk
@@ -112,6 +123,9 @@ func infraRuleAt(err error) bool {
 		return true
 	}
 	if apiErr, ok := err.(*gh.APIError); ok && gh.IsRateLimitError(apiErr) {
+		return true
+	}
+	if gh.IsServerError(err) {
 		return true
 	}
 	if _, ok := err.(*install.CapacityError); ok {

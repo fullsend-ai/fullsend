@@ -263,6 +263,11 @@ type convergeDiscovery struct {
 	components    []ComponentStatus
 	preset        []byte
 	managedConfig []byte
+	// overlay is the installed .fullsend/config.yaml read once to select
+	// the pinned fullsend_ref's configuration schema (#9292); nil when the
+	// repository follows the running release, in which case the overlay
+	// gates read it themselves.
+	overlay *overlaySnapshot
 	// appSet is the effective FULLSEND_APP_SET value to persist (GitHub
 	// only). When app_set is explicitly configured it is the resolved
 	// value; otherwise it preserves an existing repo variable, falling
@@ -1223,6 +1228,29 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		// Render the managed configuration before any writes so a
 		// validation failure fails the repo without applying changes.
 		if d.resolved.ConfigManaged {
+			// Render in the schema the repository's effective
+			// fullsend_ref reads (#9292).
+			// The installed overlay is read for a pinned ref only, as
+			// status does, so a schema-neutral desired config still
+			// resolves the schema when the overlay is schema-dependent.
+			// A read error fails the repo before any write.
+			// That read is kept as a snapshot the overlay gates reuse, so
+			// it adds no forge read.
+			var installedOverlay []byte
+			if pinnedFullsendRef(d.resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag) {
+				data, found, readErr := readManagedConfigOverlayFile(ctx, d.resolved)
+				if readErr != nil {
+					result.Results[i] = ConvergeResult{
+						Owner: d.repo.Owner,
+						Repo:  d.repo.Repo,
+						Error: fmt.Errorf("reading %s: %w", preset.OverlayPath, readErr),
+					}
+					continue
+				}
+				installedOverlay = data
+				d.overlay = &overlaySnapshot{data: data, found: found}
+			}
+			d.resolved.ConfigSchema = selectManagedConfigSchema(ctx, d.resolved, installedOverlay, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
 			body, _, configErr := desiredManagedConfig(d.resolved)
 			if configErr != nil {
 				result.Results[i] = ConvergeResult{
@@ -1239,7 +1267,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			// would fire only after they had changed the repository. A
 			// fresh install is gated before Install in its own path.
 			if workflowPresent(d.components) {
-				if gateErr := checkEstablishedOverlayGate(ctx, d.resolved, body); gateErr != nil {
+				if gateErr := checkEstablishedOverlayGateFrom(ctx, d.resolved, body, d.overlay); gateErr != nil {
 					result.Results[i] = ConvergeResult{
 						Owner: d.repo.Owner,
 						Repo:  d.repo.Repo,
@@ -1615,7 +1643,7 @@ func convergeRepo(ctx context.Context,
 		var configSafetyRejected *ComponentAction
 		var existingUnmanagedConfig []byte
 		if resolved.ConfigManaged {
-			existing, found, readErr := readExistingFile(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo, preset.OverlayPath)
+			existing, found, readErr := d.overlay.readOverlay(ctx, resolved)
 			if readErr != nil {
 				cr.Error = fmt.Errorf("reading existing %s: %w", preset.OverlayPath, readErr)
 				return cr

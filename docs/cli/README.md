@@ -35,6 +35,7 @@ To update an installed binary later, run [`fullsend self-update`](self-update.md
 | [`fullsend self-update`](self-update.md) | Update the local `fullsend` binary to the latest release, or to `--version`, after verifying the release's Sigstore signature and checksum. |
 | `fullsend eval-measure` | Score wild-run traces into `eval-measurements.jsonl`. See [Eval measurements](../guides/infrastructure/eval-measurements.md). |
 | `fullsend prepare-artifacts` | Build, in `--artifact-dir`, the filtered copy of a run's `--output-dir` that CI uploads as the run artifact. The level (`all`, `metadata` or `none`) comes from `config.yaml`'s [`artifacts`](../reference/config-reference.md#artifacts) setting and the run's source; a run whose source is unknown gets the strictest configured level. Prints the level on stdout and the rule it applied on stderr. If the level cannot be resolved, it leaves `--artifact-dir` empty and exits non-zero. `action.yml` and the GitLab agent job run it after `eval-measure`. See [Run artifacts and private data](../guides/user/run-artifacts-and-private-data.md). |
+| `fullsend issues transition` | Transition an issue: exactly one of `--state closed`, `--transition NAME` (Jira), or `--status NAME` (Jira). Accepts `--resolution ID_OR_NAME` (Jira) and `--comment TEXT`, plus the existing `--tracker`, `--project`, `--number`, `--fullsend-dir`, and `--token` flags. See [Issue transitions](../guides/user/issues-commands.md#fullsend-issues-transition) for permissions, ambiguity handling, and partial failures. |
 
 ## Global flags
 
