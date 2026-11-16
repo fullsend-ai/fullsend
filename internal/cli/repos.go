@@ -1170,12 +1170,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					}
 					failedRepoKeys[repoFullName] = true
 				} else {
-					var controlRunnerTags []string
-					if manifest.GitLab != nil {
-						controlRunnerTags = manifest.GitLab.ControlRunnerTags
-					}
-					warnGitLabFreePollQuota(ctx, fc.Client, printer, glClient.BaseURL(), r.Owner, r.Repo, controlRunnerTags)
+					warnGitLabFreePollQuota(ctx, fc.Client, printer, glClient.BaseURL(), r.Owner, r.Repo, gitlabControlRunnerTags(manifest))
 				}
+			} else if !r.Installed && convergeCreatedSchedules(r.Actions) {
+				// Converge recreated missing schedules on an already-installed
+				// repo, which starts the same quota-consuming polling.
+				warnGitLabFreePollQuota(ctx, fc.Client, printer, glClient.BaseURL(), r.Owner, r.Repo, gitlabControlRunnerTags(manifest))
 			}
 
 			healGitLabResourceGroups(ctx, glClient, printer, r.Owner, r.Repo)

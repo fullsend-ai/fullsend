@@ -160,10 +160,12 @@ and typed pins predating the secured contract are unsupported.
 > project has its own runner for untagged jobs. Every run then uses the
 > namespace's compute minutes. Even throttled to 24 runs a day per schedule,
 > the polling schedules can use a Free namespace's whole monthly quota in about
-> a week, and after that every CI job in the namespace fails. When the
+> a week, and after that jobs that rely on GitLab-hosted runners stop running
+> (jobs on the namespace's own runners keep running). When the
 > namespace is on GitLab.com Free and the poll job is untagged or carries a
 > hosted-runner (`saas-`) tag, `repos install` prints a warning after it creates
-> the schedules. To avoid the cost, register a project runner and set
+> the schedules, including when a later run recreates missing schedules on an
+> already-installed repo. To avoid the cost, register a project runner and set
 > `gitlab.control_runner_tags` to its tag before installing (see
 > [Runner Configuration](#runner-configuration)), or disable the schedules and
 > use [Off-system polling](#off-system-polling).

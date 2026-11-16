@@ -148,6 +148,36 @@ func TestWarnGitLabFreePollQuota(t *testing.T) {
 	}
 }
 
+func TestConvergeCreatedSchedules(t *testing.T) {
+	tests := []struct {
+		name    string
+		actions []repos.ComponentAction
+		want    bool
+	}{
+		{name: "no actions"},
+		{name: "schedule created", want: true, actions: []repos.ComponentAction{
+			{Component: "var:MINT_URL", Action: "none"},
+			{Component: "schedule:slash-poll", Action: "add"},
+		}},
+		{name: "schedule exists", actions: []repos.ComponentAction{{Component: "schedule:slash-poll", Action: "none"}}},
+		{name: "schedule creation failed", actions: []repos.ComponentAction{{Component: "schedule:slash-poll", Action: "error"}}},
+		{name: "schedule deferred", actions: []repos.ComponentAction{{Component: "schedule:slash-poll", Action: "none"}}},
+		{name: "non-schedule add", actions: []repos.ComponentAction{{Component: "var:MINT_URL", Action: "add"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, convergeCreatedSchedules(tt.actions))
+		})
+	}
+}
+
+func TestGitlabControlRunnerTags(t *testing.T) {
+	assert.Nil(t, gitlabControlRunnerTags(nil))
+	assert.Nil(t, gitlabControlRunnerTags(&repos.Manifest{}))
+	m := &repos.Manifest{GitLab: &repos.PlatformConfig{ControlRunnerTags: []string{"a"}}}
+	assert.Equal(t, []string{"a"}, gitlabControlRunnerTags(m))
+}
+
 func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testing.T) {
 	ctx := context.Background()
 

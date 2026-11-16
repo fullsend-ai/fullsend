@@ -120,11 +120,32 @@ func gitlabPollJobsMayUseHostedRunners(controlRunnerTags []string) bool {
 	return false
 }
 
+// gitlabControlRunnerTags returns the manifest's gitlab.control_runner_tags,
+// or nil when the manifest has no GitLab section.
+func gitlabControlRunnerTags(manifest *repos.Manifest) []string {
+	if manifest == nil || manifest.GitLab == nil {
+		return nil
+	}
+	return manifest.GitLab.ControlRunnerTags
+}
+
+// convergeCreatedSchedules reports whether convergence created at least one
+// missing pipeline schedule on an already-installed repository.
+func convergeCreatedSchedules(actions []repos.ComponentAction) bool {
+	for _, a := range actions {
+		if a.Action == "add" && strings.HasPrefix(a.Component, "schedule:") {
+			return true
+		}
+	}
+	return false
+}
+
 // warnGitLabFreePollQuota warns when the managed polling schedules will spend
 // the compute-minute quota of a GitLab.com Free namespace (#9527). Each poll
 // run on a hosted runner uses compute minutes, and the schedules fire up to
 // 24 times a day each on Free, which can use the whole monthly quota in about
-// a week; once it is gone, every CI job in the namespace fails. The check is
+// a week; once it is gone, jobs that rely on quota-metered GitLab-hosted
+// runners stop running (jobs on the namespace's own runners are unaffected). The check is
 // best effort: a host other than gitlab.com, a poll job routed to the
 // project's own runners, or a plan that cannot be read prints nothing.
 func warnGitLabFreePollQuota(ctx context.Context, client forge.Client, printer *ui.Printer, baseURL, owner, repo string, controlRunnerTags []string) {
@@ -142,7 +163,7 @@ func warnGitLabFreePollQuota(ctx context.Context, client forge.Client, printer *
 	}
 	printer.StepWarn(fmt.Sprintf("[%s] GitLab.com Free: the fullsend polling schedules run on GitLab-hosted runners and use compute minutes. "+
 		"Free runs each schedule up to 24 times a day, which can use the namespace's whole monthly compute-minute quota in about a week; "+
-		"after that every CI job in the namespace fails. Register a project runner and set gitlab.control_runner_tags to its tag, "+
+		"after that, jobs that rely on GitLab-hosted runners stop running (jobs on your own runners are unaffected). Register a project runner and set gitlab.control_runner_tags to its tag, "+
 		"or disable the schedules and use off-system polling (see the GitLab configuration guide).", owner+"/"+repo))
 }
 
