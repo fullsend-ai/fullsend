@@ -311,9 +311,37 @@ func TestLoadWithBase_LockedPins_OfflineMissingLockedContent(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "base "+tt.field+":")
 			assert.Contains(t, err.Error(), "pinned in the lock file with sha256="+missing)
-			assert.Contains(t, err.Error(), "run fullsend lock --update first")
+			assert.Contains(t, err.Error(), "rerun without --offline to fetch the pinned content")
+			assert.Contains(t, err.Error(), "or run fullsend lock --update to re-pin to its source")
 		})
 	}
+}
+
+// TestLoadWithBase_LockedPins_OfflineMissingAdvisesOnlineFetch pins the
+// advice the offline locked-not-cached error gives: rerunning without
+// --offline fetches the pinned content, and the quoted lock command is
+// named only as the way to re-pin to its source — never as the way to
+// restore the pinned content (it re-resolves from upstream).
+func TestLoadWithBase_LockedPins_OfflineMissingAdvisesOnlineFetch(t *testing.T) {
+	missing := computeHash([]byte("never cached"))
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseContent := []byte("agent: agents/triage.md\nrole: test\n")
+	require.NoError(t, fetch.CachePut(cacheDir, "https://example.com/harness/triage.yaml", baseContent))
+	path := writeTestHarness(t, dir, "child.yaml", "role: test\nbase: https://example.com/harness/triage.yaml#sha256="+computeHash(baseContent)+"\n")
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:     cacheDir,
+		FetchPolicy:       fetch.FetchPolicy{Offline: true},
+		OrgAllowlist:      []string{"https://example.com/"},
+		LockedPins:        map[string]LockedPin{"https://example.com/agents/triage.md": {SHA256: missing, Type: "resource"}},
+		LockUpdateCommand: "fullsend lock triage --update --fullsend-dir '/custom/dir'",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rerun without --offline to fetch the pinned content")
+	assert.Contains(t, err.Error(), "or run fullsend lock triage --update --fullsend-dir '/custom/dir' to re-pin to its source")
+	assert.NotContains(t, err.Error(), "run fullsend lock triage --update --fullsend-dir '/custom/dir' first")
 }
 
 func TestFetchBaseFile_LockedPins_Online(t *testing.T) {
