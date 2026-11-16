@@ -17,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -83,9 +84,12 @@ func healthyTrace(t *testing.T, m *Manifest, fc *forge.FakeClient, name, block s
 	setKeyIDVar(fc, name, active.id())
 }
 
+// ensureTrace runs the preflight, which must refuse no repository.
 func ensureTrace(t *testing.T, fc forge.Client, cfg TraceKeysConfig) (map[string]*TraceKeyPlan, error) {
 	t.Helper()
-	return EnsureTraceSigningKeys(context.Background(), cfg, newTestClientFactory(fc), noopProgress)
+	plans, refused, err := EnsureTraceSigningKeys(context.Background(), cfg, newTestClientFactory(fc), noopProgress)
+	require.Empty(t, refused, "no repository is refused")
+	return plans, err
 }
 
 // manifestTrace returns the trace_context of name's explicit manifest entry.
@@ -173,25 +177,75 @@ func (p *progressLog) all() []string {
 	return slices.Clone(p.lines)
 }
 
-// refuseTrace runs the preflight, which must refuse, and checks that the
+// stopTrace runs the preflight, which must stop the run, and checks that the
 // error shows no non-empty value of hidden and no value of keys, before any
-// assertion that prints it, and that nothing was planned, edited, written
-// or reported. It returns the error for the caller's own checks.
-func refuseTrace(t *testing.T, fc *forge.FakeClient, cfg TraceKeysConfig, hidden []string, keys ...traceKey) error {
+// assertion that prints it, and that nothing was planned, refused, edited,
+// written or reported. It returns the error for the caller's own checks.
+func stopTrace(t *testing.T, fc *forge.FakeClient, cfg TraceKeysConfig, hidden []string, keys ...traceKey) error {
 	t.Helper()
 	before := manifestSnapshot(t, cfg.Manifest)
 	progress := &progressLog{}
-	plans, err := EnsureTraceSigningKeys(context.Background(), cfg, newTestClientFactory(fc), progress.fn)
+	plans, refused, err := EnsureTraceSigningKeys(context.Background(), cfg, newTestClientFactory(fc), progress.fn)
 	require.Error(t, err)
 	for _, v := range hidden {
 		require.False(t, v != "" && strings.Contains(err.Error(), v), "the error never shows a hidden value")
 	}
 	assertNoTraceValues(t, err.Error(), keys...)
 	assert.Empty(t, planNames(plans))
+	assert.Zero(t, len(refused), "the error names the refusals")
 	assert.Equal(t, before, manifestSnapshot(t, cfg.Manifest), "no entry is edited")
 	assertNoForgeWrites(t, fc)
-	assert.Empty(t, progress.all(), "a refusal reports nothing")
+	assert.Empty(t, progress.all(), "a stopped run reports nothing")
 	return err
+}
+
+// entryYAML returns name's explicit manifest entry as YAML, or "" when it
+// has none.
+func entryYAML(t *testing.T, m *Manifest, name string) string {
+	t.Helper()
+	entry := findExplicitEntry(m, name)
+	if entry == nil {
+		return ""
+	}
+	data, err := yaml.Marshal(entry)
+	require.NoError(t, err)
+	return string(data)
+}
+
+// refuseTrace runs the preflight, which must refuse a repository without
+// stopping the run. Before any assertion that prints them, it checks that
+// the error and the refusals show no non-empty value of hidden and no value
+// of keys; then that no refused repository is planned, edited or reported,
+// and that nothing was written. It returns the plans and the refusals'
+// errors joined, for the caller's own checks.
+func refuseTrace(t *testing.T, fc *forge.FakeClient, cfg TraceKeysConfig, hidden []string, keys ...traceKey) (map[string]*TraceKeyPlan, error) {
+	t.Helper()
+	before := map[string]string{}
+	for _, e := range cfg.Manifest.AllRepos() {
+		before[strings.ToLower(e.Name)] = entryYAML(t, cfg.Manifest, e.Name)
+	}
+	progress := &progressLog{}
+	plans, refused, err := EnsureTraceSigningKeys(context.Background(), cfg, newTestClientFactory(fc), progress.fn)
+	var refusals []error
+	for _, r := range refused {
+		refusals = append(refusals, r.Err)
+	}
+	shown := fmt.Sprint(errors.Join(append([]error{err}, refusals...)...))
+	for _, v := range hidden {
+		require.False(t, v != "" && strings.Contains(shown, v), "the error never shows a hidden value")
+	}
+	assertNoTraceValues(t, shown, keys...)
+	require.NoError(t, err, "a refusal does not stop the run")
+	require.NotEmpty(t, refused, "a repository is refused")
+	lines := progress.all()
+	for _, r := range refused {
+		name := r.Owner + "/" + r.Repo
+		assert.NotContains(t, planNames(plans), name, "a refused repository gets no plan")
+		assert.Equal(t, before[strings.ToLower(name)], entryYAML(t, cfg.Manifest, name), "the entry of %s is not edited", name)
+		assert.Zero(t, countLines(lines, name+" manifest "), "a refused repository is not reported")
+	}
+	assertNoForgeWrites(t, fc)
+	return plans, errors.Join(refusals...)
 }
 
 // countLines returns how many lines contain every one of parts.
@@ -220,9 +274,10 @@ func TestEnsureTraceSigningKeys_FreshInstall(t *testing.T) {
 			findExplicitEntry(cfg.Manifest, "acme/api").Config = mustManagedConfig(t, "roles: [triage]\n")
 			progress := &progressLog{}
 
-			plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest, Deferred: deferred},
+			plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest, Deferred: deferred},
 				newTestClientFactory(fc), progress.fn)
 			require.NoError(t, err)
+			require.Empty(t, refused)
 			assert.Equal(t, []string{"acme/api", "acme/web"}, planNames(plans))
 			assertNoForgeWrites(t, fc)
 
@@ -263,9 +318,10 @@ func TestEnsureTraceSigningKeys_FreshInstall(t *testing.T) {
 func TestEnsureTraceSigningKeys_NilProgress(t *testing.T) {
 	fc, cfg := traceFixture(t, false, "acme/api")
 
-	plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest},
+	plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest},
 		newTestClientFactory(fc), nil)
 	require.NoError(t, err)
+	require.Empty(t, refused)
 	assert.Equal(t, []string{"acme/api"}, planNames(plans))
 }
 
@@ -298,9 +354,10 @@ func TestEnsureTraceSigningKeys_GlobCoveredGetsExplicitEntry(t *testing.T) {
 			fc := newFakeClientForBatch("acme/api", "acme/web")
 			progress := &progressLog{}
 
-			plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: m, RepoFilter: []string{"acme/api"}},
+			plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: m, RepoFilter: []string{"acme/api"}},
 				newTestClientFactory(fc), progress.fn)
 			require.NoError(t, err)
+			require.Empty(t, refused)
 			assert.Equal(t, []string{"acme/api"}, planNames(plans))
 			p := requireTracePlan(t, plans, "acme/api")
 			lines := progress.all()
@@ -382,9 +439,10 @@ func TestEnsureTraceSigningKeys_GitLabGetsNoKeyYet(t *testing.T) {
 				before := manifestSnapshot(t, m)
 				progress := &progressLog{}
 
-				plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: m, Rotate: rotate},
+				plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: m, Rotate: rotate},
 					newTestClientFactory(reads), progress.fn)
 				require.NoError(t, err)
+				require.Empty(t, refused)
 				assert.Empty(t, planNames(plans))
 				assert.Zero(t, reads.total(), "nothing is read for a GitLab repository")
 				assert.Equal(t, before, manifestSnapshot(t, m))
@@ -409,9 +467,10 @@ func TestEnsureTraceSigningKeys_HealthyPlansNothing(t *testing.T) {
 			before := manifestSnapshot(t, cfg.Manifest)
 			progress := &progressLog{}
 
-			plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest, ManifestPath: path},
+			plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest, ManifestPath: path},
 				newTestClientFactory(fc), progress.fn)
 			require.NoError(t, err)
+			require.Empty(t, refused)
 			assert.Empty(t, planNames(plans))
 			assert.Equal(t, before, manifestSnapshot(t, cfg.Manifest))
 			assertNoForgeWrites(t, fc)
@@ -523,14 +582,25 @@ func TestEnsureTraceSigningKeys_ExistingInstallKeysOnlyWithRotate(t *testing.T) 
 
 // From a read-only manifest (an HTTPS source, a remotely loaded manifest or
 // a local file without write permission) a fresh install without Rotate
-// goes ahead without keys and names the run that provisions them. Any
-// other key write needs the repos.yaml edit, so the run stops before any
-// edit, prints nothing and shows no generated value.
+// goes ahead without keys and names the run that provisions them. A
+// recovery without Rotate needs the repos.yaml edit, so it fails that
+// repository alone, and the fresh install beside it still goes ahead. Any
+// key with Rotate stops the run before any edit. A refusal prints nothing
+// and shows no generated value.
 func TestEnsureTraceSigningKeys_ReadOnlyManifest(t *testing.T) {
 	a, r := newTraceKey(1), newTraceKey(2)
 	const url = "https://example.com/repos.yaml"
 	healthy := func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
 		healthyTrace(t, m, fc, "acme/api", traceBlock(traceInstallA, a, r), a)
+	}
+	recovery := func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
+		healthy(t, m, fc)
+		delete(fc.VariableValues, "acme/api/"+forge.VarTraceSigningKeyID)
+		delete(fc.VariablesExist, "acme/api/"+forge.VarTraceSigningKeyID)
+	}
+	notice := func(name string) string {
+		return name + " manifest Trace signing keys not provisioned: repos.yaml is read-only; " +
+			"a later repos install " + name + " --rotate-trace-signing-key with a writable manifest provisions them"
 	}
 	cases := []struct {
 		name string
@@ -542,16 +612,18 @@ func TestEnsureTraceSigningKeys_ReadOnlyManifest(t *testing.T) {
 		remote bool
 		rotate bool
 		setup  func(t *testing.T, m *Manifest, fc *forge.FakeClient)
-		// skipped is a fresh install that goes ahead without keys.
-		skipped bool
+		// skipped is a fresh install that goes ahead without keys; refused
+		// is a repository that fails alone; web selects the fresh
+		// repository acme/web beside acme/api.
+		skipped, refused, web bool
 	}{
 		{name: "fresh install from https", path: url, skipped: true},
 		{name: "fresh install from a remotely loaded manifest", remote: true, skipped: true},
 		{name: "fresh install from a file without write permission", path: readOnlyFile, skipped: true},
-		{name: "recovery", installed: true, path: url, setup: func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
-			healthy(t, m, fc)
-			delete(fc.VariableValues, "acme/api/"+forge.VarTraceSigningKeyID)
-			delete(fc.VariablesExist, "acme/api/"+forge.VarTraceSigningKeyID)
+		{name: "recovery", installed: true, path: url, refused: true, setup: recovery},
+		{name: "recovery beside a fresh install", path: readOnlyFile, refused: true, web: true, setup: func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
+			markTraceInstalled(t, fc, "acme/api")
+			recovery(t, m, fc)
 		}},
 		{name: "rotation", installed: true, path: url, rotate: true, setup: healthy},
 		{name: "rotation on a remotely loaded manifest", installed: true, remote: true, rotate: true, setup: healthy},
@@ -563,7 +635,11 @@ func TestEnsureTraceSigningKeys_ReadOnlyManifest(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fc, cfg := traceFixture(t, tc.installed, "acme/api")
+			names := []string{"acme/api"}
+			if tc.web {
+				names = append(names, "acme/web")
+			}
+			fc, cfg := traceFixture(t, tc.installed, names...)
 			if tc.setup != nil {
 				tc.setup(t, cfg.Manifest, fc)
 			}
@@ -576,7 +652,7 @@ func TestEnsureTraceSigningKeys_ReadOnlyManifest(t *testing.T) {
 			}
 			progress := &progressLog{}
 
-			plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{
+			plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{
 				Manifest: cfg.Manifest, ManifestPath: path, Rotate: tc.rotate,
 			}, newTestClientFactory(fc), progress.fn)
 			assert.Empty(t, planNames(plans))
@@ -585,16 +661,31 @@ func TestEnsureTraceSigningKeys_ReadOnlyManifest(t *testing.T) {
 			lines := progress.all()
 			if tc.skipped {
 				require.NoError(t, err)
+				assert.Empty(t, refused)
 				assert.Len(t, lines, 1, "one notice:\n%s", strings.Join(lines, "\n"))
-				assert.Equal(t, 1, countLines(lines, "acme/api manifest Trace signing keys not provisioned: repos.yaml is read-only; "+
-					"a later repos install acme/api --rotate-trace-signing-key with a writable manifest provisions them"),
+				assert.Equal(t, 1, countLines(lines, notice("acme/api")),
 					"the notice names the run that provisions the keys:\n%s", strings.Join(lines, "\n"))
 				return
+			}
+			if tc.refused {
+				require.NoError(t, err)
+				require.Len(t, refused, 1)
+				require.Equal(t, "acme/api", refused[0].Owner+"/"+refused[0].Repo)
+				err = refused[0].Err
+			} else {
+				assert.Empty(t, refused)
 			}
 			require.ErrorIs(t, err, ErrTraceManifestReadOnly)
 			assertNoTraceValues(t, err.Error(), a, r)
 			assert.Contains(t, err.Error(), "acme/api")
+			if tc.refused {
+				assert.Contains(t, err.Error(), "install wrote nothing for it")
+			}
 			assert.NotRegexp(t, `[0-9a-f]{16}`, err.Error(), "the error shows no installation ID and no key ID")
+			if tc.web {
+				assert.Equal(t, []string{notice("acme/web")}, lines, "the fresh install beside it goes ahead without keys")
+				return
+			}
 			assert.Empty(t, lines, "a refusal reports nothing")
 		})
 	}
@@ -604,9 +695,10 @@ func TestEnsureTraceSigningKeys_ReadOnlyManifest(t *testing.T) {
 // permission.
 const readOnlyFile = "read-only file"
 
-// A failed or invalid read refuses the run before any edit: the error
-// names the repository and what was read, the fresh repository beside it
-// gets no plan, and the GitLab repository beside them gets no notice.
+// A failed or invalid read stops the run before any edit: the error names
+// the repository and what was read, and also the run's refusals, unless the
+// variable read fails for every repository. The fresh repository beside
+// them gets no plan, and the GitLab repository gets no notice.
 func TestEnsureTraceSigningKeys_ReadErrorsRefuseBeforeAnyEdit(t *testing.T) {
 	a := newTraceKey(1)
 	failed := errors.New("the forge failed")
@@ -638,20 +730,25 @@ func TestEnsureTraceSigningKeys_ReadErrorsRefuseBeforeAnyEdit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			fc, cfg := traceFixture(t, false, "acme/api", "acme/web")
+			fc, cfg := traceFixture(t, false, "acme/api", "acme/web", "acme/bad")
 			cfg.Manifest.GitLab = testGitLabManifest("acme/lab").GitLab
+			setKeyIDVar(fc, "acme/bad", "not-a-key-id")
 			tc.setup(t, cfg.Manifest, fc)
 
-			err := refuseTrace(t, fc, TraceKeysConfig{Manifest: cfg.Manifest}, []string{strings.Repeat("0", 32)}, a)
+			err := stopTrace(t, fc, TraceKeysConfig{Manifest: cfg.Manifest}, []string{strings.Repeat("0", 32), "not-a-key-id"}, a)
 			assert.Contains(t, err.Error(), tc.want)
+			if fc.Errors["GetRepoVariable"] == nil {
+				assert.Contains(t, err.Error(), forge.VarTraceSigningKeyID+" is not a key ID for acme/bad", "the error names the refusal too")
+			}
 		})
 	}
 }
 
 // A FULLSEND_TRACE_SIGNING_KEY_ID that is not 16 lowercase hex characters
-// stops the run before any edit with its own error, which says to delete
-// the variable and never shows its value. It wins over the refusal of a
-// keyless entry beside a committed block.
+// refuses the repository with its own error, which says to delete the
+// variable and never shows its value, and the fresh repository beside it
+// gets its plan. It wins over the refusal of a keyless entry beside a
+// committed block.
 func TestEnsureTraceSigningKeys_MalformedKeyIDVariableRefused(t *testing.T) {
 	a := newTraceKey(1)
 	malformed := []struct{ name, value string }{
@@ -683,7 +780,7 @@ func TestEnsureTraceSigningKeys_MalformedKeyIDVariableRefused(t *testing.T) {
 			}
 			setKeyIDVar(fc, "acme/api", tc.value)
 
-			err := refuseTrace(t, fc, TraceKeysConfig{Manifest: cfg.Manifest}, []string{strings.TrimSpace(tc.value)}, a)
+			plans, err := refuseTrace(t, fc, TraceKeysConfig{Manifest: cfg.Manifest}, []string{strings.TrimSpace(tc.value)}, a)
 			require.ErrorIs(t, err, ErrTraceKeyIDInvalid)
 			msg := err.Error()
 			assert.False(t, errors.Is(err, ErrTraceManifestStale), "a malformed value is not a repos.yaml mismatch")
@@ -691,13 +788,14 @@ func TestEnsureTraceSigningKeys_MalformedKeyIDVariableRefused(t *testing.T) {
 			assert.Contains(t, msg, forge.VarTraceSigningKeyID)
 			assert.Contains(t, msg, "delete the repository variable")
 			assert.NotContains(t, msg, "restore the entry's trace_context")
+			assert.Equal(t, []string{"acme/web"}, planNames(plans), "the fresh repository beside it gets its plan")
 		})
 	}
 }
 
 // refusalRemedy ends every ErrTraceManifestStale refusal.
-const refusalRemedy = "; repos.yaml and the trace keys were not changed: " +
-	"run install with the repos.yaml the last install wrote, or restore the entry's trace_context from it"
+const refusalRemedy = "; install wrote nothing for it: " +
+	"restore the entry's trace_context from the repos.yaml the last install wrote"
 
 // refusal is the ErrTraceManifestStale refusal of name for reasons.
 func refusal(name string, reasons ...string) string {
@@ -705,10 +803,10 @@ func refusal(name string, reasons ...string) string {
 }
 
 // An entry that contradicts the committed trace_context, the key ID
-// variable or another entry stops the run before any edit, with or without
-// Rotate: the error names the repository, every reason with key IDs only
-// and the restore remedy, and the fresh repository beside it gets no plan.
-// The committed block of an ended installation is no reason, but the other
+// variable or another entry is refused, with or without Rotate: the error
+// names the repository, every reason with key IDs only and the restore
+// remedy, and the fresh repository beside it still gets its plan. The
+// committed block of an ended installation is no reason, but the other
 // checks still apply.
 func TestEnsureTraceSigningKeys_ContradictingStateRefused(t *testing.T) {
 	a, b, n, x, z := newTraceKey(1), newTraceKey(2), newTraceKey(4), newTraceKey(5), newTraceKey(6)
@@ -808,15 +906,16 @@ func TestEnsureTraceSigningKeys_ContradictingStateRefused(t *testing.T) {
 				}
 				tc.setup(t, cfg.Manifest, fc)
 
-				err := refuseTrace(t, fc, TraceKeysConfig{
+				plans, err := refuseTrace(t, fc, TraceKeysConfig{
 					Manifest: cfg.Manifest, RepoFilter: []string{"acme/api", "acme/web"}, Rotate: rotate,
 				}, []string{tc.hidden}, a, b, n, x, z, r1, r2)
 				require.ErrorIs(t, err, ErrTraceManifestStale)
-				want := refusal("acme/api", tc.reasons...)
+				want, wantPlans := refusal("acme/api", tc.reasons...), []string{"acme/web"}
 				if tc.web != nil {
-					want += "\n" + refusal("acme/web", tc.web...)
+					want, wantPlans = want+"\n"+refusal("acme/web", tc.web...), nil
 				}
 				assert.Equal(t, want, err.Error())
+				assert.Equal(t, wantPlans, planNames(plans), "a repository that is not refused gets its plan")
 			})
 		}
 	}

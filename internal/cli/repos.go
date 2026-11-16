@@ -534,10 +534,12 @@ keeping the installation ID and retaining the previous public key, when
 the secret is missing, when that variable is missing or names a
 retained key, and with --rotate-trace-signing-key, whose first use
 gives an existing install its keys. From a read-only manifest a fresh
-install without --rotate-trace-signing-key goes ahead without keys; any
-other key write stops the run. Output shows installation and key IDs,
-never the seed. Commit the repos.yaml changes install makes, and run one
-install of a repository at a time. GitLab repositories get no keys yet.
+install without --rotate-trace-signing-key goes ahead without keys, and
+any other key write fails that repository; with
+--rotate-trace-signing-key it stops the run. Output shows installation
+and key IDs, never the seed. Commit the repos.yaml changes install
+makes, and run one install of a repository at a time. GitLab
+repositories get no keys yet.
 
 The persistent-setting flags --roles, --fullsend-ref, --mint-url, --app-set,
 --inference-auth, --vendor, --signoff, --gitlab-url, --vertex-region and
@@ -774,12 +776,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// before any manifest or forge write: a markerless overlay needs
 	// adoption and an undeclared base needs resolution (#8218). A repo that
 	// only needs adoption is skipped and reported as failed, so the other
-	// repos still converge (#8511); every other problem stops the run.
+	// repos still converge (#8511); every other problem it finds stops the
+	// run. The trace signing key preflight below skips a repo it refuses
+	// the same way.
 	adoptionRequired, err := repos.PreflightManagedConfig(ctx, manifest, preflightClients, opts.repoFilter)
 	if err != nil {
 		return fmt.Errorf("configuration preflight: %w", err)
 	}
-	adoptionFailedRepos := make([]repos.ConvergeResult, 0, len(adoptionRequired))
+	skippedRepos := make([]repos.ConvergeResult, 0, len(adoptionRequired))
 	adoptionSkip := make([]string, 0, len(adoptionRequired))
 	for _, a := range adoptionRequired {
 		printer.StepFail(fmt.Sprintf("[%s] skipped: %s", a.Name(), a.Guidance))
@@ -789,7 +793,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			// recovery.
 			continue
 		}
-		adoptionFailedRepos = append(adoptionFailedRepos, repos.ConvergeResult{
+		skippedRepos = append(skippedRepos, repos.ConvergeResult{
 			Owner: a.Owner, Repo: a.Repo,
 			Error: fmt.Errorf("adoption required: %s exists without the managed-configuration ownership marker (ADR-0122); see the guidance above; nothing was written", preset.OverlayPath),
 		})
@@ -829,35 +833,15 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	deferOutput := func(f func()) { deferredOutput = append(deferredOutput, f) }
 	manifestChanged := false
 
-	// Persist the install-time choice the generated managed overlay must
-	// reproduce (the upstream tracking default for a no-preset first
-	// install) in each repo's manifest entry before the overlay is rendered
-	// (#8218). A manifest that cannot be written fails here, before any
-	// forge write, with the exact edit.
-	writtenBack, wbErr := repos.EnsureManagedConfigDefaults(ctx, repos.ManagedConfigWritebackConfig{
-		Manifest:     manifest,
-		ManifestPath: opts.manifest,
-		DryRun:       true,
-		Deferred:     !opts.dryRun,
-		RepoFilter:   opts.repoFilter,
-		ExcludeRepos: adoptionSkip,
-	}, preflightClients, func(repo, _, msg string) {
-		deferOutput(func() { printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg)) })
-	})
-	if wbErr != nil {
-		return fmt.Errorf("recording install defaults in manifest: %w", wbErr)
-	}
-	if len(writtenBack) > 0 {
-		manifestChanged = true
-	}
-
 	// Plan trace signing key writes (ADR 0154) and record their public keys
-	// in the manifest entries, under the same deferred-persist contract. A
-	// refusal, or a read-only manifest that must record a key, fails here,
+	// in the manifest entries, under the same deferred-persist contract. It
+	// runs before the tracking writeback, so a repo whose keys install
+	// refuses gets no tracking default either. A read error, or
+	// --rotate-trace-signing-key with a read-only manifest, fails here,
 	// before the manifest write and any key write. A fresh install from a
 	// read-only manifest without --rotate-trace-signing-key goes ahead
 	// without keys and says so.
-	traceKeyPlans, traceErr := repos.EnsureTraceSigningKeys(ctx, repos.TraceKeysConfig{
+	traceKeyPlans, traceRefused, traceErr := repos.EnsureTraceSigningKeys(ctx, repos.TraceKeysConfig{
 		Manifest:     manifest,
 		ManifestPath: opts.manifest,
 		Deferred:     !opts.dryRun,
@@ -870,7 +854,40 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if traceErr != nil {
 		return fmt.Errorf("planning trace signing keys: %w", traceErr)
 	}
+	// A repo whose trace keys install refuses is skipped and reported as
+	// failed, like one that needs adoption, so the other repos still
+	// converge. Every later preflight and convergence skip it too: its
+	// commit would replace the committed trace_context with the entry's.
+	skipped := append([]string(nil), adoptionSkip...)
+	for _, r := range traceRefused {
+		name := r.Owner + "/" + r.Repo
+		printer.StepFail(fmt.Sprintf("[%s] skipped: %v", name, r.Err))
+		skipped = append(skipped, name)
+		skippedRepos = append(skippedRepos, repos.ConvergeResult{Owner: r.Owner, Repo: r.Repo, Error: r.Err})
+	}
 	if len(traceKeyPlans) > 0 {
+		manifestChanged = true
+	}
+
+	// Persist the install-time choice the generated managed overlay must
+	// reproduce (the upstream tracking default for a no-preset first
+	// install) in each repo's manifest entry before the overlay is rendered
+	// (#8218). A manifest that cannot be written fails here, before any
+	// forge write, with the exact edit.
+	writtenBack, wbErr := repos.EnsureManagedConfigDefaults(ctx, repos.ManagedConfigWritebackConfig{
+		Manifest:     manifest,
+		ManifestPath: opts.manifest,
+		DryRun:       true,
+		Deferred:     !opts.dryRun,
+		RepoFilter:   opts.repoFilter,
+		ExcludeRepos: skipped,
+	}, preflightClients, func(repo, _, msg string) {
+		deferOutput(func() { printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg)) })
+	})
+	if wbErr != nil {
+		return fmt.Errorf("recording install defaults in manifest: %w", wbErr)
+	}
+	if len(writtenBack) > 0 {
 		manifestChanged = true
 	}
 
@@ -890,14 +907,14 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// Compare the proposed layered configuration (manifest edits and declared
 	// presets) with each repository's installed layers before anything is
 	// persisted or written to the forge.
-	if err := repos.PreflightProposedManagedSafety(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip); err != nil {
+	if err := repos.PreflightProposedManagedSafety(ctx, manifest, preflightClients, opts.repoFilter, skipped); err != nil {
 		return fmt.Errorf("configuration safety preflight: %w", err)
 	}
 	// Resolve the effective infrastructure and reconcile the Vertex inputs
 	// of every selected repository before the manifest is persisted, so a
 	// mint URL conflict or a flag that contradicts the declared
 	// configuration leaves repos.yaml byte-identical.
-	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, adoptionSkip, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
+	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, skipped, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
 		return fmt.Errorf("effective infrastructure preflight: %w", err)
 	}
 	// A dry run reports the size refusal that the write below gives.
@@ -1010,7 +1027,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		Manifest:                manifest,
 		DryRun:                  opts.dryRun,
 		RepoFilter:              opts.repoFilter,
-		ExcludeRepos:            append(containFailedKeys(containFailedRepos), adoptionSkip...),
+		ExcludeRepos:            append(containFailedKeys(containFailedRepos), skipped...),
 		MaxConcurrency:          opts.concurrency,
 		UpstreamRef:             upstreamRef,
 		UpstreamTag:             upstreamTag,
@@ -1150,9 +1167,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	for _, r := range containFailedRepos {
 		failedRepoKeys[r.Owner+"/"+r.Repo] = true
 	}
-	// A repo skipped because its overlay needs adoption was excluded the
-	// same way and is likewise counted once and takes no later stage.
-	for _, r := range adoptionFailedRepos {
+	// A repo skipped because its overlay needs adoption or install refused
+	// its trace signing keys was excluded the same way and is likewise
+	// counted once and takes no later stage.
+	for _, r := range skippedRepos {
 		failedRepoKeys[r.Owner+"/"+r.Repo] = true
 	}
 	postInstallRepos := make([]repos.ConvergeResult, 0, len(installed)+len(converged)+len(alreadyCurrent))
@@ -1442,7 +1460,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 
 	printer.Blank()
 	installedCount := len(installed) - installedPostFail - roleFailInstalledCount
-	failedCount := len(failed) + len(postInstallFailedRepos) + len(containFailedRepos) + len(adoptionFailedRepos) + pollStateFail + roleFail
+	failedCount := len(failed) + len(postInstallFailedRepos) + len(containFailedRepos) + len(skippedRepos) + pollStateFail + roleFail
 
 	for _, r := range failed {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
@@ -1456,7 +1474,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	for _, r := range containFailedRepos {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
-	for _, r := range adoptionFailedRepos {
+	for _, r := range skippedRepos {
 		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
 	}
 	for _, r := range roleFailedRepos {

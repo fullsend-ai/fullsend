@@ -446,9 +446,10 @@ func TestTraceKeys_WriteStepFailureThenRetry(t *testing.T) {
 				}
 
 				progress = &progressLog{}
-				second, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest},
+				second, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest},
 					newTestClientFactory(fc), progress.fn)
 				require.NoError(t, err)
+				require.Empty(t, refused)
 				lines := progress.all()
 				requireNoSeed(t, lines, seed)
 				if step == "none" || step == "commit" {
@@ -473,9 +474,10 @@ func TestTraceKeys_WriteStepFailureThenRetry(t *testing.T) {
 				assert.Equal(t, after, committed, "the commit delivers the entry's block")
 
 				progress = &progressLog{}
-				third, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest},
+				third, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest},
 					newTestClientFactory(fc), progress.fn)
 				require.NoError(t, err)
+				require.Empty(t, refused)
 				assert.Empty(t, planNames(third), "the install is healthy after one retry")
 				assert.Zero(t, countLines(progress.all(), "ended installation"), "the landed commit leaves no ended installation")
 			})
@@ -565,8 +567,9 @@ func TestTraceKeys_UninstallOnlyThenInstall(t *testing.T) {
 	assert.False(t, kept, "uninstall deletes the key ID variable")
 
 	progress := &progressLog{}
-	plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest}, newTestClientFactory(fc), progress.fn)
+	plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest}, newTestClientFactory(fc), progress.fn)
 	require.NoError(t, err)
+	require.Empty(t, refused)
 	p := requireTracePlan(t, plans, "acme/api")
 	assert.Equal(t, reasonRecovery, p.Reason)
 	// The committed block is the entry's own installation, so it has not
@@ -647,7 +650,7 @@ func TestTraceKeys_GitHubReenrollAfterFullUninstall(t *testing.T) {
 			}
 			if tc.leftover != nil {
 				tc.leftover(fc)
-				err := refuseTrace(t, fc, TraceKeysConfig{Manifest: cfg.Manifest}, nil, old)
+				_, err := refuseTrace(t, fc, TraceKeysConfig{Manifest: cfg.Manifest}, nil, old)
 				require.ErrorIs(t, err, ErrTraceManifestStale)
 				msg := err.Error()
 				assert.Contains(t, msg, "has trace_context and the repos.yaml entry has none (install enrolls the repository again "+
@@ -658,9 +661,10 @@ func TestTraceKeys_GitHubReenrollAfterFullUninstall(t *testing.T) {
 			}
 
 			progress := &progressLog{}
-			plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest},
+			plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest},
 				newTestClientFactory(fc), progress.fn)
 			require.NoError(t, err)
+			require.Empty(t, refused)
 			p := requireTracePlan(t, plans, "acme/api")
 			lines := progress.all()
 			requireNoSeed(t, lines, p.Key.EncodeSeed())
@@ -690,9 +694,10 @@ func TestTraceKeys_GitHubReenrollFromReadOnlyManifest(t *testing.T) {
 	before := manifestSnapshot(t, cfg.Manifest)
 
 	progress := &progressLog{}
-	plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest, ManifestPath: url},
+	plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest, ManifestPath: url},
 		newTestClientFactory(fc), progress.fn)
 	require.NoError(t, err)
+	require.Empty(t, refused)
 	assert.Empty(t, planNames(plans))
 	assert.Equal(t, before, manifestSnapshot(t, cfg.Manifest), "the entry is not edited")
 	assertNoForgeWrites(t, fc)

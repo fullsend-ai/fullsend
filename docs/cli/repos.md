@@ -257,8 +257,11 @@ so a run they stop leaves `repos.yaml` unchanged:
 - the existing configuration layers: an undeclared base stops the run, and a
   repository that needs adoption is skipped;
 - the token's scopes and the sign-off identity;
-- a read-only manifest that must record the `tracker` default or a trace key,
-  and the [trace signing key](#trace-signing-keys) refusals;
+- the [trace signing keys](#trace-signing-keys): a repository whose keys
+  install refuses, or whose recovery a read-only manifest cannot record, is
+  skipped, and `--rotate-trace-signing-key` with a read-only manifest stops
+  the run;
+- a read-only manifest that must record the `tracker` default;
 - the proposed configuration, against the installed layers and against the
   effective infrastructure.
 
@@ -709,21 +712,26 @@ No fullsend code reads the signing key yet. For the whole lifecycle, see
   included (see [`repos uninstall`](#repos-uninstall)).
 - **Checks before any write.** Before it writes `repos.yaml` or any key,
   install compares each entry with the committed `.fullsend/config.yaml` and
-  with `FULLSEND_TRACE_SIGNING_KEY_ID`, and stops the run when they contradict
-  it (see
+  with `FULLSEND_TRACE_SIGNING_KEY_ID`. When they contradict it, install
+  writes nothing for that repository, lists it as failed and converges the
+  others (see
   [When install refuses an entry](../reference/trace-context.md#when-install-refuses-an-entry)).
   A `FULLSEND_TRACE_SIGNING_KEY_ID` value that is not 16 lowercase hex
-  characters also stops the run: delete the variable, then run install again.
+  characters also fails the repository: delete the variable, then run install
+  again. A failed read of either still stops the run, as in the other
+  preflights, and so does `--rotate-trace-signing-key` with a read-only
+  manifest, which cannot record the rotation the run asks for.
   Install cannot tell an older copy of `repos.yaml` from the one a run wrote
   when that run failed after deleting the variable, at the seed or variable
   write (a seed write that failed may still have landed), so keep and commit
   the `repos.yaml` such a run wrote, and retry with it.
 - **Read-only manifest.** A manifest loaded from an HTTPS URL, read from a
-  pipe or FIFO, or a local file without write permission cannot record a key.
-  From such a manifest, a fresh install without `--rotate-trace-signing-key`
-  goes ahead without keys and says so. A later run with the flag and a
-  writable manifest provisions them. Any other key write stops the run before
-  it writes any key.
+  pipe or FIFO, or a local file without write permission or on a read-only
+  file system cannot record a key. From such a manifest, a fresh install
+  without `--rotate-trace-signing-key` goes ahead without keys and says so. A
+  later run with the flag and a writable manifest provisions them. Any other
+  key write fails that repository, and with `--rotate-trace-signing-key` the
+  run stops before it writes any key.
 - **Concurrent installs.** Just before it writes a key, install reads
   `FULLSEND_TRACE_SIGNING_KEY_ID` again. If that read fails, or the variable
   appeared, disappeared or changed since the run first read it, install writes
@@ -755,15 +763,15 @@ No fullsend code reads the signing key yet. For the whole lifecycle, see
   delete the variable or restore the entry's `trace_context`. Use a release
   with this change for every `repos` command on that manifest. Keep and commit
   the `repos.yaml` edits install makes: a later install from a copy without
-  them stops the run, except after a run that failed writing the seed or
-  `FULLSEND_TRACE_SIGNING_KEY_ID`, when it replaces the key that run may have
-  written without retaining it. If the copy with those edits is lost,
+  them fails that repository, except after a run that failed writing the
+  seed or `FULLSEND_TRACE_SIGNING_KEY_ID`, when it replaces the key that run
+  may have written without retaining it. If the copy with those edits is lost,
   rebuild the entry's `trace_context` from the block in the
   `.fullsend/config.yaml` that the last install committed (in its pull request
   until that merges). An entry that already declares `trace_context` by hand
   gets a new key pair on its first install with this release, as a recovery:
   install replaces `FULLSEND_TRACE_SIGNING_KEY` and moves the declared active
-  key to `retained`. From a read-only manifest, that run stops.
+  key to `retained`. From a read-only manifest, that repository fails.
 
 ```bash
 fullsend repos install acme/api --rotate-trace-signing-key
@@ -1788,10 +1796,10 @@ the uninstall pull request first. Until then, install refuses the entry.
 workflow and the committed block in place. When you declare the repository
 again without keys, install refuses the entry until you restore its
 `trace_context` or a full uninstall finishes. A repository that a glob covers
-stays selected after uninstall removes its own entry, so these refusals stop
-any install that selects it, such as an unfiltered run or the glob, and once
-a full uninstall finishes, the next such install enrolls it again. Select
-other repositories by name, or narrow the glob, to keep it out. See
+stays selected after uninstall removes its own entry, so while these
+refusals hold, any install that selects it, such as an unfiltered run or the
+glob, skips it and lists it as failed, and once a full uninstall finishes,
+the next such install enrolls it again. Narrow the glob to keep it out. See
 [Trace Context Reference — Uninstall](../reference/trace-context.md#uninstall).
 
 ```bash

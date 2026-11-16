@@ -501,8 +501,9 @@ to add to its source, including for a glob-covered repository whose
 first-install `tracker` default needs an explicit
 entry. `--dry-run`, live install and `repos status` agree. Trace signing keys
 follow their own rule on GitHub: from such a manifest, a fresh install without
-`--rotate-trace-signing-key` goes ahead without keys and says so, and any
-other install that must record a key stops the run before it writes one (see
+`--rotate-trace-signing-key` goes ahead without keys and says so, any other
+repository that must record a key fails, and `--rotate-trace-signing-key`
+stops the run before it writes a key (see
 [Trace signing keys](../../cli/repos.md#trace-signing-keys)).
 
 ```bash

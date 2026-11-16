@@ -117,7 +117,7 @@ active key. Install then writes no key unless you pass
 key, the secret may not hold the active key. In that case, and when the secret
 is missing, the next plain `repos install` generates a new key through the
 same steps and keeps the installation ID. From a read-only manifest, that run
-stops before it writes any key.
+fails the repository and writes nothing for it.
 
 Unless another install of the repository wrote a key after the run started
 (see step 2), a run that stopped at any step converges on a plain retry with
@@ -158,7 +158,7 @@ Install replaces the managed `.fullsend/config.yaml` with what `repos.yaml`
 declares, so an older copy of `repos.yaml` could drop keys that a later run
 added. Before it writes `repos.yaml` or any key, install compares each
 selected repository's entry with the committed `.fullsend/config.yaml` and
-with `FULLSEND_TRACE_SIGNING_KEY_ID`. It stops the run when:
+with `FULLSEND_TRACE_SIGNING_KEY_ID`. It refuses the repository when:
 
 - the committed installation ID differs from the entry's, and a fullsend
   workflow is on the default branch;
@@ -171,9 +171,12 @@ with `FULLSEND_TRACE_SIGNING_KEY_ID`. It stops the run when:
   `trace_context`, or names a key that the entry does not list;
 - another `repos.yaml` entry uses the same installation ID.
 
-These usually mean that the last install wrote a different `repos.yaml`. Run
-install with the `repos.yaml` the last install wrote, or restore the entry's
-`trace_context` from it.
+Install then writes nothing for that repository and lists it as failed, and
+the other repositories still converge. Such a mismatch usually means that the
+last install wrote a different `repos.yaml`. Restore the entry's
+`trace_context` from the `repos.yaml` the last install wrote. Do not switch
+to that file: the run that refused the repository may have recorded other
+repositories' keys in the current one.
 
 Install cannot detect an older copy after a run that failed after deleting
 `FULLSEND_TRACE_SIGNING_KEY_ID` (step 3), at the seed write (step 4) or the
@@ -200,7 +203,7 @@ revert that change, and do not add the key to `repos.yaml`: that would make it
 trusted.
 
 A `FULLSEND_TRACE_SIGNING_KEY_ID` value that is not 16 lowercase hex
-characters also stops the run before it writes `repos.yaml` or any key. The
+characters also fails the repository, and install writes nothing for it. The
 error names the repository and the variable and says to delete the variable.
 It never shows the value. Delete the variable, then run install again:
 
@@ -209,12 +212,14 @@ gh variable delete FULLSEND_TRACE_SIGNING_KEY_ID --repo OWNER/REPO
 fullsend repos install OWNER/REPO
 ```
 
-Install also stops the run, before it writes any key, when it needs to record
-a key and the manifest is read-only: an HTTPS URL, a pipe or FIFO, or a local
-file without write permission. Run install from a writable local copy of the
-manifest instead. A fresh install without `--rotate-trace-signing-key` is the
-exception, including the re-enrollment of a fully uninstalled repository: it
-goes ahead without keys (see
+Install also fails the repository, and writes nothing for it, when it needs
+to record a key and the manifest is read-only: an HTTPS URL, a pipe or FIFO,
+or a local file without write permission or on a read-only file system. With
+`--rotate-trace-signing-key`, it stops the run before it writes any key,
+since the run cannot record the rotation it asks for. Run install from a
+writable local copy of the manifest instead. A fresh install without
+`--rotate-trace-signing-key` is the exception, including the re-enrollment
+of a fully uninstalled repository: it goes ahead without keys (see
 [Installation ID and key pair](#installation-id-and-key-pair) and
 [Uninstall](#uninstall)).
 
@@ -243,10 +248,10 @@ installation instead, restore the entry's `trace_context` from the
 `repos.yaml` the last install wrote.
 
 A repository that a glob covers stays selected after uninstall removes its own
-entry, so these refusals stop any install that selects it, such as an
-unfiltered run or the glob, and once a full uninstall finishes, the next such
-install enrolls it again. Select other repositories by name, or narrow the
-glob, to keep it out.
+entry, so while these refusals hold, any install that selects it, such as an
+unfiltered run or the glob, skips it and lists it as failed, and once a full
+uninstall finishes, the next such install enrolls it again. Narrow the glob
+to keep it out.
 
 Install replaces the ended block in the commit that delivers its scaffold, by
 default through the install pull request. Until that change lands, the

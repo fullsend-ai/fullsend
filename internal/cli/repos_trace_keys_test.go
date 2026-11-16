@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
@@ -272,8 +274,9 @@ func TestRunReposInstall_ScopeOrIdentityFailureLeavesManifestUnchanged(t *testin
 }
 
 // A committed config that trusts a key the repos.yaml entry does not list
-// stops the install before repos.yaml is persisted or the forge is written,
-// and the error names the key by its ID only.
+// fails the repository before repos.yaml is persisted or the forge is
+// written: it is listed as FAILED with an error that names the key by its ID
+// only.
 func TestRunReposInstall_ContradictingCommittedConfigRefusedBeforeWrites(t *testing.T) {
 	active, extra := testTraceVerificationKey(1), testTraceVerificationKey(3)
 	manifest := githubUnmanagedManifestYAML + "      config:\n" +
@@ -288,15 +291,193 @@ func TestRunReposInstall_ContradictingCommittedConfigRefusedBeforeWrites(t *test
 
 	var err error
 	out := captureStdout(t, func() { err = runReposInstall(context.Background(), githubManagedInstallOpts(manifestPath, fc)) })
-	require.ErrorIs(t, err, repos.ErrTraceManifestStale)
-	msg := err.Error()
-	assert.True(t, strings.HasPrefix(msg, "planning trace signing keys: "), msg)
-	assert.Contains(t, msg, "acme/api")
-	assert.Contains(t, msg, "trusts key ID "+hexTraceKeyID(testTracePublicKey(3)), "the error names the extra key by its ID")
+	require.EqualError(t, err, "1 repos failed")
+	failed := regexp.MustCompile(`FAILED: acme/api — ` + regexp.QuoteMeta(repos.ErrTraceManifestStale.Error()) + `.*`).FindString(out)
+	require.NotEmpty(t, failed, "acme/api is listed as FAILED with the refusal")
+	assert.Contains(t, failed, "trusts key ID "+hexTraceKeyID(testTracePublicKey(3)), "the error names the extra key by its ID")
 	for _, key := range []string{active, extra} {
-		assert.NotContains(t, msg+out, key, "a verification key appears only as its ID")
+		assert.NotContains(t, out, key, "a verification key appears only as its ID")
 	}
 	assert.Equal(t, manifest, mustReadFile(t, manifestPath), "repos.yaml is not written")
+	assertNoInstallWrites(t, fc)
+}
+
+// repoWrites counts the commits, the secret writes and deletions, and the
+// variable writes and deletions the fake recorded for repo. It returns
+// counts only, so no seed is printed.
+func repoWrites(fc *forge.FakeClient, repo string) (commits, secrets, variables int) {
+	for _, c := range fc.CommittedFiles {
+		if c.Owner+"/"+c.Repo == repo {
+			commits++
+		}
+	}
+	for _, c := range fc.CommittedFilesToBranch {
+		if c.Owner+"/"+c.Repo == repo {
+			commits++
+		}
+	}
+	for _, records := range [][]forge.SecretRecord{fc.CreatedSecrets, fc.DeletedSecrets} {
+		for _, s := range records {
+			if s.Owner+"/"+s.Repo == repo {
+				secrets++
+			}
+		}
+	}
+	for _, records := range [][]forge.VariableRecord{fc.Variables, fc.UpdatedVariables, fc.DeletedVariables} {
+		for _, v := range records {
+			if v.Owner+"/"+v.Repo == repo {
+				variables++
+			}
+		}
+	}
+	return commits, secrets, variables
+}
+
+// manifestEntryYAML returns the repos.yaml entry named name in the manifest
+// at path as YAML, or "" when the manifest has none. An entry holds public
+// values only.
+func manifestEntryYAML(t *testing.T, path, name string) string {
+	t.Helper()
+	m, err := repos.LoadManifest(context.Background(), path)
+	require.NoError(t, err)
+	for _, e := range m.AllRepos() {
+		if e.Name == name {
+			data, err := yaml.Marshal(e)
+			require.NoError(t, err)
+			return string(data)
+		}
+	}
+	return ""
+}
+
+// A repository whose trace signing keys install refuses is skipped and
+// listed as FAILED, like one that needs adoption (#8511), and the run exits
+// non-zero, while acme/web converges. The refused repository gets no commit,
+// no secret and no variable write, its committed config is unchanged and
+// its repos.yaml entry is byte-identical: install records no tracker
+// default for it and carves no entry for it out of a glob. Its layers and
+// its infrastructure are not checked, so they cannot stop the run.
+func TestRunReposInstall_TraceKeyRefusalSkipsOnlyThatRepo(t *testing.T) {
+	const web = "    - name: acme/web\n"
+	declared := strings.TrimPrefix(behaviourTestManifestYAML, "version: 1\ngithub:\n  repos:\n")
+	block := indentLines("        ", traceContextYAML(testTraceInstallationID, forge.SecretTraceSigningKey, testTraceVerificationKey(1)))
+	setKeyIDVar := func(fc *forge.FakeClient, value string) {
+		fc.VariableValues["acme/api/"+forge.VarTraceSigningKeyID] = value
+		fc.VariablesExist["acme/api/"+forge.VarTraceSigningKeyID] = true
+	}
+	malformed := func(fc *forge.FakeClient) { setKeyIDVar(fc, "not-a-key-id") }
+	// installAPI makes acme/api an existing install whose committed
+	// .fullsend/config.yaml is the managed overlay.
+	installAPI := func(fc *forge.FakeClient, overlay string) {
+		installed := newInstalledFakeClientCLI("acme/api")
+		maps.Copy(fc.VariableValues, installed.VariableValues)
+		maps.Copy(fc.Secrets, installed.Secrets)
+		maps.Copy(fc.FileContents, installed.FileContents)
+		fc.FileContents[overlayPath("acme/api")] = []byte(managedConfigMarker + overlay)
+	}
+	cases := []struct {
+		name     string
+		manifest string
+		readOnly bool
+		dryRun   bool
+		setup    func(fc *forge.FakeClient)
+		sentinel error
+	}{
+		{name: "malformed key ID variable", manifest: githubUnmanagedManifestYAML + web, setup: malformed,
+			sentinel: repos.ErrTraceKeyIDInvalid},
+		{name: "malformed key ID variable, dry run", manifest: githubUnmanagedManifestYAML + web, dryRun: true, setup: malformed,
+			sentinel: repos.ErrTraceKeyIDInvalid},
+		// As an uninstall by a release without this change leaves it.
+		{name: "key ID variable on a keyless entry", manifest: githubUnmanagedManifestYAML + web,
+			setup: func(fc *forge.FakeClient) { setKeyIDVar(fc, hexTraceKeyID(testTracePublicKey(1))) }, sentinel: repos.ErrTraceManifestStale},
+		{name: "committed config trusts a key the entry lacks", manifest: githubUnmanagedManifestYAML + "      config:\n" + block + web,
+			setup: func(fc *forge.FakeClient) {
+				installAPI(fc, traceContextYAML(testTraceInstallationID, forge.SecretTraceSigningKey,
+					testTraceVerificationKey(1), testTraceVerificationKey(3)))
+				fc.Secrets["acme/api/"+forge.SecretTraceSigningKey] = true
+				setKeyIDVar(fc, hexTraceKeyID(testTracePublicKey(1)))
+			}, sentinel: repos.ErrTraceManifestStale},
+		// A hand-declared trace_context without a seed is a recovery, which
+		// a read-only repos.yaml cannot record.
+		{name: "recovery from a read-only repos.yaml", manifest: behaviourTestManifestYAML + block + strings.Replace(declared, "acme/api", "acme/web", 1),
+			readOnly: true, sentinel: repos.ErrTraceManifestReadOnly},
+		{name: "glob-covered", manifest: strings.Replace(githubUnmanagedManifestYAML, "acme/api", "acme/*", 1), setup: malformed,
+			sentinel: repos.ErrTraceKeyIDInvalid},
+		{name: "layers the safety check rejects", manifest: githubUnmanagedManifestYAML + web,
+			setup: func(fc *forge.FakeClient) {
+				installAPI(fc, "kill_switch: true\n")
+				malformed(fc)
+			}, sentinel: repos.ErrTraceKeyIDInvalid},
+		{name: "mint URL conflict", manifest: githubUnmanagedManifestYAML + "      config:\n        mint_url: https://other-mint.example.com\n" + web,
+			setup: malformed, sentinel: repos.ErrTraceKeyIDInvalid},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTestManifest(t, tc.manifest)
+			if tc.readOnly {
+				require.NoError(t, os.Chmod(path, 0o444))
+			}
+			fc := newInstallFakeClient("acme/api", "acme/web")
+			if tc.setup != nil {
+				tc.setup(fc)
+			}
+			committed := string(fc.FileContents[overlayPath("acme/api")])
+			entry := manifestEntryYAML(t, path, "acme/api")
+			opts := githubManagedInstallOpts(path, fc)
+			opts.dryRun = tc.dryRun
+			var err error
+			out := captureStdout(t, func() { err = runReposInstall(context.Background(), opts) })
+			written := mustReadFile(t, path)
+
+			// acme/web converges. Its seed is checked before any assertion
+			// that prints the output.
+			switch {
+			case tc.dryRun:
+				assertNoInstallWrites(t, fc)
+				assert.Equal(t, tc.manifest, written, "a dry run leaves repos.yaml byte-identical")
+				assert.Equal(t, 1, strings.Count(out, "[acme/web] Would persist config.trace_context"), "the dry run previews acme/web's key")
+			case tc.readOnly:
+				assert.Equal(t, tc.manifest, written, "repos.yaml is byte-identical")
+				commits, _, _ := repoWrites(fc, "acme/web")
+				assert.NotZero(t, commits, "acme/web is installed")
+				assert.Zero(t, len(writtenTraceSeed(fc, "acme/web")), "acme/web goes ahead without keys")
+				assert.Equal(t, 1, strings.Count(out, "[acme/web] Trace signing keys not provisioned: repos.yaml is read-only"), "one notice")
+			default:
+				_, pub := requireTraceKeyWritten(t, fc, "acme/web", out, written)
+				assert.Equal(t, pub, traceValue(traceActiveKeyRe, string(fc.FileContents[overlayPath("acme/web")])), "acme/web's commit carries its key")
+			}
+
+			require.EqualError(t, err, "1 repos failed")
+			assert.Equal(t, 1, strings.Count(out, "FAILED: "), "one repository fails")
+			assert.Equal(t, 1, strings.Count(out, "FAILED: acme/api — "+tc.sentinel.Error()), "acme/api fails with the refusal")
+			assert.Equal(t, 1, strings.Count(out, "[acme/api] skipped: "+tc.sentinel.Error()), "acme/api is skipped with the refusal")
+			assert.NotRegexp(t, `\[acme/api\] (Persisted|Would persist)`, out, "no repos.yaml edit for acme/api")
+			commits, secrets, variables := repoWrites(fc, "acme/api")
+			assert.Zero(t, commits, "no commit for acme/api")
+			assert.Zero(t, secrets, "no secret write for acme/api")
+			assert.Zero(t, variables, "no variable write or deletion for acme/api")
+			assert.Equal(t, committed, string(fc.FileContents[overlayPath("acme/api")]), "acme/api's committed config is unchanged")
+			assert.Equal(t, entry, manifestEntryYAML(t, path, "acme/api"), "acme/api's repos.yaml entry is unchanged")
+		})
+	}
+}
+
+// --rotate-trace-signing-key from a read-only repos.yaml stops the run
+// before any write, also with two repositories: the run cannot record any
+// rotation it asks for.
+func TestRunReposInstall_ReadOnlyRotationStopsTheRun(t *testing.T) {
+	manifest := behaviourTestManifestYAML +
+		strings.Replace(strings.TrimPrefix(behaviourTestManifestYAML, "version: 1\ngithub:\n  repos:\n"), "acme/api", "acme/web", 1)
+	path := writeTestManifest(t, manifest)
+	require.NoError(t, os.Chmod(path, 0o444))
+	fc := newInstallFakeClient("acme/api", "acme/web")
+	opts := githubManagedInstallOpts(path, fc)
+	opts.rotateTraceSigningKey = true
+	var err error
+	captureStdout(t, func() { err = runReposInstall(context.Background(), opts) })
+	require.ErrorIs(t, err, repos.ErrTraceManifestReadOnly)
+	assert.Contains(t, err.Error(), "acme/api, acme/web", "the error names both repositories")
+	assert.Equal(t, manifest, mustReadFile(t, path), "repos.yaml is byte-identical")
 	assertNoInstallWrites(t, fc)
 }
 

@@ -52,6 +52,18 @@ type TraceKeyPlan struct {
 	KeyIDVarExists bool
 }
 
+// TraceKeyRefusal is a selected repository whose trace signing keys
+// EnsureTraceSigningKeys refuses: Err wraps ErrTraceKeyIDInvalid,
+// ErrTraceManifestStale, or ErrTraceManifestReadOnly for a recovery that a
+// run without Rotate cannot record. repos install skips the repository and
+// reports it as failed, as it does one that needs adoption (#8511); its
+// convergence would commit the entry's trace_context over the committed
+// one.
+type TraceKeyRefusal struct {
+	Owner, Repo string
+	Err         error
+}
+
 // Trace-key preflight refusals. They name the repository and key IDs, never
 // key material or the value of FULLSEND_TRACE_SIGNING_KEY_ID.
 var (
@@ -69,13 +81,14 @@ var (
 // FULLSEND_TRACE_SIGNING_KEY_ID and, when they decide the outcome, the
 // fullsend workflow marker and whether FULLSEND_TRACE_SIGNING_KEY exists.
 // Then it:
-//   - refuses with ErrTraceKeyIDInvalid, before any edit, a variable that is
-//     not 16 lowercase hex characters;
-//   - refuses with ErrTraceManifestStale, before any edit, an entry whose
-//     installation_id differs from the committed one, that lacks a committed
-//     key, or that has no trace_context while the committed config has one;
-//     a variable set beside an entry without trace_context, or naming a key
-//     the entry does not list; and an installation_id another entry uses.
+//   - refuses with ErrTraceKeyIDInvalid a variable that is not 16 lowercase
+//     hex characters;
+//   - refuses with ErrTraceManifestStale an entry whose installation_id
+//     differs from the committed one, that lacks a committed key, or that
+//     has no trace_context while the committed config has one; a variable
+//     set beside an entry without trace_context, or naming a key the entry
+//     does not list; and an installation_id another entry uses, which
+//     refuses both entries when both are selected.
 //     The committed block of an ended installation is not compared with the
 //     entry: a keyless entry's block once no fullsend workflow, seed or
 //     variable remains (a full uninstall, which keeps the committed config
@@ -85,14 +98,20 @@ var (
 //     or names a retained key, "rotation" for Rotate, and "fresh install"
 //     for a keyless entry without a fullsend workflow; a healthy install,
 //     and an existing install without trace_context, get no plan;
-//   - refuses with ErrTraceManifestReadOnly, before any edit, a plan that a
-//     read-only manifest cannot record, except a fresh install without
-//     Rotate, which goes ahead without keys and says so;
+//   - refuses with ErrTraceManifestReadOnly a recovery without Rotate that a
+//     read-only manifest cannot record; a fresh install without Rotate goes
+//     ahead without keys and says so;
 //   - otherwise generates a key (and, for an entry without keys, an
 //     installation ID) from crypto/rand, retains the previous active key,
 //     records the block in the manifest entry (carving an explicit entry out
 //     of a glob like EnsureManagedConfigDefaults) and returns a plan keyed
 //     "owner/repo".
+//
+// A refused repository gets no plan, no edit and no progress line, and is
+// returned as a TraceKeyRefusal; the others are still planned. A read,
+// client or parse error, and a key that Rotate asks for from a read-only
+// manifest, stop the run before any edit: the error also names every
+// refusal, and nothing else is returned.
 //
 // EnsureTraceSigningKeys never writes repos.yaml; the caller persists the
 // edited manifest (repos install does so through its compare-before-write
@@ -100,19 +119,20 @@ var (
 // Persisted rather than Would persist. Repositories that fail
 // RequireInferenceAuth are skipped. Progress names installation and key IDs,
 // and the glob a new entry was copied from, never the seed.
-func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients ForgeClientFactory, progress ProgressFunc) (map[string]*TraceKeyPlan, error) {
+func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients ForgeClientFactory, progress ProgressFunc) (map[string]*TraceKeyPlan, []TraceKeyRefusal, error) {
 	if progress == nil {
 		progress = func(_, _, _ string) {}
 	}
 	m := cfg.Manifest
 	selected, err := selectManifestRepos(ctx, m, clients, cfg.RepoFilter)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	readOnly := ManifestReadOnly(m, cfg.ManifestPath)
 	var repos []*traceRepo
 	var gitlab []string
 	var errs []error
+	var refused []TraceKeyRefusal
 	for _, rr := range withoutRepos(selected, cfg.ExcludeRepos) {
 		if rr.Forge == ForgeGitLab {
 			gitlab = append(gitlab, rr.Owner+"/"+rr.Repo)
@@ -124,14 +144,20 @@ func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients Fo
 			continue
 		}
 		t, err := readTraceRepo(ctx, m, clients, rr, cfg.Rotate)
-		if err != nil {
+		switch {
+		case errors.Is(err, ErrTraceKeyIDInvalid), errors.Is(err, ErrTraceManifestStale):
+			refused = append(refused, TraceKeyRefusal{Owner: rr.Owner, Repo: rr.Repo, Err: err})
+		case err != nil:
 			errs = append(errs, err)
-			continue
+		case readOnly && !cfg.Rotate && t.reason == reasonRecovery:
+			// A plain run fails only this repository; a rotation the
+			// manifest cannot record stops the run below.
+			refused = append(refused, TraceKeyRefusal{Owner: rr.Owner, Repo: rr.Repo, Err: fmt.Errorf(
+				"%w: recording the trace keys of %s needs a repos.yaml edit; install wrote nothing for it: "+
+					"run repos install %s with a writable local manifest", ErrTraceManifestReadOnly, t.name(), t.name())})
+		default:
+			repos = append(repos, t)
 		}
-		repos = append(repos, t)
-	}
-	if err := errors.Join(errs...); err != nil {
-		return nil, err
 	}
 
 	var edited []string
@@ -146,8 +172,14 @@ func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients Fo
 		}
 	}
 	if readOnly && len(edited) > 0 {
-		return nil, fmt.Errorf("%w: recording the trace keys of %s needs a repos.yaml edit; repos.yaml and the trace keys were not changed: re-run with a writable local manifest",
-			ErrTraceManifestReadOnly, strings.Join(edited, ", "))
+		errs = append(errs, fmt.Errorf("%w: recording the trace keys of %s needs a repos.yaml edit; repos.yaml and the trace keys were not changed: re-run with a writable local manifest",
+			ErrTraceManifestReadOnly, strings.Join(edited, ", ")))
+	}
+	if len(errs) > 0 {
+		for _, r := range refused {
+			errs = append(errs, r.Err)
+		}
+		return nil, nil, errors.Join(errs...)
 	}
 	for _, name := range gitlab {
 		progress(name, "manifest", "Trace signing keys not provisioned: repos install does not provision them on GitLab yet")
@@ -170,7 +202,7 @@ func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients Fo
 		}
 	}
 	if len(edited) == 0 {
-		return nil, nil
+		return nil, refused, nil
 	}
 
 	plans := make(map[string]*TraceKeyPlan, len(edited))
@@ -180,7 +212,7 @@ func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients Fo
 		}
 		key, err := t.provision()
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", t.name(), err)
+			return nil, nil, fmt.Errorf("%s: %w", t.name(), err)
 		}
 		p := &TraceKeyPlan{Key: key, Reason: t.reason}
 		if t.recordedKeyID != nil {
@@ -191,17 +223,17 @@ func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients Fo
 		if entry == nil {
 			carved, glob, err := carveOutForForge(m, t.name(), t.rr.Forge)
 			if err != nil {
-				return nil, fmt.Errorf("%s: %w", t.name(), err)
+				return nil, nil, fmt.Errorf("%s: %w", t.name(), err)
 			}
 			if carved == nil {
-				return nil, fmt.Errorf("no manifest entry or glob covers %q", t.name())
+				return nil, nil, fmt.Errorf("no manifest entry or glob covers %q", t.name())
 			}
 			entry, t.carvedFrom = carved, glob
 		}
 		entry.Config = entry.Config.WithTraceContext(t.next)
 	}
 	if err := validateManifestManaged(m); err != nil {
-		return nil, fmt.Errorf("validating manifest after recording trace keys: %w", err)
+		return nil, nil, fmt.Errorf("validating manifest after recording trace keys: %w", err)
 	}
 
 	verb := "Would persist"
@@ -215,7 +247,7 @@ func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients Fo
 				verb, where, t.next.InstallationID, tracecontext.FormatKeyID(p.Key.KeyID()), p.Reason))
 		}
 	}
-	return plans, nil
+	return plans, refused, nil
 }
 
 // traceKeySet is a validated trace_context block's installation ID and
@@ -337,7 +369,7 @@ func readTraceRepo(ctx context.Context, m *Manifest, clients ForgeClientFactory,
 		// The value is never echoed: only install writes the variable, so
 		// anything else in it is unexpected input.
 		if keyID, err = tracecontext.ParseKeyID(value); err != nil {
-			return nil, fmt.Errorf("%w for %s: its value is not 16 lowercase hex characters; repos.yaml and the trace keys were not changed: "+
+			return nil, fmt.Errorf("%w for %s: its value is not 16 lowercase hex characters; install wrote nothing for it: "+
 				"delete the repository variable %s, then run repos install again", ErrTraceKeyIDInvalid, name, forge.VarTraceSigningKeyID)
 		}
 	}
@@ -386,8 +418,8 @@ func readTraceRepo(ctx context.Context, m *Manifest, clients ForgeClientFactory,
 		}
 	}
 	if len(whys) > 0 {
-		return nil, fmt.Errorf("%w for %s: %s; repos.yaml and the trace keys were not changed: "+
-			"run install with the repos.yaml the last install wrote, or restore the entry's trace_context from it",
+		return nil, fmt.Errorf("%w for %s: %s; install wrote nothing for it: "+
+			"restore the entry's trace_context from the repos.yaml the last install wrote",
 			ErrTraceManifestStale, name, strings.Join(whys, "; "))
 	}
 	if recorded {
