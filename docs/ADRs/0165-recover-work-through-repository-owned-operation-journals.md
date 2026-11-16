@@ -67,6 +67,13 @@ inference, subject to current source, authorization and policy checks. Missing,
 exhausted or unresolved targets remain visible and cannot imply completion.
 Domain adapters define completion and any compensating actions.
 
+Journal-backed recovery is an explicit workflow opt-in. Participating workflows
+integrate trusted journal operations through their pre/post scripts, agent or
+harness contracts, and reconcilers. Existing webhook and poll dispatch paths do
+not automatically journal every run; their selection and dispatch behavior
+remains unchanged unless explicitly integrated. Once a workflow admits work to
+the journal, the recovery contract covers all its required targets and effects.
+
 Shared trusted journal operations are consumable from pre/post scripts and
 reconcilers. Incremental checkpoints and periodic reconciliation provide
 recovery when execution stops. CI cleanup supplies a best-effort checkpoint;
