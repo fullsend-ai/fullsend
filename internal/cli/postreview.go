@@ -44,8 +44,33 @@ var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 // cannot inject markup. The resolved-thread fetch matches this form (#7907).
 var findingIDRe = regexp.MustCompile(`^f_[a-zA-Z0-9]+$`)
 
-// findingMarkerRe matches finding ID markers embedded in inline review comments.
-var findingMarkerRe = regexp.MustCompile(`<!-- finding:(f_[a-zA-Z0-9]+) -->`)
+// findingMarkerRe matches finding ID markers embedded on the first line of an inline review comment.
+var findingMarkerRe = regexp.MustCompile(`^<!-- finding:(f_[a-zA-Z0-9]+) -->(\r?\n|$)`)
+
+// findingMarkerOpenerRe matches finding marker openers case-insensitively.
+var findingMarkerOpenerRe = regexp.MustCompile(`(?i)<(!--\s*finding\s*:)`)
+
+// neutralizeFindingMarkers escapes the "<" of every finding marker opener in s.
+func neutralizeFindingMarkers(s string) string {
+	return findingMarkerOpenerRe.ReplaceAllString(s, "&lt;$1")
+}
+
+// formatFindingStamp formats a finding ID as the leading HTML comment stamp.
+func formatFindingStamp(id string) string {
+	if findingIDRe.MatchString(id) {
+		return fmt.Sprintf("<!-- finding:%s -->\n", id)
+	}
+	return ""
+}
+
+// parseFindingStamp extracts the finding ID from the first line of a comment body.
+func parseFindingStamp(body string) string {
+	matches := findingMarkerRe.FindStringSubmatch(body)
+	if len(matches) >= 2 {
+		return matches[1]
+	}
+	return ""
+}
 
 // reviewProjectionMarkerPattern is the review-findings-v2 projection marker
 // pattern, including its base64 payload.
@@ -516,11 +541,10 @@ func resolveFixedReviewThreads(ctx context.Context, client forge.Client, owner, 
 		if root.AuthorType != "Bot" {
 			continue
 		}
-		matches := findingMarkerRe.FindStringSubmatch(root.Body)
-		if len(matches) < 2 {
+		findingID := parseFindingStamp(root.Body)
+		if findingID == "" {
 			continue
 		}
-		findingID := matches[1]
 		// If finding is still reported in current review, keep thread open.
 		if _, stillActive := activeFindings[findingID]; stillActive {
 			continue
@@ -775,15 +799,15 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 // File-level comments use this same helper, so they carry the stamp too.
 func formatFindingComment(f ReviewFinding) string {
 	var b strings.Builder
-	if findingIDRe.MatchString(string(f.ID)) {
-		fmt.Fprintf(&b, "<!-- finding:%s -->\n", f.ID)
+	if stamp := formatFindingStamp(string(f.ID)); stamp != "" {
+		b.WriteString(stamp)
 	}
 	fmt.Fprintf(&b, "**[%s]** %s", f.Severity, f.Category)
 	b.WriteString("\n\n")
-	b.WriteString(strings.TrimSpace(f.Description))
+	b.WriteString(strings.TrimSpace(neutralizeFindingMarkers(f.Description)))
 	if f.Remediation != "" {
 		b.WriteString("\n\n**Suggested fix:** ")
-		b.WriteString(strings.TrimSpace(f.Remediation))
+		b.WriteString(strings.TrimSpace(neutralizeFindingMarkers(f.Remediation)))
 	}
 	return b.String()
 }

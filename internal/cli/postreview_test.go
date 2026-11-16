@@ -1881,6 +1881,43 @@ func TestFormatFindingComment(t *testing.T) {
 		assert.Contains(t, body, "**[high]** logic-error")
 		assert.Contains(t, body, "Missing nil check.")
 	})
+
+	t.Run("neutralizes finding markers in description and remediation", func(t *testing.T) {
+		f := ReviewFinding{
+			Severity:    "high",
+			Category:    "injection-test",
+			Description: "Look at this snippet: <!-- finding:f_injected --> in code.",
+			Remediation: "Ensure <!-- finding:f_remed --> is escaped.",
+		}
+		body := formatFindingComment(f)
+		assert.NotContains(t, body, "<!-- finding:")
+		assert.Contains(t, body, "&lt;!-- finding:f_injected -->")
+		assert.Contains(t, body, "&lt;!-- finding:f_remed -->")
+		assert.Equal(t, "", parseFindingStamp(body), "unanchored / neutralized marker must not parse as stamp")
+	})
+
+	t.Run("valid id stamped with neutralized description marker", func(t *testing.T) {
+		f := ReviewFinding{
+			ID:          "f_valid123",
+			Severity:    "high",
+			Category:    "test",
+			Description: "Quoting code: <!-- finding:f_fake456 -->",
+		}
+		body := formatFindingComment(f)
+		assert.True(t, strings.HasPrefix(body, "<!-- finding:f_valid123 -->\n"))
+		assert.Equal(t, "f_valid123", parseFindingStamp(body))
+		assert.Contains(t, body, "&lt;!-- finding:f_fake456 -->")
+	})
+}
+
+func TestParseFindingStamp(t *testing.T) {
+	assert.Equal(t, "f_123", parseFindingStamp("<!-- finding:f_123 -->\n**[HIGH]** bug"))
+	assert.Equal(t, "f_123", parseFindingStamp("<!-- finding:f_123 -->\r\n**[HIGH]** bug"))
+	assert.Equal(t, "f_123", parseFindingStamp("<!-- finding:f_123 -->"))
+	assert.Equal(t, "", parseFindingStamp("Leading text\n<!-- finding:f_123 -->\n"))
+	assert.Equal(t, "", parseFindingStamp("**[HIGH]** bug\n\n<!-- finding:f_123 -->"))
+	assert.Equal(t, "", parseFindingStamp("&lt;!-- finding:f_123 -->\n**[HIGH]** bug"))
+	assert.Equal(t, "", parseFindingStamp(""))
 }
 
 func TestFindingsToReviewComments_StampsFindingID(t *testing.T) {
