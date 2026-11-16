@@ -392,6 +392,33 @@ After the last iteration, `fullsend run` returns an error, and so exits non-zero
 - `<code>` is the `Agent exit code` value in the Results block. It is `1` when the agent exited 0
   but its transcript reported an error.
 
+## Provider profiles in run output
+
+Once the providers exist, the run prints one line per provider the harness uses; a provider the
+run skips (for example `openai` when no model needs it) gets no line. Each line names the
+profile the provider uses and where it came from: `embedded` for the copy built into fullsend, or
+`harness` for a copy listed in `openshell.profiles`. It then lists what that profile permits: each
+endpoint's host, protocol and `access` (or the methods its allow rules list), and the binaries
+allowlist: a `**/` glob by its base name (`**/gh` as `gh`), an absolute path as written. A profile with more than three endpoints is summarised as
+`<n> endpoints: <hosts> (<access values>)`.
+
+```text
+    provider github: profile fullsend-github (embedded) -> api.github.com rest read-write, github.com rest read-write; binaries gh, git, node, pre-commit
+    provider github-ro: profile fullsend-github-ro (embedded) -> api.github.com rest read-only, api.github.com graphql read-only, github.com rest read-only; binaries gh, node
+```
+
+When the run cannot say what a profile permits, the line says so instead:
+
+- `provider <name>: profile <id> (not imported by this run; what it permits is not known to the runner)`
+  when the profile is neither built into fullsend nor listed by the harness.
+- `provider <name>: profile <id> (harness) could not be read: <error>` when the listed file cannot
+  be read or parsed.
+
+A profile is a declaration of what the gateway should allow. Whether the gateway enforces it
+depends on the deployment, and the run does not check that. If the harness also mounts a durable
+credential file, the run may print a warning before the sandbox starts; see
+[durable credentials next to write-capable providers](../reference/harness-reference.md#durable-credentials-next-to-write-capable-providers).
+
 ## OpenAI credentials on pi and codex
 
 A `fullsend-openai` provider (`providers: [openai]` on the harness, `openai/<id>` models on pi or codex)

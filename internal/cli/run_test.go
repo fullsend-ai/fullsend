@@ -1028,6 +1028,27 @@ func TestRunAgent_CustomNamedProviderOverrideWins(t *testing.T) {
 	assert.Contains(t, log, "provider create --name myorg-github-ro --type myorg-github-ro")
 }
 
+// TestRunAgent_PrintsResolvedProviderProfiles: the run names the profile
+// each provider uses, embedded or listed by the harness, and warns before
+// the sandbox is created when a durable credential host file sits next to a
+// write-capable provider (#9510).
+func TestRunAgent_PrintsResolvedProviderProfiles(t *testing.T) {
+	t.Setenv("GH_TOKEN", "dummy")
+	sa := writeHostFileFixture(t, "service_account")
+	_, _, out := runAgentWithProviderFiles(t,
+		"agent: agents/code.md\nrole: test\nproviders:\n  - github\n  - github-ro\n"+
+			"host_files:\n  - src: "+sa+"\n    dest: /tmp/sa.json\n    allow_durable: true\n"+
+			"openshell:\n  profiles:\n    - profiles/fullsend-github-ro.yaml\n",
+		map[string]string{"profiles/fullsend-github-ro.yaml": "id: fullsend-github-ro\nendpoints:\n  - host: api.github.com\n    protocol: rest\n    access: read-only\nbinaries: [\"**/gh\"]\n"})
+
+	assert.Contains(t, out, "provider github: profile fullsend-github (embedded) -> api.github.com rest read-write, github.com rest read-write; binaries gh, git, node, pre-commit")
+	assert.Contains(t, out, "provider github-ro: profile fullsend-github-ro (harness) -> api.github.com rest read-only; binaries gh")
+	warn := "host file dest /tmp/sa.json is a durable credential, and provider github (profile fullsend-github) permits write methods. Prefer a short-lived credential"
+	assert.Contains(t, out, warn)
+	assert.NotContains(t, out, "provider github-ro (profile", "a read-only provider is not named in the warning")
+	assert.Less(t, strings.Index(out, warn), strings.Index(out, "Creating sandbox"), "the warning comes before the sandbox is created")
+}
+
 // TestRunAgent_UnlistedProfileDirectoryFileIsNotImported guards the #7095
 // fix: an unlisted file under the fullsend dir's profiles/ directory must
 // never be scanned or imported, even when it shares an id with a profile
