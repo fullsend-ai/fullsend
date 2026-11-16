@@ -1089,6 +1089,8 @@ func TestIsRetryable(t *testing.T) {
 		{"429 POST", http.StatusTooManyRequests, http.MethodPost, "/issue", true},
 		{"429 POST search/jql", http.StatusTooManyRequests, http.MethodPost, "/search/jql", true},
 		{"500 GET", http.StatusInternalServerError, http.MethodGet, "/issue/PROJ-1", true},
+		{"500 GET remotelink", http.StatusInternalServerError, http.MethodGet, "/issue/PROJ-1/remotelink", false},
+		{"503 GET remotelink", http.StatusServiceUnavailable, http.MethodGet, "/issue/PROJ-1/remotelink", false},
 		{"503 PUT", http.StatusServiceUnavailable, http.MethodPut, "/issue/PROJ-1", true},
 		{"500 POST", http.StatusInternalServerError, http.MethodPost, "/issue", false},
 		{"500 POST search/jql", http.StatusInternalServerError, http.MethodPost, "/search/jql", true},
@@ -1327,7 +1329,8 @@ func TestSearchIssuesPage(t *testing.T) {
 		assert.Equal(t, "project = PROJ", body.JQL)
 		assert.Equal(t, "page-2", body.NextPageToken)
 		assert.Equal(t, 25, body.MaxResults)
-		assert.Contains(t, body.Fields, "components")
+		assert.NotContains(t, body.Fields, "components")
+		assert.Equal(t, searchFields, body.Fields)
 
 		writeJSON(t, w, http.StatusOK, SearchResult{
 			Issues: []Issue{
@@ -1335,7 +1338,7 @@ func TestSearchIssuesPage(t *testing.T) {
 					ID:  "101",
 					Key: "PROJ-101",
 					Fields: IssueFields{
-						Components: []Component{{ID: "1", Name: "backend"}},
+						Summary: "backend feature",
 					},
 				},
 			},
@@ -1348,8 +1351,7 @@ func TestSearchIssuesPage(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Issues, 1)
 	assert.Equal(t, "PROJ-101", res.Issues[0].Key)
-	require.Len(t, res.Issues[0].Fields.Components, 1)
-	assert.Equal(t, "backend", res.Issues[0].Fields.Components[0].Name)
+	assert.Equal(t, "backend feature", res.Issues[0].Fields.Summary)
 	assert.Equal(t, "page-3", res.NextPageToken)
 	assert.False(t, res.IsLast)
 }
@@ -1461,6 +1463,22 @@ func TestListRemoteLinks_Empty403BodyAndCachesDisabledState(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, links2)
 	assert.Equal(t, int32(1), hits.Load(), "subsequent ListRemoteLinks calls should skip HTTP after HTTP 403")
+}
+
+func TestListRemoteLinks_NoRetryOn503(t *testing.T) {
+	t.Parallel()
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	var attempts atomic.Int32
+	mux.HandleFunc("/rest/api/3/issue/PROJ-503/remotelink", func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	_, err := client.ListRemoteLinks(ctx, "PROJ-503")
+	require.Error(t, err)
+	assert.Equal(t, int32(1), attempts.Load(), "should not retry GET /remotelink on 503")
 }
 
 func TestListRemoteLinks_Error(t *testing.T) {

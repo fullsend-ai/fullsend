@@ -37,10 +37,6 @@ type IssueFields struct {
 	// container identity for trace binding; the key is display-only.
 	Project *ProjectRef `json:"project,omitempty"`
 
-	// Components holds Jira components assigned to the issue. Used by the
-	// poller as Priority-2 repo routing fallback.
-	Components []Component `json:"components,omitempty"`
-
 	// CustomFields holds the raw JSON value of every "customfield_*" key
 	// in the fields object, keyed by field ID (e.g. "customfield_10875").
 	// Custom field IDs and value shapes vary per Jira instance, so values
@@ -237,12 +233,6 @@ type changelogPage struct {
 	MaxResults int              `json:"maxResults"`
 	StartAt    int              `json:"startAt"`
 	IsLast     bool             `json:"isLast"`
-}
-
-// Component represents a Jira project component on an issue.
-type Component struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
 }
 
 // RemoteLink represents an external web link attached to a Jira issue

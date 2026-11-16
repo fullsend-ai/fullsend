@@ -473,9 +473,9 @@ func parseErrorResponse(resp *http.Response) error {
 
 func isRetryable(resp *http.Response, method, path string) bool {
 	// Remote-link lookups run in concurrent batches during candidate routing;
-	// abort immediately on 429 so the poller halts fan-out without adding
+	// abort immediately on 429 or 5xx so the poller halts fan-out without adding
 	// retry pressure or sleeping up to Retry-After.
-	if strings.HasSuffix(path, "/remotelink") && resp.StatusCode == http.StatusTooManyRequests {
+	if strings.HasSuffix(path, "/remotelink") && (resp.StatusCode == http.StatusTooManyRequests || (resp.StatusCode >= 500 && resp.StatusCode <= 504)) {
 		return false
 	}
 	if resp.StatusCode == http.StatusTooManyRequests {
@@ -549,7 +549,7 @@ type searchRequest struct {
 // plausibly exceed the client's 10MB decode cap — and since a failed
 // search aborts the whole cycle with the same data returning every time,
 // that failure mode would wedge the poller for the entire project.
-var searchFields = []string{"summary", "status", "labels", "reporter", "assignee", "created", "updated", "project", "issuetype", "components"}
+var searchFields = []string{"summary", "status", "labels", "reporter", "assignee", "created", "updated", "project", "issuetype"}
 
 // maxSearchPages limits pagination to prevent unbounded memory growth
 // from overly broad JQL queries.
@@ -1058,8 +1058,8 @@ func (c *LiveClient) GetMyself(ctx context.Context) (*User, error) {
 // GET /rest/api/3/issue/{issueIdOrKey}/remotelink. If Jira returns HTTP 403
 // (for example because issue linking is disabled on the site), a warning is
 // logged, the disabled state is cached on this client to skip remaining lookups,
-// and an empty slice and nil error are returned so routing can fall back to
-// components/defaults.
+// and an empty slice and nil error are returned so routing falls through to
+// unrouted fallback, or skips if strict routing is enabled.
 func (c *LiveClient) ListRemoteLinks(ctx context.Context, issueIDOrKey string) ([]RemoteLink, error) {
 	if c.remoteLinksDisabled.Load() {
 		return []RemoteLink{}, nil
