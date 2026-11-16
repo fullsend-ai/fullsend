@@ -253,7 +253,7 @@ func TestPostReviewContent_FormalReviewFailureDoesNotFailCommand(t *testing.T) {
 	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
 	parsed := ReviewResult{Body: "Looks good", Action: "approve"}
 
-	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, false, printer)
 	require.NoError(t, err, "sticky comment success must not fail the command when formal review fails")
 
 	comments := fc.IssueComments["o/r/1"]
@@ -274,7 +274,7 @@ func TestPostReviewContent_RequestChangesFormalReviewFailureDoesNotFailCommand(t
 	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
 	parsed := ReviewResult{Body: "Please fix these issues", Action: "request-changes"}
 
-	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, false, printer)
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["o/r/1"]
@@ -293,7 +293,7 @@ func TestPostReviewContent_StickyFailureStillFails(t *testing.T) {
 	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
 	parsed := ReviewResult{Body: "Looks good", Action: "approve"}
 
-	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, false, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating comment")
 	assert.Empty(t, fc.CreatedReviews)
@@ -308,7 +308,7 @@ func TestPostReviewContent_SuccessSubmitsFormalReview(t *testing.T) {
 	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
 	parsed := ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"}
 
-	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, false, printer)
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["o/r/1"]
@@ -533,7 +533,7 @@ func TestPostReviewContent_IncludesDiffHashMarker(t *testing.T) {
 	cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
 	parsed := ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"}
 
-	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, false, printer)
 	require.NoError(t, err)
 	require.Len(t, fc.IssueComments["o/r/1"], 1)
 	assert.Regexp(t, reviewDiffHashMarkerRe, strings.SplitN(fc.IssueComments["o/r/1"][0].Body, "\n", 3)[1])
@@ -568,7 +568,7 @@ Earlier review
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1,
 		ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"},
-		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, false, ui.New(io.Discard))
 	require.NoError(t, err)
 
 	body := fc.IssueComments["o/r/1"][0].Body
@@ -587,12 +587,12 @@ func TestPostReviewContent_PublishesDiffHashOnlyAfterApproval(t *testing.T) {
 	}
 
 	requestChanges := ReviewResult{Body: "Needs changes", Action: "request-changes", HeadSHA: "abc123def456"}
-	require.NoError(t, postReviewContent(context.Background(), fc, "o", "r", 1, requestChanges, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard)))
+	require.NoError(t, postReviewContent(context.Background(), fc, "o", "r", 1, requestChanges, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, false, ui.New(io.Discard)))
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
 
 	fc.Errors["CreatePullRequestReview"] = fmt.Errorf("approval API error")
 	approval := ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"}
-	require.NoError(t, postReviewContent(context.Background(), fc, "o", "r", 1, approval, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard)))
+	require.NoError(t, postReviewContent(context.Background(), fc, "o", "r", 1, approval, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, false, ui.New(io.Discard)))
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
 }
 
@@ -606,7 +606,7 @@ func TestPostReviewContent_PreservesGeneratedHashAndProjectionMarkers(t *testing
 	projection := "<!-- fullsend:review-findings-v2:eyJmaW5kaW5ncyI6W119 -->"
 	parsed := ReviewResult{Body: projection + "\n\nLooks good", Action: "approve", HeadSHA: "0123456789abcdef0123456789abcdef01234567"}
 
-	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, false, ui.New(io.Discard))
 	require.NoError(t, err)
 	body := fc.IssueComments["o/r/1"][0].Body
 	lines := strings.Split(body, "\n")
@@ -624,7 +624,7 @@ func TestPostReviewContent_DoesNotTrustAgentHashWhenHashUnavailable(t *testing.T
 	forged := "<!-- fullsend:review-diff-hash:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef -->"
 	parsed := ReviewResult{Body: forged + "\nLooks good", Action: "approve"}
 
-	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, false, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "&lt;!-- fullsend:review-diff-hash:")
 }
@@ -638,7 +638,7 @@ func TestPostReviewContent_DoesNotPublishHashWithoutReviewedHead(t *testing.T) {
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1,
 		ReviewResult{Body: "Looks good", Action: "approve"},
-		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, false, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
 }
@@ -653,7 +653,7 @@ func TestPostReviewContent_DoesNotPublishHashWhenHeadChanges(t *testing.T) {
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1,
 		ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "reviewed-head"},
-		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, false, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
 }
@@ -669,7 +669,7 @@ func TestPostReviewContent_DoesNotPublishHashWhenHeadLookupFails(t *testing.T) {
 
 	err := postReviewContent(context.Background(), fc, "o", "r", 1,
 		ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "reviewed-head"},
-		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(io.Discard))
+		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, false, ui.New(io.Discard))
 	require.NoError(t, err)
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
 }
@@ -699,7 +699,7 @@ func TestPostReviewContent_HashPublicationFailureIsBestEffort(t *testing.T) {
 	var buf bytes.Buffer
 	err := postReviewContent(context.Background(), client, "o", "r", 1,
 		ReviewResult{Body: "Looks good", Action: "approve", HeadSHA: "abc123def456"},
-		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, ui.New(&buf))
+		sticky.Config{Marker: reviewMarker, KeepHistory: true}, false, false, ui.New(&buf))
 	require.NoError(t, err)
 	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "fullsend:review-diff-hash:")
 	assert.Contains(t, buf.String(), "Could not publish review diff hash after approval")
@@ -735,7 +735,7 @@ func TestPostReviewContent_FallbackFailureDoesNotFailCommand(t *testing.T) {
 		}},
 	}
 
-	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, false, printer)
 	require.NoError(t, err)
 
 	comments := fc.IssueComments["o/r/1"]
@@ -962,23 +962,7 @@ func TestResolveFixedReviewThreads_NoResolvedFindings(t *testing.T) {
 
 func TestResolveFixedReviewThreads_DryRun(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.PRReviewThreads = map[string]forge.ReviewThreadPage{
-		"o/r/1": {
-			Threads: []forge.ReviewThread{
-				{
-					ID:         "thread-fixed",
-					IsResolved: false,
-					Comments: []forge.ReviewThreadComment{
-						{
-							Author:     "bot",
-							AuthorType: "Bot",
-							Body:       "<!-- finding:f_fixed1 -->\n**[HIGH]** bug",
-						},
-					},
-				},
-			},
-		},
-	}
+	fc.Errors["ListPullRequestReviewThreads"] = errors.New("must not list threads on dry run")
 
 	parsed := ReviewResult{
 		HeadSHA:          "c0ffee",
@@ -990,8 +974,7 @@ func TestResolveFixedReviewThreads_DryRun(t *testing.T) {
 	resolveFixedReviewThreads(context.Background(), fc, "o", "r", 1, parsed, true, printer)
 
 	assert.Empty(t, fc.ResolvedPRReviewThreads)
-	assert.False(t, fc.PRReviewThreads["o/r/1"].Threads[0].IsResolved)
-	assert.Contains(t, buf.String(), "Would resolve review thread thread-fixed")
+	assert.NotContains(t, buf.String(), "must not list threads")
 }
 
 func TestResolveFixedReviewThreads_ErrNotSupported(t *testing.T) {
@@ -1075,13 +1058,58 @@ func TestPostReviewContent_ResolvesFixedThreads(t *testing.T) {
 		ResolvedFindings: []string{"f_prior"},
 	}
 
-	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, printer)
+	// resolveFixed = false (default) -> threads should not be resolved
+	err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, false, printer)
+	require.NoError(t, err)
+	assert.Empty(t, fc.ResolvedPRReviewThreads)
+	assert.False(t, fc.PRReviewThreads["o/r/1"].Threads[0].IsResolved)
+
+	// resolveFixed = true -> threads should be resolved
+	err = postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, true, false, printer)
 	require.NoError(t, err)
 
 	require.Len(t, fc.ResolvedPRReviewThreads, 1)
 	assert.Equal(t, "thread-1", fc.ResolvedPRReviewThreads[0].ThreadID)
 	assert.True(t, fc.PRReviewThreads["o/r/1"].Threads[0].IsResolved)
 	assert.Contains(t, buf.String(), "Resolved 1 fixed review thread(s)")
+}
+
+func TestResolveFixedThreadsConfig(t *testing.T) {
+	tr := true
+	f := false
+
+	// Explicit flag takes precedence
+	got, err := resolveFixedThreadsConfig(&tr, "", nil)
+	require.NoError(t, err)
+	assert.True(t, got)
+
+	got, err = resolveFixedThreadsConfig(&f, "", nil)
+	require.NoError(t, err)
+	assert.False(t, got)
+
+	// Missing flag falls back to testConfigReader
+	mockCfg := parseTestConfig(t, "resolve_fixed_threads: true\n")
+	got, err = resolveFixedThreadsConfig(nil, "", mockCfg)
+	require.NoError(t, err)
+	assert.True(t, got)
+
+	// Missing flag and nil reader defaults to false
+	got, err = resolveFixedThreadsConfig(nil, "", nil)
+	require.NoError(t, err)
+	assert.False(t, got)
+
+	// Load from fullsendDir
+	tmpDir := t.TempDir()
+	fullsendDir := filepath.Join(tmpDir, ".fullsend")
+	require.NoError(t, os.MkdirAll(fullsendDir, 0o755))
+	configYAML := `version: "1"
+resolve_fixed_threads: true
+`
+	require.NoError(t, os.WriteFile(filepath.Join(fullsendDir, "config.yaml"), []byte(configYAML), 0o600))
+
+	got, err = resolveFixedThreadsConfig(nil, fullsendDir, nil)
+	require.NoError(t, err)
+	assert.True(t, got)
 }
 
 func TestCheckStaleHead_CaseInsensitive(t *testing.T) {
@@ -2999,7 +3027,7 @@ func TestPostReviewContent_KeepsLeadingProjectionMarkerLive(t *testing.T) {
 			cfg := sticky.Config{Marker: reviewMarker, KeepHistory: true}
 			parsed := ReviewResult{Body: tt.body, Action: "comment"}
 
-			err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, ui.New(io.Discard))
+			err := postReviewContent(context.Background(), fc, "o", "r", 1, parsed, cfg, false, false, ui.New(io.Discard))
 			require.NoError(t, err)
 
 			comments := fc.IssueComments["o/r/1"]

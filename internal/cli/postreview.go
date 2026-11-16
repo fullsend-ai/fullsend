@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
@@ -98,16 +99,17 @@ func reviewTrustedLeadingLineReForHash(diffHash, headSHA string) *regexp.Regexp 
 
 func newPostReviewCmd() *cobra.Command {
 	var (
-		repo        string
-		pr          int
-		result      string
-		token       string
-		headSHA     string
-		dryRun      bool
-		forgeName   string
-		baseURL     string
-		keepHistory bool
-		fullsendDir string
+		repo                string
+		pr                  int
+		result              string
+		token               string
+		headSHA             string
+		dryRun              bool
+		forgeName           string
+		baseURL             string
+		keepHistory         bool
+		resolveFixedThreads bool
+		fullsendDir         string
 	)
 
 	cmd := &cobra.Command{
@@ -205,6 +207,18 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 				KeepHistory: resolvedKeepHistory,
 			}
 
+			// Resolve resolve_fixed_threads: explicit --resolve-fixed-threads flag
+			// takes precedence, otherwise fall back to config.yaml via --fullsend-dir.
+			resolvedResolveFixed := resolveFixedThreads
+			if !cmd.Flags().Changed("resolve-fixed-threads") {
+				var rfFlag *bool // nil = not explicitly set
+				resolved, resolveErr := resolveFixedThreadsConfig(rfFlag, fullsendDir, nil)
+				if resolveErr != nil {
+					printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to resolve_fixed_threads=false", resolveErr))
+				}
+				resolvedResolveFixed = resolved
+			}
+
 			// Stale-head check: refuse to post a review against code
 			// that has changed since the agent reviewed it.
 			if parsed.HeadSHA != "" {
@@ -223,7 +237,7 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 				return postFailureNotice(cmd.Context(), client, owner, repoName, pr, parsed, cfg, printer)
 			}
 
-			return postReviewContent(cmd.Context(), client, owner, repoName, pr, parsed, cfg, dryRun, printer)
+			return postReviewContent(cmd.Context(), client, owner, repoName, pr, parsed, cfg, resolvedResolveFixed, dryRun, printer)
 		},
 	}
 
@@ -234,6 +248,7 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 	cmd.Flags().StringVar(&headSHA, "head-sha", "", "expected PR HEAD SHA (skips review if HEAD has moved)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
 	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
+	cmd.Flags().BoolVar(&resolveFixedThreads, "resolve-fixed-threads", false, "resolve review threads when findings are fixed (default: false; sources from config.yaml when flag is omitted)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", os.Getenv("FULLSEND_DIR"), "path to .fullsend config directory (default: $FULLSEND_DIR; sources defaults from its config.yaml when flags are omitted)")
 	cmd.Flags().StringVar(&forgeName, "forge", "", "forge backend: github (default) or gitlab")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "forge instance URL (e.g. https://gitlab.example.com)")
@@ -401,7 +416,7 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 // formal PR/MR review. Once the sticky comment is on the PR, formal
 // review submission is best-effort: a forge API failure must not turn
 // a posted verdict into a workflow Failure (#3548).
-func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, dryRun bool, printer *ui.Printer) error {
+func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, resolveFixed bool, dryRun bool, printer *ui.Printer) error {
 	cfg.TrustedLeadingLine = reviewProjectionMarkerRe
 	cfg.MaxTrustedLeadingLines = 1
 	var diffHash string
@@ -445,7 +460,9 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 		}
 	}
 
-	resolveFixedReviewThreads(ctx, client, owner, repo, pr, parsed, dryRun, printer)
+	if resolveFixed {
+		resolveFixedReviewThreads(ctx, client, owner, repo, pr, parsed, dryRun, printer)
+	}
 
 	return postApprovedFollowUpIssues(ctx, owner, repo, pr, parsed, printer)
 }
@@ -513,18 +530,40 @@ func pullRequestDiffHashFromDiffs(diffs []forge.PullRequestFileDiff, err error) 
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// resolveFixedThreadsConfig returns the explicit flag value if non-nil,
+// otherwise falls back to config.yaml in fullsendDir or testConfigReader.
+// Defaults to false (opt-in).
+func resolveFixedThreadsConfig(flag *bool, fullsendDir string, testConfigReader config.PerRepoConfigReader) (bool, error) {
+	if flag != nil {
+		return *flag, nil
+	}
+	prc := testConfigReader
+	if prc == nil && fullsendDir != "" {
+		reader, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
+		if err != nil {
+			return false, fmt.Errorf("loading config for resolve_fixed_threads: %w", err)
+		}
+		prc, _ = reader.(config.PerRepoConfigReader)
+	}
+	if prc != nil {
+		return prc.ConfigResolveFixedThreads(), nil
+	}
+	return false, nil
+}
+
 // resolveFixedReviewThreads fetches unresolved review threads and resolves
 // those corresponding to findings explicitly reported as resolved by change
 // in the review result (via resolved_findings or dispositions).
 //
 // Fail-closed safeguards:
+//   - Skips thread listing entirely on dry-run or when no resolved findings are supplied.
 //   - Requires a non-empty reviewed HeadSHA.
 //   - Only threads whose comments were all authored by a bot and whose root
 //     comment is stamped on line 1 with a valid finding marker are eligible.
 //   - Threads containing any human comments or truncated comments remain open.
 //   - Only findings explicitly confirmed resolved by change are eligible.
 func resolveFixedReviewThreads(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, dryRun bool, printer *ui.Printer) {
-	if parsed.HeadSHA == "" {
+	if dryRun || parsed.HeadSHA == "" {
 		return
 	}
 
@@ -578,12 +617,6 @@ func resolveFixedReviewThreads(ctx context.Context, client forge.Client, owner, 
 			continue
 		}
 
-		if dryRun {
-			printer.StepInfo(fmt.Sprintf("Would resolve review thread %s (fixed finding %s)", thread.ID, findingID))
-			resolvedCount++
-			continue
-		}
-
 		if err := client.ResolvePullRequestReviewThread(ctx, owner, repo, pr, thread.ID); err != nil {
 			printer.StepWarn(fmt.Sprintf("Failed to resolve review thread %s (%s): %v", thread.ID, findingID, err))
 			continue
@@ -591,7 +624,7 @@ func resolveFixedReviewThreads(ctx context.Context, client forge.Client, owner, 
 		resolvedCount++
 	}
 
-	if resolvedCount > 0 && !dryRun {
+	if resolvedCount > 0 {
 		printer.StepDone(fmt.Sprintf("Resolved %d fixed review thread(s)", resolvedCount))
 	}
 }

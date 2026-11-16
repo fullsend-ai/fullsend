@@ -23,6 +23,7 @@ func TestPerRepoDefaults_CodeDefaults(t *testing.T) {
 	assert.Equal(t, "claude", d.ConfigRuntime())
 	assert.False(t, d.IsKillSwitchActive())
 	assert.True(t, d.ConfigKeepHistory())
+	assert.False(t, d.ConfigResolveFixedThreads())
 	assert.Equal(t, PerRepoDefaultRoles(), d.ConfigRoles())
 	assert.Nil(t, d.AgentEntries())
 	assert.Equal(t, DefaultAllowedRemoteResources(), d.AllowedResources())
@@ -49,6 +50,7 @@ func TestPerRepoConfig_EmptyConfigResolvesDefaults(t *testing.T) {
 	assert.Equal(t, "claude", cfg.ConfigRuntime())
 	assert.False(t, cfg.IsKillSwitchActive())
 	assert.True(t, cfg.ConfigKeepHistory())
+	assert.False(t, cfg.ConfigResolveFixedThreads())
 	assert.Equal(t, PerRepoDefaultRoles(), cfg.ConfigRoles())
 	assert.Nil(t, cfg.AgentEntries())
 	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
@@ -182,6 +184,38 @@ func TestPerRepoConfig_KeepHistory_PointerSemantics(t *testing.T) {
 			parent:      parentCfg,
 		}
 		assert.True(t, overlay.ConfigKeepHistory())
+	})
+}
+
+// --- ResolveFixedThreads *bool pointer semantics ---
+
+func TestPerRepoConfig_ResolveFixedThreads_PointerSemantics(t *testing.T) {
+	t.Run("nil inherits parent default false", func(t *testing.T) {
+		cfg := &perRepoConfig{parent: &perRepoDefaults{}}
+		assert.False(t, cfg.ConfigResolveFixedThreads())
+	})
+
+	t.Run("explicit true overrides parent default", func(t *testing.T) {
+		tr := true
+		cfg := &perRepoConfig{
+			ResolveFixedThreads: &tr,
+			parent:              &perRepoDefaults{},
+		}
+		assert.True(t, cfg.ConfigResolveFixedThreads())
+	})
+
+	t.Run("explicit false overrides parent true", func(t *testing.T) {
+		tr := true
+		parentCfg := &perRepoConfig{
+			ResolveFixedThreads: &tr,
+			parent:              &perRepoDefaults{},
+		}
+		f := false
+		overlay := &perRepoConfig{
+			ResolveFixedThreads: &f,
+			parent:              parentCfg,
+		}
+		assert.False(t, overlay.ConfigResolveFixedThreads())
 	})
 }
 
@@ -870,5 +904,49 @@ roles:
 		// Verify it was not set.
 		prc := cfg.(*perRepoConfig)
 		assert.Nil(t, prc.KeepHistory)
+	})
+}
+
+// --- ResolveFixedThreads YAML round-trip ---
+
+func TestPerRepoConfig_ResolveFixedThreads_YAMLRoundTrip(t *testing.T) {
+	t.Run("resolve_fixed_threads true round-trips", func(t *testing.T) {
+		yamlData := `version: "1"
+resolve_fixed_threads: true
+roles:
+  - triage
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.True(t, cfg.ConfigResolveFixedThreads())
+		prc := cfg.(*perRepoConfig)
+		require.NotNil(t, prc.ResolveFixedThreads)
+		assert.True(t, *prc.ResolveFixedThreads)
+	})
+
+	t.Run("resolve_fixed_threads false round-trips", func(t *testing.T) {
+		yamlData := `version: "1"
+resolve_fixed_threads: false
+roles:
+  - triage
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.False(t, cfg.ConfigResolveFixedThreads())
+		prc := cfg.(*perRepoConfig)
+		require.NotNil(t, prc.ResolveFixedThreads)
+		assert.False(t, *prc.ResolveFixedThreads)
+	})
+
+	t.Run("resolve_fixed_threads omitted falls through to default false", func(t *testing.T) {
+		yamlData := `version: "1"
+roles:
+  - triage
+`
+		cfg, err := ParsePerRepoConfig([]byte(yamlData))
+		require.NoError(t, err)
+		assert.False(t, cfg.ConfigResolveFixedThreads())
+		prc := cfg.(*perRepoConfig)
+		assert.Nil(t, prc.ResolveFixedThreads)
 	})
 }
