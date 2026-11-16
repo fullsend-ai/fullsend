@@ -1102,7 +1102,8 @@ func TestFilterRouting(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 
 		routed, err := p.discoverCandidates(ctx)
-		require.NoError(t, err)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "candidate routing deadline exceeded before candidates could be evaluated")
 		assert.Empty(t, routed)
 		assert.Empty(t, mc.remoteLinksCalls)
 
@@ -1111,7 +1112,7 @@ func TestFilterRouting(t *testing.T) {
 		routed2, err2 := runDiscoverForCandidates(expiredCtx, newMockClient(), Options{
 			TargetRepo: "my-org/pay-backend",
 		}, []jira.Issue{{Key: "PROJ-1"}})
-		require.NoError(t, err2)
+		require.ErrorIs(t, err2, context.Canceled)
 		assert.Empty(t, routed2)
 	})
 }

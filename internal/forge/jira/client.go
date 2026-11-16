@@ -472,6 +472,12 @@ func parseErrorResponse(resp *http.Response) error {
 }
 
 func isRetryable(resp *http.Response, method, path string) bool {
+	// Remote-link lookups run in concurrent batches during candidate routing;
+	// abort immediately on 429 so the poller halts fan-out without adding
+	// retry pressure or sleeping up to Retry-After.
+	if strings.HasSuffix(path, "/remotelink") && resp.StatusCode == http.StatusTooManyRequests {
+		return false
+	}
 	if resp.StatusCode == http.StatusTooManyRequests {
 		return true
 	}

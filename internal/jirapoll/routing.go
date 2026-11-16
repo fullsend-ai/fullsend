@@ -482,8 +482,9 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 		batch := candidates[start:batchEnd]
 		start = batchEnd
 
+		batchCtx, cancelBatch := context.WithCancel(ctx)
 		results := make([]linkResult, len(batch))
-		g, gCtx := errgroup.WithContext(ctx)
+		g, gCtx := errgroup.WithContext(batchCtx)
 		g.SetLimit(routingBatchConcurrency)
 
 		for i, issue := range batch {
@@ -491,10 +492,14 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 			g.Go(func() error {
 				links, err := p.client.ListRemoteLinks(gCtx, issueKey)
 				results[i] = linkResult{links: links, err: err}
+				if err != nil && isRoutingAbortError(err) {
+					cancelBatch()
+				}
 				return nil
 			})
 		}
 		_ = g.Wait()
+		cancelBatch()
 		attempted += len(batch)
 
 		for i, issue := range batch {

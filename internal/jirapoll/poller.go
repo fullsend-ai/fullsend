@@ -426,6 +426,9 @@ func (p *Poller) buildCandidateJQL() (string, error) {
 // page), applying repository routing incrementally until M routed candidates
 // are collected, results are exhausted, or the routing fan-out aborts early.
 func (p *Poller) discoverCandidates(ctx context.Context) ([]jira.Issue, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	jql, err := p.buildCandidateJQL()
 	if err != nil {
 		return nil, err
@@ -444,6 +447,9 @@ func (p *Poller) discoverCandidates(ctx context.Context) ([]jira.Issue, error) {
 	var totalAttempted, totalLinkErrors int
 
 	for page := 0; page < maxCandidateScanPages; page++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if fanoutCtx.Err() != nil {
 			break
 		}
@@ -476,6 +482,17 @@ func (p *Poller) discoverCandidates(ctx context.Context) ([]jira.Issue, error) {
 			break
 		}
 		nextPageToken = res.NextPageToken
+	}
+
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	if fanoutCtx.Err() != nil && totalAttempted == 0 {
+		return nil, fmt.Errorf("candidate routing deadline exceeded before candidates could be evaluated: %w", fanoutCtx.Err())
+	}
+	if fanoutCtx.Err() != nil {
+		log.Printf("WARNING: candidate routing stopped after %d of up to %d candidates: %d routed, %d lookup errors, reason=%v",
+			totalAttempted, maxCandidateScanPages*50, len(collected), totalLinkErrors, fanoutCtx.Err())
 	}
 
 	if len(collected) == 0 && totalAttempted > 0 && totalLinkErrors == totalAttempted {

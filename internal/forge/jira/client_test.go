@@ -1085,6 +1085,7 @@ func TestIsRetryable(t *testing.T) {
 		want   bool
 	}{
 		{"429 GET", http.StatusTooManyRequests, http.MethodGet, "/issue/PROJ-1", true},
+		{"429 GET remotelink", http.StatusTooManyRequests, http.MethodGet, "/issue/PROJ-1/remotelink", false},
 		{"429 POST", http.StatusTooManyRequests, http.MethodPost, "/issue", true},
 		{"429 POST search/jql", http.StatusTooManyRequests, http.MethodPost, "/search/jql", true},
 		{"500 GET", http.StatusInternalServerError, http.MethodGet, "/issue/PROJ-1", true},
