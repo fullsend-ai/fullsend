@@ -495,8 +495,8 @@ func codexSubagentNote(roles []codexRole, version string) string {
 			"needs its slot. There is no close or follow-up call: never resume, message or follow up a " +
 			"child. Interrupt a child that is over its budget with `interrupt_agent`. An interrupted " +
 			"child sends no result: report a coverage gap for that role. A child whose result reports " +
-			"an error is final for that role. A message whose " +
-			"whole payload is `" + codexWithheldNotice + "` is a withheld result: report a coverage gap for " +
+			"an error is final for that role. A message whose payload is `" + codexWithheldNotice +
+			"`, ignoring whitespace around it, is a withheld result: report a coverage gap for " +
 			"that role, and never retry the spawn or read the child's raw rollout. " +
 			denied +
 			codexChunkedReadNote

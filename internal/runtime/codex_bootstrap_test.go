@@ -1304,7 +1304,7 @@ func TestCodexSubagentNote_V2CarriesTheDispatchContract(t *testing.T) {
 		"Interrupt a child that is over its budget with `interrupt_agent`",
 		"An interrupted child sends no result: report a coverage gap for that role",
 		"A child whose result reports an error is final for that role",
-		"A message whose whole payload is `" + codexWithheldNotice + "` is a withheld result: report a " +
+		"A message whose payload is `" + codexWithheldNotice + "`, ignoring whitespace around it, is a withheld result: report a " +
 			"coverage gap for that role, and never retry the spawn or read the child's raw rollout.",
 		"`task_name` set to a short name for the task, unique among the children you spawn (lowercase letters, digits and `_` only; `root` is reserved)",
 	} {
@@ -1418,7 +1418,7 @@ func TestCodexRuntimeBootstrap_V2ParentRunsNativeChildren(t *testing.T) {
 	assert.Contains(t, cfg, "[features.multi_agent_v2]\nenabled = true\n")
 	assert.Contains(t, cfg, "[agents]\nenabled = true\nmax_concurrent_threads_per_session = 4\n")
 	assert.Contains(t, cfg, codexV2DispatchMarker)
-	assert.Contains(t, cfg, "A message whose whole payload is `"+codexWithheldNotice+"` is a withheld result")
+	assert.Contains(t, cfg, "A message whose payload is `"+codexWithheldNotice+"`, ignoring whitespace around it, is a withheld result")
 	assert.Contains(t, cfg, "`task_name` set to a short name for the task, unique among the children you spawn (lowercase letters, digits and `_` only; `root` is reserved)")
 	assert.Contains(t, string(storedUpload(t, storeDir, r.codexRolesDir()+"/correctness.toml")), "any such call is denied",
 		"a V2 child reads the V2 child note")
