@@ -1323,6 +1323,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Runner secret validation failed")
 		return err
 	}
+	// Classify host_files sources on the host before upload, so a durable
+	// credential reaches the sandbox only with allow_durable: true and the
+	// run output records each one that does (#9508). Checked again after
+	// the pre-script, which may write or replace a source.
+	reportedHostFiles := map[string]bool{}
+	if err := reportHostFileCredentials(h, printer, reportedHostFiles); err != nil {
+		return err
+	}
 	// Ensure scripts are executable. The GitHub Contents API does not
 	// preserve file permissions, so scripts written via admin install
 	// may lack the execute bit.
@@ -2218,6 +2226,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		printer.StepDone("Run skipped by pre-script: " + reason)
 		return nil
+	}
+
+	if err := reportHostFileCredentials(h, printer, reportedHostFiles); err != nil {
+		return err
 	}
 
 	// 4a. Create sandbox. A private ghcr.io harness image is pulled first
@@ -4331,13 +4343,18 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 	}
 
 	// Copy host files into the sandbox.
-	for _, hf := range h.HostFiles {
+	for i, hf := range h.HostFiles {
 		hostPath, copied := hostFileSource(hf)
 		if !copied {
 			if hf.Optional {
 				continue
 			}
 			return fmt.Errorf("host_files: src %q expanded to empty string", hf.Src)
+		}
+		if !hf.Expand {
+			if shape, err := classifyHostFile(hostPath, false); err == nil && shape.durable() && !hf.AllowDurable {
+				return durableHostFilesError([]string{durableHostFileError(i, hf, hostPath, shape)})
+			}
 		}
 
 		if hf.Expand {
@@ -4350,6 +4367,9 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 				return fmt.Errorf("reading host file %s for expansion: %w", hf.Src, err)
 			}
 			expanded := shellSafeExpandEnv(string(raw))
+			if err := checkHostFileUpload(i, hf, hostPath, []byte(expanded)); err != nil {
+				return err
+			}
 
 			tmp, err := os.CreateTemp("", "fullsend-expand-*")
 			if err != nil {

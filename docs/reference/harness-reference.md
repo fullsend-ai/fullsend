@@ -76,6 +76,7 @@ host_files:
   - src: ${SOME_CREDENTIAL}
     dest: /tmp/.cred.json
     optional: true                   # Skip if missing
+    # allow_durable: true            # Only for a key the run cannot revoke
 
 # ── Environment ───────────────────────────────────────────────
 env:
@@ -320,6 +321,53 @@ keys](../cli/run.md#reserved-envsandbox-keys).
 **`agent_input`** — A local directory, not a file. When a URL `base:` harness declares it, the inherited value is cleared rather than fetched; supply the directory in the child harness if needed. See [Harness field semantic types](../contributing/harness-fields.md#semantic-types-adr-0127).
 
 **`host_files[].dest`** — An absolute path under `/sandbox/` or `/tmp/`. Paths the runner writes or puts on `PATH` ahead of the image are refused when the harness loads: `/sandbox/workspace/.env`, the runner and runtime binaries in `/sandbox/workspace/bin` (`claude`, `codex`, `pi`, `opencode`, `fullsend`, `fullsend-check-output`), and anything under `/sandbox/claude-config`, `/sandbox/codex-config`, `/sandbox/pi-config`, `/sandbox/workspace/.fullsend`, `/sandbox/workspace/.security`, `/sandbox/.venv` or `/sandbox/go/bin`. A `dest` containing a `..` path component is refused as well. The same rule applies to `host_files` under `overlays:`, `forge:` and inherited from `base:`. On Claude and pi runs `/sandbox/workspace/bin` is last on the agent's `PATH`, so a file there adds a command but does not replace one the image provides. Codex and OpenCode runs restore the `PATH` from before `.env`, so `/sandbox/workspace/bin` and `.env.d` additions are not on the codex or OpenCode agent's `PATH`. See [Adding executables](../guides/user/customizing-agents.md#adding-executables).
+
+**`host_files[].allow_durable`** — Allows the entry to mount a credential that
+this run did not issue and cannot revoke. Once such a credential is in the
+sandbox, only the network policy constrains it (credential delivery tier 4 in
+[ADR 0025](../ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)).
+
+`fullsend run` classifies each source it will copy, on the host: before the
+pre-script, again before the sandbox is created, and once more just before
+the upload, so a file the pre-script writes is checked too. An `expand: true`
+source is checked as it will be uploaded, after `${VAR}` expansion. The check
+reads only regular files. These sources are durable:
+
+- a Google `service_account` key;
+- an `authorized_user` or `external_account_authorized_user` file;
+- an `impersonated_service_account` file whose source is not an
+  `external_account`;
+- a file with a PEM private key header (`-----BEGIN ... PRIVATE KEY-----`).
+
+Without `allow_durable: true`, a durable source stops the run (the triage
+harness with a service account key; host path shortened):
+
+```text
+  ✗ Host file credential validation failed
+Error: 1 durable credential host file(s) without allow_durable:
+    host_files[1]: host file .../key.json (src ${GOOGLE_APPLICATION_CREDENTIALS}, dest /tmp/.gcp-credentials.json): service_account key, whose lifetime this run does not control; set allow_durable: true on the entry to mount it
+```
+
+With it, the run continues and prints one warning per mount:
+
+```text
+  ! host file .../key.json (dest /tmp/.gcp-credentials.json): service_account key (lifetime not controlled by this run)
+```
+
+An `external_account` file is short-lived, so it is mounted with no output.
+A file that is not a recognized credential is mounted the same way.
+
+To opt in a mount that a `base:` harness declares, copy the whole entry into
+your own harness and add `allow_durable: true`. The copy replaces the base
+entry, so keep every field the base sets, such as `optional: true`:
+
+```yaml
+host_files:
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+    optional: true
+    allow_durable: true
+```
 
 **`.env.d` host files** — A `host_files` entry with a `dest` in
 `/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.

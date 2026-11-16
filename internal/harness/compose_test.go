@@ -2262,8 +2262,8 @@ func TestMergeHostFiles(t *testing.T) {
 		{Src: "base2", Dest: "/tmp/dest2"},
 	}
 	child := []HostFile{
-		{Src: "child2", Dest: "/tmp/dest2"}, // override
-		{Src: "child3", Dest: "/tmp/dest3"}, // new
+		{Src: "child2", Dest: "/tmp/dest2", AllowDurable: true}, // override
+		{Src: "child3", Dest: "/tmp/dest3"},                     // new
 	}
 
 	result := mergeHostFiles(base, child)
@@ -2273,6 +2273,7 @@ func TestMergeHostFiles(t *testing.T) {
 	assert.Equal(t, "/tmp/dest1", result[0].Dest)
 	assert.Equal(t, "child2", result[1].Src) // overridden
 	assert.Equal(t, "/tmp/dest2", result[1].Dest)
+	assert.True(t, result[1].AllowDurable, "a child re-declaring a dest can opt in")
 	assert.Equal(t, "child3", result[2].Src)
 	assert.Equal(t, "/tmp/dest3", result[2].Dest)
 }
