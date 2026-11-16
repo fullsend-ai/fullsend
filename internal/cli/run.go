@@ -1841,6 +1841,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepFail("Another JIRA_TOKEN provider next to the minted Jira provider")
 			return err
 		}
+		ciCreds := ciVariableCredentialPolicy{forge: forgePlatform, gitlabCI: os.Getenv("GITLAB_CI") == "true", allow: h.AllowCIVariableCredential}
 		created := make(map[string]struct{}, len(allDefs))
 		sharedDefs := allDefs[:0:0]
 		handledEmbeddedProfiles := make(map[string]struct{}, len(allDefs))
@@ -1938,7 +1939,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if err := ensureEmbeddedProfile(ctx, pd.Type, printer); err != nil {
 				return err
 			}
-			handle, err := ensureOpenAIProvider(ctx, pd, sandboxName, openAIConfigIDs(runCfg), runtimeBackend, printer)
+			handle, err := ensureOpenAIProvider(ctx, pd, sandboxName, openAIConfigIDs(runCfg), runtimeBackend, ciCreds, printer)
 			var credErr openAICredentialError
 			if err != nil && !parentNeedsOpenAIProvider && !anyConfiguredOpenAIChild(openAIChildren) && errors.As(err, &credErr) {
 				// Only a persona's own frontmatter wanted openai. Before
@@ -1976,6 +1977,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			defer stopAndWait()
 		}
 		allDefs = sharedDefs
+		// Run-scoped providers (OpenAI above) report their own credential.
+		reportCIVariableCredentials(ciCreds, allDefs, os.Getenv, printer)
 
 		var (
 			mu   sync.Mutex

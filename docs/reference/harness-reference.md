@@ -23,6 +23,7 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
 # readonly_repo: true               # make the checkout read-only (chmod a-w, .git/ excluded); absent = inherit from base; false overrides a base true
+# allow_ci_variable_credential: true # GitLab: print the CI/CD-variable credential notice as info, not a warning (default false; not inherited)
 providers:                           # Network access via provider profiles
   - vertex-ai                       # Bare builtin name: resolves to fullsend's embedded definition
   - github                          # Same; or a providers/<name>.yaml path for a local/custom definition
@@ -496,6 +497,8 @@ A pi-format entry must also satisfy pi's own loader rule:
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
+**`allow_ci_variable_credential`** — Set to `true` (default `false`) to print the GitLab CI/CD-variable credential line as info instead of a warning. Use it when a credential has no keyless replacement yet. Other forges ignore it. **Top level only**: a key under `overlays:`/`forge:` is silently ignored. **Not inherited** from `base:`, so a base harness cannot silence the warning for its children. For a stock agent, set it in a local child harness; see [Configuration with `base:` composition](../guides/user/customizing-agents.md#configuration-with-base-composition). For the message text and what counts, see [GitLab Role Credentials](../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables).
+
 **`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
 
 ## Reserved `env.sandbox` names
@@ -680,6 +683,7 @@ More-specific entries go last so they override broader defaults.
 | `privilege_levels` | Merged; child keys win. Omitted entirely defaults every stage to `write`. Top-level only — this merge applies only to `base:` composition; an `overlays:`/`forge:` entry is silently ignored |
 | `validation_loop` | Field-level merge; child/overlay non-zero values win, omitted fields inherit |
 | `security` | Child replaces entirely |
+| `allow_ci_variable_credential` | NOT inherited (child must declare its own). Top-level only — a key under `overlays:`/`forge:` is silently ignored |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution and as the ceiling every harness-level `allowed_remote_resources` is validated against (see `allow_runtime_fetch` above) |
 
 ## Referencing resources: local vs. remote

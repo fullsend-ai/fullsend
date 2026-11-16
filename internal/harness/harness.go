@@ -416,6 +416,11 @@ type Harness struct {
 	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
 
+	// AllowCIVariableCredential downgrades the GitLab CI/CD-variable
+	// provider credential warning to an info line. Top level only and not
+	// inherited from a base, so a base cannot silence it for its children.
+	AllowCIVariableCredential bool `yaml:"allow_ci_variable_credential,omitempty"`
+
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
 
