@@ -23,6 +23,17 @@ const (
 // for use inside a step pattern's capture group.
 const targetAlternation = targetIssue + "|" + targetPullRequest
 
+// The comment-assertion step patterns, bound by registerForgeStateSteps
+// and compiled by the feature-wiring test (forge_state_feature_test.go),
+// so the test checks the registered patterns themselves instead of a
+// verbatim copy that can drift (thread 4586481481).
+const (
+	stepIssueCommentCountContains          = `^the issue has (\d+) comments? containing "([^"]+)"$`
+	stepLastIssueCommentContains           = `^the last comment on the issue contains "([^"]+)"$`
+	stepLastIssueCommentContainingContains = `^the last comment on the issue containing "([^"]+)" contains "([^"]+)"$`
+	stepIssueCommentOtherThanLastContains  = `^a comment on the issue other than the last contains "([^"]+)"$`
+)
+
 // registerForgeStateSteps binds Then steps that assert what agent
 // post-scripts leave on the forge: labels, issue and pull request state,
 // comments, the pull request body and agent-created issues. Each step is
@@ -50,20 +61,20 @@ func registerForgeStateSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a comment on the (`+targetAlternation+`) contains "([^"]+)"$`, func(ctx context.Context, target, text string) (context.Context, error) {
 		return ctx, thenTargetCommentContains(world.FromContext(ctx), target, text)
 	})
-	sc.Step(`^the issue has (\d+) comments? containing "([^"]+)"$`, func(ctx context.Context, count, text string) (context.Context, error) {
+	sc.Step(stepIssueCommentCountContains, func(ctx context.Context, count, text string) (context.Context, error) {
 		n, err := strconv.Atoi(count)
 		if err != nil {
 			return ctx, fmt.Errorf("parsing comment count %q: %w", count, err)
 		}
 		return ctx, thenIssueCommentCountContains(world.FromContext(ctx), n, text)
 	})
-	sc.Step(`^the last comment on the issue contains "([^"]+)"$`, func(ctx context.Context, text string) (context.Context, error) {
+	sc.Step(stepLastIssueCommentContains, func(ctx context.Context, text string) (context.Context, error) {
 		return ctx, thenLastIssueCommentContains(world.FromContext(ctx), text)
 	})
-	sc.Step(`^the last comment on the issue containing "([^"]+)" contains "([^"]+)"$`, func(ctx context.Context, marker, text string) (context.Context, error) {
+	sc.Step(stepLastIssueCommentContainingContains, func(ctx context.Context, marker, text string) (context.Context, error) {
 		return ctx, thenLastIssueCommentContainingContains(world.FromContext(ctx), marker, text)
 	})
-	sc.Step(`^a comment on the issue other than the last contains "([^"]+)"$`, func(ctx context.Context, text string) (context.Context, error) {
+	sc.Step(stepIssueCommentOtherThanLastContains, func(ctx context.Context, text string) (context.Context, error) {
 		return ctx, thenIssueCommentOtherThanLastContains(world.FromContext(ctx), text)
 	})
 	sc.Step(`^the pull request body contains "([^"]+)"$`, func(ctx context.Context, text string) (context.Context, error) {
