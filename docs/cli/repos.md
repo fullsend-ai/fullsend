@@ -703,7 +703,12 @@ reported) until the dispatcher is on the default branch, that branch is
 protected, and `ci_pipeline_variables_minimum_override_role=no_one_allowed` is
 verified. The polling schedules stay in place as the backstop: they keep
 dispatching while the fast path is deferred or disabled, and they recover events
-whose webhook delivery is missed. See
+whose webhook delivery is missed. On GitLab.com Free, when the poll job is
+untagged or carries a hosted-runner (`saas-`) tag, install warns after it creates
+the schedules that their runs use the namespace's compute minutes and can use
+its whole monthly quota in about a week; see
+[Configuring GitLab](../guides/getting-started/configuring-gitlab.md#runner-configuration)
+for routing the poll job to a project runner. See
 [Least-privilege dispatch contract](../guides/getting-started/configuring-gitlab.md#least-privilege-dispatch-contract)
 for how both paths dispatch at Developer level with typed inputs. The step is
 also deferred when a project, group, or instance-level CI/CD variable redefines

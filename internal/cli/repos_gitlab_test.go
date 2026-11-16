@@ -87,6 +87,67 @@ func TestSetupGitLabPipelineSchedules_ScheduleError(t *testing.T) {
 	assert.Contains(t, err.Error(), "creating fullsend slash poll schedule")
 }
 
+// planRecordingClient records the namespace passed to GetOrgPlan.
+type planRecordingClient struct {
+	*forge.FakeClient
+	namespaces []string
+}
+
+func (c *planRecordingClient) GetOrgPlan(ctx context.Context, org string) (string, error) {
+	c.namespaces = append(c.namespaces, org)
+	return c.FakeClient.GetOrgPlan(ctx, org)
+}
+
+func TestWarnGitLabFreePollQuota(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name     string
+		baseURL  string
+		plan     string
+		planErr  error
+		tags     []string
+		wantWarn bool
+		wantPlan bool
+	}{
+		{name: "gitlab.com free untagged warns", baseURL: "https://gitlab.com", plan: "free", wantWarn: true, wantPlan: true},
+		{name: "gitlab.com free hosted runner tag warns", baseURL: "https://GitLab.com/", plan: "free", tags: []string{"saas-linux-small-amd64"}, wantWarn: true, wantPlan: true},
+		{name: "gitlab.com premium is silent", baseURL: "https://gitlab.com", plan: "premium", wantPlan: true},
+		{name: "plan lookup error is silent", baseURL: "https://gitlab.com", planErr: fmt.Errorf("forbidden"), wantPlan: true},
+		{name: "project runner tags are silent", baseURL: "https://gitlab.com", plan: "free", tags: []string{"fullsend-api"}},
+		{name: "self-managed is silent", baseURL: "https://gitlab.example.com", plan: "free"},
+		{name: "unparsable URL is silent", baseURL: "://bad", plan: "free"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := forge.NewFakeClient()
+			fake.OrgPlan = tt.plan
+			if tt.planErr != nil {
+				fake.Errors["GetOrgPlan"] = tt.planErr
+			}
+			client := &planRecordingClient{FakeClient: fake}
+			var buf bytes.Buffer
+			printer := ui.New(&buf)
+
+			warnGitLabFreePollQuota(ctx, client, printer, tt.baseURL, "group/sub", "project", tt.tags)
+
+			if tt.wantWarn {
+				assert.Contains(t, buf.String(), "[group/sub/project] GitLab.com Free")
+				assert.Contains(t, buf.String(), "gitlab.control_runner_tags")
+				assert.Contains(t, buf.String(), "off-system polling")
+			} else {
+				assert.Empty(t, buf.String())
+			}
+			if tt.wantPlan {
+				// The plan belongs to the top-level namespace.
+				assert.Equal(t, []string{"group"}, client.namespaces)
+			} else {
+				assert.Empty(t, client.namespaces)
+			}
+		})
+	}
+}
+
 func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testing.T) {
 	ctx := context.Background()
 

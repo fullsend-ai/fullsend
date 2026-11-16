@@ -155,6 +155,19 @@ and typed pins predating the secured contract are unsupported.
 > sufficient CI capacity is still required for the scheduled jobs
 > themselves.
 >
+> **GitLab.com Free compute minutes:** an unset `gitlab.control_runner_tags`
+> leaves the poll job untagged, so GitLab-hosted runners pick it up unless the
+> project has its own runner for untagged jobs. Every run then uses the
+> namespace's compute minutes. Even throttled to 24 runs a day per schedule,
+> the polling schedules can use a Free namespace's whole monthly quota in about
+> a week, and after that every CI job in the namespace fails. When the
+> namespace is on GitLab.com Free and the poll job is untagged or carries a
+> hosted-runner (`saas-`) tag, `repos install` prints a warning after it creates
+> the schedules. To avoid the cost, register a project runner and set
+> `gitlab.control_runner_tags` to its tag before installing (see
+> [Runner Configuration](#runner-configuration)), or disable the schedules and
+> use [Off-system polling](#off-system-polling).
+>
 > This gap does not stay quiet: only the *first* `repos install` merely
 > warns when schedule creation fails and still exits successfully. Any
 > later `repos install` run on an already-installed repo takes the
@@ -2095,7 +2108,11 @@ Confirm:
   `fullsend slash poll` and `fullsend event poll`, both active. On
   GitLab.com Free, the schedules may run at most 24 times per day; verify
   the observed cadence is acceptable, or use off-system `fullsend poll`
-  instead when five-minute pickup is required. If these schedules never
+  instead when five-minute pickup is required. On GitLab-hosted runners
+  each run also uses compute minutes; check the namespace's usage under
+  Settings → Usage quotas, and on GitLab.com Free route the poll job to a
+  project runner with `gitlab.control_runner_tags` (see
+  [Runner Configuration](#runner-configuration)). If these schedules never
   run, confirm a runner carrying `gitlab.control_runner_tags` is
   registered under Settings → CI/CD → Runners — when that tag differs
   from `gitlab.agent_runner_tags`, both need their own registered runner

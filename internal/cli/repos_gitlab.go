@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -97,6 +98,52 @@ func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, prin
 		printer.StepDone(fmt.Sprintf("Created %s schedule (ID %d)", spec.Description, id))
 	}
 	return nil
+}
+
+// gitlabHostedRunnerTagPrefix is the tag prefix of GitLab.com's hosted
+// (instance) runners, such as saas-linux-small-amd64.
+const gitlabHostedRunnerTagPrefix = "saas-"
+
+// gitlabPollJobsMayUseHostedRunners reports whether poll jobs rendered with
+// the given gitlab.control_runner_tags can be picked up by GitLab.com hosted
+// runners. Untagged jobs run there unless the project has its own runner
+// that accepts untagged jobs, and a saas- tag selects a hosted runner.
+func gitlabPollJobsMayUseHostedRunners(controlRunnerTags []string) bool {
+	if len(controlRunnerTags) == 0 {
+		return true
+	}
+	for _, tag := range controlRunnerTags {
+		if strings.HasPrefix(tag, gitlabHostedRunnerTagPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// warnGitLabFreePollQuota warns when the managed polling schedules will spend
+// the compute-minute quota of a GitLab.com Free namespace (#9527). Each poll
+// run on a hosted runner uses compute minutes, and the schedules fire up to
+// 24 times a day each on Free, which can use the whole monthly quota in about
+// a week; once it is gone, every CI job in the namespace fails. The check is
+// best effort: a host other than gitlab.com, a poll job routed to the
+// project's own runners, or a plan that cannot be read prints nothing.
+func warnGitLabFreePollQuota(ctx context.Context, client forge.Client, printer *ui.Printer, baseURL, owner, repo string, controlRunnerTags []string) {
+	u, err := url.Parse(baseURL)
+	if err != nil || !strings.EqualFold(u.Hostname(), "gitlab.com") {
+		return
+	}
+	if !gitlabPollJobsMayUseHostedRunners(controlRunnerTags) {
+		return
+	}
+	namespace, _, _ := strings.Cut(owner, "/")
+	plan, err := client.GetOrgPlan(ctx, namespace)
+	if err != nil || plan != "free" {
+		return
+	}
+	printer.StepWarn(fmt.Sprintf("[%s] GitLab.com Free: the fullsend polling schedules run on GitLab-hosted runners and use compute minutes. "+
+		"Free runs each schedule up to 24 times a day, which can use the namespace's whole monthly compute-minute quota in about a week; "+
+		"after that every CI job in the namespace fails. Register a project runner and set gitlab.control_runner_tags to its tag, "+
+		"or disable the schedules and use off-system polling (see the GitLab configuration guide).", owner+"/"+repo))
 }
 
 // cleanupGitLabPipelineSchedules removes all fullsend-prefixed pipeline

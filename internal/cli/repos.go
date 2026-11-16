@@ -1169,6 +1169,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 						installedPostFail++
 					}
 					failedRepoKeys[repoFullName] = true
+				} else {
+					var controlRunnerTags []string
+					if manifest.GitLab != nil {
+						controlRunnerTags = manifest.GitLab.ControlRunnerTags
+					}
+					warnGitLabFreePollQuota(ctx, fc.Client, printer, glClient.BaseURL(), r.Owner, r.Repo, controlRunnerTags)
 				}
 			}
 
