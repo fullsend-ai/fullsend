@@ -138,7 +138,7 @@ func TestProjectExecutionRef_Issue(t *testing.T) {
 	ref, err := ProjectExecutionRef("issue-ping", "triage", ev)
 	require.NoError(t, err)
 	assert.Equal(t, "issues", ref.EventType)
-	assert.Contains(t, ref.EventPayload, `"issue"`)
+	assert.Contains(t, string(ref.EventPayload), `"issue"`)
 }
 
 func examplesDir(t *testing.T) string {

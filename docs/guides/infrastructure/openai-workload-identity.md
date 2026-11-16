@@ -350,6 +350,9 @@ with `fullsend repos install <group/project> --openai-api-key <value>` for proje
 `inference.auth` is `openai-api-key`. The fullsend job maps it to `OPENAI_API_KEY` on the runner.
 An unprefixed `OPENAI_API_KEY` CI/CD variable is no longer used, with no fallback. See the
 [upgrade steps](../../cli/repos.md#gitlab-fullsend_openai_api_key-replaces-openai_api_key-breaking).
+In a GitLab CI job the run log does not recommend the WIF variables. It reports the key as a
+CI/CD-variable credential instead; see
+[Provider credentials from CI/CD variables](../../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables).
 
 ## 4. Tell fullsend the three identifiers
 

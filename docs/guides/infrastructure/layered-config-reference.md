@@ -450,12 +450,25 @@ composition). It uses special three-way semantics:
 | Non-empty list | **Union** of overlay entries ∪ parent entries |
 
 When the overlay provides a non-empty list and a parent exists, the
-effective value is the union of both lists (overlay entries first, then
-any parent entries not already present). Code defaults are provided
+accessor-level value is the union of both lists (overlay entries first,
+then any parent entries not already present). Code defaults are provided
 solely by the terminal `perRepoDefaults` parent — intermediate parents
 may return whatever allowlist they want, including omitting the built-in
 prefixes. The union does **not** force-append code defaults after the
 parent union.
+
+Command loaders then resolve the effective command-level list from that
+accessor-level value: every command family ensures fullsend's default
+prefixes on top of a non-empty result (see the rule paragraph in
+[Harness Field Reference](../../contributing/harness-fields.md)). An
+explicit `[]` as the resolved effective value stays deny-all, but a
+non-empty overlay list over a base layer's `allowed_remote_resources: []`
+(or over any parent whose list lacks the built-in prefixes, in which case
+that parent's own entries are kept too) resolves to the overlay entries
+plus the built-in prefixes. Managed `repos.yaml` layers are the one
+exception: they reject a non-empty list declared below an explicit `[]`,
+so that shape fails validation there instead of resolving (the error tells
+you to declare the full list in a single layer).
 
 Example:
 
@@ -488,7 +501,7 @@ The `tracker` field is the single, provider-discriminated issue-tracker
 mapping (`github`, `gitlab`, or `jira`; at most one). It replaces the former
 scalar `tracker` field, which is no longer accepted. The provider block that
 is present is the default for `--tracker` on `fullsend issues get`,
-`create`, `post-comment`, and `link` (`link` supports only Jira, so a `github`
+`create`, `post-comment`, `transition`, and `link` (`link` supports only Jira, so a `github`
 or `gitlab` provider makes it fail with a not-supported error unless
 `--tracker jira` is passed); an explicit `--tracker` flag overrides it. When
 no provider block is set, `--tracker` is required on every `fullsend issues`

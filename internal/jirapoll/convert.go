@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
@@ -49,11 +50,40 @@ func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
 		},
 	}
 
+	if event.IssueType != nil {
+		// Optional metadata must satisfy the schema without preventing an
+		// otherwise valid event from dispatching when Jira omits or corrupts it.
+		idLen := utf8.RuneCountInString(event.IssueType.ID)
+		nameLen := utf8.RuneCountInString(event.IssueType.Name)
+		if idLen >= 1 && idLen <= 255 && nameLen >= 1 && nameLen <= 255 {
+			ne.State.IssueType = &normevent.IssueType{
+				ID:        event.IssueType.ID,
+				Name:      event.IssueType.Name,
+				IsSubtask: event.IssueType.Subtask,
+			}
+		}
+	}
+
 	switch event.Type {
 	case "comment_added":
 		cmd, instruction := extractCommand(event.CommentBody)
+		// A /fs-* command body is carried untruncated only on the
+		// GitLab target, whose dispatch door measures the complete
+		// body and fails closed when it exceeds the transport budget
+		// (the GitLab door measures the raw note body the same way,
+		// dispatch.go). The GitHub target has no fail-closed budget
+		// door: its records travel whole through dispatches.json into
+		// the reusable-poll-jira matrix output, so every body —
+		// command or not — keeps the schema's 4096-code-point adapter
+		// cap there, keeping the transported event inside the schema's
+		// machine-readable comment.body maxLength and the matrix
+		// output bounded as before this bound existed.
+		body := event.CommentBody
+		if cmd == "" || p.opts.TargetForge != TargetForgeGitLab {
+			body = truncate(event.CommentBody, 4096)
+		}
 		ne.Transition.Comment = &normevent.Comment{
-			Body:        truncate(event.CommentBody, 4096),
+			Body:        body,
 			Command:     cmd,
 			Instruction: truncate(instruction, 4096),
 		}

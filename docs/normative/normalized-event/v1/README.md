@@ -101,9 +101,10 @@ is intended: the matrix output could only ever lead to a `fullsend run` that
 refuses the key anyway. The general rule that pattern tightening requires v2
 still holds for shapes consumers accept.
 
-The new optional actor fields are additive, but consumers that vendor this
+The new optional fields are additive, but consumers that vendor this
 schema with `additionalProperties: false` must refresh their copy before an
-adapter emits `bot_role`, `role_verified` or `is_entity_assignee`; otherwise
+adapter emits `actor.bot_role`, `actor.role_verified`,
+`actor.is_entity_assignee` or `state.issue_type`; otherwise
 their local validator may reject an otherwise valid v1 event. Fullsend controls the supported
 NormalizedEvent producers and consumers, so the bundled validator and other
 supported consumers MUST be updated to this v1 schema before any adapter emits
@@ -213,9 +214,12 @@ cross-field equality.
 
 For `comment_added`, adapters extract `command` and `instruction` from the
 **raw** comment body before applying the 4096-character truncation stored in
-`comment.body` (JSON Schema `maxLength` counts Unicode code points). This keeps
-slash-command routing and fix instructions intact even when the stored body is
-truncated for transport.
+`comment.body` (a `/fs-*` command body is exempt on the GitLab target: the
+Jira source carries it whole past the cap there so the dispatch door can
+measure and refuse it, while the GitHub target keeps the cap for command
+bodies too — its transport has no chunk budget; JSON Schema `maxLength` counts
+Unicode code points). This keeps slash-command routing and
+fix instructions intact even when the stored body is truncated for transport.
 
 This moves instruction extraction from downstream workflow steps (e.g.
 `reusable-fix.yml`) into the input adapter — a behavioral change called out in
@@ -358,7 +362,7 @@ until it is listed here. For example `transition.comment` (its `body`,
 `actor.kind` (some adapters infer it from a display name),
 `actor.is_entity_author` (the author makes it true by acting),
 `actor.is_entity_assignee` (anyone who can assign issues can make it true),
-`state.labels`,
+`state.labels`, `state.issue_type` (editable tracker metadata),
 `base_ref` (the author picks the target branch), `head_*` and the change facts
 are untrusted. A guarded overlay may test `has()` only on objects the schema
 always requires, such as `source`; reading `is_fork` when there is no change
@@ -441,7 +445,7 @@ contract):
 | `event_payload.issue` | `entity` when `entity.kind == "work_item"`: `{number: entity.id, html_url: entity.url}` |
 | `event_payload.pull_request` | See below |
 | `event_payload.comment` | `transition.comment` when present: `{body: transition.comment.body}` |
-| `event_payload._normalized_event` | Complete `NormalizedEvent` embedded by `buildEventPayload` for CEL overlay resolution during `fullsend run` (#6748); includes `actor.bot_role` and `actor.role_verified` only when the adapter set them (ADR 0107) |
+| `event_payload._normalized_event` | Complete `NormalizedEvent` embedded by `buildEventPayload` for CEL overlay resolution during `fullsend run` (#6748); includes optional `state.issue_type` (`id`, `name`, `is_subtask`) from Jira snapshots and `actor.bot_role` and `actor.role_verified` only when the adapter set them (ADR 0107) |
 | `trigger_source` (fix agent only) | See below |
 | `status-repo` | `repo` |
 | `status-number` | `entity.id` |
@@ -527,10 +531,41 @@ two forms:
   `source.system` set to `gitlab` and, for merge request events,
   `state.change_proposal` (including `head_sha` where the poller discovered
   it). `run-agent-job.sh` passes it to `fullsend run --event-file`, so
-  overlays and root-span telemetry see the same fields as on GitHub.
+  overlays and root-span telemetry see the same fields as on GitHub — with
+  two bounds: `state.labels` is truncated to a 1024-byte JSON prefix
+  (entries past the bound are dropped, except fullsend's own control
+  labels, `fullsend-fix` and `fullsend-no-fix`, which the bound keeps
+  so the fix kill switch survives it), and each other attacker-shaped
+  single string the event carries (branch refs, the head_repo/base_repo
+  paths, logins,
+  the label name) to a 258-byte JSON prefix — a same-project MR carries
+  the project's own path in head_repo/base_repo, and it stays cut there
+  even though `repo` travels whole — both like the
+  comment-body bound below, so a trigger or overlay keyed on a value past
+  either bound does not match on this transport. The config-derived
+  `repo`, `entity.url` and `entity.linked_change_proposal.url` travel
+  whole: an install whose config lengths push the complete payload past
+  the chunk budget fails closed there (the comment-only fallback for a
+  note, a refused dispatch for a command) instead of being cut. The label-name bound is
+  stricter than a single `state.labels` entry: `transition.label.name` is
+  cut at 258 JSON bytes while the same label inside `state.labels` can
+  travel whole at up to about 1020 bytes, so for a label longer than 258
+  bytes a trigger keyed on the transition label and one keyed on
+  `state.labels` see different values. A label past the bound is
+  invisible, so a negative-label guard (`!("hold" in event.state.labels)`)
+  is unsafe: any label the forge returns before the guarded one can push it
+  past the bound and make the guard match. The control labels
+  `fullsend-fix` and `fullsend-no-fix` are the exception: the bound
+  keeps them, so the repo's own no-fix gate cannot be pushed out by
+  padding labels. The payload's flat top-level
+  `labels` key is dropped in this form — labels travel only at
+  `_normalized_event.state.labels`.
 - **Comment-only fallback.** Otherwise, for a note event, `_normalized_event`
   is a **partial** map containing only `transition`, with `transition.kind`
   set to `comment_added` and `transition.comment.body` set to the note body.
+  The payload's top-level `labels` key carries the bounded label list in
+  this form (the complete form drops it in favour of
+  `_normalized_event.state.labels`).
   Non-note events then carry no `_normalized_event`. `run-agent-job.sh` passes
   no `--event-file`, and the run behaves as it did before the complete form
   existed.
@@ -540,11 +575,22 @@ as a full NormalizedEvent. Both forms carry the note body at
 `_normalized_event.transition.comment.body`, which `run-agent-job.sh` reads for
 the `/fs-fix` instruction and the retro comment.
 
-A body that starts with `/fs-` is carried untruncated, and dispatch fails closed
-when the payload exceeds the chunk budget. Any other body is bounded to 800
-Unicode code points, with a truncation marker appended when it is cut. In the
-complete form, `transition.comment.command` and `instruction` are derived from
-the transported body, so they always match what `run-agent-job.sh` reads.
+A body that starts with `/fs-` is carried untruncated through this door, and
+dispatch fails closed when the payload exceeds the chunk budget; the
+Jira-sourced GitHub target keeps the 4096-code-point adapter cap for command
+bodies instead, its transport having no chunk budget. Any other body is bounded to 270
+Unicode code points, with a truncation marker appended when it is cut. The
+bound came down from the 800 of earlier releases. The chunk budget is the sum
+of every attacker-controlled field plus the config: an escape-heavy body, a
+full labels bound and maximal — separately bounded — branch refs,
+head_repo/base_repo paths, logins and the label name, with the whole-travelling config-derived
+repo and URLs at a plausible config, must still fit it together; a
+schema-maximal config instead fails closed (the comment-only fallback for a
+note, a refused dispatch for a command).
+`TestBuildEventPayload_WorstCaseFitsTransportBudget` pins that
+worst case. In the complete form,
+`transition.comment.command` and `instruction` are derived from the transported
+body, so they always match what `run-agent-job.sh` reads.
 
 ## GitLab adapter notes
 
@@ -873,7 +919,7 @@ gate is tracked in [#8835](https://github.com/fullsend-ai/fullsend/issues/8835).
 | Trigger-variable control (Owner-role PAT or `no_one_allowed`) | Closed: superseded | [ADR 0131](../../../ADRs/0131-gitlab-dispatch-pipeline-inputs-no-owner-role.md) adopted typed pipeline inputs with `no_one_allowed` and a Developer-role Poller. No Owner-role credential is used. ADR 0125's Caveats finding that `no_one_allowed` is unusable applied only to variable-based dispatch. |
 | Native `TRIGGER_PAYLOAD` under the required restriction | Closed | GitLab supplies `TRIGGER_PAYLOAD` as a file-type variable, and `no_one_allowed` does not strip it. In the [2026-10-20 run](https://github.com/fullsend-ai/fullsend/issues/8245#issuecomment-6301468961) on GitLab.com Free and self-managed EE (`a87815b6c`), and in the CE runs, webhook dispatcher pipelines read the payload and dispatched agents. At those commits, install provisions the trigger and webhook only after it reads back `no_one_allowed` ([`gitlabTriggerSafetyCheck`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/repos/gitlab_webhook.go#L747)). The dispatcher fails closed when `TRIGGER_PAYLOAD` is unset or unreadable ([`run-dispatcher-job.sh`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/run-dispatcher-job.sh#L66-L80)). |
 | `CI_JOB_TOKEN` running-job identity pin | Open: gated on the restriction | All three job scripts source [`pin-ci-job-identity.sh`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/scripts/pin-ci-job-identity.sh). Under `no_one_allowed`, GitLab rejects caller-supplied pipeline variables: the [#7769](https://github.com/fullsend-ai/fullsend/issues/7769) spike on self-managed EE 19.2.7 recorded HTTP 400 for a `CI_JOB_TOKEN` override on `POST /pipeline` and for a variable on a trigger-token `POST /trigger/pipeline`. The pin's own behavior for an invalid override (expected to fail closed) and for a valid foreign job token (would mis-resolve) has not been tested on a target GitLab version. The [maintainer decision on #8871](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453959180) retains the `no_one_allowed` restriction as the gate and makes those invalid and valid-foreign override tests non-blocking. The "sole project-identity source" claim therefore holds only while the restriction is verified before runnable jobs and the webhook are delivered, and the pin is defense in depth: the helper does not independently bind a supplied token to the running job. The restriction does not cover project, group, or instance CI/CD settings variables. The decision accepts that project Maintainers, group Owners, and GitLab instance administrators do not add or change a `CI_JOB_TOKEN` settings-variable override in scopes fullsend cannot read or that change later. If those roles are adversaries, the acceptance does not apply, and the installer must fail closed on unreadable scopes or a separate identity-binding control is needed. |
-| API base-URL trust | Closed: risk accepted | The identity pin bootstraps `GET /api/v4/job` from `CI_API_V4_URL`, rejects any value that is not an https API root or that contains globbing or userinfo characters, and passes that root on as `FULLSEND_PINNED_GITLAB_URL`. `CI_API_V4_URL` is in the overridable class. Its trust rests on `no_one_allowed`, which install verifies before it provisions the webhook, and on the [inherited CI/CD variable trust](../../../guides/getting-started/configuring-gitlab.md#inherited-cicd-variable-trust) assumption. The current deployment meets that restriction-based model. It does not provide the restriction-independent pin that ADR 0125 required before shipping. The [maintainer decision on #8871](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453141351) accepts the restriction-based model with no independent host pin. Within the accepted trust boundary, project Maintainers, group Owners, and GitLab instance administrators are trusted to control project, group, and instance CI/CD variables, including inherited scopes fullsend cannot read. If those roles must be treated as adversaries, the acceptance does not apply, and an independent API-host pin or fail-closed verification of unreadable scopes is required. |
+| API base-URL trust | Closed: risk accepted | The identity pin bootstraps `GET /api/v4/job` from `CI_API_V4_URL`, rejects any value that is not an https API root or that contains globbing or userinfo characters, and passes that root on as `FULLSEND_PINNED_GITLAB_URL`. `CI_API_V4_URL` is in the overridable class. Its trust rests on `no_one_allowed`, which install verifies before it provisions the webhook, and on the [inherited CI/CD variable trust](../../../guides/getting-started/configuring-gitlab.md#inherited-cicd-variable-trust) assumption. The current deployment meets that restriction-based model. It does not provide the restriction-independent pin that ADR 0125 required before shipping. The [maintainer decision on #8871](https://github.com/fullsend-ai/fullsend/issues/8871#issuecomment-6453141351) accepts the restriction-based model with no independent host pin. Within the accepted trust boundary, project Maintainers, group Owners, and GitLab instance administrators are trusted to control project, group, and instance CI/CD variables, including inherited scopes fullsend cannot read. If those roles must be treated as adversaries, the acceptance does not apply, and an independent API-host pin or fail-closed verification of unreadable scopes is required. `run-agent-job.sh` also requires `CI_SERVER_URL` and `CI_SERVER_HOST` to agree with `FULLSEND_PINNED_GITLAB_URL` before the agent runs, as defense in depth against a partial override ([#9465](https://github.com/fullsend-ai/fullsend/issues/9465)). |
 | Snapshot-consistent replay | Closed: risk accepted | The builder rejects re-fetched event-time evidence older than 30 minutes ([`webhookMaxEventAge`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L56)) and shares occurrence-aware dispatch keys with the poller ([ADR 0132](../../../ADRs/0132-occurrence-aware-shared-poller-state.md)). The [residual replay risk](#gitlab-webhook-transition-provenance-gitlab-webhook) above remains. Delivery is also at-least-once: a webhook and a poll cycle that both read state before either persists can each dispatch the same event ([`webhook_dispatch.go`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook_dispatch.go#L74-L84)). The [maintainer decision on #8835](https://github.com/fullsend-ai/fullsend/issues/8835#issuecomment-6452638835) accepts bounded at-least-once replay, not exactly-once dispatch. The accepted residuals are a duplicate dispatch when concurrent webhook and poller runs both read state before either saves, a retry after pipeline creation succeeds but state persistence fails, and a partial stage fan-out that redispatches a stage that succeeded when another stage failed. A replayed event must still pass re-fetch, freshness, actor binding, and authorization, and replay is skipped once its dispatch key is saved. |
 | Actor-to-transition attribution | Closed for the rows the builder accepts | [`bindActor`](https://github.com/fullsend-ai/fullsend/blob/a7f851df9848eab7f76c0b4aadc9043ddcd6241d/internal/poll/webhook.go#L607) requires the payload-named actor to equal the actor the re-fetch records for the transition: the note author; the MR author, merger, or closer; the issue author or closer; or the user on the latest matching resource label event. Both `reopen` rows have no event-time actor evidence and are rejected. MR label changes and other MR updates are rejected as well. Note edits and bare issue updates are ignored without dispatch. Any row added later MUST bind its actor the same way or fail closed. |
 | Live validation ([#8245](https://github.com/fullsend-ai/fullsend/issues/8245)) | Closed for GitLab.com Free and self-managed EE | See [Validation status](#gitlab-webhook-validation-status). Self-managed CE is non-gating, and stock agents on custom-port CE remain unverified. |

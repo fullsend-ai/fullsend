@@ -17,6 +17,12 @@ implements signing, strict parsing, and admission;
 parses and generates installation IDs and keys and builds the admission key
 map. The package performs no network I/O or configuration reads and never
 grants dispatch permission.
+The signing key's name, `FULLSEND_TRACE_SIGNING_KEY`, is reserved.
+`fullsend run` keeps it from harnesses and their host-side scripts.
+`fullsend lint` reports a harness that sets it in `env.sandbox`.
+`fullsend lock` gives the same report when it composes that harness.
+Fullsend's GitLab poll, dispatcher and agent jobs unset it on the first line
+of their `before_script`. `fullsend repos uninstall` deletes it.
 Carrier publication, key provisioning, production creation activation,
 runtime admission wiring, and scenario collection remain later delivery
 slices.

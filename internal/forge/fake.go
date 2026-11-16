@@ -17,6 +17,17 @@ var _ GitHubExtensions = (*FakeClient)(nil)
 var _ GitLabExtensions = (*FakeClient)(nil)
 var _ ProjectLeaser = (*FakeClient)(nil)
 
+// fakeUpstreamAnyRefFiles returns the files NewFakeClient serves at every
+// ref: the upstream fullsend-ai/fullsend repository declares the current
+// per-repo configuration schema unless a test overrides it (#9292). Kept
+// equal to config.ManagedConfigSchemaDeclarationPath and
+// config.ManagedConfigSchemaVersion by a test in internal/repos.
+func fakeUpstreamAnyRefFiles() map[string][]byte {
+	return map[string][]byte{
+		"fullsend-ai/fullsend/internal/config/managed-config-schema": []byte("2\n"),
+	}
+}
+
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
@@ -30,6 +41,7 @@ func NewFakeClient() *FakeClient {
 		Errors:                   make(map[string]error),
 		DirContents:              make(map[string][]DirectoryEntry),
 		FileContentsRef:          make(map[string][]byte),
+		FileContentsAnyRef:       fakeUpstreamAnyRefFiles(),
 		BranchRefs:               make(map[string]string),
 		ExistingBranches:         make(map[string]bool),
 		Refs:                     make(map[string]string),
@@ -329,6 +341,9 @@ type FakeClient struct {
 
 	// File contents at specific refs for GetFileContentAtRef.
 	FileContentsRef map[string][]byte // key: "owner/repo/path@ref"
+	// FileContentsAnyRef is served by GetFileContentAtRef for a path at any
+	// ref absent from FileContentsRef. key: "owner/repo/path"
+	FileContentsAnyRef map[string][]byte
 
 	// ForceReachableCommits maps "owner/repo/branch" to the number of
 	// commits reachable on that branch after force-re-root writes.
@@ -406,6 +421,10 @@ type FakeClient struct {
 
 	// Pull request file diffs for ListPullRequestFileDiffs.
 	PRFileDiffs map[string][]PullRequestFileDiff // key: "owner/repo/number"
+	// PRFileDiffModes controls whether diff fixtures report verified mode
+	// metadata. When a key is absent, fixtures retain the historical default
+	// of verified metadata; a false value models a forge mode lookup failure.
+	PRFileDiffModes map[string]bool // key: "owner/repo/number"
 
 	// Pull request reviews for ListPullRequestReviews.
 	PRReviews map[string][]PullRequestReview // key: "owner/repo/number"
@@ -920,6 +939,9 @@ func (f *FakeClient) GetFileContentAtRef(_ context.Context, owner, repo, path, r
 
 	key := fmt.Sprintf("%s/%s/%s@%s", owner, repo, path, ref)
 	content, ok := f.FileContentsRef[key]
+	if !ok {
+		content, ok = f.FileContentsAnyRef[fmt.Sprintf("%s/%s/%s", owner, repo, path)]
+	}
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
 	}
@@ -2098,7 +2120,21 @@ func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo str
 	if f.PRFileDiffs != nil {
 		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
 		if files, ok := f.PRFileDiffs[key]; ok {
-			return slices.Clone(files), nil
+			cloned := slices.Clone(files)
+			if verified, configured := f.PRFileDiffModes[key]; configured {
+				for i := range cloned {
+					cloned[i].ModesVerified = verified
+				}
+			} else {
+				for i := range cloned {
+					// Fake diffs represent complete fixtures unless a test
+					// explicitly models unavailable forge metadata.
+					if !cloned[i].ModesVerified {
+						cloned[i].ModesVerified = true
+					}
+				}
+			}
+			return cloned, nil
 		}
 	}
 	return nil, nil

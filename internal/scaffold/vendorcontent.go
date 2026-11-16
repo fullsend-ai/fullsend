@@ -183,6 +183,7 @@ var vendoredDefaultsScripts = map[string]bool{
 	".github/scripts/openshell-version.sh":          true,
 	".github/scripts/pre-fetch-review-body.sh":      true,
 	".github/scripts/resolve-effective-mint-url.sh": true,
+  ".github/scripts/review-diff-hash.sh":           true,
 	".github/scripts/retry-with-backoff.sh":         true,
 }
 

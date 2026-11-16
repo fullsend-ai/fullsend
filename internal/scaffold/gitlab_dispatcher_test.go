@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // Webhook dispatcher scaffold (ADR 0125, #7771): a GitLab native "use a
@@ -78,7 +80,10 @@ func TestGitLabDispatcherJobContent(t *testing.T) {
 	assert.NotContains(t, admit, `"schedule"`, "trigger-only allowlist")
 	assert.NotContains(t, admit, `"api"`, "trigger-only allowlist")
 
-	assert.Equal(t, []string{`. "${CI_PROJECT_DIR:-.}/` + gitlabInstallCLIScriptPath + `"`}, job.BeforeScript)
+	assert.Equal(t, []string{
+		"unset " + forge.SecretTraceSigningKey,
+		`. "${CI_PROJECT_DIR:-.}/` + gitlabInstallCLIScriptPath + `"`,
+	}, job.BeforeScript)
 	assert.Equal(t, []string{`. "${CI_PROJECT_DIR:-.}/` + gitlabRunDispatcherJobScriptPath + `"`}, job.Script)
 }
 

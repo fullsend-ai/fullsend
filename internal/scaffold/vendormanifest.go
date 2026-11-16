@@ -164,6 +164,7 @@ var vendoredDefaultsInfraPaths = []string{
 	".github/scripts/openshell-version.sh",
 	".github/scripts/pre-fetch-review-body.sh",
 	".github/scripts/resolve-effective-mint-url.sh",
+	".github/scripts/review-diff-hash.sh",
 	".github/scripts/retry-with-backoff.sh",
 }
 

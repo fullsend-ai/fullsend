@@ -2,6 +2,7 @@ package jirapoll
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"sort"
@@ -48,7 +49,7 @@ func (m *gateMatcher) Match(_ context.Context, event *normevent.Event) ([]Dispat
 				Agent:        name,
 				Role:         role,
 				SourceRepo:   event.Repo,
-				EventPayload: event.Actor.ID,
+				EventPayload: json.RawMessage(event.Actor.ID),
 			})
 		}
 	}
@@ -59,7 +60,7 @@ func (m *gateMatcher) Match(_ context.Context, event *normevent.Event) ([]Dispat
 func dispatchedBy(p *Poller, actor string) []string {
 	var out []string
 	for _, d := range p.dispatches {
-		if d.EventPayload == actor {
+		if string(d.EventPayload) == actor {
 			out = append(out, d.Agent)
 		}
 	}

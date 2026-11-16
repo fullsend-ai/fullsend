@@ -136,10 +136,33 @@ func convergeManagedConfigFiles(ctx context.Context, resolved ResolvedConfig, de
 // the repository as an error, as preflight and status report it, instead of
 // as adoption guidance.
 func checkEstablishedOverlayGate(ctx context.Context, resolved ResolvedConfig, desired []byte) error {
+	return checkEstablishedOverlayGateFrom(ctx, resolved, desired, nil)
+}
+
+// overlaySnapshot is the installed .fullsend/config.yaml as read once by
+// convergence, so the configuration schema selection and the later overlay
+// gates share one forge read (#9292).
+type overlaySnapshot struct {
+	data  []byte
+	found bool
+}
+
+// readOverlay returns the snapshot's content, or reads the overlay from the
+// forge when there is no snapshot.
+func (s *overlaySnapshot) readOverlay(ctx context.Context, resolved ResolvedConfig) ([]byte, bool, error) {
+	if s != nil {
+		return s.data, s.found, nil
+	}
+	return readExistingFile(ctx, resolved.ForgeConfig.Client, resolved.Owner, resolved.Repo, preset.OverlayPath)
+}
+
+// checkEstablishedOverlayGateFrom is checkEstablishedOverlayGate reading the
+// overlay from snapshot when it is not nil.
+func checkEstablishedOverlayGateFrom(ctx context.Context, resolved ResolvedConfig, desired []byte, snapshot *overlaySnapshot) error {
 	if !resolved.ConfigManaged {
 		return nil
 	}
-	existing, found, err := readExistingFile(ctx, resolved.ForgeConfig.Client, resolved.Owner, resolved.Repo, preset.OverlayPath)
+	existing, found, err := snapshot.readOverlay(ctx, resolved)
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", preset.OverlayPath, err)
 	}
@@ -183,6 +206,13 @@ func checkManagedConfigDrift(ctx context.Context, cfg ResolvedConfig, status *Re
 	if !cfg.ConfigManaged {
 		return
 	}
+	// The schema of the effective fullsend_ref is unknown (#9292): report
+	// compatibility as unknown, never as current against this binary's
+	// schema; install leaves the file unchanged.
+	if cfg.ConfigSchema.Unknown != "" {
+		reportUnknownManagedConfigSchema(ctx, cfg, status)
+		return
+	}
 	desired, _, err := desiredManagedConfig(cfg)
 	if err != nil {
 		status.Error = fmt.Sprintf("rendering managed config for %s/%s: %v", cfg.Owner, cfg.Repo, err)
@@ -196,6 +226,7 @@ func checkManagedConfigDrift(ctx context.Context, cfg ResolvedConfig, status *Re
 	if !found && !status.Installed {
 		return
 	}
+	checkManagedConfigCompatibility(cfg, existing, found, status)
 	// Install's preflight rejects a malformed, non-per-repo or invalid
 	// overlay outright, marked or not; status reports the same file as an
 	// error rather than as drift or adoption guidance it could never act on.

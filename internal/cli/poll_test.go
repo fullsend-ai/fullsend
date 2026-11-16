@@ -18,6 +18,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
+	"github.com/fullsend-ai/fullsend/internal/jiradispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -637,10 +638,10 @@ func TestCELMatcher_PerHarnessRoleThreshold(t *testing.T) {
 	require.NoError(t, err)
 
 	trigger := `event.entity.kind == "work_item" && event.transition.kind == "opened"`
-	m := &celMatcher{candidates: []harnessdispatch.TriggeredHarness{
+	m := &celMatcher{Matcher: &jiradispatch.Matcher{Candidates: []harnessdispatch.TriggeredHarness{
 		{Name: "triage", Harness: &harness.Harness{Role: "triage", Trigger: trigger}},
 		{Name: "code", Harness: &harness.Harness{Role: "coder", Trigger: trigger}},
-	}}
+	}}}
 
 	tests := []struct {
 		name      string
@@ -697,18 +698,18 @@ func TestCELMatcher_JiraLabelRule(t *testing.T) {
 		return got
 	}
 
-	noEntry := &celMatcher{candidates: candidates}
+	noEntry := &celMatcher{Matcher: &jiradispatch.Matcher{Candidates: candidates}}
 	assert.Empty(t, agents(noEntry, jiraLabelAddedEvent(normevent.RoleNone)),
 		"no jira entry: the role threshold applies")
 	assert.Equal(t, []string{"triage"}, agents(noEntry, jiraLabelAddedEvent(normevent.RoleTriage)))
 	assert.Equal(t, []string{"triage", "code"}, agents(noEntry, jiraLabelAddedEvent(normevent.RoleWrite)))
 
-	editors := &celMatcher{candidates: candidates, jiraAuth: &config.AuthorizationProvider{Provider: config.AuthProviderJira}}
+	editors := &celMatcher{Matcher: &jiradispatch.Matcher{Candidates: candidates}, jiraAuth: &config.AuthorizationProvider{Provider: config.AuthProviderJira}}
 	assert.Equal(t, []string{"triage", "code"}, agents(editors, jiraLabelAddedEvent(normevent.RoleNone)),
 		"jira entry with labels: jira_editors (default): any label author dispatches")
 
 	for _, labels := range []string{config.JiraLabelsAllowlist, config.JiraLabelsProjectRoles} {
-		m := &celMatcher{candidates: candidates, jiraAuth: &config.AuthorizationProvider{Provider: config.AuthProviderJira, Labels: labels}}
+		m := &celMatcher{Matcher: &jiradispatch.Matcher{Candidates: candidates}, jiraAuth: &config.AuthorizationProvider{Provider: config.AuthProviderJira, Labels: labels}}
 		assert.Empty(t, agents(m, jiraLabelAddedEvent(normevent.RoleNone)), labels)
 		assert.Equal(t, []string{"triage"}, agents(m, jiraLabelAddedEvent(normevent.RoleTriage)), labels)
 	}
@@ -729,7 +730,7 @@ authorization:
 	m, err := newCELMatcher(context.Background(), dir)
 	require.NoError(t, err)
 	require.NotNil(t, m.jiraAuth)
-	assert.False(t, m.authOptions().JiraLabelsByEditPermission)
+	assert.False(t, m.Auth.JiraLabelsByEditPermission)
 	assert.Equal(t, jirapoll.Authorization{
 		Configured:      true,
 		Write:           jirapoll.ActorList{Groups: []string{"devs"}},
@@ -748,7 +749,7 @@ authorization:
 	m, err = newCELMatcher(context.Background(), dir)
 	require.NoError(t, err)
 	require.NotNil(t, m.jiraAuth)
-	assert.True(t, m.authOptions().JiraLabelsByEditPermission)
+	assert.True(t, m.Auth.JiraLabelsByEditPermission)
 	assert.Equal(t, jirapoll.Authorization{Configured: true, Labels: config.JiraLabelsEditors}, jiraPollAuthorization(m.jiraAuth))
 
 	// An invalid labels value fails config loading.
@@ -886,5 +887,5 @@ func TestNewCELMatcher_RejectsAliasedMisspelledJiraKey(t *testing.T) {
 
 func TestJiraPollAuthorization_NilProvider(t *testing.T) {
 	assert.Equal(t, jirapoll.Authorization{}, jiraPollAuthorization(nil))
-	assert.False(t, (&celMatcher{}).authOptions().JiraLabelsByEditPermission)
+	assert.False(t, jiraAuthOptions(nil).JiraLabelsByEditPermission)
 }
