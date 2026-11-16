@@ -534,11 +534,13 @@ explicit `FULLSEND_TRACKER` or `ISSUE_URL` points somewhere else. Code stops if
   components could not be read.
 - **Retries:** on GitHub and Jira a re-run posts a new comment at the end of
   the thread instead of editing the earlier one (sticky comments were
-  removed). The code-stage update and the triage comments use fixed or
-  run-scoped markers (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`), so later steps
-  still find the relevant comment. On GitLab, the triage scripts from the
-  agents repo keep their find-and-edit behaviour on a re-run of the same
-  pipeline.
+  removed), so a retried job posts a second copy of the comments its first
+  attempt already posted. The code-stage update and the triage comments use
+  fixed or run-scoped markers (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`); the
+  run-scoped ones exist so a retried run can recognize its own earlier
+  comment, which find-and-edit turned into an update instead of a
+  duplicate. On GitLab, the triage scripts from the agents repo keep their
+  find-and-edit behaviour on a re-run of the same pipeline.
 - **Write failures:** a failed Jira write fails the step, so it is never
   reported as a success. For triage this covers label adds and removals,
   component updates, comments, and transitions. For code the step fails even
