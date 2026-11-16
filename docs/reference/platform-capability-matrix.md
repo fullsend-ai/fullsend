@@ -85,7 +85,7 @@ The built-in Jira trigger expressions live in the
 | Slash commands | `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix`, `/fs-retro`, `/fs-prioritize`, `/fs-fix-stop` | Any `/fs-<agent>` for a registered agent. `/fs-fix-stop` has no handler. Commands in threaded merge request replies are missed ([#7825](https://github.com/fullsend-ai/fullsend/issues/7825)). | `/fs-*` as the first word of a comment's first line |
 | Labels from bots | Start agents | Start agents | Ignored ([#9389](https://github.com/fullsend-ai/fullsend/issues/9389)) |
 | Status changes | Not used | Not used | Jira status transitions start nothing. `fullsend issues transition` only writes them. |
-| Who may dispatch | Repository permission, [OWNERS files](../guides/user/owners-file-authorization.md), and `authorization` config | Project member access level, mapped to a fullsend role. Triage and review need the triage role. Other stages need write. | Jira project role or the `jira` allowlist |
+| Who may dispatch | Repository permission, [OWNERS files](../guides/user/owners-file-authorization.md), and `authorization` config | Project member access level, mapped to a fullsend role. The router lets triage and review through at the triage role, but the runner then requires Developer access for every stage except prioritize, so triage and review currently need Developer access to run. Actors below Developer are skipped without an error. Jira-originated dispatches skip this check. | Jira project role or the `jira` allowlist |
 
 ## Status reporting
 
@@ -133,6 +133,7 @@ does not yet. Each tracking issue was open when this page was last updated.
 | Webhook access to protected branches fails on GitLab Free | [#9343](https://github.com/fullsend-ai/fullsend/issues/9343) |
 | Console output is redacted less thoroughly than traces, and GitLab has no `::add-mask::` equivalent | [#9012](https://github.com/fullsend-ai/fullsend/issues/9012) |
 | Harness passthrough variables have no automated check across the GitHub and GitLab templates | [#6275](https://github.com/fullsend-ai/fullsend/issues/6275) |
+| The router lets triage and review through at the triage role, but the runner requires Developer access, so the lower router threshold has no effect | None yet |
 | `/fs-fix-stop` has no handler, so the `fullsend-no-fix` label must be applied by hand | None yet |
 | Prioritize has no scheduled run | None yet |
 
