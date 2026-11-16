@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
@@ -149,6 +150,16 @@ func extractRepoSlugWithAllowedHost(rawURL, allowedGitLabURL string) string {
 	return slug
 }
 
+// trimGitSuffix removes a trailing ".git" suffix (case-insensitively), ignoring
+// any trailing slashes.
+func trimGitSuffix(s string) string {
+	trimmed := strings.TrimRight(s, "/")
+	if strings.HasSuffix(strings.ToLower(trimmed), ".git") {
+		return trimmed[:len(trimmed)-4]
+	}
+	return s
+}
+
 // extractRepoHostAndSlug extracts the normalized host and repository slug
 // from a git repository URL, additionally treating allowedGitLabURL (for
 // example, Options.GitLabURL, including any sub-path prefix) as a known GitLab
@@ -194,6 +205,11 @@ func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
 		return "", ""
 	}
 
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return "", ""
+	}
+
 	allowedHost, allowedPrefix := parseGitLabInstance(allowedGitLabURL)
 	isGitHub := host == "github.com"
 	isBitbucket := host == "bitbucket.org"
@@ -206,14 +222,9 @@ func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
 		// Generic / self-hosted git hosts: only accept SSH URLs or git.* hosts
 		// whose path explicitly ends with .git so arbitrary site links like
 		// docs.example.com/download/tool.git are ignored.
-		if !isSSH && !(strings.HasPrefix(host, "git.") && strings.HasSuffix(path, ".git")) {
+		if !isSSH && !(strings.HasPrefix(host, "git.") && strings.HasSuffix(strings.ToLower(path), ".git")) {
 			return "", ""
 		}
-	}
-
-	path = strings.Trim(path, "/")
-	if path == "" {
-		return "", ""
 	}
 
 	if allowedHost != "" && host == allowedHost && allowedPrefix != "" && !isSSH {
@@ -228,8 +239,7 @@ func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
 	}
 
 	if isGitHub || isBitbucket {
-		path = strings.TrimSuffix(path, ".git")
-		path = strings.Trim(path, "/")
+		path = strings.Trim(trimGitSuffix(path), "/")
 		parts, ok := splitNonEmptyPathSegments(path)
 		if !ok || len(parts) < 2 {
 			return "", ""
@@ -256,8 +266,7 @@ func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
 			// index >= 2, reserved wildcard UI routes truncate immediately whereas
 			// entity routes (issues, packages, releases, etc.) truncate only when
 			// followed by a recognized entity ID or ref subpath.
-			path = strings.TrimSuffix(path, ".git")
-			path = strings.Trim(path, "/")
+			path = strings.Trim(trimGitSuffix(path), "/")
 			segs, ok := splitNonEmptyPathSegments(path)
 			if !ok {
 				return "", ""
@@ -275,8 +284,7 @@ func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
 			}
 			path = strings.Join(segs, "/")
 		}
-		path = strings.TrimSuffix(path, ".git")
-		path = strings.Trim(path, "/")
+		path = strings.Trim(trimGitSuffix(path), "/")
 		parts, ok := splitNonEmptyPathSegments(path)
 		if !ok || len(parts) < 2 {
 			return "", ""
@@ -291,8 +299,7 @@ func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
 	if idx := strings.Index(path, "/-/"); idx != -1 {
 		path = path[:idx]
 	}
-	path = strings.TrimSuffix(path, ".git")
-	path = strings.Trim(path, "/")
+	path = strings.Trim(trimGitSuffix(path), "/")
 	parts, ok := splitNonEmptyPathSegments(path)
 	if !ok || len(parts) < 2 {
 		return "", ""
@@ -325,6 +332,77 @@ func isRoutingAbortError(err error) bool {
 	return false
 }
 
+// repoSlugRegex matches valid repository slugs with at least two slash-separated
+// segments (e.g. "owner/repo" or "group/subgroup/project"). Bare project names
+// without a slash are rejected to prevent taxonomy and fork collisions.
+var repoSlugRegex = regexp.MustCompile(`^[^/\s]+(/[^/\s]+)+$`)
+
+// extractRepoLabels extracts and normalizes repository slugs from issue labels
+// matching prefix (case-insensitive, default DefaultRepoLabelPrefix = "repo:").
+// It supports bare slugs (e.g. "owner/repo" or "group/subgroup/project")
+// and host-qualified git repository URLs. Returns deduplicated lowercase slugs.
+func (p *Poller) extractRepoLabels(labels []string) []string {
+	if p.opts.DisableRepoLabels || len(labels) == 0 {
+		return nil
+	}
+	prefix := p.opts.RepoLabelPrefix
+	if prefix == "" {
+		prefix = DefaultRepoLabelPrefix
+	}
+
+	var slugs []string
+	seen := make(map[string]bool)
+
+	for _, label := range labels {
+		trimmed := strings.TrimSpace(label)
+		if len(trimmed) < len(prefix) {
+			continue
+		}
+		if !strings.EqualFold(trimmed[:len(prefix)], prefix) {
+			continue
+		}
+		val := strings.TrimSpace(trimmed[len(prefix):])
+		val = strings.Trim(val, "/")
+		if val == "" {
+			continue
+		}
+
+		var slug string
+		// Check for host-qualified URL or SSH format first
+		if strings.Contains(val, "://") || strings.HasPrefix(val, "git@") {
+			_, s := extractRepoHostAndSlug(val, p.opts.GitLabURL)
+			slug = s
+		} else {
+			// Try as URL with https:// if it looks like host/path
+			if strings.Contains(val, "/") {
+				if _, s := extractRepoHostAndSlug("https://"+val, p.opts.GitLabURL); s != "" {
+					slug = s
+				}
+			}
+			if slug == "" {
+				// Bare slug check: strip .git suffix and slashes
+				cleanVal := strings.Trim(val, "/")
+				cleanVal = trimGitSuffix(cleanVal)
+				cleanVal = strings.Trim(cleanVal, "/")
+				cleanVal = strings.ToLower(cleanVal)
+				if repoSlugRegex.MatchString(cleanVal) {
+					slug = cleanVal
+				}
+			}
+		}
+
+		if slug != "" {
+			slug = strings.ToLower(strings.Trim(slug, "/"))
+			if !seen[slug] {
+				seen[slug] = true
+				slugs = append(slugs, slug)
+			}
+		}
+	}
+
+	return slugs
+}
+
 // filterRoutingPage evaluates repository routing for one page of candidates in
 // bounded batches of up to routingBatchConcurrency, stopping early once needed
 // (>0) routed candidates are collected, ctx expires, or a fatal/rate-limit/5xx
@@ -337,6 +415,7 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 	}
 
 	targetRepo := strings.ToLower(strings.TrimSpace(p.opts.TargetRepo))
+	targetRepo = strings.Trim(trimGitSuffix(targetRepo), "/")
 	targetHost := "github.com"
 	if p.opts.TargetForge == TargetForgeGitLab {
 		targetHost, _ = parseGitLabInstance(p.opts.GitLabURL)
@@ -359,23 +438,49 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 			stopScan = true
 			break
 		}
+		if needed > 0 && len(routed) >= needed {
+			break
+		}
 
-		batchSize := routingBatchConcurrency
-		if needed > 0 {
-			rem := needed - len(routed)
-			if rem <= 0 {
+		// Priority 1: Check in-memory repo labels (0 HTTP calls).
+		repoLabels := p.extractRepoLabels(candidates[start].Fields.Labels)
+		if len(repoLabels) > 0 {
+			attempted++
+			matched := false
+			for _, slug := range repoLabels {
+				if slug == targetRepo {
+					matched = true
+					break
+				}
+			}
+
+			if matched {
+				log.Printf("routing %s to %s via repo label", candidates[start].Key, p.opts.TargetRepo)
+				routed = append(routed, candidates[start])
+			} else {
+				log.Printf("skipping %s: repo label(s) %v do not match target repo %q", candidates[start].Key, repoLabels, p.opts.TargetRepo)
+			}
+			start++
+			continue
+		}
+
+		// Candidates without repo labels require remote links (Priority 2 & 3).
+		// Gather a batch of up to routingBatchConcurrency candidates that lack repo labels.
+		maxBatch := routingBatchConcurrency
+		if needed > 0 && needed-len(routed) < maxBatch {
+			maxBatch = needed - len(routed)
+		}
+
+		batchEnd := start + 1
+		for batchEnd < len(candidates) && (batchEnd-start) < maxBatch {
+			if labels := p.extractRepoLabels(candidates[batchEnd].Fields.Labels); len(labels) > 0 {
 				break
 			}
-			if rem < batchSize {
-				batchSize = rem
-			}
+			batchEnd++
 		}
-		end := start + batchSize
-		if end > len(candidates) {
-			end = len(candidates)
-		}
-		batch := candidates[start:end]
-		start = end
+
+		batch := candidates[start:batchEnd]
+		start = batchEnd
 
 		results := make([]linkResult, len(batch))
 		g, gCtx := errgroup.WithContext(ctx)
@@ -396,7 +501,7 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 			res := results[i]
 			if res.err != nil {
 				// Fail-safe: if remote links lookup failed (transient error, auth failure, etc.),
-				// do NOT fall back to component or permissive claiming. Skip this issue for this cycle
+				// do NOT fall back to permissive claiming. Skip this issue for this cycle
 				// to avoid claiming an issue that might belong to another repository.
 				log.Printf("WARNING: listing remote links for %s: %v (skipping candidate to avoid misrouting)", issue.Key, res.err)
 				linkErrors++
@@ -413,7 +518,7 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 				}
 			}
 
-			// Priority 1: Attached Git repository links
+			// Priority 2: Attached Git repository links
 			if len(attachedRepos) > 0 {
 				matched := false
 				for _, r := range attachedRepos {
@@ -432,26 +537,13 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 				continue
 			}
 
-			// Priority 2: Jira Component fallback
-			if p.opts.JiraComponent != "" {
-				componentMatched := false
-				for _, comp := range issue.Fields.Components {
-					if strings.EqualFold(comp.Name, p.opts.JiraComponent) {
-						componentMatched = true
-						break
-					}
-				}
-
-				if componentMatched {
-					log.Printf("routing %s to %s via component %q", issue.Key, p.opts.TargetRepo, p.opts.JiraComponent)
-					routed = append(routed, issue)
-				} else {
-					log.Printf("skipping %s: no attached repo and components do not match %q", issue.Key, p.opts.JiraComponent)
-				}
+			// Priority 3: Candidates with neither label nor remote link
+			if p.opts.StrictRepoRouting {
+				log.Printf("skipping %s: no repo label or attached repository link and strict routing is enabled", issue.Key)
 				continue
 			}
 
-			// Priority 3: No attached repo links and no component configured -> keep candidate
+			log.Printf("routing %s to %s via unrouted fallback (strict routing disabled)", issue.Key, p.opts.TargetRepo)
 			routed = append(routed, issue)
 		}
 

@@ -55,6 +55,9 @@ type RecordDispatcher interface {
 	Dispatch(ctx context.Context, record DispatchRecord) error
 }
 
+// DefaultRepoLabelPrefix is the default label prefix used for repository routing.
+const DefaultRepoLabelPrefix = "repo:"
+
 // Options configures the Jira poller.
 type Options struct {
 	TargetRepo              string           // Repo where agents run: a GitHub owner/repo slug, or the full GitLab project path (nested groups allowed)
@@ -63,7 +66,9 @@ type Options struct {
 	Dispatcher              RecordDispatcher // Optional output driver that schedules records directly (GitLab)
 	JiraBaseURL             string           // Jira instance base URL
 	JiraProject             string           // Jira project key for default JQL
-	JiraComponent           string           // Jira component for fallback repo routing (internal/test-only; not wired to CLI flags or config.yaml)
+	RepoLabelPrefix         string           // RepoLabelPrefix specifies the label prefix for repository routing (default: "repo:")
+	DisableRepoLabels       bool             // DisableRepoLabels explicitly turns off label-based routing
+	StrictRepoRouting       bool             // StrictRepoRouting skips unrouted candidates (neither repo labels nor attached git links) when true; when false (default), unrouted candidates are retained
 	JQL                     string           // Custom JQL override
 	OutputPath              string           // Path to write dispatch records JSON
 	M                       int              // Max candidate issues per cycle (default: 50)

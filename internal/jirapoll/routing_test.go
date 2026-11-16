@@ -34,6 +34,26 @@ func TestExtractRepoSlug(t *testing.T) {
 			expected: "my-org/pay-backend",
 		},
 		{
+			name:     "GitHub HTTPS with uppercase .GIT",
+			rawURL:   "https://github.com/my-org/pay-backend.GIT",
+			expected: "my-org/pay-backend",
+		},
+		{
+			name:     "GitHub HTTPS with mixed-case .Git and trailing slash",
+			rawURL:   "https://github.com/my-org/pay-backend.Git/",
+			expected: "my-org/pay-backend",
+		},
+		{
+			name:     "GitLab HTTPS with uppercase .GIT",
+			rawURL:   "https://gitlab.com/group/subgroup/my-service.GIT",
+			expected: "group/subgroup/my-service",
+		},
+		{
+			name:     "Generic git.* host with uppercase .GIT and trailing slash",
+			rawURL:   "https://git.example.com/group/sub/repo.GIT/",
+			expected: "group/sub/repo",
+		},
+		{
 			name:     "GitHub HTTPS with trailing slash",
 			rawURL:   "https://github.com/my-org/pay-backend/",
 			expected: "my-org/pay-backend",
@@ -577,10 +597,10 @@ func TestFilterRouting(t *testing.T) {
 		assert.Empty(t, routed)
 	})
 
-	t.Run("AttachedLinkPriorityOverComponent", func(t *testing.T) {
+	t.Run("RepoLabelPriorityOverAttachedLink", func(t *testing.T) {
 		t.Parallel()
-		// Issue has component "backend", but attached link points to "pay-frontend".
-		// pay-backend poller must skip it because the attached link has priority.
+		// Issue has repo: label "my-org/pay-backend", but attached link points to "pay-frontend".
+		// Priority 1 repo: label must take precedence and claim the issue for pay-backend.
 		mc := &mockClient{
 			remoteLinks: map[string][]jira.RemoteLink{
 				"PROJ-1": {
@@ -592,22 +612,204 @@ func TestFilterRouting(t *testing.T) {
 			{
 				Key: "PROJ-1",
 				Fields: jira.IssueFields{
-					Components: []jira.Component{{Name: "backend"}},
+					Labels: []string{"repo:my-org/pay-backend"},
 				},
 			},
 		}
 		routed, err := runDiscoverForCandidates(ctx, mc, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "backend",
+			TargetRepo: "my-org/pay-backend",
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("RepoLabelMismatch_OverridesAttachedLink_ZeroHTTPLookups", func(t *testing.T) {
+		t.Parallel()
+		// Issue has repo: label "my-org/pay-frontend", but attached link points to "my-org/pay-backend".
+		// Priority 1 skips the candidate immediately with 0 HTTP calls.
+		// If an HTTP call were made, the remoteLinksErr would fail the test or log an error.
+		mc := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{
+				"PROJ-1": {
+					{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/pay-backend"}},
+				},
+			},
+			remoteLinksErr: map[string]error{
+				"PROJ-1": fmt.Errorf("remote link call should not happen for labeled issue"),
+			},
+		}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:my-org/pay-frontend"},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
 		}, candidates)
 		require.NoError(t, err)
 		assert.Empty(t, routed)
 	})
 
-	t.Run("NonGitLinkIgnored_FallsBackToComponent", func(t *testing.T) {
+	t.Run("RepoLabel_CaseInsensitive", func(t *testing.T) {
 		t.Parallel()
-		// Issue has a Google Doc attached and component "backend".
-		// Google doc is ignored as a non-repo link; component match claims the issue.
+		mc := &mockClient{remoteLinks: map[string][]jira.RemoteLink{}}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"REPO:MY-ORG/PAY-BACKEND"},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("RepoLabel_UppercaseGitSuffix", func(t *testing.T) {
+		t.Parallel()
+		mc := &mockClient{remoteLinks: map[string][]jira.RemoteLink{}}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:my-org/pay-backend.GIT/"},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("RepoLabel_CustomPrefix", func(t *testing.T) {
+		t.Parallel()
+		mc := &mockClient{remoteLinks: map[string][]jira.RemoteLink{}}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"target:my-org/pay-backend"},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:      "my-org/pay-backend",
+			RepoLabelPrefix: "target:",
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("RepoLabel_Disabled", func(t *testing.T) {
+		t.Parallel()
+		// When DisableRepoLabels is true, repo: labels are ignored and Priority 2 applies.
+		mc := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{
+				"PROJ-1": {
+					{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/pay-frontend"}},
+				},
+			},
+		}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:my-org/pay-backend"},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:        "my-org/pay-backend",
+			DisableRepoLabels: true,
+		}, candidates)
+		require.NoError(t, err)
+		assert.Empty(t, routed, "should be skipped because attached link points to pay-frontend and labels are disabled")
+	})
+
+	t.Run("RepoLabel_BareProjectWithoutSlash_FallsThroughToLink", func(t *testing.T) {
+		t.Parallel()
+		// Bare project without slash (e.g. repo:pay-backend) is rejected to prevent fork collisions,
+		// falling through to attached remote links.
+		mc := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{
+				"PROJ-1": {
+					{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/pay-backend"}},
+				},
+			},
+		}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:pay-backend"},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("RepoLabel_HostQualifiedURL", func(t *testing.T) {
+		t.Parallel()
+		mc := &mockClient{remoteLinks: map[string][]jira.RemoteLink{}}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:https://github.com/my-org/pay-backend.git/"},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("RepoLabel_HostQualifiedGitLabURL", func(t *testing.T) {
+		t.Parallel()
+		mc := &mockClient{remoteLinks: map[string][]jira.RemoteLink{}}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:https://gitlab.example.com/group/subgroup/project/-/merge_requests/42"},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:  "group/subgroup/project",
+			TargetForge: TargetForgeGitLab,
+			GitLabURL:   "https://gitlab.example.com",
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("NonGitLinkIgnored_StrictRoutingFalse_Kept", func(t *testing.T) {
+		t.Parallel()
+		// Issue has a Google Doc attached and no repo labels.
+		// Google doc is ignored as a non-repo link; with StrictRepoRouting: false,
+		// unrouted fallback claims the issue.
 		mc := &mockClient{
 			remoteLinks: map[string][]jira.RemoteLink{
 				"PROJ-1": {
@@ -619,17 +821,44 @@ func TestFilterRouting(t *testing.T) {
 			{
 				Key: "PROJ-1",
 				Fields: jira.IssueFields{
-					Components: []jira.Component{{Name: "backend"}},
+					Labels: []string{"bug"},
 				},
 			},
 		}
 		routed, err := runDiscoverForCandidates(ctx, mc, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "backend",
+			TargetRepo:        "my-org/pay-backend",
+			StrictRepoRouting: false,
 		}, candidates)
 		require.NoError(t, err)
 		require.Len(t, routed, 1)
 		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("NonGitLinkIgnored_StrictRoutingTrue_Skipped", func(t *testing.T) {
+		t.Parallel()
+		// Issue has a Google Doc attached and no repo labels.
+		// With StrictRepoRouting: true, unrouted candidate is skipped.
+		mc := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{
+				"PROJ-1": {
+					{Object: jira.RemoteLinkObject{URL: "https://docs.google.com/document/d/12345/edit"}},
+				},
+			},
+		}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"bug"},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:        "my-org/pay-backend",
+			StrictRepoRouting: true,
+		}, candidates)
+		require.NoError(t, err)
+		assert.Empty(t, routed)
 	})
 
 	t.Run("MultipleReposAttached_CurrentRepoMatched", func(t *testing.T) {
@@ -651,53 +880,14 @@ func TestFilterRouting(t *testing.T) {
 		assert.Equal(t, "PROJ-1", routed[0].Key)
 	})
 
-	t.Run("ComponentFallback_Match", func(t *testing.T) {
+	t.Run("AttachedLink_UppercaseGitSuffix", func(t *testing.T) {
 		t.Parallel()
 		mc := &mockClient{
-			remoteLinks: map[string][]jira.RemoteLink{},
-		}
-		candidates := []jira.Issue{
-			{
-				Key: "PROJ-1",
-				Fields: jira.IssueFields{
-					Components: []jira.Component{{Name: "payments"}}, // case-insensitive check
+			remoteLinks: map[string][]jira.RemoteLink{
+				"PROJ-1": {
+					{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/pay-backend.GIT/"}},
 				},
 			},
-		}
-		routed, err := runDiscoverForCandidates(ctx, mc, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "Payments",
-		}, candidates)
-		require.NoError(t, err)
-		require.Len(t, routed, 1)
-		assert.Equal(t, "PROJ-1", routed[0].Key)
-	})
-
-	t.Run("ComponentFallback_Mismatch_Skipped", func(t *testing.T) {
-		t.Parallel()
-		mc := &mockClient{
-			remoteLinks: map[string][]jira.RemoteLink{},
-		}
-		candidates := []jira.Issue{
-			{
-				Key: "PROJ-1",
-				Fields: jira.IssueFields{
-					Components: []jira.Component{{Name: "Frontend"}},
-				},
-			},
-		}
-		routed, err := runDiscoverForCandidates(ctx, mc, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "Payments",
-		}, candidates)
-		require.NoError(t, err)
-		assert.Empty(t, routed)
-	})
-
-	t.Run("NoAttachedLinks_NoComponentConfigured_Kept", func(t *testing.T) {
-		t.Parallel()
-		mc := &mockClient{
-			remoteLinks: map[string][]jira.RemoteLink{},
 		}
 		routed, err := runDiscoverForCandidates(ctx, mc, Options{
 			TargetRepo: "my-org/pay-backend",
@@ -707,10 +897,37 @@ func TestFilterRouting(t *testing.T) {
 		assert.Equal(t, "PROJ-1", routed[0].Key)
 	})
 
+	t.Run("NoAttachedLinks_StrictRoutingFalse_Kept", func(t *testing.T) {
+		t.Parallel()
+		mc := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:        "my-org/pay-backend",
+			StrictRepoRouting: false,
+		}, []jira.Issue{{Key: "PROJ-1"}})
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("NoAttachedLinks_StrictRoutingTrue_Skipped", func(t *testing.T) {
+		t.Parallel()
+		mc := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:        "my-org/pay-backend",
+			StrictRepoRouting: true,
+		}, []jira.Issue{{Key: "PROJ-1"}})
+		require.NoError(t, err)
+		assert.Empty(t, routed)
+	})
+
 	t.Run("RemoteLinksError_PartialFailure_SafelySkipped", func(t *testing.T) {
 		t.Parallel()
-		// If listing remote links fails for one candidate, do NOT fall back to component;
-		// skip the failed candidate while still routing valid candidates without error.
+		// If listing remote links fails for one candidate, skip the failed candidate
+		// while still routing valid candidates without error.
 		mc := &mockClient{
 			remoteLinks: map[string][]jira.RemoteLink{
 				"PROJ-2": {{Object: jira.RemoteLinkObject{URL: "https://github.com/my-org/pay-backend"}}},
@@ -720,22 +937,11 @@ func TestFilterRouting(t *testing.T) {
 			},
 		}
 		candidates := []jira.Issue{
-			{
-				Key: "PROJ-1",
-				Fields: jira.IssueFields{
-					Components: []jira.Component{{Name: "backend"}},
-				},
-			},
-			{
-				Key: "PROJ-2",
-				Fields: jira.IssueFields{
-					Components: []jira.Component{{Name: "backend"}},
-				},
-			},
+			{Key: "PROJ-1"},
+			{Key: "PROJ-2"},
 		}
 		routed, err := runDiscoverForCandidates(ctx, mc, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "Backend",
+			TargetRepo: "my-org/pay-backend",
 		}, candidates)
 		require.NoError(t, err)
 		require.Len(t, routed, 1)
@@ -744,8 +950,7 @@ func TestFilterRouting(t *testing.T) {
 
 	t.Run("RemoteLinksError_AllFailed_ReturnsError", func(t *testing.T) {
 		t.Parallel()
-		// When every candidate fails remote-link lookup, return an error so the cycle
-		// does not silently finish as a quiet project.
+		// When every candidate fails remote-link lookup and none was collected, return an error.
 		mc := &mockClient{
 			remoteLinksErr: map[string]error{
 				"PROJ-1": fmt.Errorf("403 forbidden"),
@@ -753,18 +958,42 @@ func TestFilterRouting(t *testing.T) {
 			},
 		}
 		routed, err := runDiscoverForCandidates(ctx, mc, Options{
-			TargetRepo:    "my-org/pay-backend",
-			JiraComponent: "Backend",
+			TargetRepo: "my-org/pay-backend",
 		}, []jira.Issue{{Key: "PROJ-1"}, {Key: "PROJ-2"}})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "all 2 candidates dropped by remote-link lookup errors")
 		assert.Empty(t, routed)
 	})
 
-	t.Run("UnrelatedUpstreamIssueLink_NoComponent_Skipped", func(t *testing.T) {
+	t.Run("RemoteLinksError_WithRepoLabelCandidate_DoesNotFailCycle", func(t *testing.T) {
 		t.Parallel()
-		// Even with no component configured, Priority 1 link routing skips candidates
-		// whose attached forge link resolves to a different repository slug.
+		// If one candidate is routed via repo: label and another candidate fails remote link lookup,
+		// the cycle must NOT fail because collected candidates exist.
+		mc := &mockClient{
+			remoteLinksErr: map[string]error{
+				"PROJ-2": fmt.Errorf("500 internal server error"),
+			},
+		}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:my-org/pay-backend"},
+				},
+			},
+			{Key: "PROJ-2"},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+	})
+
+	t.Run("UnrelatedUpstreamIssueLink_Skipped", func(t *testing.T) {
+		t.Parallel()
+		// Link routing skips candidates whose attached forge link resolves to a different repository slug.
 		mc := &mockClient{
 			remoteLinks: map[string][]jira.RemoteLink{
 				"PROJ-1": {
@@ -948,4 +1177,108 @@ func TestPollerRun_AllRemoteLinksErrorsReturnError(t *testing.T) {
 	err := p.Run(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "all 2 candidates dropped by remote-link lookup errors")
+}
+
+func TestExtractRepoLabels(t *testing.T) {
+	t.Parallel()
+
+	t.Run("DefaultPrefix_BareSlugsAndURLs", func(t *testing.T) {
+		t.Parallel()
+		p := newTestPoller(newMockClient(), nil, Options{
+			GitLabURL: "https://gitlab.corp.redhat.com",
+		})
+
+		labels := []string{
+			"bug",
+			"repo:my-org/my-repo",
+			"REPO:Other-Org/Other-Repo.git/",
+			"repo:group/subgroup/nested-project",
+			"repo:https://github.com/web-org/web-service",
+			"repo:git@github.com:ssh-org/ssh-repo.git",
+			"repo:https://gitlab.corp.redhat.com/internal/group/svc.git",
+			"repo:single-segment-no-slash",
+			"repo:",
+			"repo:   ",
+		}
+
+		slugs := p.extractRepoLabels(labels)
+		expected := []string{
+			"my-org/my-repo",
+			"other-org/other-repo",
+			"group/subgroup/nested-project",
+			"web-org/web-service",
+			"ssh-org/ssh-repo",
+			"internal/group/svc",
+		}
+		assert.Equal(t, expected, slugs)
+	})
+
+	t.Run("DeduplicationAndCaseFolding", func(t *testing.T) {
+		t.Parallel()
+		p := newTestPoller(newMockClient(), nil, Options{})
+
+		labels := []string{
+			"repo:my-org/my-repo",
+			"REPO:my-org/my-repo",
+			"Repo:MY-ORG/MY-REPO.git",
+			"repo:MY-ORG/MY-REPO.GIT",
+			"repo:my-org/my-repo.Git/",
+			"repo:https://github.com/my-org/my-repo.git",
+			"repo:https://github.com/my-org/my-repo.GIT/",
+		}
+
+		slugs := p.extractRepoLabels(labels)
+		assert.Equal(t, []string{"my-org/my-repo"}, slugs)
+	})
+
+	t.Run("CustomPrefix", func(t *testing.T) {
+		t.Parallel()
+		p := newTestPoller(newMockClient(), nil, Options{
+			RepoLabelPrefix: "target-repo:",
+		})
+
+		labels := []string{
+			"repo:my-org/ignored",
+			"target-repo:my-org/accepted-custom",
+		}
+
+		slugs := p.extractRepoLabels(labels)
+		assert.Equal(t, []string{"my-org/accepted-custom"}, slugs)
+	})
+
+	t.Run("DisabledRepoLabels", func(t *testing.T) {
+		t.Parallel()
+		p := newTestPoller(newMockClient(), nil, Options{
+			DisableRepoLabels: true,
+		})
+
+		labels := []string{
+			"repo:my-org/my-repo",
+		}
+
+		slugs := p.extractRepoLabels(labels)
+		assert.Nil(t, slugs)
+	})
+
+	t.Run("TargetRepoWithGitSuffix_MatchesCleanLabel", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		mc := &mockClient{}
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:my-org/pay-backend"},
+				},
+			},
+		}
+
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend.git/",
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routed, 1)
+		assert.Equal(t, "PROJ-1", routed[0].Key)
+		assert.Empty(t, mc.remoteLinksCalls)
+	})
 }

@@ -478,7 +478,7 @@ func (p *Poller) discoverCandidates(ctx context.Context) ([]jira.Issue, error) {
 		nextPageToken = res.NextPageToken
 	}
 
-	if totalAttempted > 0 && totalLinkErrors == totalAttempted {
+	if len(collected) == 0 && totalAttempted > 0 && totalLinkErrors == totalAttempted {
 		return nil, fmt.Errorf("all %d candidates dropped by remote-link lookup errors", totalAttempted)
 	}
 

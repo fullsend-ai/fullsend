@@ -19,6 +19,8 @@ tracker:
     poll:
       enabled: true
       query: 'labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC'
+      repo_label_prefix: 'target:'
+      strict_routing: true
 `
 
 func TestJiraTracking_ParseFullMapping(t *testing.T) {
@@ -35,6 +37,10 @@ func TestJiraTracking_ParseFullMapping(t *testing.T) {
 	assert.Equal(t, []string{"OTHER"}, jira.AllowedTargets.Projects)
 	assert.True(t, jira.PollEnabled())
 	assert.Equal(t, `project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`, jira.PollJQL())
+	require.NotNil(t, jira.Poll)
+	assert.Equal(t, "target:", jira.Poll.RepoLabelPrefix)
+	require.NotNil(t, jira.Poll.StrictRouting)
+	assert.True(t, *jira.Poll.StrictRouting)
 
 	// Round trip through Marshal.
 	data, err := cfg.Marshal()
@@ -154,6 +160,8 @@ func TestJiraTracking_ManagedConfigSurvivesMergeAndClone(t *testing.T) {
     poll:
       enabled: true
       query: labels = "fullsend"
+      repo_label_prefix: "target:"
+      strict_routing: true
 `), &m))
 	require.True(t, m.IsSet())
 	want := m.Writer().IssueTracking()
@@ -167,12 +175,19 @@ func TestJiraTracking_ManagedConfigSurvivesMergeAndClone(t *testing.T) {
 	got := merged.IssueTracking()
 	assert.Equal(t, want, got)
 	assert.Equal(t, `project = "PROJ" AND (labels = "fullsend")`, got.Jira.PollJQL())
+	assert.Equal(t, "target:", got.Jira.Poll.RepoLabelPrefix)
+	require.NotNil(t, got.Jira.Poll.StrictRouting)
+	assert.True(t, *got.Jira.Poll.StrictRouting)
 
 	// The clone is deep: mutating it leaves the source untouched.
 	copied := cloneTracking(want)
 	*copied.Jira.Poll.Enabled = false
+	*copied.Jira.Poll.StrictRouting = false
+	copied.Jira.Poll.RepoLabelPrefix = "mutated:"
 	copied.Jira.AllowedTargets.Projects[0] = "CHANGED"
 	assert.True(t, want.Jira.PollEnabled())
+	assert.True(t, *want.Jira.Poll.StrictRouting)
+	assert.Equal(t, "target:", want.Jira.Poll.RepoLabelPrefix)
 	assert.Equal(t, "OTHER", want.Jira.AllowedTargets.Projects[0])
 
 	// Re-marshal through the managed form keeps the settings.

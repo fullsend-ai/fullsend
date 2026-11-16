@@ -3393,7 +3393,7 @@ func TestRun_RoutingAttachedLink(t *testing.T) {
 	}
 }
 
-func TestRun_RoutingComponent(t *testing.T) {
+func TestRun_RoutingRepoLabel(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	mc := newMockClient()
 	mc.roleMembership = map[string]string{"u1": "Developers"}
@@ -3403,20 +3403,20 @@ func TestRun_RoutingComponent(t *testing.T) {
 			ID:  "1001",
 			Key: "PROJ-1",
 			Fields: jira.IssueFields{
-				Components: []jira.Component{{Name: "Payments"}},
-				Reporter:   jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
-				Created:    now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
-				Updated:    now.Format("2006-01-02T15:04:05.000-0700"),
+				Labels:   []string{"repo:my-org/pay-backend"},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
 			},
 		},
 		{
 			ID:  "1002",
 			Key: "PROJ-2",
 			Fields: jira.IssueFields{
-				Components: []jira.Component{{Name: "Frontend"}},
-				Reporter:   jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
-				Created:    now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
-				Updated:    now.Format("2006-01-02T15:04:05.000-0700"),
+				Labels:   []string{"repo:my-org/pay-frontend"},
+				Reporter: jira.User{AccountID: "reporter-id", AccountType: "atlassian"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+				Updated:  now.Format("2006-01-02T15:04:05.000-0700"),
 			},
 		},
 	}
@@ -3434,11 +3434,10 @@ func TestRun_RoutingComponent(t *testing.T) {
 	}}
 
 	p := newTestPoller(mc, &stubMatcher{agents: []string{"triage"}}, Options{
-		TargetRepo:    "my-org/pay-backend",
-		JiraBaseURL:   "https://acme.atlassian.net",
-		JiraProject:   "PROJ",
-		JiraComponent: "Payments",
-		OutputPath:    filepath.Join(t.TempDir(), "dispatches.json"),
+		TargetRepo:  "my-org/pay-backend",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  filepath.Join(t.TempDir(), "dispatches.json"),
 	})
 
 	if err := p.Run(context.Background()); err != nil {

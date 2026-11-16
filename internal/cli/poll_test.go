@@ -812,6 +812,20 @@ authorization:
 	m, err = newCELMatcher(context.Background(), dir)
 	require.NoError(t, err)
 	assert.Equal(t, jirapoll.Authorization{}, jiraPollOptions(args, m).Authorization)
+
+	// Routing options are forwarded into jirapoll.Options
+	routingArgs := jiraPollArgs{
+		jira: jiraPollSettings{
+			baseURL:         "https://jira.example.com",
+			project:         "PROJ",
+			repoLabelPrefix: "custom-repo:",
+			strictRouting:   true,
+		},
+		targetRepo: "my-org/my-repo",
+	}
+	routingOpts := jiraPollOptions(routingArgs, m)
+	assert.Equal(t, "custom-repo:", routingOpts.RepoLabelPrefix)
+	assert.True(t, routingOpts.StrictRepoRouting)
 }
 
 func TestNewCELMatcher_RejectsInvalidAuthorization(t *testing.T) {

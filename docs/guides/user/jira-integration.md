@@ -1275,7 +1275,7 @@ entry's default `labels: jira_editors`, anyone with Edit Issues on the project c
 add a label such as `ready-to-code` and dispatch the agent whose trigger
 matches it. Use `labels: allowlist` if that group is broader than you want.
 
-> **Security note — Link Issues controls repository routing.** Any user with Jira's **Link Issues** permission on a polled project can attach or remove remote web links pointing at Git repositories. Because attached repository links take Priority-1 routing precedence over project defaults or component filters, adding or removing a link changes which repository's poller claims or skips an issue. Treat **Link Issues** on polled projects as part of the routing trust boundary.
+> **Security note — Issue labels and remote links control repository routing.** Any user with Jira's **Edit Issues** or **Link Issues** permission on a polled project can apply `repo:` labels or attach remote web links pointing at Git repositories. Because repository routing determines which repository's poller claims or skips an issue, adding or modifying a repo label or link changes agent dispatch boundaries. Treat **Edit Issues** and **Link Issues** on polled projects as part of the routing trust boundary.
 
 ## Poll coordination
 
@@ -1323,16 +1323,54 @@ Two more scaling limits:
 
 ## Multi-repo polling
 
-Multiple GitHub or GitLab repos can poll the same Jira project. Each repo runs its own poll workflow and gets an isolated view of coordination state — no cross-repo configuration is needed. The poller also inspects each issue's attached web links to route work automatically, and you can combine that with `tracker.jira.poll.query` (for example `component = Backend` or `labels = backend`) to segment your project server-side and reduce redundant API calls.
+Multiple GitHub or GitLab repos can poll the same Jira project. Each repo runs its own poll workflow and gets an isolated view of coordination state — no cross-repo configuration is needed. The poller uses a decoupled **3-tier routing architecture** to route work automatically without taxonomy collisions:
 
-### Automatic repository routing via attached links
+1. **Priority 1 — In-Memory `repo:` Labels (0 HTTP calls)**
+2. **Priority 2 — Attached Git Remote Links (Bounded batch concurrency)**
+3. **Priority 3 — Unrouted Fallback (`strict_routing` toggle)**
 
-Before processing candidates, the poller reads each candidate's Jira remote web links (`GET /issue/{key}/remotelink`) across recognized forge URLs (`github.com`, `bitbucket.org`, `gitlab.com`, `gitlab.*`, `*.gitlab.com`, your configured GitLab host, SSH `git@` / `ssh://` URLs, and `git.*` hosts ending in `.git`, ignoring reserved non-repository routes and non-git links such as Google Docs or Confluence). On sites where remote issue linking is disabled (HTTP 403), the poller logs a warning, skips remote-link lookups for the rest of the cycle, and treats remote links as empty:
+### Clean 3-Tier Routing Architecture
 
-1. **Attached repository link(s) present:** Only pollers whose `--target-repo` (GitHub `owner/repo` slug) or `--project` (GitLab full nested path, e.g. `group/subgroup/repo`, defaulting to `CI_PROJECT_PATH`) matches at least one attached repository link claim the issue (for example, `https://gitlab.example.com/group/subgroup/repo/-/merge_requests/12` routes to `--project group/subgroup/repo`); pollers for other repositories skip it automatically (and if remote-link lookup errors occur for a candidate, the poller fails safe by skipping that candidate rather than falling through; if all attempted candidates fail lookup, the cycle fails).
-2. **No attached repository links:** The poller keeps the candidate for `--target-repo` / `--project` unless `tracker.jira.poll.query` filters it out server-side (or a component filter is configured in the internal poller options).
+#### Priority 1: In-Memory `repo:` Labels
 
-To filter by Jira component in production workflows, add a `component = <name>` predicate to `tracker.jira.poll.query` (for example `query: 'component = Backend AND statusCategory != Done ORDER BY updated DESC'`) rather than relying on client-side filtering alone, because server-side JQL avoids scanning unrelated issues and their remote links.
+The poller first evaluates each candidate's `issue.fields.labels` directly in memory without making any HTTP calls:
+- Labels matching the prefix `repo:` (case-insensitive, customizable via `tracker.jira.poll.repo_label_prefix` in `.fullsend/config.yaml` or `--repo-label-prefix`).
+- Supports bare repository slugs (e.g. `repo:my-org/my-repo` or `repo:group/subgroup/project`) as well as host-qualified URLs (e.g. `repo:https://github.com/my-org/my-repo` or `repo:git@gitlab.com:group/project.git`). Bare names without a slash (e.g. `repo:backend`) are rejected to avoid fork and taxonomy collisions.
+- **Match:** If any `repo:` label matches the poller's `--target-repo` (GitHub) or `--project` (GitLab), the issue is claimed immediately.
+- **Mismatch:** If one or more `repo:` labels are present but none match the poller's target, the issue is skipped immediately with **zero** remote-link HTTP lookups, avoiding Jira rate limits.
+
+#### Priority 2: Attached Git Remote Links
+
+If an issue carries no `repo:` labels, the poller inspects its Jira remote web links (`GET /issue/{key}/remotelink`) in bounded batches (up to 8 concurrent calls) across recognized forge URLs (`github.com`, `bitbucket.org`, `gitlab.com`, `gitlab.*`, `*.gitlab.com`, configured GitLab hosts, SSH URLs, and `git.*` hosts ending in `.git`):
+- **Match:** If an attached Git repository link matches `--target-repo` or `--project`, the candidate is claimed.
+- **Mismatch:** If attached Git repository links are present pointing to other repositories, the issue is skipped.
+- On sites where remote issue linking is disabled (HTTP 403), the poller logs a warning, skips remote-link lookups for the rest of the cycle, and treats remote links as empty.
+
+#### Priority 3: Unrouted Fallback (`strict_routing`)
+
+When an issue has neither `repo:` labels nor attached Git links:
+- **`strict_routing: false` (Default / Single-Repo Mode):** The candidate is retained for processing, preserving backward compatibility.
+- **`strict_routing: true` (Multi-Repo Mode):** The candidate is skipped cleanly. In multi-repo environments sharing a Jira project, enabling strict routing ensures that only explicitly routed issues (via label or attached link) are claimed, preventing duplicate competing agent dispatches across repositories.
+
+### Configuration
+
+Configure repository routing in `.fullsend/config.yaml`:
+
+```yaml
+version: "1"
+tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    project: PROJ
+    poll:
+      enabled: true
+      repo_label_prefix: "repo:" # default "repo:"
+      strict_routing: true       # skip unrouted candidates in multi-repo setups
+```
+
+You can also override routing settings via CLI flags or environment variables:
+- `--repo-label-prefix <prefix>` (env: `FULLSEND_REPO_LABEL_PREFIX`)
+- `--strict-repo-routing` (env: `FULLSEND_STRICT_REPO_ROUTING=true`)
 
 ### Should each repo have its own poll workflow?
 
@@ -1368,7 +1406,7 @@ Each repo's poller runs its own JQL query, scans up to 5 pages × 50 issues (250
 
 However, more pollers against the same Jira project means more API calls per cycle. Each poller reads up to 250 `remotelink` endpoints, reads entity properties for lock filtering, fetches changelogs, and paginates comments. For large multi-repo deployments, consider:
 
-- **Narrowing `tracker.jira.poll.query` per repo** to reduce candidate overlap. Use Jira Components or labels to segment the project (see the recommendation above), then scope each repo's query — e.g., `component = Frontend` or `labels = frontend` — so Jira skips issues that belong to other repos before `remotelink` lookups run.
+- **Narrowing `tracker.jira.poll.query` per repo** to reduce candidate overlap. Use repository labels (e.g. `labels in ("repo:my-org/frontend")`) or JQL filters to segment the project server-side so Jira skips issues that belong to other repos before candidate lookups run.
 - **Staggering cron schedules** so pollers from different repos don't hit the Jira API simultaneously. For example, offset each repo's schedule by one or two minutes.
 - **Monitoring Jira rate limits.** Jira Cloud uses points-based quotas, and multiple pollers multiply the cost. Watch for `429` responses in workflow logs — the poller retries with backoff, but sustained rate limiting slows all repos' cycles.
 
