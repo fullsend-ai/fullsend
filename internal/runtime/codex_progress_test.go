@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -760,6 +761,41 @@ func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
 		assert.False(t, results[0].IsError)
 	})
 
+	t.Run("MCP structured_content stands in for a result with no text", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":{"content":[],"structured_content":{"value":"42","key":"alpha","hits":3}},"error":null,"status":"completed"}}`)
+		require.Len(t, results, 1)
+		assert.Equal(t, "alpha\n42", results[0].Result, "string values by key; the number is dropped")
+		assert.True(t, results[0].Partial, "keys and the number are not kept")
+	})
+
+	t.Run("MCP structured_content is not read when a block holds text", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":{"content":[{"type":"text","text":"{\"key\":\"alpha\"}"}],"structured_content":{"key":"alpha"}},"error":null,"status":"completed"}}`)
+		require.Len(t, results, 1)
+		assert.Equal(t, `{"key":"alpha"}`, results[0].Result, "the text block the MCP spec asks servers to send alongside")
+		assert.False(t, results[0].Partial)
+	})
+
+	t.Run("web search results become the result", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"w1","type":"web_search","query":"q","action":{"type":"search","query":"q"},"results":[{"title":"First","url":"https://example.com/a"},{"title":"Second","url":"https://example.com/b","rank":2}]}}`)
+		require.Len(t, results, 1)
+		assert.Equal(t, "First\nhttps://example.com/a\nSecond\nhttps://example.com/b", results[0].Result)
+		assert.True(t, results[0].Partial)
+		assert.False(t, results[0].IsError)
+	})
+
+	t.Run("a web search without results closes with an empty result", func(t *testing.T) {
+		t.Parallel()
+		for _, results := range []string{``, `,"results":null`, `,"results":[]`} {
+			_, got := parse(t, `{"type":"item.completed","item":{"id":"w1","type":"web_search","query":"q","action":{"type":"search","query":"q"}`+results+`}}`)
+			require.Len(t, got, 1, "results%s", results)
+			assert.Empty(t, got[0].Result, "results%s", results)
+			assert.False(t, got[0].Partial, "results%s", results)
+		}
+	})
+
 	t.Run("null MCP arguments are no arguments", func(t *testing.T) {
 		t.Parallel()
 		uses, _ := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":null,"error":null,"status":"completed"}}`)
@@ -799,6 +835,31 @@ func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
 		assert.True(t, uses[0].StartedAt.Before(<-second),
 			"the second item.started does not restamp the call")
 	})
+}
+
+func TestCodexStructuredText(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, raw, text string
+		present         bool
+	}{
+		{"absent", ``, "", false},
+		{"null", `null`, "", false},
+		{"empty containers", `[{}, [], null]`, "", false},
+		{"a number alone", `[7]`, "", true},
+		{"an empty string", `[""]`, "", true},
+		{"nested, keys in order", `{"b":{"y":"2","x":"1"},"a":["0"]}`, "0\n1\n2", true},
+		{"escapes are decoded", `{"k":"line\nnext A"}`, "line\nnext A", true},
+		{"not JSON", `{`, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			text, present := codexStructuredText(json.RawMessage(tc.raw))
+			assert.Equal(t, tc.text, text)
+			assert.Equal(t, tc.present, present)
+		})
+	}
 }
 
 // --- redaction --------------------------------------------------------------

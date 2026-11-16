@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -47,7 +49,8 @@ import (
 //	collab_tool_call  {tool: spawn_agent|send_input|wait|close_agent,
 //	                   sender_thread_id, receiver_thread_ids[], prompt?,
 //	                   agents_states{}, status}
-//	web_search        {id, query, action{type: search|open_page|find_in_page, ...}}
+//	web_search        {id, query, action{type: search|open_page|find_in_page, ...},
+//	                   results?[]}
 //	todo_list         {items[{text, completed}]}
 //	error             {message}
 //
@@ -195,10 +198,12 @@ type codexMcpToolCallItem struct {
 
 // codexMcpResult is an MCP call's result as the exec stream carries it: the
 // server's content blocks (text, image, audio, resource) and an optional
-// structured_content value, which is not read — text is what the Level 3
-// record keeps, as it is for Claude and pi tool results.
+// structured_content value. Text is what the Level 3 record keeps, as it is
+// for Claude and pi tool results; structured_content is read only when the
+// blocks hold no text (see codexStructuredText).
 type codexMcpResult struct {
-	Content []piContentBlock `json:"content"`
+	Content           []piContentBlock `json:"content"`
+	StructuredContent json.RawMessage  `json:"structured_content"`
 }
 
 type codexCollabToolCallItem struct {
@@ -207,8 +212,12 @@ type codexCollabToolCallItem struct {
 	Status            string   `json:"status"`
 }
 
+// codexWebSearchItem is a web_search item. Results is upstream's
+// WebSearchItem.results ("structured results returned by web search, when
+// available"): arbitrary JSON values, absent when codex has none.
 type codexWebSearchItem struct {
-	Query string `json:"query"`
+	Query   string          `json:"query"`
+	Results json.RawMessage `json:"results"`
 }
 
 const (
@@ -360,15 +369,70 @@ func codexCommandFailed(item codexCommandExecutionItem) bool {
 // codexMcpResultText returns an MCP call's result as ToolResultEvent carries
 // it, and whether it failed: the error message when the item carries one,
 // otherwise the text of its content blocks, with partial set when a block of
-// another type was skipped (as for Claude and pi).
+// another type was skipped (as for Claude and pi). A result whose blocks
+// hold no text falls back to its structured_content, flattened by
+// codexStructuredText.
 func codexMcpResultText(item codexMcpToolCallItem) (text string, isError, partial bool) {
 	if item.Error != nil {
 		return item.Error.Message, true, false
 	}
 	if item.Result != nil {
 		text, partial = piContentText(item.Result.Content)
+		if text == "" {
+			if s, present := codexStructuredText(item.Result.StructuredContent); present {
+				text, partial = s, true
+			}
+		}
 	}
 	return text, item.Status == "failed", partial
+}
+
+// codexStructuredText flattens a JSON value the exec stream carries as a
+// tool's output (an MCP structured_content, a web search's results) to its
+// string values, one per line: array elements in order, object members by
+// key. JSON itself is never kept, as for Claude's and pi's non-text results
+// (see piResultText): the redactor is written for plain text, and a JSON
+// escape can hide a secret from it. Decoding first leaves only plain text.
+// present reports that the value held anything (a string, number or boolean
+// anywhere in it); since keys, numbers and booleans are dropped, the caller
+// marks the result Partial whenever it is set.
+func codexStructuredText(raw json.RawMessage) (text string, present bool) {
+	if codexRawArguments(raw) == "" {
+		return "", false
+	}
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		// Unreadable, but something was there.
+		return "", true
+	}
+	var b strings.Builder
+	var walk func(any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case string:
+			present = true
+			if t == "" {
+				return
+			}
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(t)
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		case map[string]any:
+			for _, k := range slices.Sorted(maps.Keys(t)) {
+				walk(t[k])
+			}
+		case nil:
+		default:
+			present = true
+		}
+	}
+	walk(v)
+	return b.String(), present
 }
 
 // codexRawArguments returns an mcp_tool_call's arguments as the wire carried
@@ -421,9 +485,11 @@ func ParseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 //     full (verified in the live capture: command_execution and file_change
 //     both arrive started-then-completed with the same id), as a
 //     ToolUseEvent carrying the item id followed by its ToolResultEvent:
-//     the command's aggregated_output, the MCP call's result text or error,
-//     and an empty result for items that carry no output (file_change,
-//     web_search, collab_tool_call). item.started emits nothing; the
+//     the command's aggregated_output, the MCP call's result text or error
+//     (its structured_content when no block holds text), a web search's
+//     results flattened to their string values (Partial; empty when codex
+//     sent none), and an empty result for the items that carry no output
+//     (file_change, collab_tool_call). item.started emits nothing; the
 //     instant the parser read it becomes the call's StartedAt, so the
 //     execute_tool span covers the call rather than its completion line.
 //     item.updated maps to nothing.
@@ -609,6 +675,7 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 			if json.Unmarshal(raw, &item) != nil {
 				return
 			}
+			results, partial := codexStructuredText(item.Results)
 			summary := redactSummary(item.Query)
 			if utf8.RuneCountInString(summary) > maxPatternDisplay {
 				summary = string([]rune(summary)[:maxPatternDisplay]) + "…"
@@ -617,7 +684,7 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 				Name:      "WebSearch",
 				Summary:   summary,
 				Arguments: codexArgument("query", item.Query),
-			}, "", false, false)
+			}, results, false, partial)
 		case "error":
 			// Non-fatal: warnings, deprecation notices and model reroutes
 			// all arrive as completed error items, and the run carries on.

@@ -130,6 +130,17 @@ command as `Bash`'s `command`, a patched path as `Write`'s or `Edit`'s
 `file_path`, a search as `WebSearch`'s `query` (not on the list below,
 so not recorded); an MCP call's arguments pass through as the wire
 carried them.
+Codex tool results are what its `exec --json` stream reports: a
+command's `aggregated_output`, an MCP call's text (its
+`structured_content` when no content block holds text) and a web
+search's `results`; the last two are reduced to their string values,
+never kept as JSON, and marked truncated. That stream carries a tool's
+output from before any `PostToolUse` hook ran, and a codex hook can
+block a result from the model but cannot rewrite it, so output a hook
+withheld from the model is still recorded here, after the collector's
+redaction, as the same output already is in codex's `output.jsonl` and
+rollout artifacts. Claude Code's stream carries the result the hooks
+left.
 `arguments` holds the members of the call's input that name what was
 called, listed by tool, each redacted as text: `Bash` — `command`,
 `description`, `timeout`; `Read` — `file_path`, `limit`, `offset`;

@@ -66,11 +66,14 @@ mkdir -p "${CODEX_HOME}" "${WORKDIR}/repo"
 printf '%s' "${OPENAI_API_KEY}" | npx -y --ignore-scripts "${PKG}" login --with-api-key >/dev/null
 
 # The stub's path is handed to codex as a TOML string; forward slashes keep
-# it valid on Windows too.
+# it readable on Windows too. JSON string escaping is valid in a TOML basic
+# string, so a quote or backslash in the checkout path cannot break the
+# config.
 STUB="${DIR}/mcp_stub.mjs"
 if command -v cygpath >/dev/null 2>&1; then
 	STUB="$(cygpath -m "${STUB}")"
 fi
+STUB_TOML="$("${PYTHON}" -c 'import json, sys; sys.stdout.write(json.dumps(sys.argv[1]))' "${STUB}")"
 
 echo "regen-mcp.sh: capturing with ${PKG} in ${WORKDIR}" >&2
 
@@ -83,7 +86,7 @@ npx -y --ignore-scripts "${PKG}" exec --json \
 	-c approval_policy=never \
 	-c model_reasoning_effort=low \
 	-c 'mcp_servers.stub.command="node"' \
-	-c "mcp_servers.stub.args=[\"${STUB}\"]" \
+	-c "mcp_servers.stub.args=[${STUB_TOML}]" \
 	-c 'mcp_servers.stub.default_tools_approval_mode="approve"' \
 	-C "${WORKDIR}/repo" \
 	--model "${CODEX_MODEL:-gpt-5.6-luna}" \
@@ -91,19 +94,45 @@ npx -y --ignore-scripts "${PKG}" exec --json \
 	</dev/null >"${RAW}"
 
 # Keep the capture free of host paths: the working directory and the stub's
-# location are the only ones codex could echo.
+# location are the only ones codex could echo. The result is checked in the
+# scratch directory and replaces the committed fixture only once it passes,
+# so a failed run never leaves a partial or host-path capture in the tree.
+CLEAN="${WORKDIR}/clean.ndjson"
 WORKDIR="${WORKDIR}" STUB="${STUB}" "${PYTHON}" -c '
 import os, sys
 s = sys.stdin.read()
 s = s.replace(os.environ["STUB"], "/sandbox/mcp_stub.mjs")
 s = s.replace(os.environ["WORKDIR"], "/sandbox/workspace")
 sys.stdout.write(s)
-' <"${RAW}" >"${DIR}/mcp_tool_call.ndjson"
+' <"${RAW}" >"${CLEAN}"
 
-if grep -qF -e "${WORKDIR}" -e "${STUB}" "${DIR}/mcp_tool_call.ndjson"; then
+if grep -qF -e "${WORKDIR}" -e "${STUB}" "${CLEAN}"; then
 	echo "regen-mcp.sh: refusing to keep a capture that still contains a host path" >&2
 	exit 1
 fi
+
+# codex can exit 0 without following the prompt. Keep the capture only if it
+# holds a completed call to each stub tool and a completed turn.
+if ! "${PYTHON}" -c '
+import json, sys
+tools, turn = set(), False
+for line in open(sys.argv[1], encoding="utf-8"):
+    try:
+        e = json.loads(line)
+    except ValueError:
+        continue
+    item = e.get("item") or {}
+    if e.get("type") == "item.completed" and item.get("type") == "mcp_tool_call" and item.get("server") == "stub":
+        tools.add(item.get("tool"))
+    turn = turn or e.get("type") == "turn.completed"
+missing = sorted({"lookup", "fail", "broken"} - tools)
+if missing or not turn:
+    sys.exit("missing: " + ", ".join(missing + ([] if turn else ["turn.completed"])))
+' "${CLEAN}"; then
+	echo "regen-mcp.sh: the capture is incomplete; ${DIR}/mcp_tool_call.ndjson was left as it was" >&2
+	exit 1
+fi
+mv -f "${CLEAN}" "${DIR}/mcp_tool_call.ndjson"
 
 echo "wrote ${DIR}/mcp_tool_call.ndjson ($(wc -l <"${DIR}/mcp_tool_call.ndjson") lines) with ${PKG}"
 echo "update README.md with the model and version, and re-check the expected events in codex_progress_test.go" >&2

@@ -162,7 +162,8 @@ mcp_tool_call     {server, tool, arguments, result: {content[], _meta?,
 collab_tool_call  {tool: spawn_agent|send_input|wait|close_agent,
                    sender_thread_id, receiver_thread_ids[], prompt|null,
                    agents_states{}, status: in_progress|completed|failed}
-web_search        {id, query, action{type: search|open_page|find_in_page, …}}
+web_search        {id, query, action{type: search|open_page|find_in_page, …},
+                   results?: [any JSON]}
 todo_list         {items: [{text, completed}]}
 error             {message}
 ```
