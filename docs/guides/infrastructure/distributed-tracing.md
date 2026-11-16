@@ -131,10 +131,11 @@ command as `Bash`'s `command`, a patched path as `Write`'s or `Edit`'s
 so not recorded); an MCP call's arguments pass through as the wire
 carried them.
 Codex tool results are what its `exec --json` stream reports: a
-command's `aggregated_output`, an MCP call's text (its
-`structured_content` when no content block holds text) and a web
-search's `results`; the last two are reduced to their string values,
-never kept as JSON, and marked truncated. That stream carries a tool's
+command's `aggregated_output` and an MCP call's text (its
+`structured_content` when no content block holds text, reduced to its
+string values, never kept as JSON, and marked truncated). A web
+search's `results` are not recorded: fullsend runs codex with web
+search disabled, so no capture shows their shape. That stream carries a tool's
 output from before any `PostToolUse` hook ran, and a codex hook can
 block a result from the model but cannot rewrite it, so output a hook
 withheld from the model is still recorded here, after the collector's

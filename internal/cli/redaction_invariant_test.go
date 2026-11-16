@@ -459,9 +459,6 @@ func TestRedaction_NoSecretSurvivesAnyWrapping(t *testing.T) {
 		{"codex web search", viaCodex(func(text string) string {
 			return codexWire(`{"id":"item_1","type":"web_search","query":` + jsonStr(text) + `}`)
 		})},
-		{"codex web search results", viaCodex(func(text string) string {
-			return codexWire(`{"id":"item_1","type":"web_search","query":"q","results":[{"title":` + jsonStr(text) + `,"url":"https://example.com"}]}`)
-		})},
 		{"codex MCP structured content", viaCodex(func(text string) string {
 			return codexWire(codexMcp(`{}`, `{"content":[],"structured_content":{"body":`+jsonStr(text)+`}}`, ""))
 		})},

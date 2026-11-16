@@ -733,6 +733,25 @@ func TestToolSpanTracker_CodexEveryItemKind(t *testing.T) {
 		"the failed patch, the errored MCP call and the declined command")
 }
 
+func TestToolSpanTracker_CodexUnfinishedItemEndsUnanswered(t *testing.T) {
+	// At turn end codex completes every item that started without
+	// completing, still in_progress (reconcile_unfinished_started_items):
+	// the call never finished, so its span is not Ok.
+	tr, rec, _ := toolSpanFixture(t)
+	item := `{"id":"item_1","type":"command_execution","command":"sleep 60","aggregated_output":"","exit_code":null,"status":"in_progress"}`
+	wire := `{"type":"item.started","item":` + item + "}\n" +
+		`{"type":"item.completed","item":` + item + "}\n" +
+		`{"type":"turn.failed","error":{"message":"stopped"}}` + "\n"
+	_, err := agentruntime.ParseCodexStream(strings.NewReader(wire), tr.Handle)
+	require.NoError(t, err)
+	assert.Zero(t, tr.Finish())
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 1)
+	assert.Equal(t, "unanswered", toolSpanAttrs(spans[0])[attribute.Key("error.type")].AsString())
+	assert.Equal(t, codes.Error, spans[0].Status.Code)
+}
+
 func TestToolSpanTracker_PiOversizedEndIsAnsweredNotUnanswered(t *testing.T) {
 	tr, rec, _ := toolSpanFixture(t)
 	big := strings.Repeat("x", 1024*1024+10)

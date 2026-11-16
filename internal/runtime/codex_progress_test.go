@@ -777,13 +777,46 @@ func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
 		assert.False(t, results[0].Partial)
 	})
 
-	t.Run("web search results become the result", func(t *testing.T) {
+	t.Run("web search results are not recorded, only marked", func(t *testing.T) {
 		t.Parallel()
-		_, results := parse(t, `{"type":"item.completed","item":{"id":"w1","type":"web_search","query":"q","action":{"type":"search","query":"q"},"results":[{"title":"First","url":"https://example.com/a"},{"title":"Second","url":"https://example.com/b","rank":2}]}}`)
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"w1","type":"web_search","query":"q","action":{"type":"search","query":"q"},"results":[{"title":"First","url":"https://example.com/a"}]}}`)
 		require.Len(t, results, 1)
-		assert.Equal(t, "First\nhttps://example.com/a\nSecond\nhttps://example.com/b", results[0].Result)
-		assert.True(t, results[0].Partial)
+		assert.Empty(t, results[0].Result, "no capture shows the shape of results")
+		assert.True(t, results[0].Partial, "the result is not the whole of what codex sent")
 		assert.False(t, results[0].IsError)
+	})
+
+	t.Run("an item codex completed while still in progress gets no result", func(t *testing.T) {
+		t.Parallel()
+		// What reconcile_unfinished_started_items writes when a turn ends
+		// with the call still running.
+		for _, item := range []string{
+			`{"id":"c1","type":"command_execution","command":"sleep 60","aggregated_output":"","exit_code":null,"status":"in_progress"}`,
+			`{"id":"c1","type":"mcp_tool_call","server":"s","tool":"t","arguments":{},"result":null,"error":null,"status":"in_progress"}`,
+			`{"id":"c1","type":"file_change","changes":[{"path":"/a","kind":"add"},{"path":"/b","kind":"update"}],"status":"in_progress"}`,
+			`{"id":"c1","type":"collab_tool_call","tool":"wait","sender_thread_id":"t0","receiver_thread_ids":["t1"],"agents_states":{},"status":"in_progress"}`,
+		} {
+			// Not parse: its pairing check is what this case breaks.
+			var uses []ToolUseEvent
+			var results []ToolResultEvent
+			_, err := parseCodexStream(strings.NewReader(
+				`{"type":"item.started","item":`+item+"}\n"+
+					`{"type":"item.completed","item":`+item+"}\n"), func(evt AgentEvent) {
+				switch e := evt.(type) {
+				case ToolUseEvent:
+					uses = append(uses, e)
+				case ToolResultEvent:
+					results = append(results, e)
+				}
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, uses, item)
+			for _, u := range uses {
+				assert.True(t, strings.HasPrefix(u.ID, "c1"), item)
+				assert.False(t, u.StartedAt.IsZero(), item)
+			}
+			assert.Empty(t, results, "the tool never answered: %s", item)
+		}
 	})
 
 	t.Run("a web search without results closes with an empty result", func(t *testing.T) {

@@ -164,6 +164,9 @@ type codexItemEvent struct {
 type codexItemHeader struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
+	// Status is in_progress|completed|failed (declined too, for a
+	// command); web_search has none.
+	Status string `json:"status"`
 }
 
 type codexTextItem struct {
@@ -214,7 +217,11 @@ type codexCollabToolCallItem struct {
 
 // codexWebSearchItem is a web_search item. Results is upstream's
 // WebSearchItem.results ("structured results returned by web search, when
-// available"): arbitrary JSON values, absent when codex has none.
+// available"): arbitrary JSON values, absent when codex has none. They are
+// not recorded: fullsend runs codex with web_search disabled, so no capture
+// shows what codex puts there, and flattening an unknown shape could carry
+// URLs and provider metadata into the Level 3 record. A non-empty value
+// only marks the result Partial.
 type codexWebSearchItem struct {
 	Query   string          `json:"query"`
 	Results json.RawMessage `json:"results"`
@@ -388,9 +395,8 @@ func codexMcpResultText(item codexMcpToolCallItem) (text string, isError, partia
 }
 
 // codexStructuredText flattens a JSON value the exec stream carries as a
-// tool's output (an MCP structured_content, a web search's results) to its
-// string values, one per line: array elements in order, object members by
-// key. JSON itself is never kept, as for Claude's and pi's non-text results
+// tool's output (an MCP structured_content) to its string values, one per
+// line: array elements in order, object members by key. JSON itself is never kept, as for Claude's and pi's non-text results
 // (see piResultText): the redactor is written for plain text, and a JSON
 // escape can hide a secret from it. Decoding first leaves only plain text.
 // present reports that the value held anything (a string, number or boolean
@@ -486,13 +492,20 @@ func ParseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 //     both arrive started-then-completed with the same id), as a
 //     ToolUseEvent carrying the item id followed by its ToolResultEvent:
 //     the command's aggregated_output, the MCP call's result text or error
-//     (its structured_content when no block holds text), a web search's
-//     results flattened to their string values (Partial; empty when codex
-//     sent none), and an empty result for the items that carry no output
-//     (file_change, collab_tool_call). item.started emits nothing; the
-//     instant the parser read it becomes the call's StartedAt, so the
-//     execute_tool span covers the call rather than its completion line.
-//     item.updated maps to nothing.
+//     (its structured_content when no block holds text), and an empty
+//     result for the rest (file_change, collab_tool_call, and web_search,
+//     whose results are not recorded; see codexWebSearchItem).
+//     item.started emits nothing; the instant the parser read it becomes
+//     the call's StartedAt, so the execute_tool span covers the call
+//     rather than its completion line. item.updated maps to nothing.
+//
+//   - An item.completed can describe a call that never finished: when a
+//     turn ends (completed, failed or interrupted), the processor completes
+//     every item that started without completing, from the turn's snapshot
+//     (reconcile_unfinished_started_items, rust-v0.166.0), so its status
+//     can still be in_progress. Such a call gets its ToolUseEvent but no
+//     ToolResultEvent: the tool never answered, so the execute_tool span
+//     ends unanswered at Finish, as a pi call cut off by its stream does.
 //
 //   - A file_change item lists several paths and is reported as one call
 //     per path, so each call's id is the item id suffixed "#<index>": one
@@ -566,13 +579,15 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 		}
 		startedAt := started[head.ID]
 		delete(started, head.ID)
-		// call reports one finished tool call: its ToolUseEvent, then its
+		// call reports one tool call: its ToolUseEvent, then its
 		// ToolResultEvent. An item with no id gets no result, so its call
-		// still counts but opens no execute_tool span.
+		// still counts but opens no execute_tool span; an item still
+		// in_progress gets none either, since the tool never answered.
+		unfinished := head.Status == "in_progress"
 		call := func(id string, use ToolUseEvent, result string, isError, partial bool) {
 			use.ID, use.StartedAt = id, startedAt
 			onEvent(use)
-			if id != "" {
+			if id != "" && !unfinished {
 				onEvent(ToolResultEvent{ID: id, Result: result, IsError: isError, Partial: partial})
 			}
 		}
@@ -675,7 +690,7 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 			if json.Unmarshal(raw, &item) != nil {
 				return
 			}
-			results, partial := codexStructuredText(item.Results)
+			_, partial := codexStructuredText(item.Results)
 			summary := redactSummary(item.Query)
 			if utf8.RuneCountInString(summary) > maxPatternDisplay {
 				summary = string([]rune(summary)[:maxPatternDisplay]) + "…"
@@ -684,7 +699,7 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 				Name:      "WebSearch",
 				Summary:   summary,
 				Arguments: codexArgument("query", item.Query),
-			}, results, false, partial)
+			}, "", false, partial)
 		case "error":
 			// Non-fatal: warnings, deprecation notices and model reroutes
 			// all arrive as completed error items, and the run carries on.

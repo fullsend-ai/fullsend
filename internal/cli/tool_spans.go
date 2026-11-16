@@ -68,9 +68,10 @@ const maxToolSpanNameBytes = 128
 // dispatch); a call that never gets a result — the runtime was stopped, or its
 // over-long result line showed no id in the prefix the parser keeps — is ended
 // by Finish as error.type=unanswered (the pi parser reports a call cut off by a
-// kill or timeout when its stream stops; the codex parser reports a call only
-// at item.completed, so one cut off gets no span); a result whose line exceeded the
-// parser's 1 MiB bound (ToolResultEvent.Oversized) ends its span at
+// kill or timeout when its stream stops; codex completes a call still running at
+// turn end with status in_progress, which the parser reports without a result,
+// and a codex call cut off with no item.completed gets no span); a result whose
+// line exceeded the parser's 1 MiB bound (ToolResultEvent.Oversized) ends its span at
 // receipt, marked fullsend.tool.result_oversized and left without a status,
 // since the tool answered and its is_error was never decoded; and a result
 // whose call was never seen (its tool_use line was skipped) becomes a
