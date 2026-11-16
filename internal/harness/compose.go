@@ -276,9 +276,12 @@ func (opts ComposeOpts) offlineMissAdvice() string {
 }
 
 // lockedNotCachedError reports a locked URL whose pinned content is not in
-// the cache while offline mode forbids fetching it.
+// the cache while offline mode forbids fetching it. Restoring the pinned
+// content needs a network fetch the lock checks (rerun without --offline);
+// `fullsend lock --update` re-pins to whatever the source now serves, so it
+// is named only as that.
 func (opts ComposeOpts) lockedNotCachedError(field, rawURL, hash string) error {
-	return fmt.Errorf("base %s: URL %s is pinned in the lock file with sha256=%s, but that content is not in cache and offline mode is enabled (run %s first)", field, rawURL, hash, opts.lockUpdateCommand())
+	return fmt.Errorf("base %s: URL %s is pinned in the lock file with sha256=%s, but that content is not in cache and offline mode is enabled (rerun without --offline to fetch the pinned content, or run %s to re-pin to its source)", field, rawURL, hash, opts.lockUpdateCommand())
 }
 
 // checkLockedHash returns an error when pin is set and differs from got,
