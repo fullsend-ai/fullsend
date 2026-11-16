@@ -32,13 +32,11 @@ type TraceKeysConfig struct {
 	Rotate bool
 }
 
-// traceKeyReason is why EnsureTraceSigningKeys plans a key.
-type traceKeyReason string
-
+// TraceKeyPlan.Reason values.
 const (
-	reasonFreshInstall traceKeyReason = "fresh install"
-	reasonRecovery     traceKeyReason = "recovery"
-	reasonRotation     traceKeyReason = "rotation"
+	reasonFreshInstall = "fresh install"
+	reasonRecovery     = "recovery"
+	reasonRotation     = "rotation"
 )
 
 // TraceKeyPlan is one repository's pending trace-key write. Key holds the
@@ -49,7 +47,7 @@ type TraceKeyPlan struct {
 	Key tracecontext.SigningKey
 	// Reason is why the key is planned: a fresh install, a recovery or a
 	// rotation.
-	Reason         traceKeyReason
+	Reason         string
 	KeyIDVar       string
 	KeyIDVarExists bool
 }
@@ -103,6 +101,9 @@ var (
 // RequireInferenceAuth are skipped. Progress names installation and key IDs,
 // and the glob a new entry was copied from, never the seed.
 func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients ForgeClientFactory, progress ProgressFunc) (map[string]*TraceKeyPlan, error) {
+	if progress == nil {
+		progress = func(_, _, _ string) {}
+	}
 	m := cfg.Manifest
 	selected, err := selectManifestRepos(ctx, m, clients, cfg.RepoFilter)
 	if err != nil {
@@ -280,7 +281,7 @@ type traceRepo struct {
 	manifest  *traceKeySet
 	installed *traceKeySet
 	// reason is why a key is planned; "" plans none.
-	reason traceKeyReason
+	reason string
 	// readOnlySkip reports a fresh install that goes ahead without keys
 	// because the manifest is read-only.
 	readOnlySkip bool

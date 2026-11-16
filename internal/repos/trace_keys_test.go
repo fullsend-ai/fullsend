@@ -258,6 +258,17 @@ func TestEnsureTraceSigningKeys_FreshInstall(t *testing.T) {
 	}
 }
 
+// A nil progress is a no-op, as in the other exported functions that take
+// a ProgressFunc: a fresh install still gets its plan.
+func TestEnsureTraceSigningKeys_NilProgress(t *testing.T) {
+	fc, cfg := traceFixture(t, false, "acme/api")
+
+	plans, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest},
+		newTestClientFactory(fc), nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"acme/api"}, planNames(plans))
+}
+
 // A repository that only a glob covers gets its own GitHub entry, copied
 // from the first glob entry that covers it, and progress names that entry
 // and that glob, since later edits to the glob no longer reach it; the globs
@@ -425,7 +436,7 @@ func TestEnsureTraceSigningKeys_RegeneratesKeepingInstallation(t *testing.T) {
 		// installed puts a fullsend workflow on the default branch.
 		installed bool
 		rotate    bool
-		reason    traceKeyReason
+		reason    string
 		// keyIDVar is the variable's value in the fixture; "" is absent.
 		keyIDVar string
 		setup    func(t *testing.T, m *Manifest, fc *forge.FakeClient)
