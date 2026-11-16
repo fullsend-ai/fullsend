@@ -28,10 +28,10 @@ harness yaml remotely in their config.yaml.
 
 What if we took this a step further, and had a way for a third-party to
 construct a *bundle* of configuration -- multiple agents, configuration
-overlays for existing agents, and more.  I (as the author of this ADR) want to
-use this at my employer to create a config bundle that includes certain
-security capability enhancements for some agents, and advertise that as a
-golden configuration for those agents.
+overlays for existing agents, and more.  A platform owner in a company may want
+to create a config bundle that includes certain (for example) security
+capability enhancements for some agents, and advertise that as a golden
+configuration for those agents within their organization.
 
 What capabilities exist that we can build on?
 
