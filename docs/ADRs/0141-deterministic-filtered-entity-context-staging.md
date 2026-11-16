@@ -26,6 +26,11 @@ effective `human_min_role` above an immutable `triage` floor. Snapshot v1
 retains its historical threshold; deterministic assembly, current-revision
 checks, and filtering remain required.
 
+Partially superseded by
+[ADR 0117](0117-steer-a-running-cycle-with-admitted-entity-updates.md) on the
+steer path: host-side re-fetch of newer revisions of snapshot kinds during a
+cycle, and steer output listed in its own steer-envelope manifest.
+
 ## Context
 
 [Issue #6407](https://github.com/fullsend-ai/fullsend/issues/6407) identifies
