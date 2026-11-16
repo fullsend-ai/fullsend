@@ -47,7 +47,7 @@ func loadRootActionSteps(t *testing.T) map[string]actionStep {
 // when workflowEndpoint is non-nil, FULLSEND_OPENSHELL_GATEWAY_ENDPOINT is
 // set to it (the channel the dispatch workflow passes from repository
 // variables).
-func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir string, workflowEndpoint *string) (string, map[string]string, map[string]string, error) {
+func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir string, workflowEndpoint *string, lockValue *string) (string, map[string]string, map[string]string, error) {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
 	require.NoError(t, err)
@@ -66,6 +66,9 @@ func runDetectSandboxHost(t *testing.T, script string, endpoint *string, pathDir
 	}
 	if workflowEndpoint != nil {
 		env = append(env, "FULLSEND_OPENSHELL_GATEWAY_ENDPOINT="+*workflowEndpoint)
+	}
+	if lockValue != nil {
+		env = append(env, "FULLSEND_OPENSHELL_GATEWAY_ENDPOINT_LOCKED="+*lockValue)
 	}
 	cmd := exec.Command(bash, scriptPath)
 	cmd.Env = env
@@ -107,10 +110,13 @@ func TestActionDetectSandboxHostStep(t *testing.T) {
 	injected := "https://gateway.example\nBASH_ENV=/tmp/x"
 	httpEndpoint := "http://gateway.example:8080"
 
+	lockTrue := "1"
+	lockTrueWord := "true"
 	cases := []struct {
 		name             string
 		endpoint         *string
 		workflowEndpoint *string
+		lockValue        *string
 		pathDir          string
 		wantLocal        string
 		wantInstallShell string
@@ -131,10 +137,19 @@ func TestActionDetectSandboxHostStep(t *testing.T) {
 		{name: "whitespace-only runner endpoint is rejected", endpoint: &whitespace, pathDir: withCLI, wantErr: true},
 		{name: "newline-injected runner endpoint is rejected", endpoint: &injected, pathDir: withCLI, wantErr: true},
 		{name: "non-https runner endpoint is rejected", endpoint: &httpEndpoint, pathDir: withCLI, wantErr: true},
+		// Operator lock: the runner value wins, and a repository variable
+		// naming a different endpoint fails the job instead of redirecting
+		// the gateway's credentials.
+		{name: "locked runner value agrees with the repository variable", endpoint: &remote, workflowEndpoint: &remote, lockValue: &lockTrue, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
+		{name: "locked with only the runner value", endpoint: &remote, lockValue: &lockTrue, pathDir: withCLI, wantLocal: "false", wantInstallShell: "false", wantEndpoint: remote},
+		{name: "locked with no runner value and a repository variable fails the job", workflowEndpoint: &remote, lockValue: &lockTrue, pathDir: withCLI, wantErr: true},
+		{name: "locked with a near-miss lock value fails the job", endpoint: &remote, workflowEndpoint: &other, lockValue: &lockTrueWord, pathDir: withCLI, wantErr: true},
+		{name: "locked with a differing repository variable fails the job", endpoint: &remote, workflowEndpoint: &other, lockValue: &lockTrue, pathDir: withCLI, wantErr: true},
+		{name: "locked with no runner value and no repository variable sets up locally", lockValue: &lockTrue, pathDir: withCLI, wantLocal: "true", wantInstallShell: "true"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, outputs, envWrites, err := runDetectSandboxHost(t, detect.Run, tc.endpoint, tc.pathDir, tc.workflowEndpoint)
+			out, outputs, envWrites, err := runDetectSandboxHost(t, detect.Run, tc.endpoint, tc.pathDir, tc.workflowEndpoint, tc.lockValue)
 			// The endpoint value is never logged: the step prints its source
 			// and, on rejection, its length, but not the value itself, which
 			// can carry credentials or internal addresses into public logs.
@@ -156,7 +171,16 @@ func TestActionDetectSandboxHostStep(t *testing.T) {
 				// any non-zero exit: the error annotation is printed, and
 				// nothing is published to GITHUB_ENV or GITHUB_OUTPUT.
 				require.Error(t, err)
-				assert.Contains(t, out, "::error::OPENSHELL_GATEWAY_ENDPOINT must be a single https:// URL")
+				if tc.lockValue != nil && *tc.lockValue != "1" && *tc.lockValue != "0" {
+					assert.Contains(t, out, "::error::FULLSEND_OPENSHELL_GATEWAY_ENDPOINT_LOCKED must be 1, 0 or empty")
+				} else if tc.lockValue != nil && *tc.lockValue == "1" && tc.endpoint == nil && tc.workflowEndpoint != nil {
+					assert.Contains(t, out, "::error::This runner's gateway endpoint is locked")
+					assert.Contains(t, out, "no OPENSHELL_GATEWAY_ENDPOINT to pin to")
+				} else if tc.lockValue != nil && *tc.lockValue == "1" {
+					assert.Contains(t, out, "::error::This runner's gateway endpoint is locked")
+				} else {
+					assert.Contains(t, out, "::error::OPENSHELL_GATEWAY_ENDPOINT must be a single https:// URL")
+				}
 				_, wrote := envWrites["OPENSHELL_GATEWAY_ENDPOINT"]
 				assert.False(t, wrote, "a rejected endpoint must not be published to GITHUB_ENV")
 				_, decided := outputs["local"]
@@ -165,7 +189,9 @@ func TestActionDetectSandboxHostStep(t *testing.T) {
 			}
 			// The success log names the channel the endpoint came from.
 			if tc.wantEndpoint != "" {
-				if tc.workflowEndpoint != nil && *tc.workflowEndpoint != "" {
+				if tc.lockValue != nil && *tc.lockValue == "1" && tc.endpoint != nil {
+					assert.Contains(t, out, "from runner environment (locked)")
+				} else if tc.workflowEndpoint != nil && *tc.workflowEndpoint != "" {
 					assert.Contains(t, out, "from repository variable")
 				} else if tc.endpoint != nil {
 					assert.Contains(t, out, "from runner environment")

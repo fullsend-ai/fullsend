@@ -115,15 +115,15 @@ elsewhere. Configure the endpoint in one of these ways:
    reusable workflow, `vars` is read from that calling repository, not
    from the repository holding the issue or pull request. For the
    standard per-repo install the calling repository is the work-item
-   repository itself; for runs driven from the `.fullsend` config
-   repository (prioritize, poller and harness-matrix runs) it is the
-   config repository. An organization variable visible to the calling
-   repository also works. When the run starts from a different repository
-   than the work item, a variable set only on the work-item repository is
-   not read.
+   repository itself; for a custom poller or other external repository
+   calling the reusable workflow, it is that calling repository. An
+   organization variable visible to the calling repository also works.
+   When the run starts from a different repository than the work item, a
+   variable set only on the work-item repository is not read.
 2. As a fallback, for fleet-managed runner images, set
    `OPENSHELL_GATEWAY_ENDPOINT` in the runner's own process environment;
-   it applies whenever the variable from step 1 is unset. The same rule
+   it applies whenever the variable from step 1 is unset, and always
+   when the runner's endpoint is locked (below). The same rule
    holds on this channel: the value must be a single `https://` URL with
    no whitespace. Earlier releases accepted any non-empty value here, so
    plaintext, scheme-less or uppercase-scheme runner values must be
@@ -153,13 +153,27 @@ whatever endpoint the variable holds.
 **Precedence and validation.** A non-empty repository or organization
 variable deliberately takes precedence over a value configured in the
 runner's process environment: repository administrators choose the
-gateway for their runs. Whatever the source, the value must be a single
-`https://` URL with no whitespace.
+gateway for their runs. The exception is a locked runner (below).
+Whatever the source, the value must be a single `https://` URL with no
+whitespace.
 
 **Shared runner pools.** When a fleet image sets `OPENSHELL_GATEWAY` on
 a runner pool shared across repositories, each repository's variable
 decides which endpoint receives that gateway's registered credentials
-for its runs.
+for its runs. On a bearer-auth gateway (OIDC or Cloudflare edge, without
+pinned-CA mTLS), that means anyone who can write Actions variables in
+one repository can send the gateway's reusable bearer token to any host
+with a public certificate. Runner operators who need to prevent this can
+set `FULLSEND_OPENSHELL_GATEWAY_ENDPOINT_LOCKED=1` in the runner's
+process environment, together with the runner's own
+`OPENSHELL_GATEWAY_ENDPOINT`: the runner value then wins, a repository
+variable naming a different endpoint fails the job, and a repository
+variable set on a runner with no endpoint of its own fails too — the
+lock is fail-closed, and it requires the runner endpoint to pin to. The
+lock defends against variable-only writers; anyone who can write
+workflows that run on the pool can still set step `env:` overrides, so
+limiting which repositories can use the runner group remains the control
+against workflow writers.
 
 **CLI preinstall (remote gateway only).** On a remote-gateway runner,
 if the `openshell` CLI is already on the runner's `PATH`, the action
