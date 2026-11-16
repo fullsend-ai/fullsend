@@ -1865,6 +1865,75 @@ agents:
 	assert.Equal(t, "harness/lint.yaml", lint.Source)
 	assert.Equal(t, "opus", lint.Model, "base model kept (unset flag inherits)")
 	assert.Equal(t, "medium", lint.Effort)
+
+	// Only the effort was requested, so the overlay entry holds no model:
+	// writing the inherited one would freeze it against base changes.
+	local, found := config.AgentSettingsFor(localAgentEntries(cfg), "lint")
+	require.True(t, found)
+	assert.Equal(t, config.AgentEntry{Name: "lint", Effort: "medium"}, local, "only the flag given is written")
+
+	// A later base model change reaches the agent; the local effort stays.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - source: harness/lint.yaml
+    model: sonnet
+`), 0o644))
+	cfg, err = loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	lint, found = config.AgentSettingsFor(cfg.AgentEntries(), "lint")
+	require.True(t, found)
+	assert.Equal(t, "sonnet", lint.Model, "base model change is inherited")
+	assert.Equal(t, "medium", lint.Effort)
+}
+
+func TestRunAgentSet_BaseLayerAgentKeepsExplicitLocalModel(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - source: harness/lint.yaml
+    model: opus
+`), 0o644))
+	writePerRepoConfig(t, dir, `agents:
+  - name: lint
+    model: haiku
+`)
+	require.NoError(t, runAgentSet(dir, "lint", agentSetFlags{effort: "medium", effortSet: true}, ui.New(os.Stdout)))
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	local, found := config.AgentSettingsFor(localAgentEntries(cfg), "lint")
+	require.True(t, found)
+	assert.Equal(t, config.AgentEntry{Name: "lint", Model: "haiku", Effort: "medium"}, local, "explicit local model preserved")
+	lint, found := config.AgentSettingsFor(cfg.AgentEntries(), "lint")
+	require.True(t, found)
+	assert.Equal(t, "haiku", lint.Model)
+	assert.Equal(t, "medium", lint.Effort)
+}
+
+func TestRunAgentSet_BaseLayerRuntimeAndEffortNotFrozen(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - source: harness/lint.yaml
+    runtime: claude
+    effort: high
+`), 0o644))
+	writePerRepoConfig(t, dir, "")
+	require.NoError(t, runAgentSet(dir, "lint", agentSetFlags{model: "sonnet", modelSet: true}, ui.New(os.Stdout)))
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	local, found := config.AgentSettingsFor(localAgentEntries(cfg), "lint")
+	require.True(t, found)
+	assert.Equal(t, config.AgentEntry{Name: "lint", Model: "sonnet"}, local, "inherited runtime and effort not written")
+	lint, found := config.AgentSettingsFor(cfg.AgentEntries(), "lint")
+	require.True(t, found)
+	assert.Equal(t, "claude", lint.Runtime)
+	assert.Equal(t, "sonnet", lint.Model)
+	assert.Equal(t, "high", lint.Effort)
 }
 
 func TestAgentSetCmd_ExecutesAndTracksChangedFlags(t *testing.T) {
@@ -2470,6 +2539,42 @@ func TestRunAgentSet_OpenAISubagentWarnsWithoutProvider(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRunAgentSet_OpenAISubagentWarningInheritedRuntime: a --subagent-only
+// set leaves the base layer's runtime out of the overlay, but the warning
+// still judges the effective (inherited) runtime.
+func TestRunAgentSet_OpenAISubagentWarningInheritedRuntime(t *testing.T) {
+	dir := t.TempDir()
+	for _, d := range []string{"harness", "agents", "skills/probe/sub-agents"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, d), 0o755))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agents", "mix.md"), []byte("You probe.\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "skills", "probe", "SKILL.md"),
+		[]byte("---\nname: probe\ndescription: probe\n---\nProbe.\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "skills", "probe", "sub-agents", "checker.md"),
+		[]byte("---\nname: checker\nmodel: sonnet\n---\nCheck.\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "mix.yaml"),
+		[]byte("agent: agents/mix.md\nrole: test\nmodel: opus\nskills:\n  - skills/probe\nproviders:\n  - vertex-ai\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`version: "1"
+agents:
+  - name: mix
+    source: harness/mix.yaml
+    runtime: pi
+`), 0o644))
+	writePerRepoConfig(t, dir, "")
+
+	var out bytes.Buffer
+	require.NoError(t, runAgentSet(dir, "mix", agentSetFlags{
+		subagentSet: true, subagentArgs: []string{"checker=openai/gpt-5.6-luna"},
+	}, ui.New(&out)))
+	assert.Contains(t, out.String(), "declares no openai provider")
+
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	local, found := config.AgentSettingsFor(localAgentEntries(cfg), "mix")
+	require.True(t, found)
+	assert.Empty(t, local.Runtime, "inherited runtime not written")
 }
 
 // The agent-editing commands resolve the allowlist the way the commands
