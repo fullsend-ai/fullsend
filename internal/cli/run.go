@@ -6814,7 +6814,9 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			}
 			// Sanitized may be empty when all content was invisible characters.
 			out := result.Sanitized
-			if writeErr := os.WriteFile(path, []byte(out), 0o644); writeErr != nil {
+			if json.Valid(content) && !json.Valid([]byte(out)) {
+				printer.StepWarn(fmt.Sprintf("Sanitization broke JSON structural validity in %s; retaining original file to preserve structure", relPath))
+			} else if writeErr := os.WriteFile(path, []byte(out), 0o644); writeErr != nil {
 				printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
 			}
 		}

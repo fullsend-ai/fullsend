@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -80,4 +81,23 @@ func TestScanOutputFiles_SkipsStagedSkillsAndPersonaManifest(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotEqual(t, secret, string(got), p)
 	}
+}
+
+// TestScanOutputFiles_PreservesJSONStructuralValidity pins that if an output
+// file was valid JSON before sanitization, scanOutputFiles will ensure that the
+// resulting file on disk remains structurally valid JSON (#5705).
+func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
+	dir := t.TempDir()
+	jsonFile := filepath.Join(dir, "agent-result.json")
+	validJSON := `{"action":"comment","body":"Token: ghp_FAKEtesttoken000000000000000000000000\n"}`
+	require.NoError(t, os.WriteFile(jsonFile, []byte(validJSON), 0o644))
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
+
+	content, err := os.ReadFile(jsonFile)
+	require.NoError(t, err)
+	assert.True(t, json.Valid(content), "sanitized output must remain valid JSON: %s", string(content))
+	assert.NotContains(t, string(content), "ghp_FAKEtest")
 }

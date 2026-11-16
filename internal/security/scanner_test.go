@@ -2,6 +2,7 @@ package security
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -381,6 +382,41 @@ func TestSecretRedactor(t *testing.T) {
 		assert.True(t, hasFinding(result, "auth_header"))
 		assert.True(t, json.Valid([]byte(result.Sanitized)),
 			"output is not valid JSON: %s", result.Sanitized)
+	})
+
+	t.Run("env assignment does not eat escaping backslash in JSON string", func(t *testing.T) {
+		// Regression test (#5705): [^\s"'}\]),;]{8,} previously consumed \
+		// inside JSON string values before an escaped quote, leaving unescaped
+		// quote syntax like token_usage = metr..."token_usage").
+		tokenVar := "token" + "_usage"
+		input := fmt.Sprintf(`{"remediation": "Guard against null values with %s = metrics.get(\"token_usage\") or {}"}`, tokenVar)
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "env_assignment"))
+		assert.True(t, json.Valid([]byte(result.Sanitized)),
+			"output must remain valid JSON: %s", result.Sanitized)
+		assert.Contains(t, result.Sanitized, `\"token_usage\"`)
+	})
+
+	t.Run("env assignment redacts credentials containing backslashes", func(t *testing.T) {
+		result := r.Scan(`TOKEN=ab\cdEFGHijkl`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "env_assignment"))
+		assert.NotContains(t, result.Sanitized, `ab\cdEFGHijkl`)
+	})
+
+	t.Run("db connection redacts password containing backslashes", func(t *testing.T) {
+		result := r.Scan(`postgres://user:pa\ss@host:5432/db`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "db_connection_password"))
+		assert.NotContains(t, result.Sanitized, `pa\ss`)
+	})
+
+	t.Run("auth header redacts credentials containing backslashes", func(t *testing.T) {
+		result := r.Scan(`Authorization: Bearer ab\cdEFGHijkl1234`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "auth_header"))
+		assert.NotContains(t, result.Sanitized, `ab\cdEFGHijkl1234`)
 	})
 }
 

@@ -245,6 +245,12 @@ func defaultPrefixPatterns() []secretPattern {
 }
 
 func defaultStructuralPatterns() []secretPattern {
+	// Value character pattern: allows non-delimiter characters and backslashes
+	// when followed by non-delimiter characters (e.g. passwords containing
+	// backslashes like pa\ss), but stops before backslashes that escape quote
+	// delimiters (like \" in JSON strings) to preserve JSON structural integrity.
+	const valChar = `(?:\\+[^\s"'}\]),;\\]|[^\s"'}\]),;\\])`
+
 	patterns := []struct {
 		name    string
 		pattern string
@@ -253,12 +259,12 @@ func defaultStructuralPatterns() []secretPattern {
 		// quote — TOKEN="basic <base64>" — and stays outside the capture so
 		// the mask keeps it visible. A bare value still ends at the first
 		// space, as in the PostToolUse hook.
-		{"env_assignment", `(?i)(?:^|\s)(?:export\s+)?((?:[A-Za-z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)(?:_[A-Za-z0-9]+)*)\s*=\s*(?:['"](?:(?:basic|bearer|token)[ \t]+)?)?([^\s"'}\]),;]{8,})['"]?`},
+		{"env_assignment", `(?i)(?:^|\s)(?:export\s+)?((?:[A-Za-z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)(?:_[A-Za-z0-9]+)*)\s*=\s*(?:['"](?:(?:basic|bearer|token)[ \t]+)?)?(` + valChar + `{8,})['"]?`},
 		{"json_field", `(?:"[^"]*(?i:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?i:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"([^"]{8,})"|'([^']{8,})')`},
 		// The optional quote covers YAML: authorization: "Bearer <token>".
-		{"auth_header", `(?i)(?:Authorization|X-Api-Key|X-Auth-Token)\s*:\s*['"]?(?:(?:Basic|Bearer|Token)\s+)?([^\s"'}\]),;]{12,})`},
+		{"auth_header", `(?i)(?:Authorization|X-Api-Key|X-Auth-Token)\s*:\s*['"]?(?:(?:Basic|Bearer|Token)\s+)?(` + valChar + `{12,})`},
 		{"private_key", `-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----`},
-		{"db_connection_password", `(?:postgres(?:ql)?|mysql|mongodb|redis)://[^:]+:([^\s"'}\]),;]{4,})@[^@\s/]+`},
+		{"db_connection_password", `(?:postgres(?:ql)?|mysql|mongodb|redis)://[^:]+:(` + valChar + `{4,})@[^@\s/]+`},
 	}
 
 	result := make([]secretPattern, len(patterns))
