@@ -57,7 +57,7 @@ func TestVerifyActors_MissingMembership(t *testing.T) {
 	}
 	err := e.verifyActors(context.Background(), "org")
 	require.ErrorContains(t, err, "fstest-write is not a member of org")
-	require.ErrorContains(t, err, "hack/setup-new-e2e-org.sh")
+	require.ErrorContains(t, err, "e2e/org-pool/setup-org.sh")
 	assert.Empty(t, fc.AddedCollaborators)
 }
 
