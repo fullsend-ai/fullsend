@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,4 +141,86 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	assert.Contains(t, string(content4), "12345678901234567891", "large integer precision must be preserved")
 	assert.Contains(t, string(content4), "1.0", "float formatting must be preserved")
 	assert.Contains(t, string(content4), "<tag>&val</tag>", "HTML characters must not be escaped")
+}
+
+// TestScanOutputFiles_DuplicateJSONKeys verifies that JSON files containing
+// duplicate keys (which Go's map[string]any decoding drops) still have secrets
+// redacted via the fail-closed fallback scan (#5705).
+func TestScanOutputFiles_DuplicateJSONKeys(t *testing.T) {
+	dir := t.TempDir()
+	dupFile := filepath.Join(dir, "duplicate_keys.json")
+	secret := "ghp_FAKEtesttoken000000000000000000000000"
+	content := fmt.Sprintf(`{"a":"x %s","a":"second"}`, secret)
+	require.NoError(t, os.WriteFile(dupFile, []byte(content), 0o644))
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
+
+	got, err := os.ReadFile(dupFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(got), secret)
+	assert.Contains(t, string(got), "second")
+}
+
+// TestScanOutputFiles_SingleRecordJSONL_PreservesLineCount verifies that
+// single-record .jsonl files are processed through the line-preserving text scan
+// rather than being reformatted into multi-line JSON (#5705).
+func TestScanOutputFiles_SingleRecordJSONL_PreservesLineCount(t *testing.T) {
+	dir := t.TempDir()
+	jsonlFile := filepath.Join(dir, "events.jsonl")
+	secret := "ghp_FAKEtesttoken000000000000000000000000"
+	content := fmt.Sprintf(`{"action":"comment","body":"%s"}`+"\n", secret)
+	require.NoError(t, os.WriteFile(jsonlFile, []byte(content), 0o644))
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
+
+	got, err := os.ReadFile(jsonlFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(got), secret)
+	assert.Equal(t, 1, strings.Count(string(got), "\n"), "single-record jsonl must remain exactly 1 line")
+	lines := strings.Split(strings.TrimSpace(string(got)), "\n")
+	assert.Len(t, lines, 1)
+}
+
+// TestScanOutputFiles_CleanJSON verifies that clean JSON files with no findings
+// remain completely untouched byte-for-byte.
+func TestScanOutputFiles_CleanJSON(t *testing.T) {
+	dir := t.TempDir()
+	cleanFile := filepath.Join(dir, "clean.json")
+	content := `{"count": 42, "status": "ok"}`
+	require.NoError(t, os.WriteFile(cleanFile, []byte(content), 0o644))
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
+
+	got, err := os.ReadFile(cleanFile)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(got), "clean JSON should remain byte-for-byte identical")
+}
+
+func TestHasDuplicateJSONKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		want bool
+	}{
+		{"no duplicates", `{"a": 1, "b": 2}`, false},
+		{"duplicate top-level", `{"a": 1, "a": 2}`, true},
+		{"nested duplicate", `{"parent": {"x": 1, "x": 2}}`, true},
+		{"nested no duplicate", `{"p1": {"x": 1}, "p2": {"x": 1}}`, false},
+		{"array with duplicate in object", `[{"k": 1, "k": 2}]`, true},
+		{"array with separate objects", `[{"k": 1}, {"k": 2}]`, false},
+		{"value matches key name", `{"a": "a", "b": "a"}`, false},
+		{"array values inside object", `{"a": [1, 2], "b": 3}`, false},
+		{"malformed json", `{"a": `, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, hasDuplicateJSONKeys([]byte(tc.json)))
+		})
+	}
 }

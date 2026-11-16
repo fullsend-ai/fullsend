@@ -6799,42 +6799,25 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 
 		relPath, _ := filepath.Rel(outputDir, path)
 
-		// If the file is valid JSON, structurally sanitize keys and string leaves to guarantee
-		// that redaction never breaks JSON syntax and fails closed (#5705).
-		dec := json.NewDecoder(bytes.NewReader(content))
-		dec.UseNumber()
-		var jsonVal any
-		if dec.Decode(&jsonVal) == nil {
-			var trailing any
-			if dec.Decode(&trailing) == io.EOF {
-				sanitizedVal, findings := sanitizeJSONStructure(jsonVal, pipeline)
-				if len(findings) > 0 {
-					findingCount += len(findings)
-					for _, f := range findings {
-						printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
-						security.AppendFinding(findingsPath,
-							security.TracedFinding{
-								TraceID:   traceID,
-								Timestamp: time.Now().UTC().Format(time.RFC3339),
-								Phase:     "host_output",
-								Finding:   f,
-							})
-					}
-					var buf bytes.Buffer
-					enc := json.NewEncoder(&buf)
-					enc.SetEscapeHTML(false)
-					enc.SetIndent("", "  ")
-					if err := enc.Encode(sanitizedVal); err != nil {
-						printer.StepWarn(fmt.Sprintf("Could not marshal sanitized JSON %s: %v", relPath, err))
-						return nil
-					}
-					marshaled := buf.Bytes()
-					// Backstop check: verify marshaled text contains no unredacted secrets
-					backstop := pipeline.Scan(string(marshaled))
-					if len(backstop.Findings) > 0 && backstop.Sanitized != "" && json.Valid([]byte(backstop.Sanitized)) {
-						marshaled = []byte(backstop.Sanitized)
-						for _, f := range backstop.Findings {
-							printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s (backstop): %s", f.Name, relPath, f.Detail))
+		ext := strings.ToLower(filepath.Ext(path))
+		isJSONL := ext == ".jsonl" || ext == ".ndjson"
+
+		// If the file is valid JSON (and not JSONL or containing duplicate keys), structurally
+		// sanitize keys and string leaves to guarantee that redaction never breaks JSON syntax
+		// and fails closed (#5705).
+		if !isJSONL && !hasDuplicateJSONKeys(content) {
+			dec := json.NewDecoder(bytes.NewReader(content))
+			dec.UseNumber()
+			var jsonVal any
+			if dec.Decode(&jsonVal) == nil {
+				var trailing any
+				if dec.Decode(&trailing) == io.EOF {
+					rawScan := pipeline.Scan(string(content))
+					sanitizedVal, findings := sanitizeJSONStructure(jsonVal, pipeline)
+					if len(findings) > 0 {
+						findingCount += len(findings)
+						for _, f := range findings {
+							printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
 							security.AppendFinding(findingsPath,
 								security.TracedFinding{
 									TraceID:   traceID,
@@ -6843,16 +6826,50 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 									Finding:   f,
 								})
 						}
+						var buf bytes.Buffer
+						enc := json.NewEncoder(&buf)
+						enc.SetEscapeHTML(false)
+						if bytes.Contains(bytes.TrimRight(content, "\r\n"), []byte("\n")) {
+							enc.SetIndent("", "  ")
+						}
+						if err := enc.Encode(sanitizedVal); err != nil {
+							printer.StepWarn(fmt.Sprintf("Could not marshal sanitized JSON %s: %v; falling back to text scan", relPath, err))
+							// Fall through to plain text scan below instead of failing open.
+						} else {
+							marshaled := buf.Bytes()
+							// Backstop check: verify marshaled text contains no unredacted secrets.
+							backstop := pipeline.Scan(string(marshaled))
+							if len(backstop.Findings) > 0 {
+								findingCount += len(backstop.Findings)
+								for _, f := range backstop.Findings {
+									printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s (backstop): %s", f.Name, relPath, f.Detail))
+									security.AppendFinding(findingsPath,
+										security.TracedFinding{
+											TraceID:   traceID,
+											Timestamp: time.Now().UTC().Format(time.RFC3339),
+											Phase:     "host_output",
+											Finding:   f,
+										})
+								}
+								if backstop.Sanitized != "" {
+									marshaled = []byte(backstop.Sanitized)
+								}
+							}
+							if writeErr := os.WriteFile(path, marshaled, 0o644); writeErr != nil {
+								printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
+							}
+							return nil
+						}
+					} else if len(rawScan.Findings) == 0 {
+						// Clean JSON with no findings structurally or in raw scan.
+						return nil
 					}
-					if writeErr := os.WriteFile(path, marshaled, 0o644); writeErr != nil {
-						printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
-					}
+					// If structural pass found 0 findings but rawScan found secrets, fall through to text scan.
 				}
-				return nil
 			}
 		}
 
-		// Non-JSON files: run plain text pipeline scan.
+		// Non-JSON files or fallback: run plain text pipeline scan.
 		text := string(content)
 		result := pipeline.Scan(text)
 		if len(result.Findings) > 0 {
@@ -6885,6 +6902,64 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 		printer.StepDone("Output files clean — no issues found")
 	}
 	return nil
+}
+
+type jsonContainerFrame struct {
+	isObject     bool
+	expectingKey bool
+	keys         map[string]bool
+}
+
+// hasDuplicateJSONKeys parses content token by token and returns true if any
+// JSON object within the payload contains duplicate keys.
+func hasDuplicateJSONKeys(content []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(content))
+	var stack []*jsonContainerFrame
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{':
+				stack = append(stack, &jsonContainerFrame{
+					isObject:     true,
+					expectingKey: true,
+					keys:         make(map[string]bool),
+				})
+			case '[':
+				stack = append(stack, &jsonContainerFrame{
+					isObject: false,
+				})
+			case '}', ']':
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+				if len(stack) > 0 && stack[len(stack)-1].isObject {
+					stack[len(stack)-1].expectingKey = true
+				}
+			}
+		case string:
+			if len(stack) > 0 && stack[len(stack)-1].isObject {
+				top := stack[len(stack)-1]
+				if top.expectingKey {
+					if top.keys[t] {
+						return true
+					}
+					top.keys[t] = true
+					top.expectingKey = false
+				} else {
+					top.expectingKey = true
+				}
+			}
+		default:
+			if len(stack) > 0 && stack[len(stack)-1].isObject {
+				stack[len(stack)-1].expectingKey = true
+			}
+		}
+	}
 }
 
 var sensitiveJSONKeyRegex = regexp.MustCompile(`(?i)(?:key|token|secret|password|credential|auth)`)
