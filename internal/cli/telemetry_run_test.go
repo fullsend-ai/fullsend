@@ -826,7 +826,8 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic"))
 	assert.Contains(t, a, attribute.String("gen_ai.request.model", "claude-opus-4-6"))
 	assert.Contains(t, a, attribute.String("fullsend.runtime", "claude"))
-	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 11))
+	// input_tokens includes cached tokens: 11 + 109938 + 38832.
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 148781))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 1505))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation.input_tokens", 38832))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read.input_tokens", 109938))
@@ -836,6 +837,41 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	// reasoning_tokens should be absent when zero.
 	assert.NotContains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 0),
 		"reasoning_tokens attribute should be omitted when zero")
+}
+
+// TestAgentSpanEndAttrs_InputTokensIncludeCache pins gen_ai.usage.input_tokens
+// to the GenAI semconv meaning (cached tokens included). Backends that price
+// from the convention subtract the cache counters back out; emitting uncached
+// input there made MLflow report negative costs (#9532).
+func TestAgentSpanEndAttrs_InputTokensIncludeCache(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		input, cacheRead, cacheWrite int
+		wantInput                    int
+	}{
+		// Token counts from the first trace reported in #9532.
+		{name: "reported trace", input: 229, cacheRead: 4899982, cacheWrite: 909507, wantInput: 5809718},
+		{name: "no cache tokens", input: 500, wantInput: 500},
+		{name: "cache read only", input: 10, cacheRead: 2000, wantInput: 2010},
+		{name: "cache creation only", input: 10, cacheWrite: 3000, wantInput: 3010},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := agentruntime.RunMetrics{
+				Model:                    "claude-opus-4-6",
+				InputTokens:              tc.input,
+				OutputTokens:             118001,
+				CacheReadInputTokens:     tc.cacheRead,
+				CacheCreationInputTokens: tc.cacheWrite,
+			}
+			a := agentSpanEndAttrs(1, 0, "anthropic", "claude", &m)
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", tc.wantInput))
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 118001))
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read.input_tokens", tc.cacheRead))
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation.input_tokens", tc.cacheWrite))
+			// RunMetrics (and so metrics.json) keeps uncached input.
+			assert.Equal(t, tc.input, m.InputTokens)
+		})
+	}
 }
 
 func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {

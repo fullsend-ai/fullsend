@@ -5037,7 +5037,11 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 		stringAttr("gen_ai.provider.name", system),
 		boundedStringAttr("gen_ai.request.model", m.Model),
 		stringAttr("fullsend.runtime", runtimeName),
-		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
+		// The GenAI semconv (v1.40.0+) defines input_tokens as including
+		// cached tokens. RunMetrics.InputTokens is uncached input, so add the
+		// cache counters back; backends that price from the convention
+		// subtract them out again and would otherwise go negative (#9532).
+		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens+m.CacheReadInputTokens+m.CacheCreationInputTokens),
 		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
 		attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
 		attribute.Int("gen_ai.usage.cache_read.input_tokens", m.CacheReadInputTokens),

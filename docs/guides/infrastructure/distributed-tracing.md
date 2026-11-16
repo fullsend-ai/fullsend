@@ -342,7 +342,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `gen_ai.tool.call.id` | `toolu_01…` | `execute_tool` (absent when the id carried a security finding — a tainted id is dropped, never substituted, so it cannot collide with another call's) |
 | `gen_ai.system` / `gen_ai.provider.name` | `anthropic` / `anthropic-vertex` | `agent` (serving endpoint of the model used on this span — varies by runtime; `system` is the pre-v1.37 name — both keys are emitted with the same value so EM-001 and modern backends agree. Not the runtime name: `fullsend.runtime` is the harness.) |
 | `gen_ai.request.model` | `claude-opus-4-6` | `agent` (resolved model) |
-| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` (`input_tokens` includes the two cache counters, per the GenAI convention — see [Persisted token fields](#persisted-token-fields)) |
 
 Provider identity is the **serving endpoint**, not the model publisher and not the agent runtime. Claude Code reports `anthropic`. Pi reports the prefix of the resolved `provider/id` spec (`anthropic-vertex`, `xai-vertex`, `google-vertex`, `openai`, `anthropic`): a Claude model on Vertex is `anthropic-vertex` even though the publisher is Anthropic, because that is the catalog and credential path the run used. `fullsend.runtime` (`claude`, `pi`, …) stays a separate fullsend attribute. Fullsend does not emit `mlflow.*` attributes; backends that derive native cost fields do so from these portable GenAI keys.
 
@@ -532,9 +532,11 @@ for how to apply list-price rates to the persisted token fields.
 Tracing backends may display their own cost estimates alongside
 `fullsend.cost_usd`. These are independent calculations:
 
-- **MLflow** estimates cost from token counts against its internal model
-  table. This estimate excludes cache-creation and cache-read token
-  pricing, which can dominate agent-run cost. See
+- **MLflow** estimates cost from the span's token counts, including the
+  cache-creation and cache-read counters, priced through litellm when the
+  server has it installed and through MLflow's own model table otherwise.
+  The result is still an estimate: it prices all of a span's usage at the
+  rates of the single model the span names. See
   [Tracing with MLflow — Cost column caveat](../user/tracing-with-mlflow.md#cost-column-caveat).
 - Other LLM-aware backends may apply similar token-based estimates.
 
@@ -571,7 +573,8 @@ the process dies before an `agent` span ends, the file may lack that span.
 
 | Kind | `agent` span attribute | `metrics.json` `token_usage` |
 |------|------------------------|------------------------------|
-| Uncached input | `gen_ai.usage.input_tokens` | `input` |
+| Total input (uncached + cache creation + cache read) | `gen_ai.usage.input_tokens` | — (sum `input`, `cache_creation`, and `cache_read`) |
+| Uncached input | — (`input_tokens` minus the two cache attributes) | `input` |
 | Output | `gen_ai.usage.output_tokens` | `output` |
 | Cache creation | `gen_ai.usage.cache_creation.input_tokens` | `cache_creation` |
 | Cache read | `gen_ai.usage.cache_read.input_tokens` | `cache_read` |
@@ -583,8 +586,23 @@ attribute is omitted when zero; `metrics.json` always serializes
 on a fullsend `agent` span as zero recorded reasoning, not proof that the
 provider consumed none.
 
-For Claude, pi, and Codex, input is uncached input: cache creation and cache
-read are separate counters. The reasoning rule depends on the runtime:
+On `agent` spans, `gen_ai.usage.input_tokens` follows the
+[GenAI semantic convention](https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/model/gen-ai/registry.yaml#L192-L214):
+it includes cached tokens, so it is uncached input plus cache creation plus
+cache read. `metrics.json` `token_usage.input` is uncached input only; cache
+creation and cache read are separate counters there. To price uncached input
+from a span, subtract both cache attributes from `input_tokens`.
+
+Spans written by v0.56.1 and earlier emitted uncached input in
+`gen_ai.usage.input_tokens`; the value includes the cache counters starting
+with the release that follows v0.56.1. On a file written by an earlier release,
+the subtraction above can go negative — use `input_tokens` as uncached input
+there instead. The resource's `service.version` attribute tells the two apart.
+
+All four runtimes report uncached input upstream: for Claude, pi, and Codex
+the cache counters are reported separately, and the pinned OpenCode `1.19.1`
+[subtracts the cache counters from input](https://github.com/anomalyco/opencode/blob/v1.19.1/packages/opencode/src/session/session.ts#L361-L370)
+before fullsend reads it. The reasoning rule depends on the runtime:
 
 - **Codex:** Fullsend subtracts reasoning from the wire output count.
   Persisted output and reasoning are disjoint, so add a reasoning term
@@ -598,9 +616,10 @@ read are separate counters. The reasoning rule depends on the runtime:
   through, so do not add reasoning again. Recheck the schema when pricing
   artifacts from a different pi version; sibling JSON fields and synthetic
   fixture totals alone do not establish whether counters overlap.
-- **OpenCode:** Fullsend passes its wire counters through. Verify the
-  provider/version's output, reasoning, and cache semantics before using
-  either formula; this guide does not establish their overlap.
+- **OpenCode:** Fullsend passes its wire counters through. Input and the
+  cache counters are disjoint, as described above. Verify the
+  provider/version's output and reasoning semantics before using either
+  formula; this guide does not establish their overlap.
 
 Codex and pi synthesize final usage from counters observed before an
 interruption. A completed turn or assistant message can report zero
@@ -609,7 +628,10 @@ reasoning; completion alone does not imply non-zero reasoning.
 ### Worked example
 
 Extract the relevant attributes from each `agent` span in the local OTLP
-JSONL file (see [Output file format](#output-file-format)):
+JSONL file (see [Output file format](#output-file-format)). The `input`
+field below is uncached input, derived by subtracting the two cache
+attributes from `gen_ai.usage.input_tokens`; for files written by v0.56.1
+and earlier, use `gen_ai.usage.input_tokens` as `input` directly:
 
 ```bash
 jq -c '
@@ -618,20 +640,23 @@ jq -c '
   | .attributes
   | map({key: .key, value: (.value.intValue // .value.doubleValue // .value.stringValue)})
   | from_entries
+  | (.["gen_ai.usage.cache_creation.input_tokens"] | tonumber) as $cache_creation
+  | (.["gen_ai.usage.cache_read.input_tokens"] | tonumber) as $cache_read
   | {
       runtime: .["fullsend.runtime"],
       model: .["gen_ai.request.model"],
-      input: (.["gen_ai.usage.input_tokens"] | tonumber),
+      input: ((.["gen_ai.usage.input_tokens"] | tonumber) - $cache_creation - $cache_read),
       output: (.["gen_ai.usage.output_tokens"] | tonumber),
-      cache_creation: (.["gen_ai.usage.cache_creation.input_tokens"] | tonumber),
-      cache_read: (.["gen_ai.usage.cache_read.input_tokens"] | tonumber),
+      cache_creation: $cache_creation,
+      cache_read: $cache_read,
       reasoning: ((.["gen_ai.usage.reasoning_tokens"] // 0) | tonumber)
     }
 ' run-telemetry.jsonl
 ```
 
 One extracted iteration could look like this (a projection of a span,
-not the raw OTLP envelope):
+not the raw OTLP envelope; the span itself carries
+`gen_ai.usage.input_tokens` = 751000):
 
 ```json
 {

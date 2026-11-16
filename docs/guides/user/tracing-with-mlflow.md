@@ -73,9 +73,18 @@ Two conventions keep a shared MLflow instance navigable as repos onboard:
 
 ## Cost column caveat
 
-MLflow's per-trace cost column is its own estimate: it extracts input/output
-token counts and prices them against MLflow's internal model table. This
-excludes cache-creation and cache-read tokens, which dominate agent-run cost.
+MLflow's per-trace cost column is its own estimate: it prices the span's
+input, output, cache-creation, and cache-read token counts, through litellm
+when the MLflow server has it installed and through MLflow's own model table
+otherwise. It prices all of a span's usage at the rates of the single model
+the span names, so runs that use fallback or sub-agent models are priced
+approximately.
+
+Before the release that follows v0.56.1, fullsend emitted uncached input in
+`gen_ai.usage.input_tokens`. MLflow servers running litellm older than 1.83.10
+subtract the cache counters from that value and can show a negative cost for
+those traces. Spans from later releases include the cache counters in
+`input_tokens`, as the GenAI convention specifies.
 
 The authoritative cost figure is the runtime-reported `fullsend.cost_usd`
 attribute on `agent` spans (also in `run-telemetry.jsonl`). When that value
