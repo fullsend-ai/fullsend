@@ -704,7 +704,9 @@ No fullsend code reads the signing key yet. For the whole lifecycle, see
   in the `FULLSEND_TRACE_SIGNING_KEY_ID` repository variable: GitHub never
   returns a secret's value, so the variable records which key the secret
   holds. Install writes `repos.yaml` before the secret and the variable, and
-  writes them before it commits the managed configuration.
+  writes them before it commits the managed configuration. On an existing
+  install, the default branch trusts the new key only once that commit lands,
+  by default when the install pull request merges.
 - **When install writes a key.** A fresh install, one whose fullsend workflow
   is not on the default branch yet, gets an installation ID and a key pair. An
   existing install whose entry has no `trace_context` gets none from a plain
@@ -774,10 +776,11 @@ No fullsend code reads the signing key yet. For the whole lifecycle, see
   provision them on GitLab yet.
 - **Compatibility (breaking).** Fullsend v0.37.0 through v0.55.0 refuse a
   `repos.yaml` that contains `trace_context`, and earlier releases cannot read
-  this manifest format. v0.56.0 accepts it but does not manage
-  `FULLSEND_TRACE_SIGNING_KEY_ID`: its `repos status` reports the variable as
-  orphan drift, and its `repos uninstall` leaves it, after which this release
-  refuses the repository when you declare it again without keys, until you
+  this manifest format. Releases from v0.56.0 without this change
+  accept it but do not manage `FULLSEND_TRACE_SIGNING_KEY_ID`: their
+  `repos status` reports the variable as orphan drift, and their
+  `repos uninstall` leaves it, after which this release refuses the
+  repository when you declare it again without keys, until you
   delete the variable or restore the entry's `trace_context`. Use a release
   with this change for every `repos` command on that manifest. Keep and commit
   the `repos.yaml` edits install makes: a later install from a copy without

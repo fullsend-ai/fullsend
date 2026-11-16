@@ -111,6 +111,15 @@ below). A failure in step 2 or 3 leaves it as it was or absent, and a failure
 in step 4 or 5 leaves it absent unless the failed step 5 write still reached
 GitHub.
 
+On an existing install, step 4 changes the seed before step 6's commit
+is on the default branch: until the install pull request merges, including
+when `--direct` falls back to a pull request on a protected branch, and after
+a failed commit until a later run's commit lands. Until then the default
+branch's `.fullsend/config.yaml` does not list the key the secret holds, and
+install counts the repository as healthy, so a plain run writes no key and
+delivers the commit again. A fresh install has no such gap, because no
+fullsend workflow is on its default branch until that commit lands.
+
 An install is healthy when the secret exists and the variable names the
 active key. Install then writes no key unless you pass
 `--rotate-trace-signing-key`. When the variable is missing or names a retained
@@ -157,10 +166,12 @@ install commit lands.
 
 `fullsend repos install --rotate-trace-signing-key` generates a new key pair.
 The previous active key moves to `retained`, so envelopes it signed still
-verify. Envelopes carry no timestamp, so a retained key stays trusted. Within
-an installation, install never removes a retained key. Enrolling a fully
-uninstalled repository again replaces the ended installation's block, keys
-included (see [Uninstall](#uninstall)).
+verify. Envelopes carry no timestamp, so a retained key stays trusted. The new
+key is trusted once the install commit is on the default branch (see
+[Writes and recovery](#writes-and-recovery)). Within an installation, install
+never removes a retained key. Enrolling a fully uninstalled repository again
+replaces the ended installation's block, keys included (see
+[Uninstall](#uninstall)).
 
 ### When install refuses an entry
 

@@ -1957,7 +1957,9 @@ func convergeRepo(ctx context.Context,
 	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, jiraDelivery, progress)...)
 
 	// 2d'': The trace signing key (ADR 0154), before the commit that delivers
-	// the config naming it. A failure stops the repository here.
+	// the config naming it. A failure stops the repository here. Until that
+	// commit is on the default branch, the default branch's config does not
+	// list the key the secret holds.
 	traceActions := convergeTraceSigningKey(ctx, d, cfg, progress)
 	cr.Actions = append(cr.Actions, traceActions...)
 	if actionsError(traceActions) != nil {
