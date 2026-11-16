@@ -454,15 +454,26 @@ func (p *Poller) extractRepoLabels(labels []string) []repoLabel {
 	return results
 }
 
+// routingPageResult captures the outcome of evaluating repository routing for
+// a single batch or page of candidate issues.
+type routingPageResult struct {
+	routed      []jira.Issue
+	attempted   int
+	linkLookups int
+	linkErrors  int
+	stopScan    bool
+	abortErr    error
+}
+
 // filterRoutingPage evaluates repository routing for one page of candidates in
 // bounded batches of up to routingBatchConcurrency, stopping early once needed
 // (>0) routed candidates are collected, ctx expires, or a fatal/rate-limit/5xx
-// lookup error occurs. It returns the routed issues, number of candidates
-// attempted, count of candidates dropped due to lookup errors, and whether
-// further candidate scanning in this cycle should stop.
-func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue, needed int) ([]jira.Issue, int, int, bool) {
+// lookup error occurs. It returns a routingPageResult with the routed issues,
+// total candidates attempted, remote-link lookups performed, candidates dropped
+// due to lookup errors, whether candidate scanning should stop, and any abort error.
+func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue, needed int) routingPageResult {
 	if len(candidates) == 0 {
-		return candidates, 0, 0, false
+		return routingPageResult{}
 	}
 
 	targetRepo := strings.ToLower(strings.TrimSpace(p.opts.TargetRepo))
@@ -480,16 +491,14 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 		err   error
 	}
 
-	var routed []jira.Issue
-	var attempted, linkErrors int
-	var stopScan bool
+	var res routingPageResult
 
 	for start := 0; start < len(candidates); {
 		if ctx.Err() != nil {
-			stopScan = true
+			res.stopScan = true
 			break
 		}
-		if needed > 0 && len(routed) >= needed {
+		if needed > 0 && len(res.routed) >= needed {
 			break
 		}
 
@@ -504,7 +513,7 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 		}
 
 		if len(repoLabels) > 0 {
-			attempted++
+			res.attempted++
 			matched := false
 			for _, rl := range repoLabels {
 				if (rl.host == "" || rl.host == targetHost) && rl.slug == targetRepo {
@@ -515,7 +524,7 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 
 			if matched {
 				log.Printf("routing %s to %s via repo label", candidates[start].Key, p.opts.TargetRepo)
-				routed = append(routed, candidates[start])
+				res.routed = append(res.routed, candidates[start])
 			} else {
 				log.Printf("skipping %s: repo label(s) %v do not match target repo %q", candidates[start].Key, repoLabels, p.opts.TargetRepo)
 			}
@@ -524,7 +533,7 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 		}
 
 		if len(unparseable) > 0 {
-			attempted++
+			res.attempted++
 			log.Printf("skipping %s: candidate carries unparseable repo label(s) and is treated as routed elsewhere", candidates[start].Key)
 			start++
 			continue
@@ -533,8 +542,8 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 		// Candidates without repo labels require remote links (Priority 2 & 3).
 		// Gather a batch of up to routingBatchConcurrency candidates that lack repo labels.
 		maxBatch := routingBatchConcurrency
-		if needed > 0 && needed-len(routed) < maxBatch {
-			maxBatch = needed - len(routed)
+		if needed > 0 && needed-len(res.routed) < maxBatch {
+			maxBatch = needed - len(res.routed)
 		}
 
 		batchEnd := start + 1
@@ -567,24 +576,32 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 		}
 		_ = g.Wait()
 		cancelBatch()
-		attempted += len(batch)
+		res.attempted += len(batch)
+		res.linkLookups += len(batch)
 
 		for i, issue := range batch {
-			res := results[i]
-			if res.err != nil {
+			lres := results[i]
+			if lres.err != nil {
 				// Fail-safe: if remote links lookup failed (transient error, auth failure, etc.),
 				// do NOT fall back to permissive claiming. Skip this issue for this cycle
 				// to avoid claiming an issue that might belong to another repository.
-				log.Printf("WARNING: listing remote links for %s: %v (skipping candidate to avoid misrouting)", issue.Key, res.err)
-				linkErrors++
-				if isRoutingAbortError(res.err) {
-					stopScan = true
+				log.Printf("WARNING: listing remote links for %s: %v (skipping candidate to avoid misrouting)", issue.Key, lres.err)
+				res.linkErrors++
+				if isRoutingAbortError(lres.err) {
+					res.stopScan = true
+					if !errors.Is(lres.err, context.Canceled) && !errors.Is(lres.err, context.DeadlineExceeded) {
+						if res.abortErr == nil || errors.Is(res.abortErr, context.Canceled) || errors.Is(res.abortErr, context.DeadlineExceeded) {
+							res.abortErr = lres.err
+						}
+					} else if res.abortErr == nil {
+						res.abortErr = lres.err
+					}
 				}
 				continue
 			}
 
 			var attachedRepos []repoLink
-			for _, link := range res.links {
+			for _, link := range lres.links {
 				if host, slug := extractRepoHostAndSlug(link.Object.URL, p.opts.GitLabURL); slug != "" {
 					attachedRepos = append(attachedRepos, repoLink{host: host, slug: slug})
 				}
@@ -602,7 +619,7 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 
 				if matched {
 					log.Printf("routing %s to %s via attached repository link", issue.Key, p.opts.TargetRepo)
-					routed = append(routed, issue)
+					res.routed = append(res.routed, issue)
 				} else {
 					log.Printf("skipping %s: attached repository link(s) %v do not match target repo %q", issue.Key, attachedRepos, p.opts.TargetRepo)
 				}
@@ -616,17 +633,17 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 			}
 
 			log.Printf("routing %s to %s via unrouted fallback (strict routing disabled)", issue.Key, p.opts.TargetRepo)
-			routed = append(routed, issue)
+			res.routed = append(res.routed, issue)
 		}
 
-		if (needed > 0 && len(routed) >= needed) || stopScan {
+		if (needed > 0 && len(res.routed) >= needed) || res.stopScan {
 			break
 		}
 	}
 
-	if needed > 0 && len(routed) > needed {
-		routed = routed[:needed]
+	if needed > 0 && len(res.routed) > needed {
+		res.routed = res.routed[:needed]
 	}
 
-	return routed, attempted, linkErrors, stopScan
+	return res
 }

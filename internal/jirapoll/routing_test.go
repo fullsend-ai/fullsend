@@ -474,11 +474,13 @@ func TestFilterRouting(t *testing.T) {
 		t.Parallel()
 		mc := newMockClient()
 		p := newTestPoller(mc, nil, Options{JiraProject: "PROJ", TargetRepo: "my-org/pay-backend"})
-		routed, attempted, linkErrors, stopScan := p.filterRoutingPage(ctx, nil, 0)
-		assert.Empty(t, routed)
-		assert.Zero(t, attempted)
-		assert.Zero(t, linkErrors)
-		assert.False(t, stopScan)
+		res := p.filterRoutingPage(ctx, nil, 0)
+		assert.Empty(t, res.routed)
+		assert.Zero(t, res.attempted)
+		assert.Zero(t, res.linkLookups)
+		assert.Zero(t, res.linkErrors)
+		assert.False(t, res.stopScan)
+		assert.NoError(t, res.abortErr)
 	})
 
 	t.Run("AttachedLinkMatch", func(t *testing.T) {
@@ -1108,6 +1110,106 @@ func TestFilterRouting(t *testing.T) {
 		assert.Contains(t, err2.Error(), fmt.Sprintf("all %d candidates dropped by remote-link lookup errors", routingBatchConcurrency))
 		assert.Empty(t, routed2)
 		assert.Len(t, mc2.remoteLinksCalls, routingBatchConcurrency)
+	})
+
+	t.Run("LabelSkippedFollowedByRemoteLinkAuthError_FailsSafe", func(t *testing.T) {
+		t.Parallel()
+		mc := newMockClient()
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:other-org/other-repo"},
+				},
+			},
+			{Key: "PROJ-2"},
+			{Key: "PROJ-3"},
+		}
+		mc.remoteLinksErr["PROJ-2"] = &jira.APIError{StatusCode: http.StatusUnauthorized, Message: "unauthorized"}
+		mc.remoteLinksErr["PROJ-3"] = &jira.APIError{StatusCode: http.StatusUnauthorized, Message: "unauthorized"}
+
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+			M:          10,
+		}, candidates)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "all 2 candidates dropped by remote-link lookup errors")
+		assert.Empty(t, routed)
+		assert.NotContains(t, mc.remoteLinksCalls, "PROJ-1")
+		assert.Contains(t, mc.remoteLinksCalls, "PROJ-2")
+	})
+
+	t.Run("UnparseableLabelFollowedByRemoteLinkAuthError_FailsSafe", func(t *testing.T) {
+		t.Parallel()
+		mc := newMockClient()
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:invalid-bare-slug"},
+				},
+			},
+			{Key: "PROJ-2"},
+		}
+		mc.remoteLinksErr["PROJ-2"] = &jira.APIError{StatusCode: http.StatusUnauthorized, Message: "unauthorized"}
+
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+			M:          10,
+		}, candidates)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "all 1 candidates dropped by remote-link lookup errors")
+		assert.Empty(t, routed)
+		assert.NotContains(t, mc.remoteLinksCalls, "PROJ-1")
+		assert.Contains(t, mc.remoteLinksCalls, "PROJ-2")
+	})
+
+	t.Run("RemoteLinkSkippedFollowedByRemoteLinkAuthError_FailsSafe", func(t *testing.T) {
+		t.Parallel()
+		mc := newMockClient()
+		candidates := []jira.Issue{
+			{Key: "PROJ-1"},
+			{Key: "PROJ-2"},
+		}
+		mc.remoteLinks["PROJ-1"] = []jira.RemoteLink{
+			{Object: jira.RemoteLinkObject{URL: "https://github.com/other-org/other-repo"}},
+		}
+		mc.remoteLinksErr["PROJ-2"] = &jira.APIError{StatusCode: http.StatusUnauthorized, Message: "unauthorized"}
+
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+			M:          10,
+		}, candidates)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "remote-link lookup aborted")
+		assert.Empty(t, routed)
+	})
+
+	t.Run("AllLabelSkipped_SucceedsEmpty", func(t *testing.T) {
+		t.Parallel()
+		mc := newMockClient()
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-1",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:other-org/other-repo"},
+				},
+			},
+			{
+				Key: "PROJ-2",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:third-org/third-repo"},
+				},
+			},
+		}
+
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo: "my-org/pay-backend",
+			M:          10,
+		}, candidates)
+		require.NoError(t, err)
+		assert.Empty(t, routed)
+		assert.Empty(t, mc.remoteLinksCalls)
 	})
 
 	t.Run("AbortsOnFanoutDeadline", func(t *testing.T) {

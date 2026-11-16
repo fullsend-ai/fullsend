@@ -444,7 +444,8 @@ func (p *Poller) discoverCandidates(ctx context.Context) ([]jira.Issue, error) {
 
 	var collected []jira.Issue
 	var nextPageToken string
-	var totalAttempted, totalLinkErrors int
+	var totalAttempted, totalLinkLookups, totalLinkErrors int
+	var linkAbortErr error
 
 	for page := 0; page < maxCandidateScanPages; page++ {
 		if ctx.Err() != nil {
@@ -469,16 +470,22 @@ func (p *Poller) discoverCandidates(ctx context.Context) ([]jira.Issue, error) {
 			}
 		}
 
-		routed, attempted, linkErrors, stopScan := p.filterRoutingPage(fanoutCtx, res.Issues, remaining)
-		totalAttempted += attempted
-		totalLinkErrors += linkErrors
-		collected = append(collected, routed...)
+		routeRes := p.filterRoutingPage(fanoutCtx, res.Issues, remaining)
+		totalAttempted += routeRes.attempted
+		totalLinkLookups += routeRes.linkLookups
+		totalLinkErrors += routeRes.linkErrors
+		if routeRes.abortErr != nil {
+			if linkAbortErr == nil || (errors.Is(linkAbortErr, context.Canceled) && !errors.Is(routeRes.abortErr, context.Canceled)) {
+				linkAbortErr = routeRes.abortErr
+			}
+		}
+		collected = append(collected, routeRes.routed...)
 
 		if limit > 0 && len(collected) >= limit {
 			collected = collected[:limit]
 			break
 		}
-		if stopScan || res.IsLast || res.NextPageToken == "" {
+		if routeRes.stopScan || res.IsLast || res.NextPageToken == "" {
 			break
 		}
 		nextPageToken = res.NextPageToken
@@ -495,8 +502,13 @@ func (p *Poller) discoverCandidates(ctx context.Context) ([]jira.Issue, error) {
 			totalAttempted, maxCandidateScanPages*50, len(collected), totalLinkErrors, fanoutCtx.Err())
 	}
 
-	if len(collected) == 0 && totalAttempted > 0 && totalLinkErrors == totalAttempted {
-		return nil, fmt.Errorf("all %d candidates dropped by remote-link lookup errors", totalAttempted)
+	if len(collected) == 0 {
+		if totalLinkLookups > 0 && totalLinkErrors == totalLinkLookups {
+			return nil, fmt.Errorf("all %d candidates dropped by remote-link lookup errors", totalLinkLookups)
+		}
+		if linkAbortErr != nil && !errors.Is(linkAbortErr, context.Canceled) && !errors.Is(linkAbortErr, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("remote-link lookup aborted: %w", linkAbortErr)
+		}
 	}
 
 	return collected, nil
