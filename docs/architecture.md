@@ -248,6 +248,14 @@ repo baseline and overrides)
   paths; runtimes may inject ordered records as separate cacheable input blocks
   ([ADR 0141](ADRs/0141-deterministic-filtered-entity-context-staging.md),
   constrained by [ADR 0133](ADRs/0133-actor-attributed-data-security-boundary.md)).
+- Entity-context-snapshot v2 is the target model-facing field gate for every
+  normalized-entity provider/kind pair, including Jira issues and GitHub
+  Discussions. It uses normalized-entity names for shared identity, source,
+  actor, state, timestamp, and label fields, keys records by the canonical
+  entity ID, and reports a status for every applicable scope so an
+  uncollected source is never mistaken for a complete empty one
+  ([ADR 0170](ADRs/0170-align-entity-context-snapshot-with-normalized-entity.md);
+  contract: [`docs/normative/entity-context-snapshot/v2`](normative/entity-context-snapshot/v2/README.md)).
 - CEL-guarded overlays: an `overlays:` list of CEL-guarded config
   overlays generalizes the `forge:` block, letting harness authors
   condition scripts, skills, env vars, and other fields on any event
