@@ -353,15 +353,65 @@ func (l repoLabel) String() string {
 	return l.host + "/" + l.slug
 }
 
-// extractRepoLabels extracts and normalizes repository labels from issue labels
-// matching prefix (case-insensitive, default DefaultRepoLabelPrefix = "repo:").
-// It supports bare slugs (e.g. "owner/repo" or "group/subgroup/project")
-// and host-qualified git repository URLs. Bare slugs have an empty host and match
-// any target forge. URL/SSH labels preserve their host and only match pollers
-// configured for that forge host. Returns deduplicated repo labels.
-func (p *Poller) extractRepoLabels(labels []string) []repoLabel {
+// parseGenericRepoURL extracts the normalized host and path slug from any HTTP,
+// HTTPS, or SSH git repository URL with at least two path segments, without
+// restricting the host to known forges.
+func parseGenericRepoURL(rawURL string) (string, string) {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return "", ""
+	}
+
+	var host, path string
+	if strings.HasPrefix(rawURL, "git@") {
+		parts := strings.SplitN(rawURL, ":", 2)
+		if len(parts) != 2 {
+			return "", ""
+		}
+		host = strings.TrimPrefix(parts[0], "git@")
+		path = parts[1]
+	} else {
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			return "", ""
+		}
+		switch parsed.Scheme {
+		case "http", "https", "ssh":
+		default:
+			return "", ""
+		}
+		host = parsed.Host
+		path = parsed.Path
+	}
+
+	host = strings.ToLower(strings.TrimSpace(host))
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if host == "" {
+		return "", ""
+	}
+
+	path = strings.Trim(path, "/")
+	path = trimGitSuffix(path)
+	path = strings.Trim(path, "/")
+	path = strings.ToLower(path)
+
+	if repoSlugRegex.MatchString(path) {
+		return host, path
+	}
+	return "", ""
+}
+
+// parseRepoLabels extracts repository targets and collects unparseable repo
+// labels from issue labels matching prefix (case-insensitive, default
+// DefaultRepoLabelPrefix = "repo:"). Unrecognized URLs with valid host and path
+// are kept as host-qualified targets. Labels that carry the prefix but cannot be
+// parsed as valid repository targets are returned in unparseable so callers can
+// treat them as explicit routing intent (routed elsewhere).
+func (p *Poller) parseRepoLabels(labels []string) ([]repoLabel, []string) {
 	if p.opts.DisableRepoLabels || len(labels) == 0 {
-		return nil
+		return nil, nil
 	}
 	prefix := p.opts.RepoLabelPrefix
 	if prefix == "" {
@@ -369,7 +419,9 @@ func (p *Poller) extractRepoLabels(labels []string) []repoLabel {
 	}
 
 	var results []repoLabel
+	var unparseable []string
 	seen := make(map[string]bool)
+	seenUnparseable := make(map[string]bool)
 
 	for _, label := range labels {
 		trimmed := strings.TrimSpace(label)
@@ -382,6 +434,10 @@ func (p *Poller) extractRepoLabels(labels []string) []repoLabel {
 		val := strings.TrimSpace(trimmed[len(prefix):])
 		val = strings.Trim(val, "/")
 		if val == "" {
+			if !seenUnparseable[trimmed] {
+				seenUnparseable[trimmed] = true
+				unparseable = append(unparseable, trimmed)
+			}
 			continue
 		}
 
@@ -389,6 +445,9 @@ func (p *Poller) extractRepoLabels(labels []string) []repoLabel {
 		// Check for host-qualified URL or SSH format first
 		if strings.Contains(val, "://") || strings.HasPrefix(val, "git@") {
 			host, slug = extractRepoHostAndSlug(val, p.opts.GitLabURL)
+			if slug == "" {
+				host, slug = parseGenericRepoURL(val)
+			}
 		} else {
 			// Try as URL with https:// if it looks like host/path
 			if strings.Contains(val, "/") {
@@ -420,9 +479,25 @@ func (p *Poller) extractRepoLabels(labels []string) []repoLabel {
 				seen[key] = true
 				results = append(results, repoLabel{host: host, slug: slug})
 			}
+		} else {
+			if !seenUnparseable[trimmed] {
+				seenUnparseable[trimmed] = true
+				unparseable = append(unparseable, trimmed)
+			}
 		}
 	}
 
+	return results, unparseable
+}
+
+// extractRepoLabels extracts and normalizes repository labels from issue labels
+// matching prefix (case-insensitive, default DefaultRepoLabelPrefix = "repo:").
+// It supports bare slugs (e.g. "owner/repo" or "group/subgroup/project")
+// and host-qualified git repository URLs. Bare slugs have an empty host and match
+// any target forge. URL/SSH labels preserve their host and only match pollers
+// configured for that forge host. Returns deduplicated repo labels.
+func (p *Poller) extractRepoLabels(labels []string) []repoLabel {
+	results, _ := p.parseRepoLabels(labels)
 	return results
 }
 
@@ -466,7 +541,7 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 		}
 
 		// Priority 1: Check in-memory repo labels (0 HTTP calls).
-		repoLabels := p.extractRepoLabels(candidates[start].Fields.Labels)
+		repoLabels, unparseable := p.parseRepoLabels(candidates[start].Fields.Labels)
 		if len(repoLabels) > 0 {
 			attempted++
 			matched := false
@@ -487,6 +562,17 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 			continue
 		}
 
+		if len(unparseable) > 0 {
+			attempted++
+			prefix := p.opts.RepoLabelPrefix
+			if prefix == "" {
+				prefix = DefaultRepoLabelPrefix
+			}
+			log.Printf("WARNING: skipping %s: label(s) %v carry repo prefix %q but cannot be parsed as valid repository targets", candidates[start].Key, unparseable, prefix)
+			start++
+			continue
+		}
+
 		// Candidates without repo labels require remote links (Priority 2 & 3).
 		// Gather a batch of up to routingBatchConcurrency candidates that lack repo labels.
 		maxBatch := routingBatchConcurrency
@@ -496,7 +582,8 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 
 		batchEnd := start + 1
 		for batchEnd < len(candidates) && (batchEnd-start) < maxBatch {
-			if labels := p.extractRepoLabels(candidates[batchEnd].Fields.Labels); len(labels) > 0 {
+			labels, unparseable := p.parseRepoLabels(candidates[batchEnd].Fields.Labels)
+			if len(labels) > 0 || len(unparseable) > 0 {
 				break
 			}
 			batchEnd++

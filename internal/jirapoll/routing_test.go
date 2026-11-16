@@ -738,10 +738,11 @@ func TestFilterRouting(t *testing.T) {
 		assert.Empty(t, routed, "should be skipped because attached link points to pay-frontend and labels are disabled")
 	})
 
-	t.Run("RepoLabel_BareProjectWithoutSlash_FallsThroughToLink", func(t *testing.T) {
+	t.Run("RepoLabel_BareProjectWithoutSlash_SkippedAsUnparseable", func(t *testing.T) {
 		t.Parallel()
-		// Bare project without slash (e.g. repo:pay-backend) is rejected to prevent fork collisions,
-		// falling through to attached remote links.
+		// Bare project without slash (e.g. repo:pay-backend) is rejected to prevent fork collisions;
+		// candidates carrying it are treated as routed elsewhere and skipped rather than falling through
+		// to remote links or unrouted fallback.
 		mc := &mockClient{
 			remoteLinks: map[string][]jira.RemoteLink{
 				"PROJ-1": {
@@ -761,8 +762,8 @@ func TestFilterRouting(t *testing.T) {
 			TargetRepo: "my-org/pay-backend",
 		}, candidates)
 		require.NoError(t, err)
-		require.Len(t, routed, 1)
-		assert.Equal(t, "PROJ-1", routed[0].Key)
+		assert.Empty(t, routed)
+		assert.Empty(t, mc.remoteLinksCalls)
 	})
 
 	t.Run("RepoLabel_HostQualifiedURL", func(t *testing.T) {
@@ -1216,6 +1217,8 @@ func TestExtractRepoLabels(t *testing.T) {
 			"repo:https://github.com/web-org/web-service",
 			"repo:git@github.com:ssh-org/ssh-repo.git",
 			"repo:https://gitlab.corp.redhat.com/internal/group/svc.git",
+			"repo:https://code.example.com/custom/project",
+			"repo:https://www.github.com/another/repo",
 			"repo:single-segment-no-slash",
 			"repo:",
 			"repo:   ",
@@ -1229,6 +1232,8 @@ func TestExtractRepoLabels(t *testing.T) {
 			{host: "github.com", slug: "web-org/web-service"},
 			{host: "github.com", slug: "ssh-org/ssh-repo"},
 			{host: "gitlab.corp.redhat.com", slug: "internal/group/svc"},
+			{host: "code.example.com", slug: "custom/project"},
+			{host: "www.github.com", slug: "another/repo"},
 		}
 		assert.Equal(t, expected, labelsParsed)
 	})
@@ -1351,5 +1356,128 @@ func TestExtractRepoLabels(t *testing.T) {
 		assert.Equal(t, "PROJ-GITLAB", routedGL[0].Key)
 		assert.Equal(t, "PROJ-BARE", routedGL[1].Key)
 		assert.Empty(t, mcGL.remoteLinksCalls)
+	})
+
+	t.Run("ParseRepoLabels_CollectsUnparseable", func(t *testing.T) {
+		t.Parallel()
+		p := newTestPoller(newMockClient(), nil, Options{})
+
+		labels := []string{
+			"bug",
+			"repo:backend",
+			"repo:my-org/my-repo",
+			"repo:https://code.example.com/o/r",
+			"repo:",
+			"repo:   ",
+			"repo:https://code.example.com/",
+		}
+
+		parsed, unparseable := p.parseRepoLabels(labels)
+		assert.Equal(t, []repoLabel{
+			{host: "", slug: "my-org/my-repo"},
+			{host: "code.example.com", slug: "o/r"},
+		}, parsed)
+		assert.Equal(t, []string{
+			"repo:backend",
+			"repo:",
+			"repo:https://code.example.com/",
+		}, unparseable)
+	})
+
+	t.Run("UnrecognizedHostAndUnparseable_StrictRoutingFalse_Skipped", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+
+		tests := []struct {
+			name  string
+			label string
+		}{
+			{
+				name:  "UnknownHostURL",
+				label: "repo:https://code.example.com/o/r",
+			},
+			{
+				name:  "WwwGitHubURL",
+				label: "repo:https://www.github.com/o/r",
+			},
+			{
+				name:  "SingleComponentUnparseableSlug",
+				label: "repo:backend",
+			},
+		}
+
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Parallel()
+				mc := newMockClient()
+				candidates := []jira.Issue{
+					{
+						Key: "PROJ-1",
+						Fields: jira.IssueFields{
+							Labels: []string{tc.label},
+						},
+					},
+				}
+
+				// Under StrictRepoRouting: false (default), candidates carrying
+				// a repo label prefix that targets an unknown host or cannot be
+				// parsed must be skipped and NEVER claimed by Priority 3 unrouted fallback.
+				routed, err := runDiscoverForCandidates(ctx, mc, Options{
+					TargetRepo:        "o/r",
+					TargetForge:       TargetForgeGitHub,
+					StrictRepoRouting: false,
+				}, candidates)
+				require.NoError(t, err)
+				assert.Empty(t, routed, "candidate with %q must be skipped, not claimed by unrouted fallback", tc.label)
+				assert.Empty(t, mc.remoteLinksCalls, "candidates with repo label prefix must be evaluated in Priority 1 with zero remote-link lookups")
+			})
+		}
+
+		t.Run("CombinedCandidates_NoneClaimedByFallback", func(t *testing.T) {
+			t.Parallel()
+			mc := newMockClient()
+			candidates := []jira.Issue{
+				{
+					Key: "PROJ-UNKNOWN-HOST",
+					Fields: jira.IssueFields{
+						Labels: []string{"repo:https://code.example.com/o/r"},
+					},
+				},
+				{
+					Key: "PROJ-WWW-GITHUB",
+					Fields: jira.IssueFields{
+						Labels: []string{"repo:https://www.github.com/o/r"},
+					},
+				},
+				{
+					Key: "PROJ-UNPARSEABLE-SLUG",
+					Fields: jira.IssueFields{
+						Labels: []string{"repo:backend"},
+					},
+				},
+			}
+
+			routed, err := runDiscoverForCandidates(ctx, mc, Options{
+				TargetRepo:        "o/r",
+				TargetForge:       TargetForgeGitHub,
+				StrictRepoRouting: false,
+			}, candidates)
+			require.NoError(t, err)
+			assert.Empty(t, routed)
+			assert.Empty(t, mc.remoteLinksCalls)
+
+			// However, a GitLab poller targeting code.example.com DOES claim PROJ-UNKNOWN-HOST:
+			mcGL := newMockClient()
+			routedGL, err := runDiscoverForCandidates(ctx, mcGL, Options{
+				TargetRepo:        "o/r",
+				TargetForge:       TargetForgeGitLab,
+				GitLabURL:         "https://code.example.com",
+				StrictRepoRouting: false,
+			}, candidates)
+			require.NoError(t, err)
+			require.Len(t, routedGL, 1)
+			assert.Equal(t, "PROJ-UNKNOWN-HOST", routedGL[0].Key)
+			assert.Empty(t, mcGL.remoteLinksCalls)
+		})
 	})
 }
