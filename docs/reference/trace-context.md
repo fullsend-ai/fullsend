@@ -89,9 +89,9 @@ writes any key.
 Install writes a new key in this order:
 
 1. It records the new public key as `active` in `repos.yaml` and moves the
-   previous active key, if any, to `retained`. When another install that uses
-   the same file changed it after this run loaded it, install stops before
-   writing it.
+   previous active key, if any, to `retained`, or replaces it when the secret
+   cannot hold it (see below). When another install that uses the same file
+   changed it after this run loaded it, install stops before writing it.
 2. It reads `FULLSEND_TRACE_SIGNING_KEY_ID` again. If the read fails, or the
    variable appeared, disappeared or changed since the run first read it, as
    when another install or uninstall of the repository ran at the same time,
@@ -116,16 +116,26 @@ active key. Install then writes no key unless you pass
 `--rotate-trace-signing-key`. When the variable is missing or names a retained
 key, the secret may not hold the active key. In that case, and when the secret
 is missing, the next plain `repos install` generates a new key through the
-same steps and keeps the installation ID. From a read-only manifest, that run
-fails the repository and writes nothing for it.
+same steps and keeps the installation ID. It moves the previous active key to
+`retained` unless the secret cannot hold that key: when the variable names a
+retained key and the committed `.fullsend/config.yaml` does not list the
+active key, since step 3 deletes the variable before step 4 writes the seed,
+or when neither the variable nor the secret exists and no block of the
+installation is committed. Install then replaces the key and prints its key
+ID. From a read-only manifest, that run fails the repository and writes
+nothing for it.
 
 Unless another install of the repository wrote a key after the run started
 (see step 2), a run that stopped at any step converges on a plain retry with
-the `repos.yaml` it wrote. That retry keeps every trusted key: a key that the
-stopped run recorded but did not confirm writing moves to `retained`. Keep and
-commit that `repos.yaml` even though the run failed: after a run that stopped
-at step 4 or 5, a retry from an older copy writes a new key and drops the one
-the stopped run may have written, and install cannot tell (see
+the `repos.yaml` it wrote. That retry keeps every key whose seed may have been
+written: a key that the stopped run recorded but did not confirm writing moves
+to `retained`, unless the secret cannot hold it. While the variable is absent
+and the secret exists, or after `repos uninstall --uninstall-only` of an
+install whose commit landed, install cannot tell whether a recorded key's seed
+was written, so each run that stops before step 4 adds one more retained key.
+Keep and commit that `repos.yaml` even though the run failed: after a run that
+stopped at step 4 or 5, a retry from an older copy writes a new key and drops
+the one the stopped run may have written, and install cannot tell (see
 [When install refuses an entry](#when-install-refuses-an-entry)). A seed write
 that failed may still have landed, for example after a timeout.
 
@@ -229,11 +239,14 @@ On GitHub, uninstall deletes `FULLSEND_TRACE_SIGNING_KEY` and
 `FULLSEND_TRACE_SIGNING_KEY_ID` and leaves `.fullsend/config.yaml`,
 `trace_context` block included, in place. With `--uninstall-only`, the
 `repos.yaml` entry keeps its `trace_context` block. The next install then
-keeps the installation ID, moves the old active key to `retained`, and writes
-a new key pair. `--manifest-only` removes the entry and leaves the variable,
-the secret, the workflow and the committed block in place. When you declare
-the repository again without keys, install refuses the entry until you
-restore its `trace_context` or a full uninstall finishes.
+keeps the installation ID and writes a new key pair. Once a commit of the
+installation's block has landed, it moves the old active key to `retained`;
+before that, neither the variable nor the secret exists and no block of the
+installation is committed, so it replaces the old active key and prints its
+key ID. `--manifest-only` removes the entry and leaves the variable, the
+secret, the workflow and the committed block in place. When you declare the
+repository again without keys, install refuses the entry until you restore
+its `trace_context` or a full uninstall finishes.
 
 A full uninstall also removes the repository's `repos.yaml` entry. A fully
 uninstalled repository that you declare and install again is enrolled again

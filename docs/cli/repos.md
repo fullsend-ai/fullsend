@@ -278,9 +278,21 @@ repository that a glob covers.
 Some convergence input checks run only after that write: whether a selected
 repository uses each `--openai-api-key`, `--vertex-project`,
 `--vertex-wif-provider` and `--jira-*` value given, and the GCP project-number
-lookup that derives a repository's WIF provider. A failure there stops the run
-after `repos.yaml` recorded any new trace key, so that key's seed is never
-written. The next run keeps that key as a retained key.
+lookup that derives a repository's WIF provider. A failure there stops the
+run. A repository can also stop after that write and before its trace key
+step: at one of its own convergence checks, such as missing inference
+credentials or a malformed vendor manifest, at another convergence error
+before that step, or when the run is interrupted. Each of these leaves the new
+trace key that `repos.yaml` recorded for a repository without its seed. The
+next run replaces that key when the secret cannot hold it: when
+`FULLSEND_TRACE_SIGNING_KEY_ID` names a retained key and the committed
+configuration does not list the active key, or when neither the variable nor
+`FULLSEND_TRACE_SIGNING_KEY` exists and no block of the installation is
+committed. Otherwise it keeps that key as a retained key. So while the
+variable is absent and the secret exists, or after
+`repos uninstall --uninstall-only` of an install whose commit landed, each
+failed run adds one retained key whose seed no one holds, and install never
+removes a retained key.
 
 Legacy issue-tracking configuration in managed `config:` blocks (the scalar
 `tracker: github|gitlab|jira` form and the removed `create_issues` block) is
@@ -700,16 +712,21 @@ No fullsend code reads the signing key yet. For the whole lifecycle, see
   later runs, install writes no key while the secret exists and the variable
   names the active key. When the secret is missing, or the variable is missing
   or names a retained key, install writes a new key pair, keeps the
-  installation ID and moves the previous active key to `retained`. This
-  recovers an interrupted run, retried with the `repos.yaml` that run wrote,
-  and a reinstall after `repos uninstall --uninstall-only`. A repository that
-  install skips, such as one whose `.fullsend/config.yaml` needs adoption,
-  gets no key.
+  installation ID and moves the previous active key to `retained`. When the
+  secret cannot hold the previous active key, install replaces that key
+  instead and prints its key ID: when the variable names a retained key and
+  the committed configuration does not list the active key, or when neither
+  the variable nor the secret exists and no block of the installation is
+  committed. This recovers an interrupted run, retried with the `repos.yaml`
+  that run wrote, and a reinstall after `repos uninstall --uninstall-only`. A
+  repository that install skips, such as one whose `.fullsend/config.yaml`
+  needs adoption, gets no key.
 - **Rotation.** `--rotate-trace-signing-key` writes a new key pair even when
-  the install is healthy. The previous active key moves to `retained`. Within
-  an installation, install never removes a retained key. Enrolling a fully
-  uninstalled repository again replaces the ended installation's block, keys
-  included (see [`repos uninstall`](#repos-uninstall)).
+  the install is healthy. The previous active key moves to `retained` unless,
+  as above, the secret cannot hold it. Within an installation, install never
+  removes a retained key. Enrolling a fully uninstalled repository again
+  replaces the ended installation's block, keys included (see
+  [`repos uninstall`](#repos-uninstall)).
 - **Checks before any write.** Before it writes `repos.yaml` or any key,
   install compares each entry with the committed `.fullsend/config.yaml` and
   with `FULLSEND_TRACE_SIGNING_KEY_ID`. When they contradict it, install
@@ -743,9 +760,10 @@ No fullsend code reads the signing key yet. For the whole lifecycle, see
   key.
 - **Output.** Install and `--dry-run` name `FULLSEND_TRACE_SIGNING_KEY` and
   `FULLSEND_TRACE_SIGNING_KEY_ID`, and show the installation ID, the new key ID
-  and the reason (fresh install, recovery or rotation) for each new key. They
-  never show the seed. `--dry-run` writes nothing, and the IDs it shows belong
-  to keys that it discards.
+  and the reason (fresh install, recovery or rotation) for each new key, and
+  the key ID of an active key that a recovery replaces. They never show the
+  seed. `--dry-run` writes nothing, and the IDs it shows belong to keys that
+  it discards.
 - **Uninstall and status.** On GitHub, `repos uninstall` deletes
   `FULLSEND_TRACE_SIGNING_KEY` and `FULLSEND_TRACE_SIGNING_KEY_ID` (see
   [`repos uninstall`](#repos-uninstall)), and `repos status` counts the
@@ -771,7 +789,9 @@ No fullsend code reads the signing key yet. For the whole lifecycle, see
   until that merges). An entry that already declares `trace_context` by hand
   gets a new key pair on its first install with this release, as a recovery:
   install replaces `FULLSEND_TRACE_SIGNING_KEY` and moves the declared active
-  key to `retained`. From a read-only manifest, that repository fails.
+  key to `retained`, or replaces that key when neither the secret nor the
+  variable exists and no block of this installation is committed. From a
+  read-only manifest, that repository fails.
 
 ```bash
 fullsend repos install acme/api --rotate-trace-signing-key
@@ -796,7 +816,7 @@ Install flags supply only secrets and sensitive provisioning inputs, local vendo
 | `--jira-email` | | Optional Jira account email written as `FULLSEND_JIRA_EMAIL` to selected repos whose effective `tracker.jira.poll.enabled` is `true`. If omitted, the existing secret is kept. Command-line only. See [Jira polling](#jira-polling). |
 | `--jira-client-id` | | Atlassian service account OAuth 2.0 client ID written as `FULLSEND_JIRA_CLIENT_ID`, instead of `--jira-token`, to selected repos whose effective `tracker.jira.poll.enabled` is `true`. If omitted, the existing secret is kept. Command-line only. See [Jira polling](#jira-polling). |
 | `--jira-client-secret` | | Atlassian service account OAuth 2.0 client secret written as `FULLSEND_JIRA_CLIENT_SECRET`, instead of `--jira-token`. If omitted, the existing secret is kept. Command-line only: never written to `repos.yaml` and never logged. See [Jira polling](#jira-polling). |
-| `--rotate-trace-signing-key` | `false` | Generate a new trace signing key pair for each selected GitHub repo: write the private key as `FULLSEND_TRACE_SIGNING_KEY`, record the public key as active in `repos.yaml`, and keep the previous key as retained. On an existing install without `trace_context`, the first rotation provisions the keys. Needs a writable `repos.yaml`. GitLab repos get no key. See [Trace signing keys](#trace-signing-keys). |
+| `--rotate-trace-signing-key` | `false` | Generate a new trace signing key pair for each selected GitHub repo: write the private key as `FULLSEND_TRACE_SIGNING_KEY`, record the public key as active in `repos.yaml`, and keep the previous key as retained unless the secret cannot hold it. On an existing install without `trace_context`, the first rotation provisions the keys. Needs a writable `repos.yaml`. GitLab repos get no key. See [Trace signing keys](#trace-signing-keys). |
 | `--fullsend-binary` | | Path to a pre-built Linux fullsend binary to upload when vendoring instead of auto-resolving it from the resolved `fullsend_ref`. Valid only when at least one selected repo resolves `vendor: true`; otherwise install fails and points at `fullsend repos set defaults.vendor true` |
 | `--fullsend-source` | | Path to a fullsend source checkout for vendored content and cross-compilation instead of auto-detecting or fetching from GitHub. Same `vendor: true` requirement as `--fullsend-binary` |
 | `--gitlab-role-registry` | | Path to administrator GitLab role registry JSON (custom roles: credential references and policy, never secret values). Written as the protected unmasked `FULLSEND_GITLAB_ROLE_REGISTRY` variable. |
@@ -1785,10 +1805,12 @@ and on GitHub its `FULLSEND_TRACE_SIGNING_KEY_ID` variable. A repository
 without them still uninstalls. On GitHub, uninstall leaves the committed
 `.fullsend/config.yaml`, `trace_context` block included, in place. With
 `--uninstall-only`, the `repos.yaml` entry keeps its block too, so the next
-install keeps the installation ID, moves the old active key to `retained` and
-writes a new key pair. A fully uninstalled GitHub repository that you declare
-and install again is enrolled as a new installation: from a writable manifest,
-install generates a new installation ID and key pair. The uninstall counts as
+install keeps the installation ID and writes a new key pair. Once a commit of
+the installation's block has landed, it moves the old active key to
+`retained`; before that, it replaces the old active key and prints its key ID.
+A fully uninstalled GitHub repository that you declare and install again is
+enrolled as a new installation: from a writable manifest, install generates a
+new installation ID and key pair. The uninstall counts as
 finished once the repository has no fullsend workflow,
 `FULLSEND_TRACE_SIGNING_KEY` or `FULLSEND_TRACE_SIGNING_KEY_ID` left, so merge
 the uninstall pull request first. Until then, install refuses the entry.

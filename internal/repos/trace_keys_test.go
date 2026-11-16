@@ -479,11 +479,21 @@ func TestEnsureTraceSigningKeys_HealthyPlansNothing(t *testing.T) {
 	}
 }
 
+// notRetained is how progress names a recorded active key that a recovery
+// replaces because FULLSEND_TRACE_SIGNING_KEY cannot hold it.
+func notRetained(keyID string) string {
+	return "; key ID " + keyID + " is not retained: " + forge.SecretTraceSigningKey + " does not hold it and no committed config lists it"
+}
+
 // Every unhealthy state gets a new active key as "recovery", which wins
 // over Rotate, and a healthy install gets one as "rotation". The
-// installation ID is kept, the previous active key is retained after the
-// keys retained before, and the plan carries FULLSEND_TRACE_SIGNING_KEY_ID
-// as the preflight read it.
+// installation ID is kept, and the plan carries
+// FULLSEND_TRACE_SIGNING_KEY_ID as the preflight read it. The previous
+// active key is retained after the keys retained before, unless the secret
+// cannot hold it: the variable names a retained key and the committed
+// config does not list the active key, or neither the variable nor the
+// secret exists and no block of the installation is committed. Then the
+// recovery replaces it, and progress names its key ID.
 func TestEnsureTraceSigningKeys_RegeneratesKeepingInstallation(t *testing.T) {
 	a, r := newTraceKey(1), newTraceKey(2)
 	keyed := func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
@@ -498,18 +508,48 @@ func TestEnsureTraceSigningKeys_RegeneratesKeepingInstallation(t *testing.T) {
 		reason    string
 		// keyIDVar is the variable's value in the fixture; "" is absent.
 		keyIDVar string
+		// replaced reports a recovery that replaces a instead of retaining
+		// it.
+		replaced bool
 		setup    func(t *testing.T, m *Manifest, fc *forge.FakeClient)
 	}{
 		{name: "variable absent", installed: true, reason: reasonRecovery, setup: func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
 			keyed(t, m, fc)
 			setTraceSecret(fc, "acme/api")
 		}},
+		// As a run that failed setting the variable leaves it: the secret
+		// may hold a.
+		{name: "variable absent, nothing committed", installed: true, reason: reasonRecovery,
+			setup: func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
+				setManifestTrace(t, m, "acme/api", traceBlock(traceInstallA, a, r))
+				setTraceSecret(fc, "acme/api")
+			}},
 		{name: "variable and secret absent", installed: true, reason: reasonRecovery, setup: keyed},
+		// As a fresh install's run that stopped before its key write leaves
+		// it, or a hand-declared block whose key no secret holds.
+		{name: "variable and secret absent, nothing committed", installed: true, reason: reasonRecovery, replaced: true,
+			setup: func(t *testing.T, m *Manifest, _ *forge.FakeClient) {
+				setManifestTrace(t, m, "acme/api", traceBlock(traceInstallA, a, r))
+			}},
+		// A rotation to a wrote the seed and the variable, then
+		// --uninstall-only deleted both before the commit that lists a
+		// landed: a's seed was live, so it stays trusted.
+		{name: "variable and secret absent, committed config lists only the previous key", reason: reasonRecovery,
+			setup: func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
+				setManifestTrace(t, m, "acme/api", traceBlock(traceInstallA, a, r))
+				setInstalledTrace(fc, "acme/api", traceBlock(traceInstallA, r))
+			}},
 		{name: "secret absent", installed: true, reason: reasonRecovery, keyIDVar: a.id(), setup: func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
 			keyed(t, m, fc)
 			setKeyIDVar(fc, "acme/api", a.id())
 		}},
-		{name: "variable names a retained key", installed: true, reason: reasonRecovery, keyIDVar: r.id(), setup: func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
+		// The variable names a, so the secret held its seed.
+		{name: "secret absent, nothing committed", installed: true, reason: reasonRecovery, keyIDVar: a.id(),
+			setup: func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
+				setManifestTrace(t, m, "acme/api", traceBlock(traceInstallA, a, r))
+				setKeyIDVar(fc, "acme/api", a.id())
+			}},
+		{name: "variable names a retained key", installed: true, reason: reasonRecovery, keyIDVar: r.id(), replaced: true, setup: func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
 			// A run recorded a as active, then stopped before its seed
 			// write: the secret, the variable and the committed config
 			// still hold r.
@@ -518,6 +558,13 @@ func TestEnsureTraceSigningKeys_RegeneratesKeepingInstallation(t *testing.T) {
 			setTraceSecret(fc, "acme/api")
 			setKeyIDVar(fc, "acme/api", r.id())
 		}},
+		// The committed config trusts a, so its seed may have been live.
+		{name: "variable names a retained key, committed config lists the active key", installed: true, reason: reasonRecovery, keyIDVar: r.id(),
+			setup: func(t *testing.T, m *Manifest, fc *forge.FakeClient) {
+				keyed(t, m, fc)
+				setTraceSecret(fc, "acme/api")
+				setKeyIDVar(fc, "acme/api", r.id())
+			}},
 		// After repos uninstall --uninstall-only on GitHub: the entry and
 		// the committed config keep the block, and nothing else remains.
 		{name: "after --uninstall-only", reason: reasonRecovery, setup: keyed},
@@ -534,10 +581,15 @@ func TestEnsureTraceSigningKeys_RegeneratesKeepingInstallation(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/rotate=%t", tc.name, rotate), func(t *testing.T) {
 				fc, cfg := traceFixture(t, tc.installed, "acme/api")
 				tc.setup(t, cfg.Manifest, fc)
+				progress := &progressLog{}
 
-				plans, err := ensureTrace(t, fc, TraceKeysConfig{Manifest: cfg.Manifest, Rotate: rotate})
+				plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: cfg.Manifest, Rotate: rotate},
+					newTestClientFactory(fc), progress.fn)
 				require.NoError(t, err)
+				require.Empty(t, refused)
 				p := requireTracePlan(t, plans, "acme/api")
+				lines := progress.all()
+				requireNoSeed(t, lines, p.Key.EncodeSeed())
 				assert.Equal(t, tc.reason, p.Reason)
 				assert.Equal(t, tc.keyIDVar, p.KeyIDVar)
 				assert.Equal(t, tc.keyIDVar != "", p.KeyIDVarExists)
@@ -545,8 +597,16 @@ func TestEnsureTraceSigningKeys_RegeneratesKeepingInstallation(t *testing.T) {
 				got := manifestTrace(t, cfg.Manifest, "acme/api")
 				assert.Equal(t, traceInstallA, got.InstallationID, "the installation ID is kept")
 				assertPlanKeyIsActive(t, p, got)
-				assert.Equal(t, []string{r.pubB64(), a.pubB64()}, got.VerificationKeys.Retained,
-					"the previous active key is retained after the earlier retained key")
+				line := "acme/api manifest Would persist config.trace_context in the manifest entry: installation ID " + traceInstallA +
+					", new active key ID " + traceKeyID(p.Key.Public()) + " (" + tc.reason + ")"
+				if tc.replaced {
+					assert.Equal(t, []string{r.pubB64()}, got.VerificationKeys.Retained, "the active key the secret cannot hold is replaced")
+					line += notRetained(a.id())
+				} else {
+					assert.Equal(t, []string{r.pubB64(), a.pubB64()}, got.VerificationKeys.Retained,
+						"the previous active key is retained after the earlier retained key")
+				}
+				assert.Equal(t, []string{line}, lines, "progress names the IDs, and a replaced key's ID")
 				assertNoForgeWrites(t, fc)
 			})
 		}

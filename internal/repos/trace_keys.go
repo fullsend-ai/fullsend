@@ -105,7 +105,11 @@ var (
 //     installation ID) from crypto/rand, retains the previous active key,
 //     records the block in the manifest entry (carving an explicit entry out
 //     of a glob like EnsureManagedConfigDefaults) and returns a plan keyed
-//     "owner/repo".
+//     "owner/repo". A recovery replaces the active key instead, and progress
+//     names it, when the secret cannot hold it: the variable names a
+//     retained key and the committed config does not list the active key,
+//     or neither the variable nor the secret exists and no block of this
+//     installation is committed.
 //
 // A refused repository gets no plan, no edit and no progress line, and is
 // returned as a TraceKeyRefusal; the others are still planned. A read,
@@ -243,8 +247,13 @@ func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients Fo
 	for _, t := range repos {
 		if p := plans[t.name()]; p != nil {
 			where := manifestEntryWhere(t.name(), t.carvedFrom)
-			progress(t.name(), "manifest", fmt.Sprintf("%s config.trace_context in %s: installation ID %s, new active key ID %s (%s)",
-				verb, where, t.next.InstallationID, tracecontext.FormatKeyID(p.Key.KeyID()), p.Reason))
+			line := fmt.Sprintf("%s config.trace_context in %s: installation ID %s, new active key ID %s (%s)",
+				verb, where, t.next.InstallationID, tracecontext.FormatKeyID(p.Key.KeyID()), p.Reason)
+			if t.unwritten {
+				line += fmt.Sprintf("; key ID %s is not retained: %s does not hold it and no committed config lists it",
+					tracecontext.FormatKeyID(t.manifest.active), forge.SecretTraceSigningKey)
+			}
+			progress(t.name(), "manifest", line)
 		}
 	}
 	return plans, refused, nil
@@ -330,6 +339,9 @@ type traceRepo struct {
 	// recordedKeyID is the key ID FULLSEND_TRACE_SIGNING_KEY_ID names, or
 	// nil when the variable is absent.
 	recordedKeyID *[8]byte
+	// unwritten reports a recovery whose active key the secret cannot hold,
+	// so provision replaces that key instead of retaining it.
+	unwritten bool
 }
 
 func (t *traceRepo) name() string { return t.rr.Owner + "/" + t.rr.Repo }
@@ -439,10 +451,19 @@ func readTraceRepo(ctx context.Context, m *Manifest, clients ForgeClientFactory,
 	}
 	// A variable that is absent (an interrupted write, a deleted malformed
 	// value, a torn-down install) or that names a retained key means the
-	// secret may not hold the active key.
+	// secret may not hold the active key. Recovery retains that key unless
+	// the secret cannot hold it, as after a run that stopped before its key
+	// write, or --uninstall-only before the install's first commit landed.
 	switch {
 	case !secretExists, !recorded, keyID != t.manifest.active:
 		t.reason = reasonRecovery
+		// A key write deletes the variable before the seed, so a variable
+		// naming another key means the secret never held the active key,
+		// overlapping installs aside. With no variable, no secret and no
+		// committed block of this installation, it does not hold it either.
+		active, in := t.manifest.active, t.installed
+		t.unwritten = (recorded && keyID != active && (in == nil || !in.has(active, t.manifest.keys[active]))) ||
+			(!recorded && !secretExists && (in == nil || t.ended))
 	case rotate:
 		t.reason = reasonRotation
 	}
@@ -482,8 +503,8 @@ func (t *traceRepo) staleReasons() []string {
 }
 
 // provision generates t's new active key into t.next, keeping the
-// installation ID and retaining the previous active key, or starting a
-// block with a new installation ID.
+// installation ID and retaining the previous active key unless t.unwritten
+// replaces it, or starting a block with a new installation ID.
 func (t *traceRepo) provision() (tracecontext.SigningKey, error) {
 	key, err := tracecontext.NewSigningKey(nil)
 	if err != nil {
@@ -500,7 +521,7 @@ func (t *traceRepo) provision() (tracecontext.SigningKey, error) {
 			SigningKey:       &config.TraceSigningKeyRef{Secret: config.TraceSigningKeySecret},
 			VerificationKeys: &config.TraceVerificationKeys{},
 		}
-	} else {
+	} else if !t.unwritten {
 		t.next.VerificationKeys.Retained = append(t.next.VerificationKeys.Retained, t.next.VerificationKeys.Active)
 	}
 	t.next.VerificationKeys.Active = tracecontext.FormatVerificationKey(key.Public())

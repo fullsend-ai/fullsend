@@ -350,9 +350,12 @@ type traceStepFixture struct {
 // forge's error echoes. After a failed or unmerged commit, which leaves the
 // key written, the next preflight plans nothing; while a re-enrollment's
 // commit has not landed, it names the ended installation once. One plain
-// retry converges, keeps the installation and every trusted key, and
-// delivers the entry's block; a third preflight plans nothing and names no
-// ended installation.
+// retry converges, keeps the installation, and delivers the entry's block.
+// It replaces the stopped run's key, and names it, when the secret cannot
+// hold it: the variable still names the previous key, or neither the
+// variable nor the secret exists and no block of the installation is
+// committed. Otherwise it keeps every trusted key. A third preflight plans
+// nothing and names no ended installation.
 func TestTraceKeys_WriteStepFailureThenRetry(t *testing.T) {
 	old := newTraceKey(1)
 	fixtures := []traceStepFixture{
@@ -387,7 +390,7 @@ func TestTraceKeys_WriteStepFailureThenRetry(t *testing.T) {
 				p := requireTracePlan(t, first, "acme/api")
 				seed, id := p.Key.EncodeSeed(), traceKeyID(p.Key.Public())
 				before := manifestTrace(t, cfg.Manifest, "acme/api")
-				installation, eligible := before.InstallationID, traceEligible(before)
+				installation, eligible, retained := before.InstallationID, traceEligible(before), before.VerificationKeys.Retained
 				oldVar, oldVarSet := keyIDVar(fc)
 				cfg.TraceKeyPlans = first
 
@@ -462,13 +465,26 @@ func TestTraceKeys_WriteStepFailureThenRetry(t *testing.T) {
 					wantEnded = 1
 				}
 				assert.Equal(t, wantEnded, endedLines(lines, old), "ended installation lines:\n%s", strings.Join(lines, "\n"))
+				// A failed seed write leaves the old seed of an existing
+				// install in the secret, which may then hold either key.
+				replaced := step == "reread" || step == "delete" || step == "seed" && !rotate
+				wantNamed := 0
+				if replaced {
+					wantNamed = 1
+				}
+				assert.Equal(t, wantNamed, countLines(lines, "(recovery)"+notRetained(id)), "the retry names the key it replaces:\n%s", strings.Join(lines, "\n"))
 				cfg.TraceKeyPlans = second
 				client = &traceFailClient{FakeClient: fc}
 				convergeOK(t, client, cfg, client.land(), seed)
 				after := manifestTrace(t, cfg.Manifest, "acme/api")
 				assert.Equal(t, installation, after.InstallationID, "the installation is kept")
 				assertTraceConverged(t, fc, after)
-				assert.Subset(t, traceEligible(after), eligible, "no key leaves the eligible set")
+				if replaced {
+					assert.NotContains(t, traceEligible(after), before.VerificationKeys.Active, "the key the secret cannot hold is replaced")
+					assert.Equal(t, retained, after.VerificationKeys.Retained, "the keys retained before are kept")
+				} else {
+					assert.Subset(t, traceEligible(after), eligible, "no key leaves the eligible set")
+				}
 				committed, err := installedTraceContext(context.Background(), fc, "acme", "api", ForgeGitHub)
 				require.NoError(t, err)
 				assert.Equal(t, after, committed, "the commit delivers the entry's block")

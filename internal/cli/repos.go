@@ -397,9 +397,10 @@ type reposInstallConfig struct {
 	jiraClientSecret string
 
 	// rotateTraceSigningKey writes a new trace signing key pair and keeps
-	// the previous verification key as retained (ADR 0154); on an existing
-	// install without trace_context the first rotation provisions the
-	// keys. A one-run control: never persisted.
+	// the previous verification key as retained unless the secret cannot
+	// hold it (ADR 0154); on an existing install without trace_context the
+	// first rotation provisions the keys. A one-run control: never
+	// persisted.
 	rotateTraceSigningKey bool
 
 	// GitLab-specific
@@ -530,10 +531,14 @@ repos.yaml entry as config.trace_context (a repository that only a glob
 covers gets its own entry, copied from the glob), and writes the private
 seed as the FULLSEND_TRACE_SIGNING_KEY secret and its key ID as the
 FULLSEND_TRACE_SIGNING_KEY_ID variable. A later run writes a new pair,
-keeping the installation ID and retaining the previous public key, when
-the secret is missing, when that variable is missing or names a
-retained key, and with --rotate-trace-signing-key, whose first use
-gives an existing install its keys. From a read-only manifest a fresh
+keeping the installation ID, when the secret is missing, when that
+variable is missing or names a retained key, and with
+--rotate-trace-signing-key, whose first use gives an existing install
+its keys. It retains the previous public key, or replaces it when the
+secret cannot hold that key: when the variable names a retained key and
+the committed .fullsend/config.yaml does not list the active key, or
+when neither the variable nor the secret exists and no block of the
+installation is committed. From a read-only manifest a fresh
 install without --rotate-trace-signing-key goes ahead without keys, and
 any other key write fails that repository; with
 --rotate-trace-signing-key it stops the run. Output shows installation
@@ -581,7 +586,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.jiraEmail, "jira-email", "", "Jira account email written as FULLSEND_JIRA_EMAIL to selected repos whose tracker.jira.poll.enabled is true (optional); an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.jiraClientID, "jira-client-id", "", "Atlassian service account OAuth 2.0 client ID written as FULLSEND_JIRA_CLIENT_ID to selected repos whose tracker.jira.poll.enabled is true, instead of --jira-token; an omitted value keeps the existing secret; command-line only, never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.jiraClientSecret, "jira-client-secret", "", "Atlassian service account OAuth 2.0 client secret written as FULLSEND_JIRA_CLIENT_SECRET to selected repos whose tracker.jira.poll.enabled is true, instead of --jira-token; an omitted value keeps the existing secret; command-line only, never written to repos.yaml and never logged")
-	cmd.Flags().BoolVar(&opts.rotateTraceSigningKey, "rotate-trace-signing-key", false, "generate a new trace signing key pair for each selected GitHub repo, written as FULLSEND_TRACE_SIGNING_KEY with its public key recorded in repos.yaml, and keep the previous verification key as retained; on an existing install without trace_context, the first rotation provisions the keys; needs a writable repos.yaml; GitLab repos get no key yet")
+	cmd.Flags().BoolVar(&opts.rotateTraceSigningKey, "rotate-trace-signing-key", false, "generate a new trace signing key pair for each selected GitHub repo, written as FULLSEND_TRACE_SIGNING_KEY with its public key recorded in repos.yaml, and keep the previous verification key as retained unless the secret cannot hold it; on an existing install without trace_context, the first rotation provisions the keys; needs a writable repos.yaml; GitLab repos get no key yet")
 	cmd.Flags().StringVar(&opts.gitlabRoleRegistry, "gitlab-role-registry", "", "path to administrator GitLab role registry JSON (custom roles; never secret values)")
 	cmd.Flags().StringArrayVar(&opts.gitlabRoleTokens, "gitlab-role-token", nil, "administrator-provided GitLab role PAT (repeatable, role=token); values are never logged")
 	cmd.Flags().BoolVar(&opts.rotateGitLabRoles, "rotate-gitlab-roles", false, "force-rotate GitLab role credentials even if they are not near expiry")

@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -17,8 +18,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/telemetry/tracecontext"
 )
 
@@ -208,7 +211,9 @@ func TestRunReposInstall_RotateTraceSigningKeyProvisionsExistingInstall(t *testi
 // repos.yaml records the new key before the first forge write, so a failed
 // seed write leaves the key recorded and the key ID variable absent. The next
 // plain run writes a new key and the variable names it; the installation ID
-// is kept and the key that was never written stays retained.
+// is kept. Neither the variable nor the secret exists and nothing is
+// committed, so the secret cannot hold the recorded key: the run replaces it
+// instead of retaining it, and names its key ID.
 func TestRunReposInstall_TraceKeyRetryAfterSecretWriteFailure(t *testing.T) {
 	manifestPath := writeTestManifest(t, githubUnmanagedManifestYAML)
 	fc := newInstallFakeClient("acme/api")
@@ -233,7 +238,253 @@ func TestRunReposInstall_TraceKeyRetryAfterSecretWriteFailure(t *testing.T) {
 	assert.NotEqual(t, unwritten, pub, "the retry generates a new key")
 	assert.Equal(t, pub, traceValue(traceActiveKeyRe, second), "the written key is active")
 	assert.Equal(t, installationID, traceValue(traceInstallationIDRe, second), "the installation ID is kept")
-	assert.Regexp(t, `retained:\s*-\s*["']?`+regexp.QuoteMeta(unwritten), second, "the key that was never written stays retained")
+	assert.NotContains(t, second, unwritten, "the key that was never written is not retained")
+	assert.Equal(t, 1, strings.Count(out, notRetained(verificationKeyID(t, unwritten))), "the retry names the key it replaces")
+}
+
+// notRetained is how install names a recorded active key that it replaces
+// because FULLSEND_TRACE_SIGNING_KEY cannot hold it.
+func notRetained(keyID string) string {
+	return "(recovery); key ID " + keyID + " is not retained: " + forge.SecretTraceSigningKey +
+		" does not hold it and no committed config lists it"
+}
+
+// verificationKeyID returns the key ID of a public key in standard base64,
+// the form trace_context.verification_keys holds.
+func verificationKeyID(t *testing.T, pub string) string {
+	t.Helper()
+	b, err := base64.StdEncoding.DecodeString(pub)
+	require.NoError(t, err)
+	require.Len(t, b, ed25519.PublicKeySize)
+	return hexTraceKeyID(b)
+}
+
+// apiTrace returns acme/api's trace_context in the manifest at path, or nil.
+// It holds public values only.
+func apiTrace(t *testing.T, path string) *config.TraceContextConfig {
+	t.Helper()
+	m, err := repos.LoadManifest(context.Background(), path)
+	require.NoError(t, err)
+	for _, e := range m.AllRepos() {
+		if e.Name == "acme/api" && e.Config.Writer() != nil {
+			return e.Config.Writer().TraceContext()
+		}
+	}
+	return nil
+}
+
+// vendorManifestKey is acme/api's .fullsend vendor manifest in the fake. A
+// malformed one fails acme/api's convergence before its key step.
+var vendorManifestKey = "acme/api/" + scaffold.VendorManifestPath(scaffold.PerRepoVendorPrefix)
+
+// installTrace runs repos install with the manifest at path against fc,
+// after change edits the options, and returns its output and error.
+func installTrace(t *testing.T, path string, fc *forge.FakeClient, change func(*reposInstallConfig)) (string, error) {
+	t.Helper()
+	opts := githubManagedInstallOpts(path, fc)
+	if change != nil {
+		change(opts)
+	}
+	var err error
+	out := captureStdout(t, func() { err = runReposInstall(context.Background(), opts) })
+	return out, err
+}
+
+// A run that stops before acme/api's key step, at a run-level input check or
+// at one of acme/api's convergence checks, has already recorded a new active
+// key whose seed it never writes. The next run replaces that key instead of
+// retaining it: FULLSEND_TRACE_SIGNING_KEY cannot hold it, since neither the
+// variable nor the secret exists and nothing is committed or, after a
+// rotation, the variable still names the previous key, which the committed
+// config lists without the new one. Each of two failed runs keeps the
+// installation ID, records another active key and names the one it
+// replaces, and the retained keys stay as they were (the previous key, after
+// a rotation). A run without the cause installs, and its commit delivers the
+// entry's block.
+func TestRunReposInstall_TraceKeyNeverWrittenIsNotRetained(t *testing.T) {
+	cases := []struct {
+		name string
+		// rotate first installs acme/api, then fails its first run with
+		// --rotate-trace-signing-key.
+		rotate bool
+		// cause makes a run stop before acme/api's key step, with want in
+		// its error or output.
+		cause func(fc *forge.FakeClient, opts *reposInstallConfig)
+		want  string
+	}{
+		{name: "missing inference inputs", want: "no credentials were supplied", cause: func(_ *forge.FakeClient, opts *reposInstallConfig) {
+			opts.inferenceProject, opts.inferenceProjectNumber = "", ""
+		}},
+		{name: "malformed vendor manifest", want: "parsing vendor manifest", cause: func(fc *forge.FakeClient, _ *reposInstallConfig) {
+			fc.FileContents[vendorManifestKey] = []byte("{not a manifest")
+		}},
+		{name: "unused --jira-token", want: "--jira-token was supplied but no selected repository", cause: func(_ *forge.FakeClient, opts *reposInstallConfig) {
+			opts.jiraToken = "unused-token"
+		}},
+		{name: "rotation, malformed vendor manifest", rotate: true, want: "parsing vendor manifest", cause: func(fc *forge.FakeClient, _ *reposInstallConfig) {
+			fc.FileContents[vendorManifestKey] = []byte("{not a manifest")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTestManifest(t, githubUnmanagedManifestYAML)
+			fc := newInstallFakeClient("acme/api")
+			var retained []string
+			if tc.rotate {
+				_, err := installTrace(t, path, fc, nil)
+				require.NoError(t, err, "acme/api installs")
+				retained = []string{apiTrace(t, path).VerificationKeys.Active}
+			}
+
+			var installation, active string
+			commits, secrets, variables := repoWrites(fc, "acme/api")
+			for run := 1; run <= 2; run++ {
+				out, err := installTrace(t, path, fc, func(opts *reposInstallConfig) {
+					opts.rotateTraceSigningKey = tc.rotate && run == 1
+					tc.cause(fc, opts)
+				})
+				require.Error(t, err, "run %d fails", run)
+				// Neither is printed: a failed run writes no seed to check
+				// them against first.
+				require.True(t, strings.Contains(err.Error()+out, tc.want), "run %d stops at the expected check", run)
+				c, s, v := repoWrites(fc, "acme/api")
+				assert.Equal(t, []int{commits, secrets, variables}, []int{c, s, v}, "run %d writes nothing to acme/api", run)
+				got := apiTrace(t, path)
+				require.NotNil(t, got, "run %d records trace_context", run)
+				if run == 1 {
+					installation = got.InstallationID
+					assert.Zero(t, strings.Count(out, "is not retained"), "run 1 replaces no key")
+				} else {
+					assert.Equal(t, installation, got.InstallationID, "the installation ID is kept")
+					assert.NotEqual(t, active, got.VerificationKeys.Active, "run 2 records another key")
+					assert.Equal(t, 1, strings.Count(out, notRetained(verificationKeyID(t, active))), "run 2 names the key it replaces")
+				}
+				assert.Equal(t, retained, got.VerificationKeys.Retained, "run %d keeps the retained keys as they were", run)
+				active = got.VerificationKeys.Active
+			}
+
+			delete(fc.FileContents, vendorManifestKey)
+			out, err := installTrace(t, path, fc, nil)
+			require.NoError(t, err, "the run without the cause installs")
+			manifest := mustReadFile(t, path)
+			overlay := fc.FileContents[overlayPath("acme/api")]
+			_, pub := requireTraceKeyWritten(t, fc, "acme/api", out, manifest, string(overlay))
+			got := apiTrace(t, path)
+			assert.Equal(t, installation, got.InstallationID, "the installation ID is kept")
+			assert.Equal(t, pub, got.VerificationKeys.Active, "the written key is active")
+			assert.Equal(t, retained, got.VerificationKeys.Retained, "the retained keys are as they were")
+			assert.Equal(t, 1, strings.Count(out, notRetained(verificationKeyID(t, active))), "the run names the key it replaces")
+			committed, err := config.ParsePerRepoConfig(overlay)
+			require.NoError(t, err)
+			assert.Equal(t, got, committed.TraceContext(), "the commit delivers the entry's block")
+		})
+	}
+}
+
+// A recovery replaces the recorded active key only when
+// FULLSEND_TRACE_SIGNING_KEY cannot hold it, so it also replaces a key whose
+// seed was written once but never committed, and still retains one key per
+// failed run while the secret may hold the key:
+//   - L2: the first rotation of an install without keys wrote its seed and
+//     variable, its commit did not land, and repos uninstall
+//     --uninstall-only deleted both; the next run replaces that key.
+//   - H1: a hand-declared trace_context whose key no secret holds and no
+//     committed config lists; the first run replaces it.
+//   - R1: FULLSEND_TRACE_SIGNING_KEY_ID was deleted while the secret holds
+//     the key; each run that stops before its key step retains one more.
+//   - --uninstall-only after the install's commit landed: likewise.
+func TestRunReposInstall_TraceKeyRecoveryBounds(t *testing.T) {
+	uninstallOnly := func(t *testing.T, path string, fc *forge.FakeClient) {
+		t.Helper()
+		require.NoError(t, runReposUninstall(context.Background(), &reposUninstallConfig{
+			manifest: path, yes: true, concurrency: 4, uninstallOnly: true, testClient: fc,
+		}, []string{"acme/api"}), "repos uninstall --uninstall-only")
+	}
+	installed := func(t *testing.T, path string, fc *forge.FakeClient) {
+		t.Helper()
+		_, err := installTrace(t, path, fc, nil)
+		require.NoError(t, err, "acme/api installs")
+	}
+	cases := []struct {
+		name     string
+		manifest string
+		// existing makes acme/api an install without trace keys.
+		existing bool
+		// prepare brings acme/api to the row's state.
+		prepare func(t *testing.T, path string, fc *forge.FakeClient)
+		// failing makes two runs stop at acme/api's convergence checks;
+		// otherwise one run installs.
+		failing bool
+		// replaced reports that a run replaces the recorded active key
+		// instead of retaining it.
+		replaced bool
+	}{
+		{name: "L2: first rotation written, commit not landed, then --uninstall-only", existing: true, replaced: true,
+			prepare: func(t *testing.T, path string, fc *forge.FakeClient) {
+				fc.Errors["CommitFiles"] = errors.New("commit refused")
+				_, err := installTrace(t, path, fc, func(opts *reposInstallConfig) { opts.rotateTraceSigningKey = true })
+				require.Error(t, err, "the rotation's commit fails")
+				delete(fc.Errors, "CommitFiles")
+				requireTraceKeyWritten(t, fc, "acme/api")
+				uninstallOnly(t, path, fc)
+			}},
+		{name: "H1: hand-declared key, no secret, nothing committed", replaced: true,
+			manifest: githubUnmanagedManifestYAML + "      config:\n" +
+				indentLines("        ", traceContextYAML(testTraceInstallationID, forge.SecretTraceSigningKey, testTraceVerificationKey(1)))},
+		{name: "R1: key ID variable deleted, secret present", failing: true,
+			prepare: func(t *testing.T, path string, fc *forge.FakeClient) {
+				installed(t, path, fc)
+				delete(fc.VariableValues, "acme/api/"+forge.VarTraceSigningKeyID)
+				delete(fc.VariablesExist, "acme/api/"+forge.VarTraceSigningKeyID)
+			}},
+		{name: "--uninstall-only after the install's commit landed", failing: true,
+			prepare: func(t *testing.T, path string, fc *forge.FakeClient) {
+				installed(t, path, fc)
+				uninstallOnly(t, path, fc)
+			}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			manifest := githubUnmanagedManifestYAML
+			if tc.manifest != "" {
+				manifest = tc.manifest
+			}
+			path := writeTestManifest(t, manifest)
+			fc := newInstallFakeClient("acme/api")
+			if tc.existing {
+				fc = newInstalledFakeClientCLI("acme/api")
+			}
+			if tc.prepare != nil {
+				tc.prepare(t, path, fc)
+			}
+			runs := 1
+			if tc.failing {
+				fc.FileContents[vendorManifestKey] = []byte("{not a manifest")
+				runs = 2
+			}
+			for run := 1; run <= runs; run++ {
+				before := apiTrace(t, path)
+				require.NotNil(t, before, "acme/api's entry has trace_context")
+				out, err := installTrace(t, path, fc, nil)
+				got := apiTrace(t, path)
+				require.NotNil(t, got)
+				assert.Equal(t, before.InstallationID, got.InstallationID, "the installation ID is kept")
+				assert.NotEqual(t, before.VerificationKeys.Active, got.VerificationKeys.Active, "run %d records a new key", run)
+				if tc.replaced {
+					requireTraceKeyWritten(t, fc, "acme/api", out, mustReadFile(t, path))
+					require.NoError(t, err)
+					assert.Equal(t, before.VerificationKeys.Retained, got.VerificationKeys.Retained, "the recorded key is replaced")
+					assert.Equal(t, 1, strings.Count(out, notRetained(verificationKeyID(t, before.VerificationKeys.Active))), "the run names the key it replaces")
+					continue
+				}
+				require.Error(t, err, "run %d fails", run)
+				require.True(t, strings.Contains(err.Error()+out, "parsing vendor manifest"), "run %d stops before the key step", run)
+				assert.Equal(t, append(slices.Clone(before.VerificationKeys.Retained), before.VerificationKeys.Active), got.VerificationKeys.Retained,
+					"run %d retains one more key", run)
+				assert.Zero(t, strings.Count(out, "is not retained"), "run %d replaces no key", run)
+			}
+		})
+	}
 }
 
 // The token-scope check and the sign-off identity lookup only read, and they
