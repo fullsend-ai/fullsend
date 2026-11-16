@@ -14,10 +14,11 @@ import (
 
 // TestTriageReRunAppendFeature_StepsMatchPatterns checks that every
 // comment assertion of the triage re-run scenario matches a pattern
-// registerForgeStateSteps registers (the patterns are repeated here
-// verbatim), so a typo in the feature or the step text fails here
-// rather than after a lease: the scenario's behaviour job skips on
-// fork PRs, so its wiring is otherwise only checked live.
+// registerForgeStateSteps registers (the test compiles the same
+// package-level consts the registration binds), so a typo in the
+// feature or a reworded step text fails here rather than after a
+// lease: the scenario's behaviour job skips on fork PRs, so its
+// wiring is otherwise only checked live.
 func TestTriageReRunAppendFeature_StepsMatchPatterns(t *testing.T) {
 	t.Parallel()
 
@@ -37,10 +38,10 @@ func TestTriageReRunAppendFeature_StepsMatchPatterns(t *testing.T) {
 	require.NoError(t, scanner.Err())
 
 	patterns := []*regexp.Regexp{
-		regexp.MustCompile(`^the issue has (\d+) comments? containing "([^"]+)"$`),
-		regexp.MustCompile(`^the last comment on the issue contains "([^"]+)"$`),
-		regexp.MustCompile(`^the last comment on the issue containing "([^"]+)" contains "([^"]+)"$`),
-		regexp.MustCompile(`^a comment on the issue other than the last contains "([^"]+)"$`),
+		regexp.MustCompile(stepIssueCommentCountContains),
+		regexp.MustCompile(stepLastIssueCommentContains),
+		regexp.MustCompile(stepLastIssueCommentContainingContains),
+		regexp.MustCompile(stepIssueCommentOtherThanLastContains),
 	}
 	var commentAssertions []string
 	for _, step := range steps {
