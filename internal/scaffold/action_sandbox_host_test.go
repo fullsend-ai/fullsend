@@ -135,6 +135,22 @@ func TestActionDetectSandboxHostStep(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out, outputs, envWrites, err := runDetectSandboxHost(t, detect.Run, tc.endpoint, tc.pathDir, tc.workflowEndpoint)
+			// The endpoint value is never logged: the step prints its source
+			// and, on rejection, its length, but not the value itself, which
+			// can carry credentials or internal addresses into public logs.
+			// Every value the case supplied is checked, including the losing
+			// channel's value in the precedence case, and each line of a
+			// newline-injected value, so a partial leak is caught too.
+			for _, supplied := range []*string{tc.endpoint, tc.workflowEndpoint} {
+				if supplied == nil || *supplied == "" {
+					continue
+				}
+				for _, line := range strings.Split(*supplied, "\n") {
+					if line != "" {
+						assert.NotContains(t, out, line, "the endpoint value must never appear in the run log")
+					}
+				}
+			}
 			if tc.wantErr {
 				// A rejection must be the step's own validation failing, not
 				// any non-zero exit: the error annotation is printed, and
@@ -146,6 +162,14 @@ func TestActionDetectSandboxHostStep(t *testing.T) {
 				_, decided := outputs["local"]
 				assert.False(t, decided, "a rejected endpoint must not produce a sandbox-host decision")
 				return
+			}
+			// The success log names the channel the endpoint came from.
+			if tc.wantEndpoint != "" {
+				if tc.workflowEndpoint != nil && *tc.workflowEndpoint != "" {
+					assert.Contains(t, out, "from repository variable")
+				} else if tc.endpoint != nil {
+					assert.Contains(t, out, "from runner environment")
+				}
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantLocal, outputs["local"])

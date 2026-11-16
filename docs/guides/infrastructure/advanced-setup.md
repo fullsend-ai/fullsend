@@ -123,32 +123,48 @@ elsewhere. Configure the endpoint in one of these ways:
    not read.
 2. As a fallback, for fleet-managed runner images, set
    `OPENSHELL_GATEWAY_ENDPOINT` in the runner's own process environment;
-   it applies whenever the variable from step 1 is unset.
+   it applies whenever the variable from step 1 is unset. The same rule
+   holds on this channel: the value must be a single `https://` URL with
+   no whitespace. Earlier releases accepted any non-empty value here, so
+   plaintext, scheme-less or uppercase-scheme runner values must be
+   migrated to lowercase `https://` URLs.
 
 When an endpoint is configured, the action skips the Podman installation,
 the rootless Podman configuration, and the local gateway configuration,
-and sandboxes are created on the remote gateway. The gateway must
-already be registered on the runner: `openshell gateway add` stores the
-gateway's mTLS or authentication material, and the action never
-registers a gateway itself. Set the variable to the endpoint exactly as
-it was registered, as an `https://` URL — plaintext `http://` gateways
-are rejected. When `OPENSHELL_GATEWAY` is not set on the runner,
-OpenShell matches the configured endpoint against the registered
-gateways, and a value that does not match (for example `https://gw:443`
-where `https://gw` is registered) makes the sandbox fail later at the
-TLS or authentication handshake, with an error that does not point at
+and sandboxes are created on the remote gateway.
+
+**Registration.** The gateway must already be registered on the runner:
+`openshell gateway add` stores the gateway's mTLS or authentication
+material, and the action never registers a gateway itself. Set the
+variable to the endpoint exactly as it was registered, as an `https://`
+URL — plaintext `http://` gateways are rejected. The runner operator who
+registered the gateway can confirm the exact registered value.
+
+**Endpoint matching.** When `OPENSHELL_GATEWAY` is not set on the
+runner, OpenShell matches the configured endpoint against the registered
+gateways. A value that does not match (for example `https://gw:443`
+where `https://gw` is registered) is used as a gateway name instead, and
+the sandbox fails with `failed to read TLS CA` under a
+`gateways/https___gw_443/mtls` path — an error that does not point at
 the mismatch. When a fleet image sets `OPENSHELL_GATEWAY`, no endpoint
 matching happens: the named gateway's registered material is used with
-whatever endpoint the variable holds, so on a runner pool shared across
-repositories, a repository variable from any one repository decides
-where that gateway is used. The runner operator who registered the
-gateway can confirm the exact registered value. A non-empty repository
-or organization variable deliberately takes precedence over a value
-configured in the runner's process environment: repository
-administrators choose the gateway for their runs. The value must be a
-single `https://` URL with no whitespace. If the `openshell` CLI is already on the runner's `PATH`, the
-action also skips the OpenShell CLI installer, which needs `sudo` and
-starts a local gateway service. Install the CLI version pinned in
+whatever endpoint the variable holds.
+
+**Precedence and validation.** A non-empty repository or organization
+variable deliberately takes precedence over a value configured in the
+runner's process environment: repository administrators choose the
+gateway for their runs. Whatever the source, the value must be a single
+`https://` URL with no whitespace.
+
+**Shared runner pools.** When a fleet image sets `OPENSHELL_GATEWAY` on
+a runner pool shared across repositories, each repository's variable
+decides which endpoint receives that gateway's registered credentials
+for its runs.
+
+**CLI preinstall (remote gateway only).** On a remote-gateway runner,
+if the `openshell` CLI is already on the runner's `PATH`, the action
+also skips the OpenShell CLI installer, which needs `sudo` and starts a
+local gateway service. Install the CLI version pinned in
 `.github/scripts/openshell-version.sh` in the runner image.
 
 The action also needs the Python `jsonschema` package to validate agent
