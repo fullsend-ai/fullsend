@@ -1218,6 +1218,7 @@ func TestExtractRepoLabels(t *testing.T) {
 			"repo:git@github.com:ssh-org/ssh-repo.git",
 			"repo:https://gitlab.corp.redhat.com/internal/group/svc.git",
 			"repo:https://code.example.com/custom/project",
+			"repo:https://code.example.com/custom/project/-/issues/1",
 			"repo:https://www.github.com/another/repo",
 			"repo:single-segment-no-slash",
 			"repo:",
@@ -1370,6 +1371,11 @@ func TestExtractRepoLabels(t *testing.T) {
 			"repo:",
 			"repo:   ",
 			"repo:https://code.example.com/",
+			"repo:https://code.example.com/single",
+			"repo:https://github.com/orgs/my-org/teams/backend",
+			"repo:https://github.com/advisories/GHSA-1234",
+			"repo:https://bitbucket.org/workspaces/my-ws",
+			"repo:https://gitlab.com/groups/my-group",
 		}
 
 		parsed, unparseable := p.parseRepoLabels(labels)
@@ -1381,6 +1387,11 @@ func TestExtractRepoLabels(t *testing.T) {
 			"repo:backend",
 			"repo:",
 			"repo:https://code.example.com/",
+			"repo:https://code.example.com/single",
+			"repo:https://github.com/orgs/my-org/teams/backend",
+			"repo:https://github.com/advisories/GHSA-1234",
+			"repo:https://bitbucket.org/workspaces/my-ws",
+			"repo:https://gitlab.com/groups/my-group",
 		}, unparseable)
 	})
 

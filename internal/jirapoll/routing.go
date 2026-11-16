@@ -165,6 +165,10 @@ func trimGitSuffix(s string) string {
 // example, Options.GitLabURL, including any sub-path prefix) as a known GitLab
 // instance. Returns ("", "") if the URL does not identify a repository link.
 func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
+	return extractRepoHostAndSlugInternal(rawURL, allowedGitLabURL, false)
+}
+
+func extractRepoHostAndSlugInternal(rawURL, allowedGitLabURL string, allowGenericHTTP bool) (string, string) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return "", ""
@@ -219,10 +223,12 @@ func extractRepoHostAndSlug(rawURL, allowedGitLabURL string) (string, string) {
 		(allowedHost != "" && host == allowedHost)
 
 	if !isGitHub && !isBitbucket && !isGitLab {
-		// Generic / self-hosted git hosts: only accept SSH URLs or git.* hosts
-		// whose path explicitly ends with .git so arbitrary site links like
-		// docs.example.com/download/tool.git are ignored.
-		if !isSSH && !(strings.HasPrefix(host, "git.") && strings.HasSuffix(strings.ToLower(path), ".git")) {
+		// Generic / self-hosted git hosts: for remote links (!allowGenericHTTP),
+		// only accept SSH URLs or git.* hosts whose path explicitly ends with .git
+		// so arbitrary site links like docs.example.com/download/tool.git are ignored.
+		// For explicit repo: labels (allowGenericHTTP), any HTTP(S) or SSH host
+		// is accepted as long as it has a valid repository path slug.
+		if !allowGenericHTTP && !isSSH && !(strings.HasPrefix(host, "git.") && strings.HasSuffix(strings.ToLower(path), ".git")) {
 			return "", ""
 		}
 	}
@@ -353,56 +359,6 @@ func (l repoLabel) String() string {
 	return l.host + "/" + l.slug
 }
 
-// parseGenericRepoURL extracts the normalized host and path slug from any HTTP,
-// HTTPS, or SSH git repository URL with at least two path segments, without
-// restricting the host to known forges.
-func parseGenericRepoURL(rawURL string) (string, string) {
-	rawURL = strings.TrimSpace(rawURL)
-	if rawURL == "" {
-		return "", ""
-	}
-
-	var host, path string
-	if strings.HasPrefix(rawURL, "git@") {
-		parts := strings.SplitN(rawURL, ":", 2)
-		if len(parts) != 2 {
-			return "", ""
-		}
-		host = strings.TrimPrefix(parts[0], "git@")
-		path = parts[1]
-	} else {
-		parsed, err := url.Parse(rawURL)
-		if err != nil {
-			return "", ""
-		}
-		switch parsed.Scheme {
-		case "http", "https", "ssh":
-		default:
-			return "", ""
-		}
-		host = parsed.Host
-		path = parsed.Path
-	}
-
-	host = strings.ToLower(strings.TrimSpace(host))
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	if host == "" {
-		return "", ""
-	}
-
-	path = strings.Trim(path, "/")
-	path = trimGitSuffix(path)
-	path = strings.Trim(path, "/")
-	path = strings.ToLower(path)
-
-	if repoSlugRegex.MatchString(path) {
-		return host, path
-	}
-	return "", ""
-}
-
 // parseRepoLabels extracts repository targets and collects unparseable repo
 // labels from issue labels matching prefix (case-insensitive, default
 // DefaultRepoLabelPrefix = "repo:"). Unrecognized URLs with valid host and path
@@ -444,14 +400,11 @@ func (p *Poller) parseRepoLabels(labels []string) ([]repoLabel, []string) {
 		var host, slug string
 		// Check for host-qualified URL or SSH format first
 		if strings.Contains(val, "://") || strings.HasPrefix(val, "git@") {
-			host, slug = extractRepoHostAndSlug(val, p.opts.GitLabURL)
-			if slug == "" {
-				host, slug = parseGenericRepoURL(val)
-			}
+			host, slug = extractRepoHostAndSlugInternal(val, p.opts.GitLabURL, true)
 		} else {
 			// Try as URL with https:// if it looks like host/path
 			if strings.Contains(val, "/") {
-				if h, s := extractRepoHostAndSlug("https://"+val, p.opts.GitLabURL); s != "" {
+				if h, s := extractRepoHostAndSlugInternal("https://"+val, p.opts.GitLabURL, false); s != "" {
 					host, slug = h, s
 				}
 			}
@@ -542,6 +495,14 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 
 		// Priority 1: Check in-memory repo labels (0 HTTP calls).
 		repoLabels, unparseable := p.parseRepoLabels(candidates[start].Fields.Labels)
+		if len(unparseable) > 0 {
+			prefix := p.opts.RepoLabelPrefix
+			if prefix == "" {
+				prefix = DefaultRepoLabelPrefix
+			}
+			log.Printf("WARNING: issue %s: label(s) %v carry repo prefix %q but cannot be parsed as valid repository targets", candidates[start].Key, unparseable, prefix)
+		}
+
 		if len(repoLabels) > 0 {
 			attempted++
 			matched := false
@@ -564,11 +525,7 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 
 		if len(unparseable) > 0 {
 			attempted++
-			prefix := p.opts.RepoLabelPrefix
-			if prefix == "" {
-				prefix = DefaultRepoLabelPrefix
-			}
-			log.Printf("WARNING: skipping %s: label(s) %v carry repo prefix %q but cannot be parsed as valid repository targets", candidates[start].Key, unparseable, prefix)
+			log.Printf("skipping %s: candidate carries unparseable repo label(s) and is treated as routed elsewhere", candidates[start].Key)
 			start++
 			continue
 		}
