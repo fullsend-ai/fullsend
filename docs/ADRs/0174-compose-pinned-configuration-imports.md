@@ -64,6 +64,10 @@ Here's a two-file example:
 agents:
   - name: review
 
+# Allow the imported skill's source repository
+allowed_remote_resources:
+  - https://github.com/acme/agent-config/
+
 # But layer in a remote config from a third-party
 imports:
   - https://raw.githubusercontent.com/acme/agent-config/<commit>/config.yaml#sha256=<digest>
