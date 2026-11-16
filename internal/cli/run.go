@@ -6799,34 +6799,57 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 
 		relPath, _ := filepath.Rel(outputDir, path)
 
-		// If the file is valid JSON, structurally sanitize string leaves to guarantee
+		// If the file is valid JSON, structurally sanitize keys and string leaves to guarantee
 		// that redaction never breaks JSON syntax and fails closed (#5705).
+		dec := json.NewDecoder(bytes.NewReader(content))
+		dec.UseNumber()
 		var jsonVal any
-		if json.Unmarshal(content, &jsonVal) == nil {
-			sanitizedVal, findings := sanitizeJSONStructure(jsonVal, pipeline)
-			if len(findings) > 0 {
-				findingCount += len(findings)
-				for _, f := range findings {
-					printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
-					security.AppendFinding(findingsPath,
-						security.TracedFinding{
-							TraceID:   traceID,
-							Timestamp: time.Now().UTC().Format(time.RFC3339),
-							Phase:     "host_output",
-							Finding:   f,
-						})
+		if dec.Decode(&jsonVal) == nil {
+			var trailing any
+			if dec.Decode(&trailing) == io.EOF {
+				sanitizedVal, findings := sanitizeJSONStructure(jsonVal, pipeline)
+				if len(findings) > 0 {
+					findingCount += len(findings)
+					for _, f := range findings {
+						printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
+						security.AppendFinding(findingsPath,
+							security.TracedFinding{
+								TraceID:   traceID,
+								Timestamp: time.Now().UTC().Format(time.RFC3339),
+								Phase:     "host_output",
+								Finding:   f,
+							})
+					}
+					var buf bytes.Buffer
+					enc := json.NewEncoder(&buf)
+					enc.SetEscapeHTML(false)
+					enc.SetIndent("", "  ")
+					if err := enc.Encode(sanitizedVal); err != nil {
+						printer.StepWarn(fmt.Sprintf("Could not marshal sanitized JSON %s: %v", relPath, err))
+						return nil
+					}
+					marshaled := buf.Bytes()
+					// Backstop check: verify marshaled text contains no unredacted secrets
+					backstop := pipeline.Scan(string(marshaled))
+					if len(backstop.Findings) > 0 && backstop.Sanitized != "" && json.Valid([]byte(backstop.Sanitized)) {
+						marshaled = []byte(backstop.Sanitized)
+						for _, f := range backstop.Findings {
+							printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s (backstop): %s", f.Name, relPath, f.Detail))
+							security.AppendFinding(findingsPath,
+								security.TracedFinding{
+									TraceID:   traceID,
+									Timestamp: time.Now().UTC().Format(time.RFC3339),
+									Phase:     "host_output",
+									Finding:   f,
+								})
+						}
+					}
+					if writeErr := os.WriteFile(path, marshaled, 0o644); writeErr != nil {
+						printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
+					}
 				}
-				marshaled, err := json.MarshalIndent(sanitizedVal, "", "  ")
-				if err != nil {
-					printer.StepWarn(fmt.Sprintf("Could not marshal sanitized JSON %s: %v", relPath, err))
-					return nil
-				}
-				marshaled = append(marshaled, '\n')
-				if writeErr := os.WriteFile(path, marshaled, 0o644); writeErr != nil {
-					printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
-				}
+				return nil
 			}
-			return nil
 		}
 
 		// Non-JSON files: run plain text pipeline scan.
@@ -6866,19 +6889,8 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 
 var sensitiveJSONKeyRegex = regexp.MustCompile(`(?i)(?:key|token|secret|password|credential|auth)`)
 
-func maskSecretValue(value string) string {
-	if len(value) < 10 {
-		return "***"
-	}
-	prefix := value[:4]
-	if strings.Contains(prefix, "\\") {
-		return "***"
-	}
-	return prefix + "..."
-}
-
-// sanitizeJSONStructure recursively visits all string values in parsed JSON data,
-// scans each string leaf using the pipeline, and collects any findings.
+// sanitizeJSONStructure recursively visits all keys and string values in parsed JSON data,
+// scans each key and string leaf using the pipeline, and collects any findings.
 func sanitizeJSONStructure(v any, pipeline *security.Pipeline) (any, []security.Finding) {
 	var findings []security.Finding
 	switch val := v.(type) {
@@ -6895,22 +6907,50 @@ func sanitizeJSONStructure(v any, pipeline *security.Pipeline) (any, []security.
 	case map[string]any:
 		newMap := make(map[string]any, len(val))
 		for k, item := range val {
-			if strVal, ok := item.(string); ok && sensitiveJSONKeyRegex.MatchString(k) && len(strVal) >= 8 {
-				masked := maskSecretValue(strVal)
-				findings = append(findings, security.Finding{
-					Scanner:  "secret_redactor",
-					Name:     "json_field",
-					Severity: "high",
-					Detail:   fmt.Sprintf("Redacted json_field (%d chars) -> %s", len(strVal), masked),
-				})
-				newMap[k] = masked
+			sanitizedKey := k
+			keyRes := pipeline.Scan(k)
+			if len(keyRes.Findings) > 0 {
+				findings = append(findings, keyRes.Findings...)
+				if keyRes.Sanitized != "" {
+					sanitizedKey = keyRes.Sanitized
+				}
+			}
+			targetKey := sanitizedKey
+			if _, exists := newMap[targetKey]; exists {
+				for i := 1; ; i++ {
+					cand := fmt.Sprintf("%s_%d", sanitizedKey, i)
+					if _, exists := newMap[cand]; !exists {
+						targetKey = cand
+						break
+					}
+				}
+			}
+			if strVal, ok := item.(string); ok {
+				valRes := pipeline.Scan(strVal)
+				if len(valRes.Findings) > 0 {
+					findings = append(findings, valRes.Findings...)
+					newMap[targetKey] = valRes.Sanitized
+					continue
+				}
+				if sensitiveJSONKeyRegex.MatchString(k) && len(strVal) >= 8 {
+					masked := security.Mask(strVal)
+					findings = append(findings, security.Finding{
+						Scanner:  "secret_redactor",
+						Name:     "json_field",
+						Severity: "high",
+						Detail:   fmt.Sprintf("Redacted json_field (%d chars) -> %s", len(strVal), masked),
+					})
+					newMap[targetKey] = masked
+					continue
+				}
+				newMap[targetKey] = strVal
 				continue
 			}
 			newVal, f := sanitizeJSONStructure(item, pipeline)
 			if len(f) > 0 {
 				findings = append(findings, f...)
 			}
-			newMap[k] = newVal
+			newMap[targetKey] = newVal
 		}
 		return newMap, findings
 	case []any:

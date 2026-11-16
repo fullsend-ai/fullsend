@@ -403,6 +403,18 @@ func TestSecretRedactor(t *testing.T) {
 		assert.False(t, result.Safe)
 		assert.True(t, hasFinding(result, "env_assignment"))
 		assert.NotContains(t, result.Sanitized, `ab\cdEFGHijkl`)
+
+		// Boundary test: exactly 8 characters containing multiple backslashes
+		resultBoundary := r.Scan(`TOKEN=a\b\c\def`)
+		assert.False(t, resultBoundary.Safe)
+		assert.True(t, hasFinding(resultBoundary, "env_assignment"))
+		assert.NotContains(t, resultBoundary.Sanitized, `a\b\c\def`)
+
+		// Trailing backslash before boundary
+		resultTrailing := r.Scan(`TOKEN=abcdefg\`)
+		assert.False(t, resultTrailing.Safe)
+		assert.True(t, hasFinding(resultTrailing, "env_assignment"))
+		assert.NotContains(t, resultTrailing.Sanitized, `abcdefg\`)
 	})
 
 	t.Run("db connection redacts password containing backslashes", func(t *testing.T) {
@@ -410,6 +422,18 @@ func TestSecretRedactor(t *testing.T) {
 		assert.False(t, result.Safe)
 		assert.True(t, hasFinding(result, "db_connection_password"))
 		assert.NotContains(t, result.Sanitized, `pa\ss`)
+
+		// Boundary test: exactly 4 characters containing interior backslash
+		resultInterior := r.Scan(`postgres://user:p\ss@host:5432/db`)
+		assert.False(t, resultInterior.Safe)
+		assert.True(t, hasFinding(resultInterior, "db_connection_password"))
+		assert.NotContains(t, resultInterior.Sanitized, `p\ss`)
+
+		// Boundary test: trailing backslash before delimiter @
+		resultTrailing := r.Scan(`postgres://user:p\s\@host:5432/db`)
+		assert.False(t, resultTrailing.Safe)
+		assert.True(t, hasFinding(resultTrailing, "db_connection_password"))
+		assert.NotContains(t, resultTrailing.Sanitized, `p\s\`)
 	})
 
 	t.Run("auth header redacts credentials containing backslashes", func(t *testing.T) {
@@ -417,6 +441,12 @@ func TestSecretRedactor(t *testing.T) {
 		assert.False(t, result.Safe)
 		assert.True(t, hasFinding(result, "auth_header"))
 		assert.NotContains(t, result.Sanitized, `ab\cdEFGHijkl1234`)
+
+		// Boundary test: exactly 12 characters containing multiple backslashes
+		resultBoundary := r.Scan(`Authorization: Bearer a\b\c\d\e\f\g`)
+		assert.False(t, resultBoundary.Safe)
+		assert.True(t, hasFinding(resultBoundary, "auth_header"))
+		assert.NotContains(t, resultBoundary.Sanitized, `a\b\c\d\e\f\g`)
 	})
 
 	t.Run("json_field with embedded escaped quote preserves valid JSON", func(t *testing.T) {

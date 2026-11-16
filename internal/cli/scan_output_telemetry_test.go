@@ -105,6 +105,16 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	validJSON3 := `{"auth":"Authorization: Bearer abc\ndefghijkl1234"}`
 	require.NoError(t, os.WriteFile(jsonFile3, []byte(validJSON3), 0o644))
 
+	// Case 4: Secret token in object key, large integers (> 2^53), float precision, and HTML characters.
+	jsonFile4 := filepath.Join(dir, "key_and_numbers.json")
+	validJSON4 := `{"ghp_FAKEtesttoken000000000000000000000000": 12345678901234567891, "ratio": 1.0, "html": "<tag>&val</tag>"}`
+	require.NoError(t, os.WriteFile(jsonFile4, []byte(validJSON4), 0o644))
+
+	// Case 5: Slices containing string secrets and colliding keys.
+	jsonFile5 := filepath.Join(dir, "slice_and_collision.json")
+	validJSON5 := `{"tokens":["ghp_FAKEtesttoken000000000000000000000001"],"ghp_FAKEtesttoken000000000000000000000002":1,"ghp_FAKEtesttoken000000000000000000000003":2}`
+	require.NoError(t, os.WriteFile(jsonFile5, []byte(validJSON5), 0o644))
+
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
@@ -116,10 +126,18 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 		{jsonFile1, "ghp_FAKEtest"},
 		{jsonFile2, "secret_password_1234"},
 		{jsonFile3, "abcdefghijkl1234"},
+		{jsonFile4, "ghp_FAKEtest"},
+		{jsonFile5, "ghp_FAKEtest"},
 	} {
 		content, err := os.ReadFile(p.path)
 		require.NoError(t, err)
 		assert.True(t, json.Valid(content), "sanitized %s must remain valid JSON: %s", filepath.Base(p.path), string(content))
 		assert.NotContains(t, string(content), p.secret, "secret must be redacted from %s", filepath.Base(p.path))
 	}
+
+	content4, err := os.ReadFile(jsonFile4)
+	require.NoError(t, err)
+	assert.Contains(t, string(content4), "12345678901234567891", "large integer precision must be preserved")
+	assert.Contains(t, string(content4), "1.0", "float formatting must be preserved")
+	assert.Contains(t, string(content4), "<tag>&val</tag>", "HTML characters must not be escaped")
 }

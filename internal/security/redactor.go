@@ -119,7 +119,7 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 				continue
 			}
 			seen[match] = true
-			masked := mask(match)
+			masked := Mask(match)
 			result.Findings = append(result.Findings, Finding{
 				Scanner:  "secret_redactor",
 				Name:     p.name,
@@ -173,7 +173,39 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 			}
 
 			secret := current[start:end]
-			masked := mask(secret)
+			// If the matched secret ends with a backslash and is immediately
+			// followed by a quote delimiter, the trailing backslash was escaping
+			// that delimiter (e.g. \" in JSON or code strings). Preserve the
+			// escape by excluding the backslash from the redacted secret span.
+			if end < len(current) && (current[end] == '"' || current[end] == '\'') {
+				numBackslashes := 0
+				for k := len(secret) - 1; k >= 0 && secret[k] == '\\'; k-- {
+					numBackslashes++
+				}
+				if numBackslashes%2 == 1 {
+					secret = secret[:len(secret)-1]
+					end--
+				}
+			}
+			if len(secret) == 0 {
+				continue
+			}
+			minLen := 0
+			switch p.name {
+			case "env_assignment":
+				minLen = 8
+			case "auth_header":
+				minLen = 12
+			case "db_connection_password":
+				minLen = 4
+			case "json_field":
+				minLen = 8
+			}
+			if len(secret) < minLen {
+				continue
+			}
+
+			masked := Mask(secret)
 			result.Findings = append(result.Findings, Finding{
 				Scanner:  "secret_redactor",
 				Name:     p.name,
@@ -194,7 +226,8 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 	return result
 }
 
-func mask(value string) string {
+// Mask returns a redacted representation of a secret value.
+func Mask(value string) string {
 	if len(value) < 10 {
 		return "***"
 	}
@@ -249,12 +282,6 @@ func defaultPrefixPatterns() []secretPattern {
 }
 
 func defaultStructuralPatterns() []secretPattern {
-	// Value character pattern: allows non-delimiter characters and backslashes
-	// when followed by non-delimiter characters (e.g. passwords containing
-	// backslashes like pa\ss), but stops before backslashes that escape quote
-	// delimiters (like \" in JSON strings) to preserve JSON structural integrity.
-	const valChar = `(?:\\+[^\s"'}\]),;\\]|[^\s"'}\]),;\\])`
-
 	patterns := []struct {
 		name    string
 		pattern string
@@ -263,12 +290,12 @@ func defaultStructuralPatterns() []secretPattern {
 		// quote — TOKEN="basic <base64>" — and stays outside the capture so
 		// the mask keeps it visible. A bare value still ends at the first
 		// space, as in the PostToolUse hook.
-		{"env_assignment", `(?i)(?:^|\s)(?:export\s+)?((?:[A-Za-z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)(?:_[A-Za-z0-9]+)*)\s*=\s*(?:['"](?:(?:basic|bearer|token)[ \t]+)?)?(` + valChar + `{8,})['"]?`},
+		{"env_assignment", `(?i)(?:^|\s)(?:export\s+)?((?:[A-Za-z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)(?:_[A-Za-z0-9]+)*)\s*=\s*(?:['"](?:(?:basic|bearer|token)[ \t]+)?)?([^\s"'}\]),;]{8,})['"]?`},
 		{"json_field", `(?:"[^"]*(?i:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?i:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"((?:\\.|[^"\\]){8,})"|'((?:\\.|[^'\\]){8,})')`},
 		// The optional quote covers YAML: authorization: "Bearer <token>".
-		{"auth_header", `(?i)(?:Authorization|X-Api-Key|X-Auth-Token)\s*:\s*['"]?(?:(?:Basic|Bearer|Token)\s+)?(` + valChar + `{12,})`},
+		{"auth_header", `(?i)(?:Authorization|X-Api-Key|X-Auth-Token)\s*:\s*['"]?(?:(?:Basic|Bearer|Token)\s+)?([^\s"'}\]),;]{12,})`},
 		{"private_key", `-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----`},
-		{"db_connection_password", `(?:postgres(?:ql)?|mysql|mongodb|redis)://[^:]+:(` + valChar + `{4,})@[^@\s/]+`},
+		{"db_connection_password", `(?:postgres(?:ql)?|mysql|mongodb|redis)://[^:]+:([^\s"'}\]),;]{4,})@[^@\s/]+`},
 	}
 
 	result := make([]secretPattern, len(patterns))
