@@ -55,7 +55,10 @@ func newCICheckE2EAuthorizationCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "check-e2e-authorization [PR_NUMBER] [OWNER/REPO]",
 		Short: "Decide whether a pull request may run credentialed e2e tests",
-		Long: `Checks whether a pull request may run credentialed e2e tests in CI.
+		Long: `For use in the fullsend-ai org for our internal CI purposes only;
+not intended for end-users.
+
+Checks whether a pull request may run credentialed e2e tests in CI.
 
 On pull_request workflows, authorizes when the PR author is a trusted
 bot or has write+ permission via the collaborator permission API.
