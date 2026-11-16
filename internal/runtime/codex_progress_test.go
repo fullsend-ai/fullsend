@@ -3,11 +3,13 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"testing/iotest"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -573,6 +575,230 @@ func TestParseCodexStream_OverlongLineIsSkipped(t *testing.T) {
 	require.Len(t, texts, 1, "the oversized line is dropped, the stream continues")
 	assert.Equal(t, "after", texts[0].Text)
 	assert.False(t, codexOnlyResult(t, events).IsError)
+}
+
+// --- tool call ids, arguments and results (#7414) ---------------------------
+
+// codexToolPairs collects the ToolUseEvent/ToolResultEvent stream of a parse
+// and checks the pairing every call must have: a use with an id is followed at
+// once by the result with the same id.
+func codexToolPairs(t *testing.T, events []AgentEvent) ([]ToolUseEvent, []ToolResultEvent) {
+	t.Helper()
+	var uses []ToolUseEvent
+	var results []ToolResultEvent
+	for i, evt := range events {
+		switch e := evt.(type) {
+		case ToolUseEvent:
+			uses = append(uses, e)
+			if e.ID == "" {
+				continue
+			}
+			require.Less(t, i+1, len(events), "call %q has no result", e.ID)
+			res, ok := events[i+1].(ToolResultEvent)
+			require.True(t, ok, "call %q is not followed by its result", e.ID)
+			assert.Equal(t, e.ID, res.ID)
+		case ToolResultEvent:
+			results = append(results, e)
+		}
+	}
+	return uses, results
+}
+
+func TestParseCodexStream_ToolCallsFromLiveCapture(t *testing.T) {
+	t.Parallel()
+
+	before := time.Now()
+	events, _ := collectCodexEvents(t, "basic_run.ndjson")
+	uses, results := codexToolPairs(t, events)
+	require.Len(t, uses, 3, "one use per call: fullsend.tool_calls counts these")
+	require.Len(t, results, 3)
+
+	for i, id := range []string{"item_2", "item_3", "item_4"} {
+		assert.Equal(t, id, uses[i].ID, "the item id is the call id")
+		assert.False(t, uses[i].StartedAt.Before(before),
+			"every call in the capture has an item.started, read during this parse")
+		assert.False(t, results[i].IsError)
+		assert.False(t, results[i].Partial)
+	}
+
+	assert.JSONEq(t, `{"command":"/bin/zsh -lc 'ls .'"}`, uses[0].Arguments)
+	assert.Equal(t, "raw.ndjson\n", results[0].Result, "aggregated_output is the result")
+	assert.NotContains(t, uses[0].Summary, "raw.ndjson", "successful output stays out of the summary")
+
+	assert.JSONEq(t, `{"file_path":"/sandbox/workspace/repo/hello.txt"}`, uses[1].Arguments)
+	assert.Empty(t, results[1].Result, "a file change carries no output: the result only closes the call")
+
+	assert.Equal(t, "hi\n", results[2].Result)
+}
+
+func TestParseCodexStream_McpCallsFromLiveCapture(t *testing.T) {
+	t.Parallel()
+
+	before := time.Now()
+	events, threadID := collectCodexEvents(t, "mcp_tool_call.ndjson")
+	// Asserted by shape, as in TestParseCodexStream_BasicRun: a re-capture
+	// brings a new thread id.
+	assert.Regexp(t, `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`, threadID)
+	uses, results := codexToolPairs(t, events)
+	require.Len(t, uses, 3)
+	require.Len(t, results, 3)
+
+	for i, name := range []string{"lookup", "fail", "broken"} {
+		assert.Equal(t, fmt.Sprintf("item_%d", i+1), uses[i].ID)
+		assert.Equal(t, "mcp__stub__"+name, uses[i].Name)
+		assert.False(t, uses[i].StartedAt.Before(before), "each call has an item.started")
+		assert.False(t, results[i].Partial)
+	}
+	assert.JSONEq(t, `{"key":"alpha"}`, uses[0].Arguments, "MCP arguments pass through as the wire carried them")
+	assert.JSONEq(t, `{"key":"beta"}`, uses[1].Arguments)
+	assert.JSONEq(t, `{"key":"gamma"}`, uses[2].Arguments)
+
+	// Success: result.content text, no error.
+	assert.Equal(t, "value for alpha: 42", results[0].Result)
+	assert.False(t, results[0].IsError)
+	assert.Empty(t, uses[0].Summary, "a successful MCP call surfaces no payload")
+
+	// A result the tool flagged isError: status failed, the text in result,
+	// error null.
+	assert.Equal(t, "backend unavailable for beta", results[1].Result)
+	assert.True(t, results[1].IsError)
+	assert.Equal(t, "backend unavailable for beta", uses[1].Summary, "a failure surfaces its text")
+
+	// A JSON-RPC error: result null, the message in error.
+	assert.True(t, results[2].IsError)
+	assert.Contains(t, results[2].Result, "handler crashed on gamma")
+	assert.Contains(t, uses[2].Summary, "tool call failed for `stub/broken`")
+
+	result := codexOnlyResult(t, events)
+	assert.False(t, result.IsError, "failed tool calls do not fail the turn")
+	assert.Equal(t, 1, result.NumTurns)
+}
+
+func TestParseCodexStream_ToolResultsForEveryItemKind(t *testing.T) {
+	t.Parallel()
+
+	events, _ := collectCodexEvents(t, "mcp_and_file_change.ndjson")
+	uses, results := codexToolPairs(t, events)
+	require.Len(t, uses, 10)
+	require.Len(t, results, 10)
+
+	type want struct {
+		id, args, result string
+		isError          bool
+	}
+	for i, w := range []want{
+		{"item_1#0", `{"file_path":"/sandbox/workspace/repo/new.go"}`, "", false},
+		{"item_1#1", `{"file_path":"/sandbox/workspace/repo/main.go"}`, "", false},
+		{"item_1#2", `{"file_path":"/sandbox/workspace/repo/old.go"}`, "", false},
+		{"item_2", `{"file_path":"/sandbox/workspace/repo/locked.go"}`, "", true},
+		{"item_3", `{"number":6920}`, "issue body", false},
+		{"item_4", `{}`, "server not reachable", true},
+		{"item_5", `{"query":"codex exec json event schema"}`, "", false},
+		{"item_6", "", "", false},
+		{"item_8", `{"command":"rm -rf /"}`, "", true},
+		{"item_9", `{"command":"go test ./...\n  -run TestCodex"}`, "ok\tgithub.com/fullsend-ai/fullsend/internal/runtime\t0.4s\n", false},
+	} {
+		assert.Equal(t, w.id, uses[i].ID, "call %d", i)
+		if w.args == "" {
+			assert.Empty(t, uses[i].Arguments, "call %s", w.id)
+		} else {
+			assert.JSONEq(t, w.args, uses[i].Arguments, "call %s", w.id)
+		}
+		assert.Equal(t, w.result, results[i].Result, "call %s", w.id)
+		assert.Equal(t, w.isError, results[i].IsError, "call %s", w.id)
+	}
+
+	// The fan-out shares item_1's item.started; item_2 had none.
+	assert.False(t, uses[0].StartedAt.IsZero())
+	assert.Equal(t, uses[0].StartedAt, uses[2].StartedAt, "one patch, one start")
+	assert.True(t, uses[3].StartedAt.IsZero(), "no item.started: the tracker falls back to its own receipt")
+}
+
+func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	parse := func(t *testing.T, lines ...string) ([]ToolUseEvent, []ToolResultEvent) {
+		t.Helper()
+		var events []AgentEvent
+		_, err := parseCodexStream(strings.NewReader(strings.Join(lines, "\n")+"\n"), func(evt AgentEvent) {
+			events = append(events, evt)
+		})
+		require.NoError(t, err)
+		return codexToolPairs(t, events)
+	}
+
+	t.Run("a non-zero exit on a completed command is a failed call", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"false","aggregated_output":"","exit_code":1,"status":"completed"}}`)
+		require.Len(t, results, 1)
+		assert.True(t, results[0].IsError)
+	})
+
+	t.Run("a failed command keeps its output as the result", func(t *testing.T) {
+		t.Parallel()
+		events, _ := collectCodexEvents(t, "turn_failed.ndjson")
+		_, results := codexToolPairs(t, events)
+		require.Len(t, results, 1)
+		assert.True(t, results[0].IsError)
+		assert.Equal(t, "go: build failed\nexit status 1\n", results[0].Result)
+	})
+
+	t.Run("an item with no id yields a use but no result", func(t *testing.T) {
+		t.Parallel()
+		uses, results := parse(t, `{"type":"item.completed","item":{"type":"command_execution","command":"ls","aggregated_output":"a\n","exit_code":0,"status":"completed"}}`)
+		require.Len(t, uses, 1, "the call still counts")
+		assert.Empty(t, uses[0].ID)
+		assert.Empty(t, results, "a result with no id could not correlate with anything")
+	})
+
+	t.Run("a non-text MCP block marks the result partial", func(t *testing.T) {
+		t.Parallel()
+		_, results := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":{"content":[{"type":"text","text":"caption"},{"type":"image","data":"iVBOR","mimeType":"image/png"}],"structured_content":null},"error":null,"status":"completed"}}`)
+		require.Len(t, results, 1)
+		assert.Equal(t, "caption", results[0].Result)
+		assert.True(t, results[0].Partial)
+		assert.False(t, results[0].IsError)
+	})
+
+	t.Run("null MCP arguments are no arguments", func(t *testing.T) {
+		t.Parallel()
+		uses, _ := parse(t, `{"type":"item.completed","item":{"id":"m1","type":"mcp_tool_call","server":"s","tool":"t","arguments":null,"result":null,"error":null,"status":"completed"}}`)
+		require.Len(t, uses, 1)
+		assert.Empty(t, uses[0].Arguments)
+	})
+
+	t.Run("a failed patch that names no file still closes its call", func(t *testing.T) {
+		t.Parallel()
+		uses, results := parse(t, `{"type":"item.completed","item":{"id":"p1","type":"file_change","changes":[],"status":"failed"}}`)
+		require.Len(t, uses, 1)
+		assert.Equal(t, "p1", uses[0].ID)
+		require.Len(t, results, 1)
+		assert.True(t, results[0].IsError)
+	})
+
+	t.Run("a repeated item.started keeps the first instant", func(t *testing.T) {
+		t.Parallel()
+		started := `{"type":"item.started","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}`
+		var events []AgentEvent
+		r, w := io.Pipe()
+		second := make(chan time.Time, 1)
+		go func() {
+			fmt.Fprintln(w, started)
+			// io.Pipe hands the line over before Fprintln returns; the
+			// pause lets the parser stamp it before the second start.
+			time.Sleep(50 * time.Millisecond)
+			second <- time.Now()
+			fmt.Fprintln(w, started)
+			fmt.Fprintln(w, `{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"","exit_code":0,"status":"completed"}}`)
+			w.Close()
+		}()
+		_, err := parseCodexStream(r, func(evt AgentEvent) { events = append(events, evt) })
+		require.NoError(t, err)
+		uses, _ := codexToolPairs(t, events)
+		require.Len(t, uses, 1)
+		assert.True(t, uses[0].StartedAt.Before(<-second),
+			"the second item.started does not restamp the call")
+	})
 }
 
 // --- redaction --------------------------------------------------------------

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -184,10 +185,20 @@ type codexFileChangeItem struct {
 }
 
 type codexMcpToolCallItem struct {
-	Server string             `json:"server"`
-	Tool   string             `json:"tool"`
-	Error  *codexErrorPayload `json:"error"`
-	Status string             `json:"status"`
+	Server    string             `json:"server"`
+	Tool      string             `json:"tool"`
+	Arguments json.RawMessage    `json:"arguments"`
+	Result    *codexMcpResult    `json:"result"`
+	Error     *codexErrorPayload `json:"error"`
+	Status    string             `json:"status"`
+}
+
+// codexMcpResult is an MCP call's result as the exec stream carries it: the
+// server's content blocks (text, image, audio, resource) and an optional
+// structured_content value, which is not read — text is what the Level 3
+// record keeps, as it is for Claude and pi tool results.
+type codexMcpResult struct {
+	Content []piContentBlock `json:"content"`
 }
 
 type codexCollabToolCallItem struct {
@@ -317,6 +328,59 @@ func codexMcpToolName(server, tool string) string {
 	return strings.Join(parts, "__")
 }
 
+// codexArgument encodes one member as a call's Arguments object. Codex has no
+// uniform arguments object — a command is a string, a patch a list of
+// changes — so each item type is given the member the Claude tool it is
+// renamed to would carry (Bash's command, Write's or Edit's file_path,
+// WebSearch's query), and the Level 3 collector keeps or drops it by that
+// tool's list (recordedArguments) like any other call. An empty value
+// encodes nothing.
+func codexArgument(key, value string) string {
+	if value == "" {
+		return ""
+	}
+	data, err := json.Marshal(map[string]string{key: value})
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// codexCommandFailed reports whether a command_execution item is a failed
+// call, as is_error reports it for Claude's and pi's Bash: refused before it
+// ran (declined), failed, or exited non-zero.
+func codexCommandFailed(item codexCommandExecutionItem) bool {
+	switch item.Status {
+	case "declined", "failed":
+		return true
+	}
+	return item.ExitCode != nil && *item.ExitCode != 0
+}
+
+// codexMcpResultText returns an MCP call's result as ToolResultEvent carries
+// it, and whether it failed: the error message when the item carries one,
+// otherwise the text of its content blocks, with partial set when a block of
+// another type was skipped (as for Claude and pi).
+func codexMcpResultText(item codexMcpToolCallItem) (text string, isError, partial bool) {
+	if item.Error != nil {
+		return item.Error.Message, true, false
+	}
+	if item.Result != nil {
+		text, partial = piContentText(item.Result.Content)
+	}
+	return text, item.Status == "failed", partial
+}
+
+// codexRawArguments returns an mcp_tool_call's arguments as the wire carried
+// them, or nothing for an absent or null value.
+func codexRawArguments(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if s == "" || s == "null" {
+		return ""
+	}
+	return s
+}
+
 // codexTerminalKind records which terminal event closed the stream.
 type codexTerminalKind int
 
@@ -333,6 +397,12 @@ const (
 	codexSubtypeIncomplete = "incomplete"
 )
 
+// ParseCodexStream exposes parseCodexStream to the cli package's redaction
+// invariant test, which needs this parser in front of the Level 3 collector.
+func ParseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, err error) {
+	return parseCodexStream(r, onEvent)
+}
+
 // parseCodexStream reads JSONL from `codex exec --json` and emits normalized
 // AgentEvent values through onEvent. It returns the thread_id from the
 // thread.started header, which names the rollout transcript under
@@ -347,11 +417,21 @@ const (
 //     version. The runner emits one from the resolved run parameters, as
 //     PiRuntime.Run does.
 //
-//   - item.started and item.updated map to nothing. AgentEvent has no
-//     tool-start event, and item.completed repeats the item in full (verified
-//     in the live capture: command_execution and file_change both arrive
-//     started-then-completed with the same id), so nothing is lost by
-//     reporting only the completion.
+//   - A tool item is reported at item.completed, which repeats the item in
+//     full (verified in the live capture: command_execution and file_change
+//     both arrive started-then-completed with the same id), as a
+//     ToolUseEvent carrying the item id followed by its ToolResultEvent:
+//     the command's aggregated_output, the MCP call's result text or error,
+//     and an empty result for items that carry no output (file_change,
+//     web_search, collab_tool_call). item.started emits nothing; the
+//     instant the parser read it becomes the call's StartedAt, so the
+//     execute_tool span covers the call rather than its completion line.
+//     item.updated maps to nothing.
+//
+//   - A file_change item lists several paths and is reported as one call
+//     per path, so each call's id is the item id suffixed "#<index>": one
+//     id per call keeps the Level 3 tool_call and tool_call_response parts
+//     correlated one to one.
 //
 //   - An `error` *item* is not a run failure. The processor emits one for
 //     config warnings, deprecation notices, generic warnings and model
@@ -406,6 +486,10 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 		onEvent(delta)
 	}
 
+	// started holds, by item id, when the parser read each item.started whose
+	// item.completed has not arrived yet.
+	started := map[string]time.Time{}
+
 	// handleItem maps one completed thread item onto AgentEvents. Unknown item
 	// types are skipped: codex adds them faster than fullsend pins move, and a
 	// new tool kind must not abort the stream.
@@ -413,6 +497,18 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 		var head codexItemHeader
 		if jsonErr := json.Unmarshal(raw, &head); jsonErr != nil {
 			return
+		}
+		startedAt := started[head.ID]
+		delete(started, head.ID)
+		// call reports one finished tool call: its ToolUseEvent, then its
+		// ToolResultEvent. An item with no id gets no result, so its call
+		// still counts but opens no execute_tool span.
+		call := func(id string, use ToolUseEvent, result string, isError, partial bool) {
+			use.ID, use.StartedAt = id, startedAt
+			onEvent(use)
+			if id != "" {
+				onEvent(ToolResultEvent{ID: id, Result: result, IsError: isError, Partial: partial})
+			}
 		}
 		switch head.Type {
 		case "agent_message":
@@ -435,39 +531,61 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 			// Codex's shell tool is named Bash in the hook wire protocol
 			// (core/src/tools/hook_names.rs), so progress output agrees with
 			// what the hook scripts see.
-			onEvent(ToolUseEvent{Name: "Bash", Summary: codexCommandSummary(item)})
+			call(head.ID, ToolUseEvent{
+				Name:      "Bash",
+				Summary:   codexCommandSummary(item),
+				Arguments: codexArgument("command", item.Command),
+			}, item.AggregatedOutput, codexCommandFailed(item), false)
 		case "file_change":
 			var item codexFileChangeItem
 			if json.Unmarshal(raw, &item) != nil {
 				return
 			}
+			failed := item.Status == "failed"
 			if len(item.Changes) == 0 {
 				// A patch that failed before it could name a file still
 				// happened; reporting nothing would hide it.
-				if item.Status == "failed" {
-					onEvent(ToolUseEvent{Name: "Edit", Summary: "(failed)"})
+				if failed {
+					call(head.ID, ToolUseEvent{Name: "Edit", Summary: "(failed)"}, "", true, false)
 				}
 				return
 			}
-			for _, change := range item.Changes {
+			for i, change := range item.Changes {
 				summary := codexCapPath(change.Path)
-				if item.Status == "failed" {
+				if failed {
 					summary = piTruncate(summary+" (failed)", piSummaryMax)
 				}
-				onEvent(ToolUseEvent{Name: codexFileChangeTool(change.Kind), Summary: summary})
+				id := head.ID
+				if id != "" && len(item.Changes) > 1 {
+					id = fmt.Sprintf("%s#%d", id, i)
+				}
+				call(id, ToolUseEvent{
+					Name:      codexFileChangeTool(change.Kind),
+					Summary:   summary,
+					Arguments: codexArgument("file_path", change.Path),
+				}, "", failed, false)
 			}
 		case "mcp_tool_call":
 			var item codexMcpToolCallItem
 			if json.Unmarshal(raw, &item) != nil {
 				return
 			}
+			text, isError, partial := codexMcpResultText(item)
+			// A failure surfaces its text, as a failed command does. A tool
+			// that flags its own result as an error arrives with status
+			// failed, its text in result and no error (live capture).
 			summary := ""
-			if item.Error != nil && item.Error.Message != "" {
-				summary = piSummarize(item.Error.Message)
-			} else if item.Status == "failed" {
-				summary = "failed"
+			if isError {
+				summary = piSummarize(text)
+				if summary == "" {
+					summary = "failed"
+				}
 			}
-			onEvent(ToolUseEvent{Name: codexMcpToolName(item.Server, item.Tool), Summary: summary})
+			call(head.ID, ToolUseEvent{
+				Name:      codexMcpToolName(item.Server, item.Tool),
+				Summary:   summary,
+				Arguments: codexRawArguments(item.Arguments),
+			}, text, isError, partial)
 		case "collab_tool_call":
 			var item codexCollabToolCallItem
 			if json.Unmarshal(raw, &item) != nil {
@@ -482,7 +600,10 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 			if item.Status == "failed" {
 				summary += " (failed)"
 			}
-			onEvent(ToolUseEvent{Name: "Agent", Summary: piSummarize(summary)})
+			// No Arguments: Agent's recorded members (description, model,
+			// subagent_type) have no counterpart on the item.
+			call(head.ID, ToolUseEvent{Name: "Agent", Summary: piSummarize(summary)},
+				"", item.Status == "failed", false)
 		case "web_search":
 			var item codexWebSearchItem
 			if json.Unmarshal(raw, &item) != nil {
@@ -492,7 +613,11 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 			if utf8.RuneCountInString(summary) > maxPatternDisplay {
 				summary = string([]rune(summary)[:maxPatternDisplay]) + "…"
 			}
-			onEvent(ToolUseEvent{Name: "WebSearch", Summary: summary})
+			call(head.ID, ToolUseEvent{
+				Name:      "WebSearch",
+				Summary:   summary,
+				Arguments: codexArgument("query", item.Query),
+			}, "", false, false)
 		case "error":
 			// Non-fatal: warnings, deprecation notices and model reroutes
 			// all arrive as completed error items, and the run carries on.
@@ -637,9 +762,24 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 			}
 			handleItem(evt.Item)
 
-		case "item.started", "item.updated":
-			// No AgentEvent for a tool starting or progressing; the matching
-			// item.completed carries the same item in full.
+		case "item.started":
+			// No AgentEvent for a tool starting: the matching item.completed
+			// carries the same item in full. Its start instant is kept for
+			// the call's StartedAt; a repeated item.started keeps the first.
+			var evt codexItemEvent
+			if json.Unmarshal(line, &evt) != nil || len(evt.Item) == 0 {
+				continue
+			}
+			var head codexItemHeader
+			if json.Unmarshal(evt.Item, &head) != nil || head.ID == "" {
+				continue
+			}
+			if _, ok := started[head.ID]; !ok {
+				started[head.ID] = time.Now()
+			}
+
+		case "item.updated":
+			// No AgentEvent for a tool progressing.
 
 		default:
 			// Unknown top-level type — skipped. A renamed terminal event would

@@ -195,7 +195,7 @@ call superseded by a second `tool_use` with the same id is ended the same
 way at the reuse; a result with no matching call (its `tool_use` or, on pi,
 `tool_execution_start` line was skipped) becomes a
 near-zero-duration span marked `fullsend.tool.unmatched=true`. Events without
-an id — codex emits none — produce no span, so the child count can be
+an id — OpenCode emits none — produce no span, so the child count can be
 below `fullsend.tool_calls`, which counts every reported call, id or not; a
 `server_tool_use` block on an `assistant` line produces no event at all (its
 result never arrives as a `tool_result`), so it appears in neither count. The name passes through `redactText`
@@ -233,10 +233,9 @@ renderer path.
 
 The collector (`internal/cli/content_collector.go`) coalesces contiguous
 text/reasoning deltas, maps tool use to `tool_call` parts and tool
-results to `tool_call_response` parts (only the Claude and pi parsers emit
-`ToolResultEvent`, call ids and `ToolUseEvent.Arguments` today — codex
-emits none of them,
-[#7414](https://github.com/fullsend-ai/fullsend/issues/7414); the schema's
+results to `tool_call_response` parts (the Claude, pi and codex parsers
+emit `ToolResultEvent`, call ids and `ToolUseEvent.Arguments`; OpenCode
+emits none of them; the schema's
 required result field is `response`), redacts every
 part — `security.OutputPipeline()`, with `replaceEnvSecrets` for the values
 of sensitive runner env keys and of `providerOnlyKeys`, in one pass, on both

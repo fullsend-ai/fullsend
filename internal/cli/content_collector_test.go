@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -951,6 +953,39 @@ func TestContentCollector_ToolResultBecomesToolCallResponsePart(t *testing.T) {
 	assert.Equal(t, "toolu_01abc", part["id"])
 	assert.Equal(t, "main.go\nutil.go\n", part["response"],
 		"the schema's result field is named response, not result")
+}
+
+func TestContentCollector_CodexToolCallsCorrelateWithResults(t *testing.T) {
+	// The live codex capture through the real parser: every tool_call part
+	// carries its item id and recorded arguments, and each result with text
+	// becomes a tool_call_response part with the same id.
+	f, err := os.Open(filepath.Join("..", "runtime", "testdata", "codex", "basic_run.ndjson"))
+	require.NoError(t, err)
+	t.Cleanup(func() { f.Close() })
+	c := newContentCollector(maxContentBytes)
+	_, err = agentruntime.ParseCodexStream(f, c.Handle)
+	require.NoError(t, err)
+
+	calls := map[string]string{}
+	responses := map[string]any{}
+	for _, m := range decodeOutputMessages(t, c.Result("stop").OutputMessages) {
+		for _, p := range m["parts"].([]any) {
+			part := p.(map[string]any)
+			switch part["type"] {
+			case "tool_call":
+				args, _ := json.Marshal(part["arguments"])
+				calls[part["id"].(string)] = string(args)
+			case "tool_call_response":
+				responses[part["id"].(string)] = part["response"]
+			}
+		}
+	}
+	require.Len(t, calls, 3)
+	assert.JSONEq(t, `{"command":"/bin/zsh -lc 'ls .'"}`, calls["item_2"])
+	assert.JSONEq(t, `{"file_path":"/sandbox/workspace/repo/hello.txt"}`, calls["item_3"])
+	assert.JSONEq(t, `{"command":"/bin/zsh -lc 'cat hello.txt'"}`, calls["item_4"])
+	assert.Equal(t, map[string]any{"item_2": "raw.ndjson\n", "item_4": "hi\n"}, responses,
+		"the file change's empty result closes its span but records no part")
 }
 
 func TestContentCollector_RedactsSecretsAndSurfacesFindings(t *testing.T) {

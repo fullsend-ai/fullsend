@@ -124,6 +124,14 @@ convention bump.
 
 ## Annotations
 
+**2026-11-16 — codex ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
+the codex parser now passes call ids, arguments and results through, so codex runs
+get `execute_tool` spans. It reports a call at `item.completed`, which carries the
+whole item, and a span starts when `item.started` was read. One `file_change` item
+patching several paths is one call per path, each with the item id suffixed
+`#<index>`. A call cut off before `item.completed` has no span. The Consequences'
+"Claude-only" now holds only for OpenCode, whose parser emits no call ids.
+
 **2026-11-07 — Cut-off pi calls ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
 the pi parser now emits a call with no `tool_execution_end` when its stream
 stops, so a call cut off by a kill or timeout closes as

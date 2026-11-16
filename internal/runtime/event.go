@@ -49,8 +49,10 @@ func (TextEvent) agentEvent() {}
 // Not every call yields one: a Claude Code server_tool_use
 // block on an assistant line (the path production takes) and a tool_use
 // line beyond streamBufSize emit nothing.
-// ID is the tool call identifier from the runtime stream; it is empty
-// when the parser passes none through — codex (#7414), OpenCode,
+// ID is the tool call identifier from the runtime stream (on codex the
+// item id, suffixed "#<index>" for each path of a multi-path
+// file_change); it is empty when the parser passes none through —
+// OpenCode, a codex item with no id,
 // a pi call whose tool_execution_start was not seen, and a Claude Code
 // server-side tool reported from stream_event blocks,
 // whose result never arrives as a tool_result.
@@ -61,12 +63,16 @@ func (TextEvent) agentEvent() {}
 // unredacted, for the Level 3 content collector only — the renderer does
 // not print it. It is not checked here: input assembled from stream_event
 // deltas stops growing at maxToolInputSize and can be incomplete JSON.
-// Empty when the wire carried no input, and from the codex parser (#7414)
-// and the OpenCode parser.
+// Empty when the wire carried no input, and from the OpenCode parser.
+// Codex has no uniform input object, so its parser builds one member in
+// the vocabulary of the tool it renames the item to: a command as Bash's
+// command, a patched path as Write's or Edit's file_path, a search as
+// WebSearch's query; an MCP call carries its arguments as the wire did,
+// and a collab_tool_call carries none.
 // StartedAt is when the parser read the call's start, for a parser that
-// holds this event until the call ends (pi). It is zero when no start was
-// seen and from the other parsers: the event's receipt is then the nearest
-// thing to a start.
+// emits this event when the call ends (pi's tool_execution_start, codex's
+// item.started). It is zero when no start was seen and from the other
+// parsers: the event's receipt is then the nearest thing to a start.
 type ToolUseEvent struct {
 	ID        string
 	Name      string
@@ -85,8 +91,8 @@ func (ToolUseEvent) agentEvent() {}
 // Result is a fragment of what the wire carried; Oversized reports that
 // the result's stream line exceeded streamBufSize and was skipped, so
 // only ID is known — Result is empty and IsError is unknown, not false.
-// The Claude and pi runtimes emit it — see the runtime support matrix in
-// docs/runtimes.md.
+// The Claude, pi and codex runtimes emit it — see the runtime support
+// matrix in docs/runtimes.md.
 type ToolResultEvent struct {
 	ID        string
 	Result    string
