@@ -256,14 +256,18 @@ so a run they stop leaves `repos.yaml` unchanged:
 - the command-line flags, the manifest and the repository selection;
 - the existing configuration layers: an undeclared base stops the run, and a
   repository that needs adoption is skipped;
-- the token's scopes and the sign-off identity;
+- the token's scopes;
 - the [trace signing keys](#trace-signing-keys): a repository whose keys
   install refuses, or whose recovery a read-only manifest cannot record, is
   skipped, and `--rotate-trace-signing-key` with a read-only manifest stops
   the run;
 - a read-only manifest that must record the `tracker` default;
 - the proposed configuration, against the installed layers and against the
-  effective infrastructure.
+  effective infrastructure;
+- the sign-off identity, and the check that a selected repository resolves
+  `vendor: true` when `--fullsend-binary` or `--fullsend-source` is given:
+  install resolves both from the edited manifest, because a new entry copied
+  from a glob takes that glob's settings.
 
 Install also stops before that write when the file changed after the run
 loaded it, as when another install that uses the same file runs at the same

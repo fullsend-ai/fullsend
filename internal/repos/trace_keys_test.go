@@ -326,9 +326,9 @@ func TestEnsureTraceSigningKeys_NilProgress(t *testing.T) {
 }
 
 // A repository that only a glob covers gets its own GitHub entry, copied
-// from the first glob entry that covers it, and progress names that entry
-// and that glob, since later edits to the glob no longer reach it; the globs
-// and the repositories the run does not select are unchanged.
+// from the glob entry that selected it, and progress names that entry and
+// that glob, since later edits to the glob no longer reach it; the globs and
+// the repositories the run does not select are unchanged.
 func TestEnsureTraceSigningKeys_GlobCoveredGetsExplicitEntry(t *testing.T) {
 	glob := func(name, ref, role string) RepoEntry {
 		return RepoEntry{Name: name, FullsendRef: ref, Config: mustManagedConfig(t, "roles: ["+role+"]\n")}
@@ -336,6 +336,8 @@ func TestEnsureTraceSigningKeys_GlobCoveredGetsExplicitEntry(t *testing.T) {
 	cases := []struct {
 		name  string
 		globs []RepoEntry
+		// fork leaves acme/api out of the org listing.
+		fork bool
 		// copied is the glob entry acme/api's entry is copied from.
 		copied string
 	}{
@@ -345,6 +347,16 @@ func TestEnsureTraceSigningKeys_GlobCoveredGetsExplicitEntry(t *testing.T) {
 		{name: "first covering glob", globs: []RepoEntry{
 			glob("acme/w*", "v0.0.1", "coder"), glob("acme/a*", "v1.2.3", "triage"), glob("acme/*", "v9.9.9", "coder"),
 		}, copied: "acme/a*"},
+		// Selection matches a glob case-sensitively, so acme/A* covers
+		// acme/api only when case is ignored and does not select it.
+		{name: "glob that selected it", globs: []RepoEntry{
+			glob("acme/A*", "v9.9.9", "coder"), glob("acme/api*", "v1.2.3", "triage"),
+		}, copied: "acme/api*"},
+		// A fork is selected by name, through the first glob that covers
+		// it ignoring case, and its entry is copied from that glob.
+		{name: "fork selected by name", globs: []RepoEntry{
+			glob("acme/A*", "v1.2.3", "triage"), glob("acme/api*", "v9.9.9", "coder"),
+		}, fork: true, copied: "acme/A*"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -352,6 +364,7 @@ func TestEnsureTraceSigningKeys_GlobCoveredGetsExplicitEntry(t *testing.T) {
 				MintURL: "https://mint.example.com", Repos: slices.Clone(tc.globs),
 			}}
 			fc := newFakeClientForBatch("acme/api", "acme/web")
+			fc.Repos[0].Fork = tc.fork
 			progress := &progressLog{}
 
 			plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{Manifest: m, RepoFilter: []string{"acme/api"}},

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/telemetry/tracecontext"
@@ -204,6 +206,159 @@ func TestRunReposInstall_RotateTraceSigningKeyProvisionsExistingInstall(t *testi
 			assert.Equal(t, pub, traceValue(traceActiveKeyRe, overlay), "the commit delivers the active key")
 			assert.Contains(t, out, "[acme/api] Persisted config.trace_context in the manifest entry: installation ID "+installationID+
 				", new active key ID "+keyID+" (rotation)")
+		})
+	}
+}
+
+// The first --rotate-trace-signing-key run of an existing install that a
+// glob covers gives it a repos.yaml entry copied from the glob entry that
+// selected it. Selection matches a glob case-sensitively, so acme/A*, listed
+// first, covers acme/api only when case is ignored and does not select it:
+// the entry copies acme/api*, and the commit keeps the committed kill_switch.
+func TestRunReposInstall_FirstRotationCopiesTheGlobThatSelectedTheRepo(t *testing.T) {
+	manifestPath := writeTestManifest(t, `version: 1
+github:
+  mint_url: https://mint.example.com
+  fullsend_ref: v1.0.0
+  inference:
+    auth: vertex-wif
+  repos:
+    - name: acme/A*
+      config:
+        kill_switch: false
+    - name: acme/api*
+      config:
+        kill_switch: true
+`)
+	fc := newInstalledFakeClientCLI("acme/api")
+	fc.FileContents[overlayPath("acme/api")] = []byte(managedConfigMarker + "kill_switch: true\n")
+	opts := githubManagedInstallOpts(manifestPath, fc)
+	opts.rotateTraceSigningKey = true
+	var err error
+	out := captureStdout(t, func() { err = runReposInstall(context.Background(), opts) })
+	require.NoError(t, err)
+
+	manifest := mustReadFile(t, manifestPath)
+	overlay := string(fc.FileContents[overlayPath("acme/api")])
+	keyID, _ := requireTraceKeyWritten(t, fc, "acme/api", out, manifest, overlay)
+	assert.Contains(t, out, "[acme/api] Persisted config.trace_context in the new manifest entry acme/api, copied from the glob entry acme/api*: "+
+		"installation ID "+traceValue(traceInstallationIDRe, manifest)+", new active key ID "+keyID+" (rotation)")
+	assert.Contains(t, manifestEntryYAML(t, manifestPath, "acme/api"), "kill_switch: true", "the new entry copies acme/api*")
+	assert.Contains(t, overlay, "kill_switch: true", "the commit keeps the committed kill_switch")
+	assert.NotContains(t, overlay, "kill_switch: false")
+}
+
+// Install resolves the sign-off identity from the edited manifest, so a
+// glob-covered repository's scaffold commit follows the signoff of its new
+// entry, which install copies from the glob entry that selected it. acme/A*,
+// listed first, covers acme/api only when case is ignored and does not
+// select it: the entry copies acme/api*. A dry run reports the trailer the
+// install adds.
+func TestRunReposInstall_SignoffFollowsTheCopiedEntry(t *testing.T) {
+	const signoff = "      signoff: true\n"
+	globs := func(upper, lower string) string {
+		return strings.TrimSuffix(githubUnmanagedManifestYAML, "    - name: acme/api\n") +
+			"    - name: acme/A*\n" + upper + "    - name: acme/api*\n" + lower
+	}
+	cases := []struct {
+		name, manifest string
+		// installed makes acme/api an existing install, run with
+		// --rotate-trace-signing-key.
+		installed, dryRun bool
+		// signed reports that the scaffold commit carries the trailer.
+		signed bool
+	}{
+		{name: "fresh install", manifest: globs("", signoff), signed: true},
+		{name: "first rotation of an existing install", manifest: globs("", signoff), installed: true, signed: true},
+		{name: "signoff only on the glob that does not select it", manifest: globs(signoff, "")},
+		{name: "dry run of the fresh install", manifest: globs("", signoff), dryRun: true, signed: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			manifestPath := writeTestManifest(t, tc.manifest)
+			fc := newInstallFakeClient("acme/api")
+			if tc.installed {
+				fc = newInstalledFakeClientCLI("acme/api")
+			}
+			fc.AuthenticatedUserIdentity = &forge.UserIdentity{Name: "Install User", Email: "install@example.com"}
+			out, err := installTrace(t, manifestPath, fc, func(opts *reposInstallConfig) {
+				opts.rotateTraceSigningKey = tc.installed
+				opts.dryRun = tc.dryRun
+			})
+			assert.Empty(t, regexp.MustCompile(`FAILED: .*`).FindAllString(out, -1), "no repository fails")
+			require.NoError(t, err)
+			assert.Contains(t, regexp.MustCompile(`Install complete: .*`).FindString(out), ", 0 failed")
+			if tc.dryRun {
+				assert.Equal(t, "Would add trailer to GitHub scaffold commits: "+signoffTestTrailer,
+					regexp.MustCompile(`Would add trailer to .*`).FindString(out))
+				assert.Empty(t, scaffoldCommitMessages(fc), "a dry run commits nothing")
+				return
+			}
+			if tc.signed {
+				requireAllSignedOff(t, fc)
+			} else {
+				requireNoneSignedOff(t, fc)
+			}
+			requireTraceKeyWritten(t, fc, "acme/api", out, mustReadFile(t, manifestPath), string(fc.FileContents[overlayPath("acme/api")]))
+		})
+	}
+}
+
+// Install checks --fullsend-binary against the edited manifest, so the flag
+// follows the vendor setting of a glob-covered repository's new entry, which
+// install copies from the glob entry that selected it. acme/A*, listed first,
+// covers acme/api only when case is ignored and does not select it: the
+// entry copies acme/api*. A refusal stops the run before repos.yaml, a key or
+// a commit is written, and a dry run gives the install's answer.
+func TestRunReposInstall_VendorFlagsFollowTheCopiedEntry(t *testing.T) {
+	const vendor = "      vendor: true\n"
+	globs := func(upper, lower string) string {
+		return strings.TrimSuffix(githubUnmanagedManifestYAML, "    - name: acme/api\n") +
+			"    - name: acme/A*\n" + upper + "    - name: acme/api*\n" + lower
+	}
+	cases := []struct {
+		name, manifest string
+		dryRun         bool
+		// refused reports that install refuses --fullsend-binary.
+		refused bool
+	}{
+		{name: "vendor only on the glob that selects it", manifest: globs("", vendor)},
+		{name: "vendor only on the glob that does not select it", manifest: globs(vendor, ""), refused: true},
+		{name: "dry run with vendor only on the glob that selects it", manifest: globs("", vendor), dryRun: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			manifestPath := writeTestManifest(t, tc.manifest)
+			fc := newInstallFakeClient("acme/api")
+			out, err := installTrace(t, manifestPath, fc, func(opts *reposInstallConfig) {
+				opts.repoFilter = []string{"acme/api"}
+				opts.fullsendBinary = amd64VendorBinary(t)
+				opts.dryRun = tc.dryRun
+			})
+			// The checks on out never print it whole.
+			if tc.refused {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "--fullsend-binary is only used for repositories whose repos.yaml settings resolve vendor: true, and no selected repository does")
+				assert.True(t, mustReadFile(t, manifestPath) == tc.manifest, "repos.yaml is byte-identical")
+				assert.False(t, strings.Contains(out, "Persisted"), "the run reports no repos.yaml edit")
+				assertNoInstallWrites(t, fc)
+				return
+			}
+			require.NoError(t, err)
+			assert.Contains(t, regexp.MustCompile(`Install complete: .*`).FindString(out), ", 0 failed")
+			if tc.dryRun {
+				assert.True(t, strings.Contains(out, "[acme/api] Would persist config.trace_context in the new manifest entry acme/api, copied from the glob entry acme/api*: "),
+					"the dry run reports the entry copied from acme/api*")
+				assert.True(t, mustReadFile(t, manifestPath) == tc.manifest, "a dry run leaves repos.yaml unchanged")
+				assertNoInstallWrites(t, fc)
+				return
+			}
+			requireTraceKeyWritten(t, fc, "acme/api", out, mustReadFile(t, manifestPath))
+			assert.True(t, strings.Contains(out, "[acme/api] Persisted config.trace_context in the new manifest entry acme/api, copied from the glob entry acme/api*: "),
+				"the install reports the entry copied from acme/api*")
+			assert.Contains(t, manifestEntryYAML(t, manifestPath, "acme/api"), "vendor: true", "the new entry copies acme/api*")
+			assert.True(t, bytes.Equal(fc.FileContents["acme/api/"+layers.VendoredBinaryPathPerRepo], minimalLinuxAmd64ELF),
+				"the scaffold commit carries the vendored binary")
 		})
 	}
 }
@@ -488,9 +643,9 @@ func TestRunReposInstall_TraceKeyRecoveryBounds(t *testing.T) {
 }
 
 // The token-scope check and the sign-off identity lookup only read, and they
-// run before install plans any repos.yaml edit: when either fails, repos.yaml
-// stays byte-identical, so it records no trace_context for a key that was
-// never written, and nothing is written to the forge.
+// run before install writes repos.yaml: when either fails, repos.yaml stays
+// byte-identical, so it records no trace_context for a key that was never
+// written, and nothing is written to the forge.
 func TestRunReposInstall_ScopeOrIdentityFailureLeavesManifestUnchanged(t *testing.T) {
 	cases := []struct {
 		name, manifest, want string

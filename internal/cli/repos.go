@@ -684,19 +684,6 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if err := requireDeclaredSelections(manifest, opts.repoFilter); err != nil {
 		return err
 	}
-	if opts.fullsendBinary != "" || opts.fullsendSource != "" {
-		vendored, vendorErr := manifest.VendorSelected(opts.repoFilter)
-		if vendorErr != nil {
-			return fmt.Errorf("resolving vendor settings: %w", vendorErr)
-		}
-		if !vendored {
-			flag := "--fullsend-binary"
-			if opts.fullsendBinary == "" {
-				flag = "--fullsend-source"
-			}
-			return fmt.Errorf("%s is only used for repositories whose repos.yaml settings resolve vendor: true, and no selected repository does; enable vendoring in repos.yaml, for example:\n  fullsend repos set defaults.vendor true", flag)
-		}
-	}
 
 	var clients repos.ForgeClientFactory
 	switch {
@@ -804,26 +791,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		})
 	}
 
-	// The token-scope check and the sign-off identity lookup only read, so
-	// they run before install plans any manifest edit: a failure leaves
-	// repos.yaml unchanged instead of recording a trace key whose seed is
-	// never written (ADR 0154). The manifest edits below carve glob-covered
-	// repositories into entries copied from their globs, so they change
-	// neither the targeted forges nor the sign-off settings.
+	// The token-scope check only reads, so it runs before install plans any
+	// manifest edit: a failure leaves repos.yaml unchanged instead of
+	// recording a trace key whose seed is never written (ADR 0154). The
+	// manifest edits below carve glob-covered repositories into entries
+	// copied from their globs, so they do not change the targeted forges.
 	targetedForges, err := manifest.DistinctForgesFor(opts.repoFilter)
 	if err != nil {
 		return fmt.Errorf("determining targeted forges: %w", err)
 	}
 	if err := checkAllForgeScopes(ctx, clients, printer, targetedForges); err != nil {
-		return err
-	}
-
-	// Signoff comes from the manifest settings. Trailers are resolved once
-	// per forge before convergence (including dry runs) so a missing
-	// identity fails before any scaffold commit is made.
-	signOffTrailers, err := resolveRepoSignOffTrailers(ctx, clients, printer, manifest,
-		opts.repoFilter, opts.dryRun)
-	if err != nil {
 		return err
 	}
 
@@ -921,6 +898,30 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// configuration leaves repos.yaml byte-identical.
 	if err := repos.PreflightEffectiveInfrastructure(ctx, manifest, preflightClients, opts.repoFilter, skipped, opts.inferenceProject, opts.inferenceWIFProvider); err != nil {
 		return fmt.Errorf("effective infrastructure preflight: %w", err)
+	}
+	// Whether --fullsend-binary and --fullsend-source apply, and which forges
+	// need a sign-off identity, come from the manifest settings. Both are
+	// resolved here (including dry runs), from the edited manifest, since a
+	// new entry copied from a glob takes that glob's settings, so a refused
+	// flag or a missing identity fails before repos.yaml or any key is
+	// written. Trailers are resolved once per forge before convergence.
+	if opts.fullsendBinary != "" || opts.fullsendSource != "" {
+		vendored, vendorErr := manifest.VendorSelected(opts.repoFilter)
+		if vendorErr != nil {
+			return fmt.Errorf("resolving vendor settings: %w", vendorErr)
+		}
+		if !vendored {
+			flag := "--fullsend-binary"
+			if opts.fullsendBinary == "" {
+				flag = "--fullsend-source"
+			}
+			return fmt.Errorf("%s is only used for repositories whose repos.yaml settings resolve vendor: true, and no selected repository does; enable vendoring in repos.yaml, for example:\n  fullsend repos set defaults.vendor true", flag)
+		}
+	}
+	signOffTrailers, err := resolveRepoSignOffTrailers(ctx, clients, printer, manifest,
+		opts.repoFilter, opts.dryRun)
+	if err != nil {
+		return err
 	}
 	// A dry run reports the size refusal that the write below gives.
 	if manifestChanged && opts.dryRun && opts.manifest != "" {

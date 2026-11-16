@@ -282,6 +282,12 @@ type ResolvedRepo struct {
 	Repo  string
 	Forge string
 	Entry RepoEntry
+	// glob names the glob entry that selected the repository in glob
+	// expansion, such as "acme/api*", and is empty otherwise. For a concrete
+	// selection that expansion missed, lookupManifestEntry finds the
+	// covering glob the way carveOutForForge does: ignoring case, the first
+	// in its forge section.
+	glob string
 }
 
 // ResolvedConfig is the fully resolved configuration for a single
@@ -1203,6 +1209,7 @@ func (m *Manifest) ExpandGlobsFor(ctx context.Context, clients ForgeClientFactor
 					Repo:  repo.Name,
 					Forge: p.name,
 					Entry: entry,
+					glob:  g.entry.Name,
 				}
 			}
 		}

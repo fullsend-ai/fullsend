@@ -403,7 +403,7 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 		entry := findExplicitEntry(m, name)
 		if entry == nil {
 			needsNewEntry[name] = true
-			carved, glob, err := carveOutForForge(m, name, p.rr.Forge)
+			carved, glob, err := carveOutForForge(m, name, p.rr.Forge, "")
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", name, err)
 			}
@@ -558,7 +558,7 @@ func newEntrySuggestion(m *Manifest, p pendingWriteback) RepoEntry {
 		entry = *existing
 	} else if platform := m.PlatformFor(p.rr.Forge); platform != nil {
 		scratch := &PlatformConfig{Repos: slices.Clone(platform.Repos)}
-		if carved, _, _ := carveOutGlobEntry([]*PlatformConfig{scratch}, name); carved != nil {
+		if carved, _, _ := carveOutGlobEntry([]*PlatformConfig{scratch}, name, ""); carved != nil {
 			entry = *carved
 		}
 	}

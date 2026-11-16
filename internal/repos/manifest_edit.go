@@ -27,9 +27,10 @@ type ManifestRemoveResult struct {
 
 // carveOutForForge carves an explicit entry for name from the covering glob
 // in the discovered forge section, or from the first covering glob across
-// forges (GitHub before GitLab) when discovered is empty. It returns the new
-// entry and the name of the glob entry it was copied from.
-func carveOutForForge(m *Manifest, name, discovered string) (*RepoEntry, string, error) {
+// forges (GitHub before GitLab) when discovered is empty; a non-empty glob
+// names the glob entry to copy instead. It returns the new entry and the
+// name of the glob entry it was copied from.
+func carveOutForForge(m *Manifest, name, discovered, glob string) (*RepoEntry, string, error) {
 	order := []string{ForgeGitHub, ForgeGitLab}
 	if discovered != "" {
 		order = []string{discovered}
@@ -39,12 +40,12 @@ func carveOutForForge(m *Manifest, name, discovered string) (*RepoEntry, string,
 		if platform == nil {
 			continue
 		}
-		carved, glob, err := carveOutGlobEntry([]*PlatformConfig{platform}, name)
+		carved, from, err := carveOutGlobEntry([]*PlatformConfig{platform}, name, glob)
 		if err != nil {
 			return nil, "", err
 		}
 		if carved != nil {
-			return carved, glob, nil
+			return carved, from, nil
 		}
 	}
 	return nil, "", nil
@@ -63,9 +64,10 @@ func manifestEntryWhere(name, glob string) string {
 
 // carveOutGlobEntry appends an explicit entry for name copied from the first
 // glob entry (GitHub before GitLab, matching resolution order) that covers
-// it, and returns a pointer to the new entry and the glob entry's name. It
-// returns nil when no glob covers name.
-func carveOutGlobEntry(platforms []*PlatformConfig, name string) (*RepoEntry, string, error) {
+// it ignoring case, or from the glob entry named glob when glob is not
+// empty, and returns a pointer to the new entry and the glob entry's name.
+// It returns nil when there is no such glob entry.
+func carveOutGlobEntry(platforms []*PlatformConfig, name, glob string) (*RepoEntry, string, error) {
 	for _, platform := range platforms {
 		if platform == nil {
 			continue
@@ -74,9 +76,12 @@ func carveOutGlobEntry(platforms []*PlatformConfig, name string) (*RepoEntry, st
 			if !isGlob(entry.Name) {
 				continue
 			}
-			ok, err := matchesPattern(entry.Name, name)
-			if err != nil {
-				return nil, "", fmt.Errorf("invalid manifest repo pattern %q: %w", entry.Name, err)
+			ok := entry.Name == glob
+			if glob == "" {
+				var err error
+				if ok, err = matchesPattern(entry.Name, name); err != nil {
+					return nil, "", fmt.Errorf("invalid manifest repo pattern %q: %w", entry.Name, err)
+				}
 			}
 			if !ok {
 				continue

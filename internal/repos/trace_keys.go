@@ -104,7 +104,7 @@ var (
 //   - otherwise generates a key (and, for an entry without keys, an
 //     installation ID) from crypto/rand, retains the previous active key,
 //     records the block in the manifest entry (carving an explicit entry out
-//     of a glob like EnsureManagedConfigDefaults) and returns a plan keyed
+//     of the glob that selected the repository) and returns a plan keyed
 //     "owner/repo". A recovery replaces the active key instead, and progress
 //     names it, when the secret cannot hold it: the variable names a
 //     retained key and the committed config does not list the active key,
@@ -225,7 +225,7 @@ func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients Fo
 		plans[t.name()] = p
 		entry := findExplicitEntry(m, t.name())
 		if entry == nil {
-			carved, glob, err := carveOutForForge(m, t.name(), t.rr.Forge)
+			carved, glob, err := carveOutForForge(m, t.name(), t.rr.Forge, t.rr.glob)
 			if err != nil {
 				return nil, nil, fmt.Errorf("%s: %w", t.name(), err)
 			}
