@@ -337,11 +337,29 @@ func isRoutingAbortError(err error) bool {
 // without a slash are rejected to prevent taxonomy and fork collisions.
 var repoSlugRegex = regexp.MustCompile(`^[^/\s]+(/[^/\s]+)+$`)
 
-// extractRepoLabels extracts and normalizes repository slugs from issue labels
+// repoLabel represents a repository target parsed from an issue label.
+// Host is empty for bare slugs (e.g. "owner/repo"), matching any forge.
+// For URL or SSH labels, Host contains the normalized host (e.g. "github.com",
+// "gitlab.com", or a configured GitLab host).
+type repoLabel struct {
+	host string
+	slug string
+}
+
+func (l repoLabel) String() string {
+	if l.host == "" {
+		return l.slug
+	}
+	return l.host + "/" + l.slug
+}
+
+// extractRepoLabels extracts and normalizes repository labels from issue labels
 // matching prefix (case-insensitive, default DefaultRepoLabelPrefix = "repo:").
 // It supports bare slugs (e.g. "owner/repo" or "group/subgroup/project")
-// and host-qualified git repository URLs. Returns deduplicated lowercase slugs.
-func (p *Poller) extractRepoLabels(labels []string) []string {
+// and host-qualified git repository URLs. Bare slugs have an empty host and match
+// any target forge. URL/SSH labels preserve their host and only match pollers
+// configured for that forge host. Returns deduplicated repo labels.
+func (p *Poller) extractRepoLabels(labels []string) []repoLabel {
 	if p.opts.DisableRepoLabels || len(labels) == 0 {
 		return nil
 	}
@@ -350,7 +368,7 @@ func (p *Poller) extractRepoLabels(labels []string) []string {
 		prefix = DefaultRepoLabelPrefix
 	}
 
-	var slugs []string
+	var results []repoLabel
 	seen := make(map[string]bool)
 
 	for _, label := range labels {
@@ -367,16 +385,15 @@ func (p *Poller) extractRepoLabels(labels []string) []string {
 			continue
 		}
 
-		var slug string
+		var host, slug string
 		// Check for host-qualified URL or SSH format first
 		if strings.Contains(val, "://") || strings.HasPrefix(val, "git@") {
-			_, s := extractRepoHostAndSlug(val, p.opts.GitLabURL)
-			slug = s
+			host, slug = extractRepoHostAndSlug(val, p.opts.GitLabURL)
 		} else {
 			// Try as URL with https:// if it looks like host/path
 			if strings.Contains(val, "/") {
-				if _, s := extractRepoHostAndSlug("https://"+val, p.opts.GitLabURL); s != "" {
-					slug = s
+				if h, s := extractRepoHostAndSlug("https://"+val, p.opts.GitLabURL); s != "" {
+					host, slug = h, s
 				}
 			}
 			if slug == "" {
@@ -387,20 +404,26 @@ func (p *Poller) extractRepoLabels(labels []string) []string {
 				cleanVal = strings.ToLower(cleanVal)
 				if repoSlugRegex.MatchString(cleanVal) {
 					slug = cleanVal
+					host = ""
 				}
 			}
 		}
 
 		if slug != "" {
 			slug = strings.ToLower(strings.Trim(slug, "/"))
-			if !seen[slug] {
-				seen[slug] = true
-				slugs = append(slugs, slug)
+			host = strings.ToLower(strings.TrimSpace(host))
+			key := host + "/" + slug
+			if host == "" {
+				key = slug
+			}
+			if !seen[key] {
+				seen[key] = true
+				results = append(results, repoLabel{host: host, slug: slug})
 			}
 		}
 	}
 
-	return slugs
+	return results
 }
 
 // filterRoutingPage evaluates repository routing for one page of candidates in
@@ -447,8 +470,8 @@ func (p *Poller) filterRoutingPage(ctx context.Context, candidates []jira.Issue,
 		if len(repoLabels) > 0 {
 			attempted++
 			matched := false
-			for _, slug := range repoLabels {
-				if slug == targetRepo {
+			for _, rl := range repoLabels {
+				if (rl.host == "" || rl.host == targetHost) && rl.slug == targetRepo {
 					matched = true
 					break
 				}

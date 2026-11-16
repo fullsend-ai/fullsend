@@ -834,6 +834,25 @@ func TestFilterRouting(t *testing.T) {
 		assert.Equal(t, "PROJ-1", routed[0].Key)
 	})
 
+	t.Run("UnrelatedAttachedLink_StrictRoutingFalse_Skipped", func(t *testing.T) {
+		t.Parallel()
+		// Issue has an attached remote link to an unrelated repo (e.g. upstream issue).
+		// Even when StrictRepoRouting is false, non-matching repo links drop the issue.
+		mc := &mockClient{
+			remoteLinks: map[string][]jira.RemoteLink{
+				"PROJ-1": {
+					{Object: jira.RemoteLinkObject{URL: "https://github.com/kubernetes/kubernetes/issues/123"}},
+				},
+			},
+		}
+		routed, err := runDiscoverForCandidates(ctx, mc, Options{
+			TargetRepo:        "my-org/pay-backend",
+			StrictRepoRouting: false,
+		}, []jira.Issue{{Key: "PROJ-1"}})
+		require.NoError(t, err)
+		assert.Empty(t, routed)
+	})
+
 	t.Run("NonGitLinkIgnored_StrictRoutingTrue_Skipped", func(t *testing.T) {
 		t.Parallel()
 		// Issue has a Google Doc attached and no repo labels.
@@ -1202,16 +1221,16 @@ func TestExtractRepoLabels(t *testing.T) {
 			"repo:   ",
 		}
 
-		slugs := p.extractRepoLabels(labels)
-		expected := []string{
-			"my-org/my-repo",
-			"other-org/other-repo",
-			"group/subgroup/nested-project",
-			"web-org/web-service",
-			"ssh-org/ssh-repo",
-			"internal/group/svc",
+		labelsParsed := p.extractRepoLabels(labels)
+		expected := []repoLabel{
+			{host: "", slug: "my-org/my-repo"},
+			{host: "", slug: "other-org/other-repo"},
+			{host: "", slug: "group/subgroup/nested-project"},
+			{host: "github.com", slug: "web-org/web-service"},
+			{host: "github.com", slug: "ssh-org/ssh-repo"},
+			{host: "gitlab.corp.redhat.com", slug: "internal/group/svc"},
 		}
-		assert.Equal(t, expected, slugs)
+		assert.Equal(t, expected, labelsParsed)
 	})
 
 	t.Run("DeduplicationAndCaseFolding", func(t *testing.T) {
@@ -1228,8 +1247,12 @@ func TestExtractRepoLabels(t *testing.T) {
 			"repo:https://github.com/my-org/my-repo.GIT/",
 		}
 
-		slugs := p.extractRepoLabels(labels)
-		assert.Equal(t, []string{"my-org/my-repo"}, slugs)
+		labelsParsed := p.extractRepoLabels(labels)
+		expected := []repoLabel{
+			{host: "", slug: "my-org/my-repo"},
+			{host: "github.com", slug: "my-org/my-repo"},
+		}
+		assert.Equal(t, expected, labelsParsed)
 	})
 
 	t.Run("CustomPrefix", func(t *testing.T) {
@@ -1243,8 +1266,8 @@ func TestExtractRepoLabels(t *testing.T) {
 			"target-repo:my-org/accepted-custom",
 		}
 
-		slugs := p.extractRepoLabels(labels)
-		assert.Equal(t, []string{"my-org/accepted-custom"}, slugs)
+		labelsParsed := p.extractRepoLabels(labels)
+		assert.Equal(t, []repoLabel{{host: "", slug: "my-org/accepted-custom"}}, labelsParsed)
 	})
 
 	t.Run("DisabledRepoLabels", func(t *testing.T) {
@@ -1257,8 +1280,8 @@ func TestExtractRepoLabels(t *testing.T) {
 			"repo:my-org/my-repo",
 		}
 
-		slugs := p.extractRepoLabels(labels)
-		assert.Nil(t, slugs)
+		labelsParsed := p.extractRepoLabels(labels)
+		assert.Nil(t, labelsParsed)
 	})
 
 	t.Run("TargetRepoWithGitSuffix_MatchesCleanLabel", func(t *testing.T) {
@@ -1281,5 +1304,52 @@ func TestExtractRepoLabels(t *testing.T) {
 		require.Len(t, routed, 1)
 		assert.Equal(t, "PROJ-1", routed[0].Key)
 		assert.Empty(t, mc.remoteLinksCalls)
+	})
+
+	t.Run("CrossForgeHostMatching", func(t *testing.T) {
+		t.Parallel()
+		ctx := context.Background()
+		candidates := []jira.Issue{
+			{
+				Key: "PROJ-GITLAB",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:https://gitlab.com/acme/backend"},
+				},
+			},
+			{
+				Key: "PROJ-BARE",
+				Fields: jira.IssueFields{
+					Labels: []string{"repo:acme/backend"},
+				},
+			},
+		}
+
+		// GitHub poller for acme/backend:
+		// - Skips PROJ-GITLAB because label host "gitlab.com" != targetHost "github.com".
+		// - Claims PROJ-BARE because bare slug matches any forge.
+		mcGH := newMockClient()
+		routedGH, err := runDiscoverForCandidates(ctx, mcGH, Options{
+			TargetRepo:  "acme/backend",
+			TargetForge: TargetForgeGitHub,
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routedGH, 1)
+		assert.Equal(t, "PROJ-BARE", routedGH[0].Key)
+		assert.Empty(t, mcGH.remoteLinksCalls)
+
+		// GitLab poller for acme/backend:
+		// - Claims PROJ-GITLAB because label host "gitlab.com" == targetHost "gitlab.com".
+		// - Claims PROJ-BARE because bare slug matches any forge.
+		mcGL := newMockClient()
+		routedGL, err := runDiscoverForCandidates(ctx, mcGL, Options{
+			TargetRepo:  "acme/backend",
+			TargetForge: TargetForgeGitLab,
+			GitLabURL:   "https://gitlab.com",
+		}, candidates)
+		require.NoError(t, err)
+		require.Len(t, routedGL, 2)
+		assert.Equal(t, "PROJ-GITLAB", routedGL[0].Key)
+		assert.Equal(t, "PROJ-BARE", routedGL[1].Key)
+		assert.Empty(t, mcGL.remoteLinksCalls)
 	})
 }

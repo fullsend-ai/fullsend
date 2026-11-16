@@ -1339,7 +1339,7 @@ Multiple GitHub or GitLab repos can poll the same Jira project. Each repo runs i
 
 The poller first evaluates each candidate's `issue.fields.labels` directly in memory without making any HTTP calls:
 - Labels matching the prefix `repo:` (case-insensitive, customizable via `tracker.jira.poll.repo_label_prefix` in `.fullsend/config.yaml` or `--repo-label-prefix`).
-- Supports bare repository slugs (e.g. `repo:my-org/my-repo` or `repo:group/subgroup/project`) as well as host-qualified URLs (e.g. `repo:https://github.com/my-org/my-repo` or `repo:git@gitlab.com:group/project.git`). Bare names without a slash (e.g. `repo:backend`) are rejected to avoid fork and taxonomy collisions.
+- Supports bare repository slugs (e.g. `repo:my-org/my-repo` or `repo:group/subgroup/project`) as well as host-qualified URLs (e.g. `repo:https://github.com/my-org/my-repo` or `repo:git@gitlab.com:group/project.git`). Bare names without a slash (e.g. `repo:backend`) are rejected to avoid fork and taxonomy collisions. Bare `owner/repo` labels match any target forge (GitHub, GitLab), while host-qualified URL or SSH labels match only when the label's host matches the target forge's host (`github.com` or the configured GitLab host).
 - **Match:** If any `repo:` label matches the poller's `--target-repo` (GitHub) or `--project` (GitLab), the issue is claimed immediately.
 - **Mismatch:** If one or more `repo:` labels are present but none match the poller's target, the issue is skipped immediately with **zero** remote-link HTTP lookups, avoiding Jira rate limits.
 
@@ -1353,8 +1353,8 @@ If an issue carries no `repo:` labels, the poller inspects its Jira remote web l
 #### Priority 3: Unrouted Fallback (`strict_routing`)
 
 When an issue has neither `repo:` labels nor attached Git links:
-- **`strict_routing: false` (Default / Single-Repo Mode):** The candidate is retained for processing, preserving backward compatibility.
-- **`strict_routing: true` (Multi-Repo Mode):** The candidate is skipped cleanly. In multi-repo environments sharing a Jira project, enabling strict routing ensures that only explicitly routed issues (via label or attached link) are claimed, preventing duplicate competing agent dispatches across repositories.
+- **`strict_routing: false` (Default / Single-Repo Mode):** Candidates with neither a `repo:` label nor any attached Git repository link are claimed as an unrouted fallback. However, issues carrying an attached Git repository link or `repo:` label that points to a different repository are skipped.
+- **`strict_routing: true` (Multi-Repo Mode):** Candidates with neither a `repo:` label nor an attached Git repository link are skipped cleanly. In multi-repo environments sharing a Jira project, enabling strict routing ensures that only explicitly routed issues (via label or attached link) are claimed, preventing duplicate competing agent dispatches across repositories.
 
 ### Configuration
 
