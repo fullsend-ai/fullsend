@@ -33,24 +33,23 @@ var githubPublicHosts = map[string]bool{"api.github.com": true, "github.com": tr
 // rest of the run does not: an http, userinfo, path or query URL leaves the
 // run on github.com here too. GHE.com (*.ghe.com) is left alone as well: gh
 // calls api.<host> there and reads GH_TOKEN, which this binding does not model.
-func githubForgeHostPort(getenv func(string) string) (host, port string) {
+func githubForgeHostPort(getenv func(string) string) (host string, port int) {
 	base := config.GitHubServerBaseURL(getenv("GITHUB_SERVER_URL"))
 	if base == "" {
-		return "", ""
+		return "", 0
 	}
-	u, err := url.Parse(base)
-	if err != nil || u.Hostname() == "" {
-		return "", ""
-	}
+	// GitHubServerBaseURL returns "https://" + a host that url.Parse
+	// already accepted, so this parse cannot fail.
+	u, _ := url.Parse(base)
 	h := u.Hostname()
 	if h == "ghe.com" || strings.HasSuffix(h, ".ghe.com") {
-		return "", ""
+		return "", 0
 	}
-	p := u.Port()
-	if p == "" {
-		p = "443"
+	port = 443
+	if p, err := strconv.Atoi(u.Port()); err == nil {
+		port = p
 	}
-	return h, p
+	return h, port
 }
 
 // githubForgeSandboxEnvLines returns the sandbox .env lines that point gh at
@@ -66,18 +65,14 @@ func githubForgeSandboxEnvLines(getenv func(string) string) []string {
 	if host == "" {
 		return nil
 	}
-	portNum, err := strconv.Atoi(port)
-	if err != nil {
-		return nil
-	}
-	if err := validateForgeDestination(host, portNum); err != nil {
+	if err := validateForgeDestination(host, port); err != nil {
 		return nil
 	}
 	// gh takes GH_HOST as an authority: an IPv6 literal needs its brackets,
 	// with or without a port.
 	ghHost := host
-	if port != "443" {
-		ghHost = net.JoinHostPort(host, port)
+	if port != 443 {
+		ghHost = net.JoinHostPort(host, strconv.Itoa(port))
 	} else if strings.Contains(host, ":") {
 		ghHost = "[" + host + "]"
 	}
@@ -106,16 +101,12 @@ func githubForgeSandboxEnvLines(getenv func(string) string) []string {
 // that do not issue GH_TOKEN, or that name no github.com endpoint are
 // returned unchanged, and source files are never modified. host == ""
 // (github.com) returns profiles unchanged. The returned cleanup is never nil.
-func bindGitHubForgeHost(profiles []resolve.ResolvedProfile, host, port string) ([]resolve.ResolvedProfile, func(), error) {
+func bindGitHubForgeHost(profiles []resolve.ResolvedProfile, host string, port int) ([]resolve.ResolvedProfile, func(), error) {
 	noop := func() {}
 	if host == "" {
 		return profiles, noop, nil
 	}
-	portNum, err := strconv.Atoi(port)
-	if err != nil {
-		return nil, noop, fmt.Errorf("GitHub server port %q is not a valid integer", port)
-	}
-	if err := validateForgeDestination(host, portNum); err != nil {
+	if err := validateForgeDestination(host, port); err != nil {
 		return nil, noop, err
 	}
 	var tmpDir string
@@ -132,7 +123,7 @@ func bindGitHubForgeHost(profiles []resolve.ResolvedProfile, host, port string) 
 			cleanup()
 			return nil, noop, fmt.Errorf("reading profile %q: %w", rp.ID, err)
 		}
-		patched, changed, err := addGitHubForgeEndpoints(data, host, portNum)
+		patched, changed, err := addGitHubForgeEndpoints(data, host, port)
 		if err != nil {
 			cleanup()
 			return nil, noop, fmt.Errorf("adding GitHub server to profile %q: %w", rp.ID, err)
@@ -163,14 +154,10 @@ func bindGitHubForgeHostBytes(data []byte, getenv func(string) string) ([]byte, 
 	if host == "" {
 		return data, nil
 	}
-	portNum, err := strconv.Atoi(port)
-	if err != nil {
-		return nil, fmt.Errorf("GitHub server port %q is not a valid integer", port)
-	}
-	if err := validateForgeDestination(host, portNum); err != nil {
+	if err := validateForgeDestination(host, port); err != nil {
 		return nil, err
 	}
-	patched, _, err := addGitHubForgeEndpoints(data, host, portNum)
+	patched, _, err := addGitHubForgeEndpoints(data, host, port)
 	return patched, err
 }
 

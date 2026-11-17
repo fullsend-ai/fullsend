@@ -19,20 +19,21 @@ func envOf(m map[string]string) func(string) string {
 
 func TestGitHubForgeHostPort(t *testing.T) {
 	cases := []struct {
-		server, host, port string
+		server, host string
+		port         int
 	}{
-		{"", "", ""},
-		{"https://github.com", "", ""},
-		{"https://GitHub.com/", "", ""},
-		{"https://ghes.example.com", "ghes.example.com", "443"},
-		{"https://ghemu.localhost:443", "ghemu.localhost", "443"},
-		{"https://ghes.example.com:8443/", "ghes.example.com", "8443"},
-		{"http://127.0.0.1:18600", "", ""},
-		{"http://ghes.internal", "", ""},
-		{"https://user@ghes.example.com", "", ""},
-		{"https://ghes.example.com/sub", "", ""},
-		{"https://acme.ghe.com", "", ""},
-		{"::not a url", "", ""},
+		{"", "", 0},
+		{"https://github.com", "", 0},
+		{"https://GitHub.com/", "", 0},
+		{"https://ghes.example.com", "ghes.example.com", 443},
+		{"https://ghemu.localhost:443", "ghemu.localhost", 443},
+		{"https://ghes.example.com:8443/", "ghes.example.com", 8443},
+		{"http://127.0.0.1:18600", "", 0},
+		{"http://ghes.internal", "", 0},
+		{"https://user@ghes.example.com", "", 0},
+		{"https://ghes.example.com/sub", "", 0},
+		{"https://acme.ghe.com", "", 0},
+		{"::not a url", "", 0},
 	}
 	for _, c := range cases {
 		host, port := githubForgeHostPort(envOf(map[string]string{"GITHUB_SERVER_URL": c.server}))
@@ -139,12 +140,12 @@ func TestBindGitHubForgeHost(t *testing.T) {
 	require.NoError(t, os.WriteFile(src, data, 0o644))
 	in := []resolve.ResolvedProfile{{ID: "fullsend-github-ro", LocalPath: src}}
 
-	same, cleanup, err := bindGitHubForgeHost(in, "", "")
+	same, cleanup, err := bindGitHubForgeHost(in, "", 0)
 	require.NoError(t, err)
 	cleanup()
 	assert.Equal(t, in, same, "github.com changes nothing")
 
-	out, cleanup, err := bindGitHubForgeHost(in, "ghemu.localhost", "443")
+	out, cleanup, err := bindGitHubForgeHost(in, "ghemu.localhost", 443)
 	require.NoError(t, err)
 	defer cleanup()
 	require.NotEqual(t, src, out[0].LocalPath, "the source file is never modified")
@@ -155,7 +156,7 @@ func TestBindGitHubForgeHost(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(bound), "ghemu.localhost")
 
-	_, _, err = bindGitHubForgeHost(in, "*.example.com", "443")
+	_, _, err = bindGitHubForgeHost(in, "*.example.com", 443)
 	assert.Error(t, err, "a wildcard host is refused before any profile is bound")
 }
 
@@ -287,4 +288,68 @@ endpoints:
 	}
 	assert.Equal(t, []testEndpoint{{Host: "ghes.example.com", Port: 443, Protocol: "rest", Access: "read-only"}}, added,
 		"two github.com policies for one protocol and path collapse to the read-only one")
+}
+
+func TestBindGitHubForgeHostErrors(t *testing.T) {
+	_, cleanup, err := bindGitHubForgeHost([]resolve.ResolvedProfile{{ID: "gone", LocalPath: filepath.Join(t.TempDir(), "missing.yaml")}}, "ghes.example.com", 443)
+	cleanup()
+	assert.ErrorContains(t, err, `reading profile "gone"`)
+
+	bad := filepath.Join(t.TempDir(), "bad.yaml")
+	require.NoError(t, os.WriteFile(bad, []byte("endpoints: [\n"), 0o644))
+	_, cleanup, err = bindGitHubForgeHost([]resolve.ResolvedProfile{{ID: "bad", LocalPath: bad}}, "ghes.example.com", 443)
+	cleanup()
+	assert.ErrorContains(t, err, `adding GitHub server to profile "bad"`)
+
+	_, err = bindGitHubForgeHostBytes([]byte("id: x\n"), envOf(map[string]string{"GITHUB_SERVER_URL": "https://bad'host.example"}))
+	assert.Error(t, err, "a server host that is not a concrete hostname is refused")
+}
+
+func TestAddGitHubForgeEndpointsOddShapes(t *testing.T) {
+	_, _, err := addGitHubForgeEndpoints([]byte("endpoints: [\n"), "ghes.example.com", 443)
+	assert.ErrorContains(t, err, "parsing profile YAML")
+
+	for name, in := range map[string]string{
+		"not a mapping":         "- a\n- b\n",
+		"endpoints not a list":  "credentials: [{name: t, env_vars: [GH_TOKEN]}]\nendpoints: {host: api.github.com}\n",
+		"entries without hosts": "credentials: [{name: t, env_vars: [GH_TOKEN]}]\nendpoints: [plain, {port: 443}]\n",
+	} {
+		out, changed, err := addGitHubForgeEndpoints([]byte(in), "ghes.example.com", 443)
+		require.NoError(t, err, name)
+		assert.False(t, changed, name)
+		assert.Equal(t, in, string(out), name)
+	}
+}
+
+func TestAddGitHubForgeEndpointsCopiesAnAliasedEndpointList(t *testing.T) {
+	in := []byte(`id: aliased
+credentials:
+  - name: t
+    env_vars: [GH_TOKEN]
+shared: &eps
+  - host: api.github.com
+    port: 443
+    protocol: rest
+endpoints: *eps
+`)
+	out, changed, err := addGitHubForgeEndpoints(in, "ghes.example.com", 443)
+	require.NoError(t, err)
+	require.True(t, changed)
+	var doc struct {
+		Shared    []testEndpoint `yaml:"shared"`
+		Endpoints []testEndpoint `yaml:"endpoints"`
+	}
+	require.NoError(t, yaml.Unmarshal(out, &doc))
+	assert.Len(t, doc.Shared, 1, "the anchored list itself is not changed")
+	assert.Len(t, doc.Endpoints, 2)
+}
+
+func TestBindGitHubForgeHostSkipsProfilesItLeavesAlone(t *testing.T) {
+	dir := t.TempDir()
+	other := filepath.Join(dir, "other.yaml")
+	require.NoError(t, os.WriteFile(other, []byte("id: other\ncredentials: [{name: k, env_vars: [OTHER_TOKEN]}]\nendpoints: [{host: api.github.com, port: 443, protocol: rest}]\n"), 0o644))
+	out, cleanup, err := bindGitHubForgeHost([]resolve.ResolvedProfile{{ID: "other", LocalPath: other}}, "ghes.example.com", 443)
+	defer cleanup()
+	require.NoError(t, err)
+	assert.Equal(t, other, out[0].LocalPath, "an unchanged profile keeps its source file")
 }

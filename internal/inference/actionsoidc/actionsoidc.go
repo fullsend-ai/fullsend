@@ -211,10 +211,9 @@ func configuredGitHubServer(getenv func(string) string) (host, port string) {
 	if base == "" {
 		return "", ""
 	}
-	u, err := url.Parse(base)
-	if err != nil || u.Hostname() == "" {
-		return "", ""
-	}
+	// GitHubServerBaseURL returns "https://" + a host that url.Parse
+	// already accepted, so this parse cannot fail.
+	u, _ := url.Parse(base)
 	return strings.ToLower(u.Hostname()), urlPort(u)
 }
 
