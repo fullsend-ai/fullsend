@@ -87,10 +87,10 @@ orchestration code of its own.
   time anyone adds the label.
 - **The issue type.** A work item whose type marks it as a vulnerability
   skips triage and starts the `cve` agent, so no model reads it before the
-  host checks. Today only Jira events carry an issue type, the type names
-  belong to the Jira site, and changing only the type of an open work item
-  raises no event. Chosen where the tracker has such a type, with the label
-  and the command for everything else.
+  host checks. Today only Jira events carry an issue type, a type's id and
+  name belong to the Jira site, and changing only the type of an open work
+  item raises no event. Chosen where the tracker has such a type, with the
+  label and the command for everything else.
 
 ## Decision
 
@@ -106,14 +106,17 @@ always follows a verdict.
    trigger dispatches it ([ADR 0061](0061-harness-cel-dispatch.md)).
 2. **Start.** Where events carry an issue type, a work item of a
    vulnerability type starts the agent when it is opened, and triage does
-   not start on it. The type names belong to the tracker's site, so the
-   `cve` and triage triggers name them, and an adopter with other names
-   changes those triggers on its `agents:` entries
+   not start on it. The `cve` and triage triggers match the type by its
+   id, because a site can rename a type and the id stays the same. The ids
+   belong to the tracker's site, so an adopter sets them by changing those
+   triggers on its `agents:` entries
    ([ADR 0162](0162-agent-entries-may-carry-harness-overrides.md)).
    Everywhere else, and for a work item that is already open, the agent
    starts on a `/fs-cve-triage` comment from a person or when the
    `fullsend-cve` label is added, and triage does not start on a work item
-   with that label.
+   with that label. Whether a work item of a vulnerability type should
+   instead wait for a person's comment before its first assessment, so that
+   nothing is assessed by default, is not decided here.
 3. **Verdict.** The result is affected, not affected, fixed or under
    investigation, in the terms of CSAF VEX, and each piece of evidence says
    whether a tool observed it or the model judged it. Host scripts publish it
