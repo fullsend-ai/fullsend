@@ -1174,7 +1174,10 @@ func (m *Manifest) ExpandGlobsFor(ctx context.Context, clients ForgeClientFactor
 			}
 
 			for _, repo := range repos {
-				matched, err := filepath.Match(g.pattern, repo.Name)
+				// Match case-insensitively, as carveOutGlobEntry and
+				// ResolveConfigWithGlobs do, so selection and carve-out
+				// agree on which glob entry covers a repository.
+				matched, err := matchesPattern(g.pattern, repo.Name)
 				if err != nil {
 					return nil, fmt.Errorf("matching glob %q against %q: %w", g.pattern, repo.Name, err)
 				}
