@@ -3180,10 +3180,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		} else if len(extracted) == 0 {
 			printer.StepInfo("No output files found")
 		} else {
-			for _, f := range extracted {
-				printer.StepInfo(f)
-			}
-			printer.StepDone(fmt.Sprintf("Extracted %d output file(s) (%.1fs)", len(extracted), time.Since(extractStart).Seconds()))
+			printExtractedOutputFiles(printer, extracted, time.Since(extractStart), progressVerbosity)
 		}
 
 		// 9c. Extract transcripts for this iteration.
@@ -3385,7 +3382,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 9f. Post-agent output scan — redact secrets from extracted output.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running post-agent output scan")
-		if err := scanOutputFiles(runDir, securityTraceID, printer); err != nil {
+		if err := scanOutputFiles(runDir, securityTraceID, progressVerbosity, printer); err != nil {
 			printer.StepWarn("Output scan error: " + err.Error())
 		}
 
@@ -6834,10 +6831,25 @@ func scanRepoContextFiles(repoDir string) []security.Finding {
 	return allFindings
 }
 
+// printExtractedOutputFiles prints the output files extracted from the
+// sandbox: one line per file, then the count. At the quiet progress level
+// (ADR 0163) only the count prints, since the agent chooses the names.
+func printExtractedOutputFiles(printer *ui.Printer, extracted []string, elapsed time.Duration, progressVerbosity string) {
+	if !config.ProgressIsQuiet(progressVerbosity) {
+		for _, f := range extracted {
+			printer.StepInfo(f)
+		}
+	}
+	printer.StepDone(fmt.Sprintf("Extracted %d output file(s) (%.1fs)", len(extracted), elapsed.Seconds()))
+}
+
 // scanOutputFiles runs the output security pipeline (unicode normalization and
 // secret redaction) on extracted output files, recursively walking all
-// subdirectories (iteration-N/output/, etc.).
-func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
+// subdirectories (iteration-N/output/, etc.). At the quiet progress level
+// (ADR 0163) it prints counts only: file paths and finding details, which
+// can carry agent-chosen names and matched text, stay in findings.jsonl.
+func scanOutputFiles(outputDir, traceID, progressVerbosity string, printer *ui.Printer) error {
+	quiet := config.ProgressIsQuiet(progressVerbosity)
 	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
 		printer.StepInfo("No output files to scan")
 		return nil
@@ -6845,6 +6857,8 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 
 	pipeline := security.OutputPipeline()
 	findingCount := 0
+	// At quiet, unreadable and unwritable files are counted, not named.
+	unreadable, unwritable := 0, 0
 	findingsPath := filepath.Join(outputDir, "security", "findings.jsonl")
 
 	err := filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
@@ -6876,6 +6890,10 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 		}
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
+			if quiet {
+				unreadable++
+				return nil
+			}
 			relPath, _ := filepath.Rel(outputDir, path)
 			printer.StepWarn(fmt.Sprintf("Could not read %s: %v", relPath, readErr))
 			return nil
@@ -6887,7 +6905,9 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			findingCount += len(result.Findings)
 			relPath, _ := filepath.Rel(outputDir, path)
 			for _, f := range result.Findings {
-				printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
+				if !quiet {
+					printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
+				}
 				security.AppendFinding(findingsPath,
 					security.TracedFinding{
 						TraceID:   traceID,
@@ -6899,7 +6919,11 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			// Sanitized may be empty when all content was invisible characters.
 			out := result.Sanitized
 			if writeErr := os.WriteFile(path, []byte(out), 0o644); writeErr != nil {
-				printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
+				if quiet {
+					unwritable++
+				} else {
+					printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
+				}
 			}
 		}
 		return nil
@@ -6908,6 +6932,12 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 		return err
 	}
 
+	if unreadable > 0 {
+		printer.StepWarn(fmt.Sprintf("Could not read %d output file(s)", unreadable))
+	}
+	if unwritable > 0 {
+		printer.StepWarn(fmt.Sprintf("Could not write %d sanitized output file(s)", unwritable))
+	}
 	if findingCount > 0 {
 		printer.StepWarn(fmt.Sprintf("Sanitized %d finding(s) in output files", findingCount))
 	} else {

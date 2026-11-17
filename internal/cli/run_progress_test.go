@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,4 +177,51 @@ func TestEmitTranscriptErrorsAt(t *testing.T) {
 	emitTranscriptErrorsAt(tx, &quiet, summaries, config.ProgressVerbosityQuiet)
 	assert.Equal(t, "::error title=Agent Error::agent terminated with error (subtype: error_during_execution)\n", quiet.String())
 	assert.NotContains(t, quiet.String(), "SECRET-TRANSCRIPT")
+}
+
+// At quiet the extracted output files print as a count only: their names
+// are chosen by the agent. Other levels keep one line per file.
+func TestPrintExtractedOutputFiles(t *testing.T) {
+	files := []string{"SECRET-NAME.md", "agent-result.json"}
+	for _, level := range []string{"", config.ProgressVerbosityFull, config.ProgressVerbosityTools} {
+		var out bytes.Buffer
+		printExtractedOutputFiles(ui.New(&out), files, 1500*time.Millisecond, level)
+		assert.Contains(t, out.String(), "SECRET-NAME.md", level)
+		assert.Contains(t, out.String(), "Extracted 2 output file(s) (1.5s)", level)
+	}
+	for _, level := range []string{config.ProgressVerbosityQuiet, "loud"} {
+		var out bytes.Buffer
+		printExtractedOutputFiles(ui.New(&out), files, 1500*time.Millisecond, level)
+		assert.NotContains(t, out.String(), "SECRET-NAME", level)
+		assert.NotContains(t, out.String(), "agent-result.json", level)
+		assert.Contains(t, out.String(), "Extracted 2 output file(s) (1.5s)", level)
+	}
+}
+
+// At quiet the output scan prints the finding count only: no file path and
+// no finding detail. It still sanitizes the file.
+func TestScanOutputFiles_QuietPrintsCountsOnly(t *testing.T) {
+	secret := "Token: ghp_FAKEtesttoken" + strings.Repeat("0", 24) + "\n"
+	for _, level := range []string{config.ProgressVerbosityQuiet, config.ProgressVerbosityFull} {
+		t.Run(level, func(t *testing.T) {
+			dir := t.TempDir()
+			p := filepath.Join(dir, "iteration-1", "output", "SECRET-NAME.md")
+			require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+			require.NoError(t, os.WriteFile(p, []byte(secret), 0o644))
+
+			var out bytes.Buffer
+			require.NoError(t, scanOutputFiles(dir, "trace-id", level, ui.New(&out)))
+			got, err := os.ReadFile(p)
+			require.NoError(t, err)
+			assert.NotContains(t, string(got), "ghp_FAKEtest", "the file is sanitized at every level")
+			assert.Contains(t, out.String(), "Sanitized 1 finding(s) in output files")
+			if level == config.ProgressVerbosityQuiet {
+				assert.NotContains(t, out.String(), "SECRET-NAME")
+				assert.NotContains(t, out.String(), "Sanitized [")
+				return
+			}
+			assert.Contains(t, out.String(), "Sanitized [")
+			assert.Contains(t, out.String(), "SECRET-NAME.md")
+		})
+	}
 }
