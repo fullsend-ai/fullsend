@@ -364,8 +364,13 @@ func (p *Poller) evaluate(ctx context.Context, pr forge.ChangeProposal) (string,
 			p.cacheSkips++
 			return ReasonFinished, "cached"
 		case HeadExhausted:
-			p.cacheSkips++
-			return ReasonAttemptsExhausted, fmt.Sprintf("cached, %d dispatches", h.Dispatches)
+			// The limit comes from the current config: a repository that
+			// raised max_attempts_per_head gets the extra attempts.
+			if h.Dispatches >= p.opts.MaxAttempts {
+				p.cacheSkips++
+				return ReasonAttemptsExhausted, fmt.Sprintf("cached, %d dispatches", h.Dispatches)
+			}
+			p.state.setStatus(key, "", p.opts.Now())
 		}
 	}
 	if ok, detail := p.authorized(ctx, pr); !ok {

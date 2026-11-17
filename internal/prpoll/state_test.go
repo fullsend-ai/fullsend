@@ -143,7 +143,7 @@ func TestRun_CachedHeadsSkipWithoutAPICalls(t *testing.T) {
 			h := newHarness(t)
 			h.fake.prs = []map[string]any{forkPR(7, "alice", testSHA, after)}
 			h.fake.perms["alice"] = "write"
-			h.opts.State = stateWith(7, testSHA, 1, status)
+			h.opts.State = stateWith(7, testSHA, h.opts.MaxAttempts, status)
 			assert.Empty(t, h.run(t))
 			assert.Equal(t, 1, h.fake.requests, "only the PR listing is read")
 			assert.Contains(t, h.log.String(), ": "+reason+" (cached")
@@ -267,4 +267,21 @@ func TestRun_DefaultBranch(t *testing.T) {
 			assert.False(t, h.opts.State.Changed())
 		})
 	}
+}
+
+func TestRun_RaisedAttemptLimitReopensAnExhaustedHead(t *testing.T) {
+	h := newHarness(t)
+	h.opts.MaxAttempts = 1
+	h.opts.State = NewState()
+	h.fake.prs = []map[string]any{forkPR(7, "alice", testSHA, after)}
+	h.fake.perms["alice"] = "write"
+	require.Len(t, h.run(t), 1, "first dispatch")
+	assert.Empty(t, h.run(t), "limit 1 reached")
+	require.Equal(t, HeadExhausted, h.opts.State.head(headKey(7, testSHA)).Status)
+
+	h.opts.MaxAttempts = 2
+	h.log.Reset()
+	assert.Len(t, h.run(t), 1, "a raised limit gives the head another attempt")
+	assert.Equal(t, 2, h.opts.State.dispatches(headKey(7, testSHA)))
+	assert.NotContains(t, h.log.String(), "(cached")
 }
