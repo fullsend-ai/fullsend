@@ -137,6 +137,7 @@ func (m *VendorManifest) CleanupPaths(workflowPrefix string) []string {
 var vendoredReusableWorkflows = []string{
 	"reusable-dispatch.yml",
 	"reusable-poll-jira.yml",
+	"reusable-poll-prs.yml",
 	"reusable-prioritize.yml",
 }
 
