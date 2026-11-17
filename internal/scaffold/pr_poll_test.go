@@ -25,6 +25,11 @@ type prPollWorkflow struct {
 		CancelInProgress *bool  `yaml:"cancel-in-progress"`
 	} `yaml:"concurrency"`
 	Jobs map[string]struct {
+		Name     string `yaml:"name"`
+		Strategy struct {
+			FailFast *bool  `yaml:"fail-fast"`
+			Matrix   string `yaml:"matrix"`
+		} `yaml:"strategy"`
 		Needs       string            `yaml:"needs"`
 		If          string            `yaml:"if"`
 		Uses        string            `yaml:"uses"`
@@ -79,13 +84,20 @@ func TestRenderPRPollCaller(t *testing.T) {
 		require.Contains(t, wf.Jobs, "dispatch")
 		dispatch := wf.Jobs["dispatch"]
 		assert.Equal(t, "poll", dispatch.Needs)
-		assert.Equal(t, "${{ needs.poll.outputs.matrix }}", dispatch.With["matrix"])
+		assert.Equal(t, "Review (#${{ matrix.status_number }}@${{ matrix.event_payload.pull_request.head.sha }})", dispatch.Name,
+			"the poll reads review jobs back by this name")
+		assert.Equal(t, "${{ fromJSON(needs.poll.outputs.matrix) }}", dispatch.Strategy.Matrix, "one dispatch run per pull request")
+		require.NotNil(t, dispatch.Strategy.FailFast)
+		assert.False(t, *dispatch.Strategy.FailFast, "one failed review does not cancel the others")
+		assert.Equal(t, "poll-review", dispatch.With["event_action"])
+		assert.Equal(t, "${{ toJSON(matrix) }}", dispatch.With["poll_review"])
+		assert.NotContains(t, dispatch.With, "matrix", "poll reviews go to the built-in review job, not harness-run")
 		for name := range dispatch.Secrets {
 			assert.False(t, strings.HasPrefix(name, "FULLSEND_JIRA_"), "the dispatch job forwards no Jira secret (%s)", name)
 		}
 	})
 
-	t.Run("dispatch job matches the Jira caller apart from Jira secrets", func(t *testing.T) {
+	t.Run("dispatch job matches the Jira caller in permissions, secrets and shared inputs", func(t *testing.T) {
 		out, err := RenderPRPollCaller(pinned, testPRPollSince)
 		require.NoError(t, err)
 		jira, err := RenderJiraPollCaller(pinned, true, true)
@@ -99,7 +111,13 @@ func TestRenderPRPollCaller(t *testing.T) {
 				delete(want.Secrets, name)
 			}
 		}
-		assert.Equal(t, want, pr.Jobs["dispatch"])
+		got := pr.Jobs["dispatch"]
+		assert.Equal(t, want.Permissions, got.Permissions)
+		assert.Equal(t, want.Secrets, got.Secrets)
+		assert.Equal(t, want.Uses, got.Uses)
+		for _, key := range []string{"mint_url", "gcp_region", "project_number", "runner_image"} {
+			assert.Equal(t, want.With[key], got.With[key], key)
+		}
 	})
 
 	t.Run("default ref and vendored install", func(t *testing.T) {

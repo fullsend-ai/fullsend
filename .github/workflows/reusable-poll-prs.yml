@@ -1,0 +1,133 @@
+# Reusable fork PR review poll workflow for per-repo installations (ADR 0171).
+# Called by the managed .github/workflows/fullsend-poll-prs.yml caller that
+# `fullsend repos install` writes while fork_pr_review_poll.enabled is true.
+#
+# workflow_call contract:
+# - Required input: since, the RFC 3339 time the poll was enabled. Pull
+#   request activity from before it starts no review (no backlog on enable).
+# - Optional inputs: runner_image (runner for the poll job) and
+#   timeout_minutes (job timeout; defaults to 15 minutes).
+# - Output: matrix is the JSON include matrix for reusable-dispatch.yml; an
+#   empty include array means there is no review to start.
+# Runs `fullsend poll --input-driver github-pr-poll` once against the
+# caller's .fullsend/config.yaml and returns the dispatch matrix. The caller
+# passes it to reusable-dispatch.yml at the same ref (ADR 62), which routes
+# the review entries to the built-in review job.
+#
+# Security: the poll job takes no secrets. It reads pull requests, reviews,
+# comments and the poll workflow's own runs with a read-only GITHUB_TOKEN,
+# and never checks out or runs code from a pull request. The checkout is the
+# caller's default branch: .fullsend/ plus OWNERS files for authorization.
+name: Fork PR review poll
+
+on:
+  workflow_call:
+    inputs:
+      since:
+        description: RFC 3339 time the poll was enabled.
+        type: string
+        required: true
+      runner_image:
+        description: GitHub Actions runner image for the poll job.
+        type: string
+        required: false
+        default: "ubuntu-24.04"
+      timeout_minutes:
+        description: Maximum runtime in minutes for the poll job.
+        type: number
+        required: false
+        default: 15
+    outputs:
+      matrix:
+        description: Dispatch matrix accepted by reusable-dispatch.yml.
+        value: ${{ jobs.poll.outputs.matrix }}
+
+jobs:
+  poll:
+    name: Poll fork PRs
+    runs-on: ${{ inputs.runner_image }}
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: read
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .fullsend/
+            .defaults/action.yml
+            .fullsend/.defaults/action.yml
+            OWNERS
+            OWNERS_ALIASES
+          sparse-checkout-cone-mode: false
+
+      - name: Detect CLI install mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .defaults/action.yml || -f .fullsend/.defaults/action.yml ]]; then
+            echo "mode=vendored" >> "${GITHUB_OUTPUT}"
+          else
+            echo "mode=upstream" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Checkout upstream install action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-actions
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/install-fullsend-cli/
+          sparse-checkout-cone-mode: false
+
+      - name: Install fullsend CLI
+        uses: ./.workflow-actions/.github/actions/install-fullsend-cli
+        with:
+          mode: ${{ steps.mode.outputs.mode }}
+          vendored_path: .fullsend/bin/fullsend
+          workflow_repository: ${{ job.workflow_repository }}
+          workflow_sha: ${{ job.workflow_sha }}
+          github_token: ${{ github.token }}
+
+      - name: Poll fork PRs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_REPO: ${{ github.repository }}
+          SINCE: ${{ inputs.since }}
+          FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
+          FULLSEND_REVIEW_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
+        run: |
+          set -euo pipefail
+          fullsend poll \
+            --input-driver github-pr-poll \
+            --target-repo "${TARGET_REPO}" \
+            --since "${SINCE}" \
+            --output dispatches.json \
+            --fullsend-dir .fullsend
+
+      - name: Build dispatch matrix
+        id: matrix
+        run: |
+          set -euo pipefail
+          jq -e 'type == "array"' dispatches.json > /dev/null
+          if jq -e 'length == 0' dispatches.json > /dev/null; then
+            echo "No dispatches."
+            echo 'matrix={"include":[]}' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          MATRIX=$(jq -c '{include: .}' dispatches.json)
+          DELIM="MATRIX_$(openssl rand -hex 8)"
+          {
+            echo "matrix<<${DELIM}"
+            printf '%s\n' "${MATRIX}"
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
