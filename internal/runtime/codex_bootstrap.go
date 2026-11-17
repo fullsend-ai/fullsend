@@ -453,8 +453,9 @@ const codexV2DispatchMarker = "Dispatch follows collaboration V2."
 // codex's native tools and states the policy the spawn guard enforces, so
 // the parent passes the arguments the guard admits and handles a denial
 // without retrying. The first two sentences and the denied-spawn sentence
-// are what the agents repository's pr-review skill and retro agent key on
-// (fullsend-ai/agents#1849); change them only together with those. roles is
+// are what the agents repository's pr-review skill, review agent and retro
+// agent key on (fullsend-ai/agents#1849, fullsend-ai/agents#1971); change
+// them only together with those. roles is
 // the registered roster, sorted by name (codexRoles); version is the
 // collaboration version the gate admitted. The V2 note keeps the keyed
 // sentences, puts codexV2DispatchMarker right after its third sentence,

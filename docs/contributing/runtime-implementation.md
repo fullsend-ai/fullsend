@@ -1670,9 +1670,16 @@ Two artefacts of the run are worth knowing about:
   and local smoke runs.
 - The rollout session files are archived as transcripts but not error-classified: only the tee'd
   `exec --json` capture yields a verdict, which is what the runner's exit-code override reads.
-- Native sub-agents (ADR 0126) have completed fleet-shaped runs only locally, on macOS and on
-  Fedora ([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)), not through the fleet
-  workflows.
+- Native sub-agents (ADR 0126) have run fleet-shaped only locally on macOS Apple Silicon,
+  natively and in a Fedora CoreOS (aarch64) podman VM
+  ([#6970](https://github.com/fullsend-ai/fullsend/issues/6970)), not through the fleet
+  workflows. In two of the three `review` runs on #6970 a persona the skill selects did not run,
+  and neither result said so ([#9073](https://github.com/fullsend-ai/fullsend/issues/9073),
+  [#9657](https://github.com/fullsend-ai/fullsend/issues/9657)). On collaboration V2 (ADR 0159),
+  `review` and `retro` have run natively on macOS only
+  ([#9085](https://github.com/fullsend-ai/fullsend/issues/9085#issuecomment-6920231259)), and there the
+  `review` parent dropped the challenger's kept findings after its own check of the repository
+  ([#9657](https://github.com/fullsend-ai/fullsend/issues/9657)).
 
 ### Re-check on a `CODEX_VERSION` bump
 
