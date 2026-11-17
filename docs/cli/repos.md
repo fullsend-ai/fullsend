@@ -329,7 +329,9 @@ gitlab:
 
 A repo entry (or the glob entry that matches the repo) takes precedence over its forge section (`github` or `gitlab`), which takes precedence over `defaults`. Signoff is off when no level sets it. There is no command-line override: the former `--signoff` flag was removed, so set the level you want with, for example, `fullsend repos set defaults.signoff true`.
 
-When signoff is enabled for any selected repo, the identity is resolved once per forge before anything is committed. A missing identity, such as a GitHub App installation token that cannot read `/user`, or an identity without a name or email fails the install before any scaffold commit is made. `--dry-run` runs the same identity check and reports the trailer that would be added. When signoff is disabled, no trailer is added and no identity lookup is made. Uninstall commits (file deletions) do not add a trailer.
+When signoff is enabled for any selected repo, the identity is resolved once per forge before anything is committed. A missing user identity, an identity without a name or email, or a failed identity lookup (for example, a network error) fails the install before any scaffold commit is made. `--dry-run` runs the same identity check and reports the trailer that would be added.
+
+A GitHub App installation token cannot read `/user`, so it has no identity to sign off as. In that case install prints a notice and creates GitHub scaffold commits without the trailer instead of failing; `--dry-run` reports that the trailer would be skipped. The DCO GitHub App exempts bot-authored commits, so these commits still pass the DCO check. Scheduled automation running under an App (for example with `actions/create-github-app-token`) can therefore apply the same manifest with `signoff: true` that operators use with their own tokens; no override is needed. When signoff is disabled, no trailer is added and no identity lookup is made. Uninstall commits (file deletions) do not add a trailer.
 
 ### Signed commits
 

@@ -922,7 +922,11 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			if !ok {
 				return fmt.Errorf("signoff is enabled for %s/%s but no %s user identity was resolved", owner, repo, rc.Forge)
 			}
-			meta.CommitMsg += "\n\n" + trailer
+			// An empty trailer means the forge runs under a GitHub App
+			// installation token, which has no identity to sign off as.
+			if trailer != "" {
+				meta.CommitMsg += "\n\n" + trailer
+			}
 		}
 		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
 			targetRepo.DefaultBranch, meta, files, direct, nil)
@@ -1803,6 +1807,12 @@ func checkAllForgeScopes(ctx context.Context, clients repos.ForgeClientFactory, 
 // user's identity is resolved once per forge and a missing or incomplete
 // identity is an error. In a dry run the trailer that would be added is
 // reported for each forge.
+//
+// The one exception is a GitHub App installation token, which cannot read
+// /user and so has no identity to sign off as. The DCO app exempts
+// bot-authored commits, so the forge maps to an empty trailer and a notice
+// is printed instead of failing the install. User tokens whose profile has
+// no name or email, and lookup failures other than "not found", still fail.
 func resolveRepoSignOffTrailers(ctx context.Context, clients repos.ForgeClientFactory, printer *ui.Printer,
 	manifest *repos.Manifest, filter []string, dryRun bool) (map[string]string, error) {
 	forges, err := manifest.SignoffForgesFor(filter)
@@ -1822,7 +1832,23 @@ func resolveRepoSignOffTrailers(ctx context.Context, clients repos.ForgeClientFa
 		}
 		trailer, err := resolveSignOffTrailer(ctx, fc.Client, "signoff", label)
 		if err != nil {
-			return nil, err
+			if forgeName != repos.ForgeGitHub || !errors.Is(err, forge.ErrNotFound) {
+				return nil, err
+			}
+			isInstallation, instErr := fc.Client.IsInstallationToken(ctx)
+			if instErr != nil {
+				return nil, fmt.Errorf("%w (detecting installation token: %v)", err, instErr)
+			}
+			if !isInstallation {
+				return nil, err
+			}
+			trailers[forgeName] = ""
+			verb := "Skipping"
+			if dryRun {
+				verb = "Would skip"
+			}
+			printer.StepWarn(fmt.Sprintf("%s Signed-off-by trailer on %s scaffold commits: a GitHub App installation token has no user identity to sign off as (the DCO check exempts App-authored commits)", verb, label))
+			continue
 		}
 		trailers[forgeName] = trailer
 		if dryRun {
