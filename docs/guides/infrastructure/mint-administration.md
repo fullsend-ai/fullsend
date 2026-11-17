@@ -1002,9 +1002,12 @@ Why a file, not a flag or Secret Manager:
    wrangler secret put FULLSEND_WEBHOOK_SECRET --name "$WORKER_NAME" < webhook-secret
    ```
 
-   This deploys a new Worker version. Durable `mint deploy` runs keep the
-   secret. Preview versions do not inherit it, so the route stays off on
-   previews.
+   This deploys a new Worker version, and later durable `mint deploy` runs
+   keep the secret. If the newest version is a `mint deploy --preview`
+   upload, `wrangler secret put` fails with "the latest version of your
+   Worker isn't currently deployed": run a durable `fullsend mint deploy`
+   first, then set the secret. Whether a preview carries the secret was not
+   checked.
 
    Not run for this guide (no Cloudflare account was used).
 
@@ -1077,7 +1080,7 @@ In the App's **Advanced** tab, under **Recent Deliveries**:
 - a `pull_request` delivery for a push to a fork PR on an enrolled
   repository is answered `202` `{"dispatched":true}`, and the repository's
   **Actions** tab shows a `workflow_dispatch` run of the poll workflow;
-- another push to the same repository within 30 seconds is answered `202`
+- another push to the same repository within 10 seconds is answered `202`
   `{"dispatched":false,"reason":"debounced"}`. That is expected.
 
 The mint logs one line per delivery, for example:
@@ -1089,10 +1092,15 @@ github webhook: delivery="local-1" event="ping" action="" repo="" outcome=ping
 ### Limits
 
 - **Debounce:** after a dispatch for a repository, the mint answers further
-  deliveries for it with `debounced` for 30 seconds, without calling GitHub.
+  deliveries for it with `debounced` for 10 seconds, without calling GitHub.
   The poll's concurrency group keeps at most one queued run, and every run
   scans every open PR. A push that lands after the dispatched run has listed
   the PRs waits for the next run or the schedule.
+- **Cloudflare rate limit:** the Worker limits this path per source address,
+  like `/v1/bot-role`. GitHub sends every delivery from a few addresses, and
+  every `pull_request` action of the App counts, including ones the route
+  ignores. A busy fleet can get `429`; those wake-ups fall back to the
+  schedule.
 - **Negative cache:** `app_not_installed` and `workflow_not_dispatchable`
   are remembered per repository for 5 minutes and answered without calling
   GitHub.
@@ -1113,7 +1121,7 @@ github webhook: delivery="local-1" event="ping" action="" repo="" outcome=ping
 | `413` `{"error":"request body too large"}` | The payload is larger than 1 MiB. | None. The schedule picks up the PR. |
 | `429` `{"error":"rate_limited"}` (Cloudflare only) | More than 60 deliveries per minute from one GitHub source IP. | None. The schedule picks up the PR. |
 | `202` `{"dispatched":false,"reason":"not_fork"}` | The PR's head branch is in the base repository. A same-repository PR is not a fork PR, and the route acts only on fork PRs. | None. To test the webhook, push to a PR opened from a fork. |
-| `202` `{"dispatched":false,"reason":"debounced"}` | This mint instance dispatched the poll for the repository in the last 30 seconds, or is dispatching it now. | None. See [Limits](#limits). |
+| `202` `{"dispatched":false,"reason":"debounced"}` | This mint instance dispatched the poll for the repository in the last 10 seconds, or is dispatching it now. | None. See [Limits](#limits). |
 | `202` `{"dispatched":false,"reason":"workflow_not_dispatchable"}` | GitHub answered the repository read with `404`, or the dispatch with `404` or `422`. In observed GitHub behaviour these mean: no `.github/workflows/fullsend-poll-prs.yml` on the default branch (also the case before the fullsend release that installs it), no `workflow_dispatch` trigger, or Actions disabled. The answer may come from the 5-minute cache, with no GitHub call. | Install or update the poll workflow. Deliveries within 5 minutes of the first such answer may still get it from the cache. The schedule picks up the PR meanwhile. |
 | `202` `{"dispatched":false,"reason":"app_not_installed"}` | The orchestrator App is not installed on the repository. The answer may come from the 5-minute cache. | Install the App on the repository. Deliveries within 5 minutes may still get the cached answer. |
 | `202` `{"dispatched":false,"reason":"not_orchestrator_app"}` | The delivery names an App whose ID is not the `fullsend` entry of `ROLE_APP_IDS`. | Configure the webhook on the App registered as `fullsend`. |

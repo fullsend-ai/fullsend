@@ -308,7 +308,7 @@ inputs. The token is created per request and never returned, logged or
 cached.
 
 `webhookLimiter` bounds the GitHub calls: after a dispatch it answers a
-repository's deliveries with `debounced` for 30 s, and it remembers
+repository's deliveries with `debounced` for 10 s, and it remembers
 `app_not_installed` and `workflow_not_dispatchable` for 5 minutes. A miss
 reserves the repository before the GitHub calls, so concurrent deliveries
 for it do not dispatch twice; a failure clears the reservation so a

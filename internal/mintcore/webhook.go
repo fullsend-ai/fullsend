@@ -43,10 +43,14 @@ const (
 	webhookSignaturePrefix = "sha256="
 
 	// webhookDebounce is how long, after a dispatch for a repository,
-	// further deliveries for it are answered without a GitHub call. One
-	// more dispatch would add nothing: the poll's concurrency group keeps
-	// at most one queued run, and every run scans every open PR.
-	webhookDebounce = 30 * time.Second
+	// further deliveries for it are answered without a GitHub call. It is
+	// short on purpose: while the dispatched run is still queued, one more
+	// dispatch adds nothing (the poll's concurrency group keeps one queued
+	// run, and every run scans every open PR), but once that run has
+	// listed the PRs, a later push needs a new run. Actions runs usually
+	// start within 10-30 s, so a 10 s window catches bursts of one push
+	// (opened plus synchronize) without holding back a second push.
+	webhookDebounce = 10 * time.Second
 
 	// webhookNegativeTTL is how long app_not_installed and
 	// workflow_not_dispatchable are remembered for a repository.

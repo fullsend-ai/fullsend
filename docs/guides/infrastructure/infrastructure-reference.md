@@ -290,7 +290,7 @@ inputs, and no webhook field reaches a job. Setup and troubleshooting:
   returns `202` with `{"dispatched": false, "reason": "..."}` and makes no
   GitHub call. The payload's `default_branch` is not read.
 - **Limits:** per repository, a dispatch makes the mint answer further
-  deliveries `202` `{"dispatched": false, "reason": "debounced"}` for 30
+  deliveries `202` `{"dispatched": false, "reason": "debounced"}` for 10
   seconds, and `app_not_installed` or `workflow_not_dispatchable` is
   remembered and answered for 5 minutes, all without a GitHub call. The state
   is best-effort and in-process: kept per mint instance (Cloud Run instance,
