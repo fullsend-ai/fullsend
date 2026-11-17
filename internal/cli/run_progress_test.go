@@ -77,11 +77,24 @@ func TestResolveRunProgressVerbosity(t *testing.T) {
 	}
 }
 
-func TestResolveRunProgressVerbosity_UnreadableEventIsQuiet(t *testing.T) {
+// An event file runAgent cannot read fails the run earlier, with "reading
+// event file ..." (runAgent reads it before it resolves the level), so in
+// a real run this branch is reached only if the file changes between the
+// two reads. It is kept as a defensive branch: the source counts as
+// unknown, so the run gets the strictest of progress.verbosity and every
+// by_source entry. With no progress setting the log stays as it is today.
+func TestResolveRunProgressVerbosity_UnreadableEventIsUnknownSource(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+
 	rc, dir := progressFixture(t, "version: \"1\"\n")
-	level, rule := resolveRunProgressVerbosity(rc, dir, filepath.Join(t.TempDir(), "missing.json"))
-	assert.Equal(t, config.ProgressVerbosityQuiet, level)
-	assert.Contains(t, rule, "the run source could not be read")
+	level, rule := resolveRunProgressVerbosity(rc, dir, missing)
+	assert.Equal(t, config.ProgressVerbosityFull, level, "unset must log as today")
+	assert.Empty(t, rule)
+
+	rc, dir = progressFixture(t, "version: \"1\"\nprogress:\n  by_source:\n    jira: quiet\n")
+	level, rule = resolveRunProgressVerbosity(rc, dir, missing)
+	assert.Equal(t, config.ProgressVerbosityQuiet, level, "a source level still applies when the source is unknown")
+	assert.Equal(t, "Progress log: quiet (run source unknown: the event file could not be read)", rule)
 }
 
 // The standard GitHub stage jobs carry no normalized event; a native

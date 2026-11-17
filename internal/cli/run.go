@@ -5043,13 +5043,16 @@ func emitTranscriptErrorsAt(tx agentruntime.TranscriptHandler, w io.Writer, summ
 // chosen. The run source is read the way prepare-artifacts reads it
 // (artifactRunSource): a valid normalized event, else a native GitHub
 // event; an unknown source gets the strictest of progress.verbosity and
-// every progress.by_source entry. It fails closed: a source or level that
-// cannot be resolved logs at quiet. A level that resolves to full returns
-// no line, so a run without the setting logs exactly as before.
+// every progress.by_source entry. An event file that cannot be read also
+// counts as an unknown source; runAgent has already failed on such a file
+// before it gets here, so that branch is defensive only. It fails closed:
+// a level that cannot be resolved logs at quiet. A level that resolves to
+// full returns no line, so a run without the setting logs exactly as
+// before.
 func resolveRunProgressVerbosity(rc runConfig, absFullsendDir, eventFile string) (level, rule string) {
 	source, how, err := artifactRunSource(absFullsendDir, eventFile)
 	if err != nil {
-		return config.ProgressVerbosityQuiet, "Progress log: quiet (the run source could not be read)"
+		source, how = "", "the event file could not be read"
 	}
 	level, err = config.ResolveProgressVerbosity(rc.perRepo, source)
 	if err != nil {
