@@ -1004,6 +1004,10 @@ type perRepoConfig struct {
 	// content overrides the parent layer; by_source merges per key.
 	Artifacts *ArtifactsConfig `yaml:"artifacts,omitempty"`
 
+	// Progress limits what the live progress log shows (ADR 0163).
+	// verbosity overrides the parent layer; by_source merges per key.
+	Progress *ProgressConfig `yaml:"progress,omitempty"`
+
 	// TraceContextBlock is the trace_context block (ADR 0154). It backs
 	// the TraceContext() accessor and is named distinctly from it because
 	// Go forbids a field and method sharing a name on the same type.
@@ -1143,6 +1147,7 @@ type perRepoConfigMarshal struct {
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
 	Models                 *ModelsConfig             `yaml:"models,omitempty"`
 	Artifacts              *ArtifactsConfig          `yaml:"artifacts,omitempty"`
+	Progress               *ProgressConfig           `yaml:"progress,omitempty"`
 	TraceContext           *TraceContextConfig       `yaml:"trace_context,omitempty"`
 }
 
@@ -1174,6 +1179,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	}
 	if !c.Artifacts.IsZero() {
 		h.Artifacts = c.Artifacts
+	}
+	if !c.Progress.IsZero() {
+		h.Progress = c.Progress
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -1312,6 +1320,9 @@ func (c *perRepoConfig) validateLocalFields() error {
 		return err
 	}
 	if err := validateArtifacts(c.Artifacts); err != nil {
+		return err
+	}
+	if err := validateProgress(c.Progress); err != nil {
 		return err
 	}
 	if err := ValidateTraceContext(c.TraceContextBlock); err != nil {

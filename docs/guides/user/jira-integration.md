@@ -858,6 +858,23 @@ Use `none` if issue keys and branch names must stay private too. To check
 that it worked, and to see what each level keeps, follow
 [Run artifacts and private data](run-artifacts-and-private-data.md).
 
+The job log is a separate surface. While the agent runs, the log prints the
+model's reasoning and replies, tool lines and error messages, any of which can
+quote the Jira issue. Anyone can read the job log of a public repository. To
+keep that text out of the log for Jira-started runs, add:
+
+```yaml
+progress:
+  by_source:
+    jira: quiet         # heartbeat, counts, error types and the result only
+```
+
+With `quiet`, monitor runs through OTLP export to a backend you control, such
+as MLflow (see [Distributed tracing](../infrastructure/distributed-tracing.md)).
+Level 3 content capture sends reasoning and tool content only to that backend.
+See [`progress`](../../reference/config-reference.md#progress) for what each
+level prints.
+
 ### Letting the assignee start Code
 
 The developer who works a Jira issue is usually its **assignee**, while a

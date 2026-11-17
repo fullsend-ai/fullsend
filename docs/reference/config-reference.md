@@ -139,6 +139,12 @@ artifacts:
   by_source:                         # Per run source (event.source.system); stricter level wins
     jira: metadata                   # e.g. runs started from a Jira issue
 
+# ── Live progress log ────────────────────────────────────────
+progress:
+  verbosity: full                    # Every run: full (default) | tools | quiet
+  by_source:                         # Per run source (event.source.system); stricter level wins
+    jira: quiet                      # e.g. runs started from a Jira issue
+
 # ── Trace context ────────────────────────────────────────────
 trace_context:                       # Trace-context keys of this repository (ADR 0154)
   installation_id: 0f1e2d3c4b5a69788796a5b4c3d2e1f0  # 32 lowercase hex characters, not all zero
@@ -1042,6 +1048,62 @@ repository's normal review and CODEOWNERS.
 `by_source` looks only at where the run started. For when to choose each
 level, what `metadata` still publishes and what follow-up workflows lose, see
 [Run artifacts and private data](../guides/user/run-artifacts-and-private-data.md).
+
+### `progress`
+
+Limits what `fullsend run` prints to the CI job log while an agent runs, and
+the GitHub Actions annotations that come with it
+([ADR 0163](../ADRs/0163-repo-config-limits-live-progress-log.md)). On a
+public repository, anyone can read the job log until log retention expires.
+
+```yaml
+progress:
+  verbosity: full         # every run: full (default) | tools | quiet
+  by_source:              # per run source; the stricter level wins
+    jira: quiet           # runs started from a Jira issue
+```
+
+| Level | The log shows |
+|---|---|
+| `full` | Everything, as before. This is the default, so an unset block leaves the log unchanged. |
+| `tools` | Everything except the model's reasoning and replies: tool lines, task and status progress, token counts, errors, validation output and the result. Tool lines and task labels can still carry text from the source, so use `quiet` for a source that isn't public. |
+| `quiet` | Only lines fullsend writes from its own fields: the heartbeat, the model, event kinds and states (`Task — running`, `Status: hook — running`), token counts, cost, error types, transcript error types, validation passed or failed, and the result. Reasoning, replies, tool lines, task labels, status details, error messages, plugin and retry messages, and validation output are left out. No `::notice::` annotations are written, and transcript `::error::` annotations carry the error type only. |
+
+Only the printed log changes. Telemetry spans, Level 3 content capture
+([ADR 0050](../ADRs/0050-distributed-tracing-instrumentation.md)), the
+validation feedback that the next iteration gets, and the run artifact still
+receive everything. To keep reasoning and tool content under `quiet`, export
+it over OTLP to a backend you control (see
+[Distributed tracing](../guides/infrastructure/distributed-tracing.md)), and
+set [`artifacts`](#artifacts) separately for the run artifact.
+
+- **`verbosity`** — The level for every run. Unset means `full`.
+- **`by_source`** — Levels for runs started from one source. Keys follow the
+  same rules as [`artifacts.by_source`](#artifacts): the normalized event's
+  `source.system`, lowercase with no surrounding spaces, and open strings, so
+  a later adapter's source name works with no schema change.
+
+**Resolution.** The runner uses the stricter of `verbosity` and the
+`by_source` entry for the run's source. A source with no entry gets
+`verbosity`. `quiet` is stricter than `tools`, which is stricter than `full`.
+`fullsend run` finds the run's source the same way as
+[`artifacts`](#artifacts) (a valid normalized event, else a native GitHub
+event). A run whose source is unknown gets the strictest of `verbosity` and
+every `by_source` entry. When the level isn't `full`, the run prints one line
+naming the level and how it was chosen.
+
+**Fails closed.** If the level can't be resolved, for example because of an
+invalid level, a `by_source` key that isn't lowercase, or an unreadable event
+file, the run logs at `quiet`.
+
+**Layers.** Across `config.base.yaml` and `config.yaml`, an explicit
+`verbosity` overrides and `by_source` merges per key. The `fullsend repos`
+safety gate ([ADR 0122](../ADRs/0122-declarative-repo-configuration.md))
+treats lowering an effective level toward `full` as a relaxation, as it does
+for `artifacts`.
+
+Logs written by pre-scripts and post-scripts aren't covered; those scripts are
+the repository owner's own code.
 
 ### `trace_context`
 

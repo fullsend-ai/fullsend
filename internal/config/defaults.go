@@ -128,3 +128,10 @@ func (d *perRepoDefaults) ConfigArtifactsContentSet() bool { return false }
 
 // ConfigArtifactsBySource returns the default per-source levels (none).
 func (d *perRepoDefaults) ConfigArtifactsBySource() map[string]string { return nil }
+
+// ConfigProgressVerbosity returns the default live progress log level
+// ("full" — everything, as before ADR 0163).
+func (d *perRepoDefaults) ConfigProgressVerbosity() string { return ProgressVerbosityFull }
+
+// ConfigProgressBySource returns the default per-source levels (none).
+func (d *perRepoDefaults) ConfigProgressBySource() map[string]string { return nil }

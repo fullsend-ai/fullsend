@@ -183,6 +183,26 @@ over OTLP to a backend you control
 ([How to emit traces](how-to-emit-traces.md)). OTLP export works at every
 level.
 
+## The job log is a separate setting
+
+`artifacts` does not change the job log. While the agent runs, the log prints
+the model's reasoning and replies, tool lines, error messages and validation
+output, and on GitHub Actions some of these become annotations on the run
+summary page. To keep that text out of the log for Jira-started runs, also
+add:
+
+```yaml
+progress:
+  by_source:
+    jira: quiet         # heartbeat, counts, error types and the result only
+```
+
+`tools` hides only reasoning and replies. Tool lines and task labels can still
+carry text from the source, so use `quiet` for a source that isn't public. The
+level changes only what is printed; OTLP export and Level 3 content capture
+still receive everything. See
+[`progress`](../../reference/config-reference.md#progress).
+
 ## Troubleshooting
 
 Find the message in the job log. On GitHub Actions the warnings also show as

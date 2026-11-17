@@ -1152,6 +1152,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return fmt.Errorf("%s: %w", runCfg.source, err)
 		}
 	}
+	// The live progress log level (ADR 0163) gates what the renderer and
+	// the runner's own transcript-error and validation lines print. It
+	// fails closed to quiet, and leaves the log unchanged when it resolves
+	// to full.
+	progressVerbosity, progressRule := resolveRunProgressVerbosity(runCfg, absFullsendDir, eventFile)
+	if progressRule != "" {
+		printer.StepInfo(progressRule)
+	}
 	// resolvedModel is the alias-table target when models.aliases remaps
 	// h.Model, h.Model otherwise. It is what the echo and the Claude Code
 	// warning look at; pi still prefixes a bare id with its provider.
@@ -3005,6 +3013,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		toolSpans := newToolSpanTracker(tracer, agentCtx)
 		toolSpans.runnerEnv = h.RunnerEnv
 		renderer := agentruntime.NewEventRenderer(printer)
+		// The level gates printed lines only: iterationEventHandler still
+		// hands every event to the content collector and tool spans.
+		renderer.Verbosity = progressVerbosity
 		renderer.RedactProgress = func(text string) string {
 			return redactProgressSecretLiterals(text, h.RunnerEnv)
 		}
@@ -3033,6 +3044,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			ModelAliases:      configModelAliases,
 			ForgeClient:       playbackForgeClient,
 			OnEvent:           iterationEventHandler(renderer.Handle, collector, toolSpans),
+			ProgressVerbosity: progressVerbosity,
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 		lastIterElapsed = time.Since(agentStart)
@@ -3108,7 +3120,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				lastExitCode = 1
 				transcriptErrorOverride = true
 			}
-			printer.StepWarn(outcome.warnMsg)
+			// transcriptErrMsg still reaches the agent span below; at quiet
+			// the console line names the error type only.
+			warnMsg := outcome.warnMsg
+			if config.ProgressIsQuiet(progressVerbosity) {
+				warnMsg = classifyTranscriptError(te.QuietDisplayMessage(), te.Subtype, exitCode).warnMsg
+			}
+			printer.StepWarn(warnMsg)
 		}
 
 		// finish_reason reflects how the generation ended: a clean exit is
@@ -3224,7 +3242,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Extracting target repo")
 		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir, hostRepositorySnapshot); err != nil {
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
-				tx.EmitTranscriptErrors(os.Stderr, es)
+				emitTranscriptErrorsAt(tx, os.Stderr, es, progressVerbosity)
 			}
 			if h.ValidationLoop != nil {
 				// SafeDownload failed — the repo directory may contain
@@ -3292,7 +3310,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
-			printer.StepDone(fmt.Sprintf("Validation passed: %s (%.1fs)", strings.TrimSpace(redactFeedback(string(valOut), h.RunnerEnv)), time.Since(valStart).Seconds()))
+			printer.StepDone(validationPassedLine("Validation passed", valOut, h.RunnerEnv, time.Since(valStart), progressVerbosity))
 			validationPassed = true
 			validatedIterNum = iteration
 			break
@@ -3304,7 +3322,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// the same redacted text — the workflow log is a sink for this output
 		// too, and on a public repo it is a public one.
 		feedback := writeValidationFeedback(iterDir, valOut, valErr, h.RunnerEnv, printer)
-		printer.StepFail("Validation failed: " + feedback)
+		printer.StepFail(validationFailedLine("Validation failed", feedback, progressVerbosity))
 		if feedbackEnabled {
 			validationFeedback = feedback
 		}
@@ -3328,7 +3346,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// from the latest. This ensures a successful retry's output is
 	// found even when earlier steps in that iteration failed. See #5393.
 	if h.ValidationLoop != nil && !validationPassed {
-		sweep := postLoopValidationSweep(h, runDir, runCount, repoExtractedOK, printer)
+		sweep := postLoopValidationSweep(h, runDir, runCount, repoExtractedOK, progressVerbosity, printer)
 		validationPassed = sweep.passed
 		repoExtractedOK = sweep.repoExtractedOK
 		validatedIterNum = sweep.validatedIter
@@ -3358,7 +3376,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
 	if errorSummaries := tx.ParseTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
 		printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
-		tx.EmitTranscriptErrors(os.Stderr, errorSummaries)
+		emitTranscriptErrorsAt(tx, os.Stderr, errorSummaries, progressVerbosity)
 	}
 
 	// 9f. Post-agent output scan — redact secrets from extracted output.
@@ -4957,8 +4975,10 @@ type sweepResult struct {
 // backwards. It returns the first iteration that passes, or signals that
 // none passed. When the passing iteration is not runCount, repoExtractedOK
 // is set to false because hostRepositoryDownloadDir holds a different
-// iteration's repo checkout — the post-script must not use it.
-func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, currentRepoExtractedOK bool, printer *ui.Printer) sweepResult {
+// iteration's repo checkout — the post-script must not use it. At the
+// quiet progress level (ADR 0163) the lines say passed or failed without
+// the script's output.
+func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, currentRepoExtractedOK bool, progressVerbosity string, printer *ui.Printer) sweepResult {
 	for i := runCount; i >= 1; i-- {
 		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
 		valStart := time.Now()
@@ -4972,16 +4992,77 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
-			printer.StepDone(fmt.Sprintf("Validation passed (iteration %d): %s (%.1fs)", i, strings.TrimSpace(redactFeedback(string(valOut), h.RunnerEnv)), time.Since(valStart).Seconds()))
+			printer.StepDone(validationPassedLine(fmt.Sprintf("Validation passed (iteration %d)", i), valOut, h.RunnerEnv, time.Since(valStart), progressVerbosity))
 			repoOK := currentRepoExtractedOK
 			if i != runCount {
 				repoOK = false
 			}
 			return sweepResult{passed: true, validatedIter: i, repoExtractedOK: repoOK}
 		}
-		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactedValidationFailMessage(valOut, valErr, h.RunnerEnv)))
+		printer.StepWarn(validationFailedLine(fmt.Sprintf("Post-loop validation failed (iteration %d)", i),
+			redactedValidationFailMessage(valOut, valErr, h.RunnerEnv), progressVerbosity))
 	}
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
+}
+
+// validationPassedLine is the console line for a passing validation
+// script: the label, the script's redacted output and the elapsed time.
+// At the quiet progress level (ADR 0163) the output is left out, since it
+// can quote the agent's output files.
+func validationPassedLine(label string, valOut []byte, runnerEnv map[string]string, elapsed time.Duration, progressVerbosity string) string {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		return fmt.Sprintf("%s (%.1fs)", label, elapsed.Seconds())
+	}
+	return fmt.Sprintf("%s: %s (%.1fs)", label, strings.TrimSpace(redactFeedback(string(valOut), runnerEnv)), elapsed.Seconds())
+}
+
+// validationFailedLine is the console line for a failing validation
+// script: the label and the redacted feedback. At the quiet progress level
+// (ADR 0163) only the label prints; the feedback file and the next
+// iteration's prompt still get the full text.
+func validationFailedLine(label, feedback, progressVerbosity string) string {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		return label
+	}
+	return label + ": " + feedback
+}
+
+// emitTranscriptErrorsAt writes the transcript error annotations at the
+// run's progress level (ADR 0163): the runtime's full annotations, or at
+// quiet the error type only.
+func emitTranscriptErrorsAt(tx agentruntime.TranscriptHandler, w io.Writer, summaries []agentruntime.TranscriptError, progressVerbosity string) {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		agentruntime.EmitQuietTranscriptErrors(w, summaries)
+		return
+	}
+	tx.EmitTranscriptErrors(w, summaries)
+}
+
+// resolveRunProgressVerbosity returns the live progress log level for the
+// run (ADR 0163) and, when the level is not full, a line saying how it was
+// chosen. The run source is read the way prepare-artifacts reads it
+// (artifactRunSource): a valid normalized event, else a native GitHub
+// event; an unknown source gets the strictest of progress.verbosity and
+// every progress.by_source entry. It fails closed: a source or level that
+// cannot be resolved logs at quiet. A level that resolves to full returns
+// no line, so a run without the setting logs exactly as before.
+func resolveRunProgressVerbosity(rc runConfig, absFullsendDir, eventFile string) (level, rule string) {
+	source, how, err := artifactRunSource(absFullsendDir, eventFile)
+	if err != nil {
+		return config.ProgressVerbosityQuiet, "Progress log: quiet (the run source could not be read)"
+	}
+	level, err = config.ResolveProgressVerbosity(rc.perRepo, source)
+	if err != nil {
+		return config.ProgressVerbosityQuiet, "Progress log: quiet (the progress setting could not be resolved: " +
+			agentruntime.SanitizeOutput(err.Error()) + ")"
+	}
+	if level == config.ProgressVerbosityFull {
+		return level, ""
+	}
+	if source != "" {
+		return level, fmt.Sprintf("Progress log: %s (run source %q %s)", level, agentruntime.SanitizeOutput(source), how)
+	}
+	return level, fmt.Sprintf("Progress log: %s (run source unknown: %s)", level, how)
 }
 
 // stripOIDCEnv returns a copy of env with OIDC credential entries and
