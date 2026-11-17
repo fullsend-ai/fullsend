@@ -3544,6 +3544,7 @@ func (c *LiveClient) GetLatestWorkflowRun(ctx context.Context, owner, repo, work
 			RunAttempt int    `json:"run_attempt"`
 			Name       string `json:"name"`
 			Event      string `json:"event"`
+			HeadBranch string `json:"head_branch"`
 			Status     string `json:"status"`
 			Conclusion string `json:"conclusion"`
 			HTMLURL    string `json:"html_url"`
@@ -3564,6 +3565,7 @@ func (c *LiveClient) GetLatestWorkflowRun(ctx context.Context, owner, repo, work
 		RunAttempt: run.RunAttempt,
 		Name:       run.Name,
 		Event:      run.Event,
+		HeadBranch: run.HeadBranch,
 		Status:     run.Status,
 		Conclusion: run.Conclusion,
 		HTMLURL:    run.HTMLURL,
@@ -3583,6 +3585,7 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 		RunAttempt int    `json:"run_attempt"`
 		Name       string `json:"name"`
 		Event      string `json:"event"`
+		HeadBranch string `json:"head_branch"`
 		Status     string `json:"status"`
 		Conclusion string `json:"conclusion"`
 		HTMLURL    string `json:"html_url"`
@@ -3597,6 +3600,7 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 		RunAttempt: run.RunAttempt,
 		Name:       run.Name,
 		Event:      run.Event,
+		HeadBranch: run.HeadBranch,
 		Status:     run.Status,
 		Conclusion: run.Conclusion,
 		HTMLURL:    run.HTMLURL,
@@ -4868,6 +4872,7 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 			RunAttempt int    `json:"run_attempt"`
 			Name       string `json:"name"`
 			Event      string `json:"event"`
+			HeadBranch string `json:"head_branch"`
 			Status     string `json:"status"`
 			Conclusion string `json:"conclusion"`
 			HTMLURL    string `json:"html_url"`
@@ -4884,6 +4889,7 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 			RunAttempt: r.RunAttempt,
 			Name:       r.Name,
 			Event:      r.Event,
+			HeadBranch: r.HeadBranch,
 			Status:     r.Status,
 			Conclusion: r.Conclusion,
 			HTMLURL:    r.HTMLURL,
@@ -4913,6 +4919,7 @@ func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, wor
 				RunAttempt int    `json:"run_attempt"`
 				Name       string `json:"name"`
 				Event      string `json:"event"`
+				HeadBranch string `json:"head_branch"`
 				Status     string `json:"status"`
 				Conclusion string `json:"conclusion"`
 				HTMLURL    string `json:"html_url"`
@@ -4938,6 +4945,7 @@ func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, wor
 				RunAttempt: r.RunAttempt,
 				Name:       r.Name,
 				Event:      r.Event,
+				HeadBranch: r.HeadBranch,
 				Status:     r.Status,
 				Conclusion: r.Conclusion,
 				HTMLURL:    r.HTMLURL,
@@ -4973,6 +4981,7 @@ func (c *LiveClient) ListWorkflowRunsByStatus(ctx context.Context, owner, repo, 
 				RunAttempt int    `json:"run_attempt"`
 				Name       string `json:"name"`
 				Event      string `json:"event"`
+				HeadBranch string `json:"head_branch"`
 				Status     string `json:"status"`
 				Conclusion string `json:"conclusion"`
 				HTMLURL    string `json:"html_url"`
@@ -4994,6 +5003,7 @@ func (c *LiveClient) ListWorkflowRunsByStatus(ctx context.Context, owner, repo, 
 				RunAttempt: r.RunAttempt,
 				Name:       r.Name,
 				Event:      r.Event,
+				HeadBranch: r.HeadBranch,
 				Status:     r.Status,
 				Conclusion: r.Conclusion,
 				HTMLURL:    r.HTMLURL,
@@ -5021,6 +5031,7 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 			RunAttempt int    `json:"run_attempt"`
 			Name       string `json:"name"`
 			Event      string `json:"event"`
+			HeadBranch string `json:"head_branch"`
 			Status     string `json:"status"`
 			Conclusion string `json:"conclusion"`
 			HTMLURL    string `json:"html_url"`
@@ -5038,6 +5049,7 @@ func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo str
 			RunAttempt: r.RunAttempt,
 			Name:       r.Name,
 			Event:      r.Event,
+			HeadBranch: r.HeadBranch,
 			Status:     r.Status,
 			Conclusion: r.Conclusion,
 			HTMLURL:    r.HTMLURL,

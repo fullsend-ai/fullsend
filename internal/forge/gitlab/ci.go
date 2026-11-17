@@ -737,6 +737,7 @@ func pipelineToWorkflowRun(p glPipeline) forge.WorkflowRun {
 		ID:         int(p.ID),
 		Name:       p.Ref,
 		Event:      p.Source,
+		HeadBranch: p.Ref,
 		Status:     status,
 		Conclusion: conclusion,
 		HTMLURL:    p.WebURL,

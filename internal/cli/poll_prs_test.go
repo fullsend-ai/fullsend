@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/prpoll"
 )
 
 const enabledPRPollConfig = "fork_pr_review_poll:\n  enabled: true\n"
@@ -53,6 +55,7 @@ func runPRPoll(t *testing.T, configBody string, flags prPollFlags) (string, stri
 	}
 	var stderr strings.Builder
 	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
 	cmd.SetErr(&stderr)
 	err := runGitHubPRPoll(cmd, flags)
 	data, _ := os.ReadFile(flags.outputPath)
@@ -160,6 +163,8 @@ func TestRunGitHubPRPoll_DispatchesThroughCommand(t *testing.T) {
 				"base":{"ref":"main","sha":"b","repo":{"full_name":"o/r"}}}]`))
 		case r.URL.Path == "/repos/o/r/collaborators/alice/permission":
 			_, _ = w.Write([]byte(`{"permission":"read","role_name":"read"}`))
+		case r.URL.Path == "/repos/o/r":
+			_, _ = w.Write([]byte(`{"full_name":"o/r","default_branch":"main"}`))
 		case strings.HasSuffix(r.URL.Path, "/runs"):
 			_, _ = w.Write([]byte(`{"workflow_runs":[]}`))
 		default:
@@ -196,6 +201,139 @@ func TestRunGitHubPRPoll_DispatchesThroughCommand(t *testing.T) {
 	assert.Equal(t, "3", refs[0].StatusNumber)
 	assert.Contains(t, stderr.String(), "PR #3 head 0123456: dispatch")
 	assert.Contains(t, stderr.String(), "GitHub API calls")
+	assert.Contains(t, stderr.String(), "warning: no --state-file")
+}
+
+// prPollServer serves one dispatchable fork PR by a write collaborator and
+// counts repository lookups.
+func prPollServer(t *testing.T, repoLookups *int) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos/o/r/pulls":
+			_, _ = w.Write([]byte(`[{"number":3,"html_url":"https://github.com/o/r/pull/3","updated_at":"2026-11-17T19:00:00Z",
+				"user":{"login":"alice","type":"User"},
+				"head":{"ref":"f","sha":"0123456789abcdef0123456789abcdef01234567","repo":{"full_name":"alice/r","owner":{"login":"alice"}}},
+				"base":{"ref":"main","sha":"b","repo":{"full_name":"o/r"}}}]`))
+		case r.URL.Path == "/repos/o/r/collaborators/alice/permission":
+			_, _ = w.Write([]byte(`{"permission":"write","role_name":"write"}`))
+		case r.URL.Path == "/repos/o/r":
+			*repoLookups++
+			_, _ = w.Write([]byte(`{"full_name":"o/r","default_branch":"main"}`))
+		case strings.HasSuffix(r.URL.Path, "/runs"):
+			_, _ = w.Write([]byte(`{"workflow_runs":[]}`))
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestRunGitHubPRPoll_StateFile(t *testing.T) {
+	prPollTestEnv(t)
+	t.Setenv("GITHUB_TOKEN", "tok")
+	t.Setenv(forge.VarReviewClientID, "Iv1.review")
+	repoLookups := 0
+	srv := prPollServer(t, &repoLookups)
+	newPRPollClient = func(token string) prPollClient { return gh.New(token).WithBaseURL(srv.URL) }
+
+	fullsendDir := writeJiraPollConfig(t, "fork_pr_review_poll:\n  enabled: true\n  max_attempts_per_head: 1\n")
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	marker := statePath + prPollStateChangedSuffix
+	pollOnce := func() string {
+		t.Helper()
+		out := filepath.Join(t.TempDir(), "dispatches.json")
+		cmd := newPollCmd()
+		var stderr strings.Builder
+		cmd.SetErr(&stderr)
+		cmd.SetArgs([]string{"--input-driver", prPollInputDriver, "--target-repo", "o/r", "--fullsend-dir", fullsendDir,
+			"--output", out, "--since", "2026-11-17T18:00:00Z", "--state-file", statePath, "--default-branch", "main"})
+		require.NoError(t, cmd.Execute(), stderr.String())
+		return stderr.String()
+	}
+
+	// Cycle 1 dispatches and records the dispatch.
+	log := pollOnce()
+	assert.Contains(t, log, "PR #3 head 0123456: dispatch")
+	assert.Contains(t, log, "state: changed (1 heads)")
+	assert.FileExists(t, marker)
+	data, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"3:0123456789abcdef0123456789abcdef01234567":{"dispatches":1,"status":""`)
+
+	// Cycle 2 finds the attempt limit reached and records the head as
+	// exhausted.
+	log = pollOnce()
+	assert.Contains(t, log, "skip: attempts exhausted (1 dispatches)")
+	assert.Contains(t, log, "state: changed")
+	data, err = os.ReadFile(statePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"status":"exhausted"`)
+
+	// Cycle 3 skips the head from the state: nothing changes, and the
+	// marker of the last cycle is removed.
+	log = pollOnce()
+	assert.Contains(t, log, "skip: attempts exhausted (cached, 1 dispatches)")
+	assert.Contains(t, log, "1 heads skipped from cache")
+	assert.Contains(t, log, "state: unchanged")
+	assert.NoFileExists(t, marker)
+	assert.Zero(t, repoLookups, "--default-branch is used")
+}
+
+func TestRunGitHubPRPoll_DefaultBranchFromRepository(t *testing.T) {
+	prPollTestEnv(t)
+	t.Setenv("GITHUB_TOKEN", "tok")
+	t.Setenv(forge.VarReviewClientID, "Iv1.review")
+	repoLookups := 0
+	srv := prPollServer(t, &repoLookups)
+	newPRPollClient = func(token string) prPollClient { return gh.New(token).WithBaseURL(srv.URL) }
+	_, stderr, err := runPRPoll(t, enabledPRPollConfig, prPollFlags{since: "2026-11-17T18:00:00Z"})
+	require.NoError(t, err, stderr)
+	assert.Equal(t, 1, repoLookups)
+}
+
+func TestRunGitHubPRPoll_StateErrors(t *testing.T) {
+	t.Run("corrupt state file is a warning", func(t *testing.T) {
+		prPollTestEnv(t)
+		t.Setenv("GITHUB_TOKEN", "tok")
+		t.Setenv(forge.VarReviewClientID, "Iv1.review")
+		repoLookups := 0
+		srv := prPollServer(t, &repoLookups)
+		newPRPollClient = func(token string) prPollClient { return gh.New(token).WithBaseURL(srv.URL) }
+		statePath := filepath.Join(t.TempDir(), "state.json")
+		require.NoError(t, os.WriteFile(statePath, []byte("{garbage"), 0o600))
+		out, stderr, err := runPRPoll(t, enabledPRPollConfig, prPollFlags{since: "2026-11-17T18:00:00Z", stateFile: statePath, defaultBranch: "main"})
+		require.NoError(t, err)
+		assert.Contains(t, out, `"agent": "review"`)
+		assert.Contains(t, stderr, "is unusable (invalid JSON")
+		assert.Contains(t, stderr, "state: changed")
+	})
+	t.Run("stale marker that cannot be removed", func(t *testing.T) {
+		prPollTestEnv(t)
+		statePath := filepath.Join(t.TempDir(), "state.json")
+		// A non-empty directory at the marker path cannot be removed.
+		require.NoError(t, os.MkdirAll(filepath.Join(statePath+prPollStateChangedSuffix, "x"), 0o700))
+		_, _, err := runPRPoll(t, "", prPollFlags{stateFile: statePath})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "remove poll state marker")
+	})
+	t.Run("unwritable state", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "missing", "state.json")
+		state := prpoll.NewState()
+		var log strings.Builder
+		require.NoError(t, savePRPollState(path, state, &log))
+		assert.Equal(t, "state: unchanged\n", log.String())
+
+		corrupt := filepath.Join(t.TempDir(), "corrupt.json")
+		require.NoError(t, os.WriteFile(corrupt, []byte("x"), 0o600))
+		state = prpoll.LoadState(corrupt, nil)
+		require.True(t, state.Changed())
+		err := savePRPollState(path, state, &log)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "write poll state")
+	})
 }
 
 func TestReviewBotLogins(t *testing.T) {

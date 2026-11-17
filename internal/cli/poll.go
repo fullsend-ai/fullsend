@@ -39,6 +39,9 @@ func newPollCmd() *cobra.Command {
 		modeFlag    string
 		sinceFlag   string
 
+		prPollStateFile     string
+		prPollDefaultBranch string
+
 		printDispatchRoutes bool
 	)
 
@@ -77,10 +80,12 @@ func newPollCmd() *cobra.Command {
 
 			if inputDriver == prPollInputDriver {
 				return runGitHubPRPoll(cmd, prPollFlags{
-					targetRepo:  targetRepo,
-					outputPath:  outputPath,
-					fullsendDir: fullsendDir,
-					since:       sinceFlag,
+					targetRepo:    targetRepo,
+					outputPath:    outputPath,
+					fullsendDir:   fullsendDir,
+					since:         sinceFlag,
+					stateFile:     prPollStateFile,
+					defaultBranch: prPollDefaultBranch,
 				})
 			}
 
@@ -185,6 +190,8 @@ func newPollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub owner/repo slug where agents run, without '..' (default: $GITHUB_REPOSITORY; github-pr-poll, and jira-poll with --target-forge github)")
 	cmd.Flags().StringVar(&targetForge, "target-forge", jirapoll.TargetForgeGitHub, "Forge the jira-poll driver dispatches agents to: 'github' (write --output for reusable-dispatch.yml) or 'gitlab' (start the project's protected agent pipelines; uses --project and --gitlab-url)")
 	cmd.Flags().StringVar(&sinceFlag, "since", "", "RFC 3339 time the fork PR review poll was enabled; PRs last updated before it are skipped (github-pr-poll only; required)")
+	cmd.Flags().StringVar(&prPollStateFile, "state-file", "", "JSON file of per-head dispatch state kept across fork PR review poll cycles; read if present, rewritten only when the state changed, with a sibling <file>.changed marker (github-pr-poll only)")
+	cmd.Flags().StringVar(&prPollDefaultBranch, "default-branch", "", "Repository default branch; only poll workflow runs on it are read (default: read from the repository; github-pr-poll only)")
 	cmd.Flags().StringVar(&modeFlag, "mode", "", "Poll mode: 'slash' (slash commands only) or 'events' (labels, merges, non-slash notes)")
 	cmd.MarkFlagsOneRequired("forge", "input-driver")
 

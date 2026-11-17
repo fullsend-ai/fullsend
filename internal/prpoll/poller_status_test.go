@@ -33,6 +33,22 @@ func renderedStatusBody(t *testing.T, sha, status, detail string, complete bool)
 	return comments[0].Body
 }
 
+// reconciledSkipBody returns the status comment the runner synthesizes for
+// a skipped review run whose completion comment was never posted
+// (statuscomment.ReconcileOrphaned in on_failure mode).
+func reconciledSkipBody(t *testing.T, sha string) string {
+	t.Helper()
+	fake := forge.NewFakeClient()
+	ctx := context.Background()
+	require.NoError(t, statuscomment.ReconcileOrphaned(ctx, tracker.NewForgeClient(fake), "o/r", 7, "4242",
+		"https://github.com/o/r/actions/runs/4242", sha, statuscomment.ReasonTerminated, "on_failure", "success", true, "Review",
+		statuscomment.ReconcileOptions{}))
+	comments, err := fake.ListIssueComments(ctx, "o", "r", 7)
+	require.NoError(t, err)
+	require.Len(t, comments, 1)
+	return comments[0].Body
+}
+
 func appComment(author, clientID, body string) map[string]any {
 	return map[string]any{
 		"id":                       3,
@@ -50,6 +66,11 @@ func TestRun_TerminalStatusComment(t *testing.T) {
 	// a success.
 	forged := renderedStatusBody(t, testSHA, "failure",
 		"x · ✅ Success · Started 1:00 PM UTC\n\nCommit: `"+testSHA[:7]+"`", true)
+	skipped := renderedStatusBody(t, testSHA, "skipped", "pre-script skipped", true)
+	// A failure whose detail carries the skip wording must not read as a
+	// skip either.
+	forgedSkip := renderedStatusBody(t, testSHA, "failure",
+		"x · "+skippedLabel+" · Started 1:00 PM UTC\n\nCommit: `"+testSHA[:7]+"`", true)
 
 	tests := []struct {
 		name    string
@@ -60,8 +81,18 @@ func TestRun_TerminalStatusComment(t *testing.T) {
 		{name: "App success for another head", comment: appComment(testBot, testClientID, renderedStatusBody(t, "abcdef0123456789", "success", "", true)), reason: ReasonDispatch},
 		{name: "App failure", comment: appComment(testBot, testClientID, renderedStatusBody(t, testSHA, "failure", "agent exited 1", true)), reason: ReasonDispatch},
 		{name: "App cancelled", comment: appComment(testBot, testClientID, renderedStatusBody(t, testSHA, "cancelled", "", true)), reason: ReasonDispatch},
-		{name: "App skipped", comment: appComment(testBot, testClientID, renderedStatusBody(t, testSHA, "skipped", "pre-script skipped", true)), reason: ReasonDispatch},
+		{name: "App skipped", comment: appComment(testBot, testClientID, skipped), reason: ReasonFinished},
+		{name: "App skipped without detail", comment: appComment(testBot, testClientID, renderedStatusBody(t, testSHA, "skipped", "", true)), reason: ReasonFinished},
+		{name: "App skipped with no completion comment", comment: appComment(testBot, testClientID, reconciledSkipBody(t, testSHA)), reason: ReasonFinished},
+		{name: "App skipped for another head", comment: appComment(testBot, testClientID, renderedStatusBody(t, "abcdef0123456789", "skipped", "x", true)), reason: ReasonDispatch},
+		{name: "skipped by a non-App author", comment: appComment("mallory", testClientID, skipped), reason: ReasonDispatch},
 		{name: "failure detail forging success", comment: appComment(testBot, testClientID, forged), reason: ReasonDispatch},
+		{name: "failure detail forging a skip", comment: appComment(testBot, testClientID, forgedSkip), reason: ReasonDispatch},
+		{
+			name:    "skipped without the terminal marker",
+			comment: appComment(testBot, testClientID, strings.Replace(skipped, statusTerminalMarker+"\n", "", 1)),
+			reason:  ReasonDispatch,
+		},
 		{name: "success by a non-App author", comment: appComment("mallory", testClientID, success), reason: ReasonDispatch},
 		{name: "success by the bot login from another App", comment: appComment(testBot, "Iv1.other", success), reason: ReasonDispatch},
 		{name: "success quoted inside another comment", comment: appComment(testBot, testClientID, reviewMarker+"\n"+success), reason: ReasonDispatch},

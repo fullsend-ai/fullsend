@@ -2,7 +2,10 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,13 +43,27 @@ type prPollFlags struct {
 	outputPath  string
 	fullsendDir string
 	since       string
+	// stateFile is the JSON file of per-head state kept across cycles;
+	// empty keeps no state.
+	stateFile string
+	// defaultBranch is the repository's default branch; empty reads it
+	// from the repository.
+	defaultBranch string
 }
+
+// prPollStateChangedSuffix names the marker file written next to the
+// state file when a cycle changed the state, so the workflow saves it.
+const prPollStateChangedSuffix = ".changed"
 
 // runGitHubPRPoll is the github-pr-poll input driver: one fork PR review
 // poll cycle that writes the review dispatches as a JSON array to
 // --output, for reusable-dispatch.yml. When the poll is disabled, the kill
 // switch is on or the review agent is disabled, it writes [] without
 // contacting GitHub. The job holds a read-only GITHUB_TOKEN.
+//
+// With --state-file it reads the per-head state before the cycle and, when
+// the cycle changed it, writes it back and creates <state-file>.changed;
+// it logs "state: changed" or "state: unchanged".
 func runGitHubPRPoll(cmd *cobra.Command, flags prPollFlags) error {
 	targetRepo := flags.targetRepo
 	if targetRepo == "" {
@@ -61,6 +78,12 @@ func runGitHubPRPoll(cmd *cobra.Command, flags prPollFlags) error {
 	}
 	if flags.outputPath == "" {
 		return fmt.Errorf("--output is required for --input-driver %s", prPollInputDriver)
+	}
+	if flags.stateFile != "" {
+		// A stale marker would make the workflow save an unchanged state.
+		if err := os.Remove(flags.stateFile + prPollStateChangedSuffix); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove poll state marker: %w", err)
+		}
 	}
 
 	cfg, err := config.LoadConfig(flags.fullsendDir, config.LoadOpts{MissingOK: true})
@@ -116,6 +139,7 @@ func runGitHubPRPoll(cmd *cobra.Command, flags prPollFlags) error {
 		Since:             since,
 		MaxStarts:         pollCfg.EffectiveMaxStartsPerCycle(),
 		MaxAttempts:       pollCfg.EffectiveMaxAttemptsPerHead(),
+		DefaultBranch:     flags.defaultBranch,
 		ReviewBotLogins:   reviewBotLogins(owner, os.Getenv(forge.VarAppSet)),
 		ReviewAppClientID: reviewClientID,
 		Log:               stderr,
@@ -128,12 +152,40 @@ func runGitHubPRPoll(cmd *cobra.Command, flags prPollFlags) error {
 		},
 	}
 	opts.Authorize = prPollAuthorizer(flags.fullsendDir, cfg)
+	if flags.stateFile != "" {
+		opts.State = prpoll.LoadState(flags.stateFile, stderr)
+	} else {
+		fmt.Fprintln(stderr, "warning: no --state-file; dispatch counts are not kept across poll cycles")
+	}
 
 	refs, err := prpoll.New(client, opts).Run(cmd.Context())
 	if err != nil {
 		return err
 	}
-	return writePRPollDispatches(flags.outputPath, refs)
+	if err := writePRPollDispatches(flags.outputPath, refs); err != nil {
+		return err
+	}
+	if flags.stateFile == "" {
+		return nil
+	}
+	return savePRPollState(flags.stateFile, opts.State, stderr)
+}
+
+// savePRPollState writes state to path and the <path>.changed marker when
+// the cycle changed it, and logs "state: changed" or "state: unchanged".
+func savePRPollState(path string, state *prpoll.State, log io.Writer) error {
+	if !state.Changed() {
+		fmt.Fprintln(log, "state: unchanged")
+		return nil
+	}
+	if err := state.Save(path); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path+prPollStateChangedSuffix, []byte("changed\n"), 0o644); err != nil {
+		return fmt.Errorf("write poll state marker: %w", err)
+	}
+	fmt.Fprintf(log, "state: changed (%d heads)\n", len(state.Heads))
+	return nil
 }
 
 // reviewBotLogins returns the logins of fullsend's review App for a

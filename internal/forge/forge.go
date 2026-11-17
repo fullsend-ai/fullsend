@@ -632,6 +632,10 @@ type WorkflowRun struct {
 	RunAttempt int // Attempt number for a rerunnable execution; zero when unavailable.
 	Name       string
 	Event      string // GitHub trigger event, e.g. "issues", "issue_comment"
+	// HeadBranch is the branch the run's workflow file was read from: on
+	// GitHub the run's head_branch (for a fork pull_request run, the fork's
+	// branch), on GitLab the pipeline ref. Empty when unavailable.
+	HeadBranch string
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string

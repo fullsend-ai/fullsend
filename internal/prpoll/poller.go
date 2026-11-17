@@ -9,8 +9,14 @@
 // head commit that fullsend's review App has neither finished nor started,
 // within per-cycle and per-head bounds. Decisions
 // come only from records the review App writes (formal reviews, its sticky
-// comment and status comments) and from the poll workflow's own jobs, never
-// from comment text anyone can post.
+// comment and status comments), from the jobs of the poll workflow's own
+// schedule and workflow_dispatch runs on the default branch, and from the
+// poll's State, never from comment text anyone can post.
+//
+// The State carries per-head dispatch counts and finished or exhausted
+// heads across cycles. It bounds every head to MaxAttempts dispatches,
+// even when a review ends without a record the poll can read, and lets a
+// cycle skip finished or exhausted heads without any API call.
 package prpoll
 
 import (
@@ -39,14 +45,15 @@ const (
 	// dispatch job for one pull request number and head SHA. That job
 	// calls reusable-dispatch.yml, so Actions names the called jobs
 	// "<dispatch job> / <called job>", for example
-	// "Review (#7@<sha>) / Route" and "Review (#7@<sha>) / Review". The
-	// poll reads them back to tell running, finished and failed attempts
-	// apart; the workflow must render the same name (see ReviewJobName).
+	// "Review (#7@<sha>) / Route" and "Review (#7@<sha>) / Review"; before
+	// the called workflow expands, the job is listed under the bare
+	// dispatch job name. The poll reads them back to tell running and
+	// finished reviews apart; the workflow must render the same name (see
+	// ReviewJobName).
 	ReviewJobNameFormat = "Review (#%d@%s)"
 
-	// routeJob and reviewJob are the names of reusable-dispatch.yml's
-	// route job and of the built-in review job it runs.
-	routeJob  = "Route"
+	// reviewJob is the name of the built-in review job reusable-dispatch.yml
+	// runs.
 	reviewJob = "Review"
 
 	// TriggerSource is the trigger_source of every dispatch the poll
@@ -105,27 +112,34 @@ var (
 		regexp.QuoteMeta(statusTerminalMarker) + "\n" +
 		"🤖 Finished [^·\n]+ · ✅ Success · Started [^\n]*\n\n" +
 		"Commit: `([0-9a-f]{7,64})`")
+	// statusSkippedRe matches the GitHub body of a status comment whose run
+	// ended skipped, in the two forms statuscomment renders, with the same
+	// anchoring as statusSuccessRe: buildCompletionBody's "Finished
+	// <description> · ⏭ Skipped[ (<detail>)] · Started" line, and
+	// buildInterruptedBody's "<heading> · ⏭ Skipped (no completion
+	// comment)" line. A detail is sanitized to one line, so it cannot
+	// supply the Commit line that follows. Group 1 is the short commit SHA.
+	statusSkippedRe = regexp.MustCompile("\\A<!-- fullsend:agent-status:[0-9]+ -->\n" +
+		regexp.QuoteMeta(statusTerminalMarker) + "\n" +
+		"🤖 (?:Finished [^·\n]+ · " + skippedLabel + "(?: \\([^\n]*\\))? · Started|[^·\n]+ · " + skippedLabel + " \\(no completion comment\\) ·) [^\n]*\n\n" +
+		"Commit: `([0-9a-f]{7,64})`")
 )
 
 // statusTerminalMarker is the marker statuscomment writes on a status
 // comment once its run has finished.
 const statusTerminalMarker = "<!-- fullsend:status:terminal -->"
 
-// failedRunLookback bounds the completed (failed or cancelled) poll
-// workflow runs whose jobs loadJobs lists: only runs created in the last
-// failedRunLookback, or since Since when that is later. Without it the
-// listing grows with every failed run since the poll was enabled. A failed
-// review job older than the window no longer counts against
-// MaxAttempts, so a head whose attempts ran out is retried at most once
-// per window.
-const failedRunLookback = 72 * time.Hour
+// skippedLabel is statuscomment's skipped status label: the ⏭ emoji with
+// its emoji variation selector (U+FE0F), then "Skipped".
+const skippedLabel = "\u23ed\ufe0f Skipped"
 
 // runningStatuses are the workflow run statuses whose jobs may still run.
 var runningStatuses = []string{"queued", "in_progress", "waiting", "requested", "pending"}
 
-// failedConclusions are the run conclusions that can contain a review job
-// that did not succeed. A successful run has no failed job.
-var failedConclusions = []string{"failure", "cancelled", "timed_out", "startup_failure"}
+// pollRunEvents are the events of the poll workflow runs whose jobs the
+// poll reads. A pull_request run executes the workflow file of the PR's
+// head, so a fork could fake review jobs in it.
+var pollRunEvents = map[string]bool{"schedule": true, "workflow_dispatch": true}
 
 // ReviewJobName returns the review job name for pull request number and
 // head SHA sha.
@@ -142,6 +156,7 @@ type Client interface {
 	ListWorkflowRunsByStatus(ctx context.Context, owner, repo, workflowFile, status string, createdSince time.Time) ([]forge.WorkflowRun, error)
 	ListWorkflowRunJobs(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowJob, error)
 	GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*forge.WorkflowRun, error)
+	GetRepo(ctx context.Context, owner, repo string) (*forge.Repository, error)
 }
 
 // Options configure one poll cycle.
@@ -153,8 +168,16 @@ type Options struct {
 	Since time.Time
 	// MaxStarts caps the dispatches of one cycle.
 	MaxStarts int
-	// MaxAttempts caps the failed review jobs for one head commit.
+	// MaxAttempts caps the review dispatches the poll emits for one head
+	// commit, as counted in State.
 	MaxAttempts int
+	// DefaultBranch is the repository's default branch: only poll
+	// workflow runs on it are read. Empty reads it from the repository;
+	// when that fails Run fails, with no dispatches.
+	DefaultBranch string
+	// State is the per-head state across cycles. Run updates it in place;
+	// nil uses an empty state that is discarded after the cycle.
+	State *State
 	// ReviewBotLogins are the logins of fullsend's review App.
 	ReviewBotLogins []string
 	// ReviewAppClientID is the client ID of fullsend's review App. It is
@@ -175,22 +198,32 @@ type Options struct {
 	APICalls func() int64
 }
 
-// runJob is a poll workflow job with the ID of the run that holds it.
-type runJob struct {
-	forge.WorkflowJob
-	runID int
-}
-
 // Poller runs fork PR review poll cycles.
 type Poller struct {
 	client Client
 	opts   Options
 
+	state *State
+	// now is the time of the cycle, used for state entries.
+	now time.Time
+
 	runsLoaded bool
-	jobs       []runJob
+	jobs       []forge.WorkflowJob
 	// comments are the issue comments of the pull request being
-	// evaluated, listed by finished and reused by statusCommentRunning.
+	// evaluated, listed once and read by statusCommentRunning and
+	// finished.
 	comments []forge.IssueComment
+	// perms caches collaborator permission lookups by lowercased login
+	// for the cycle.
+	perms map[string]permLookup
+	// cacheSkips counts the heads skipped from State without API calls.
+	cacheSkips int
+}
+
+// permLookup is the result of one collaborator permission lookup.
+type permLookup struct {
+	perm string
+	err  error
 }
 
 // New returns a Poller over client.
@@ -201,8 +234,17 @@ func New(client Client, opts Options) *Poller {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Poller{client: client, opts: opts}
+	state := opts.State
+	if state == nil {
+		state = NewState()
+	}
+	return &Poller{client: client, opts: opts, state: state, perms: map[string]permLookup{}}
 }
+
+// ErrNoDefaultBranch reports that the repository's default branch is not
+// known, so the poll cannot tell its own runs from runs a pull request
+// could fake.
+var ErrNoDefaultBranch = errors.New("the repository's default branch is unknown; the poll cannot tell its own runs from pull request runs, so it starts no review")
 
 // decision is the outcome for one pull request.
 type decision struct {
@@ -215,17 +257,31 @@ type decision struct {
 var ErrNoReviewAppClientID = errors.New("the review App client ID (FULLSEND_REVIEW_CLIENT_ID) is not set; the poll cannot verify which comments the review App wrote, so it starts no review")
 
 // Run executes one poll cycle and returns the dispatches to start, oldest
-// updated_at first. It fails, with no dispatches, when the review App
-// client ID is not set.
+// updated_at first, and records them in the state. It fails, with no
+// dispatches, when the review App client ID is not set or the default
+// branch is unknown.
 func (p *Poller) Run(ctx context.Context) ([]harnessdispatch.ExecutionRef, error) {
 	if p.opts.ReviewAppClientID == "" {
 		return nil, ErrNoReviewAppClientID
 	}
 	start := p.opts.Now()
+	p.now = start
 	var callsBefore int64
 	if p.opts.APICalls != nil {
 		callsBefore = p.opts.APICalls()
 	}
+
+	if p.opts.DefaultBranch == "" {
+		info, err := p.client.GetRepo(ctx, p.opts.Owner, p.opts.Repo)
+		if err != nil {
+			return nil, fmt.Errorf("%w: get repository: %w", ErrNoDefaultBranch, err)
+		}
+		if info == nil || info.DefaultBranch == "" {
+			return nil, ErrNoDefaultBranch
+		}
+		p.opts.DefaultBranch = info.DefaultBranch
+	}
+	p.state.Prune(start)
 
 	prs, err := p.client.ListRepoPullRequests(ctx, p.opts.Owner, p.opts.Repo)
 	if err != nil {
@@ -259,6 +315,14 @@ func (p *Poller) Run(ctx context.Context) ([]harnessdispatch.ExecutionRef, error
 		}
 		refs = append(refs, ref)
 	}
+	// Count the dispatches only once every ref is built, so an error above
+	// records none.
+	for _, idx := range candidates {
+		if d := decisions[idx]; d.reason == ReasonDispatch {
+			p.state.recordDispatch(headKey(d.pr.Number, d.pr.HeadSHA), start)
+		}
+	}
+	p.state.Prune(start)
 
 	for _, d := range decisions {
 		line := fmt.Sprintf("PR #%d head %s: %s", d.pr.Number, shortSHA(d.pr.HeadSHA), d.reason)
@@ -267,7 +331,7 @@ func (p *Poller) Run(ctx context.Context) ([]harnessdispatch.ExecutionRef, error
 		}
 		fmt.Fprintln(p.opts.Log, line)
 	}
-	summary := fmt.Sprintf("fork PR review poll: %d open PRs, %d dispatched", len(prs), len(refs))
+	summary := fmt.Sprintf("fork PR review poll: %d open PRs, %d dispatched, %d heads skipped from cache", len(prs), len(refs), p.cacheSkips)
 	if p.opts.APICalls != nil {
 		summary += fmt.Sprintf(", %d GitHub API calls", p.opts.APICalls()-callsBefore)
 	}
@@ -277,7 +341,9 @@ func (p *Poller) Run(ctx context.Context) ([]harnessdispatch.ExecutionRef, error
 }
 
 // evaluate returns the decision reason for one pull request and an
-// optional detail. Cheap checks on the listing run before any API call.
+// optional detail. Cheap checks on the listing and the state run before
+// any API call; then authorization, the running check, the finished check
+// and last the dispatch count.
 func (p *Poller) evaluate(ctx context.Context, pr forge.ChangeProposal) (string, string) {
 	if pr.HeadRepo != "" && strings.EqualFold(pr.HeadRepo, pr.BaseRepo) {
 		return ReasonSameRepo, ""
@@ -291,28 +357,56 @@ func (p *Poller) evaluate(ctx context.Context, pr forge.ChangeProposal) (string,
 	if t := updatedAt(pr); t.IsZero() || t.Before(p.opts.Since) {
 		return ReasonBeforeEnable, "updated_at " + pr.UpdatedAt
 	}
+	key := headKey(pr.Number, pr.HeadSHA)
+	if h := p.state.head(key); h != nil {
+		switch h.Status {
+		case HeadFinished:
+			p.cacheSkips++
+			return ReasonFinished, "cached"
+		case HeadExhausted:
+			p.cacheSkips++
+			return ReasonAttemptsExhausted, fmt.Sprintf("cached, %d dispatches", h.Dispatches)
+		}
+	}
 	if ok, detail := p.authorized(ctx, pr); !ok {
 		return ReasonDenied, detail
 	}
 
 	p.comments = nil
-	finished, err := p.finished(ctx, pr)
+	jobs, err := p.jobState(ctx, pr)
 	if err != nil {
 		return ReasonLookupFailed, err.Error()
 	}
+	if jobs == ReasonRunning {
+		return ReasonRunning, ""
+	}
+	comments, err := p.client.ListIssueComments(ctx, p.opts.Owner, p.opts.Repo, pr.Number)
+	if err != nil {
+		return ReasonLookupFailed, fmt.Errorf("list comments: %w", err).Error()
+	}
+	p.comments = comments
+	running, err := p.statusCommentRunning(ctx, pr)
+	if err != nil {
+		return ReasonLookupFailed, err.Error()
+	}
+	if running {
+		return ReasonRunning, ""
+	}
+
+	finished := jobs == ReasonFinished
+	if !finished {
+		if finished, err = p.finished(ctx, pr); err != nil {
+			return ReasonLookupFailed, err.Error()
+		}
+	}
 	if finished {
+		p.state.setStatus(key, HeadFinished, p.now)
 		return ReasonFinished, ""
 	}
 
-	state, attempts, err := p.jobState(ctx, pr)
-	if err != nil {
-		return ReasonLookupFailed, err.Error()
-	}
-	if state != "" {
-		return state, ""
-	}
-	if attempts >= p.opts.MaxAttempts {
-		return ReasonAttemptsExhausted, fmt.Sprintf("%d failed attempts", attempts)
+	if n := p.state.dispatches(key); n >= p.opts.MaxAttempts {
+		p.state.setStatus(key, HeadExhausted, p.now)
+		return ReasonAttemptsExhausted, fmt.Sprintf("%d dispatches", n)
 	}
 	return ReasonDispatch, ""
 }
@@ -320,10 +414,10 @@ func (p *Poller) evaluate(ctx context.Context, pr forge.ChangeProposal) (string,
 // authorized asks the dispatch core whether pr's author may request a
 // review. It builds the event the GitHub event adapter builds for a
 // pull_request (see harnessdispatch/input/ghaevent.go): the actor is the
-// PR author as the API lists it, with the collaborator role read on every
-// cycle. A lookup that is not a 404 leaves the role unverified, which the
-// core denies; a bot author is decided by the core's bot rules (ADR
-// 0107). The detail names the role.
+// PR author as the API lists it, with the collaborator role read once per
+// author on every cycle. A lookup that is not a 404 leaves the role
+// unverified, which the core denies; a bot author is decided by the core's
+// bot rules (ADR 0107). The detail names the role.
 func (p *Poller) authorized(ctx context.Context, pr forge.ChangeProposal) (bool, string) {
 	kind := normevent.ActorHuman
 	if strings.EqualFold(pr.AuthorType, "Bot") || strings.HasSuffix(strings.ToLower(pr.Author), "[bot]") {
@@ -332,7 +426,12 @@ func (p *Poller) authorized(ctx context.Context, pr forge.ChangeProposal) (bool,
 	role := normevent.RoleNone
 	verified := true
 	detail := ""
-	perm, err := p.client.GetCollaboratorPermission(ctx, p.opts.Owner, p.opts.Repo, pr.Author)
+	lookup, ok := p.perms[strings.ToLower(pr.Author)]
+	if !ok {
+		lookup.perm, lookup.err = p.client.GetCollaboratorPermission(ctx, p.opts.Owner, p.opts.Repo, pr.Author)
+		p.perms[strings.ToLower(pr.Author)] = lookup
+	}
+	perm, err := lookup.perm, lookup.err
 	switch {
 	case err == nil:
 		role = normevent.MapGitHubPermission(perm)
@@ -400,11 +499,10 @@ func (p *Poller) isReviewAppComment(c forge.IssueComment) bool {
 // commit: a submitted formal review against it, an App-authored sticky
 // comment whose current section names it, an App-authored review-skip
 // note for it (the route found the diff unchanged since the last review),
-// or an App-authored status comment whose run finished with success for
-// it. The status comment covers a review that succeeded without leaving a
-// head-keyed review record (a failure notice, for one), whose run loadJobs
-// no longer lists once it completed successfully. A running review status
-// comment for the head commit is reported through jobState.
+// or an App-authored status comment whose run finished with success or
+// ended skipped for it. The status comment covers a review that ended
+// without leaving a head-keyed review record (a failure notice, or a
+// pre-script skip). It reads the comments evaluate listed.
 func (p *Poller) finished(ctx context.Context, pr forge.ChangeProposal) (bool, error) {
 	reviews, err := p.client.ListPullRequestReviews(ctx, p.opts.Owner, p.opts.Repo, pr.Number)
 	if err != nil {
@@ -415,12 +513,7 @@ func (p *Poller) finished(ctx context.Context, pr forge.ChangeProposal) (bool, e
 			return true, nil
 		}
 	}
-	comments, err := p.client.ListIssueComments(ctx, p.opts.Owner, p.opts.Repo, pr.Number)
-	if err != nil {
-		return false, fmt.Errorf("list comments: %w", err)
-	}
-	p.comments = comments
-	for _, c := range comments {
+	for _, c := range p.comments {
 		if !p.isReviewAppComment(c) || !strings.Contains(c.Body, reviewMarker) {
 			continue
 		}
@@ -429,7 +522,7 @@ func (p *Poller) finished(ctx context.Context, pr forge.ChangeProposal) (bool, e
 			return true, nil
 		}
 	}
-	for _, c := range comments {
+	for _, c := range p.comments {
 		if !p.isReviewAppComment(c) || !strings.Contains(c.Body, reviewSkipMarker) {
 			continue
 		}
@@ -439,79 +532,60 @@ func (p *Poller) finished(ctx context.Context, pr forge.ChangeProposal) (bool, e
 			}
 		}
 	}
-	for _, c := range comments {
+	for _, c := range p.comments {
 		if !p.isReviewAppComment(c) {
 			continue
 		}
-		if m := statusSuccessRe.FindStringSubmatch(c.Body); m != nil && shaMatches(pr.HeadSHA, m[1]) {
-			return true, nil
+		for _, re := range []*regexp.Regexp{statusSuccessRe, statusSkippedRe} {
+			if m := re.FindStringSubmatch(c.Body); m != nil && shaMatches(pr.HeadSHA, m[1]) {
+				return true, nil
+			}
 		}
 	}
 	return false, nil
 }
 
 // jobState returns ReasonRunning when a job of the PR head's dispatch is
-// running, ReasonFinished when its review job succeeded, or "" with the
-// number of failed attempts: the runs in which the dispatch's review or
-// route job completed without success, one per run.
-func (p *Poller) jobState(ctx context.Context, pr forge.ChangeProposal) (string, int, error) {
+// not completed in a poll workflow run that loadJobs lists, ReasonFinished
+// when its review job succeeded there, or "". A dispatch job is listed
+// under its bare name until the called workflow expands it, and as
+// "<name> / <called job>" after.
+func (p *Poller) jobState(ctx context.Context, pr forge.ChangeProposal) (string, error) {
 	if err := p.loadJobs(ctx); err != nil {
-		return "", 0, err
+		return "", err
 	}
-	prefix := ReviewJobName(pr.Number, pr.HeadSHA) + " / "
+	name := ReviewJobName(pr.Number, pr.HeadSHA)
+	prefix := name + " / "
 	finished := false
-	failedRuns := map[int]bool{}
 	for _, j := range p.jobs {
 		called, ok := strings.CutPrefix(j.Name, prefix)
-		if !ok {
+		if !ok && j.Name != name {
 			continue
 		}
 		if j.Status != "completed" {
-			return ReasonRunning, 0, nil
+			return ReasonRunning, nil
 		}
-		switch {
-		case called == reviewJob && j.Conclusion == "success":
+		if ok && called == reviewJob && j.Conclusion == "success" {
 			// A successful review job is a finished review even when its
 			// comment is not visible yet; starting another would review
 			// the same head twice.
 			finished = true
-		case (called == reviewJob || called == routeJob) && isFailedConclusion(j.Conclusion):
-			failedRuns[j.runID] = true
 		}
 	}
 	if finished {
-		return ReasonFinished, 0, nil
+		return ReasonFinished, nil
 	}
-
-	running, err := p.statusCommentRunning(ctx, pr)
-	if err != nil {
-		return "", 0, err
-	}
-	if running {
-		return ReasonRunning, 0, nil
-	}
-	return "", len(failedRuns), nil
-}
-
-// isFailedConclusion reports whether conclusion is one of
-// failedConclusions.
-func isFailedConclusion(conclusion string) bool {
-	for _, c := range failedConclusions {
-		if c == conclusion {
-			return true
-		}
-	}
-	return false
+	return "", nil
 }
 
 // statusCommentRunning reports whether an App-authored status comment for
-// the PR's head commit belongs to a run that is still in progress. It uses
-// the comments finished already listed. A run the forge reports as not
-// found (deleted, or older than the run retention) is not running; any
-// other lookup error fails closed.
+// the PR's head commit belongs to a run that is still in progress. A
+// terminal status comment's run has finished its review and is not read.
+// A run the forge reports as not found (deleted, or older than the run
+// retention) is not running; any other lookup error fails closed.
 func (p *Poller) statusCommentRunning(ctx context.Context, pr forge.ChangeProposal) (bool, error) {
 	for _, c := range p.comments {
-		if !p.isReviewAppComment(c) {
+		if !p.isReviewAppComment(c) || strings.Contains(c.Body, statusTerminalMarker) {
 			continue
 		}
 		m := statusMarkerRe.FindStringSubmatch(c.Body)
@@ -541,49 +615,34 @@ func (p *Poller) statusCommentRunning(ctx context.Context, pr forge.ChangePropos
 }
 
 // loadJobs lists, once per cycle, the jobs of the poll workflow's runs
-// that may hold a running or failed review job: runs still in progress
-// created since the poll was enabled, and completed runs that did not
-// succeed created within failedRunLookback (and since the poll was
-// enabled).
+// still in progress created since the poll was enabled. Only schedule and
+// workflow_dispatch runs on the default branch count: they run the
+// workflow file of the default branch, so a pull request cannot fake their
+// jobs.
 func (p *Poller) loadJobs(ctx context.Context) error {
 	if p.runsLoaded {
 		return nil
 	}
-	failedSince := p.opts.Now().Add(-failedRunLookback)
-	if p.opts.Since.After(failedSince) {
-		failedSince = p.opts.Since
-	}
-	type listing struct {
-		status string
-		since  time.Time
-	}
-	var listings []listing
-	for _, status := range runningStatuses {
-		listings = append(listings, listing{status, p.opts.Since})
-	}
-	for _, status := range failedConclusions {
-		listings = append(listings, listing{status, failedSince})
-	}
 	seen := map[int]bool{}
 	var runs []forge.WorkflowRun
-	for _, l := range listings {
-		status := l.status
-		list, err := p.client.ListWorkflowRunsByStatus(ctx, p.opts.Owner, p.opts.Repo, WorkflowFile, status, l.since)
+	for _, status := range runningStatuses {
+		list, err := p.client.ListWorkflowRunsByStatus(ctx, p.opts.Owner, p.opts.Repo, WorkflowFile, status, p.opts.Since)
 		if err != nil {
 			return fmt.Errorf("list %s poll workflow runs: %w", status, err)
 		}
 		for _, r := range list {
-			if !seen[r.ID] {
-				seen[r.ID] = true
-				runs = append(runs, r)
+			if seen[r.ID] || !pollRunEvents[r.Event] || r.HeadBranch != p.opts.DefaultBranch {
+				continue
 			}
+			seen[r.ID] = true
+			runs = append(runs, r)
 		}
 	}
-	var jobs []runJob
+	var jobs []forge.WorkflowJob
 	for _, r := range runs {
 		list, err := p.client.ListWorkflowRunJobs(ctx, p.opts.Owner, p.opts.Repo, r.ID)
 		if err != nil {
-			if r.Status != "completed" && errors.Is(err, forge.ErrJobsListingNotFoundFirstPage) {
+			if errors.Is(err, forge.ErrJobsListingNotFoundFirstPage) {
 				// A run that has not started may 404 its job listing; it
 				// has no review job yet.
 				continue
@@ -591,7 +650,7 @@ func (p *Poller) loadJobs(ctx context.Context) error {
 			return fmt.Errorf("list jobs of poll workflow run %d: %w", r.ID, err)
 		}
 		for _, j := range list {
-			jobs = append(jobs, runJob{WorkflowJob: j, runID: r.ID})
+			jobs = append(jobs, j)
 		}
 	}
 	p.jobs = jobs

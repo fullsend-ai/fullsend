@@ -24,8 +24,8 @@ type ForkPRReviewPollConfig struct {
 	// MaxStartsPerCycle caps the reviews one poll cycle starts (1-20,
 	// default 5).
 	MaxStartsPerCycle *int `yaml:"max_starts_per_cycle,omitempty"`
-	// MaxAttemptsPerHead caps the failed review attempts for one head
-	// commit before the poll stops starting it (1-5, default 2).
+	// MaxAttemptsPerHead caps the reviews the poll starts for one head
+	// commit that end without a finished review record (1-5, default 2).
 	MaxAttemptsPerHead *int `yaml:"max_attempts_per_head,omitempty"`
 }
 

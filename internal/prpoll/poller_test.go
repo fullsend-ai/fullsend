@@ -44,6 +44,10 @@ type fakeGitHub struct {
 	created  []string          // created= query values seen on run listings
 	byStatus map[string]string // status= → created= of run listings
 	runErr   map[int]int       // run ID → HTTP status a run lookup fails with
+	jobsErr  map[int]int       // run ID → HTTP status a job listing fails with
+	repoErr  int               // HTTP status the repository lookup fails with
+	branch   string            // default_branch of the repository
+	perCalls map[string]int    // login → permission lookups
 	requests int
 }
 
@@ -56,6 +60,9 @@ func newFakeGitHub() *fakeGitHub {
 		jobs:     map[int][]map[string]any{},
 		byStatus: map[string]string{},
 		runErr:   map[int]int{},
+		jobsErr:  map[int]int{},
+		branch:   "main",
+		perCalls: map[string]int{},
 	}
 }
 
@@ -75,6 +82,12 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		page = 1
 	}
 	switch {
+	case r.URL.Path == "/repos/o/r":
+		if f.repoErr != 0 {
+			http.Error(w, `{"message":"boom"}`, f.repoErr)
+			return
+		}
+		writeJSON(w, map[string]any{"full_name": "o/r", "default_branch": f.branch})
 	case path == "pulls":
 		start := (page - 1) * 100
 		end := min(start+100, len(f.prs))
@@ -84,6 +97,7 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, f.prs[start:end])
 	case len(parts) == 3 && parts[0] == "collaborators" && parts[2] == "permission":
 		login := parts[1]
+		f.perCalls[login]++
 		if code, ok := f.permErr[login]; ok {
 			http.Error(w, `{"message":"boom"}`, code)
 			return
@@ -121,6 +135,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"workflow_runs": orEmpty(out)})
 	case len(parts) == 4 && parts[0] == "actions" && parts[1] == "runs" && parts[3] == "jobs":
 		id, _ := strconv.Atoi(parts[2])
+		if code, ok := f.jobsErr[id]; ok {
+			http.Error(w, `{"message":"boom"}`, code)
+			return
+		}
 		jobs, ok := f.jobs[id]
 		if !ok {
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
@@ -192,8 +210,7 @@ func coreAuthorize(ev *normevent.Event) bool {
 	return harnessdispatch.IsHarnessAuthorizedWith(ev, "review", harnessdispatch.AuthOptions{})
 }
 
-// testNow is the fixed clock of the harness, within failedRunLookback of
-// testSince.
+// testNow is the fixed clock of the harness, two hours after testSince.
 var testNow = testSince.Add(2 * time.Hour)
 
 func newHarness(t *testing.T) *harness {
@@ -212,6 +229,7 @@ func newHarness(t *testing.T) *harness {
 		MaxAttempts:       2,
 		ReviewBotLogins:   []string{testBot, "fullsend-ai-review[bot]"},
 		ReviewAppClientID: testClientID,
+		DefaultBranch:     "main",
 		Log:               log,
 		Now:               func() time.Time { return testNow },
 		Authorize: func(ev *normevent.Event) bool {
@@ -288,7 +306,7 @@ func TestRun_DispatchesAuthorizedForkPR(t *testing.T) {
 	assert.Equal(t, "o/r", base["repo"].(map[string]any)["full_name"])
 
 	assert.Contains(t, h.log.String(), "PR #7 head 0123456: dispatch")
-	assert.Regexp(t, `fork PR review poll: 1 open PRs, 1 dispatched, \d+ GitHub API calls, wall time`, h.log.String())
+	assert.Regexp(t, `fork PR review poll: 1 open PRs, 1 dispatched, 0 heads skipped from cache, \d+ GitHub API calls, wall time`, h.log.String())
 	for _, c := range h.fake.created {
 		assert.Equal(t, ">="+testSince.Format(time.RFC3339), c, "run listings are bounded by the enable time")
 	}
@@ -400,7 +418,7 @@ func TestRun_SkipReasons(t *testing.T) {
 			pr:   forkPR(15, "alice", testSHA, after),
 			setup: func(h *harness) {
 				h.fake.perms["alice"] = "admin"
-				h.fake.runs = []map[string]any{run(101, "completed", "failure")}
+				h.fake.runs = []map[string]any{run(101, "in_progress", "")}
 				h.fake.jobs[101] = []map[string]any{job(ReviewJobName(15, testSHA)+" / Review", "completed", "success")}
 			},
 			reason: ReasonFinished,
@@ -421,9 +439,7 @@ func TestRun_SkipReasons(t *testing.T) {
 			pr:   forkPR(17, "alice", testSHA, after),
 			setup: func(h *harness) {
 				h.fake.perms["alice"] = "write"
-				h.fake.runs = []map[string]any{run(300, "completed", "failure"), run(301, "completed", "cancelled")}
-				h.fake.jobs[300] = []map[string]any{job(ReviewJobName(17, testSHA)+" / Review", "completed", "failure")}
-				h.fake.jobs[301] = []map[string]any{job(ReviewJobName(17, testSHA)+" / Route", "completed", "cancelled")}
+				h.opts.State = stateWith(17, testSHA, 2, "")
 			},
 			reason: ReasonAttemptsExhausted,
 		},
@@ -493,14 +509,23 @@ func TestRun_DispatchCases(t *testing.T) {
 			},
 		},
 		{
-			name: "one failed attempt below the limit",
+			name: "one dispatch below the limit",
 			setup: func(h *harness) {
 				h.fake.perms["alice"] = "write"
-				h.fake.runs = []map[string]any{run(300, "completed", "failure")}
-				h.fake.jobs[300] = []map[string]any{
-					job(ReviewJobName(17, testSHA)+" / Review", "completed", "failure"),
-					job(ReviewJobName(7, testSHA)+" / Review", "completed", "failure"),
-				}
+				h.opts.State = stateWith(7, testSHA, 1, "")
+			},
+		},
+		{
+			name: "status comment of a run that is terminal",
+			setup: func(h *harness) {
+				h.fake.perms["alice"] = "write"
+				// The run is still listed as running, but the terminal
+				// comment is not looked up.
+				h.fake.runs = []map[string]any{run(410, "in_progress", "")}
+				h.fake.jobs[410] = []map[string]any{}
+				c := statusComment(testBot, testClientID, 410, testSHA[:7])
+				c["body"] = strings.Replace(c["body"].(string), " -->\n", " -->\n"+statusTerminalMarker+"\n", 1)
+				h.fake.comments[7] = []map[string]any{c}
 			},
 		},
 		{
@@ -640,36 +665,29 @@ func TestRun_DeniedPRsDoNotCountAgainstMaxStarts(t *testing.T) {
 	assert.NotContains(t, h.log.String(), ReasonStartCap)
 }
 
-func TestRun_FailedRunListingsUseTheLookbackWindow(t *testing.T) {
-	format := func(t time.Time) string { return ">=" + t.UTC().Format(time.RFC3339) }
-	t.Run("enabled long ago", func(t *testing.T) {
-		h := newHarness(t)
-		now := testSince.Add(10 * 24 * time.Hour)
-		h.opts.Now = func() time.Time { return now }
-		h.fake.prs = []map[string]any{forkPR(7, "alice", testSHA, now.Add(-time.Minute))}
-		h.fake.perms["alice"] = "write"
-		assert.Len(t, h.run(t), 1)
-		for _, status := range runningStatuses {
-			assert.Equal(t, format(testSince), h.fake.byStatus[status], status)
-		}
-		for _, status := range failedConclusions {
-			assert.Equal(t, format(now.Add(-failedRunLookback)), h.fake.byStatus[status], status)
-		}
-	})
-	t.Run("enabled within the window", func(t *testing.T) {
-		h := newHarness(t)
-		h.fake.prs = []map[string]any{forkPR(7, "alice", testSHA, after)}
-		h.fake.perms["alice"] = "write"
-		assert.Len(t, h.run(t), 1)
-		for _, status := range append(append([]string{}, runningStatuses...), failedConclusions...) {
-			assert.Equal(t, format(testSince), h.fake.byStatus[status], status)
-		}
-	})
+func TestRun_ListsOnlyRunningRunsSinceEnable(t *testing.T) {
+	h := newHarness(t)
+	now := testSince.Add(10 * 24 * time.Hour)
+	h.opts.Now = func() time.Time { return now }
+	h.fake.prs = []map[string]any{forkPR(7, "alice", testSHA, now.Add(-time.Minute))}
+	h.fake.perms["alice"] = "write"
+	assert.Len(t, h.run(t), 1)
+	var statuses []string
+	for status, created := range h.fake.byStatus {
+		statuses = append(statuses, status)
+		assert.Equal(t, ">="+testSince.UTC().Format(time.RFC3339), created, status)
+	}
+	assert.ElementsMatch(t, runningStatuses, statuses, "no completed run is listed")
 }
 
 func TestRun_JobState(t *testing.T) {
-	prefix := ReviewJobName(7, testSHA) + " / "
+	name := ReviewJobName(7, testSHA)
+	prefix := name + " / "
 	other := "fedcba9876543210fedcba9876543210fedcba98"
+	withRun := func(r map[string]any, key string, value any) map[string]any {
+		r[key] = value
+		return r
+	}
 	tests := []struct {
 		name   string
 		runs   []map[string]any
@@ -683,6 +701,12 @@ func TestRun_JobState(t *testing.T) {
 			reason: ReasonRunning,
 		},
 		{
+			name:   "dispatch job before the called workflow expands",
+			runs:   []map[string]any{run(1, "in_progress", "")},
+			jobs:   map[int][]map[string]any{1: {job(name, "queued", "")}},
+			reason: ReasonRunning,
+		},
+		{
 			name:   "any other called job queued",
 			runs:   []map[string]any{run(1, "queued", "")},
 			jobs:   map[int][]map[string]any{1: {job(prefix+"Route", "completed", "success"), job(prefix+"Post", "queued", "")}},
@@ -690,63 +714,57 @@ func TestRun_JobState(t *testing.T) {
 		},
 		{
 			name:   "running wins over an earlier success",
-			runs:   []map[string]any{run(1, "completed", "failure"), run(2, "in_progress", "")},
+			runs:   []map[string]any{run(1, "in_progress", ""), run(2, "in_progress", "")},
 			jobs:   map[int][]map[string]any{1: {job(prefix+"Review", "completed", "success")}, 2: {job(prefix+"Review", "in_progress", "")}},
 			reason: ReasonRunning,
 		},
 		{
 			name:   "review succeeded",
-			runs:   []map[string]any{run(1, "completed", "failure")},
+			runs:   []map[string]any{run(1, "in_progress", "")},
 			jobs:   map[int][]map[string]any{1: {job(prefix+"Route", "completed", "success"), job(prefix+"Review", "completed", "success")}},
 			reason: ReasonFinished,
 		},
 		{
-			name: "review succeeded after failed attempts",
-			runs: []map[string]any{run(1, "completed", "failure"), run(2, "completed", "failure"), run(3, "completed", "failure")},
-			jobs: map[int][]map[string]any{
-				1: {job(prefix+"Review", "completed", "failure")},
-				2: {job(prefix+"Route", "completed", "failure")},
-				3: {job(prefix+"Review", "completed", "success")},
-			},
-			reason: ReasonFinished,
+			name:   "completed bare dispatch job is neither running nor finished",
+			runs:   []map[string]any{run(1, "in_progress", "")},
+			jobs:   map[int][]map[string]any{1: {job(name, "completed", "success")}},
+			reason: ReasonDispatch,
 		},
 		{
-			name:   "route and review failing in one run are one attempt",
-			runs:   []map[string]any{run(1, "completed", "failure")},
+			name:   "failed review job is not finished",
+			runs:   []map[string]any{run(1, "in_progress", "")},
 			jobs:   map[int][]map[string]any{1: {job(prefix+"Route", "completed", "failure"), job(prefix+"Review", "completed", "cancelled")}},
 			reason: ReasonDispatch,
 		},
 		{
-			name: "failures in two runs exhaust two attempts",
-			runs: []map[string]any{run(1, "completed", "failure"), run(2, "completed", "timed_out")},
-			jobs: map[int][]map[string]any{
-				1: {job(prefix+"Route", "completed", "startup_failure")},
-				2: {job(prefix+"Review", "completed", "timed_out")},
-			},
-			reason: ReasonAttemptsExhausted,
-		},
-		{
-			name: "other called jobs do not count as attempts",
-			runs: []map[string]any{run(1, "completed", "failure"), run(2, "completed", "failure")},
-			jobs: map[int][]map[string]any{
-				1: {job(prefix+"Post", "completed", "failure")},
-				2: {job(prefix+"Route", "completed", "success"), job(prefix+"Review", "completed", "skipped"), job(prefix+"Setup", "completed", "failure")},
-			},
+			name: "pull_request run of a modified poll workflow is ignored",
+			runs: []map[string]any{withRun(run(1, "in_progress", ""), "event", "pull_request")},
+			jobs: map[int][]map[string]any{1: {job(prefix+"Review", "completed", "success"), job(name, "in_progress", "")}},
+			// The fork's fake jobs neither finish nor block the head.
 			reason: ReasonDispatch,
 		},
 		{
+			name:   "run on another branch is ignored",
+			runs:   []map[string]any{withRun(run(1, "in_progress", ""), "head_branch", "feature")},
+			jobs:   map[int][]map[string]any{1: {job(prefix+"Review", "in_progress", "")}},
+			reason: ReasonDispatch,
+		},
+		{
+			name:   "workflow_dispatch run counts",
+			runs:   []map[string]any{withRun(run(1, "in_progress", ""), "event", "workflow_dispatch")},
+			jobs:   map[int][]map[string]any{1: {job(prefix+"Review", "in_progress", "")}},
+			reason: ReasonRunning,
+		},
+		{
 			name: "jobs of another PR, head or naming are ignored",
-			runs: []map[string]any{run(1, "in_progress", ""), run(2, "completed", "failure")},
+			runs: []map[string]any{run(1, "in_progress", "")},
 			jobs: map[int][]map[string]any{
 				1: {
 					job(ReviewJobName(77, testSHA)+" / Review", "in_progress", ""),
 					job(ReviewJobName(7, other)+" / Route", "queued", ""),
-					job(ReviewJobName(7, testSHA), "in_progress", ""),
-					job("dispatch / "+ReviewJobName(7, testSHA), "in_progress", ""),
-				},
-				2: {
 					job(ReviewJobName(7, other)+" / Review", "completed", "success"),
-					job(ReviewJobName(7, other)+" / Review", "completed", "failure"),
+					job("dispatch / "+name, "in_progress", ""),
+					job(name+"x", "in_progress", ""),
 				},
 			},
 			reason: ReasonDispatch,
@@ -864,7 +882,8 @@ func TestRun_Errors(t *testing.T) {
 		h := newHarness(t)
 		h.fake.prs = []map[string]any{forkPR(7, "alice", testSHA, after)}
 		h.fake.perms["alice"] = "write"
-		h.fake.runs = []map[string]any{run(600, "completed", "failure")}
+		h.fake.runs = []map[string]any{run(600, "in_progress", "")}
+		h.fake.jobsErr[600] = http.StatusForbidden
 		assert.Empty(t, h.run(t))
 		assert.Contains(t, h.log.String(), ReasonLookupFailed)
 	})
@@ -943,15 +962,16 @@ func TestNew_Defaults(t *testing.T) {
 
 func TestHelpers(t *testing.T) {
 	assert.Equal(t, "Review (#12@abc)", ReviewJobName(12, "abc"))
-	assert.True(t, isFailedConclusion("startup_failure"))
-	assert.False(t, isFailedConclusion("skipped"))
 	assert.True(t, shaMatches(testSHA, testSHA[:7]))
 	assert.False(t, shaMatches(testSHA, testSHA[:6]))
 	assert.Equal(t, "abc", shortSHA("abc"))
 }
 
 func run(id int, status, conclusion string) map[string]any {
-	return map[string]any{"id": id, "status": status, "conclusion": conclusion, "created_at": after.Format(time.RFC3339)}
+	return map[string]any{
+		"id": id, "status": status, "conclusion": conclusion, "created_at": after.Format(time.RFC3339),
+		"event": "schedule", "head_branch": "main",
+	}
 }
 
 func job(name, status, conclusion string) map[string]any {
