@@ -425,6 +425,26 @@ func TestEnvDataLoad_NulValueWarns(t *testing.T) {
 	assert.NotContains(t, stderr, "\x00")
 }
 
+// A dropped NUL value leaves the name's export state as it was: neither the
+// `export NAME=` that carried it nor a later bare `export NAME` exports the
+// earlier value (#8604).
+func TestEnvDataLoad_NulValueKeepsExportState(t *testing.T) {
+	f := newEnvDataFixture(t)
+	f.write(t, ".env", "A=private\nexport A='x\x00y'\nB=private\nB=\"a\x00b\"\nexport B\nexport C='x\x00y'\nexport C\nD=private\nD='x\x00y'\nD=later\nexport D\n")
+	out, stderr, err := f.load(t, `printf '%s|%s' "$A" "$B"`)
+	require.NoError(t, err, stderr)
+	assert.Equal(t, "private|private", out, "the earlier values stand as shell variables")
+	assert.Contains(t, stderr, "line 2: the value of A contains a NUL byte")
+	assert.Contains(t, stderr, "line 4: the value of B contains a NUL byte")
+	assert.Contains(t, stderr, "line 6: the value of C contains a NUL byte")
+	env, _ := f.envOf(t)
+	for _, name := range []string{"A", "B", "C"} {
+		_, ok := env[name]
+		assert.False(t, ok, "%s is exported after its NUL value was dropped", name)
+	}
+	assert.Equal(t, "later", env["D"], "a later accepted value is exported as usual")
+}
+
 // A statement rejected on its first line is skipped to where a shell would
 // end it, so the lines inside its quoted value are not read as assignments.
 func TestEnvDataLoad_RejectedMultiLineStatementSkippedWhole(t *testing.T) {
@@ -459,6 +479,68 @@ func TestEnvDataLoad_RejectedMultiLineStatementSkippedWhole(t *testing.T) {
 		assert.Contains(t, stderr, line)
 	}
 	for _, line := range []string{"line 2:", "line 3:", "line 5:", "line 6:", "line 8:", "line 10:", "line 12:", "line 13:", "line 15:", "line 16:"} {
+		assert.NotContains(t, stderr, line)
+	}
+}
+
+// A rejected statement whose backtick command substitution spans lines is
+// skipped whole, including a backtick inside double quotes; a quote inside
+// the backticks does not open a value, and an unterminated backtick falls
+// back to the line end (#8604).
+func TestEnvDataLoad_RejectedBacktickStatementSkippedWhole(t *testing.T) {
+	f := newEnvDataFixture(t)
+	f.write(t, ".env", strings.Join([]string{
+		"export X=`printf a",
+		"export INSIDE_BT=1",
+		"`",
+		"export Y=\"`printf b",
+		"export INSIDE_DQ_BT=1",
+		"`\"",
+		"export Z=`printf \"it's\" \\`",
+		"export INSIDE_ESCAPED_BT=1`",
+		"export U=`never closed",
+		"export AFTER_UNTERMINATED=1",
+		"export KEEP=1",
+	}, "\n")+"\n")
+	env, stderr := f.envOf(t)
+	for _, name := range []string{"X", "INSIDE_BT", "Y", "INSIDE_DQ_BT", "Z", "INSIDE_ESCAPED_BT", "U"} {
+		_, ok := env[name]
+		assert.False(t, ok, "%s was taken from .env", name)
+	}
+	assert.Equal(t, "1", env["AFTER_UNTERMINATED"], "an unterminated backtick falls back to the line end")
+	assert.Equal(t, "1", env["KEEP"])
+	for _, line := range []string{"line 1:", "line 4:", "line 7:", "line 9:"} {
+		assert.Contains(t, stderr, line)
+	}
+	for _, line := range []string{"line 2:", "line 3:", "line 5:", "line 6:", "line 8:", "line 10:", "line 11:"} {
+		assert.NotContains(t, stderr, line)
+	}
+}
+
+// A comment inside a rejected $(...) statement is skipped without opening
+// quote or backtick spans, so the statement still resyncs at its closing
+// parenthesis (#8604).
+func TestEnvDataLoad_RejectedStatementCommentInsideSubstitution(t *testing.T) {
+	f := newEnvDataFixture(t)
+	f.write(t, ".env", strings.Join([]string{
+		"export X=$(printf x # lone `backtick",
+		"export INSIDE_BT=1",
+		")",
+		"export Y=$(printf y # it's a lone quote",
+		"export INSIDE_SQ=1",
+		")",
+		"export KEEP=1",
+	}, "\n")+"\n")
+	env, stderr := f.envOf(t)
+	for _, name := range []string{"X", "INSIDE_BT", "Y", "INSIDE_SQ"} {
+		_, ok := env[name]
+		assert.False(t, ok, "%s was taken from .env", name)
+	}
+	assert.Equal(t, "1", env["KEEP"])
+	for _, line := range []string{"line 1:", "line 4:"} {
+		assert.Contains(t, stderr, line)
+	}
+	for _, line := range []string{"line 2:", "line 3:", "line 5:", "line 6:", "line 7:"} {
 		assert.NotContains(t, stderr, line)
 	}
 }
