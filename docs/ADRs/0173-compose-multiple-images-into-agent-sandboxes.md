@@ -124,6 +124,6 @@ Support depends on the sandbox backend, not the forge.
   and the ADR 0032 build-time protections described above.
 - Repositories can provide tools without building a fullsend-specific
   composite image.
-- fullsend's sandbox image and project tool images can be maintained
+- Fullsend's sandbox image and project tool images can be maintained
   independently.
 - Limitation! Mounted executables must be compatible with the sandbox runtime.
