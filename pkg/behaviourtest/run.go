@@ -64,7 +64,11 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 	// orgs; there is no exclusive org lock and no broad startup cleanup.
 	// Abandoned slot repos are reclaimed by the allocator's GC.
 	pool := poolConfigFor(cfg.Environment, e2eCfg, binary, t.Logf)
-	driver, err := installFactoryFor(cfg.Environment)(pool)
+	factory, err := installFactoryFor(cfg.Environment)
+	if err != nil {
+		failRun(t, nil, behaviourSuiteName, err)
+	}
+	driver, err := factory(pool)
 	if err != nil {
 		failRun(t, nil, behaviourSuiteName, fmt.Errorf("creating install driver (env=%s): %w", cfg.Environment, err))
 	}

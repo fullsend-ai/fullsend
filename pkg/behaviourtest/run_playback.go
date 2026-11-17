@@ -79,7 +79,11 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 	// driver leases (org, repo) slots across the pool orgs, with no
 	// exclusive org lock and no broad startup cleanup.
 	pool := poolConfigFor(cfg.Environment, e2eCfg, binary, t.Logf)
-	baseDriver, err := installFactoryFor(cfg.Environment)(pool)
+	factory, err := installFactoryFor(cfg.Environment)
+	if err != nil {
+		failRun(t, nil, playbackSuiteName, err)
+	}
+	baseDriver, err := factory(pool)
 	if err != nil {
 		failRun(t, nil, playbackSuiteName, fmt.Errorf("creating install driver (env=%s): %w", cfg.Environment, err))
 	}

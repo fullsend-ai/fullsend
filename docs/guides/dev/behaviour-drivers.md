@@ -19,9 +19,11 @@ v1 reference implementations:
 - `pkg/behaviourtest/drivers/scm/gitlab/`
 - `pkg/behaviourtest/drivers/ci/githubactions/`
 - `pkg/behaviourtest/drivers/ci/gitlabci/`
+- `pkg/behaviourtest/drivers/scm/forgejo/` and `pkg/behaviourtest/drivers/ci/forgejoactions/` (minimal stubs; see [Forgejo driver stubs](#forgejo-driver-stubs))
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_previews.go` (RepoPoolCFMintPreviews)
 - `pkg/behaviourtest/drivers/install/repopool_cfmint_stage.go` (RepoPoolCFMintStage)
 - `pkg/behaviourtest/drivers/install/repopool_external_mint.go` (RepoPoolExternalMint)
+- `pkg/behaviourtest/drivers/install/forgejo_dev.go` (NewForgejoDev, minimal stub)
 - `pkg/behaviourtest/drivers/install/common/setup.go` (shared helpers: `RunGitHubSetup`, `ResolveInferenceWIFProvider`, `InferenceStatusWIFProvider`, `ProvisionInference`)
 
 ## Runner configuration
@@ -29,15 +31,15 @@ v1 reference implementations:
 Set when starting the suite (not in feature files):
 
 ```
-BEHAVIOUR_SCM=github              # also: gitlab; future: forgejo
-BEHAVIOUR_CI=githubactions        # also: gitlabci; future: tekton
+BEHAVIOUR_SCM=github              # also: gitlab, forgejo (forgejo-dev only); default forgejo when ENVIRONMENT=forgejo-dev
+BEHAVIOUR_CI=githubactions        # also: gitlabci, forgejoactions (forgejo-dev only); default forgejoactions when ENVIRONMENT=forgejo-dev; future: tekton
 BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
 BEHAVIOUR_CONFIG_PRESET=          # optional local path or HTTPS URL forwarded as github setup --config
 PLAYBACK_RUNTIME=                 # unset: normal "dummy" runtime; "dummy-playback": installs with playback tracking hooks (see behaviour-testing.md)
-ENVIRONMENT=dev                   # mint/infra target: dev (default) or stage
+ENVIRONMENT=dev                   # mint/infra target: dev (default), stage, or forgejo-dev
 ```
 
-The suite in `e2e/behaviour/suite_test.go` (or an external runner) calls `behaviourtest.RunSuite`, which selects an `install.Factory` from `ENVIRONMENT` (e.g. `install.NewRepoPoolCFMintPreviews(pool)`) to get the shared `install.Driver` that leases `(org, repo)` slots across the pool orgs and owns mint deploy, repo install, and teardown. It does not reserve an org (`e2etest.AcquireOrg`) or run broad startup cleanup. It runs godog with `pkg/behaviourtest/suite.InitScenario`, which clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `install.LeaseDriver.AllocateLease` claims a free slot, creating its repo. A slot whose repo already exists belongs to another holder and is never reset or deleted. The driver then installs fullsend with that org's credential and mint, and the step rebinds the World's org, token, mint URL, and SCM/CI drivers (built from `BEHAVIOUR_SCM` / `BEHAVIOUR_CI` via `World.OrgDrivers`) to the leased org. `DeallocateLease` deletes the slot repo, if it is still this lease's, and frees the slot in the After hook, after scenario cleanup and debug collection. `Driver.Finalize` releases outstanding leases with an error and tears down each deployed mint once. See [Repo allocation via the shared slot driver](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver). Unsupported `BEHAVIOUR_INSTALL_MODE` or `ENVIRONMENT` values fail at suite startup. `ENVIRONMENT` is `dev` or `stage` (empty defaults to `dev`).
+The suite in `e2e/behaviour/suite_test.go` (or an external runner) calls `behaviourtest.RunSuite`, which selects an `install.Factory` from `ENVIRONMENT` (e.g. `install.NewRepoPoolCFMintPreviews(pool)`) to get the shared `install.Driver` that leases `(org, repo)` slots across the pool orgs and owns mint deploy, repo install, and teardown. It does not reserve an org (`e2etest.AcquireOrg`) or run broad startup cleanup. It runs godog with `pkg/behaviourtest/suite.InitScenario`, which clones a template `*world.World` per scenario. When a scenario calls "Given the enrolled test repository", `install.LeaseDriver.AllocateLease` claims a free slot, creating its repo. A slot whose repo already exists belongs to another holder and is never reset or deleted. The driver then installs fullsend with that org's credential and mint, and the step rebinds the World's org, token, mint URL, and SCM/CI drivers (built from `BEHAVIOUR_SCM` / `BEHAVIOUR_CI` via `World.OrgDrivers`) to the leased org. `DeallocateLease` deletes the slot repo, if it is still this lease's, and frees the slot in the After hook, after scenario cleanup and debug collection. `Driver.Finalize` releases outstanding leases with an error and tears down each deployed mint once. See [Repo allocation via the shared slot driver](behaviour-testing.md#repo-allocation-via-the-shared-slot-driver). Unsupported `BEHAVIOUR_INSTALL_MODE` or `ENVIRONMENT` values fail at suite startup. `ENVIRONMENT` is `dev`, `stage`, or `forgejo-dev` (empty defaults to `dev`).
 
 ### Install driver (unified)
 
@@ -47,6 +49,9 @@ The suite uses a single unified `install.Driver` constructed via `install.Factor
 |-------------|---------|------|-----|-------------|
 | `dev` (default) | `NewRepoPoolCFMintPreviews` | One public CF Worker preview per mint group leased in the run (four at 12 slots per org) | Pool orgs `halfsend-01` … `halfsend-22` | Vendored binary |
 | `stage` | `NewRepoPoolCFMintStage` | Durable CF Worker at `stage-mint.fullsend.sh` | `halfsend` (single unsuffixed org) | Non-vendored, `--fullsend-ref=main` |
+| `forgejo-dev` | `NewForgejoDev` | None | None (stub; see [Forgejo driver stubs](#forgejo-driver-stubs)) | Not implemented |
+
+Any other `ENVIRONMENT` value fails at suite startup; it never falls back to a GitHub factory.
 
 Each factory returns the same shared slot driver (`composed.go`), which owns the full lifecycle:
 
@@ -68,6 +73,18 @@ Both CF mint drivers also deploy with `--status-auth oidc,github --status-github
 When the [job-scoped trace collector](behaviour-testing.md#job-scoped-trace-collection) runs, RepoPoolCFMintPreviews starts it once, before any mint deploy, and adds `--otlp-traces-endpoint` and `--otlp-headers-file` to every group's deploy, so each preview mint exports its spans to the same collector as the workflows. Leased repos are pointed at the collector with their org's client. RepoPoolCFMintStage does not trace its mint, because its durable mint is shared across runs.
 
 `Finalize` (RepoPoolCFMintPreviews) abandons every org's preview alias via `fullsend mint delete --platform=cloudflare` and reclaims any outstanding leases with an error. The RepoPoolCFMintStage driver's teardown is a no-op (the durable Worker persists across runs). The RepoPoolExternalMint driver's teardown is a no-op.
+
+### Forgejo driver stubs
+
+`ENVIRONMENT=forgejo-dev` selects the Forgejo drivers. When `BEHAVIOUR_SCM` and `BEHAVIOUR_CI` are unset, they default to `forgejo` and `forgejoactions`. The Forgejo drivers only run together and only in `forgejo-dev`. If you mix them, for example `forgejo-dev` with `BEHAVIOUR_SCM=github`, or `BEHAVIOUR_SCM=forgejo` with `ENVIRONMENT=dev`, the suite fails at startup with an error that names the conflicting variables. It does not fall back to the GitHub or GitLab drivers.
+
+The drivers are minimal stubs for now:
+
+- `scm/forgejo` and `ci/forgejoactions` implement `scm.Driver` and `ci.Driver`. Every method returns an error. The CI stub implements none of the optional CI extensions.
+- `install.NewForgejoDev` returns an `install.Driver` that provisions nothing. `AllocateRepo` and `DeallocateRepo` return an error, `Finalize` is a no-op, and `Capacity` is `install.ForgejoDevCapacity` (2). It is not an `install.LeaseDriver`.
+- In `forgejo-dev`, the runner's `PoolConfig.TokenFor` returns an error and `NewClient` returns nil, so the run never mints GitHub tokens or builds GitHub clients.
+
+Each stub error is a `*drivers.NotImplementedError` (package `pkg/behaviourtest/drivers`) that names the driver and the operation, for example `forgejo SCM driver: CreateIssue: not implemented`. It satisfies `errors.Is(err, drivers.ErrNotImplemented)`. Use the same sentinel for any other driver operation that is not supported yet.
 
 ## Adding an SCM driver
 
@@ -146,5 +163,6 @@ Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios aga
 
 - [x] GitLab SCM driver (implemented; `@skip:gitlab` tag removal pending)
 - [x] GitLab CI driver (implemented; suite wiring currently uses a GitHub-backed `forge.Client` — not yet live-testable against real GitLab backends)
+- [ ] Forgejo SCM, Forgejo Actions CI, and `forgejo-dev` install drivers (selection and not-implemented stubs only; see [Forgejo driver stubs](#forgejo-driver-stubs))
 - [ ] Tekton CI driver
 - [ ] Non-GitHub install backends
