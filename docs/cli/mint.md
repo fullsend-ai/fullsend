@@ -133,13 +133,23 @@ Authentication (one of):
 
 `mint deploy` has no flag for `FULLSEND_WEBHOOK_SECRET`, which turns on the
 mint's `POST /v1/webhooks/github` route (the fast path that starts a fork PR
-review poll). Set it by hand: as an env var of the mint service on GCP (kept
-by redeploys), with `wrangler secret put FULLSEND_WEBHOOK_SECRET` on
-Cloudflare (kept by durable redeploys, not inherited by previews), or in the
-environment of the standalone mint. Then turn on the orchestrator App's
-webhook. See
+review poll). The route also needs the `fullsend` role in `ROLE_APP_IDS` and,
+when set, in `ALLOWED_ROLES`. Set the secret by hand, without putting it on a
+command line:
+
+- **GCP:** as a plain env var of the `fullsend-mint` Cloud Run service,
+  applied from a file with `gcloud run services update --env-vars-file`.
+  `mint deploy`, `mint enroll`, `mint unenroll` and `mint workflow-host` keep
+  a plain env var but drop a Secret Manager binding.
+- **Cloudflare:** `wrangler secret put FULLSEND_WEBHOOK_SECRET --name "$WORKER_NAME" < webhook-secret`,
+  where `WORKER_NAME` is the `--worker-name` given to `mint deploy`
+  (default `fullsend-mint`). Durable redeploys keep it; previews do not
+  inherit it.
+- **Standalone:** in the environment of the mint process.
+
+Then turn on the orchestrator App's webhook. See
 [GitHub webhook for fork PR reviews](../guides/infrastructure/mint-administration.md#github-webhook-for-fork-pr-reviews)
-for the steps, what success looks like, and troubleshooting.
+for the per-host steps, what success looks like, and troubleshooting.
 
 #### Omit-vs-empty semantics for config flags on redeploy
 

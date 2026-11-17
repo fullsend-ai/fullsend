@@ -831,7 +831,7 @@ fullsend mint delete \
 
 ## Cloudflare Worker rate limiting
 
-The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token` and `POST /v1/bot-role` requests. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
+The Cloudflare Worker deployment includes a native `[[ratelimits]]` binding (`MINT_TOKEN_RATE_LIMITER`) that rate-limits `POST /v1/token`, `POST /v1/bot-role` and `POST /v1/webhooks/github` requests, each path with its own counter. The binding is configured in `wrangler.toml` and enforced in the Worker before WASM initialization — no operator action is required.
 
 | Setting | Value |
 |---------|-------|
@@ -845,108 +845,282 @@ If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs
 
 ## GitHub webhook for fork PR reviews
 
-A repository's fork PR review poll (`.github/workflows/fullsend-poll-prs.yml`)
-runs on a `*/5` schedule. GitHub runs such schedules late and sometimes
-skips them. The mint can start the poll within seconds of a push to a fork
-PR instead: the orchestrator (`fullsend`) App sends its `pull_request`
-webhook to the mint, and the mint sends one `workflow_dispatch` of the poll
-workflow on the repository's default branch, with no inputs. The poll then
-does exactly what it does on a scheduled tick. No webhook field reaches a
-job, and the schedule stays as the backstop for any delivery that is lost.
+**What you get:** a push to a fork PR starts the repository's fork PR review
+poll (`.github/workflows/fullsend-poll-prs.yml`) within seconds. Without the
+webhook, the poll waits for its `*/5` schedule, which GitHub runs late and
+sometimes skips. The schedule stays on as the backstop for any lost delivery.
 
-The route is `POST /v1/webhooks/github`. It is **off** (answers `404`) until
-`FULLSEND_WEBHOOK_SECRET` is set, and the App's webhook is off until you
-turn it on. Both steps are manual. The endpoint contract is in the
+**What you do:** two manual steps, because `mint deploy` has no flag for
+either of them.
+
+1. Set the `FULLSEND_WEBHOOK_SECRET` secret on the mint, using the setup for
+   your host below.
+2. Turn on the webhook of the orchestrator (`fullsend`) GitHub App and give
+   it the same secret.
+
+> **Requires a fullsend release whose `repos install` writes the fork PR
+> review poll** (ADR 0171,
+> [fullsend#9626](https://github.com/fullsend-ai/fullsend/issues/9626)).
+> Until a repository has that workflow, every dispatch for it answers
+> `workflow_not_dispatchable` and nothing else happens.
+
+How it works: the App sends its `pull_request` webhook to
+`<mint URL>/v1/webhooks/github`. The mint checks the signature, keeps only
+pushes to fork PRs of enrolled repositories, reads the repository's current
+default branch from GitHub, and sends one `workflow_dispatch` of the poll
+workflow with no inputs. No webhook field reaches a job. The endpoint
+contract is in the
 [Infrastructure Reference](infrastructure-reference.md#github-webhook-endpoint).
 
-### 1. Create the secret
+### Before you start
+
+- **The `fullsend` role on the mint.** `ROLE_APP_IDS` has a `fullsend` entry,
+  `ALLOWED_ROLES` (when set) includes `fullsend`, and the mint holds the
+  `fullsend` App's private key. Otherwise the route stays off (`404`), and
+  the mint logs `github webhook: FULLSEND_WEBHOOK_SECRET is set but
+  ALLOWED_ROLES does not allow role "fullsend"; the route is off` at startup.
+- **The App on each repository** with the **Actions: Read and write**
+  permission. The mint asks for a token with only `actions: write` and
+  `metadata: read`.
+- **A new secret, used for this App's webhook only.** Do not reuse it for a
+  repository or organization webhook, or for another App. The signature
+  covers the body, not the headers that name the App, so any hook that shares
+  the secret can send deliveries the mint accepts.
+
+  ```bash
+  umask 077
+  openssl rand -hex 32 | tr -d '\n' > webhook-secret
+  ```
+
+  The mint compares the exact value, so the file must not end with a newline.
+
+- **The mint URL.** Every enrolled repository stores it in the
+  `FULLSEND_MINT_URL` variable. Read it from one of your enrolled
+  repositories (here `acme-corp/my-repo`):
+
+  ```bash
+  export MINT_URL="$(gh variable get FULLSEND_MINT_URL --repo acme-corp/my-repo)"
+  ```
+
+  If the variable is set at organization level, use
+  `--org acme-corp` instead of `--repo`. For example,
+  `gh variable get FULLSEND_MINT_URL --repo fullsend-ai/fullsend` prints
+  `https://mint.fullsend.sh`. Each setup below also says where the host
+  shows the URL.
+
+### Set up on GCP (Cloud Function)
+
+1. Name the mint's project and region. The region is the `--region` you
+   passed to `fullsend mint deploy` (default `us-central1`):
+
+   ```bash
+   export GCP_PROJECT="my-project-id"
+   export MINT_REGION="us-central1"
+   ```
+
+   The mint URL is the function's URI:
+
+   ```bash
+   gcloud functions describe fullsend-mint --gen2 \
+     --project="$GCP_PROJECT" --region="$MINT_REGION" \
+     --format="value(serviceConfig.uri)"
+   ```
+
+2. Write every current env var of the mint service, plus the secret, to a
+   file. The next step's `--env-vars-file` **replaces all** env vars, so the
+   file must hold the existing ones. The `jq` program stops if an env var is
+   not a plain value:
+
+   ```bash
+   umask 077
+   gcloud run services describe fullsend-mint \
+     --project="$GCP_PROJECT" --region="$MINT_REGION" --format=json \
+     | jq -e --rawfile secret webhook-secret '
+         .spec.template.spec.containers[0].env
+         | if all(has("value")) then from_entries + {FULLSEND_WEBHOOK_SECRET: $secret}
+           else error("an env var is not a plain value; stop") end' > mint-env.yaml
+   jq -r 'keys[]' mint-env.yaml
+   ```
+
+   Check the printed names: every name from the service (such as
+   `ROLE_APP_IDS`, `PER_REPO_WIF_REPOS`, `ALLOWED_ROLES`) plus
+   `FULLSEND_WEBHOOK_SECRET`.
+
+3. Apply the file, route traffic to the new revision (the mint uses
+   [REVISION-pinned traffic routing](#revision-pinned-traffic-routing)), and
+   delete the file:
+
+   ```bash
+   gcloud run services update fullsend-mint \
+     --project="$GCP_PROJECT" --region="$MINT_REGION" \
+     --env-vars-file=mint-env.yaml
+   REV=$(gcloud run services describe fullsend-mint \
+     --project="$GCP_PROJECT" --region="$MINT_REGION" \
+     --format="value(status.latestCreatedRevisionName)")
+   gcloud run services update-traffic fullsend-mint \
+     --project="$GCP_PROJECT" --region="$MINT_REGION" \
+     --to-revisions="$REV=100"
+   rm mint-env.yaml
+   ```
+
+   Not run against a live mint for this guide. The `jq` step was run on a
+   sample `describe` output, and `gcloud` accepted the file it wrote (the run
+   stopped at authentication).
+
+4. Check that the route is on (see [Check the route](#check-the-route)).
+
+Why a file, not a flag or Secret Manager:
+
+- `--update-env-vars=FULLSEND_WEBHOOK_SECRET=...` would put the secret in the
+  `gcloud` command line, where other local users can see it in the process
+  list and your shell history keeps it.
+- A Secret Manager binding (`--update-secrets`) does not last:
+  `mint enroll`, `mint unenroll` and `mint workflow-host` rewrite the env vars
+  as plain values and drop the binding, and the route then answers `404`.
+- A plain env var is kept by those commands and by `mint deploy`. Anyone who
+  can view the Cloud Run service or the function can read it.
+
+### Set up on Cloudflare (Worker)
+
+1. Name the Worker. `WORKER_NAME` is the `--worker-name` you passed to
+   `fullsend mint deploy --platform cloudflare`, or `fullsend-mint` if you
+   passed none. The Cloudflare dashboard lists it under
+   **Workers & Pages**.
+
+   ```bash
+   export WORKER_NAME="fullsend-mint"
+   ```
+
+   The mint URL is the `FULLSEND_MINT_URL` that `mint deploy` printed: your
+   custom domain when you deployed with `--custom-domain`, otherwise
+   `https://<WORKER_NAME>.<your workers.dev subdomain>.workers.dev`.
+
+2. Store the secret as a Worker secret. `wrangler` reads the value from
+   standard input, so it never appears in a command line:
+
+   ```bash
+   wrangler secret put FULLSEND_WEBHOOK_SECRET --name "$WORKER_NAME" < webhook-secret
+   ```
+
+   This deploys a new Worker version. Durable `mint deploy` runs keep the
+   secret. Preview versions do not inherit it, so the route stays off on
+   previews.
+
+   Not run for this guide (no Cloudflare account was used).
+
+3. Check that the route is on (see [Check the route](#check-the-route)).
+
+The Worker rate-limits `POST /v1/webhooks/github` like `/v1/token` (see
+[Cloudflare Worker rate limiting](#cloudflare-worker-rate-limiting)).
+
+### Set up on a standalone mint
+
+1. Check the configuration from
+   [Standalone mint](standalone-mint.md#step-4-configure-and-run):
+   `ROLE_APP_IDS` has a `fullsend` entry and `PEM_DIR` holds `fullsend.pem`.
+
+2. Start the mint with the secret in its environment:
+
+   ```bash
+   export FULLSEND_WEBHOOK_SECRET="$(cat webhook-secret)"
+   ./fullsend-mint
+   ```
+
+   `export` is a shell builtin, so the secret is not in any process's
+   command line. Under a service manager, put the variable in an env file
+   with mode `600` that the service reads.
+
+3. The mint URL is the public HTTPS URL you set up in
+   [Step 5: Expose the mint to GitHub Actions](standalone-mint.md#step-5-expose-the-mint-to-github-actions).
+   Check that the route is on (see [Check the route](#check-the-route)).
+
+### Check the route
+
+An unsigned request shows whether the route is on, without the secret:
 
 ```bash
-openssl rand -hex 32 | tr -d '\n' > webhook-secret
-chmod 600 webhook-secret
+curl -s -w ' %{http_code}\n' -X POST "$MINT_URL/v1/webhooks/github"
 ```
 
-The mint compares the exact value, so it must not end with a newline.
+Output when the route is on (from a local standalone mint):
 
-### 2. Set `FULLSEND_WEBHOOK_SECRET` on the mint
-
-**GCP (Cloud Function).** Merge it into the mint service's env vars, then
-route traffic to the new revision (see
-[REVISION-pinned traffic routing](#revision-pinned-traffic-routing)):
-
-```bash
-gcloud run services update fullsend-mint \
-  --project="$GCP_PROJECT" --region="$MINT_REGION" \
-  --update-env-vars="FULLSEND_WEBHOOK_SECRET=$(cat webhook-secret)"
-REV=$(gcloud run services describe fullsend-mint \
-  --project="$GCP_PROJECT" --region="$MINT_REGION" \
-  --format="value(status.latestCreatedRevisionName)")
-gcloud run services update-traffic fullsend-mint \
-  --project="$GCP_PROJECT" --region="$MINT_REGION" \
-  --to-revisions="$REV=100"
+```text
+{"error":"invalid signature"} 401
 ```
 
-Use `--update-env-vars`, never `--set-env-vars` (see
-[Debugging with gcloud](#debugging-with-gcloud)). A plain env var is kept by
-`mint deploy`, `mint enroll`, `mint unenroll` and `mint workflow-host`. You
-can bind a Secret Manager secret instead (`--update-secrets`), but
-`mint enroll`, `mint unenroll` and `mint workflow-host` rewrite the env vars
-as plain values and drop that binding. The route then answers `404` until you
-bind the secret again.
+A `404` means the route is off: see the first row of
+[Troubleshooting the webhook](#troubleshooting-the-webhook).
 
-**Cloudflare Worker.** Store it as a Worker secret:
-
-```bash
-wrangler secret put FULLSEND_WEBHOOK_SECRET --name "$WORKER_NAME" < webhook-secret
-```
-
-Durable `mint deploy` keeps Worker secrets. Preview versions do not inherit
-them, so the route stays off on previews.
-
-**Standalone mint.** Export `FULLSEND_WEBHOOK_SECRET` before starting the
-mint (see [Standalone mint](standalone-mint.md#optional-variables)).
-
-### 3. Turn on the orchestrator App's webhook
+### Turn on the orchestrator App's webhook
 
 In the settings of the GitHub App registered as `fullsend` in
 `ROLE_APP_IDS`:
 
 1. **General → Webhook:** check **Active**, set **Webhook URL** to
-   `<mint URL>/v1/webhooks/github` and **Webhook secret** to the content of
+   `$MINT_URL/v1/webhooks/github` and **Webhook secret** to the content of
    `webhook-secret`. Save.
 2. **Permissions & events → Subscribe to events:** check **Pull request**.
    Save.
 
-The mint acts only on deliveries for that App ID. A hook from another App, or
-a repository or organization webhook, is answered `202` and ignored.
+Then delete the local `webhook-secret` file, or move it to your secret store.
+
+The mint acts only on deliveries for that App ID. A repository or
+organization webhook pointed at the mint has a different secret, so the mint
+answers it `401`.
 
 ### What success looks like
 
 In the App's **Advanced** tab, under **Recent Deliveries**:
 
-- the `ping` sent when the webhook is turned on is answered `200`;
+- the `ping` GitHub sends when the webhook is turned on is answered `200`
+  `{"ok":true}`;
 - a `pull_request` delivery for a push to a fork PR on an enrolled
-  repository is answered `202` with `{"dispatched":true}`.
+  repository is answered `202` `{"dispatched":true}`, and the repository's
+  **Actions** tab shows a `workflow_dispatch` run of the poll workflow;
+- another push to the same repository within 30 seconds is answered `202`
+  `{"dispatched":false,"reason":"debounced"}`. That is expected.
 
-The repository's **Actions** tab then shows a `workflow_dispatch` run of the
-poll workflow. Other deliveries (same-repository PRs, other actions, other
-events, repositories not in `PER_REPO_WIF_REPOS`) are answered `202` with
-`{"dispatched":false,"reason":"..."}` and start nothing. The mint logs one
-line per delivery with the delivery ID, event, action, repository and
-outcome.
+The mint logs one line per delivery, for example:
+
+```text
+github webhook: delivery="local-1" event="ping" action="" repo="" outcome=ping
+```
+
+### Limits
+
+- **Debounce:** after a dispatch for a repository, the mint answers further
+  deliveries for it with `debounced` for 30 seconds, without calling GitHub.
+  The poll's concurrency group keeps at most one queued run, and every run
+  scans every open PR. A push that lands after the dispatched run has listed
+  the PRs waits for the next run or the schedule.
+- **Negative cache:** `app_not_installed` and `workflow_not_dispatchable`
+  are remembered per repository for 5 minutes and answered without calling
+  GitHub.
+- **Per instance:** this state lives in one mint instance (one Cloud Run
+  instance, one Worker isolate, or one standalone process). It is not shared
+  across instances or isolates and is lost on restart. Each instance
+  remembers at most 10,000 repositories.
+- **Cloudflare only:** at most 60 requests per minute per source IP (see
+  [Cloudflare Worker rate limiting](#cloudflare-worker-rate-limiting)). Over
+  that, the Worker answers `429`.
 
 ### Troubleshooting the webhook
 
-| Delivery response | Cause | Fix |
-|-------------------|-------|-----|
-| `404` `{"error":"not found"}` | `FULLSEND_WEBHOOK_SECRET` is not set on the revision or Worker that serves traffic, or the Webhook URL path is wrong. | Set the secret (step 2). On GCP, check the traffic-serving revision's env vars (see [Debugging with gcloud](#debugging-with-gcloud)). Check that the URL ends in `/v1/webhooks/github`. |
-| `401` `{"error":"invalid signature"}` | The App's webhook secret and `FULLSEND_WEBHOOK_SECRET` differ. A trailing newline in either one is enough. | Set both from the same `webhook-secret` file, then **Redeliver**. |
-| `202` `{"dispatched":false,"reason":"workflow_not_dispatchable"}` | GitHub answered the dispatch with `404` or `422`. The repository has no `.github/workflows/fullsend-poll-prs.yml` on its default branch, the workflow has no `workflow_dispatch` trigger, or Actions is disabled. | Install or update the poll workflow. The schedule still picks up the PR. |
-| `202` `{"dispatched":false,"reason":"app_not_installed"}` | The orchestrator App is not installed on the repository. | Install the App on the repository. |
-| `202` `{"dispatched":false,"reason":"not_orchestrator_app"}` | The delivery is for an App whose ID is not the `fullsend` entry of `ROLE_APP_IDS`, or for a repository or organization webhook. | Configure the webhook on the App registered as `fullsend`. |
+| What you see | Cause | Fix |
+|--------------|-------|-----|
+| `404` `{"error":"not found"}` | The route is off: `FULLSEND_WEBHOOK_SECRET` is not set on the revision or Worker that serves traffic, `ROLE_APP_IDS` has no `fullsend` entry, or `ALLOWED_ROLES` leaves out `fullsend`. A preview Worker, or a Webhook URL that does not end in `/v1/webhooks/github`, also gets `404`. | Set the secret for your host. Check the startup log for `the route is off`. On GCP, check the traffic-serving revision's env vars (see [Debugging with gcloud](#debugging-with-gcloud)). |
+| `401` `{"error":"invalid signature"}` | The App's webhook secret and `FULLSEND_WEBHOOK_SECRET` differ. A trailing newline in either is enough. A repository or organization webhook pointed at the mint also gets `401`. | Set both from the same `webhook-secret` file, then **Redeliver**. Use the App's webhook, not a repository or organization webhook. |
+| `413` `{"error":"request body too large"}` | The payload is larger than 1 MiB. | None. The schedule picks up the PR. |
+| `429` `{"error":"rate_limited"}` (Cloudflare only) | More than 60 deliveries per minute from one GitHub source IP. | None. The schedule picks up the PR. |
+| `202` `{"dispatched":false,"reason":"not_fork"}` | The PR's head branch is in the base repository. A same-repository PR is not a fork PR, and the route acts only on fork PRs. | None. To test the webhook, push to a PR opened from a fork. |
+| `202` `{"dispatched":false,"reason":"debounced"}` | This mint instance dispatched the poll for the repository in the last 30 seconds, or is dispatching it now. | None. See [Limits](#limits). |
+| `202` `{"dispatched":false,"reason":"workflow_not_dispatchable"}` | GitHub answered the repository read with `404`, or the dispatch with `404` or `422`. In observed GitHub behaviour these mean: no `.github/workflows/fullsend-poll-prs.yml` on the default branch (also the case before the fullsend release that installs it), no `workflow_dispatch` trigger, or Actions disabled. The answer may come from the 5-minute cache, with no GitHub call. | Install or update the poll workflow. Deliveries within 5 minutes of the first such answer may still get it from the cache. The schedule picks up the PR meanwhile. |
+| `202` `{"dispatched":false,"reason":"app_not_installed"}` | The orchestrator App is not installed on the repository. The answer may come from the 5-minute cache. | Install the App on the repository. Deliveries within 5 minutes may still get the cached answer. |
+| `202` `{"dispatched":false,"reason":"not_orchestrator_app"}` | The delivery names an App whose ID is not the `fullsend` entry of `ROLE_APP_IDS`. | Configure the webhook on the App registered as `fullsend`. |
 | `202` `{"dispatched":false,"reason":"repo_not_enrolled"}` | The base repository is not in `PER_REPO_WIF_REPOS`. | [Enroll the repository](#enrolling-repositories). |
-| `413` | The payload is larger than 1 MiB. | None: the schedule picks up the PR. |
-| `502` `{"error":"dispatch failed"}` | A GitHub API call failed (installation lookup, token request, or a dispatch answer other than `204`, `404` or `422`). The mint's log line for the delivery holds the error. | **Redeliver** from the **Advanced** tab once GitHub recovers. |
+| `502` `{"error":"dispatch failed"}` | A GitHub API call failed: the installation lookup, the token request (for example, the App lacks **Actions: Read and write**), the repository read with an answer other than `200` or `404`, or a dispatch answer other than 2xx, `404` or `422`. The mint's log line for the delivery holds the error. | Fix the cause, then **Redeliver** from the **Advanced** tab. |
+| `500` `{"error":"dispatch failed"}` | The mint could not read the `fullsend` private key or sign the App JWT (`outcome=credential_error` in the log). | Check the `fullsend` PEM (see [PEM secret errors](#pem-secret-errors)). |
+| GitHub shows the delivery as timed out | GitHub waits 10 seconds for an answer. A cold start plus the four GitHub calls can take longer. The dispatch may still have happened. | Check the repository's **Actions** tab, or the mint log for the delivery ID with `outcome=dispatched`. A **Redeliver** is harmless: at most one more poll run, or a `debounced` answer. |
 
 ## Bot-role lookup endpoint
 

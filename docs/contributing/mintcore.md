@@ -229,7 +229,7 @@ call `mintHTTP` include:
 - `github.go` — GitHub App installation token creation
 - `bot_role.go` — GitHub App lookup and installation verification for
   `POST /v1/bot-role`
-- `webhook.go` — `workflow_dispatch` of the fork PR review poll for
+- `webhook.go` — repository read and `workflow_dispatch` of the fork PR review poll for
   `POST /v1/webhooks/github`
 - `jwks_verifier.go` — JWKS key fetching
 - `sts_verifier.go` — GCP STS token exchange
@@ -292,16 +292,34 @@ type PEMAccessor interface {
 ## GitHub webhook route
 
 `POST /v1/webhooks/github` (`webhook.go`) is off, and answers `404` like an
-unknown path, until `FULLSEND_WEBHOOK_SECRET` is set. Its only
-authentication is the `X-Hub-Signature-256` HMAC of the raw body, checked
-with the standard library (`crypto/hmac`) because mintcore cannot import
-`internal/poll`. It acts only on deliveries for the `fullsend` App ID in
-`ROLE_APP_IDS`, and only on fork `pull_request` events of repositories that
-pass `IsPerRepoMode`. It then sends one `workflow_dispatch` of
-`fullsend-poll-prs.yml` with no inputs, using an installation token limited
-to that repository with `actions: write` and `metadata: read`. The token is
-created per request and never returned, logged or cached. Operator setup is
-in
+unknown path, until `FULLSEND_WEBHOOK_SECRET` is set and `checkAllowedRole`
+allows the `fullsend` role. `NewHandler` decides this once, after it has
+built `allowedRoles`, and logs when the secret is set but the role is not
+allowed. Its only authentication is the `X-Hub-Signature-256` HMAC of the
+raw body, checked with the standard library (`crypto/hmac`) because mintcore
+cannot import `internal/poll`. It acts only on deliveries for the `fullsend`
+App ID in `ROLE_APP_IDS`, and only on fork `pull_request` events of
+repositories that pass `IsPerRepoMode`. It then mints an installation token
+limited to that repository with `actions: write` and `metadata: read`, reads
+the current default branch with `GET /repos/{owner}/{repo}` (never the
+payload's `default_branch`, which a replayed delivery could hold stale), and
+sends one `workflow_dispatch` of `fullsend-poll-prs.yml` on it with no
+inputs. The token is created per request and never returned, logged or
+cached.
+
+`webhookLimiter` bounds the GitHub calls: after a dispatch it answers a
+repository's deliveries with `debounced` for 30 s, and it remembers
+`app_not_installed` and `workflow_not_dispatchable` for 5 minutes. A miss
+reserves the repository before the GitHub calls, so concurrent deliveries
+for it do not dispatch twice; a failure clears the reservation so a
+redelivery tries again. The map is guarded by a mutex and bounded to 10,000
+entries (expired entries are swept first, then the one expiring soonest is
+evicted). Its clock is the `now` field, which tests replace. The state is
+best-effort and in-process: per Cloud Run instance, Worker isolate or
+standalone process, not shared, and lost on restart (on the Worker, also on
+a WASM runtime re-init). The Cloudflare Worker adapter also rate-limits the
+path with `MINT_TOKEN_RATE_LIMITER`, like `/v1/token` and `/v1/bot-role`.
+Operator setup is in
 [Mint administration](../guides/infrastructure/mint-administration.md#github-webhook-for-fork-pr-reviews).
 
 ## Tracing

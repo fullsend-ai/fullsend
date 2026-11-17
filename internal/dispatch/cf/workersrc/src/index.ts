@@ -66,8 +66,8 @@ export interface Env {
    */
   MINT_OTLP_HEADERS?: string;
   /**
-   * Native Workers rate limiter for POST /v1/token and POST
-   * /v1/bot-role (one counter per path). Bound via
+   * Native Workers rate limiter for POST /v1/token, POST /v1/bot-role
+   * and POST /v1/webhooks/github (one counter per path). Bound via
    * [[ratelimits]] in wrangler.toml. The key includes the request
    * hostname so preview aliases (which produce distinct hostnames)
    * get isolated counters without extra namespace_id patching.
@@ -786,9 +786,10 @@ export default {
       );
     }
 
-    // Rate-limit POST /v1/token and POST /v1/bot-role before WASM init
-    // to avoid wasting CPU (and shared GitHub API capacity, for the
-    // bot-role lookup) on abusive traffic. The key includes the
+    // Rate-limit POST /v1/token, POST /v1/bot-role and POST
+    // /v1/webhooks/github before WASM init to avoid wasting CPU (and
+    // shared GitHub API capacity, for the bot-role lookup and the
+    // webhook dispatch) on abusive traffic. The key includes the
     // hostname so that preview aliases (which produce distinct
     // hostnames like <alias>-<worker>.<subdomain>.workers.dev) get
     // isolated counters — concurrent BT preview instances do not
@@ -807,7 +808,8 @@ export default {
       request.method === "POST" &&
       (routePath === "/v1/token" ||
         routePath === "/" ||
-        routePath === "/v1/bot-role")
+        routePath === "/v1/bot-role" ||
+        routePath === "/v1/webhooks/github")
     ) {
       const rl = env.MINT_TOKEN_RATE_LIMITER;
       if (rl) {

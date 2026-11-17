@@ -92,8 +92,14 @@ type Handler struct {
 	tracer *Tracer
 
 	// webhookSecret is FULLSEND_WEBHOOK_SECRET, the HMAC secret of the
-	// orchestrator App's webhook. Nil turns the webhook route off.
+	// orchestrator App's webhook. Nil turns the webhook route off: it is
+	// left nil while the secret is unset or ALLOWED_ROLES does not allow
+	// webhookRole.
 	webhookSecret []byte
+
+	// webhookLimits debounces dispatches and remembers negative results
+	// per repository, in this instance only.
+	webhookLimits *webhookLimiter
 }
 
 type foreignInflight struct {
@@ -165,10 +171,6 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		allowedWorkflowFiles: SplitCSV(mintEnv("ALLOWED_WORKFLOW_FILES")),
 		workflowHostRepos:    workflowHostRepos,
 	}
-	if secret := mintEnv(webhookSecretEnv); secret != "" {
-		h.webhookSecret = []byte(secret)
-	}
-
 	if raw := mintEnv("ROLE_APP_IDS"); raw != "" {
 		var ids map[string]string
 		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
@@ -205,6 +207,16 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		}
 		if !roleSet[role] {
 			return nil, fmt.Errorf("ALLOWED_ROLES contains %q but ROLE_APP_IDS has no entry for it", role)
+		}
+	}
+
+	if secret := mintEnv(webhookSecretEnv); secret != "" {
+		if h.checkAllowedRole(webhookRole) {
+			h.webhookSecret = []byte(secret)
+			h.webhookLimits = newWebhookLimiter()
+		} else {
+			log.Printf("github webhook: %s is set but ALLOWED_ROLES does not allow role %q; the route is off",
+				webhookSecretEnv, webhookRole)
 		}
 	}
 
@@ -249,7 +261,8 @@ func (h *Handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The webhook route answers 404 like an unknown path until
-	// FULLSEND_WEBHOOK_SECRET is configured.
+	// FULLSEND_WEBHOOK_SECRET is configured and ALLOWED_ROLES allows the
+	// fullsend role.
 	if r.URL.Path == webhookPath && h.webhookSecret != nil {
 		h.handleGitHubWebhook(w, r)
 		return

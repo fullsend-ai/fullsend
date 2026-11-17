@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // GitHub webhook route that wakes a repository's fork PR review poll
@@ -24,7 +26,8 @@ const (
 	webhookPath = "/v1/webhooks/github"
 
 	// webhookSecretEnv names the HMAC secret shared with the orchestrator
-	// App's webhook. The route is off (404) while it is unset.
+	// App's webhook. The route is off (404) while it is unset or while
+	// ALLOWED_ROLES does not allow webhookRole.
 	webhookSecretEnv = "FULLSEND_WEBHOOK_SECRET"
 
 	// maxWebhookBodyBytes bounds the webhook body the route reads.
@@ -38,6 +41,20 @@ const (
 	pollWorkflowFile = "fullsend-poll-prs.yml"
 
 	webhookSignaturePrefix = "sha256="
+
+	// webhookDebounce is how long, after a dispatch for a repository,
+	// further deliveries for it are answered without a GitHub call. One
+	// more dispatch would add nothing: the poll's concurrency group keeps
+	// at most one queued run, and every run scans every open PR.
+	webhookDebounce = 30 * time.Second
+
+	// webhookNegativeTTL is how long app_not_installed and
+	// workflow_not_dispatchable are remembered for a repository.
+	webhookNegativeTTL = 5 * time.Minute
+
+	// webhookLimiterMaxEntries bounds the repositories webhookLimiter
+	// remembers.
+	webhookLimiterMaxEntries = 10000
 )
 
 // Outcomes logged for each webhook request and returned as the reason of a
@@ -53,7 +70,7 @@ const (
 	webhookOutcomeNotFork          = "not_fork"
 	webhookOutcomeInvalidRepo      = "invalid_repository"
 	webhookOutcomeNotEnrolled      = "repo_not_enrolled"
-	webhookOutcomeNoDefaultBranch  = "no_default_branch"
+	webhookOutcomeDebounced        = "debounced"
 	webhookOutcomeBadSignature     = "invalid_signature"
 	webhookOutcomeTooLarge         = "body_too_large"
 	webhookOutcomeBadBody          = "invalid_body"
@@ -77,9 +94,11 @@ var webhookPRActions = map[string]bool{
 }
 
 // webhookRepo is the subset of a webhook repository object the route reads.
+// The payload's default_branch is deliberately not read: a replayed old
+// delivery could name a former default branch, so the dispatch ref comes
+// from a live GET /repos/{owner}/{repo} instead.
 type webhookRepo struct {
-	FullName      string `json:"full_name"`
-	DefaultBranch string `json:"default_branch"`
+	FullName string `json:"full_name"`
 }
 
 // webhookPullRequestEvent is the subset of a pull_request webhook payload
@@ -203,14 +222,18 @@ func (h *Handler) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		writeWebhookDrop(w, webhookOutcomeNotEnrolled)
 		return
 	}
-	if base.DefaultBranch == "" {
-		l.write(webhookOutcomeNoDefaultBranch, nil)
-		writeWebhookDrop(w, webhookOutcomeNoDefaultBranch)
+	// Answer from the per-instance limiter when it can, without any GitHub
+	// call. A miss reserves the repository, so concurrent deliveries for
+	// it are debounced while this one dispatches.
+	if reason, ok := h.webhookLimits.reserve(base.FullName); !ok {
+		l.write(reason+" source=cache", nil)
+		writeWebhookDrop(w, reason)
 		return
 	}
 
 	owner, name, _ := strings.Cut(base.FullName, "/")
-	outcome, status, err := h.dispatchPollWorkflow(r.Context(), owner, name, base.DefaultBranch)
+	outcome, status, err := h.dispatchPollWorkflow(r.Context(), owner, name)
+	h.webhookLimits.settle(base.FullName, outcome)
 	l.write(outcome, err)
 	switch status {
 	case http.StatusAccepted:
@@ -260,12 +283,14 @@ func (h *Handler) fromOrchestratorApp(header http.Header) bool {
 }
 
 // dispatchPollWorkflow sends one workflow_dispatch of pollWorkflowFile on
-// ref in owner/name with a token limited to that repository and to
-// webhookDispatchPermissions. It returns the outcome to log and the status
-// class to answer with: 202 for a dispatch or a repository that cannot take
-// one, 502 for any other GitHub failure, 500 for a mint credential failure.
-// The token is never returned, logged or kept beyond this call.
-func (h *Handler) dispatchPollWorkflow(ctx context.Context, owner, name, ref string) (string, int, error) {
+// the current default branch of owner/name with a token limited to that
+// repository and to webhookDispatchPermissions. It reads the default
+// branch from GitHub with the same token rather than trusting the payload.
+// It returns the outcome to log and the status class to answer with: 202
+// for a dispatch or a repository that cannot take one, 502 for any other
+// GitHub failure, 500 for a mint credential failure. The token is never
+// returned, logged or kept beyond this call.
+func (h *Handler) dispatchPollWorkflow(ctx context.Context, owner, name string) (string, int, error) {
 	jwt, err := h.appJWT(ctx, webhookRole)
 	if err != nil {
 		return webhookOutcomeCredentialError, http.StatusInternalServerError, err
@@ -282,7 +307,20 @@ func (h *Handler) dispatchPollWorkflow(ctx context.Context, owner, name, ref str
 		return webhookOutcomeGitHubError, http.StatusBadGateway, err
 	}
 
-	status, err := postWorkflowDispatch(ctx, h.githubBaseURL, token, owner, name, ref)
+	ref, status, err := getDefaultBranch(ctx, h.githubBaseURL, token, owner, name)
+	switch {
+	case err != nil:
+		return webhookOutcomeGitHubError, http.StatusBadGateway, err
+	case status == http.StatusNotFound:
+		return webhookOutcomeNotDispatchable, http.StatusAccepted, nil
+	case status != http.StatusOK:
+		return webhookOutcomeGitHubError, http.StatusBadGateway,
+			fmt.Errorf("reading repository returned status %d", status)
+	case ref == "":
+		return webhookOutcomeNotDispatchable, http.StatusAccepted, nil
+	}
+
+	status, err = postWorkflowDispatch(ctx, h.githubBaseURL, token, owner, name, ref)
 	switch {
 	case err != nil:
 		return webhookOutcomeGitHubError, http.StatusBadGateway, err
@@ -323,6 +361,129 @@ func postWorkflowDispatch(ctx context.Context, githubBaseURL, token, owner, name
 	defer resp.Body.Close()
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	return resp.StatusCode, nil
+}
+
+// getDefaultBranch calls GET /repos/{owner}/{name} and returns the
+// repository's current default branch and GitHub's status. The branch is
+// empty unless the status is 200.
+func getDefaultBranch(ctx context.Context, githubBaseURL, token, owner, name string) (string, int, error) {
+	reqURL := fmt.Sprintf("%s/repos/%s/%s", githubBaseURL, owner, name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("creating repository request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", githubUserAgent())
+
+	resp, err := mintHTTP(req)
+	if err != nil {
+		return "", 0, fmt.Errorf("reading repository: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return "", resp.StatusCode, nil
+	}
+	var repo struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&repo); err != nil {
+		return "", 0, fmt.Errorf("decoding repository: %w", err)
+	}
+	return repo.DefaultBranch, http.StatusOK, nil
+}
+
+// webhookLimiter bounds the GitHub calls the webhook route makes per
+// repository. It is best-effort and in-process: its state lives in one
+// mint instance (one Cloud Run instance, one Worker isolate, one
+// standalone process), is not shared across instances or isolates, and is
+// lost on restart. A nil *webhookLimiter limits nothing.
+type webhookLimiter struct {
+	mu         sync.Mutex
+	now        func() time.Time
+	maxEntries int
+	entries    map[string]webhookLimitEntry
+}
+
+// webhookLimitEntry is what the limiter remembers for one repository:
+// reason is the answer for deliveries until expires.
+type webhookLimitEntry struct {
+	reason  string
+	expires time.Time
+}
+
+func newWebhookLimiter() *webhookLimiter {
+	return &webhookLimiter{
+		now:        time.Now,
+		maxEntries: webhookLimiterMaxEntries,
+		entries:    make(map[string]webhookLimitEntry),
+	}
+}
+
+// reserve reports whether a delivery for repo may call GitHub. When it may
+// not, it returns the reason to answer with: debounced after a recent or
+// in-flight dispatch, or a remembered app_not_installed or
+// workflow_not_dispatchable. When it may, it marks repo as debounced, so
+// concurrent deliveries for it do not call GitHub too; settle records the
+// result.
+func (l *webhookLimiter) reserve(repo string) (string, bool) {
+	if l == nil {
+		return "", true
+	}
+	key := strings.ToLower(repo)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	if e, ok := l.entries[key]; ok && now.Before(e.expires) {
+		return e.reason, false
+	}
+	l.putLocked(key, webhookLimitEntry{reason: webhookOutcomeDebounced, expires: now.Add(webhookDebounce)}, now)
+	return "", true
+}
+
+// settle records the outcome of the dispatch reserve allowed for repo. A
+// dispatch debounces repo for webhookDebounce, app_not_installed and
+// workflow_not_dispatchable are remembered for webhookNegativeTTL, and any
+// failure clears the reservation so a redelivery calls GitHub again.
+func (l *webhookLimiter) settle(repo, outcome string) {
+	if l == nil {
+		return
+	}
+	key := strings.ToLower(repo)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	switch outcome {
+	case webhookOutcomeDispatched:
+		l.putLocked(key, webhookLimitEntry{reason: webhookOutcomeDebounced, expires: now.Add(webhookDebounce)}, now)
+	case webhookOutcomeNotInstalled, webhookOutcomeNotDispatchable:
+		l.putLocked(key, webhookLimitEntry{reason: outcome, expires: now.Add(webhookNegativeTTL)}, now)
+	default:
+		delete(l.entries, key)
+	}
+}
+
+// putLocked stores e for key. When the map is full it first drops expired
+// entries and then, if still full, the entry that expires soonest.
+func (l *webhookLimiter) putLocked(key string, e webhookLimitEntry, now time.Time) {
+	if _, ok := l.entries[key]; !ok && len(l.entries) >= l.maxEntries {
+		for k, v := range l.entries {
+			if !now.Before(v.expires) {
+				delete(l.entries, k)
+			}
+		}
+		if len(l.entries) >= l.maxEntries {
+			oldest, first := "", true
+			for k, v := range l.entries {
+				if first || v.expires.Before(l.entries[oldest].expires) {
+					oldest, first = k, false
+				}
+			}
+			delete(l.entries, oldest)
+		}
+	}
+	l.entries[key] = e
 }
 
 // writeWebhookDrop answers a signed delivery the route does not act on.

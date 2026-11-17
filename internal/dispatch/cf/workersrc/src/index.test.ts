@@ -98,6 +98,69 @@ describe("mint worker rate limiting", () => {
     expect(body.error).toBe("rate_limited");
   });
 
+  it("returns 429 rate_limited when MINT_TOKEN_RATE_LIMITER denies POST /v1/webhooks/github", async () => {
+    const req = new Request("https://worker.test/v1/webhooks/github", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const limitedEnv: Env = {
+      ...env,
+      MINT_TOKEN_RATE_LIMITER: denyRateLimit,
+    } as Env;
+    const res = await worker.fetch(req, limitedEnv, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(429);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toBe("rate_limited");
+  });
+
+  it("rate-limits an otherwise-encoded /v1/webhooks/github path on its decoded form", async () => {
+    const req = new Request("https://worker.test/v1/webhooks/git%68ub", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const limitedEnv: Env = {
+      ...env,
+      MINT_TOKEN_RATE_LIMITER: denyRateLimit,
+    } as Env;
+    const res = await worker.fetch(req, limitedEnv, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(res.status).toBe(429);
+  });
+
+  it("allows POST /v1/webhooks/github when rate limiter permits", async () => {
+    const keys: string[] = [];
+    const capturingRateLimit: Env["MINT_TOKEN_RATE_LIMITER"] = {
+      limit: async (opts: { key: string }) => {
+        keys.push(opts.key);
+        return { success: true };
+      },
+    };
+    const req = new Request("https://worker.test/v1/webhooks/github", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "CF-Connecting-IP": "1.2.3.4",
+      },
+      body: "{}",
+    });
+    const ctx = createExecutionContext();
+    const res = await worker.fetch(
+      req,
+      { ...env, MINT_TOKEN_RATE_LIMITER: capturingRateLimit } as Env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+    // Passes through to the WASM handler (404 while the route is off),
+    // not 429, on its own counter.
+    expect(res.status).not.toBe(429);
+    expect(keys).toEqual(["worker.test:/v1/webhooks/github:1.2.3.4"]);
+  });
+
   it("rejects an encoded slash in the path instead of skipping the limiter", async () => {
     const req = new Request("https://worker.test/v1%2Fbot-role", {
       method: "POST",

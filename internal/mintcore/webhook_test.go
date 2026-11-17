@@ -33,12 +33,15 @@ type webhookGitHub struct {
 
 	installStatus  int // 0 means 200
 	tokenStatus    int // 0 means 201
+	repoStatus     int // 0 means 200
+	repoBody       string
 	dispatchStatus int // 0 means 204
 
 	mu            sync.Mutex
 	calls         []string
 	tokenPerms    map[string]string
 	tokenRepos    []string
+	repoToken     string
 	dispatchBody  map[string]any
 	dispatchToken string
 }
@@ -76,6 +79,17 @@ func (g *webhookGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]string{"token": webhookTestToken, "expires_at": "2099-01-01T00:00:00Z"})
+	case r.Method == http.MethodGet && r.URL.Path == "/repos/test-org/test-repo":
+		g.repoToken = r.Header.Get("Authorization")
+		if g.repoStatus != 0 {
+			w.WriteHeader(g.repoStatus)
+			return
+		}
+		body := g.repoBody
+		if body == "" {
+			body = `{"full_name":"test-org/test-repo","default_branch":"main"}`
+		}
+		w.Write([]byte(body))
 	case r.Method == http.MethodPost && r.URL.Path == "/repos/test-org/test-repo/actions/workflows/fullsend-poll-prs.yml/dispatches":
 		g.dispatchToken = r.Header.Get("Authorization")
 		if err := json.NewDecoder(r.Body).Decode(&g.dispatchBody); err != nil {
@@ -286,8 +300,6 @@ func TestWebhook_DropsWithoutCallingGitHub(t *testing.T) {
 			header: map[string]string{"X-GitHub-Hook-Installation-Target-ID": "abc"}, wantReason: "not_orchestrator_app"},
 		{name: "repository hook", event: "pull_request", body: fork,
 			header: map[string]string{"X-GitHub-Hook-Installation-Target-Type": "repository"}, wantReason: "not_orchestrator_app"},
-		{name: "no fullsend role", event: "pull_request", body: fork,
-			env: map[string]string{"ROLE_APP_IDS": `{"triage":"100"}`}, wantReason: "not_orchestrator_app"},
 		{name: "ping from another app", event: "ping", body: []byte(`{}`),
 			header: map[string]string{"X-GitHub-Hook-Installation-Target-ID": "999"}, wantReason: "not_orchestrator_app"},
 		{name: "push event", event: "push", body: []byte(`{}`), wantReason: "event_ignored"},
@@ -300,9 +312,6 @@ func TestWebhook_DropsWithoutCallingGitHub(t *testing.T) {
 		{name: "deleted fork", event: "pull_request", body: prPayload("synchronize", "", "test-org/test-repo"), wantReason: "not_fork"},
 		{name: "invalid base repository", event: "pull_request", body: prPayload("opened", "fork/x", "../etc"), wantReason: "invalid_repository"},
 		{name: "not enrolled", event: "pull_request", body: prPayload("opened", "fork/other-repo", "test-org/other-repo"), wantReason: "repo_not_enrolled"},
-		{name: "no default branch", event: "pull_request",
-			body:       []byte(`{"action":"opened","pull_request":{"head":{"repo":{"full_name":"fork/test-repo"}},"base":{"repo":{"full_name":"test-org/test-repo"}}}}`),
-			wantReason: "no_default_branch"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -347,6 +356,7 @@ func TestWebhook_DispatchesForkPR(t *testing.T) {
 			wantCalls := []string{
 				"GET /repos/test-org/test-repo/installation",
 				"POST /app/installations/42/access_tokens",
+				"GET /repos/test-org/test-repo",
 				"POST /repos/test-org/test-repo/actions/workflows/fullsend-poll-prs.yml/dispatches",
 			}
 			if calls := gh.recordedCalls(); strings.Join(calls, "\n") != strings.Join(wantCalls, "\n") {
@@ -360,6 +370,9 @@ func TestWebhook_DispatchesForkPR(t *testing.T) {
 			}
 			if len(gh.dispatchBody) != 1 || gh.dispatchBody["ref"] != "main" {
 				t.Errorf("dispatch body = %v, want only ref main", gh.dispatchBody)
+			}
+			if gh.repoToken != "Bearer "+webhookTestToken {
+				t.Errorf("repository read Authorization = %q, want the dispatch token", gh.repoToken)
 			}
 			if gh.dispatchToken != "Bearer "+webhookTestToken {
 				t.Errorf("dispatch Authorization = %q, want the dispatch token", gh.dispatchToken)
@@ -402,10 +415,20 @@ func TestWebhook_DispatchFailures(t *testing.T) {
 		name           string
 		installStatus  int
 		tokenStatus    int
+		repoStatus     int
+		repoBody       string
 		dispatchStatus int
 		wantStatus     int
 		wantReason     string
 	}{
+		{name: "repository read 404", repoStatus: http.StatusNotFound,
+			wantStatus: http.StatusAccepted, wantReason: "workflow_not_dispatchable"},
+		{name: "repository without default branch", repoBody: `{"full_name":"test-org/test-repo"}`,
+			wantStatus: http.StatusAccepted, wantReason: "workflow_not_dispatchable"},
+		{name: "repository read 500", repoStatus: http.StatusInternalServerError,
+			wantStatus: http.StatusBadGateway},
+		{name: "repository read invalid JSON", repoBody: `{`,
+			wantStatus: http.StatusBadGateway},
 		{name: "dispatch 404", dispatchStatus: http.StatusNotFound,
 			wantStatus: http.StatusAccepted, wantReason: "workflow_not_dispatchable"},
 		{name: "dispatch 422", dispatchStatus: http.StatusUnprocessableEntity,
@@ -422,7 +445,8 @@ func TestWebhook_DispatchFailures(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			logs := captureWebhookLogs(t)
-			gh := &webhookGitHub{installStatus: tc.installStatus, tokenStatus: tc.tokenStatus, dispatchStatus: tc.dispatchStatus}
+			gh := &webhookGitHub{installStatus: tc.installStatus, tokenStatus: tc.tokenStatus,
+				repoStatus: tc.repoStatus, repoBody: tc.repoBody, dispatchStatus: tc.dispatchStatus}
 			h := newWebhookHandler(t, webhookTestSecret, gh)
 			rec := serveWebhook(h, webhookRequest("pull_request", prPayload("synchronize", "fork/test-repo", "test-org/test-repo")))
 			if rec.Code != tc.wantStatus {
@@ -462,6 +486,12 @@ func TestWebhook_DispatchTransportError(t *testing.T) {
 	h := newWebhookHandler(t, webhookTestSecret, gh)
 	if _, err := postWorkflowDispatch(t.Context(), "http://127.0.0.1:0", webhookTestToken, "test-org", "test-repo", "main"); err == nil {
 		t.Fatal("postWorkflowDispatch to an unreachable host succeeded")
+	}
+	if _, _, err := getDefaultBranch(t.Context(), "http://127.0.0.1:0", webhookTestToken, "test-org", "test-repo"); err == nil {
+		t.Fatal("getDefaultBranch from an unreachable host succeeded")
+	}
+	if _, _, err := getDefaultBranch(t.Context(), "http://bad host", webhookTestToken, "test-org", "test-repo"); err == nil {
+		t.Fatal("getDefaultBranch with an invalid URL succeeded")
 	}
 	// An unreachable GitHub API answers 502 so GitHub can redeliver.
 	h.githubBaseURL = "http://127.0.0.1:0"
