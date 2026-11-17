@@ -11,6 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 )
 
@@ -25,28 +26,28 @@ const githubTokenEnvVar = "GH_TOKEN"
 var githubPublicHosts = map[string]bool{"api.github.com": true, "github.com": true}
 
 // githubForgeHostPort returns the host and port of the GitHub server this run
-// is configured for (GITHUB_SERVER_URL), or ("", "") on github.com or when it
-// is unset or unparsable. A URL without a port gets the scheme's default.
+// is configured for (GITHUB_SERVER_URL), or ("", "") when the run is on
+// github.com. The URL must pass config.GitHubServerBaseURL, the rule the API
+// client and the allowlist use, so the profiles and gh never name a server the
+// rest of the run does not: an http, userinfo, path or query URL leaves the
+// run on github.com here too. GHE.com (*.ghe.com) is left alone as well: gh
+// calls api.<host> there and reads GH_TOKEN, which this binding does not model.
 func githubForgeHostPort(getenv func(string) string) (host, port string) {
-	raw := strings.TrimSpace(getenv("GITHUB_SERVER_URL"))
-	if raw == "" {
+	base := config.GitHubServerBaseURL(getenv("GITHUB_SERVER_URL"))
+	if base == "" {
 		return "", ""
 	}
-	u, err := url.Parse(raw)
+	u, err := url.Parse(base)
 	if err != nil || u.Hostname() == "" {
 		return "", ""
 	}
-	h := strings.ToLower(u.Hostname())
-	if h == "github.com" {
+	h := u.Hostname()
+	if h == "ghe.com" || strings.HasSuffix(h, ".ghe.com") {
 		return "", ""
 	}
 	p := u.Port()
 	if p == "" {
-		if u.Scheme == "http" {
-			p = "80"
-		} else {
-			p = "443"
-		}
+		p = "443"
 	}
 	return h, p
 }

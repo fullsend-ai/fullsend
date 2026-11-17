@@ -281,6 +281,10 @@
           "description": "trace-ID injection succeeds; the run warns and continues when it fails"
         },
         {
+          "const": "GH_HOST",
+          "description": "GITHUB_SERVER_URL points to a GitHub server other than github.com (GitHub Enterprise Server or a GitHub-compatible API); GH_ENTERPRISE_TOKEN then gets the GH_TOKEN placeholder"
+        },
+        {
           "const": "TIRITH_FAIL_ON",
           "description": "security.sandbox_hooks.tirith.fail_on is set; only the claude, codex, and pi bootstraps append hook env, so it is unreachable under opencode"
         },

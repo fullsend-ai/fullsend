@@ -32,6 +32,14 @@ func TestRequireGitHubOIDCHostRefusesOtherHosts(t *testing.T) {
 	if err := requireGitHubOIDCHost("https://ghes.example.com.evil.test/token", envWith("https://ghes.example.com")); err == nil {
 		t.Error("a look-alike host was accepted")
 	}
+	if err := requireGitHubOIDCHost("https://ghes.example.com:8443/token", envWith("https://ghes.example.com")); err == nil {
+		t.Error("another port on the configured server was accepted")
+	}
+	for _, server := range []string{"http://ghes.example.com", "https://user@ghes.example.com", "https://ghes.example.com/sub"} {
+		if err := requireGitHubOIDCHost("https://ghes.example.com/token", envWith(server)); err == nil {
+			t.Errorf("GITHUB_SERVER_URL=%q is not a valid server URL but its host was accepted", server)
+		}
+	}
 }
 
 func TestRequireGitHubOIDCHostOnGitHubCom(t *testing.T) {

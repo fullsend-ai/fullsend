@@ -23,6 +23,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/config"
 )
 
 const (
@@ -193,28 +195,37 @@ func requireGitHubOIDCHost(raw string, getenv func(string) string) error {
 	if isLoopback(host) || strings.HasSuffix(host, oidcHostSuffix) {
 		return nil
 	}
-	if server := configuredGitHubServerHost(getenv); server != "" && host == server {
+	if server, port := configuredGitHubServer(getenv); server != "" && host == server && urlPort(u) == port {
 		return nil
 	}
 	return fmt.Errorf("OIDC request URL host %q is not GitHub's Actions token service (*%s)", u.Hostname(), oidcHostSuffix)
 }
 
-// configuredGitHubServerHost returns the host GITHUB_SERVER_URL names, or ""
-// when it is unset, unparsable, or github.com.
-func configuredGitHubServerHost(getenv func(string) string) string {
-	raw := strings.TrimSpace(getenv("GITHUB_SERVER_URL"))
-	if raw == "" {
-		return ""
+// configuredGitHubServer returns the host and port of the GitHub server
+// GITHUB_SERVER_URL names, or ("", "") when it is unset, github.com, or not
+// a URL config.GitHubServerBaseURL accepts (https, no userinfo, path or
+// query), the same rule the rest of the run uses for the server.
+func configuredGitHubServer(getenv func(string) string) (host, port string) {
+	base := config.GitHubServerBaseURL(getenv("GITHUB_SERVER_URL"))
+	if base == "" {
+		return "", ""
 	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return ""
+	u, err := url.Parse(base)
+	if err != nil || u.Hostname() == "" {
+		return "", ""
 	}
-	host := strings.ToLower(u.Hostname())
-	if host == "" || host == "github.com" {
-		return ""
+	return strings.ToLower(u.Hostname()), urlPort(u)
+}
+
+// urlPort returns u's port, or the scheme's default when it names none.
+func urlPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
 	}
-	return host
+	if strings.EqualFold(u.Scheme, "http") {
+		return "80"
+	}
+	return "443"
 }
 
 func isLoopback(host string) bool {

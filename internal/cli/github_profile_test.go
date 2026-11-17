@@ -27,8 +27,11 @@ func TestGitHubForgeHostPort(t *testing.T) {
 		{"https://ghes.example.com", "ghes.example.com", "443"},
 		{"https://ghemu.localhost:443", "ghemu.localhost", "443"},
 		{"https://ghes.example.com:8443/", "ghes.example.com", "8443"},
-		{"http://127.0.0.1:18600", "127.0.0.1", "18600"},
-		{"http://ghes.internal", "ghes.internal", "80"},
+		{"http://127.0.0.1:18600", "", ""},
+		{"http://ghes.internal", "", ""},
+		{"https://user@ghes.example.com", "", ""},
+		{"https://ghes.example.com/sub", "", ""},
+		{"https://acme.ghe.com", "", ""},
 		{"::not a url", "", ""},
 	}
 	for _, c := range cases {
