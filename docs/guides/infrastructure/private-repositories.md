@@ -24,14 +24,14 @@ The [Jira integration](../user/jira-integration.md) runs agents in the
 repository where fullsend is installed. A run that starts from a Jira issue
 reads that issue's title, description, comments, and other fields, including
 custom fields. By default (`artifacts` level `all`), the run artifact holds
-the run's `output/` directory. These JSONL files in the artifact record what
-the agent read:
+the run's `output/` directory. These files in the artifact record what the
+agent read:
 
 | File | Contents |
 |------|----------|
 | `output.jsonl` | The raw conversation stream for each iteration, including tool results such as Jira API responses |
 | `transcripts/*.jsonl` | The agent session transcripts for each iteration |
-| `agent-stderr.log` | The agent CLI's stderr for each iteration, written only at progress level `quiet` |
+| `agent-stderr.log` | The agent CLI's stderr for each iteration, as plain text, written only at progress level `quiet` |
 | `run-telemetry.jsonl` | Run spans, which carry conversation content when content capture is on |
 
 On a public GitHub repository, any signed-in GitHub user can download this

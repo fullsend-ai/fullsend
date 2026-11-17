@@ -1067,7 +1067,32 @@ progress:
 |---|---|
 | `full` | Everything, as before. This is the default, so an unset block leaves the log unchanged. |
 | `tools` | Everything except the model's reasoning and replies: tool lines, task and status progress, token counts, errors, validation output and the result. Tool lines and task labels can still carry text from the source, so use `quiet` for a source that isn't public. |
-| `quiet` | Only lines fullsend writes from its own fields: the heartbeat, the model, event kinds and states (`Task — running`, `Status: hook — running`; a value fullsend does not set itself prints as `other`), token counts, cost, error types, transcript error types, validation passed or failed, output file, transcript and scan finding counts, failed step names, and the result. Reasoning, replies, tool lines, task labels, status details, error messages, plugin and retry messages, validation output, output file and transcript names, the error text of a failed extraction step and the agent CLI's stderr are left out. No notice carries agent or source text: the notices that remain hold fullsend's own fields, such as `Agent completed (4m12s)`. Transcript `::error::` annotations carry the error type only. Once the run has started (from sandbox setup on), its final error prints as a fixed message and telemetry keeps the full text; a setup error before that, such as a config or provider error, prints in full. The level covers the job log only: the status comment on the issue or pull request still carries the full run error. |
+| `quiet` | Only lines fullsend writes from its own fields. Text from the agent or the source is left out; see the lists below. |
+
+At `quiet`:
+
+- **Shown:** the heartbeat, the model, event kinds and states (`Task — running`,
+  `Status: hook — running`; a value fullsend does not set itself prints as
+  `other`), token counts, cost, error types, transcript error types,
+  validation passed or failed, output file, transcript and scan finding
+  counts, failed step names, and the result.
+- **Left out:** reasoning, replies, tool lines, task labels, status details,
+  error messages, plugin and retry messages, validation output, output file
+  and transcript names, the error text of a failed extraction step and the
+  agent CLI's stderr. No notice carries agent or source text: the notices that
+  remain hold fullsend's own fields, such as `Agent completed (4m12s)`.
+- **Errors:** transcript `::error::` annotations carry the error type only.
+  Once the run has started (from sandbox setup on), its final error prints as
+  this fixed message, and telemetry keeps the full text:
+
+  ```text
+  agent run failed (error details are not printed at progress level quiet; see telemetry or the run artifact)
+  ```
+
+  A setup error before that, such as a config or provider error, prints in
+  full. The level covers the job log only: the status comment on the issue or
+  pull request still carries the full run error
+  ([#9627](https://github.com/fullsend-ai/fullsend/issues/9627)).
 
 **Agent CLI stderr at `quiet`.** The agent CLI (Claude Code, pi, Codex or
 OpenCode) writes its own diagnostics to stderr, and they can quote what the
@@ -1097,14 +1122,18 @@ set [`artifacts`](#artifacts) separately for the run artifact.
   `source.system`, lowercase with no surrounding spaces, and open strings, so
   a later adapter's source name works with no schema change.
 
-**Resolution.** The runner uses the stricter of `verbosity` and the
-`by_source` entry for the run's source. A source with no entry gets
-`verbosity`. `quiet` is stricter than `tools`, which is stricter than `full`.
-`fullsend run` finds the run's source the same way as
-[`artifacts`](#artifacts) (a valid normalized event, else a native GitHub
-event). A run whose source is unknown gets the strictest of `verbosity` and
-every `by_source` entry. When the level isn't `full`, the run prints one line
-naming the level and how it was chosen, for example:
+**Resolution.** The stricter level wins: the runner uses the stricter of
+`verbosity` and the `by_source` entry for the run's source, where `quiet` is
+stricter than `tools`, which is stricter than `full`. A source with no entry
+gets `verbosity`.
+
+- `fullsend run` finds the run's source the same way as
+  [`artifacts`](#artifacts): a valid normalized event, else a native GitHub
+  event.
+- A run whose source is unknown gets the strictest of `verbosity` and every
+  `by_source` entry.
+- When the level isn't `full`, the run prints one line naming the level and
+  how it was chosen, for example:
 
 ```text
 Progress log: quiet (run source "jira" from the normalized event)

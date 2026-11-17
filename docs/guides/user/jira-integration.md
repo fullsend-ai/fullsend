@@ -11,10 +11,10 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 >
 > An agent run that starts from a Jira issue reads the issue's title,
 > description, comments, and other fields, including custom fields. By
-> default, the run artifact holds JSONL files that record what the agent
-> read: the raw conversation stream (`output.jsonl`), the agent transcripts
-> (`transcripts/*.jsonl`), the agent CLI's stderr (`agent-stderr.log`, written
-> only at progress level `quiet`), and, when content capture is on,
+> default, the run artifact holds files that record what the agent read: the
+> raw conversation stream (`output.jsonl`), the agent transcripts
+> (`transcripts/*.jsonl`), the agent CLI's stderr (`agent-stderr.log`, plain
+> text, written only at progress level `quiet`), and, when content capture is on,
 > `run-telemetry.jsonl`.
 >
 > - On a public GitHub repository, any signed-in GitHub user can download the
@@ -859,10 +859,10 @@ Use `none` if issue keys and branch names must stay private too. To check
 that it worked, and to see what each level keeps, follow
 [Run artifacts and private data](run-artifacts-and-private-data.md).
 
-The job log is a separate surface. While the agent runs, the log prints the
-model's reasoning and replies, tool lines and error messages, any of which can
-quote the Jira issue. Anyone can read the job log of a public repository. To
-keep that text out of the log for Jira-started runs, add:
+To keep Jira issue text out of the job log, set `progress` for Jira-started
+runs. The job log is separate from the artifact: by default it prints the
+model's reasoning and replies, tool lines and error messages, and anyone can
+read the job log of a public repository. Add:
 
 ```yaml
 progress:
@@ -872,7 +872,9 @@ progress:
 
 With `quiet`, monitor runs through OTLP export to a backend you control, such
 as MLflow (see [Distributed tracing](../infrastructure/distributed-tracing.md)).
-Level 3 content capture sends reasoning and tool content only to that backend.
+Level 3 content capture (the tracing level that adds conversation content to
+spans, see [Content capture](../infrastructure/distributed-tracing.md#content-capture-level-3))
+sends reasoning and tool content only to that backend.
 See [`progress`](../../reference/config-reference.md#progress) for what each
 level prints.
 

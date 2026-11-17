@@ -185,10 +185,12 @@ level.
 
 ## Keep Jira text out of the job log
 
-`artifacts` does not change the job log. While the agent runs, the log prints
-the model's reasoning and replies, tool lines, error messages and validation
-output. On GitHub Actions some of these also become annotations on the run
-summary page. Anyone can read the job log of a public repository.
+Set `progress` to keep Jira issue text out of the public job log and its
+annotations; `artifacts` filters only the uploaded artifact, not the log. By
+default the log prints the model's reasoning and replies, tool lines, error
+messages and validation output, and on GitHub Actions some of these become
+annotations on the run summary page. Anyone can read the job log of a public
+repository.
 
 1. In `.fullsend/config.yaml`, next to the `artifacts` block, add:
 
@@ -213,11 +215,27 @@ Progress log: quiet (run source "jira" from the normalized event)
 A run started from a GitHub issue in the same repository prints no
 `Progress log` line, because it still logs at `full`.
 
-While the agent runs, the log shows the heartbeat, event states such as
-`Task — running`, token counts, error types, `Validation passed` or
-`Validation failed`, and the result. It does not show reasoning, replies,
-tool lines or validation output. A stuck or failed run still shows the
-heartbeat, the error type and the exit code.
+While the agent runs, a quiet log looks like this (a triage run, trimmed):
+
+```text
+→ Agent: claude-sonnet-5-5 (v2.1.306)
+  ! Retry 1/10 (delay 522ms)
+  ⏳ Agent running (30s elapsed, 9m30s remaining)
+→ Result: success
+    Turns: 7
+    Cost: $0.1794
+    Tokens: in=10 out=1871 reasoning=49 cache_create=62561 cache_read=42757
+
+  ✓ Agent exited with code 0 (33.7s)
+  ...
+  ✓ Validation passed (1.5s)
+```
+
+The log keeps the heartbeat, event states such as `Task — running`, token
+counts, error types, `Validation passed` or `Validation failed`, and the
+result. It leaves out reasoning, replies, tool lines and validation output. A
+stuck or failed run still shows the heartbeat, the error type and the exit
+code.
 
 If the agent CLI wrote anything to stderr, you also see one line like:
 
@@ -238,8 +256,10 @@ it stays on the runner.
   still carry text from the source, so use `quiet` for a source that isn't
   public.
 - The level changes only what is printed. The next iteration still gets the
-  full validation feedback, and OTLP export and Level 3 content capture still
-  receive everything ([Keep conversation content privately](#keep-conversation-content-privately)).
+  full validation feedback, and OTLP export and Level 3 content capture (the
+  tracing level that adds conversation content to spans, see
+  [Content capture](../infrastructure/distributed-tracing.md#content-capture-level-3))
+  still receive everything ([Keep conversation content privately](#keep-conversation-content-privately)).
 - The level covers the live job log only. The status comment fullsend posts
   on the issue or pull request when a run ends still carries the full run
   error, and output from your own pre-scripts and post-scripts prints as
@@ -262,6 +282,10 @@ annotations on the run.
 | `The installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded. Set the version input to at least the fullsend release that ships this action.` | The workflow pins an older fullsend CLI through the action's `version` input. | Raise `version`. See [Upgrading](#upgrading). |
 | `The fullsend CLI is not installed (check the install step), so no run artifact is uploaded.` | The install step failed earlier in the job. | Fix the install step. |
 | No artifact, no warning | The level is `none`, or on GitLab the job was cancelled or timed out before the end of the job script. | Check the `Run artifact level` line in the log. |
+| `Progress log: quiet (the progress setting could not be resolved: invalid progress.by_source key "Jira": ...)` | A `progress` level or source key is invalid, so the run logs at `quiet`. The text after `resolved:` names the cause. | Fix the key or level it names; see the next two rows. |
+| `invalid progress.by_source key "Jira": source keys are lowercase with no surrounding spaces; use "jira"` | A `progress.by_source` key is not lowercase. | Rename the key as the message says. |
+| `invalid progress.verbosity "loud": must be one of full, tools, quiet` or `invalid progress.by_source.jira "loud": must be one of full, tools, quiet` | A `progress` level is misspelled. | Use `full`, `tools` or `quiet`. |
+| `Progress log: quiet (run source unknown: no valid normalized event)` | The run has no source (manual, scheduled or local, or a dispatch without a valid event), so it got the strictest of `progress.verbosity` and every `progress.by_source` entry. The level in the line is the one applied. | Nothing, if that level is what you want. Otherwise loosen the strictest `by_source` entry; no key exempts these runs. |
 
 When fullsend cannot work out the level, it uploads nothing rather than the
 raw `output/`.
