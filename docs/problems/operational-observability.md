@@ -213,7 +213,9 @@ This works for early experimentation when the volume is low and the operators ar
   0021](../ADRs/0021-jsonl-reasoning-trace-exposure.md): owner-scoped storage
   with credential scanning as defense-in-depth. Repo-level limits on what a run
   artifact publishes, per run source, decided in [ADR
-  0161](../ADRs/0161-repo-config-limits-run-artifact-content.md). Broader
+  0161](../ADRs/0161-repo-config-limits-run-artifact-content.md), and limits on
+  what the live job log shows decided in [ADR
+  0163](../ADRs/0163-repo-config-limits-live-progress-log.md). Broader
   question of balancing security and transparency for non-JSONL observability
   data remains open.) See [Private Context in Public Agent
   Workflows](private-context-public-workflows.md) for runs whose input audience
