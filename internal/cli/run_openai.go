@@ -670,10 +670,19 @@ func dropSkippedProviders(names []string, skipped map[string]struct{}) []string 
 // ImportProfileVerified drops the content cache, re-sends, and confirms the
 // gateway lists it, so a hash match against a recreated (empty) gateway
 // cannot skip the import.
-func ensureEmbeddedProfile(ctx context.Context, profileID string, printer *ui.Printer) error {
+//
+// githubServer, when not nil, is the GitHub server other than github.com
+// the run is configured for: a profile that issues GH_TOKEN then also names
+// that server (bindGitHubCredentialToServer), and every other profile is
+// imported as shipped.
+func ensureEmbeddedProfile(ctx context.Context, profileID string, githubServer *githubServerHosts, printer *ui.Printer) error {
 	data, err := scaffold.FullsendRepoFile("profiles/" + profileID + ".yaml")
 	if err != nil {
 		return fmt.Errorf("provider profile %q is not shipped by this fullsend build: %w", profileID, err)
+	}
+	data, err = bindGitHubServerProfileBytes(profileID, data, githubServer, printer)
+	if err != nil {
+		return err
 	}
 	return importProfileBytes(ctx, profileID, data, printer)
 }

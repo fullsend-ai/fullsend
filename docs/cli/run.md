@@ -419,6 +419,28 @@ depends on the deployment, and the run does not check that. If the harness also 
 credential file, the run may print a warning before the sandbox starts; see
 [durable credentials next to write-capable providers](../reference/harness-reference.md#durable-credentials-next-to-write-capable-providers).
 
+## GitHub servers other than github.com
+
+On a run that is not on GitLab, `GITHUB_SERVER_URL` (set by the GitHub Actions runner) can name a
+GitHub server other than github.com, for example a GitHub Enterprise Server. The value must be a
+plain `https://<host>[:<port>]` URL; any other value, and `https://github.com`, leaves the run on
+github.com. On such a server the runner:
+
+- Adds the server's endpoints to every provider profile that issues `GH_TOKEN`: the embedded
+  `fullsend-github` and `fullsend-github-ro` profiles, and any profile listed in
+  `openshell.profiles`. Each `github.com` endpoint gets a copy on the server's host and port. Each
+  `api.github.com` endpoint gets a copy on the server's API host, with the same protocol, access
+  and enforcement. The API is on the server's own host, with GraphQL at `/api/graphql`, unless
+  `GITHUB_API_URL` is `https://api.<host>` for the same server; then GraphQL stays at `/graphql`
+  on that API host. A `GITHUB_API_URL` that names any other host is ignored. The `github.com`
+  endpoints stay in place. Each changed profile is logged as
+  `GitHub credential profile "<id>": added GitHub server endpoints <host:port>[path], ...`. The
+  provider line above still shows an embedded profile as shipped. A server host that is not a
+  concrete hostname or IP address stops the run before any profile is imported.
+- Accepts an OIDC request URL (`ACTIONS_ID_TOKEN_REQUEST_URL`) on the server's host and port for
+  the inference gateway and OpenAI workload identity assertions. On github.com only
+  `*.actions.githubusercontent.com` is accepted, as before.
+
 ## OpenAI credentials on pi and codex
 
 A `fullsend-openai` provider (`providers: [openai]` on the harness, `openai/<id>` models on pi or codex)

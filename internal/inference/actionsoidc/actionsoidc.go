@@ -20,8 +20,11 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/fullsend-ai/fullsend/internal/config"
 )
 
 const (
@@ -33,8 +36,9 @@ const (
 	// HTTPTimeout is the per-request timeout of the default client.
 	HTTPTimeout = 30 * time.Second
 
-	// oidcHostSuffix is where GitHub serves ACTIONS_ID_TOKEN_REQUEST_URL
-	// (github.com only; GHES is not supported by fullsend).
+	// oidcHostSuffix is where github.com serves ACTIONS_ID_TOKEN_REQUEST_URL.
+	// Another GitHub server serves it from its own host
+	// (RequireGitHubOIDCHost).
 	oidcHostSuffix = ".actions.githubusercontent.com"
 )
 
@@ -173,6 +177,14 @@ func RequireSecureURL(what, raw string) error {
 // GitHub's Actions token service (loopback is allowed for tests). The URL
 // is runner-injected and deny-listed, so this is defence in depth against a
 // rewritten runner environment, not SSRF hardening.
+//
+// On a GitHub server other than github.com (GitHub Enterprise Server, or
+// another GitHub-compatible server) the Actions token service is that
+// server itself, so an https URL on the host and port GITHUB_SERVER_URL
+// names is accepted too. GITHUB_SERVER_URL is read through
+// config.GitHubServerBaseURL, the value the configured-host GitHub clients
+// use, which is empty for github.com and for a value that is not a plain
+// https server URL; github.com itself is never accepted as a token service.
 func RequireGitHubOIDCHost(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -182,7 +194,33 @@ func RequireGitHubOIDCHost(raw string) error {
 	if isLoopback(host) || strings.HasSuffix(host, oidcHostSuffix) {
 		return nil
 	}
-	return fmt.Errorf("OIDC request URL host %q is not GitHub's Actions token service (*%s)", u.Hostname(), oidcHostSuffix)
+	if isConfiguredGitHubServer(u) {
+		return nil
+	}
+	return fmt.Errorf("OIDC request URL host %q is not GitHub's Actions token service (*%s or the GITHUB_SERVER_URL host)", u.Hostname(), oidcHostSuffix)
+}
+
+// isConfiguredGitHubServer reports whether u is an https URL on the host and
+// port of the non-github.com GitHub server that GITHUB_SERVER_URL names. A
+// URL without a port is on port 443.
+func isConfiguredGitHubServer(u *url.URL) bool {
+	base := config.GitHubServerBaseURL(os.Getenv("GITHUB_SERVER_URL"))
+	if base == "" || !strings.EqualFold(u.Scheme, "https") {
+		return false
+	}
+	server, err := url.Parse(base)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(u.Hostname(), server.Hostname()) && httpsPort(u) == httpsPort(server)
+}
+
+// httpsPort returns u's port, or 443 when it names none.
+func httpsPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	return "443"
 }
 
 func isLoopback(host string) bool {

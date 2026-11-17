@@ -784,7 +784,7 @@ func profileListingStub(t *testing.T, listing string) string {
 func TestEnsureOpenAIProfile(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    fullsend-openai  Fullsend OpenAI  endpoints: 1\n    nvidia  NVIDIA  endpoints: 1  inference")
-	require.NoError(t, ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
+	require.NoError(t, ensureEmbeddedProfile(context.Background(), "fullsend-openai", nil, ui.New(io.Discard)))
 	lines := readArgLines(t, argsLog)
 	require.Len(t, lines, 3, "delete, import, then confirm the listing: %q", lines)
 	assert.Equal(t, "provider profile delete fullsend-openai", lines[0])
@@ -793,13 +793,13 @@ func TestEnsureOpenAIProfile(t *testing.T) {
 
 	// Second call: the content cache is deliberately not trusted, so the
 	// embedded profile is sent again and the gateway asked again.
-	require.NoError(t, ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard)))
+	require.NoError(t, ensureEmbeddedProfile(context.Background(), "fullsend-openai", nil, ui.New(io.Discard)))
 	lines = readArgLines(t, argsLog)
 	require.Len(t, lines, 6, "%q", lines)
 	assert.Equal(t, "provider profile delete fullsend-openai", lines[3])
 	assert.Equal(t, "provider list-profiles -o json", lines[5])
 
-	err := ensureEmbeddedProfile(context.Background(), "no-such-profile", ui.New(io.Discard))
+	err := ensureEmbeddedProfile(context.Background(), "no-such-profile", nil, ui.New(io.Discard))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not shipped by this fullsend build")
 }
@@ -808,7 +808,7 @@ func TestEnsureOpenAIProfile_StaleCacheReimports(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	// A cache that says "imported" against a gateway that does not list it.
 	argsLog := profileListingStub(t, "Available Provider Profiles:\n    nvidia  NVIDIA  endpoints: 1  inference")
-	err := ensureEmbeddedProfile(context.Background(), "fullsend-openai", ui.New(io.Discard))
+	err := ensureEmbeddedProfile(context.Background(), "fullsend-openai", nil, ui.New(io.Discard))
 	require.Error(t, err, "the stub never lists it, so the re-import cannot be confirmed either")
 	assert.Contains(t, err.Error(), "not on the gateway after import")
 	lines := readArgLines(t, argsLog)
