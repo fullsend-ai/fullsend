@@ -1053,7 +1053,7 @@ type piRunResult struct {
 // selects the successful attempt. timeout is what is left of the run's
 // budget, and mayFallBack holds the attempt's events back (attemptGate)
 // when a later model could still replace it.
-func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManifest, exts []piManifestExtension, manifestSum, modelSpec string, timeout time.Duration, mayFallBack bool, handler func(AgentEvent), printer *ui.Printer) (res piRunResult) {
+func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManifest, exts []piManifestExtension, manifestSum, modelSpec string, timeout time.Duration, mayFallBack bool, agentStderr io.Writer, handler func(AgentEvent), printer *ui.Printer) (res piRunResult) {
 	gate := &attemptGate{next: handler, hold: mayFallBack}
 	defer func() { res.held, res.answered = gate.held, gate.answered }()
 
@@ -1064,7 +1064,7 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 	attemptParams.Model = modelSpec
 	cmd := buildPiRunCommand(attemptParams, m, exts, manifestSum)
 
-	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, timeout, os.Stderr)
+	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, timeout, agentStderr)
 	if err != nil {
 		return piRunResult{exitCode: -1, execErr: err, modelSpec: modelSpec}
 	}
@@ -1236,7 +1236,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 
 	handler := params.OnEvent
 	if handler == nil {
-		renderer := NewEventRenderer(printer)
+		renderer := newEventRendererAt(printer, params.ProgressVerbosity)
 		handler = renderer.Handle
 	}
 
@@ -1277,8 +1277,12 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	// otherwise be extracted with the transcripts and reported as an error
 	// on a run that went on to succeed, so it is removed before the next;
 	// when that fails, the abandoned attempt's error is the run's result.
+	// Every model attempt writes to the same stderr sink, so at quiet a
+	// fallback run keeps one file and prints one count line.
+	agentStderr, endAgentStderr := openAgentStderr(params, printer)
+	defer endAgentStderr()
 	attempt := func(modelSpec string, timeout time.Duration, mayFallBack bool) piRunResult {
-		return r.piExecModel(ctx, params, m, exts, manifestSum, modelSpec, timeout, mayFallBack, metricsHandler, printer)
+		return r.piExecModel(ctx, params, m, exts, manifestSum, modelSpec, timeout, mayFallBack, agentStderr, metricsHandler, printer)
 	}
 	onFallback := func(prev, next string, budget time.Duration) bool {
 		// sandbox.Exec reports a command that ran and failed through its
@@ -1289,7 +1293,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 			cerr = fmt.Errorf("exit %d: %s", code, strings.TrimSpace(stderr))
 		}
 		if cerr != nil {
-			printer.StepWarn(fmt.Sprintf("model %s is not available (%s); not falling back to %s because the abandoned attempt's session files could not be cleared: %s", sanitizeOutput(piBareModelID(prev)), fallbackReasonText(fallbackReasonNotServed), sanitizeOutput(piBareModelID(next)), sanitizeOutput(cerr.Error())))
+			printer.StepWarn(detailWarning(fmt.Sprintf("model %s is not available (%s); not falling back to %s because the abandoned attempt's session files could not be cleared", sanitizeOutput(piBareModelID(prev)), fallbackReasonText(fallbackReasonNotServed), sanitizeOutput(piBareModelID(next))), sanitizeOutput(cerr.Error()), params.ProgressVerbosity))
 			return false
 		}
 		printer.StepWarn(modelFallbackWarning(piBareModelID(prev), piBareModelID(next), fallbackReasonNotServed))
@@ -1332,7 +1336,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		// only record of what they spent. A read failure is not fatal —
 		// losing the breakdown must not fail an iteration that succeeded.
 		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
-			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
+			printer.StepWarn(detailWarning("Could not read the sub-agent usage file", sanitizeOutput(uerr.Error()), params.ProgressVerbosity))
 		} else {
 			// Unconditional: the parent's own entry belongs in the
 			// breakdown even when this iteration dispatched nothing, or
@@ -1352,7 +1356,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		if msg == "" {
 			msg = "stopReason " + result.lastResult.Subtype
 		}
-		printer.StepWarn("pi exited 0 but the stream reports an error: " + sanitizeOutput(msg))
+		printer.StepWarn(exitedZeroStreamError("pi", msg, result.lastResult.Subtype, params.ProgressVerbosity))
 		return 1, nil
 	}
 	return result.exitCode, nil

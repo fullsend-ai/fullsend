@@ -126,6 +126,18 @@ See
 
 ## Live progress
 
+Use `progress` in `.fullsend/config.yaml` to control how much the job log
+shows while an agent runs. The default, `full`, prints everything. `tools`
+hides the model's reasoning and replies. `quiet` prints only lines fullsend
+writes from its own fields, and leaves out text from the agent or the source.
+Set one level for every run with `progress.verbosity`. Set a level for one run
+source with `progress.by_source` (for example `jira: quiet`). If both apply,
+the stricter level wins. When the level isn't `full`, the run prints one line
+near the top, such as
+`Progress log: quiet (run source "jira" from the normalized event)`. See
+[`progress`](../reference/config-reference.md#progress) for what each level
+shows.
+
 Progress display depends on the selected runtime. See
 [Claude Workflow progress](../runtimes/claude.md#live-claude-workflow-progress)
 for Claude background tasks, agent lifecycle metadata and display limits.
@@ -141,6 +153,7 @@ depend on the process cwd.
 |------|-------------|
 | `metrics.json` | Behavioral metrics: tokens, cost, model, runtime, iterations |
 | `transcripts/` | Agent conversation transcripts |
+| `iteration-<n>/agent-stderr.log` | The agent CLI's stderr, written instead of the job log only at progress level `quiet` |
 | `personas.json` | Persona manifest of the personas found in the staged skills (by the rules the `pi` and `codex` runtimes use to discover them), written every run; its path is exported as `FULLSEND_PERSONAS_FILE` to the pre-script, post-script and validation script (see [Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file)) |
 | `skills/<index>/<name>/` | Per-run copies of skills that have per-file overrides, with the overrides applied (see [Overriding single files in a skill](../guides/user/customizing-with-skills.md#overriding-single-files-in-a-skill)) |
 | `claude-debug.log`, `pi-debug.log` or `codex-debug.log` | Debug log (when `--debug` is set) |

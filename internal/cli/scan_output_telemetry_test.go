@@ -40,7 +40,7 @@ func TestScanOutputFiles_SkipsTelemetryArtifacts(t *testing.T) {
 		require.NoError(t, os.WriteFile(p, []byte(secret), 0o644))
 	}
 
-	err := scanOutputFiles(dir, "trace-id", ui.New(&bytes.Buffer{}))
+	err := scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{}))
 	require.NoError(t, err)
 
 	got, err := os.ReadFile(telem)
@@ -72,7 +72,7 @@ func TestScanOutputFiles_SkipsStagedSkillsAndPersonaManifest(t *testing.T) {
 		require.NoError(t, os.WriteFile(p, []byte(secret), 0o644))
 	}
 
-	require.NoError(t, scanOutputFiles(dir, "trace-id", ui.New(&bytes.Buffer{})))
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{})))
 
 	for _, p := range []string{staged, manifest} {
 		got, err := os.ReadFile(p)
@@ -139,7 +139,7 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", printer))
 
 	for _, p := range []struct {
 		path   string
@@ -247,7 +247,7 @@ func TestScanOutputFiles_DuplicateJSONKeys(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", printer))
 
 	got, err := os.ReadFile(dupFile)
 	require.NoError(t, err)
@@ -272,7 +272,7 @@ func TestScanOutputFiles_SingleRecordJSONL_PreservesLineCount(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", printer))
 
 	got, err := os.ReadFile(jsonlFile)
 	require.NoError(t, err)
@@ -287,7 +287,7 @@ func TestScanOutputFiles_ReturnsErrorWhenSanitizedWriteFails(t *testing.T) {
 	path := filepath.Join(dir, "secret.txt")
 	require.NoError(t, os.WriteFile(path, []byte("Token: ghp_FAKEtesttoken000000000000000000000000"), 0o644))
 
-	err := scanOutputFilesWithWriter(dir, "trace-id", ui.New(&bytes.Buffer{}), func(string, []byte, os.FileMode) error {
+	err := scanOutputFilesWithWriter(dir, "trace-id", "normal", ui.New(&bytes.Buffer{}), func(string, []byte, os.FileMode) error {
 		return os.ErrPermission
 	})
 	require.Error(t, err)
@@ -301,7 +301,7 @@ func TestScanOutputFiles_BackstopDoesNotRemaskExistingMask(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
 	var output bytes.Buffer
-	require.NoError(t, scanOutputFiles(dir, "trace-id", ui.New(&output)))
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&output)))
 	first, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Contains(t, string(first), "metr...", "the first redaction should retain its informative prefix")
@@ -311,7 +311,7 @@ func TestScanOutputFiles_BackstopDoesNotRemaskExistingMask(t *testing.T) {
 
 	// Rescanning the already-sanitized document must be idempotent.
 	var secondOutput bytes.Buffer
-	require.NoError(t, scanOutputFiles(dir, "trace-id", ui.New(&secondOutput)))
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&secondOutput)))
 	second, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, first, second)
@@ -327,7 +327,7 @@ func TestScanOutputFiles_CleanJSON(t *testing.T) {
 
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", printer))
 
 	got, err := os.ReadFile(cleanFile)
 	require.NoError(t, err)

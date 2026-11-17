@@ -174,7 +174,7 @@ func TestDummyRuntimeNoopMethods(t *testing.T) {
 	t.Parallel()
 
 	rt := DummyRuntime{}
-	assert.NoError(t, rt.ExtractTranscripts("", "", ""))
+	assert.NoError(t, rt.ExtractTranscripts("", "", "", ""))
 	assert.NoError(t, rt.ExtractDebugLog("", "", ""))
 	assert.Nil(t, rt.ParseTranscriptErrors(""))
 

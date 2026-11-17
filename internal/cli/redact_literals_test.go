@@ -57,7 +57,7 @@ func TestPostLoopValidationSweep_RedactsPaddedSecretBeforeTrim(t *testing.T) {
 		ValidationLoop: &harness.ValidationLoop{Script: script},
 	}
 	var out bytes.Buffer
-	result := postLoopValidationSweep(h, runDir, 1, true, ui.New(&out))
+	result := postLoopValidationSweep(h, runDir, 1, true, "", ui.New(&out))
 
 	assert.False(t, result.passed)
 	assert.NotContains(t, out.String(), "sweep-padded-value-3")
