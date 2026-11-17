@@ -65,6 +65,7 @@ fullsend-<agent>[.matrix-<job-index>]/ # suffix on later rows for repeated agent
     │   ├── output/
     │   │   └── agent-result.json    # the validated result (name set by the agent)
     │   ├── output.jsonl             # raw agent stream, not for consumers
+    │   ├── agent-stderr.log         # agent CLI stderr, at progress quiet only
     │   └── transcripts/             # agent transcripts, not for consumers
     ├── logs/                        # sandbox and gateway logs
     ├── metrics.json                 # model, runtime, turns, tool calls, cost

@@ -13,7 +13,8 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 > description, comments, and other fields, including custom fields. By
 > default, the run artifact holds JSONL files that record what the agent
 > read: the raw conversation stream (`output.jsonl`), the agent transcripts
-> (`transcripts/*.jsonl`), and, when content capture is on,
+> (`transcripts/*.jsonl`), the agent CLI's stderr (`agent-stderr.log`, written
+> only at progress level `quiet`), and, when content capture is on,
 > `run-telemetry.jsonl`.
 >
 > - On a public GitHub repository, any signed-in GitHub user can download the

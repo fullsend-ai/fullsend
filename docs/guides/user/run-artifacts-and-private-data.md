@@ -228,7 +228,9 @@ Agent CLI stderr: 3 line(s) kept out of the log at quiet, in agent-stderr.log
 The stderr itself is in `agent-stderr.log` in the iteration directory, next
 to `output.jsonl`. The run artifact includes that file only when
 `artifacts` is `all` for the run, just like the transcripts. With
-`jira: metadata` from the steps above, it stays on the runner.
+`artifacts.by_source.jira: metadata` from
+[Stop Jira text from reaching the artifact](#stop-jira-text-from-reaching-the-artifact),
+it stays on the runner.
 
 ### What else to know
 
@@ -306,6 +308,7 @@ artifacts:
 By default the run artifact holds the run's whole `output/` directory:
 
 - the raw conversation stream and transcripts of every iteration;
+- `agent-stderr.log` beside them, written only at progress level `quiet`;
 - the agent's output files;
 - `run-telemetry.jsonl`, with conversation content when content capture is on;
 - `security/findings.jsonl`.
