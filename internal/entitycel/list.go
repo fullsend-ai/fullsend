@@ -1,12 +1,15 @@
 package entitycel
 
 import (
+	"errors"
 	"reflect"
 
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
 )
+
+var errPartialNative = errors.New("entitycel: a partially known list has no native value")
 
 // partialList is a CEL list whose known members are only part of the
 // collection: more members may exist. It answers only what every completion

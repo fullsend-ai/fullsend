@@ -134,6 +134,23 @@ func TestDecideEntityEligibility_CancelledContextDefers(t *testing.T) {
 	assert.False(t, got.Outcome.MayStartSandbox())
 }
 
+func TestDecideEntityEligibility_CancelDuringAuthorizeDefers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got := DecideEntityEligibility(ctx, EntityEvaluation{
+		Harness:       "h",
+		Trigger:       `entity.state == "open"`,
+		EntitySources: true,
+		Authorize: func(ctx context.Context) error {
+			cancel()
+			return ctx.Err()
+		},
+		ResolveEntity: resolveTo(eligibilityEntity(t, ne.CoverageComplete)),
+	})
+	assert.Equal(t, EntityDeferred, got.Outcome)
+	assert.False(t, got.Outcome.MayStartSandbox())
+}
+
 func TestEntityOutcome(t *testing.T) {
 	assert.Equal(t, EntityDenied, EntityOutcome(0), "the zero outcome fails closed")
 	for o, want := range map[EntityOutcome]string{

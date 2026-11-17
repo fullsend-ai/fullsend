@@ -86,12 +86,37 @@ func NewEnv() (*cel.Env, error) {
 	)
 }
 
+// maxMacroOperandNodes bounds the combined size, in AST nodes, of a
+// comprehension macro's range and arguments. The expansion below copies the
+// range into three places and the arguments into two, so chained or nested
+// comprehensions would otherwise grow exponentially with nesting depth. The
+// bound caps each expansion at a small constant multiple of this size, and
+// therefore the compiled AST at a size linear in the number of macros.
+const maxMacroOperandNodes = 5000
+
+// exprSize returns the number of nodes in the expressions.
+func exprSize(exprs ...ast.Expr) int {
+	n := 0
+	v := ast.NewExprVisitor(func(ast.Expr) { n++ })
+	for _, e := range exprs {
+		ast.PreOrderVisit(e, v)
+	}
+	return n
+}
+
 // soundMacro wraps a receiver comprehension macro so that
 // range.m(args) expands to
 // @entitycel_merge(range, m(@entitycel_known(range), args), m(range, args)).
+// It rejects an expansion whose range and arguments together exceed
+// [maxMacroOperandNodes].
 func soundMacro(std parser.Macro, expand parser.MacroExpander) cel.Macro {
 	return parser.NewReceiverMacro(std.Function(), std.ArgCount(),
 		func(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
+			if exprSize(append([]ast.Expr{target}, args...)...) > maxMacroOperandNodes {
+				return nil, eh.NewError(target.ID(), fmt.Sprintf(
+					"%s() operands exceed %d expression nodes; simplify the predicate",
+					std.Function(), maxMacroOperandNodes))
+			}
 			knownFold, err := expand(eh, eh.NewCall(fnKnown, eh.Copy(target)), copyExprs(eh, args))
 			if err != nil {
 				return nil, err

@@ -1,7 +1,9 @@
 package entitycel
 
 import (
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/cel-go/common/types"
 	"github.com/stretchr/testify/assert"
@@ -317,6 +319,40 @@ func TestValidate(t *testing.T) {
 	require.Error(t, Validate(`entity.title`))
 	require.Error(t, Validate(`entity.`))
 	require.Error(t, Validate(`@entitycel_known(entity.labels).size() > 0`), "internal functions are not callable")
+}
+
+// chainedMaps returns a predicate with n chained map comprehensions, whose
+// unbounded expansion would grow as 3^n.
+func chainedMaps(n int) string {
+	return "[1]" + strings.Repeat(".map(x, x)", n) + ".size() == 1"
+}
+
+// nestedMaps returns a predicate with n comprehensions nested in the
+// argument position, whose unbounded expansion would grow as 2^n.
+func nestedMaps(n int) string {
+	return strings.Repeat("[1].map(x, ", n) + "x" + strings.Repeat(")", n) + ".size() == 1"
+}
+
+func TestValidateBoundsMacroExpansion(t *testing.T) {
+	require.NoError(t, Validate(chainedMaps(5)), "modest chaining stays valid")
+	require.NoError(t, Validate(nestedMaps(5)), "modest nesting stays valid")
+
+	for name, expr := range map[string]string{
+		"chained": chainedMaps(60),
+		"nested":  nestedMaps(60),
+	} {
+		t.Run(name, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() { done <- Validate(expr) }()
+			select {
+			case err := <-done:
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "expression nodes")
+			case <-time.After(10 * time.Second):
+				t.Fatal("compiling a deeply chained predicate was not bounded")
+			}
+		})
+	}
 }
 
 func TestPartialListValue(t *testing.T) {

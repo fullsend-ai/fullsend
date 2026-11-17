@@ -1,16 +1,12 @@
 package entitycel
 
 import (
-	"errors"
-
 	"github.com/google/cel-go/common/operators"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/common/types/traits"
 	"github.com/google/cel-go/interpreter"
 )
-
-var errPartialNative = errors.New("entitycel: a partially known list has no native value")
 
 // cel-go's built-in list and map equality treat any element comparison that
 // is not definitely false — including an unknown — as equal, and compare a

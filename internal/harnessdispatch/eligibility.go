@@ -113,6 +113,9 @@ func DecideEntityEligibility(ctx context.Context, ev EntityEvaluation) EntityDec
 		return deferred(ev, "%v", err)
 	}
 	if err := ev.Authorize(ctx); err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return deferred(ev, "authorization interrupted: %v", err)
+		}
 		return denied(ev, "authorization: %v", err)
 	}
 	entity, err := ev.ResolveEntity(ctx)
