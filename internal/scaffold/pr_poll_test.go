@@ -63,6 +63,7 @@ func TestRenderPRPollCaller(t *testing.T) {
 		require.Contains(t, wf.On, "schedule")
 		assert.Equal(t, []any{map[string]any{"cron": "*/5 * * * *"}}, wf.On["schedule"])
 		assert.Contains(t, wf.On, "workflow_dispatch")
+		assert.Empty(t, wf.On["workflow_dispatch"], "a dispatched run takes no inputs and behaves exactly like a scheduled run")
 		assert.Len(t, wf.On, 2, "the caller runs only on its schedule and manual dispatch")
 		assert.Empty(t, wf.Permissions, "the workflow grants nothing by default")
 		assert.Empty(t, wf.Concurrency.Group, "reviews a cycle starts must not hold back the next cycle")

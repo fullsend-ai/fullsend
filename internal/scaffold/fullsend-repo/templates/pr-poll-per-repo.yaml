@@ -31,6 +31,10 @@ name: fullsend fork PR review poll
 on:
   schedule:
     - cron: "*/5 * * * *"
+  # No inputs: a dispatched run behaves exactly like a scheduled one, so
+  # anything that starts this workflow (a person, or later a webhook) only
+  # brings the next cycle forward. Keep the file name, this trigger and the
+  # poll job's queueing concurrency stable.
   workflow_dispatch: {}
 
 permissions: {}
@@ -53,7 +57,7 @@ jobs:
 
   # One reusable-dispatch run per pull request, named for the pull request
   # and head commit it reviews. The poll reads these job names back to tell
-  # a running or failed review of a head commit from one not yet started.
+  # a running review of a head commit from one not yet started.
   dispatch:
     name: Review (#${{ matrix.status_number }}@${{ matrix.event_payload.pull_request.head.sha }})
     needs: poll

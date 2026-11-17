@@ -18,8 +18,12 @@
 # file carried between cycles in the Actions cache (newest
 # fullsend-poll-prs-state-* entry). It bounds every re-dispatch of a head and
 # lets finished heads cost no API calls. Runs on a fork pull request cannot
-# save into the default branch's cache scope. A missing or evicted entry only
-# costs fresh API checks.
+# save into the default branch's cache scope, but any job that runs on the
+# default branch can, so the state is trusted only to stop or bound reviews:
+# it can never start one. A missing or evicted entry only costs fresh API
+# checks; a failed save loses that cycle's counts, so a head can get more
+# starts than max_attempts_per_head. An exhausted head that stays unchanged
+# for 14 days is pruned and gets new attempts.
 #
 # Security: the poll job takes no secrets. It reads pull requests, reviews,
 # comments and the poll workflow's own runs with a read-only GITHUB_TOKEN,
@@ -138,8 +142,7 @@ jobs:
       # Saved before the matrix is handed on, so the next cycle sees this
       # cycle's dispatches even while the reviews it starts are still running.
       # The poll writes state.json.changed only when the cycle changed the
-      # state. Only scheduled and manual runs on the default branch save, so
-      # the entry always comes from the trusted caller.
+      # state. Only scheduled and manual runs on the default branch save.
       - name: Save poll state
         if: >-
           (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')

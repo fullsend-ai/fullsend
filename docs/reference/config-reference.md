@@ -1245,7 +1245,8 @@ waits; the reviews a run starts are outside that limit, so a long review never
 delays the next poll. Between runs, the poll keeps how many reviews it started
 for each head commit, and which commits are finished, in the GitHub Actions
 cache. Finished commits cost no API calls in later runs. If the cache entry is
-evicted, the poll checks those commits again. The poll job is read-only, gets no secrets, and lists pull requests with
+evicted, the poll checks those commits again. The cache only stops or limits
+reviews; it never starts one. The poll job is read-only, gets no secrets, and lists pull requests with
 `GITHUB_TOKEN`. When it finds pull requests to review, it hands them to
 Fullsend's dispatch workflow, which runs the review. Both workflows are pinned
 to the same Fullsend ref as the rest of the scaffold. When `enabled` is
