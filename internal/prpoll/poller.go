@@ -370,7 +370,7 @@ func (p *Poller) evaluate(ctx context.Context, pr forge.ChangeProposal) (string,
 				p.cacheSkips++
 				return ReasonAttemptsExhausted, fmt.Sprintf("cached, %d dispatches", h.Dispatches)
 			}
-			p.state.setStatus(key, "", p.opts.Now())
+			p.state.setStatus(key, "", p.now)
 		}
 	}
 	if ok, detail := p.authorized(ctx, pr); !ok {
