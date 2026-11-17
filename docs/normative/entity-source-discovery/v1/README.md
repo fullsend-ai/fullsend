@@ -410,12 +410,18 @@ A range is `complete` only when every condition holds:
      found in the overlap or a later range. Overlap alone does not recover
      an unchanged entity that a moved entity's departure shifted past a page
      boundary. To close that gap, the adapter MUST also detect that the
-     range changed during pagination: it re-reads the whole range after the
-     first pass ends and finds no entity whose canonical ID is missing from
-     the first pass or that was updated after the first pass began. If the
-     second pass finds a difference, the adapter repeats the full read of the
-     range; if it cannot obtain a pass without a difference, the range stays
-     `incomplete` with a durable retry record.
+     range changed during pagination. It reads the whole range in successive
+     full passes, and a pass counts as validated only when it and the pass
+     immediately before it (the baseline) both return exactly the same set of
+     canonical IDs and no entity returned by the later pass was updated after
+     the baseline pass began. Requiring identical sets catches departures
+     during either pass, because an entity that left the range after being
+     read is missing from the next pass. If the two passes differ, the later
+     pass becomes the baseline and the adapter reads the range again,
+     keeping the entities it has discovered. If it cannot obtain a validated
+     pair of passes within its bounded scan budget, the range stays
+     `incomplete` with a durable retry record, and the retry starts a new
+     first pass with no baseline.
 5. Every candidate in the range has a final membership result for every
    relevant harness, or a durable retry record.
 
@@ -623,7 +629,8 @@ implementation MUST pass them.
 | ESD-55 | New source added to a scope with an existing watermark | Full scan for newly eligible entities before coverage is claimed for the new source |
 | ESD-56 | Provider guarantees per-entity page completeness | Entity may be routed after its page; the range is still not `complete` until all rules hold |
 | ESD-57 | Rate limit response with a retry hint | Work deferred with backoff; no coverage claimed; checkpoint does not advance |
-| ESD-58 | Range holds entities A, B, C, D with page size two; after page one, A is updated past the range's upper bound, so page two returns D and skips unchanged C; C lies outside the next range's boundary overlap | Overlap alone does not complete the range; the second full read finds C missing from the first pass and repeats, or the range stays `incomplete` with a durable retry record; checkpoint does not advance |
+| ESD-58 | Range holds entities A, B, C, D with page size two; after page one, A is updated past the range's upper bound, so page two returns D and skips unchanged C; C lies outside the next range's boundary overlap | Overlap alone does not complete the range; the next full read returns a different ID set from the first pass, so it becomes the baseline and the range is read again, or the range stays `incomplete` with a durable retry record; checkpoint does not advance |
+| ESD-59 | Range holds entities A to F with page size two; entity E is skipped in the first pass because A departs after page one, and in the validating pass B and C depart after page one, so E is skipped again | The two passes return different ID sets, so the range is not validated and stays `incomplete` unless a later pair of passes returns identical ID sets with no entity updated after the baseline began; checkpoint does not advance until then |
 
 ### Time-dependent queries and retry
 
@@ -645,7 +652,7 @@ implementation MUST pass them.
 | Deduplication and local routing | ESD-30 to ESD-36 |
 | Unknown is never non-match | ESD-32 to ESD-34, ESD-41, ESD-63 |
 | Bound-run membership before every sandbox cycle | ESD-40 to ESD-44 |
-| Last page is not completeness | ESD-50 to ESD-58 |
+| Last page is not completeness | ESD-50 to ESD-59 |
 | Time-dependent rediscovery | ESD-07, ESD-60 |
 | Durable retry | ESD-53, ESD-57, ESD-61 to ESD-64 |
 | Event-only harnesses unaffected | ESD-01, ESD-44 |
