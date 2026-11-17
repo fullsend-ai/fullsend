@@ -501,11 +501,15 @@ func ParseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 //
 //   - An item.completed can describe a call that never finished: when a
 //     turn ends (completed, failed or interrupted), the processor completes
-//     every item that started without completing, from the turn's snapshot
-//     (reconcile_unfinished_started_items, rust-v0.166.0), so its status
-//     can still be in_progress. Such a call gets its ToolUseEvent but no
-//     ToolResultEvent: the tool never answered, so the execute_tool span
-//     ends unanswered at Finish, as a pi call cut off by its stream does.
+//     each item that started without completing from the turn snapshot's
+//     copy of it (reconcile_unfinished_started_items, rust-v0.166.0), with
+//     whatever status that copy holds. One that is completed or failed is
+//     reported like any other. One still in_progress gets its ToolUseEvent
+//     but no ToolResultEvent: the tool never answered, so the execute_tool
+//     span ends unanswered at Finish, as a pi call cut off by its stream
+//     does. An item missing from the snapshot, or one that maps to nothing
+//     (an interrupted collab_tool_call), gets no item.completed and so no
+//     call at all.
 //
 //   - A file_change item lists several paths and is reported as one call
 //     per path, so each call's id is the item id suffixed "#<index>": one

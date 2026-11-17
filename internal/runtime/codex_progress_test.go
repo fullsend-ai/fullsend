@@ -819,6 +819,32 @@ func TestParseCodexStream_ToolResultEdgeCases(t *testing.T) {
 		}
 	})
 
+	t.Run("an item reconciled at turn end with a finished snapshot keeps its result", func(t *testing.T) {
+		t.Parallel()
+		// reconcile_unfinished_started_items emits the snapshot's copy, so a
+		// call that finished without its own item.completed arrives completed
+		// just before turn.completed.
+		uses, results := parse(t,
+			`{"type":"item.started","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}`,
+			`{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"ls","aggregated_output":"a\n","exit_code":0,"status":"completed"}}`,
+			`{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}`)
+		require.Len(t, uses, 1)
+		require.Len(t, results, 1)
+		assert.Equal(t, "a\n", results[0].Result)
+		assert.False(t, results[0].IsError)
+	})
+
+	t.Run("an item that never gets an item.completed is no call", func(t *testing.T) {
+		t.Parallel()
+		// Missing from the turn snapshot, or mapping to nothing there (an
+		// interrupted collab_tool_call): codex writes no item.completed.
+		uses, results := parse(t,
+			`{"type":"item.started","item":{"id":"a1","type":"collab_tool_call","tool":"wait","sender_thread_id":"t0","receiver_thread_ids":["t1"],"agents_states":{},"status":"in_progress"}}`,
+			`{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}`)
+		assert.Empty(t, uses)
+		assert.Empty(t, results)
+	})
+
 	t.Run("a web search without results closes with an empty result", func(t *testing.T) {
 		t.Parallel()
 		for _, results := range []string{``, `,"results":null`, `,"results":[]`} {
