@@ -1001,6 +1001,9 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 		"ListWorkflowRunsSince": func(fc *FakeClient) []any {
 			return pack(fc.ListWorkflowRunsSince(ctx, "o", "r", "ci.yml", time.Time{}))
 		},
+		"ListWorkflowRunsByStatus": func(fc *FakeClient) []any {
+			return pack(fc.ListWorkflowRunsByStatus(ctx, "o", "r", "ci.yml", "in_progress", time.Time{}))
+		},
 		"ListRecentWorkflowRuns": func(fc *FakeClient) []any { return pack(fc.ListRecentWorkflowRuns(ctx, "o", "r", 10)) },
 		"ListWorkflowRunJobs":    func(fc *FakeClient) []any { return pack(fc.ListWorkflowRunJobs(ctx, "o", "r", 1)) },
 		"ListWorkflowRunArtifacts": func(fc *FakeClient) []any {

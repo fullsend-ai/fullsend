@@ -105,8 +105,10 @@ github:
 // #9109 convergence also reads the managed Jira poll caller once, to keep
 // it absent while Jira polling is disabled. The trace signing key
 // preflight reads FULLSEND_TRACE_SIGNING_KEY_ID once, and an install reads
-// it again right before it writes the key (ADR 0154): 29 reads for an
-// install and 27 for a dry run.
+// it again right before it writes the key (ADR 0154). Since #9623
+// convergence also reads the managed fork PR review poll caller once, to
+// keep it absent while the poll is disabled: 30 reads for an install and
+// 28 for a dry run.
 func TestRunReposInstall_PreflightReadsOnceConvergenceRechecks(t *testing.T) {
 	overlayKey := "file:acme/api/" + preset.OverlayPath
 	baseKey := "file:acme/api/" + preset.BasePath
@@ -125,10 +127,10 @@ func TestRunReposInstall_PreflightReadsOnceConvergenceRechecks(t *testing.T) {
 		writeback bool
 		total     int
 	}{
-		{name: "pristine no-preset install", manifest: githubUnmanagedManifestYAML, writeback: true, total: 29},
-		{name: "pristine no-preset dry run", manifest: githubUnmanagedManifestYAML, dryRun: true, writeback: true, total: 27},
-		{name: "behaviour-test manifest", manifest: behaviourTestManifestYAML, writeback: true, total: 29},
-		{name: "behaviour-test manifest dry run", manifest: behaviourTestManifestYAML, dryRun: true, writeback: true, total: 27},
+		{name: "pristine no-preset install", manifest: githubUnmanagedManifestYAML, writeback: true, total: 30},
+		{name: "pristine no-preset dry run", manifest: githubUnmanagedManifestYAML, dryRun: true, writeback: true, total: 28},
+		{name: "behaviour-test manifest", manifest: behaviourTestManifestYAML, writeback: true, total: 30},
+		{name: "behaviour-test manifest dry run", manifest: behaviourTestManifestYAML, dryRun: true, writeback: true, total: 28},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -2947,17 +2947,28 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 			HTMLURL string `json:"html_url"`
 			Title   string `json:"title"`
 			Number  int    `json:"number"`
-			Head    struct {
+			// UpdatedAt is kept as the raw string GitHub returns.
+			UpdatedAt string `json:"updated_at"`
+			Head      struct {
 				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
 				Repo struct {
 					FullName string `json:"full_name"`
+					Owner    struct {
+						Login string `json:"login"`
+					} `json:"owner"`
 				} `json:"repo"`
 			} `json:"head"`
 			Base struct {
-				Ref string `json:"ref"`
+				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
+				Repo struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
 			} `json:"base"`
 			User struct {
 				Login string `json:"login"`
+				Type  string `json:"type"`
 			} `json:"user"`
 		}
 		if err := decodeJSON(resp, &prs); err != nil {
@@ -2966,14 +2977,20 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 
 		for _, pr := range prs {
 			result = append(result, forge.ChangeProposal{
-				ID:       pr.ID,
-				URL:      pr.HTMLURL,
-				Title:    pr.Title,
-				Number:   pr.Number,
-				Head:     pr.Head.Ref,
-				HeadRepo: pr.Head.Repo.FullName,
-				Base:     pr.Base.Ref,
-				Author:   pr.User.Login,
+				ID:         pr.ID,
+				URL:        pr.HTMLURL,
+				Title:      pr.Title,
+				Number:     pr.Number,
+				Head:       pr.Head.Ref,
+				HeadRepo:   pr.Head.Repo.FullName,
+				Base:       pr.Base.Ref,
+				Author:     pr.User.Login,
+				HeadSHA:    pr.Head.SHA,
+				HeadOwner:  pr.Head.Repo.Owner.Login,
+				BaseRepo:   pr.Base.Repo.FullName,
+				BaseSHA:    pr.Base.SHA,
+				AuthorType: pr.User.Type,
+				UpdatedAt:  pr.UpdatedAt,
 			})
 		}
 
@@ -3904,21 +3921,28 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 			User    struct {
 				Login string `json:"login"`
 			} `json:"user"`
-			CreatedAt string `json:"created_at"`
+			CreatedAt             string `json:"created_at"`
+			PerformedViaGitHubApp *struct {
+				ClientID string `json:"client_id"`
+			} `json:"performed_via_github_app"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decoding issue comments page %d: %w", page, err)
 		}
 
 		for _, r := range raw {
-			result = append(result, forge.IssueComment{
+			c := forge.IssueComment{
 				ID:        r.ID,
 				NodeID:    r.NodeID,
 				HTMLURL:   r.HTMLURL,
 				Body:      r.Body,
 				Author:    r.User.Login,
 				CreatedAt: r.CreatedAt,
-			})
+			}
+			if r.PerformedViaGitHubApp != nil {
+				c.AppClientID = r.PerformedViaGitHubApp.ClientID
+			}
+			result = append(result, c)
 		}
 
 		if len(raw) < 100 {
@@ -4497,6 +4521,7 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 			State       string `json:"state"`
 			Body        string `json:"body"`
 			SubmittedAt string `json:"submitted_at"`
+			CommitID    string `json:"commit_id"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decoding pull request reviews page %d: %w", page, err)
@@ -4510,6 +4535,7 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 				State:       r.State,
 				Body:        r.Body,
 				SubmittedAt: r.SubmittedAt,
+				CommitID:    r.CommitID,
 			})
 		}
 
@@ -4923,6 +4949,62 @@ func (c *LiveClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, wor
 		}
 	}
 	return nil, fmt.Errorf("list workflow runs since: pagination exceeded %d pages", maxPages)
+}
+
+// ListWorkflowRunsByStatus returns the runs of workflowFile that GitHub's
+// status filter selects (a status such as "in_progress" or a conclusion such
+// as "failure"), created at or after createdSince when it is non-zero,
+// paginating in 100-run pages.
+func (c *LiveClient) ListWorkflowRunsByStatus(ctx context.Context, owner, repo, workflowFile, status string, createdSince time.Time) ([]forge.WorkflowRun, error) {
+	const maxPages = 100
+	const perPage = 100
+	query := url.Values{}
+	query.Set("status", status)
+	query.Set("per_page", strconv.Itoa(perPage))
+	if !createdSince.IsZero() {
+		query.Set("created", ">="+createdSince.UTC().Format(time.RFC3339))
+	}
+	var all []forge.WorkflowRun
+	for page := 1; page <= maxPages; page++ {
+		query.Set("page", strconv.Itoa(page))
+		var result struct {
+			WorkflowRuns []struct {
+				ID         int    `json:"id"`
+				RunAttempt int    `json:"run_attempt"`
+				Name       string `json:"name"`
+				Event      string `json:"event"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+				HTMLURL    string `json:"html_url"`
+				CreatedAt  string `json:"created_at"`
+			} `json:"workflow_runs"`
+		}
+		path := fmt.Sprintf("/repos/%s/%s/actions/workflows/%s/runs?%s",
+			url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(workflowFile), query.Encode())
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list %s workflow runs page %d: %w", status, page, err)
+		}
+		if err := decodeJSON(resp, &result); err != nil {
+			return nil, fmt.Errorf("decode %s workflow runs page %d: %w", status, page, err)
+		}
+		for _, r := range result.WorkflowRuns {
+			all = append(all, forge.WorkflowRun{
+				ID:         r.ID,
+				RunAttempt: r.RunAttempt,
+				Name:       r.Name,
+				Event:      r.Event,
+				Status:     r.Status,
+				Conclusion: r.Conclusion,
+				HTMLURL:    r.HTMLURL,
+				CreatedAt:  r.CreatedAt,
+			})
+		}
+		if len(result.WorkflowRuns) < perPage {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("list %s workflow runs: pagination exceeded %d pages", status, maxPages)
 }
 
 // ListRecentWorkflowRuns returns recent workflow runs across all workflows.

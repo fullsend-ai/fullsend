@@ -37,6 +37,7 @@ func newPollCmd() *cobra.Command {
 		targetRepo  string
 		targetForge string
 		modeFlag    string
+		sinceFlag   string
 
 		printDispatchRoutes bool
 	)
@@ -74,12 +75,21 @@ func newPollCmd() *cobra.Command {
 				return runJiraPoll(cmd, jiraURL, jiraProject, jqlOverride, targetRepo, outputPath, fullsendDir)
 			}
 
+			if inputDriver == prPollInputDriver {
+				return runGitHubPRPoll(cmd, prPollFlags{
+					targetRepo:  targetRepo,
+					outputPath:  outputPath,
+					fullsendDir: fullsendDir,
+					since:       sinceFlag,
+				})
+			}
+
 			if inputDriver == "gitlab-webhook" {
 				return runGitLabWebhook(cmd, projectPath, gitlabURL, fullsendDir)
 			}
 
 			if forgeFlag != "gitlab" {
-				return fmt.Errorf("poll command supports --forge gitlab, --input-driver jira-poll, or --input-driver gitlab-webhook (got forge=%q, input-driver=%q)", forgeFlag, inputDriver)
+				return fmt.Errorf("poll command supports --forge gitlab, --input-driver jira-poll, --input-driver github-pr-poll, or --input-driver gitlab-webhook (got forge=%q, input-driver=%q)", forgeFlag, inputDriver)
 			}
 
 			sel, forgeToken, err := resolveGitLabPollerCredential(os.Getenv)
@@ -156,10 +166,10 @@ func newPollCmd() *cobra.Command {
 
 	cmd.Flags().BoolVar(&printDispatchRoutes, "print-dispatch-routes", false, "Print the GitLab agent dispatch routes this CLI supports (one per line) and exit; used by the job scripts to detect an older CLI before selecting a route")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", "Forge platform (gitlab)")
-	cmd.Flags().StringVar(&inputDriver, "input-driver", "", "Poll input driver (jira-poll or gitlab-webhook)")
+	cmd.Flags().StringVar(&inputDriver, "input-driver", "", "Poll input driver (jira-poll, github-pr-poll or gitlab-webhook)")
 	cmd.Flags().StringVar(&projectPath, "project", "", "GitLab project path (default: $CI_PROJECT_PATH for --forge gitlab and for --input-driver jira-poll --target-forge gitlab; required for --input-driver gitlab-webhook)")
 	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", "https://gitlab.com", "GitLab instance URL")
-	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON (jira-poll only; required for --target-forge github, optional for --target-forge gitlab; ignored by --forge gitlab)")
+	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON (jira-poll and github-pr-poll; required for github-pr-poll and for jira-poll --target-forge github, optional for --target-forge gitlab; ignored by --forge gitlab)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	// --jira-url, --jira-project, and --jql are no longer supported: the
@@ -172,8 +182,9 @@ func newPollCmd() *cobra.Command {
 	for _, name := range []string{"jira-url", "jira-project", "jql"} {
 		_ = cmd.Flags().MarkHidden(name)
 	}
-	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub owner/repo slug where agents run, without '..' (default: $GITHUB_REPOSITORY; jira-poll with --target-forge github only)")
+	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "GitHub owner/repo slug where agents run, without '..' (default: $GITHUB_REPOSITORY; github-pr-poll, and jira-poll with --target-forge github)")
 	cmd.Flags().StringVar(&targetForge, "target-forge", jirapoll.TargetForgeGitHub, "Forge the jira-poll driver dispatches agents to: 'github' (write --output for reusable-dispatch.yml) or 'gitlab' (start the project's protected agent pipelines; uses --project and --gitlab-url)")
+	cmd.Flags().StringVar(&sinceFlag, "since", "", "RFC 3339 time the fork PR review poll was enabled; PRs last updated before it are skipped (github-pr-poll only; required)")
 	cmd.Flags().StringVar(&modeFlag, "mode", "", "Poll mode: 'slash' (slash commands only) or 'events' (labels, merges, non-slash notes)")
 	cmd.MarkFlagsOneRequired("forge", "input-driver")
 

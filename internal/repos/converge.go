@@ -323,6 +323,10 @@ type convergeDiscovery struct {
 	// tracker.jira mapping, whether polling is enabled, and whether the
 	// Jira credential secrets exist (#9076).
 	jira jiraPollState
+
+	// prPoll is the repository's fork PR review poll state: whether the
+	// effective fork_pr_review_poll.enabled is true (ADR 0171).
+	prPoll prPollState
 }
 
 // withVertexInputs returns cfg with this repository's effective Vertex
@@ -993,6 +997,11 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				return
 			}
 			jiraState := jiraPollState{jira: jiraTracking, enabled: jiraTracking.PollEnabled()}
+			prPoll, prPollErr := effectiveForkPRReviewPoll(resolved, presetData)
+			if prPollErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: prPollErr}
+				return
+			}
 			repoFullName := rr.Owner + "/" + rr.Repo
 			progress(repoFullName, "discover", "Checking installation status")
 
@@ -1092,6 +1101,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 
 			discoveries[idx] = convergeDiscovery{
 				jira:              jiraState,
+				prPoll:            prPoll,
 				repo:              rr,
 				resolved:          resolved,
 				components:        probed,
@@ -1849,6 +1859,7 @@ func convergeRepo(ctx context.Context,
 				}
 			}
 			dryJira := convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{render: jiraRender}, progress)
+			dryJira = append(dryJira, convergePRPoll(ctx, d, cfg, jiraPollDelivery{render: jiraRender}, progress)...)
 			cr.Actions = append(cr.Actions, dryJira...)
 			for _, a := range dryJira {
 				if a.Action == "error" {
@@ -1887,13 +1898,16 @@ func convergeRepo(ctx context.Context,
 		// Jira polling converges when the install commits its scaffold:
 		// its credentials are written after Install has written its own,
 		// and a file-based poll resource joins the same scaffold commit.
+		// The fork PR review poll caller (ADR 0171) joins it the same way.
 		var jiraActions []ComponentAction
 		scaffoldCommit := installCommit
 		installCommit = func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, installed bool) error {
-			jiraActions = convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{
+			delivery := jiraPollDelivery{
 				render: jiraRender,
 				stage:  func(f forge.TreeFile) { files = append(files, f) },
-			}, progress)
+			}
+			jiraActions = convergeJiraPoll(ctx, d, cfg, delivery, progress)
+			jiraActions = append(jiraActions, convergePRPoll(ctx, d, cfg, delivery, progress)...)
 			return scaffoldCommit(ctx, owner, repo, files, direct, installed)
 		}
 
@@ -1950,11 +1964,14 @@ func convergeRepo(ctx context.Context,
 	jiraDelivery := jiraPollDelivery{
 		stage: func(f forge.TreeFile) { allScaffoldFiles = append(allScaffoldFiles, f) },
 	}
-	if d.jira.enabled {
+	if d.jira.enabled || d.prPoll.enabled {
 		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
 		jiraDelivery.render = scaffold.RenderOptions{UpstreamRef: rref.ref, UpstreamTag: rref.tag}
 	}
 	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, jiraDelivery, progress)...)
+	// 2d'': Converge the fork PR review poll caller (ADR 0171), delivered
+	// in the same scaffold commit as the Jira poll caller.
+	cr.Actions = append(cr.Actions, convergePRPoll(ctx, d, cfg, jiraDelivery, progress)...)
 
 	// 2d'': The trace signing key (ADR 0154), before the commit that delivers
 	// the config naming it. A failure stops the repository here. Until that

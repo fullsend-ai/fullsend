@@ -117,6 +117,10 @@ type PerRepoConfigReader interface {
 	// nil when it has none. There is no parent fallback: config.base.yaml
 	// never supplies it (ADR 0154).
 	TraceContext() *TraceContextConfig
+	// ForkPRReviewPoll returns the effective fork_pr_review_poll block
+	// (ADR 0171), merged key by key through the parent chain, or nil when
+	// no layer sets it.
+	ForkPRReviewPoll() *ForkPRReviewPollConfig
 }
 
 // --- Write superset interfaces ---

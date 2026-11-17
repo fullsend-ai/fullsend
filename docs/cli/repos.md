@@ -806,6 +806,38 @@ No fullsend code reads the signing key yet. For the whole lifecycle, see
 fullsend repos install acme/api --rotate-trace-signing-key
 ```
 
+### Fork PR review poll
+
+`repos install` converges the fork PR review poll
+([ADR 0171](https://github.com/fullsend-ai/fullsend/pull/9381)) from each
+repo's effective `fork_pr_review_poll.enabled` in `.fullsend/config.yaml`
+(see [Config Reference](../reference/config-reference.md)). The poll is
+GitHub only and needs no secrets.
+
+- **Enabled.** Install writes the scheduled caller
+  `.github/workflows/fullsend-poll-prs.yml` in the scaffold commit. It runs
+  every five minutes and on manual dispatch, in one
+  `fullsend-poll-prs` concurrency group that queues rather than cancels. Its
+  `poll` job calls Fullsend's `reusable-poll-prs.yml` with a read-only token
+  (`contents`, `pull-requests`, `issues` and `actions`: `read`), and its
+  `dispatch` job hands the resulting matrix to `reusable-dispatch.yml`, both
+  pinned to the same ref as the rest of the scaffold.
+- **Enable time.** When install first writes the caller, it stamps the
+  current UTC time into the poll job's `since` input and keeps that value on
+  later converges. A fork PR last updated before it is not reviewed until its
+  next push, so enabling the poll does not review the backlog. Re-enabling
+  after the caller was removed stamps a new time.
+- **Disabled (`enabled: false` or omitted).** Install removes the managed
+  caller.
+- **Ownership.** Install changes the file only when it carries the
+  `# fullsend-component: pr-poll` marker line. A workflow at that path
+  without the marker is reported and left untouched. `repos uninstall`
+  removes the managed caller.
+
+The poll job runs `fullsend poll --input-driver github-pr-poll`. It skips the
+cycle when the poll is disabled, the kill switch is on, or the `review` agent
+is disabled.
+
 ### Flags
 
 Install flags supply only secrets and sensitive provisioning inputs, local vendoring artifacts, and controls for one run. None of their values is written to `repos.yaml`. Persistent settings live in the manifest; the flags that used to set them were removed (see [Removed configuration flags](#removed-configuration-flags-breaking)).

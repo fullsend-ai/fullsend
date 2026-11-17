@@ -2315,6 +2315,37 @@ func (f *FakeClient) ListWorkflowRunsSince(ctx context.Context, owner, repo, wor
 	return matched, nil
 }
 
+// ListWorkflowRunsByStatus returns the configured runs of workflowFile (as
+// ListWorkflowRuns does) whose Status is status, or whose Conclusion is
+// status for a completed run, created at or after createdSince when it is
+// non-zero.
+func (f *FakeClient) ListWorkflowRunsByStatus(ctx context.Context, owner, repo, workflowFile, status string, createdSince time.Time) ([]WorkflowRun, error) {
+	f.mu.Lock()
+	e := f.err("ListWorkflowRunsByStatus")
+	f.mu.Unlock()
+	if e != nil {
+		return nil, e
+	}
+	runs, err := f.ListWorkflowRuns(ctx, owner, repo, workflowFile)
+	if err != nil {
+		return nil, err
+	}
+	var matched []WorkflowRun
+	for _, run := range runs {
+		if run.Status != status && (run.Status != "completed" || run.Conclusion != status) {
+			continue
+		}
+		if !createdSince.IsZero() {
+			runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+			if parseErr != nil || runTime.Before(createdSince) {
+				continue
+			}
+		}
+		matched = append(matched, run)
+	}
+	return matched, nil
+}
+
 func (f *FakeClient) ListWorkflowRunJobs(_ context.Context, _, _ string, runID int) ([]WorkflowJob, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

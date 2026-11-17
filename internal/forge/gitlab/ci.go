@@ -839,6 +839,12 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 	return runs, nil
 }
 
+// ListWorkflowRunsByStatus is not supported on GitLab: the fork PR review
+// poll that uses it is GitHub only (ADR 0171).
+func (c *LiveClient) ListWorkflowRunsByStatus(context.Context, string, string, string, string, time.Time) ([]forge.WorkflowRun, error) {
+	return nil, forge.ErrNotSupported
+}
+
 // ListWorkflowRunsSince lists pipelines for workflowFile (treated as the ref
 // name, as in ListWorkflowRuns), paginating through as many 100-per-page
 // requests as needed to reach pipelines created at or after since instead of
