@@ -77,7 +77,7 @@ following hold:
 3. The adapter passes every conformance case in
    [Conformance cases](#conformance-cases) that applies to the pair.
 4. The effective platform policy permits eventless evaluation for the
-   harness and repository, and discovery runs with trusted Fullsend
+   harness and repository, and discovery runs with trusted fullsend
    invocation provenance, as Authorization Contract v2 requires.
 
 ADR 0149 separately requires a new major authorization contract that defines
@@ -407,7 +407,15 @@ A range is `complete` only when every condition holds:
      at least the provider's indexing-delay allowance, clock-skew allowance,
      and timestamp precision. Entities seen in the overlap are reconciled by
      canonical ID, so an entity that moved position during pagination is
-     found in the overlap or a later range.
+     found in the overlap or a later range. Overlap alone does not recover
+     an unchanged entity that a moved entity's departure shifted past a page
+     boundary. To close that gap, the adapter MUST also detect that the
+     range changed during pagination: it re-reads the whole range after the
+     first pass ends and finds no entity whose canonical ID is missing from
+     the first pass or that was updated after the first pass began. If the
+     second pass finds a difference, the adapter repeats the full read of the
+     range; if it cannot obtain a pass without a difference, the range stays
+     `incomplete` with a durable retry record.
 5. Every candidate in the range has a final membership result for every
    relevant harness, or a durable retry record.
 
@@ -615,6 +623,7 @@ implementation MUST pass them.
 | ESD-55 | New source added to a scope with an existing watermark | Full scan for newly eligible entities before coverage is claimed for the new source |
 | ESD-56 | Provider guarantees per-entity page completeness | Entity may be routed after its page; the range is still not `complete` until all rules hold |
 | ESD-57 | Rate limit response with a retry hint | Work deferred with backoff; no coverage claimed; checkpoint does not advance |
+| ESD-58 | Range holds entities A, B, C, D with page size two; after page one, A is updated past the range's upper bound, so page two returns D and skips unchanged C; C lies outside the next range's boundary overlap | Overlap alone does not complete the range; the second full read finds C missing from the first pass and repeats, or the range stays `incomplete` with a durable retry record; checkpoint does not advance |
 
 ### Time-dependent queries and retry
 
@@ -636,7 +645,7 @@ implementation MUST pass them.
 | Deduplication and local routing | ESD-30 to ESD-36 |
 | Unknown is never non-match | ESD-32 to ESD-34, ESD-41, ESD-63 |
 | Bound-run membership before every sandbox cycle | ESD-40 to ESD-44 |
-| Last page is not completeness | ESD-50 to ESD-57 |
+| Last page is not completeness | ESD-50 to ESD-58 |
 | Time-dependent rediscovery | ESD-07, ESD-60 |
 | Durable retry | ESD-53, ESD-57, ESD-61 to ESD-64 |
 | Event-only harnesses unaffected | ESD-01, ESD-44 |
