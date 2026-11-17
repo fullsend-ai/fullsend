@@ -119,7 +119,7 @@ Decides whether one public vulnerability affects one branch of a repository, and
 
 - **Authority:** Comment and label on the work item; hand an affected verdict to the code agent
 - **Does not have:** Write access to code
-- **Decided:** a read-only `cve` agent assesses before the code agent acts ([ADR 0169](../ADRs/0169-assess-vulnerabilities-with-a-read-only-agent-before-the-code-agent.md)). Opening one work item per maintained branch, and finding a tracker's repository and branch, remain open.
+- **Decided:** a read-only `cve` agent assesses before the code agent acts, and a work item of a vulnerability type goes to it without passing through triage ([ADR 0169](../ADRs/0169-assess-vulnerabilities-with-a-read-only-agent-before-the-code-agent.md)). Writing the intake record that names the product and release, opening one work item per maintained branch, and an agent job on one forge with the repository on another remain open.
 
 ### Backlog/priority agent
 
