@@ -1112,3 +1112,73 @@ func TestSpecExamplesProduceSerializableViews(t *testing.T) {
 		})
 	}
 }
+
+// TestResolutionAndChangeTimeFollowTheirActor checks that a thread's resolved
+// boolean and an extension's changed_at are as unauthorized as the actor that
+// produced them.
+func TestResolutionAndChangeTimeFollowTheirActor(t *testing.T) {
+	const at = normentity.Timestamp("2026-11-17T11:00:00.000000000Z")
+
+	t.Run("thread resolution", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			resolvedBy normentity.Field[normentity.Actor]
+			resolved   normentity.Field[bool]
+			wantKnown  bool
+		}{
+			{"excluded resolver", normentity.Known(human(reader)), normentity.Known(true), false},
+			{"unresolved resolver", normentity.Known(human(unknownAct)), normentity.Known(true), false},
+			{"excluded resolver, unresolved thread", normentity.Known(human(reader)), normentity.Known(false), false},
+			{"unattributed resolution", normentity.Field[normentity.Actor]{}, normentity.Known(true), false},
+			{"admitted resolver", normentity.Known(human(writer)), normentity.Known(true), true},
+			{"open thread without resolver", normentity.Field[normentity.Actor]{}, normentity.Known(false), true},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				doc := workItem(t)
+				th := &doc.Entity.Threads.Known[0]
+				th.ResolvedBy, th.Resolved = tc.resolvedBy, tc.resolved
+				view := build(t, input(t, doc, normentity.RoleTriage))
+				_, known := view.Document.Entity.Threads.Known[0].Resolved.Value()
+				assert.Equal(t, tc.wantKnown, known)
+				if !tc.wantKnown {
+					_, unknown := view.Document.Entity.Threads.Known[0].Resolved.UnknownReason()
+					assert.True(t, unknown, "resolved stays unknown, never false")
+				}
+			})
+		}
+	})
+
+	t.Run("extension changed_at", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			changedBy normentity.Field[normentity.Actor]
+			wantKnown bool
+		}{
+			{"excluded changer", normentity.Known(human(reader)), false},
+			{"unresolved changer", normentity.Known(human(unknownAct)), false},
+			{"missing changer", normentity.Field[normentity.Actor]{}, false},
+			{"admitted changer", normentity.Known(human(writer)), true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				doc := workItem(t)
+				entry := normentity.ExtensionEntry{
+					SourceKey: "k",
+					Value:     normentity.Known(normentity.ExtensionValue{Atom: &normentity.ExtensionAtom{String: new("v")}}),
+					ChangedBy: tc.changedBy,
+					ChangedAt: normentity.Known(at),
+				}
+				doc.Entity.Extensions.CustomFields["timed"] = entry
+				doc.Entity.Extensions.Properties = map[string]normentity.ExtensionEntry{"timed": entry}
+				view := build(t, input(t, doc, normentity.RoleTriage))
+				for name, m := range map[string]map[string]normentity.ExtensionEntry{
+					"custom_fields": view.Document.Entity.Extensions.CustomFields,
+					"properties":    view.Document.Entity.Extensions.Properties,
+				} {
+					_, known := m["timed"].ChangedAt.Value()
+					assert.Equal(t, tc.wantKnown, known, name)
+				}
+			})
+		}
+	})
+}

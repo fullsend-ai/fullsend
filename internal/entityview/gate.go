@@ -234,8 +234,15 @@ func (b *builder) thread(t *normentity.Thread, comments map[string]Outcome) {
 			*a = withVerdict(*a, d)
 		} else {
 			t.ResolvedBy = normentity.Unknown[normentity.Actor](unknownReason(d.outcome))
+			// The resolution is the resolver's act: without an admitted
+			// resolver the boolean is as unauthorized as the identity.
+			t.Resolved = unknownIfSet(t.Resolved, d.outcome)
 		}
 		b.value("threads.resolved_by", d.outcome)
+	} else if r, ok := t.Resolved.Value(); ok && r {
+		// A resolution with no attributable resolver cannot be admitted.
+		t.Resolved = normentity.Unknown[bool](normentity.ReasonFailed)
+		b.value("threads.resolved_by", Unresolved)
 	}
 	b.extensions(t.Extensions)
 }
@@ -268,6 +275,8 @@ func (b *builder) extensions(x *normentity.Extensions) {
 				if _, known := entry.Value.Value(); known || entry.Value.IsNull() {
 					entry.Value = normentity.Unknown[normentity.ExtensionValue](unknownReason(o))
 				}
+				// The change time is the unadmitted change's own signal.
+				entry.ChangedAt = unknownIfSet(entry.ChangedAt, o)
 			}
 			m[alias] = entry
 			b.value("extensions", o)
@@ -409,6 +418,15 @@ func unknownReason(o Outcome) normentity.UnknownReason {
 		return normentity.ReasonPartial
 	}
 	return normentity.ReasonFailed
+}
+
+// unknownIfSet makes a present field unknown for a non-admitted outcome and
+// leaves an absent field absent.
+func unknownIfSet[T any](f normentity.Field[T], o Outcome) normentity.Field[T] {
+	if f.IsZero() {
+		return f
+	}
+	return normentity.Unknown[T](unknownReason(o))
 }
 
 func outcomeOr(m map[string]Outcome, k string, def Outcome) Outcome {
