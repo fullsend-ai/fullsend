@@ -206,7 +206,9 @@ A child gets no copy of the parent's conversation (`fork_context: false` on V1, 
 four are open at once on V1, where a finished child holds its slot until it is closed, and four
 run at once on V2; the depth is one. A runner-owned hook admits a spawn only for a registered
 role with that fresh context and no model or effort override; it denies resume, V2's message and
-follow-up calls, Codex's built-in `explorer` and `worker`, and any spawn from a child. A denied
+follow-up calls, Codex's built-in `explorer` and `worker`, and any spawn from a child. It also
+denies a parent's `wait_agent` whose `timeout_ms` is over 120000, so a parent cannot wait out the
+run's budget in one call. A denied
 spawn is final for that role: the parent runs that
 sub-agent definition itself. A spawn the hook did not admit fails the run after the fact, within
 the limits named in [Troubleshooting](#troubleshooting): per iteration the runner counts the
