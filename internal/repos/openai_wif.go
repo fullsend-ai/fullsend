@@ -242,9 +242,10 @@ func resolveOpenAIWIFIdentifiers(ctx context.Context, client forge.Client, owner
 // the runtime would read. For a config-managed repository it applies the
 // same ADR-0122 adoption and safety outcomes the delivery path enforces:
 // the rendered managed overlay counts only when it will actually be
-// written; when adoption is required or the safety gate rejects it, the
-// existing file stays and is returned instead. A nil result means the
-// default branch content is used unchanged (no overlay is delivered).
+// written; when adoption is required (and not acknowledged with --adopt) or
+// the safety gate rejects it, the existing file stays and is returned
+// instead. A nil result means the default branch content is used unchanged
+// (no overlay is delivered).
 func effectiveConfigOverlay(ctx context.Context, d convergeDiscovery) ([]byte, error) {
 	if !d.resolved.ConfigManaged {
 		return nil, nil
@@ -253,7 +254,7 @@ func effectiveConfigOverlay(ctx context.Context, d convergeDiscovery) ([]byte, e
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", preset.OverlayPath, err)
 	}
-	if overlayNeedsAdoption(found, existing) {
+	if d.resolved.adoptionBlocks(found, existing) {
 		return existing, nil
 	}
 	if bytes.Equal(existing, d.managedConfig) {

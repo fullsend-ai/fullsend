@@ -391,6 +391,12 @@ the rest of the fleet still converges and the run exits non-zero.
    exist only in the file, such as `kill_switch: true`, until install
    converges. It also hides those restrictions from the safety check below.
 
+   Or let install do this step: `fullsend repos install acme/api --adopt
+   acme/api` replaces the file with the managed file, marker included,
+   through the scaffold PR (or `--direct`) once the safety check below
+   passes. Add `--dry-run` to see the adoption plan first. That run also
+   does the install in step 5.
+
 5. Run `fullsend repos status --repo acme/api` again. It now reports
    ordinary drift, or none. Then preview and install:
 

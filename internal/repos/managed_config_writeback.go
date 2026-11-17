@@ -95,6 +95,11 @@ type AdoptionRequiredRepo struct {
 	// Guidance is the adoption message with the proposed repos.yaml entry
 	// and the setting-level difference. It does not name the repository.
 	Guidance string
+	// Adopting reports that the operator acknowledged this repository's
+	// adoption with `repos install --adopt` (#8512). Install then does not
+	// skip it: Guidance is the adoption plan, and convergence replaces the
+	// file with the managed one if the ADR-0122 safety gate passes.
+	Adopting bool
 }
 
 // Name returns the repository as owner/repo.
@@ -109,7 +114,10 @@ func (a AdoptionRequiredRepo) Name() string {
 // A repository whose only problem is an existing .fullsend/config.yaml
 // without the ownership marker (adoption required) is returned in the
 // adoption set with its guidance, so the caller can skip and report that
-// repository alone (#8511). Every other problem fails the run: a read or
+// repository alone (#8511). A repository whose adoption the operator
+// acknowledged (Manifest.SetAdoptOverlays) is returned with Adopting set and
+// its adoption plan as Guidance, so the caller converges it (#8512).
+// Every other problem fails the run: a read or
 // client error, a malformed or non-per-repo overlay, an existing
 // .fullsend/config.base.yaml with no resolved preset or with invalid
 // content, and an invalid selector. The error then reports every offending
@@ -191,13 +199,14 @@ func PreflightProposedManagedSafety(ctx context.Context, m *Manifest, clients Fo
 			continue
 		}
 		// A fresh or pending install: a markerless overlay is rejected by
-		// preflightOverlay, so only the safety comparison remains.
+		// preflightOverlay unless acknowledged with --adopt, so only the
+		// safety comparison remains.
 		existing, found, readErr := readManagedConfigOverlayFile(ctx, resolved)
 		if readErr != nil {
 			errs = append(errs, fmt.Errorf("%s: reading %s: %w", name, preset.OverlayPath, readErr))
 			continue
 		}
-		if overlayNeedsAdoption(found, existing) {
+		if resolved.adoptionBlocks(found, existing) {
 			continue
 		}
 		if rejected := managedSafetyRejectedAction(ctx, resolved); rejected != nil {
@@ -246,9 +255,13 @@ func preflightManagedConfigRepos(ctx context.Context, m *Manifest, clients Forge
 			}
 		}
 		if guidance != "" {
-			all = append(all, fmt.Errorf("%s: %s", name, guidance))
+			// An adoption acknowledged with --adopt is a plan, not a
+			// problem, so it is not part of a run-level error.
+			if !resolved.AdoptOverlay {
+				all = append(all, fmt.Errorf("%s: %s", name, guidance))
+			}
 			if len(repoErrs) == 0 {
-				adoption = append(adoption, AdoptionRequiredRepo{Owner: rr.Owner, Repo: rr.Repo, Guidance: guidance})
+				adoption = append(adoption, AdoptionRequiredRepo{Owner: rr.Owner, Repo: rr.Repo, Guidance: guidance, Adopting: resolved.AdoptOverlay})
 			}
 		}
 		if len(repoErrs) > 0 {
@@ -288,6 +301,10 @@ func preflightOverlay(ctx context.Context, store *presetCache, client forge.Clie
 	msg := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required (ADR-0122): "+
 		"put every existing setting you want to keep into the repository's config in repos.yaml "+
 		"or accept its removal, then remove or replace the file; nothing was written", preset.OverlayPath)
+	if resolved.AdoptOverlay {
+		msg = fmt.Sprintf("%s exists without the managed-configuration ownership marker; adopting it (--adopt, ADR-0122): "+
+			"the managed file replaces it if the safety gate passes, and settings it declares that repos.yaml does not are dropped", preset.OverlayPath)
+	}
 	if desired, _, err := desiredManagedConfig(resolved); err == nil {
 		var presetNote string
 		if resolved.Config != "" && len(resolved.ProposedBase) == 0 {

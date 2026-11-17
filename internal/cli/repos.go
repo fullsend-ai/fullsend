@@ -371,6 +371,10 @@ type reposInstallConfig struct {
 	force               bool
 	reactivateSchedules bool
 	gitlabToken         string
+	// adopt names the repositories (owner/repo) whose existing
+	// .fullsend/config.yaml without the ownership marker this run replaces
+	// with the managed file, subject to the ADR-0122 safety gate (#8512).
+	adopt []string
 
 	// GCP credentials (install-time only). The region is not an input:
 	// FULLSEND_GCP_REGION comes from the effective configuration (#8220).
@@ -517,6 +521,17 @@ two credential sets are mutually exclusive; supplying one removes existing
 secrets of the other. When polling is false or omitted, Fullsend-owned poll
 resources are removed and the Jira secrets are left in place.
 
+An existing .fullsend/config.yaml without the managed-configuration
+ownership marker stops its repo as "adoption required" (ADR-0122): install
+prints the proposed repos.yaml entry and the setting differences, skips the
+repo and exits non-zero. Once repos.yaml carries every setting to keep,
+--adopt owner/repo (repeatable, exact names only) replaces that file with
+the managed file, marker included, through the normal scaffold PR (or
+--direct push). The safety gate still applies: a managed file less
+restrictive than the current effective configuration is rejected unless
+repos.yaml declares the relaxation. --dry-run shows the adoption plan
+without writing.
+
 The persistent-setting flags --roles, --fullsend-ref, --mint-url, --app-set,
 --inference-auth, --vendor, --signoff, --gitlab-url, --vertex-region and
 --forge were removed; using one fails with the repos.yaml key to set instead.
@@ -531,7 +546,11 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
   fullsend repos install acme/api --vertex-project my-gcp-project
 
   # Converge every declared repository
-  fullsend repos install`,
+  fullsend repos install
+
+  # Replace a hand-written .fullsend/config.yaml with the managed file
+  fullsend repos install acme/api --adopt acme/api --dry-run
+  fullsend repos install acme/api --adopt acme/api`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.repoFilter = args
@@ -550,6 +569,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "allow scaffold ref downgrades")
 	cmd.Flags().BoolVar(&opts.reactivateSchedules, "reactivate-schedules", false, "reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted)")
+	cmd.Flags().StringArrayVar(&opts.adopt, "adopt", nil, "adopt this repository's existing .fullsend/config.yaml that lacks the managed-configuration ownership marker: replace it with the managed file rendered from repos.yaml if the ADR-0122 safety gate passes (repeatable, exact owner/repo)")
 	cmd.Flags().StringVar(&opts.inferenceProject, "vertex-project", "", "GCP project ID written as FULLSEND_GCP_PROJECT_ID for Vertex AI inference; must match config.inference.project when repos.yaml or the preset declares one; never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.inferenceWIFProvider, "vertex-wif-provider", "", "full WIF provider resource name (projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}) written as FULLSEND_GCP_WIF_PROVIDER instead of deriving per-repo providers; must match config.inference.wif_provider when declared; never written to repos.yaml")
 	cmd.Flags().StringVar(&opts.openAIAPIKey, "openai-api-key", "", "OpenAI API key written as FULLSEND_OPENAI_API_KEY to selected repos whose inference.auth is openai-api-key; command-line only, never written to repos.yaml and never logged")
@@ -654,6 +674,13 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	if err := requireDeclaredSelections(manifest, opts.repoFilter); err != nil {
 		return err
 	}
+	// --adopt acknowledges the ADR-0122 handoff of one named repository's
+	// markerless .fullsend/config.yaml (#8512). It is validated before any
+	// forge read and kept in memory only: the safety gate still applies.
+	if err := repos.ValidateAdoptSelections(manifest, opts.repoFilter, opts.adopt); err != nil {
+		return err
+	}
+	manifest.SetAdoptOverlays(opts.adopt)
 	if opts.fullsendBinary != "" || opts.fullsendSource != "" {
 		vendored, vendorErr := manifest.VendorSelected(opts.repoFilter)
 		if vendorErr != nil {
@@ -758,7 +785,15 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	}
 	adoptionFailedRepos := make([]repos.ConvergeResult, 0, len(adoptionRequired))
 	adoptionSkip := make([]string, 0, len(adoptionRequired))
+	adopting := make(map[string]bool, len(adoptionRequired))
 	for _, a := range adoptionRequired {
+		if a.Adopting {
+			// Acknowledged with --adopt: show the plan and converge the
+			// repository, which replaces the file if the safety gate passes.
+			adopting[strings.ToLower(a.Name())] = true
+			printer.StepInfo(fmt.Sprintf("[%s] %s", a.Name(), a.Guidance))
+			continue
+		}
 		printer.StepFail(fmt.Sprintf("[%s] skipped: %s", a.Name(), a.Guidance))
 		adoptionSkip = append(adoptionSkip, a.Name())
 		if _, failed := containFailed[a.Name()]; failed {
@@ -768,8 +803,16 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 		adoptionFailedRepos = append(adoptionFailedRepos, repos.ConvergeResult{
 			Owner: a.Owner, Repo: a.Repo,
-			Error: fmt.Errorf("adoption required: %s exists without the managed-configuration ownership marker (ADR-0122); see the guidance above; nothing was written", preset.OverlayPath),
+			Error: fmt.Errorf("adoption required: %s exists without the managed-configuration ownership marker (ADR-0122); see the guidance above, then re-run with --adopt %s to replace it; nothing was written", preset.OverlayPath, a.Name()),
 		})
+	}
+	for _, name := range opts.adopt {
+		key := strings.ToLower(strings.TrimSpace(name))
+		if !adopting[key] {
+			// Report each name once, however often it was repeated.
+			adopting[key] = true
+			printer.StepWarn(fmt.Sprintf("[%s] --adopt: no %s without the ownership marker in this run's selection; nothing to adopt", strings.TrimSpace(name), preset.OverlayPath))
+		}
 	}
 
 	// The only manifest edit install still plans is the initial

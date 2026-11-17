@@ -61,7 +61,11 @@ func adoptionProposal(cfg ResolvedConfig, existing, desired, currentBase, propos
 	if hasYAMLComments(existing) {
 		b.WriteString("\ncomments in the existing file are not carried into repos.yaml or the managed file")
 	}
-	fmt.Fprintf(&b, "\nafter updating repos.yaml, remove or replace %s so `fullsend repos install` can write the managed file", preset.OverlayPath)
+	if cfg.AdoptOverlay {
+		fmt.Fprintf(&b, "\nwith --adopt, `fullsend repos install` writes the managed file in place of %s through the normal delivery path", preset.OverlayPath)
+		return b.String()
+	}
+	fmt.Fprintf(&b, "\nafter updating repos.yaml, remove or replace %s so `fullsend repos install` can write the managed file, or run `fullsend repos install --adopt %s/%s` to replace it", preset.OverlayPath, owner, repo)
 	return b.String()
 }
 

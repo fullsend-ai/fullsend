@@ -64,6 +64,7 @@ fullsend
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
 │   │   ├── --force                          #   Allow scaffold ref downgrades
 │   │   ├── --reactivate-schedules           #   Re-enable disabled GitLab pipeline schedules
+│   │   ├── --adopt <owner/repo>             #   Adopt an existing markerless .fullsend/config.yaml (repeatable)
 │   │   ├── --vertex-project <id>            #   GCP project ID for Vertex inference (else declared inference.project; never in repos.yaml)
 │   │   ├── --vertex-wif-provider <path>     #   Full WIF provider resource name (else declared inference.wif_provider; skips per-repo derivation)
 │   │   ├── --openai-api-key <key>           #   FULLSEND_OPENAI_API_KEY for openai-api-key repos (CLI-only; never in repos.yaml)
