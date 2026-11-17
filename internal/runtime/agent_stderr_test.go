@@ -356,3 +356,24 @@ func TestOpenCodeRun_ExitedZeroStreamErrorAtQuietNamesSubtypeOnly(t *testing.T) 
 	_, _, _, full := runOpenCodeStream(t, stream, config.ProgressVerbosityFull)
 	assert.Contains(t, full, "opencode exited 0 but the stream reports an error: quota exhausted")
 }
+
+// A file write that fails mid-run never fails the pipe and never falls
+// back to the job log; the count line says the file is incomplete.
+func TestOpenAgentStderr_QuietWriteFailureKeepsDraining(t *testing.T) {
+	jobLog := captureAgentStderrLog(t)
+	var out bytes.Buffer
+	w, end := openAgentStderr(RunParams{ProgressVerbosity: config.ProgressVerbosityQuiet, StderrPath: filepath.Join(t.TempDir(), AgentStderrFile)}, ui.New(&out))
+	sink, ok := w.(*quietAgentStderr)
+	require.True(t, ok)
+	require.NoError(t, sink.file.Close())
+	n, err := io.WriteString(w, "")
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	n, err = io.WriteString(w, agentStderrText)
+	require.NoError(t, err)
+	assert.Equal(t, len(agentStderrText), n)
+	end()
+	assert.Empty(t, jobLog.String())
+	assert.Contains(t, out.String(), "Agent CLI stderr: 2 line(s) kept out of the log at quiet; writing agent-stderr.log failed, so it is incomplete")
+	assert.NotContains(t, out.String(), "PRIVATE")
+}
