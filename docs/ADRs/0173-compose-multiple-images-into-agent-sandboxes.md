@@ -22,16 +22,16 @@ Accepted
 Projects need different compilers, SDKs, and development tools. Today, they can
 supply an `image` to the harness configuration to put their own image in place,
 giving coding agents their tools, but they have to build a special image for
-fullsend that includes both their toolchain and Fullsend's agent dependencies.
+fullsend that includes both their toolchain and fullsend's agent dependencies.
 What a pain!
 
 This ADR aims to let coding agents use project-selected images without
-requiring those images to include Fullsend's dependencies.
+requiring those images to include fullsend's dependencies.
 
 ## Decision
 
 We adopt separate image mounts so that coding agents can use a
-project-selected sandbox image while Fullsend's own dependencies arrive in a
+project-selected sandbox image while fullsend's own dependencies arrive in a
 second image, without the project rebuilding either one.
 
 - Introduce a new `image_mounts` field in the harness. The fullsend runner will
@@ -122,8 +122,8 @@ Support depends on the sandbox backend, not the forge.
   [ADR 0030](0030-openshell-sandbox-interaction-model.md) from one image to a
   base image plus mounts. The base image keeps the ADR 0030 guest requirements
   and the ADR 0032 build-time protections described above.
-- Repositories can provide tools without building a Fullsend-specific
+- Repositories can provide tools without building a fullsend-specific
   composite image.
-- Fullsend's sandbox image and project tool images can be maintained
+- fullsend's sandbox image and project tool images can be maintained
   independently.
 - Limitation! Mounted executables must be compatible with the sandbox runtime.
