@@ -1,0 +1,213 @@
+package entitycel
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/common"
+	"github.com/google/cel-go/common/ast"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
+	"github.com/google/cel-go/parser"
+
+	"github.com/fullsend-ai/fullsend/internal/normentity"
+)
+
+// Result is the three-valued result of an entity-source predicate. The zero
+// value is Unknown so an unset result never reads as a definite answer.
+type Result int
+
+// Predicate results.
+const (
+	// Unknown: the evidence does not settle the predicate.
+	Unknown Result = iota
+	// False: every completion of the evidence makes the predicate false.
+	False
+	// True: every completion of the evidence makes the predicate true.
+	True
+)
+
+func (r Result) String() string {
+	switch r {
+	case True:
+		return "true"
+	case False:
+		return "false"
+	}
+	return "unknown"
+}
+
+// ErrMalformedEntity wraps a failure to bind the entity, such as an invalid
+// coverage status. It is a data problem, distinct from a predicate that
+// fails to compile or evaluate.
+var ErrMalformedEntity = errors.New("entitycel: malformed entity")
+
+// Internal functions introduced by the comprehension macros. Their names are
+// not valid CEL identifiers, so predicates cannot call them directly.
+const (
+	fnKnown = "@entitycel_known"
+	fnMerge = "@entitycel_merge"
+)
+
+// NewEnv creates the CEL environment for entity-source predicates: root
+// variables entity (required) and event (null when no event prompted the
+// evaluation), both dyn.
+//
+// Its comprehension macros (all, exists, exists_one, existsOne, map, filter)
+// evaluate the comprehension twice when the range is a partial list: over
+// the known members only, and over the known members followed by the unknown
+// remainder. The result is kept only when both agree; otherwise it is
+// unknown. A remainder may hold no members or several, so neither pass alone
+// may decide the result.
+func NewEnv() (*cel.Env, error) {
+	t := cel.TypeParamType("T")
+	return cel.NewEnv(
+		cel.Variable(RootEntity, cel.DynType),
+		cel.Variable(RootEvent, cel.DynType),
+		cel.ClearMacros(),
+		cel.Macros(
+			parser.HasMacro,
+			soundMacro(parser.AllMacro, parser.MakeAll),
+			soundMacro(parser.ExistsMacro, parser.MakeExists),
+			soundMacro(parser.ExistsOneMacro, parser.MakeExistsOne),
+			soundMacro(parser.ExistsOneMacroNew, parser.MakeExistsOne),
+			soundMacro(parser.MapMacro, parser.MakeMap),
+			soundMacro(parser.MapFilterMacro, parser.MakeMap),
+			soundMacro(parser.FilterMacro, parser.MakeFilter),
+		),
+		cel.Function(fnKnown,
+			cel.Overload("entitycel_known_T", []*cel.Type{t}, t,
+				cel.UnaryBinding(knownMembers))),
+		cel.Function(fnMerge,
+			cel.Overload("entitycel_merge_dyn_T_T", []*cel.Type{cel.DynType, t, t}, t,
+				cel.FunctionBinding(mergeFold))),
+	)
+}
+
+// soundMacro wraps a receiver comprehension macro so that
+// range.m(args) expands to
+// @entitycel_merge(range, m(@entitycel_known(range), args), m(range, args)).
+func soundMacro(std parser.Macro, expand parser.MacroExpander) cel.Macro {
+	return parser.NewReceiverMacro(std.Function(), std.ArgCount(),
+		func(eh parser.ExprHelper, target ast.Expr, args []ast.Expr) (ast.Expr, *common.Error) {
+			knownFold, err := expand(eh, eh.NewCall(fnKnown, eh.Copy(target)), copyExprs(eh, args))
+			if err != nil {
+				return nil, err
+			}
+			fullFold, err := expand(eh, eh.Copy(target), copyExprs(eh, args))
+			if err != nil {
+				return nil, err
+			}
+			return eh.NewCall(fnMerge, target, knownFold, fullFold), nil
+		})
+}
+
+func copyExprs(eh parser.ExprHelper, exprs []ast.Expr) []ast.Expr {
+	out := make([]ast.Expr, len(exprs))
+	for i, e := range exprs {
+		out[i] = eh.Copy(e)
+	}
+	return out
+}
+
+// knownMembers returns a partial list's known members as an ordinary list,
+// and any other value unchanged.
+func knownMembers(v ref.Val) ref.Val {
+	if p, ok := v.(*partialList); ok {
+		return p.knownList()
+	}
+	return v
+}
+
+// mergeFold keeps a comprehension result over a partial list only when the
+// known-only and remainder passes agree. Unknown and error arguments never
+// reach it: CEL returns them before calling a strict function.
+func mergeFold(args ...ref.Val) ref.Val {
+	if len(args) != 3 {
+		return types.NewErr("no such overload")
+	}
+	p, ok := args[0].(*partialList)
+	if !ok {
+		return args[2]
+	}
+	if equal(args[1], args[2]) == types.True {
+		return args[2]
+	}
+	return p.remainder
+}
+
+// compile compiles a predicate and checks that it is a boolean.
+func compile(env *cel.Env, expr string) (*cel.Ast, error) {
+	if strings.TrimSpace(expr) == "" {
+		return nil, fmt.Errorf("entity-source predicate is empty")
+	}
+	checked, issues := env.Compile(expr)
+	if issues != nil && issues.Err() != nil {
+		return nil, issues.Err()
+	}
+	if !checked.OutputType().IsExactType(types.BoolType) {
+		return nil, fmt.Errorf("entity-source predicate must evaluate to bool, got %v", checked.OutputType())
+	}
+	return checked, nil
+}
+
+// Validate compiles an entity-source predicate and checks that it is a
+// boolean. Unlike an event-only trigger, an empty predicate is invalid: an
+// entity-source harness has no other routing rule.
+func Validate(expr string) error {
+	env, err := NewEnv()
+	if err != nil {
+		return fmt.Errorf("creating CEL env: %w", err)
+	}
+	_, err = compile(env, expr)
+	return err
+}
+
+// Evaluate evaluates an entity-source predicate over the bound entity and an
+// optional event (map form). A nil event binds `event` to CEL null, as for an
+// eventless (scheduled or bound-run) evaluation.
+//
+// It returns True or False only when the known data settles the predicate,
+// and Unknown when the result depends on unresolved fields or on members a
+// partial collection may hold. An error — a predicate that does not compile,
+// a malformed entity (wrapping [ErrMalformedEntity]), or an evaluation error
+// such as reading a field of a null event — is returned with Unknown and must
+// never be read as false.
+func Evaluate(expr string, entity *normentity.Entity, event map[string]any) (Result, error) {
+	bound, err := Bind(entity)
+	if err != nil {
+		return Unknown, fmt.Errorf("%w: %w", ErrMalformedEntity, err)
+	}
+	env, err := NewEnv()
+	if err != nil {
+		return Unknown, fmt.Errorf("creating CEL env: %w", err)
+	}
+	checked, err := compile(env, expr)
+	if err != nil {
+		return Unknown, err
+	}
+	prg, err := env.Program(checked, cel.CustomDecoratorV2(decorate))
+	if err != nil {
+		return Unknown, err
+	}
+	var ev any = types.NullValue
+	if event != nil {
+		ev = event
+	}
+	out, _, err := prg.Eval(map[string]any{RootEntity: bound, RootEvent: ev})
+	if err != nil {
+		return Unknown, err
+	}
+	switch v := out.(type) {
+	case types.Bool:
+		if v {
+			return True, nil
+		}
+		return False, nil
+	case *types.Unknown:
+		return Unknown, nil
+	}
+	return Unknown, fmt.Errorf("entity-source predicate result is not bool: %v", out.Type())
+}
