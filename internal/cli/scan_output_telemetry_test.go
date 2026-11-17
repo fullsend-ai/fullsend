@@ -153,6 +153,10 @@ func TestScanOutputFiles_DuplicateJSONKeys(t *testing.T) {
 	content := fmt.Sprintf(`{"a":"x %s","a":"second"}`, secret)
 	require.NoError(t, os.WriteFile(dupFile, []byte(content), 0o644))
 
+	dupWithLargeNumFile := filepath.Join(dir, "duplicate_with_large_num.json")
+	contentWithLargeNum := fmt.Sprintf(`{"large":1e1000,"a":"x %s","a":"second"}`, secret)
+	require.NoError(t, os.WriteFile(dupWithLargeNumFile, []byte(contentWithLargeNum), 0o644))
+
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
@@ -161,6 +165,11 @@ func TestScanOutputFiles_DuplicateJSONKeys(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(got), secret)
 	assert.Contains(t, string(got), "second")
+
+	gotLarge, err := os.ReadFile(dupWithLargeNumFile)
+	require.NoError(t, err)
+	assert.NotContains(t, string(gotLarge), secret)
+	assert.Contains(t, string(gotLarge), "second")
 }
 
 // TestScanOutputFiles_SingleRecordJSONL_PreservesLineCount verifies that
@@ -216,6 +225,8 @@ func TestHasDuplicateJSONKeys(t *testing.T) {
 		{"array with separate objects", `[{"k": 1}, {"k": 2}]`, false},
 		{"value matches key name", `{"a": "a", "b": "a"}`, false},
 		{"array values inside object", `{"a": [1, 2], "b": 3}`, false},
+		{"out-of-range number before duplicate keys", `{"large": 1e1000, "dup": 1, "dup": 2}`, true},
+		{"out-of-range number without duplicates", `{"large": 1e1000, "no_dup": 1}`, false},
 		{"malformed json", `{"a": `, false},
 	}
 	for _, tc := range tests {

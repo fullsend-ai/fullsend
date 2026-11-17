@@ -6914,6 +6914,7 @@ type jsonContainerFrame struct {
 // JSON object within the payload contains duplicate keys.
 func hasDuplicateJSONKeys(content []byte) bool {
 	dec := json.NewDecoder(bytes.NewReader(content))
+	dec.UseNumber()
 	var stack []*jsonContainerFrame
 	for {
 		tok, err := dec.Token()

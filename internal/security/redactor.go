@@ -173,6 +173,21 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 			}
 
 			secret := current[start:end]
+			minLen := 0
+			switch p.name {
+			case "env_assignment":
+				minLen = 8
+			case "auth_header":
+				minLen = 12
+			case "db_connection_password":
+				minLen = 4
+			case "json_field":
+				minLen = 8
+			}
+			if len(secret) < minLen {
+				continue
+			}
+
 			// If the matched secret ends with a backslash and is immediately
 			// followed by a quote delimiter, the trailing backslash was escaping
 			// that delimiter (e.g. \" in JSON or code strings). Preserve the
@@ -188,20 +203,6 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 				}
 			}
 			if len(secret) == 0 {
-				continue
-			}
-			minLen := 0
-			switch p.name {
-			case "env_assignment":
-				minLen = 8
-			case "auth_header":
-				minLen = 12
-			case "db_connection_password":
-				minLen = 4
-			case "json_field":
-				minLen = 8
-			}
-			if len(secret) < minLen {
 				continue
 			}
 

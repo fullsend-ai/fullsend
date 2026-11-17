@@ -415,6 +415,19 @@ func TestSecretRedactor(t *testing.T) {
 		assert.False(t, resultTrailing.Safe)
 		assert.True(t, hasFinding(resultTrailing, "env_assignment"))
 		assert.NotContains(t, resultTrailing.Sanitized, `abcdefg\`)
+
+		// Exact-minimum-length boundary tests (8 chars) ending in backslash before quote delimiters
+		resultSingleQuote := r.Scan("TOKEN='abcdefg\\'")
+		assert.False(t, resultSingleQuote.Safe)
+		assert.True(t, hasFinding(resultSingleQuote, "env_assignment"))
+		assert.NotContains(t, resultSingleQuote.Sanitized, "abcdefg")
+		assert.Contains(t, resultSingleQuote.Sanitized, `\'`)
+
+		resultDoubleQuote := r.Scan(`TOKEN="abcdefg\""`)
+		assert.False(t, resultDoubleQuote.Safe)
+		assert.True(t, hasFinding(resultDoubleQuote, "env_assignment"))
+		assert.NotContains(t, resultDoubleQuote.Sanitized, "abcdefg")
+		assert.Contains(t, resultDoubleQuote.Sanitized, `\"`)
 	})
 
 	t.Run("db connection redacts password containing backslashes", func(t *testing.T) {
@@ -447,6 +460,31 @@ func TestSecretRedactor(t *testing.T) {
 		assert.False(t, resultBoundary.Safe)
 		assert.True(t, hasFinding(resultBoundary, "auth_header"))
 		assert.NotContains(t, resultBoundary.Sanitized, `a\b\c\d\e\f\g`)
+
+		// Exact-minimum-length boundary tests (12 chars) ending in backslash before quote delimiters
+		resAuthSingle := r.Scan("authorization: 'Bearer abcdefghijk\\'")
+		assert.False(t, resAuthSingle.Safe)
+		assert.True(t, hasFinding(resAuthSingle, "auth_header"))
+		assert.NotContains(t, resAuthSingle.Sanitized, "abcdefghijk")
+		assert.Contains(t, resAuthSingle.Sanitized, `\'`)
+
+		resAuthDouble := r.Scan(`authorization: "Bearer abcdefghijk\""`)
+		assert.False(t, resAuthDouble.Safe)
+		assert.True(t, hasFinding(resAuthDouble, "auth_header"))
+		assert.NotContains(t, resAuthDouble.Sanitized, "abcdefghijk")
+		assert.Contains(t, resAuthDouble.Sanitized, `\"`)
+
+		resAuthUnprefixedSingle := r.Scan("authorization: 'abcdefghijk\\'")
+		assert.False(t, resAuthUnprefixedSingle.Safe)
+		assert.True(t, hasFinding(resAuthUnprefixedSingle, "auth_header"))
+		assert.NotContains(t, resAuthUnprefixedSingle.Sanitized, "abcdefghijk")
+		assert.Contains(t, resAuthUnprefixedSingle.Sanitized, `\'`)
+
+		resAuthUnprefixedDouble := r.Scan(`authorization: "abcdefghijk\""`)
+		assert.False(t, resAuthUnprefixedDouble.Safe)
+		assert.True(t, hasFinding(resAuthUnprefixedDouble, "auth_header"))
+		assert.NotContains(t, resAuthUnprefixedDouble.Sanitized, "abcdefghijk")
+		assert.Contains(t, resAuthUnprefixedDouble.Sanitized, `\"`)
 	})
 
 	t.Run("json_field with embedded escaped quote preserves valid JSON", func(t *testing.T) {
