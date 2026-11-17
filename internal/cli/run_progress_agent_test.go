@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -124,4 +125,104 @@ func TestRunAgent_QuietValidationKeepsFeedbackForNextIteration(t *testing.T) {
 	feedback, err := os.ReadFile(filepath.Join(outputBase, mustRunDir(t, outputBase), "iteration-1", validationFeedbackFile))
 	require.NoError(t, err)
 	assert.True(t, strings.Contains(string(feedback), "SECRET-VALIDATION-FEEDBACK"), "the feedback file keeps the full text")
+}
+
+// stderrToTempFile points os.Stderr at a temp file while fn runs and
+// returns what was written. A file, not a pipe: runAgent writes more than
+// a pipe buffer holds.
+func stderrToTempFile(t *testing.T, fn func()) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	require.NoError(t, err)
+	prev := os.Stderr
+	os.Stderr = f
+	defer func() { os.Stderr = prev }()
+	fn()
+	require.NoError(t, f.Close())
+	data, err := os.ReadFile(f.Name())
+	require.NoError(t, err)
+	return string(data)
+}
+
+// useClaudeTranscripts makes runAgent extract transcripts with the Claude
+// Code handler, so the real per-file lines run against the fake openshell.
+func useClaudeTranscripts(t *testing.T) {
+	t.Helper()
+	prev := resolveRunBackendFn
+	resolveRunBackendFn = func(o runOverrides, rc runConfig, agentName string) (agentruntime.Backend, string, error) {
+		b, src, err := prev(o, rc, agentName)
+		b.Transcripts = agentruntime.ClaudeRuntime{}
+		return b, src, err
+	}
+	t.Cleanup(func() { resolveRunBackendFn = prev })
+}
+
+// wrapOpenshellExtraction puts an openshell in front of the current one:
+// its output listing runs listing, its transcript listing names
+// SECRET-TRANSCRIPT.jsonl, and copying SECRET-OUT.json fails with
+// SECRET-DL-ERR. Everything else goes to the openshell it wraps.
+func wrapOpenshellExtraction(t *testing.T, listing string) {
+	t.Helper()
+	prevBin, err := exec.LookPath("openshell")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \"$1 $2\" in\n" +
+		"  'sandbox exec')\n" +
+		"    case \"$*\" in\n" +
+		"      *\"/output -type f\"*) " + listing + " ;;\n" +
+		"      *\"-name '*.jsonl'\"*) echo /sandbox/claude/projects/p/SECRET-TRANSCRIPT.jsonl; exit 0 ;;\n" +
+		"    esac ;;\n" +
+		"  'sandbox download')\n" +
+		"    case \"$4\" in\n" +
+		"      *SECRET-OUT*) echo SECRET-DL-ERR >&2; exit 1 ;;\n" +
+		"      *SECRET-TRANSCRIPT*) mkdir -p \"$5\"; printf '{}\\n' > \"$5/$(basename \"$4\")\"; exit 0 ;;\n" +
+		"    esac ;;\n" +
+		"esac\n" +
+		"exec " + shellQuoteForTest(prevBin) + " \"$@\"\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// At quiet neither the printer nor os.Stderr (where the sandbox and the
+// runtimes write) carries an output file name, a transcript name or a
+// copy or listing error. Unset prints them as before, which shows the
+// test reaches those lines.
+func TestRunAgent_QuietKeepsExtractionNamesAndErrorsOutOfTheLog(t *testing.T) {
+	cases := map[string]string{
+		"listing fails": "echo SECRET-LIST-ERR >&2; exit 1",
+		"copy fails":    "echo /sandbox/workspace/output/SECRET-OUT.json; exit 0",
+	}
+	for name, listing := range cases {
+		for _, verbosity := range []string{config.ProgressVerbosityQuiet, ""} {
+			t.Run(name+"/verbosity="+verbosity, func(t *testing.T) {
+				repoDir := newShallowTestRepo(t)
+				useFakeOpenshellRepoDownload(t, "cp -R "+shellQuoteForTest(repoDir)+"/. \"$dest\"/", "")
+				wrapOpenshellExtraction(t, listing)
+				useProgressProbeRuntime(t)
+				useClaudeTranscripts(t)
+				dir := writeValidationLoopFullsendDir(t, passingValidationScript, "", 1, "")
+				writeProgressConfig(t, dir, verbosity)
+
+				var out string
+				var err error
+				stderr := stderrToTempFile(t, func() { out, err = runValidationLoopAgent(t, dir, t.TempDir(), repoDir) })
+				require.NoError(t, err)
+				assert.Contains(t, out, "Failed to extract output files")
+				if verbosity == config.ProgressVerbosityQuiet {
+					assert.NotContains(t, out, "SECRET-", "quiet printer lines carry no names or error text")
+					assert.NotContains(t, stderr, "SECRET-", "quiet stderr lines carry no names or error text")
+					assert.Contains(t, stderr, "Transcripts: 1 file(s) saved, 0 skipped or failed to copy")
+					return
+				}
+				all := out + stderr
+				assert.Contains(t, all, "SECRET-TRANSCRIPT.jsonl", "unset names the transcript as before")
+				if name == "listing fails" {
+					assert.Contains(t, out, "SECRET-LIST-ERR", "unset prints the error text as before")
+				} else {
+					assert.Contains(t, stderr, "Failed to copy SECRET-OUT.json", "unset names the file as before")
+				}
+			})
+		}
+	}
 }
