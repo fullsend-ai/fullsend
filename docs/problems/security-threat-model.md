@@ -55,6 +55,12 @@ The attack surface is the same as for visible prompt injection — PR descriptio
 
 ### Defense considerations
 
+A vetted extension may expose several tools. Selecting one must not grant its
+siblings or the runtime defaults.
+[ADR 0166](../ADRs/0166-select-pi-extension-tools-without-widening-access.md)
+requires exact native tool selection and consistent hook and child permissions
+for Pi extensions.
+
 - **Edge and proxy guardrails** — Some organizations filter or moderate **outbound** model traffic (prompts or completions) or tool invocations at a **gateway** in front of providers and MCP servers — for example policy-as-code, rate limits, or vendor moderation hooks. That can add defense in depth and consistent telemetry, but it does not remove the need for **in-agent** separation of trusted instructions from untrusted forge content; see [landscape.md](../landscape.md#agent-gateway). A compromised gateway policy is a concentrated risk, so gateway configuration should be governed like other agent infrastructure.
 
 - **Input sanitization** — strip or flag non-rendering Unicode characters before content reaches agents. Specific character classes to target: Tag characters (U+E0000–U+E007F), zero-width characters (U+200B, U+200C, U+200D, U+FEFF), bidirectional overrides (U+202A–U+202E, U+2066–U+2069), and variation selectors. This is more tractable than general prompt injection detection because the characters themselves are the signal — their mere presence in a PR description or code comment is suspicious, regardless of what they encode. However, some of these characters have legitimate uses in internationalized text, so stripping must be context-aware or at minimum flag rather than silently remove.
