@@ -260,3 +260,27 @@ func TestPRPollCallerSince(t *testing.T) {
 		})
 	}
 }
+
+// The poll caller runs one reusable-dispatch call per pull request in a
+// single workflow run, and artifact names are unique per run, so each
+// poll-started review must upload under its own name.
+func TestPRPollReviewArtifactNameIsPerPullRequest(t *testing.T) {
+	content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+	var wf struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				With map[string]string `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal([]byte(content), &wf))
+	var name string
+	for _, step := range wf.Jobs["review"].Steps {
+		if step.With["agent"] == "review" {
+			name = step.With["artifact-name"]
+		}
+	}
+	require.NotEmpty(t, name, "the review job's agent step sets artifact-name")
+	assert.Contains(t, name, "trigger_source == 'fork-pr-poll'")
+	assert.Contains(t, name, "pull_request.number")
+}

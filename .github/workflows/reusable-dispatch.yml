@@ -1952,6 +1952,10 @@ jobs:
           status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
+          # The fork PR review poll runs one review per pull request in the
+          # same workflow run, and artifact names are unique per run. Other
+          # events keep the default fullsend-review name.
+          artifact-name: ${{ needs.route.outputs.trigger_source == 'fork-pr-poll' && format('fullsend-review-pr-{0}', fromJSON(needs.route.outputs.event_payload).pull_request.number) || '' }}
 
   fix:
     name: Fix
