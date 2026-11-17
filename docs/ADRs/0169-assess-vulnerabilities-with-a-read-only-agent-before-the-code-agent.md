@@ -40,10 +40,11 @@ showed the flow can work. It composes the triage harness with its own agent,
 result schema and scripts, registers that under the `triage` name, and keeps
 a controller in the repository. A second repository would have to copy that
 code, and a repository that adopts it no longer has regular triage. Dispatch
-to several targets, recovery and Pi tool selection for this work are being
-decided separately ([#9266](https://github.com/fullsend-ai/fullsend/pull/9266),
-[#9264](https://github.com/fullsend-ai/fullsend/pull/9264),
-[#9265](https://github.com/fullsend-ai/fullsend/pull/9265)).
+to several targets and recovery for this work are being decided separately
+([#9266](https://github.com/fullsend-ai/fullsend/pull/9266),
+[#9264](https://github.com/fullsend-ai/fullsend/pull/9264)). Selecting Pi
+extension tools is proposed in
+[#9265](https://github.com/fullsend-ai/fullsend/pull/9265).
 
 Each step gets its own agent, harness and sandbox
 ([ADR 0020](0020-composable-single-responsibility-agents-with-individual-sandboxes.md)),
@@ -70,7 +71,9 @@ orchestration code of its own.
 - **A Pi extension that holds the whole workflow.** It works on one runtime,
   which the adopter chooses per agent
   ([ADR 0091](0091-per-agent-runtime-model-effort.md)), and the checks that
-  gate publishing and coding would run inside the sandbox.
+  gate publishing and coding would run inside the sandbox. This option is
+  about where the workflow lives. An extension that collects evidence as a
+  tool inside a run is allowed (item 8).
 - **A read-only assessment agent, then the code agent.** Chosen.
 
 ### How a work item reaches the agent
@@ -119,13 +122,22 @@ always follows a verdict.
    nothing is assessed by default, is not decided here.
 3. **Verdict.** The result is affected, not affected, fixed or under
    investigation, in the terms of CSAF VEX, and each piece of evidence says
-   whether a tool observed it or the model judged it. Host scripts publish it
-   as one comment on the work item, which a later run updates. It is a
+   whether a tool observed it or the model judged it. Host scripts publish
+   each run's verdict as a new comment on the work item and do not edit an
+   earlier one
+   ([#9334](https://github.com/fullsend-ai/fullsend/issues/9334)). It is a
    proposal for a person to review; fullsend does not publish VEX. A run
    that cannot gather its evidence, for example because the sandbox lacks
    the toolchain the branch declares, says so and gives no verdict.
 4. **Handoff.** An affected verdict records on the work item the
    vulnerability, the branch, the commit and the files its plan may change.
+   Host scripts write that record, and a later assessment replaces it.
+   Where the tracker can hold structured data on a work item, the record is
+   kept there and not in comment text. Where it can only be a comment, the
+   host check accepts only a comment written by fullsend's own identity,
+   because authorizing the actor who starts a run does not authorize other
+   content on the work item
+   ([Authorization Contract v2](../normative/authorization/v2/README.md)).
    The code agent works on a vulnerability only while that record is current.
    It opens its change against the assessed branch
    ([ADR 0053](0053-agent-driven-branch-targeting.md)), and a host check
@@ -135,12 +147,16 @@ always follows a verdict.
    the same record and the same files, and a change that needs other files
    needs a new assessment.
 5. **One target per run.** Host scripts resolve one repository and branch
-   for the work item. They use a structured intake record on the work item
-   (the vulnerability, product, release and component) and a release
-   mapping the adopter keeps in its repository, not the work item's free
-   text. Who writes the intake record is not decided here. Several
-   maintained branches are several work items. How those are created is
-   not decided here; #9266 proposes one.
+   for the work item. They use structured data on the work item (the
+   vulnerability, product, release and component), which is either the
+   tracker's own fields or an intake record set on the work item, and a
+   release mapping the adopter keeps in its repository, not the work item's
+   free text. When that data is missing or ambiguous, or the release has no
+   mapping, the run stops with a reason; it does not choose a repository
+   and does not report not affected. Who writes an intake record, where one
+   is used, is not decided here. Several maintained branches are several
+   work items. How those are created is not decided here; #9266 proposes
+   one.
 6. **Scope.** Embargoed vulnerabilities are out of scope. Host scripts stop
    a run that cannot show its finding is public, before a sandbox exists.
    A work item that carries a tracker security level counts as not public
@@ -149,6 +165,10 @@ always follows a verdict.
    here (see
    [private context in public agent workflows](../problems/private-context-public-workflows.md));
    until it is, the agent by default does not read that text in that case.
+   When the tracker is private and the repository is public, the change
+   the code agent proposes, its commits included, carries only public facts:
+   the vulnerability's identifier, its public advisory and the assessed
+   commit. It carries no link to the work item and no text from it.
 7. **Adopter facts.** The release mapping with its maintained branches,
    vendor VEX sources, readable tracker security levels and label
    conventions live in files in the adopter's repository. A harness setting
@@ -158,14 +178,19 @@ always follows a verdict.
 8. **Tools.** Tools the agent calls during a run, MCP servers included,
    execute inside its sandbox, under its network policy and an allow-list
    of tools. The sandbox is given no credential that can change code, and
-   publishing stays in host scripts. A tool server that has to run outside
-   the sandbox with its own access to the checkout is a platform decision
-   this ADR does not make.
+   publishing stays in host scripts. A tool that collects evidence, a
+   runtime extension included, is such a tool. It covers the ecosystems it
+   was written for and may work on one runtime only, so a run it does not
+   cover gathers its evidence without it or ends without a verdict (item
+   3). A tool server that has to run outside the sandbox with its own
+   access to the checkout is a platform decision this ADR does not make.
 
 ## Forge scope
 
 - **GitHub:** issues are the work item, including one opened from a
-  Dependabot alert.
+  Dependabot alert. An alert that has no work item is not in this ADR's
+  scope: reading alerts, assessing one before a work item exists and
+  opening the work item are not decided here.
 - **GitLab:** covered as the repository, with Jira as the tracker. GitLab
   issues as the work item are not covered yet, because no adopter files
   vulnerability trackers there; the agent skips them with a reason.
@@ -197,9 +222,13 @@ always follows a verdict.
   check before it is enabled on these changes. When the change is on
   another forge than the work item, the fix agent's run also needs a way
   to read the record.
-- The adopter keeps the release mapping, and something has to write the
-  intake record. Opening one work item per maintained branch also stays
-  with the adopter until a later decision.
+- The adopter keeps the release mapping. Where the tracker's own fields do
+  not carry the vulnerability, release and component, something has to
+  write the intake record. Opening one work item per maintained branch
+  also stays with the adopter until a later decision.
+- Nothing checks yet that a change proposed on a public repository carries
+  only public facts. That host check is needed before the code agent works
+  from a private tracker on a public repository.
 - Where a site puts a security level on every vulnerability tracker, the
   agent does not run until the adopter lists a level as readable.
 - One vulnerability can have many trackers, and several can map to the same
