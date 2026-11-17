@@ -13,6 +13,7 @@ on:
     # SYNC-WITH: grep in "Check for mint-cf-worker-relevant changes" step
     paths:
       - "internal/dispatch/cf/**"
+      - "internal/mintcore/**"
       - "cmd/mint-wasm/**"
       - "Makefile"
       - ".github/workflows/mint-cf-worker-test.yml"
@@ -20,6 +21,7 @@ on:
     # SYNC-WITH: grep in "Check for mint-cf-worker-relevant changes" step
     paths:
       - "internal/dispatch/cf/**"
+      - "internal/mintcore/**"
       - "cmd/mint-wasm/**"
       - "Makefile"
       - ".github/workflows/mint-cf-worker-test.yml"
@@ -61,7 +63,7 @@ jobs:
             echo "relevant=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if echo "$FILES" | grep -qE '^internal/dispatch/cf/|^cmd/mint-wasm/|^Makefile$|^\.github/workflows/mint-cf-worker-test\.yml$'; then
+          if echo "$FILES" | grep -qE '^internal/dispatch/cf/|^internal/mintcore/|^cmd/mint-wasm/|^Makefile$|^\.github/workflows/mint-cf-worker-test\.yml$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No mint-cf-worker-relevant files changed — skipping"
