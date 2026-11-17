@@ -1122,6 +1122,9 @@ func (f *fakeURLSCM) CreateIssue(context.Context, string, string, string, string
 func (f *fakeURLSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
 	return nil
 }
+func (f *fakeURLSCM) EnsureLabel(context.Context, string, string, string) error {
+	return nil
+}
 func (f *fakeURLSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
 	return nil, nil
 }

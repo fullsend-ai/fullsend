@@ -18,6 +18,10 @@ this hook cannot read blocks, and so does any unexpected error, because Claude
 Code reads a bare exit 1 with no stdout as *non*-blocking, making a traceback
 equivalent to an allow.
 
+A verdict asking for approval is the one case that blocks even when tirith
+cleared the command: requires_approval blocks on an exit 0 and on an
+action=allow or warn alike, because this hook has no one to ask.
+
 analysis_incomplete blocks too. Tirith emits it when it cannot resolve what a
 command will execute, which is the same signal for an unparsed POSIX idiom and
 for a deliberately obfuscated payload, so it cannot be downgraded. The block
@@ -29,8 +33,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import traceback
 from datetime import UTC, datetime
 
@@ -45,16 +51,16 @@ TIRITH_REQUIRED = os.environ.get("TIRITH_REQUIRED", "") == "1"
 SEVERITY_LEVELS = {"low": 1, "medium": 2, "high": 3, "critical": 4}
 
 # Appended when analysis_incomplete alone caused the block, so the agent gets a
-# rewrite instead of "could not analyse". Syntax only: this reaches the caller
-# whose command was just blocked, so it must never name the credential rewrite
-# that clears the sensitive-upload rule. Every rewrite below is asserted not to
-# unblock an attack shape. Mirrors the dialect table in
-# docs/contributing/runtime-implementation.md.
+# rewrite instead of "could not analyse". It carries the syntax rewrites and
+# nothing else: the text reaches the caller whose command was just blocked, so
+# it must never describe a form that gets an upload past this hook. Every
+# rewrite below is asserted not to unblock an attack shape. Mirrors the dialect
+# table in docs/contributing/runtime-implementation.md.
 DIALECT_HINT = (
     " — tirith could not analyse this command, so it is blocked rather than trusted. "
-    'Rewrite it in a form tirith parses: `test -n "$X"` instead of `[ -n "$X" ]` or '
-    "`[[ ... ]]`; two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` "
-    "inside `$(( ))`; in a `case`, only the first arm may be a glob. "
+    "Rewrite it in a form tirith parses: "
+    "two-step arithmetic (`n=$(cmd); y=$(( n - 1 ))`) instead of `$( )` inside `$(( ))`; "
+    "in a `case`, only the first arm may be a glob. "
     "See docs/contributing/runtime-implementation.md, 'Tirith: accepted shell dialect'."
 )
 
@@ -84,17 +90,209 @@ def severity_meets_threshold(severity: str, threshold: str) -> bool:
     return sev_level >= thresh_level
 
 
+def one_line(text: str, limit: int = 200) -> str:
+    """Collapse whitespace and drop control characters, then cap the length.
+
+    approval_rule comes from the verdict and lands in a reason the runner
+    renders as one line, so a newline or an escape sequence in it would
+    reformat the block message around the rule name.
+    """
+    printable = "".join(
+        " " if ch.isspace() else ch for ch in text if ch.isprintable() or ch.isspace()
+    )
+    return " ".join(printable.split())[:limit].strip()
+
+
+def approval_block(raw: object, returncode: int) -> str:
+    """Return a block reason when tirith asks for approval, else "".
+
+    A policy approval rule sets requires_approval, possibly on an exit 0 or an
+    action=warn. This hook has no one to ask, so the request is a block. Any
+    value other than an absent key or false blocks too: it is unreadable.
+    """
+    if not isinstance(raw, dict):
+        return ""
+    requires_approval = raw.get("requires_approval", False)
+    if requires_approval is False:
+        return ""
+    if requires_approval is True:
+        rule = raw.get("approval_rule")
+        cleaned = one_line(rule) if isinstance(rule, str) else ""
+        named = f" ({cleaned})" if cleaned else ""
+        reason = (
+            f"Tirith requires approval{named} (exit code {returncode}) — "
+            "blocked; this hook cannot collect an approval"
+        )
+        log_finding("tirith_requires_approval", "high", reason, "block")
+    else:
+        reason = (
+            f"Tirith requires_approval is {type(requires_approval).__name__}, expected a "
+            f"bool (exit code {returncode}) — blocked; this hook cannot read the approval "
+            "field and so cannot collect an approval"
+        )
+        log_finding("tirith_malformed_output", "high", reason, "block")
+    return reason
+
+
+# The temp root for the per-call directory. Fixed, not tempfile.gettempdir(),
+# so TMPDIR/TMP/TEMP from the agent-influenceable environment cannot steer where
+# the directory lands (and so plant a policy file into it).
+TIRITH_TMP_ROOT = "/tmp"
+
+# The repository's .tirith/policy.yaml, staged by the runner next to this script
+# before the agent started (security.TirithRepoPolicyFile). It is read from the
+# ref the run trusts, never from the agent-writable checkout, and the runtime's
+# launch guard checks it against the runner-held digest with the scripts.
+# Absent when the repository has none.
+REPO_POLICY_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "tirith-repo-policy.yaml"
+)
+
+
+def _tirith_env(config_home: str) -> dict[str, str]:
+    """Build the environment for the tirith subprocess from scratch.
+
+    tirith's verdict must depend only on the command, never on the agent's
+    environment or files. tirith reads a *trusted* user-scope policy from
+    $HOME/.config/tirith (or XDG_CONFIG_HOME / TIRITH_POLICY_ROOT), honours a
+    TIRITH=0 bypass and other TIRITH_* toggles, and looks for a check daemon's
+    socket under its state dir — all of which the agent can set or write in the
+    sandbox, where $HOME is agent-writable. So this passes none of the agent's
+    environment through: it keeps PATH (the runtime already pins it to a trusted
+    value; see the lookup in check_command), forces a fixed C locale, points
+    every config and state directory at a fresh empty per-call directory the
+    agent has not seen, and drops every TIRITH_* name before forcing the one the
+    hook owns.
+
+    The per-call directory is created with mkdtemp (mode 0700) under a fixed
+    temp root. Its only barrier is its unpredictable name: it is owned by the
+    same uid tirith runs as, so a process the agent leaves running under that
+    uid could still race it. The boundary that would close that is running
+    tirith as a different uid, or the sandbox pre-creating a root-owned config
+    dir at bootstrap; both are out of scope here and tracked as follow-ups.
+    """
+    # PATH comes from the hook process, which the runtime launches with a PATH
+    # pinned to directories the agent cannot write (envDataTrustedPath); the
+    # binary is also resolved absolutely in check_command, so this value is used
+    # only as a fallback search path. A fixed C locale keeps tirith's analysis
+    # from depending on an agent-set LANG/LC_*/TZ.
+    env = {
+        "PATH": os.environ.get("PATH") or os.defpath,
+        "LC_ALL": "C.UTF-8",
+        "LANG": "C.UTF-8",
+    }
+    # A single root under the temp dir holds config, data and state, so the
+    # policy lookup, the TIRITH_* toggles and the daemon socket lookup all land
+    # on an empty directory.
+    env["HOME"] = config_home
+    env["XDG_CONFIG_HOME"] = os.path.join(config_home, ".config")
+    env["XDG_DATA_HOME"] = os.path.join(config_home, ".local", "share")
+    env["XDG_STATE_HOME"] = os.path.join(config_home, ".local", "state")
+    env["XDG_RUNTIME_DIR"] = os.path.join(config_home, "run")
+    # Create them so tirith does not fail (and so block every command under
+    # TIRITH_REQUIRED) if it expects them to exist.
+    for key in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"):
+        os.makedirs(env[key], mode=0o700, exist_ok=True)
+    # tirith looks for a repo-scope .tirith policy by walking up from its cwd to
+    # the nearest .git. An empty .git in the per-call directory ends that walk
+    # there, so nothing in the temp root or above it is read.
+    os.mkdir(os.path.join(config_home, ".git"), mode=0o700)
+    # Suppress network lookups (OSV, deps.dev, threat-DB). The sandbox egress
+    # policy already denies these, so this only drops the denied attempts.
+    # The variable, not --offline: tirith exits 2 with no output on an unknown
+    # option, so a flag would break every check on a binary that lacks it.
+    env["TIRITH_OFFLINE"] = "1"
+    return env
+
+
+def _stage_repo_policy(config_home: str) -> None:
+    """Copy the staged repository policy into the per-call directory, if any.
+
+    The per-call directory already holds the .git marker that ends tirith's
+    walk for a repository policy, so a .tirith/policy.yaml beside it is the
+    one tirith reads as repo scope. tirith merges a repo-scope policy into its
+    baseline as tightening only (it can add block and approval rules and
+    network denies, not allowlists or a bypass), so the file is passed through
+    unchanged: fullsend does no merging.
+
+    No staged file leaves the directory as it was. A staged file that cannot
+    be read raises OSError, which the caller treats as a setup failure, so the
+    owner's policy is never silently skipped. O_NOFOLLOW refuses a symlink in
+    its place.
+    """
+    try:
+        fd = os.open(REPO_POLICY_PATH, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return
+    with os.fdopen(fd, "rb") as src:
+        policy = src.read()
+    policy_dir = os.path.join(config_home, ".tirith")
+    os.mkdir(policy_dir, mode=0o700)
+    dest = os.open(
+        os.path.join(policy_dir, "policy.yaml"),
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    with os.fdopen(dest, "wb") as out:
+        out.write(policy)
+
+
+def _setup_failed(exc: OSError) -> tuple[bool, str]:
+    """Verdict when the hook cannot set up tirith's isolated environment."""
+    reason = f"tirith setup failed ({type(exc).__name__})"
+    if TIRITH_REQUIRED:
+        reason += " — blocking (TIRITH_REQUIRED=1)"
+        log_finding("tirith_error", "critical", reason, "block")
+        return True, reason
+    # Even fail-open, leave a trace that the scanner did not run.
+    log_finding("tirith_error", "high", reason, "warn")
+    return False, ""
+
+
 def check_command(command: str) -> tuple[bool, str]:
     """Run tirith check on a command. Returns (should_block, reason)."""
     try:
+        config_home = tempfile.mkdtemp(prefix="tirith-hook-", dir=TIRITH_TMP_ROOT)
+    except OSError as exc:
+        return _setup_failed(exc)
+    try:
+        # Building the env creates the per-call XDG dirs; a failure here is a
+        # setup failure, not a missing binary, so it is caught and labelled as
+        # such rather than falling through to the binary-not-found handler.
+        try:
+            env = _tirith_env(config_home)
+            _stage_repo_policy(config_home)
+        except OSError as exc:
+            return _setup_failed(exc)
+        # Resolve the binary absolutely against the trusted PATH rather than
+        # letting the child re-resolve a bare `tirith`, so the verdict never
+        # depends on PATH ordering. which uses the same PATH the child gets.
+        # Require an absolute result: a relative path (from an empty or relative
+        # PATH entry) would make subprocess raise under cwd=config_home and
+        # fail open. The shipped PATH is pinned to absolute dirs, so this guard
+        # cannot trigger there; it is defence in depth.
+        tirith_bin = shutil.which("tirith", path=env["PATH"])
+        if tirith_bin is None or not os.path.isabs(tirith_bin):
+            reason = "tirith not found on the trusted PATH"
+            if TIRITH_REQUIRED:
+                reason += " — blocking (TIRITH_REQUIRED=1)"
+                log_finding("tirith_missing", "critical", reason, "block")
+                return True, reason
+            log_finding("tirith_missing", "high", reason, "warn")
+            return False, ""
         result = subprocess.run(
-            ["tirith", "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
+            [tirith_bin, "check", "--json", "--non-interactive", "--shell", "posix", "--", command],
             capture_output=True,
             text=True,
             # Without this a non-UTF-8 byte in a finding raises into the
             # fail-open handler below, discarding a real threat report.
             errors="replace",
             timeout=5,
+            # The verdict must not depend on the agent's environment or files.
+            env=env,
+            # Not the agent-controlled checkout: tirith walks up from cwd for a
+            # repo-local .tirith policy.
+            cwd=config_home,
         )
     except FileNotFoundError:
         if TIRITH_REQUIRED:
@@ -115,9 +313,19 @@ def check_command(command: str) -> tuple[bool, str]:
             log_finding("tirith_error", "critical", reason, "block")
             return True, reason
         return False, ""
+    finally:
+        # tirith has read its policy and written any state by the time it
+        # returns, so the per-call directory is no longer needed.
+        shutil.rmtree(config_home, ignore_errors=True)
 
     if result.returncode == 0:
-        return False, ""
+        # An allow may still carry requires_approval. Output that is absent or
+        # unreadable stays an allow here, as it was before tirith had the field.
+        try:
+            reason = approval_block(json.loads(result.stdout), result.returncode)
+        except json.JSONDecodeError:
+            reason = ""
+        return bool(reason), reason
 
     # Parse tirith JSON output.
     # v0.3.x returns {"action": "block", "findings": [...], ...}
@@ -209,6 +417,10 @@ def check_command(command: str) -> tuple[bool, str]:
         if only_analysis_incomplete:
             block_reason += DIALECT_HINT
         return True, block_reason
+
+    reason = approval_block(raw, result.returncode)
+    if reason:
+        return True, reason
 
     # v0.3.x: honour the top-level action field even when no individual
     # finding met the severity threshold.

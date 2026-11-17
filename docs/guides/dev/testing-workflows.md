@@ -1,6 +1,6 @@
 # Testing workflow changes
 
-This guide explains how to test changes to Fullsend's GitHub Actions workflows, composite actions, and the CLI itself.
+This guide explains how to test changes to fullsend's GitHub Actions workflows, composite actions, and the CLI itself.
 
 ## References
 
@@ -68,7 +68,7 @@ jobs:
       # [...]
 ```
 
-Push the change and trigger a Fullsend action on the test repository:
+Push the change and trigger a fullsend action on the test repository:
 `/fs-triage`, `/fs-code`, or another agent command. Revert the references to
 the desired release or branch before deleting or rewriting the test ref.
 

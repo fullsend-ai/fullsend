@@ -54,7 +54,7 @@
 // and re-adding them creates pending invitations (#7777). The ensurer
 // verifies org membership once per org; it must not call AddCollaborator.
 // The all-repository role itself is verified only by
-// hack/setup-new-e2e-org.sh at setup time, not by the ensurer, so the e2e
+// e2e/org-pool/setup-org.sh at setup time, not by the ensurer, so the e2e
 // GitHub App installation does not need the organization_custom_roles
 // permission. fstest-outsider must remain outside the organization.
 package install

@@ -10,7 +10,8 @@ import (
 // The edit-repair extension is a stopgap for a pi defect: some models send
 // the edit tool's `edits` as a JSON string holding raw control characters,
 // or as an array of JSON strings, and pi's own argument preparation rejects
-// both with `edits.0: must be object` (earendil-works/pi#8521, #8962). It
+// both with `edits.0: expected object, got string` (earendil-works/pi#8521,
+// #8962). It
 // re-registers pi's edit tool with the argument repair in front; see
 // pi_extension/fullsend-edit-repair.js.
 //

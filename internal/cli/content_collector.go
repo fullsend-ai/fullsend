@@ -913,6 +913,8 @@ func encodedSepEnd(s string) int {
 // the tool's name says what was not recorded. A tool the list does not
 // name, every mcp__ tool among them, records nothing of its input: on
 // those, description, url or path carry bulk content as often as not.
+// pi's built-in tools are lowercase and use its own member names, so they
+// are listed separately; its Agent tool and Task alias take Agent's members.
 // Each kept string goes through the text pipeline on its own. A Bash command is
 // kept whole, up to maxToolArgumentsBytes, so a heredoc or an inline
 // script records what it writes. The guarantee is then one sentence:
@@ -932,6 +934,15 @@ var recordedArguments = map[string]map[string]bool{
 	"Skill":        {"skill": true},
 	"WebFetch":     {"url": true},
 	"Write":        {"file_path": true},
+
+	"Task":  {"description": true, "model": true, "subagent_type": true},
+	"bash":  {"command": true, "timeout": true},
+	"edit":  {"path": true},
+	"find":  {"limit": true, "path": true, "pattern": true},
+	"grep":  {"context": true, "glob": true, "ignoreCase": true, "limit": true, "literal": true, "path": true, "pattern": true},
+	"ls":    {"limit": true, "path": true},
+	"read":  {"limit": true, "offset": true, "path": true},
+	"write": {"path": true},
 }
 
 // toolArguments returns the recorded members of a tool call's arguments

@@ -77,12 +77,12 @@ func TestParseCodexStream_BasicRun(t *testing.T) {
 
 	thinking := codexEventsOfType[ThinkingEvent](events)
 	require.Len(t, thinking, 1)
-	assert.Contains(t, thinking[0].Text, "Verifying user request")
+	assert.Contains(t, thinking[0].Text, "Planning ls command and patch application")
 
 	texts := codexEventsOfType[TextEvent](events)
 	require.Len(t, texts, 2)
 	assert.Contains(t, texts[0].Text, "hello.txt")
-	assert.Equal(t, "Done. `hello.txt` contains `hi`.", texts[1].Text)
+	assert.Equal(t, "done", texts[1].Text)
 
 	// The capture has item.started *and* item.completed for both commands
 	// and the file change; only the completions are reported.
@@ -96,19 +96,19 @@ func TestParseCodexStream_BasicRun(t *testing.T) {
 	assert.Equal(t, "Bash", tools[2].Name)
 	assert.Equal(t, "$ /bin/zsh -lc 'cat hello.txt'", tools[2].Summary)
 
-	// codex nests its categories: input_tokens 43607 includes the 32508
-	// cached and 11087 cache-write tokens, and output_tokens 327 includes
-	// the 43 reasoning tokens. The normalized counters are disjoint, so the
-	// five sum to the 43934 tokens the thread actually used rather than to
-	// ~87500.
+	// codex nests its categories: input_tokens 57322 includes the 49024
+	// cached tokens (this capture wrote nothing to the cache), and
+	// output_tokens 295 includes the 21 reasoning tokens. The normalized
+	// counters are disjoint, so the five sum to the 57617 tokens the thread
+	// actually used rather than to 106662.
 	tokens := codexEventsOfType[TokensEvent](events)
 	require.Len(t, tokens, 1)
-	assert.Equal(t, 12, tokens[0].InputTokens, "43607 - 32508 - 11087")
-	assert.Equal(t, 284, tokens[0].OutputTokens, "327 - 43")
-	assert.Equal(t, 43, tokens[0].ReasoningTokens)
-	assert.Equal(t, 32508, tokens[0].CacheRead)
-	assert.Equal(t, 11087, tokens[0].CacheWrite)
-	assert.Equal(t, 43934,
+	assert.Equal(t, 8298, tokens[0].InputTokens, "57322 - 49024 - 0")
+	assert.Equal(t, 274, tokens[0].OutputTokens, "295 - 21")
+	assert.Equal(t, 21, tokens[0].ReasoningTokens)
+	assert.Equal(t, 49024, tokens[0].CacheRead)
+	assert.Equal(t, 0, tokens[0].CacheWrite)
+	assert.Equal(t, 57617,
 		tokens[0].InputTokens+tokens[0].OutputTokens+tokens[0].ReasoningTokens+
 			tokens[0].CacheRead+tokens[0].CacheWrite,
 		"the renderer sums all five, so they must not overlap")
@@ -118,11 +118,11 @@ func TestParseCodexStream_BasicRun(t *testing.T) {
 	assert.Empty(t, result.Subtype)
 	assert.Equal(t, 1, result.NumTurns)
 	assert.Zero(t, result.TotalCostUSD, "codex reports no cost")
-	assert.Equal(t, 12, result.InputTokens)
-	assert.Equal(t, 284, result.OutputTokens)
-	assert.Equal(t, 43, result.ReasoningTokens)
-	assert.Equal(t, 11087, result.CacheCreationInputTokens)
-	assert.Equal(t, 32508, result.CacheReadInputTokens)
+	assert.Equal(t, 8298, result.InputTokens)
+	assert.Equal(t, 274, result.OutputTokens)
+	assert.Equal(t, 21, result.ReasoningTokens)
+	assert.Equal(t, 0, result.CacheCreationInputTokens)
+	assert.Equal(t, 49024, result.CacheReadInputTokens)
 }
 
 // --- fixture table ----------------------------------------------------------
@@ -749,11 +749,11 @@ func TestApplyCodexMetrics(t *testing.T) {
 	}
 
 	assert.Equal(t, 1, metrics.NumTurns)
-	assert.Equal(t, 12, metrics.InputTokens)
-	assert.Equal(t, 284, metrics.OutputTokens)
-	assert.Equal(t, 43, metrics.ReasoningTokens)
-	assert.Equal(t, 11087, metrics.CacheCreationInputTokens)
-	assert.Equal(t, 32508, metrics.CacheReadInputTokens)
+	assert.Equal(t, 8298, metrics.InputTokens)
+	assert.Equal(t, 274, metrics.OutputTokens)
+	assert.Equal(t, 21, metrics.ReasoningTokens)
+	assert.Equal(t, 0, metrics.CacheCreationInputTokens)
+	assert.Equal(t, 49024, metrics.CacheReadInputTokens)
 	assert.Equal(t, int32(3), metrics.ToolCalls.Load())
 
 	// Left for the runner: the stream carries neither.

@@ -109,10 +109,40 @@ func TestTriggerExtraWork_ExtendsAndReferenceResolution(t *testing.T) {
 			ci:   "job:\n  script: [x]\n  extends: .missing\n",
 			want: `job "job" whose extends target ".missing" is not defined in the same file`,
 		},
+		"missing extends target with own rejecting rules": {
+			ci: "job:\n  script: [x]\n  extends: .missing\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\"'\n      when: never\n    - when: on_success\n",
+		},
+		"missing extends target with own rules from !reference": {
+			ci: rejectTriggerTemplate + "job:\n  script: [x]\n  extends: [.missing]\n  rules: !reference [.reject, rules]\n",
+		},
+		"missing extends target with own admitting rules": {
+			ci:   "job:\n  script: [x]\n  extends: .missing\n  rules:\n    - when: always\n",
+			want: `job "job" that a trigger pipeline would run`,
+		},
+		"missing nested extends target with own rejecting rules": {
+			ci: ".local:\n  extends: .missing\njob:\n  script: [x]\n  extends: .local\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\"'\n      when: never\n",
+		},
+		"missing nested extends target without own rules": {
+			ci:   rejectTriggerTemplate + ".local:\n  extends: [.reject, .missing]\njob:\n  script: [x]\n  extends: .local\n",
+			want: `extends target ".missing" is not defined in the same file`,
+		},
+		"missing extends target with own rules and own only": {
+			ci:   "job:\n  script: [x]\n  extends: .missing\n  only: [main]\n  rules:\n    - if: '$CI_PIPELINE_SOURCE == \"trigger\"'\n      when: never\n",
+			want: "uses only or except",
+		},
+		"missing extends target with own rules using a missing !reference": {
+			ci:   "job:\n  script: [x]\n  extends: .missing\n  rules:\n    - !reference [.gone, rules]\n",
+			want: `!reference target ".gone" is not defined in the same file`,
+		},
 		"extends target defined in another file": {
 			ci:     rejectTriggerTemplate + "job:\n  script: [x]\n  extends: .reject\n",
 			shared: func(n string) bool { return n == ".reject" },
 			want:   `extends target ".reject" is also defined in another file the pipeline loads`,
+		},
+		"shared extends target with own rules still fails closed": {
+			ci:     rejectTriggerTemplate + ".shared:\n  image: alpine\njob:\n  script: [x]\n  extends: .shared\n  rules: !reference [.reject, rules]\n",
+			shared: func(n string) bool { return n == ".shared" },
+			want:   `extends target ".shared" is also defined in another file the pipeline loads`,
 		},
 		"extends target that is not a mapping": {
 			ci:   ".s: text\njob:\n  script: [x]\n  extends: .s\n",
@@ -197,6 +227,36 @@ func TestGitLabExtraWork_IssueConfigWithExtendsIsAccepted(t *testing.T) {
 	gate, err := gitlabDispatchExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
 	require.NoError(t, err)
 	assert.Empty(t, gate)
+}
+
+// issue8731Job is the job reported in #8731: it extends a template that only
+// an include defines, and its own rules (which GitLab uses instead of the
+// template's) reject trigger and schedule pipelines.
+const issue8731Job = `
+image-build:
+  stage: build
+  extends:
+    - .buildah:build
+  rules:
+    - !reference [.build_time_only_rules, rules]
+    - when: on_success
+`
+
+// A job whose own rules decide the trigger case no longer defers the webhook
+// fast path because its extends target comes from an include (#8731). The
+// activation gate still reports it, because its rules admit source=pipeline.
+func TestGitLabExtraWork_IncludedExtendsTargetWithOwnRules(t *testing.T) {
+	e := readyTriggerDispatchEnv(t)
+	commitShippedScaffold(t, e)
+	e.appendRootCI(t, issue8691CI+issue8731Job)
+
+	fastPath, err := gitlabTriggerExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	assert.Empty(t, fastPath)
+
+	gate, err := gitlabDispatchExtraWorkProblem(context.Background(), e.state, trigOwner, trigRepo, trigBranch)
+	require.NoError(t, err)
+	assert.Contains(t, gate, `job "image-build" that an agent child pipeline (source=pipeline) would run`)
 }
 
 // A template that another file of the pipeline also defines is deep-merged by

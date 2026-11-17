@@ -52,7 +52,8 @@ For the repo admin:
   pi needs the model list below; codex and Claude Code do not need one. See
   [Claude Code § Inference gateway route](../../runtimes/claude.md#inference-gateway-route) and
   [Codex › Models through an inference gateway](../../runtimes/codex.md#models-through-an-inference-gateway-experimental).
-- The latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
+- The latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI
+  (run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later).
 
 ## The config block
 
@@ -177,10 +178,10 @@ request with the change. The pull request's `config.yaml` diff, on a repository 
 with `--runtime pi`:
 
 ```diff
-@@ -20,3 +20,12 @@ create_issues:
-         repos:
-             - example-org/example-repo
-             - fullsend-ai/fullsend
+@@ -21,3 +21,12 @@ tracker:
+             repos:
+                 - example-org/example-repo
+                 - fullsend-ai/fullsend
 +inference:
 +    gateway:
 +        url: https://gateway.example.com
@@ -206,10 +207,10 @@ fullsend github setup example-org/example-repo \
 The output is the same as above. The pull request's diff:
 
 ```diff
-@@ -20,3 +20,12 @@ create_issues:
-         repos:
-             - example-org/example-repo
-             - fullsend-ai/fullsend
+@@ -21,3 +21,12 @@ tracker:
+             repos:
+                 - example-org/example-repo
+                 - fullsend-ai/fullsend
 +inference:
 +    gateway:
 +        url: https://gateway.example.com

@@ -58,11 +58,26 @@ type Body string
 
 // Issue represents an issue's content, independent of the tracker backend.
 type Issue struct {
+	// Number is the display number addressing the issue as (project,
+	// number): GitHub's per-repo issue number, GitLab's per-project IID,
+	// or the numeric suffix of a Jira key. It is not a stable identity.
 	Number int
-	Title  string
-	Body   Body
-	URL    string
-	Labels []string
+	// ID is the immutable issue database ID: GitHub's REST issue id,
+	// GitLab's database issue id (not the IID), or Jira's numeric issue
+	// id string parsed to an integer. It is 0 when the backend did not
+	// report one; trace admission treats that as unresolved identity
+	// rather than guessing. For a GitHub PR number, a forge-backed GetIssue
+	// returns the issue-space id; never use it as KindChangeProposal
+	// identity (see forge.Issue.ID).
+	ID int64
+	// ContainerID is the immutable Jira project ID supplied by GetIssue.
+	// Zero means unresolved: create responses and forge-backed reads need
+	// a separate trusted project/repository lookup before trace admission.
+	ContainerID int64
+	Title       string
+	Body        Body
+	URL         string
+	Labels      []string
 	// IssueType is the tracker's issue type name (e.g. "Bug", "Story").
 	// Set by the Jira client; empty for trackers that don't report one.
 	IssueType string

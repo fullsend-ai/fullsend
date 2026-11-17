@@ -160,3 +160,4 @@ example above.
 - [Agent runtimes](../runtimes.md): choosing and selecting a runtime
 - [Running agents locally](../guides/user/running-agents-locally.md): the local-run setup this page builds on
 - [Runtime implementation](../contributing/runtime-implementation.md): how the runtime is secured, per feature
+- [Sandbox environment contract](../normative/sandbox-env/v1/README.md): the generated list of what the runner exports into an opencode sandbox (`runtime_opencode`) and the keys it reserves

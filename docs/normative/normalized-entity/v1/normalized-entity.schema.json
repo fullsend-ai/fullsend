@@ -1,0 +1,3683 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/normalized-entity/v1/normalized-entity.schema.json",
+  "title": "NormalizedEntityDocument",
+  "description": "Partial CEL-facing normalized entities for GitHub issues, pull requests and Discussions; GitLab issues and merge requests; and Jira issues.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "entity",
+    "coverage",
+    "view"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "normalized-entity/v1"
+    },
+    "entity": {
+      "$ref": "#/$defs/entity"
+    },
+    "coverage": {
+      "$ref": "#/$defs/coverage"
+    },
+    "view": {
+      "$ref": "#/$defs/view"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "kind": {
+                "const": "work_item"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "threads": {
+                "maxItems": 0
+              }
+            },
+            "required": [
+              "work_item"
+            ]
+          },
+          "coverage": {
+            "properties": {
+              "threads": {
+                "properties": {
+                  "status": {
+                    "const": "complete"
+                  }
+                }
+              },
+              "thread_comments": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "work_item": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "kind": {
+                "const": "change_proposal"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "required": [
+              "change_proposal",
+              "checks",
+              "reviews",
+              "reviewers",
+              "current_approvals"
+            ]
+          },
+          "coverage": {
+            "required": [
+              "checks",
+              "check_logs",
+              "check_annotations",
+              "reviews",
+              "reviewers",
+              "current_approvals",
+              "changed_files",
+              "commits"
+            ]
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "change_proposal": false,
+              "checks": false,
+              "reviews": false,
+              "reviewers": false,
+              "current_approvals": false
+            }
+          },
+          "coverage": {
+            "properties": {
+              "checks": false,
+              "check_logs": false,
+              "check_annotations": false,
+              "reviews": false,
+              "reviewers": false,
+              "current_approvals": false,
+              "changed_files": false,
+              "commits": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "comments": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "comments": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "reviews": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "reviews": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "current_approvals": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "current_approvals": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "reviewers": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "reviewers": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "label_applications": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "label_applications": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "labels": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "labels": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "system": {
+                    "const": "jira"
+                  }
+                },
+                "required": [
+                  "system"
+                ]
+              }
+            },
+            "required": [
+              "source"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "kind": {
+                "const": "work_item"
+              },
+              "source_id": {
+                "pattern": "^[1-9][0-9]*$"
+              },
+              "key": {
+                "pattern": "^[A-Z][A-Z0-9_]+-[1-9][0-9]*$"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "source_id": {
+                "$ref": "#/$defs/structural_id"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "system": {
+                    "const": "gitlab"
+                  }
+                },
+                "required": [
+                  "system"
+                ]
+              }
+            },
+            "required": [
+              "source"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "kind": {
+                "enum": [
+                  "work_item",
+                  "change_proposal"
+                ]
+              },
+              "source_id": {
+                "pattern": "^[1-9][0-9]*$"
+              },
+              "threads": {
+                "items": {
+                  "properties": {
+                    "outdated": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "system": {
+                    "const": "github"
+                  }
+                },
+                "required": [
+                  "system"
+                ]
+              }
+            },
+            "required": [
+              "source"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "key": {
+                "pattern": "^#[1-9][0-9]*$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "system": {
+                    "const": "gitlab"
+                  }
+                },
+                "required": [
+                  "system"
+                ]
+              },
+              "kind": {
+                "const": "change_proposal"
+              }
+            },
+            "required": [
+              "source",
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "key": {
+                "pattern": "^![1-9][0-9]*$"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "key": {
+                "pattern": "^([A-Z][A-Z0-9_]+-|#)[1-9][0-9]*$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "kind": {
+                "const": "conversation"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "required": [
+              "conversation"
+            ],
+            "properties": {
+              "change_proposal": false,
+              "state": {
+                "oneOf": [
+                  {
+                    "enum": [
+                      "open",
+                      "closed"
+                    ]
+                  },
+                  {
+                    "$ref": "#/$defs/unknown"
+                  }
+                ]
+              },
+              "threads": {
+                "items": {
+                  "properties": {
+                    "resolved": {
+                      "type": "null"
+                    },
+                    "outdated": {
+                      "type": "null"
+                    },
+                    "review_id": {
+                      "type": "null"
+                    },
+                    "location": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "coverage": {
+            "properties": {
+              "reviews": false
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "conversation": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "kind": {
+                "const": "work_item"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "state": {
+                "oneOf": [
+                  {
+                    "enum": [
+                      "open",
+                      "closed"
+                    ]
+                  },
+                  {
+                    "$ref": "#/$defs/unknown"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "kind": {
+                "const": "conversation"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "comments": {
+                "items": {
+                  "required": [
+                    "parent_id"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "comments": {
+                "items": {
+                  "properties": {
+                    "parent_id": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "source": {
+                "properties": {
+                  "system": {
+                    "const": "gitlab"
+                  }
+                },
+                "required": [
+                  "system"
+                ]
+              }
+            },
+            "required": [
+              "source"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "reviews": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "unknown",
+                      "unsupported",
+                      "failed",
+                      "not_loaded"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "kind": {
+                "const": "conversation"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "label_applications": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "unsupported",
+                      "unknown",
+                      "not_loaded",
+                      "failed"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "checks": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            },
+            "required": [
+              "checks"
+            ]
+          }
+        },
+        "required": [
+          "coverage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "checks": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "change_proposal": {
+                "properties": {
+                  "head_sha": {
+                    "$ref": "#/$defs/unknown"
+                  }
+                },
+                "required": [
+                  "head_sha"
+                ]
+              }
+            },
+            "required": [
+              "change_proposal"
+            ]
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "checks": {
+                "maxItems": 0
+              }
+            }
+          },
+          "coverage": {
+            "properties": {
+              "checks": {
+                "properties": {
+                  "status": {
+                    "not": {
+                      "const": "complete"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "kind": {
+                "const": "conversation"
+              }
+            }
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "assignees": {
+                "maxItems": 0
+              }
+            }
+          },
+          "coverage": {
+            "properties": {
+              "assignees": {
+                "properties": {
+                  "status": {
+                    "const": "unsupported"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "kind": {
+                "const": "change_proposal"
+              }
+            }
+          }
+        },
+        "required": [
+          "entity"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "lifecycle": {
+                "required": [
+                  "merged_at",
+                  "merged_by"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "lifecycle": {
+                "properties": {
+                  "merged_at": false,
+                  "merged_by": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "assignees": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "coverage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "assignees": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "reactions": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "coverage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "reactions": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "changed_files": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "coverage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "change_proposal": {
+                "properties": {
+                  "changed_files": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "coverage": {
+            "properties": {
+              "commits": {
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "not_loaded",
+                      "unsupported"
+                    ]
+                  }
+                },
+                "required": [
+                  "status"
+                ]
+              }
+            }
+          }
+        },
+        "required": [
+          "coverage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "properties": {
+              "change_proposal": {
+                "properties": {
+                  "commits": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{9}Z$",
+      "description": "UTC with exactly nine fractional-second digits, so lexical string comparison equals chronological comparison in CEL."
+    },
+    "structural_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=-]*$",
+      "description": "Immutable source-system identifier or a stable source-backed action identifier. Numeric provider IDs use base-10 without leading zeroes."
+    },
+    "repository": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 512,
+      "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+$",
+      "description": "Canonical navigation path of a forge repository/project, with provider-preserved case; not an identity input."
+    },
+    "role": {
+      "enum": [
+        "admin",
+        "maintain",
+        "write",
+        "triage",
+        "read",
+        "none",
+        "external"
+      ],
+      "description": "Authorization Contract v1 role vocabulary (independent copy)."
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "system",
+        "host"
+      ],
+      "properties": {
+        "system": {
+          "enum": [
+            "github",
+            "gitlab",
+            "jira"
+          ],
+          "description": "Authoritative source system and overlay selector."
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[1-9][0-9]{0,4})?$",
+          "description": "Lowercase DNS name, with :port only when the HTTPS port is not 443."
+        },
+        "repository": {
+          "$ref": "#/$defs/repository",
+          "description": "GitHub lowercase owner/repository or GitLab canonical path_with_namespace."
+        },
+        "repository_id": {
+          "$ref": "#/$defs/structural_id",
+          "description": "Immutable GitHub GraphQL node ID or GitLab global numeric project ID."
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[A-Z][A-Z0-9_]+$",
+          "description": "Jira project key; mutable navigation value."
+        },
+        "project_id": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$",
+          "description": "Immutable Jira project database ID."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "system": {
+                "const": "jira"
+              }
+            },
+            "required": [
+              "system"
+            ]
+          },
+          "then": {
+            "required": [
+              "project",
+              "project_id"
+            ],
+            "properties": {
+              "repository": false,
+              "repository_id": false
+            }
+          },
+          "else": {
+            "required": [
+              "repository",
+              "repository_id"
+            ],
+            "properties": {
+              "project": false,
+              "project_id": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "system": {
+                "const": "github"
+              }
+            },
+            "required": [
+              "system"
+            ]
+          },
+          "then": {
+            "properties": {
+              "repository": {
+                "pattern": "^[a-z0-9._-]+/[a-z0-9._-]+$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "system": {
+                "const": "gitlab"
+              }
+            },
+            "required": [
+              "system"
+            ]
+          },
+          "then": {
+            "properties": {
+              "repository_id": {
+                "pattern": "^[1-9][0-9]*$"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "unknown": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "$unknown"
+      ],
+      "properties": {
+        "$unknown": {
+          "enum": [
+            "not_loaded",
+            "partial",
+            "unsupported",
+            "failed",
+            "consistency_unknown"
+          ]
+        }
+      },
+      "description": "Serialized unresolved field. The CEL binding maps this marker to CEL unknown; the marker object is never exposed to CEL."
+    },
+    "actor_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "login",
+        "kind",
+        "role",
+        "role_verified"
+      ],
+      "properties": {
+        "id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/structural_id"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "login": {
+          "oneOf": [
+            {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1,
+              "maxLength": 255,
+              "description": "Current display login; untrusted and mutable."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "kind": {
+          "oneOf": [
+            {
+              "enum": [
+                "human",
+                "bot"
+              ]
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "role": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/role"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ],
+          "description": "Verified effective human role, none for a provider-classified bot, or unknown before human role resolution."
+        },
+        "bot_role": {
+          "oneOf": [
+            {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1,
+              "maxLength": 255
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ],
+          "description": "Registered bot role, null after a completed no-match, or unknown before resolution; absent for humans."
+        },
+        "role_verified": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ],
+          "description": "True when role lookup completed, including a bot no-match; false on lookup failure; unknown before lookup."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "human"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "bot_role"
+              ]
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "role_verified": {
+                      "const": true
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "role": {
+                      "$ref": "#/$defs/role"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "role": {
+                      "$ref": "#/$defs/unknown"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "bot"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "bot_role"
+            ],
+            "properties": {
+              "role": {
+                "const": "none"
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "role_verified": {
+                      "const": true
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "bot_role": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "bot_role": {
+                      "$ref": "#/$defs/unknown"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "$ref": "#/$defs/unknown"
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "bot_role"
+              ]
+            },
+            "properties": {
+              "role": {
+                "$ref": "#/$defs/unknown"
+              },
+              "role_verified": {
+                "$ref": "#/$defs/unknown"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role_verified": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/structural_id"
+              }
+            }
+          }
+        }
+      ],
+      "description": "Shared ADR 0107 actor representation for every person in the entity model. Humans omit bot_role; bots have role none and a resolved, null, or unknown bot_role."
+    },
+    "admitted_actor": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actor_ref"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/structural_id"
+            },
+            "kind": {
+              "enum": [
+                "human",
+                "bot"
+              ]
+            },
+            "role": {
+              "$ref": "#/$defs/role"
+            },
+            "role_verified": {
+              "const": true
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "bot"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "bot_role": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "description": "The shared actor shape with verified identity and current-revision admission; human bot_role is still absent."
+    },
+    "action_base": {
+      "type": "object",
+      "required": [
+        "id",
+        "created_at",
+        "revised_at",
+        "actor",
+        "is_entity_author"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/structural_id",
+          "description": "Stable source-backed action ID; a body action uses entity.source_id."
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp",
+          "description": "Immutable source time: creation for body and comment, submission for review, application for label_application."
+        },
+        "revised_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp",
+              "description": "Time of the current revision: the latest authenticated edit when the source records one, otherwise equal to created_at. Never earlier than created_at. Always equal to created_at for label_application."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "actor": {
+          "$ref": "#/$defs/admitted_actor",
+          "description": "Verified actor under the provider authorization source selected by Authorization Contract v2."
+        },
+        "is_entity_author": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ],
+          "description": "Contextual routing aid on this action, never an actor identity field or authorization evidence."
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        }
+      }
+    },
+    "text_action_payload": {
+      "type": "object",
+      "required": [
+        "text",
+        "command"
+      ],
+      "properties": {
+        "text": {
+          "oneOf": [
+            {
+              "type": "string",
+              "description": "Complete, authorized current-revision text after the filter pipeline identified by view.filter_version; empty text is valid."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "command": {
+          "oneOf": [
+            {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 2,
+              "maxLength": 64,
+              "pattern": "^/",
+              "not": {
+                "type": "string",
+                "pattern": "[\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]"
+              },
+              "description": "First whitespace-delimited token of the first line of the authorized, filtered current revision when it is a command token (begins with '/', 2 to 64 characters, no whitespace), otherwise null. Whitespace is the explicit code-point set in the README (Unicode White_Space plus U+FEFF), encoded as an explicit character class so every regular-expression dialect agrees. A bare '/' or a slash-prefixed token over 64 characters is not a command token and yields null. Required for body, comment, and review."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      }
+    },
+    "body_action": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/action_base"
+        },
+        {
+          "$ref": "#/$defs/text_action_payload"
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "comment_action": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/action_base"
+        },
+        {
+          "$ref": "#/$defs/text_action_payload"
+        },
+        {
+          "type": "object",
+          "required": [
+            "thread_id"
+          ],
+          "properties": {
+            "thread_id": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/structural_id"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/unknown"
+                }
+              ],
+              "description": "Source thread ID for a threaded comment, null when source confirms it is unthreaded, or unknown when membership is unresolved."
+            },
+            "parent_id": {
+              "$ref": "#/$defs/structural_id",
+              "description": "Discussion thread-root message ID. On a root comment it equals id; on a reply it identifies the root."
+            },
+            "url": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "format": "uri"
+                },
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/unknown"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "review_action": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/action_base"
+        },
+        {
+          "$ref": "#/$defs/text_action_payload"
+        },
+        {
+          "type": "object",
+          "required": [
+            "review_state"
+          ],
+          "properties": {
+            "review_state": {
+              "oneOf": [
+                {
+                  "enum": [
+                    "approved",
+                    "changes_requested",
+                    "commented",
+                    "dismissed"
+                  ],
+                  "description": "Current review state. Required for review."
+                },
+                {
+                  "$ref": "#/$defs/unknown"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "label_application_action": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/action_base"
+        },
+        {
+          "type": "object",
+          "required": [
+            "label"
+          ],
+          "properties": {
+            "label": {
+              "oneOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 255,
+                  "description": "Applied label name. Required for label_application."
+                },
+                {
+                  "$ref": "#/$defs/unknown"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "thread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "created_at",
+        "comment_ids",
+        "resolved",
+        "outdated",
+        "review_id",
+        "location"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/structural_id",
+          "description": "Source thread ID, scoped to this entity."
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "comment_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/structural_id"
+          },
+          "description": "Known admitted entity.comments IDs in source thread order; coverage.thread_comments records the unknown remainder."
+        },
+        "resolved": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ],
+          "description": "Native thread resolution, null when inapplicable, or unknown when unresolved."
+        },
+        "outdated": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ],
+          "description": "Native outdated state, null when the source has no equivalent; never inferred from the current diff."
+        },
+        "review_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/structural_id"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ],
+          "description": "Associated formal review action ID when source-backed, null when none or inapplicable."
+        },
+        "location": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/thread_location"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ],
+          "description": "Source-backed diff location, null for a general discussion, or unknown when not fetched."
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        },
+        "resolved_by": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/admitted_actor"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      }
+    },
+    "thread_location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "line",
+        "side"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Source-backed repository-relative path after the snapshot path-safety pipeline."
+        },
+        "line": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "side": {
+          "oneOf": [
+            {
+              "enum": [
+                "left",
+                "right"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "start_line": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "original_line": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "original_start_line": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "old_line": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "new_line": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "start_side": {
+          "oneOf": [
+            {
+              "enum": [
+                "left",
+                "right"
+              ]
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      }
+    },
+    "thread_comment_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "thread_id",
+        "status"
+      ],
+      "properties": {
+        "thread_id": {
+          "$ref": "#/$defs/structural_id"
+        },
+        "status": {
+          "$ref": "#/$defs/coverage_status"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "source_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      }
+    },
+    "change_proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_repository",
+        "head_repository",
+        "base_ref",
+        "head_ref",
+        "head_sha",
+        "is_fork",
+        "draft",
+        "approval",
+        "changed_files",
+        "commits"
+      ],
+      "properties": {
+        "base_repository": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/repository"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "head_repository": {
+          "oneOf": [
+            {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/repository"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "null only when the source reports that the head repository no longer exists."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "base_ref": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "head_ref": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "head_sha": {
+          "oneOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "is_fork": {
+          "oneOf": [
+            {
+              "type": "boolean",
+              "description": "Source-reported cross-repository flag; independent of head_repository availability."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "draft": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "approval": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/approval"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "changed_files": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/changed_file"
+          }
+        },
+        "commits": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+          }
+        }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "source",
+        "id",
+        "source_id",
+        "key",
+        "number",
+        "url",
+        "state",
+        "title",
+        "author",
+        "created_at",
+        "updated_at",
+        "labels",
+        "threads",
+        "body",
+        "comments",
+        "label_applications",
+        "assignees",
+        "reactions",
+        "lifecycle"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "work_item",
+            "change_proposal",
+            "conversation"
+          ],
+          "description": "Supported provider/kind pairs are constrained at the document root."
+        },
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "id": {
+          "type": "string",
+          "maxLength": 1024,
+          "pattern": "^fullsend:entity:v1:(github|gitlab|jira):[a-z0-9.-]+(%3A[1-9][0-9]{0,4})?:(work_item|change_proposal|conversation):([A-Za-z0-9._~-]|%[0-9A-F]{2})+$",
+          "description": "Canonical fullsend entity ID derived from source.system, source.host, kind, and source_id using the README's component encoding. Conformance checks recompute the exact value."
+        },
+        "source_id": {
+          "$ref": "#/$defs/structural_id",
+          "description": "Immutable provider entity ID: GitHub GraphQL node ID or GitLab/Jira global database ID as a base-10 string."
+        },
+        "number": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Positive numeric component of the current human reference: GitHub number, GitLab IID, or Jira issue-key suffix."
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "state": {
+          "oneOf": [
+            {
+              "enum": [
+                "open",
+                "closed",
+                "merged"
+              ],
+              "description": "Current lifecycle state."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "title": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "description": "Complete, authorized current-revision title after the filter pipeline identified by view.filter_version."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "author": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/actor_ref",
+              "description": "Source-authenticated creator. Routing data only; not authorization evidence."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "created_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "updated_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "labels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "description": "Known label names only; coverage.labels determines whether the remainder is unknown. The CEL binding must not expose this array as a complete list when coverage is incomplete."
+        },
+        "change_proposal": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/change_proposal"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "body": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/body_action"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ],
+          "description": "One admitted body action, null when the source confirms no body, or unknown until the current revision is resolved."
+        },
+        "comments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/comment_action"
+          },
+          "description": "Known admitted comments only; coverage.comments describes the unknown remainder."
+        },
+        "label_applications": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/label_application_action"
+          },
+          "description": "Known attributable applications of current labels; coverage.label_applications describes the unknown remainder."
+        },
+        "reviews": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/review_action"
+          },
+          "description": "Known submitted formal reviews on a change proposal; coverage.reviews describes the unknown remainder."
+        },
+        "threads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/thread"
+          },
+          "description": "Known source comment threads; coverage.threads describes the unknown remainder."
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^([A-Z][A-Z0-9_]+-|[#!])[1-9][0-9]*$",
+          "description": "Contextual human reference: Jira issue key, GitHub #number, GitLab issue #IID or MR !IID. Not immutable identity."
+        },
+        "conversation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/conversation"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check"
+          },
+          "description": "Known current-head check results only. coverage.checks describes the unknown remainder; inapplicable outside change proposals."
+        },
+        "reviewers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reviewer"
+          },
+          "description": "Known current reviewer assignments or standings; coverage.reviewers describes the unknown remainder."
+        },
+        "current_approvals": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/current_approval"
+          },
+          "description": "Known currently recorded, admitted approvals; coverage.current_approvals describes the unknown remainder."
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        },
+        "assignees": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/known_actor"
+          },
+          "description": "Known current source assignees; coverage.assignees tracks the unknown remainder. The assigner's admission is separate from the assignee's role."
+        },
+        "reactions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reaction"
+          },
+          "description": "Known entity-level reactions with admitted actors; coverage.reactions tracks the remainder."
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/lifecycle"
+        },
+        "work_item": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/work_item"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      }
+    },
+    "coverage_status": {
+      "enum": [
+        "complete",
+        "partial",
+        "not_loaded",
+        "unknown",
+        "unsupported",
+        "failed"
+      ]
+    },
+    "coverage_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "$ref": "#/$defs/coverage_status"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "source_revision": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "labels",
+        "threads",
+        "thread_comments",
+        "comments",
+        "label_applications",
+        "extension_lists",
+        "assignees",
+        "reactions"
+      ],
+      "properties": {
+        "labels": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "comments": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "label_applications": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "reviews": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "checks": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "threads": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "thread_comments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/thread_comment_coverage"
+          },
+          "description": "Exactly one coverage row per known thread, keyed by thread_id."
+        },
+        "check_logs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check_log_coverage"
+          },
+          "description": "Exactly one row per known check, keyed by check_id; each direction has independent coverage."
+        },
+        "check_annotations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check_annotation_coverage"
+          },
+          "description": "Exactly one row per known check; unsupported if the forge has no check-bound annotations."
+        },
+        "reviewers": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "current_approvals": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "extension_lists": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/extension_list_coverage"
+          },
+          "description": "Independent partial-list coverage for selected extension values."
+        },
+        "assignees": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "reactions": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "changed_files": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "commits": {
+          "$ref": "#/$defs/coverage_entry"
+        }
+      }
+    },
+    "view": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "human_min_role",
+        "resolved_at",
+        "filter_version"
+      ],
+      "properties": {
+        "human_min_role": {
+          "enum": [
+            "triage",
+            "write",
+            "maintain",
+            "admin"
+          ]
+        },
+        "resolved_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "filter_version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Active version of the common content-filter pipeline used for every concrete title, action text, check name, report text, annotation text, or check log line in this view. Host-only metadata."
+        }
+      },
+      "description": "Host-only authorization and filtering view metadata. No predicate result or acquisition plan is encoded here."
+    },
+    "conversation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category"
+      ],
+      "properties": {
+        "category": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/conversation_category"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      }
+    },
+    "conversation_category": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/structural_id"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "slug": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "format": {
+          "oneOf": [
+            {
+              "enum": [
+                "question_answer"
+              ]
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      }
+    },
+    "log_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "timestamp"
+      ],
+      "properties": {
+        "text": {
+          "oneOf": [
+            {
+              "type": "string",
+              "not": {
+                "pattern": "[\\r\\n]"
+              },
+              "description": "One complete filtered source log line; empty lines are valid."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "timestamp": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null",
+              "description": "The source has no per-line timestamp."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      }
+    },
+    "check_log": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ascending",
+        "descending"
+      ],
+      "properties": {
+        "ascending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/log_entry"
+          },
+          "description": "Contiguous known prefix from the earliest source log line; remaining membership follows coverage.check_logs."
+        },
+        "descending": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/log_entry"
+          },
+          "description": "Contiguous known prefix from the latest source log line; remaining membership follows coverage.check_logs."
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "status",
+        "conclusion",
+        "created_at",
+        "head_sha",
+        "started_at",
+        "completed_at",
+        "never_started",
+        "log",
+        "report"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/structural_id"
+        },
+        "name": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "description": "Filtered source check name."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "status": {
+          "oneOf": [
+            {
+              "enum": [
+                "queued",
+                "in_progress",
+                "completed"
+              ]
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "conclusion": {
+          "oneOf": [
+            {
+              "enum": [
+                "success",
+                "failure",
+                "neutral",
+                "cancelled",
+                "skipped",
+                "timed_out",
+                "action_required",
+                "stale"
+              ]
+            },
+            {
+              "type": "null",
+              "description": "Known not completed."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "head_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
+          "description": "Source-reported revision, which must match the current change-proposal head."
+        },
+        "started_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null",
+              "description": "Known not started."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "completed_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null",
+              "description": "Known not completed."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "never_started": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null",
+              "description": "Known not completed."
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "log": {
+          "$ref": "#/$defs/check_log"
+        },
+        "report": {
+          "$ref": "#/$defs/check_report"
+        },
+        "extensions": {
+          "$ref": "#/$defs/extensions"
+        },
+        "url": {
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "uri"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "run_attempt": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "trigger_event": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      }
+    },
+    "check_log_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_id",
+        "ascending",
+        "descending"
+      ],
+      "properties": {
+        "check_id": {
+          "$ref": "#/$defs/structural_id"
+        },
+        "ascending": {
+          "$ref": "#/$defs/coverage_entry"
+        },
+        "descending": {
+          "$ref": "#/$defs/coverage_entry"
+        }
+      }
+    },
+    "repository_path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9._/~!$&()+,;=:@#\\[\\]{} -]+$",
+      "allOf": [
+        {
+          "not": {
+            "pattern": "^/"
+          }
+        },
+        {
+          "not": {
+            "pattern": "/$"
+          }
+        },
+        {
+          "not": {
+            "pattern": "//"
+          }
+        },
+        {
+          "not": {
+            "pattern": "(^|/)\\.{1,2}(/|$)"
+          }
+        },
+        {
+          "not": {
+            "pattern": "%"
+          }
+        },
+        {
+          "not": {
+            "pattern": "[​-‍‪-‮⁦-⁩﻿︀-️￹-￻]"
+          }
+        }
+      ],
+      "description": "Filtered, validated repository-relative path of a check annotation."
+    },
+    "check_annotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "start_line",
+        "end_line",
+        "start_column",
+        "end_column",
+        "level",
+        "title",
+        "message",
+        "details"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/repository_path"
+        },
+        "start_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "end_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "start_column": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "end_column": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "level": {
+          "enum": [
+            "notice",
+            "warning",
+            "failure"
+          ]
+        },
+        "title": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "message": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "details": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      },
+      "description": "One forge-published, check-bound file finding. Text is fully filtered or unknown."
+    },
+    "check_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "summary",
+        "details",
+        "annotations"
+      ],
+      "properties": {
+        "title": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "summary": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "details": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "annotations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check_annotation"
+          },
+          "description": "Known check-bound file findings; coverage.check_annotations describes the unknown remainder."
+        }
+      }
+    },
+    "check_annotation_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "check_id",
+        "coverage"
+      ],
+      "properties": {
+        "check_id": {
+          "$ref": "#/$defs/structural_id"
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage_entry"
+        }
+      },
+      "description": "Exactly one row per known check, keyed by check_id."
+    },
+    "team_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "id",
+        "name"
+      ],
+      "properties": {
+        "kind": {
+          "const": "team"
+        },
+        "id": {
+          "$ref": "#/$defs/structural_id"
+        },
+        "name": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      },
+      "description": "Source-identified team review request; a team is not an actor or an authorization verdict."
+    },
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject",
+        "state"
+      ],
+      "properties": {
+        "subject": {
+          "oneOf": [
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/actor_ref"
+                },
+                {
+                  "properties": {
+                    "id": {
+                      "$ref": "#/$defs/structural_id"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "$ref": "#/$defs/team_ref"
+            }
+          ]
+        },
+        "state": {
+          "oneOf": [
+            {
+              "enum": [
+                "unreviewed",
+                "review_started",
+                "reviewed",
+                "approved",
+                "changes_requested",
+                "unapproved",
+                "dismissed"
+              ]
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      },
+      "description": "One current source-backed reviewer assignment or review standing; not a formal review action or the population eligible under approval rules."
+    },
+    "current_approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actor",
+        "approved_at"
+      ],
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/admitted_actor",
+          "description": "Current approving actor, admitted under the selected harness authorization policy."
+        },
+        "approved_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "is_entity_author": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ],
+          "description": "Contextual routing aid on this action, never an actor identity field or authorization evidence."
+        }
+      },
+      "description": "A currently recorded approval, keyed by source actor ID; it need not count toward the forge approval requirement."
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate"
+      ],
+      "properties": {
+        "gate": {
+          "oneOf": [
+            {
+              "enum": [
+                "not_required",
+                "satisfied",
+                "unsatisfied"
+              ]
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      },
+      "description": "Current forge approval requirement only, evaluated for this proposal revision after harness actor admission; independent of CI, conflicts, and other merge blockers."
+    },
+    "extension_option": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/structural_id"
+        },
+        "label": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      }
+    },
+    "extension_atom": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/extension_option"
+        },
+        {
+          "$ref": "#/$defs/known_actor"
+        }
+      ],
+      "description": "Selected, typed scalar, option, or identified ADR 0107 actor; arbitrary source JSON is not a CEL value."
+    },
+    "extension_value": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/extension_atom"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/extension_atom"
+          }
+        },
+        {
+          "$ref": "#/$defs/unknown"
+        }
+      ],
+      "description": "A configured typed projection. Null is a source-confirmed unset value; unknown is unresolved."
+    },
+    "extension_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_key",
+        "value",
+        "changed_by"
+      ],
+      "properties": {
+        "source_key": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Immutable or stable source field ID or API property key, never a display name."
+        },
+        "source_path": {
+          "type": "string",
+          "pattern": "^(|/.*)$",
+          "maxLength": 1024,
+          "description": "Optional JSON Pointer selecting a declared typed value from a structured source property."
+        },
+        "value": {
+          "$ref": "#/$defs/extension_value"
+        },
+        "changed_by": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/admitted_actor"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "changed_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      },
+      "description": "One explicitly declared extension. A known value requires its own trusted current-revision provenance; it never borrows the containing record actor."
+    },
+    "extensions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "custom_fields",
+        "properties"
+      ],
+      "properties": {
+        "custom_fields": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/extension_entry"
+          },
+          "description": "Schema-defined provider custom fields keyed by configured CEL alias."
+        },
+        "properties": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/extension_entry"
+          },
+          "description": "API key/value properties keyed by configured CEL alias; distinct from custom fields."
+        }
+      },
+      "description": "Reusable source-defined data on an entity or source record; absent when no extensions are declared for that record."
+    },
+    "extension_list_coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "owner_kind",
+        "owner_id",
+        "category",
+        "alias",
+        "coverage"
+      ],
+      "properties": {
+        "owner_kind": {
+          "enum": [
+            "entity",
+            "body",
+            "comment",
+            "review",
+            "label_application",
+            "thread",
+            "check"
+          ]
+        },
+        "owner_id": {
+          "$ref": "#/$defs/structural_id"
+        },
+        "category": {
+          "enum": [
+            "custom_fields",
+            "properties"
+          ]
+        },
+        "alias": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "coverage": {
+          "$ref": "#/$defs/coverage_entry"
+        }
+      },
+      "description": "One host-only coverage row per declared list-valued extension, keyed by record, category, and alias."
+    },
+    "known_actor": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/actor_ref"
+        },
+        {
+          "properties": {
+            "id": {
+              "$ref": "#/$defs/structural_id"
+            }
+          }
+        }
+      ],
+      "description": "Identified person using the same actor shape; identity does not by itself authorize the assignment."
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "closed_at",
+        "closed_by"
+      ],
+      "properties": {
+        "closed_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "closed_by": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/admitted_actor"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "merged_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "merged_by": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/admitted_actor"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      },
+      "description": "Source-backed lifecycle events. Merge fields apply only to change proposals. The state field remains the portable current state."
+    },
+    "source_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "category"
+      ],
+      "properties": {
+        "name": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "category": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      },
+      "description": "Source-native status name and category, independent of portable entity.state."
+    },
+    "issue_type": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "is_subtask"
+      ],
+      "properties": {
+        "id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/structural_id"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "name": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "is_subtask": {
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      }
+    },
+    "work_item": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_status",
+        "issue_type",
+        "state_reason"
+      ],
+      "properties": {
+        "source_status": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/source_status"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "issue_type": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/issue_type"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "state_reason": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      },
+      "description": "Provider-native issue details supplementing portable entity.state."
+    },
+    "reaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "content",
+        "actor",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/structural_id"
+        },
+        "content": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        },
+        "actor": {
+          "$ref": "#/$defs/admitted_actor"
+        },
+        "created_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      },
+      "description": "Source-backed reaction on the entity itself; a login-only API response requires immutable-actor enrichment."
+    },
+    "changed_file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "patch"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "Safe repository-relative changed path."
+        },
+        "patch": {
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/unknown"
+            }
+          ]
+        }
+      },
+      "description": "One changed path. Patch is a complete filtered diff, null when source confirms none, or unknown when unfetched or truncated."
+    }
+  }
+}

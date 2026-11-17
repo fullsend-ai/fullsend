@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -57,16 +58,17 @@ func routeRetroEvent(entity, transition, actor, rawType, rawAction string) strin
 }
 
 const (
-	routeRetroPR           = `{"kind": "change_proposal", "id": 7, "url": "https://github.com/fullsend-ai/demo/pull/7"}`
-	routeRetroIssue        = `{"kind": "work_item", "id": 8, "url": "https://github.com/fullsend-ai/demo/issues/8"}`
-	routeRetroWriter       = `{"id": "alice", "kind": "human", "role": "write", "is_entity_author": false}`
-	routeRetroReadAuthor   = `{"id": "contributor", "kind": "human", "role": "read", "is_entity_author": true}`
-	routeRetroTriager      = `{"id": "tri", "kind": "human", "role": "triage", "is_entity_author": false}`
-	routeRetroAppBot       = `{"id": "dep-updater[bot]", "kind": "bot", "role": "none", "is_entity_author": true}`
-	routeRetroClosed       = `{"kind": "closed"}`
-	routeRetroMerged       = `{"kind": "merged"}`
-	routeRetroCommand      = `{"kind": "comment_added", "comment": {"id": "1", "command": "/fs-retro", "body": "/fs-retro"}}`
-	routeRetroOtherCommand = `{"kind": "comment_added", "comment": {"id": "1", "command": "/fs-review", "body": "/fs-review"}}`
+	routeRetroPR            = `{"kind": "change_proposal", "id": 7, "url": "https://github.com/fullsend-ai/demo/pull/7"}`
+	routeRetroIssue         = `{"kind": "work_item", "id": 8, "url": "https://github.com/fullsend-ai/demo/issues/8"}`
+	routeRetroWriter        = `{"id": "alice", "kind": "human", "role": "write", "is_entity_author": false}`
+	routeRetroReadAuthor    = `{"id": "contributor", "kind": "human", "role": "read", "is_entity_author": true}`
+	routeRetroTriager       = `{"id": "tri", "kind": "human", "role": "triage", "is_entity_author": false}`
+	routeRetroAppBot        = `{"id": "dep-updater[bot]", "kind": "bot", "role": "none", "is_entity_author": true}`
+	routeRetroRegisteredBot = `{"id": "fullsend-ai-review[bot]", "kind": "bot", "role": "none", "bot_role": "review", "role_verified": true, "is_entity_author": false}`
+	routeRetroClosed        = `{"kind": "closed"}`
+	routeRetroMerged        = `{"kind": "merged"}`
+	routeRetroCommand       = `{"kind": "comment_added", "comment": {"id": "1", "command": "/fs-retro", "body": "/fs-retro"}}`
+	routeRetroOtherCommand  = `{"kind": "comment_added", "comment": {"id": "1", "command": "/fs-review", "body": "/fs-review"}}`
 )
 
 func TestRetroRouteAccepts(t *testing.T) {
@@ -121,28 +123,34 @@ func TestRouteBuiltinAgent_Retro(t *testing.T) {
 			wantDecision: routeRun,
 		},
 		{
-			name:         "PR closed by its read-only author starts a retro (lifecycle-close exception)",
+			name:         "PR closed by a write actor starts a retro",
+			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
+			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroWriter, "pull_request_target", "closed"),
+			wantDecision: routeRun,
+		},
+		{
+			name:         "PR closed by its read-only author is denied",
 			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
 			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroReadAuthor, "pull_request_target", "closed"),
-			wantDecision: routeRun,
+			wantDecision: routeSkip, wantReason: "closed pull request retro requires write",
 		},
 		{
-			name:         "PR closed by an app bot without a role starts a retro (lifecycle-close exception)",
+			name:         "PR closed by an app bot without write is denied",
 			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
 			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroAppBot, "pull_request_target", "closed"),
-			wantDecision: routeRun,
+			wantDecision: routeSkip, wantReason: "closed pull request retro requires write",
 		},
 		{
-			name:         "PR closed by a triage user starts a retro (lifecycle-close exception)",
+			name:         "PR closed by a triage user is denied",
 			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
 			event:        routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroTriager, "pull_request_target", "closed"),
-			wantDecision: routeRun,
+			wantDecision: routeSkip, wantReason: "closed pull request retro requires write",
 		},
 		{
 			name:         "/fs-retro from a triage user is not authorized",
 			agents:       []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}},
 			event:        routeRetroEvent(routeRetroPR, routeRetroCommand, routeRetroTriager, "issue_comment", "created"),
-			wantDecision: routeSkip, wantReason: "actor not authorized",
+			wantDecision: routeSkip, wantReason: "retro command requires write",
 		},
 		{
 			name:         "/fs-retro from a bot is skipped even when the trigger has no actor guard",
@@ -175,10 +183,9 @@ func TestRouteBuiltinAgent_Retro(t *testing.T) {
 	}
 }
 
-// The lifecycle-close exception is scoped to the retro role: the review
-// route still denies a closer without write, even with a trigger that
-// matches the close.
-func TestRouteBuiltinAgent_LifecycleCloseExceptionIsRetroOnly(t *testing.T) {
+// A closed pull request requires write access on every CEL route, including
+// retro, even when a trigger matches the event.
+func TestRouteBuiltinAgent_ClosedPRRequiresWriteAcrossRoutes(t *testing.T) {
 	neutralizeAgentsRepoFallback(t)
 	dir := writeRouteFixture(t, sourcedRouteFixture([]config.AgentEntry{{Name: "review", Trigger: "true"}}, "review", routeTestHarnessBody))
 	got, err := routeBuiltinAgent(context.Background(), routeOpts{
@@ -203,10 +210,9 @@ func TestRouteBuiltinAgent_LifecycleCloseExceptionIsRetroOnly(t *testing.T) {
 	assert.Equal(t, "actor not authorized", got.Reason)
 }
 
-// When the retro harness cannot be resolved, the lifecycle-close exception
-// falls back to the agent's own role (the Retro job mints the retro role),
-// so a read-only closer still starts a retro, as in bash.
-func TestRouteBuiltinAgent_LifecycleCloseHarnessUnavailable(t *testing.T) {
+// When the retro harness cannot be resolved, authorization fails closed to
+// the write threshold instead of using a close-event exception.
+func TestRouteBuiltinAgent_ClosedPRHarnessUnavailableRequiresWrite(t *testing.T) {
 	neutralizeAgentsRepoFallback(t)
 	dir := writeRouteFixture(t, routeFixture{agents: []config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}}})
 	got, err := routeBuiltinAgent(context.Background(), routeOpts{
@@ -216,15 +222,71 @@ func TestRouteBuiltinAgent_LifecycleCloseHarnessUnavailable(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, got.Harness)
-	assert.Equal(t, routeRun, got.Decision, "reason: %s", got.Reason)
+	assert.Equal(t, routeSkip, got.Decision)
+	assert.Equal(t, "closed pull request retro requires write", got.Reason)
+
+	got, err = routeBuiltinAgent(context.Background(), routeOpts{
+		agent: "retro", configDir: dir,
+		event:       routeEvent(t, routeRetroEvent(routeRetroPR, routeRetroClosed, routeRetroWriter, "pull_request_target", "closed")),
+		forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, got.Harness)
+	assert.Equal(t, routeRun, got.Decision, "write-authorized close should pass the default write threshold: %s", got.Reason)
+}
+
+func TestRouteBuiltinAgent_ClosedPRRetroRequiresWriteFloor(t *testing.T) {
+	neutralizeAgentsRepoFallback(t)
+	for _, transition := range []string{routeRetroClosed, routeRetroMerged} {
+		for _, harnessRole := range []string{"retro", "review", "triage"} {
+			for _, actor := range []struct {
+				name string
+				json string
+			}{
+				{name: "triage human", json: routeRetroTriager},
+				{name: "registered bot without repository write", json: routeRetroRegisteredBot},
+			} {
+				t.Run(harnessRole+"/"+transition+"/"+actor.name, func(t *testing.T) {
+					harnessBody := strings.Replace(routeTestRetroHarness, "role: retro", "role: "+harnessRole, 1)
+					dir := writeRouteFixture(t, sourcedRouteFixture([]config.AgentEntry{{Name: "retro", Trigger: "true"}}, "retro", harnessBody))
+					got, err := routeBuiltinAgent(context.Background(), routeOpts{
+						agent: "retro", configDir: dir,
+						event:       routeEvent(t, routeRetroEvent(routeRetroPR, transition, actor.json, "pull_request_target", "closed")),
+						forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+					})
+					require.NoError(t, err)
+					assert.Equal(t, routeSkip, got.Decision)
+					assert.Equal(t, "closed pull request retro requires write", got.Reason)
+				})
+			}
+		}
+	}
+}
+
+func TestRouteBuiltinAgent_RetroSlashCommandRequiresWriteFloor(t *testing.T) {
+	neutralizeAgentsRepoFallback(t)
+	for _, harnessRole := range []string{"retro", "review", "triage"} {
+		t.Run(harnessRole, func(t *testing.T) {
+			harnessBody := strings.Replace(routeTestRetroHarness, "role: retro", "role: "+harnessRole, 1)
+			dir := writeRouteFixture(t, sourcedRouteFixture([]config.AgentEntry{{Name: "retro", Trigger: "true"}}, "retro", harnessBody))
+			got, err := routeBuiltinAgent(context.Background(), routeOpts{
+				agent: "retro", configDir: dir,
+				event:       routeEvent(t, routeRetroEvent(routeRetroPR, routeRetroCommand, routeRetroTriager, "issue_comment", "created")),
+				forgeClient: forge.NewFakeClient(), printer: ui.New(io.Discard),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, routeSkip, got.Decision)
+			assert.Equal(t, "retro command requires write", got.Reason)
+		})
+	}
 }
 
 // TestRetroRouteParity runs raw GitHub webhook payloads through the gha-event
 // input and routeBuiltinAgent (`fullsend dispatch --route retro`), with the
 // default retro trigger set in config and a local harness with role: retro,
 // and compares the decision with the one the bash router in
-// reusable-dispatch.yml makes for the same event. A row whose CEL result
-// differs from bash must name the known difference in diff.
+// reusable-dispatch.yml makes for the same event. Closed-PR actors below
+// write and permission lookup failures must be skipped by both routes.
 func TestRetroRouteParity(t *testing.T) {
 	neutralizeAgentsRepoFallback(t)
 	dir := writeRouteFixture(t, sourcedRouteFixture([]config.AgentEntry{{Name: "retro", Trigger: routeTrigger(t, "retro")}}, "retro", routeTestRetroHarness))
@@ -244,33 +306,63 @@ func TestRetroRouteParity(t *testing.T) {
 		eventName string
 		action    string
 		payload   string
-		bash      bool   // reusable-dispatch.yml routes STAGE=retro
-		cel       bool   // CEL route decision is run
-		diff      string // known, accepted difference; empty when cel == bash
+		bash      bool // reusable-dispatch.yml routes STAGE=retro
+		cel       bool // CEL route decision is run
+		lookupErr bool
 	}{
 		{
-			name:      "PR merged by a write user (merge queue: the user who enqueued it)",
+			name:      "PR merged by a write user",
 			eventName: "pull_request_target", action: "closed",
 			payload: merged(prPayload("closed", "dep-updater[bot]", "writer", "")),
 			bash:    true, cel: true,
 		},
 		{
-			name:      "PR closed by its read-only author",
+			name:      "PR merged by an unauthorized queue bot is denied",
+			eventName: "pull_request_target", action: "closed",
+			payload: merged(prPayload("closed", "writer", "renovate-fullsend[bot]", "")),
+			bash:    false, cel: false,
+		},
+		{
+			name:      "queue bot closing without a merge is denied",
+			eventName: "pull_request_target", action: "closed",
+			payload: prPayload("closed", "writer", "renovate-fullsend[bot]", ""),
+			bash:    false, cel: false,
+		},
+		{
+			name:      "unregistered app bot cannot merge a PR to start retro",
+			eventName: "pull_request_target", action: "closed",
+			payload: merged(prPayload("closed", "writer", "dep-updater[bot]", "")),
+			bash:    false, cel: false,
+		},
+		{
+			name:      "PR closed by its read-only author is denied",
 			eventName: "pull_request_target", action: "closed",
 			payload: prPayload("closed", "reader", "reader", ""),
-			bash:    true, cel: true,
+			bash:    false, cel: false,
 		},
 		{
-			name:      "PR closed by a triage user",
+			name:      "PR closed by a triage user is denied",
 			eventName: "pull_request_target", action: "closed",
 			payload: prPayload("closed", "writer", "triager", ""),
-			bash:    true, cel: true,
+			bash:    false, cel: false,
 		},
 		{
-			name:      "PR closed by an app bot without a collaborator role",
+			name:      "a read-only closer cannot close a writer's PR to start retro",
+			eventName: "pull_request_target", action: "closed",
+			payload: prPayload("closed", "writer", "reader", ""),
+			bash:    false, cel: false,
+		},
+		{
+			name:      "permission lookup failure denies a close event",
+			eventName: "pull_request_target", action: "closed",
+			payload: prPayload("closed", "writer", "writer", ""),
+			bash:    false, cel: false, lookupErr: true,
+		},
+		{
+			name:      "PR closed by an app bot without a collaborator role is denied",
 			eventName: "pull_request_target", action: "closed",
 			payload: prPayload("closed", "dep-updater[bot]", "dep-updater[bot]", ""),
-			bash:    true, cel: true,
+			bash:    false, cel: false,
 		},
 		{
 			name:      "PR opened",
@@ -329,6 +421,9 @@ func TestRetroRouteParity(t *testing.T) {
 
 			client := forge.NewFakeClient()
 			client.CollaboratorPermissions = permissions
+			if tc.lookupErr {
+				client.Errors = map[string]error{"GetCollaboratorPermission": errors.New("permission lookup unavailable")}
+			}
 			ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
 				EventPath:   eventPath,
 				EventName:   tc.eventName,
@@ -337,6 +432,7 @@ func TestRetroRouteParity(t *testing.T) {
 				Forge:       client,
 			})
 			require.NoError(t, err)
+			applyBotRoleLookup(context.Background(), ev, &fakeBotRoleResolver{}, nil)
 
 			d, err := routeBuiltinAgent(context.Background(), routeOpts{
 				agent:       "retro",
@@ -352,18 +448,14 @@ func TestRetroRouteParity(t *testing.T) {
 			}
 
 			assert.Equal(t, tc.cel, got, "CEL route decision (%s: %s)", d.Decision, d.Reason)
-			if tc.diff == "" {
-				assert.Equal(t, tc.bash, got, "CEL differs from bash without a documented difference")
-			} else {
-				assert.NotEqual(t, tc.bash, tc.cel, "row documents a difference but bash and CEL agree")
-			}
+			assert.Equal(t, tc.bash, got, "CEL differs from bash")
 		})
 	}
 }
 
-// The lifecycle-close exception follows the resolved harness role: a retro
-// entry whose harness declares another role keeps that role's threshold.
-func TestRouteBuiltinAgent_LifecycleCloseFollowsHarnessRole(t *testing.T) {
+// A retro entry whose harness declares another role uses that role's normal
+// threshold; the close event does not bypass it.
+func TestRouteBuiltinAgent_ClosedPRUsesResolvedHarnessRoleThreshold(t *testing.T) {
 	neutralizeAgentsRepoFallback(t)
 	coderHarness := strings.Replace(routeTestRetroHarness, "role: retro", "role: coder", 1)
 	dir := writeRouteFixture(t, sourcedRouteFixture([]config.AgentEntry{{Name: "retro", Trigger: "true"}}, "retro", coderHarness))
@@ -374,5 +466,5 @@ func TestRouteBuiltinAgent_LifecycleCloseFollowsHarnessRole(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, routeSkip, got.Decision)
-	assert.Equal(t, "actor not authorized", got.Reason)
+	assert.Equal(t, "closed pull request retro requires write", got.Reason)
 }

@@ -27,9 +27,10 @@ type ManifestRemoveResult struct {
 
 // carveOutForForge carves an explicit entry for name from the covering glob
 // in the discovered forge section, or from the first covering glob across
-// forges (GitHub before GitLab) when discovered is empty. It returns the new
-// entry and the forge section it was added to.
-func carveOutForForge(m *Manifest, name, discovered string) (*RepoEntry, string, error) {
+// forges (GitHub before GitLab) when discovered is empty; a non-empty glob
+// names the glob entry to copy instead. It returns the new entry and the
+// name of the glob entry it was copied from.
+func carveOutForForge(m *Manifest, name, discovered, glob string) (*RepoEntry, string, error) {
 	order := []string{ForgeGitHub, ForgeGitLab}
 	if discovered != "" {
 		order = []string{discovered}
@@ -39,22 +40,34 @@ func carveOutForForge(m *Manifest, name, discovered string) (*RepoEntry, string,
 		if platform == nil {
 			continue
 		}
-		carved, err := carveOutGlobEntry([]*PlatformConfig{platform}, name)
+		carved, from, err := carveOutGlobEntry([]*PlatformConfig{platform}, name, glob)
 		if err != nil {
 			return nil, "", err
 		}
 		if carved != nil {
-			return carved, forgeName, nil
+			return carved, from, nil
 		}
 	}
 	return nil, "", nil
 }
 
+// manifestEntryWhere names, for a progress line, the manifest entry of name
+// that an edit went into: its existing entry when glob is "", else the new
+// entry copied from the glob entry glob. A new entry no longer follows
+// edits to its glob, so the line names both.
+func manifestEntryWhere(name, glob string) string {
+	if glob == "" {
+		return "the manifest entry"
+	}
+	return fmt.Sprintf("the new manifest entry %s, copied from the glob entry %s", name, glob)
+}
+
 // carveOutGlobEntry appends an explicit entry for name copied from the first
 // glob entry (GitHub before GitLab, matching resolution order) that covers
-// it, and returns a pointer to the new entry. It returns nil when no glob
-// covers name.
-func carveOutGlobEntry(platforms []*PlatformConfig, name string) (*RepoEntry, error) {
+// it ignoring case, or from the glob entry named glob when glob is not
+// empty, and returns a pointer to the new entry and the glob entry's name.
+// It returns nil when there is no such glob entry.
+func carveOutGlobEntry(platforms []*PlatformConfig, name, glob string) (*RepoEntry, string, error) {
 	for _, platform := range platforms {
 		if platform == nil {
 			continue
@@ -63,9 +76,12 @@ func carveOutGlobEntry(platforms []*PlatformConfig, name string) (*RepoEntry, er
 			if !isGlob(entry.Name) {
 				continue
 			}
-			ok, err := matchesPattern(entry.Name, name)
-			if err != nil {
-				return nil, fmt.Errorf("invalid manifest repo pattern %q: %w", entry.Name, err)
+			ok := entry.Name == glob
+			if glob == "" {
+				var err error
+				if ok, err = matchesPattern(entry.Name, name); err != nil {
+					return nil, "", fmt.Errorf("invalid manifest repo pattern %q: %w", entry.Name, err)
+				}
 			}
 			if !ok {
 				continue
@@ -82,10 +98,10 @@ func carveOutGlobEntry(platforms []*PlatformConfig, name string) (*RepoEntry, er
 				explicit.Signoff = &s
 			}
 			platform.Repos = append(platform.Repos, explicit)
-			return &platform.Repos[len(platform.Repos)-1], nil
+			return &platform.Repos[len(platform.Repos)-1], entry.Name, nil
 		}
 	}
-	return nil, nil
+	return nil, "", nil
 }
 
 // RemoveFromManifest removes matching repo entries from all platform
@@ -149,6 +165,15 @@ func RemoveFromManifest(cfg ManifestEditConfig, repos []string, progress Progres
 	}
 
 	if cfg.DryRun {
+		// A dry run gives the live write's refusals, in the same order.
+		if cfg.ManifestPath != "" {
+			if ManifestReadOnly(cfg.Manifest, cfg.ManifestPath) {
+				return nil, nil, readOnlyManifestError(cfg.ManifestPath)
+			}
+			if err := CheckManifestSize(cfg.ManifestPath, cfg.Manifest); err != nil {
+				return nil, nil, err
+			}
+		}
 		for _, r := range result.Removed {
 			progress(r, "dry-run", "Would remove from manifest")
 		}
@@ -226,16 +251,35 @@ func WriteManifest(path string, m *Manifest) error {
 	return writeManifest(path, m)
 }
 
+// CheckManifestSize returns the error WriteManifest gives a writable
+// manifest that renders larger than LoadManifest accepts, so a dry run can
+// report it too.
+func CheckManifestSize(path string, m *Manifest) error {
+	_, err := marshalManifest(path, m)
+	return err
+}
+
 func writeManifest(path string, m *Manifest) error {
 	if ManifestReadOnly(m, path) {
 		return readOnlyManifestError(path)
 	}
-	data, err := MarshalWithHeader(m)
+	data, err := marshalManifest(path, m)
 	if err != nil {
-		return fmt.Errorf("marshalling manifest: %w", err)
+		return err
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		return fmt.Errorf("writing manifest: %w", err)
 	}
 	return nil
+}
+
+// marshalManifest renders m for path. LoadManifest refuses a larger file,
+// which would lock every later command out of it. A MarshalWithHeader error
+// already names the manifest, so it is returned as it is.
+func marshalManifest(path string, m *Manifest) ([]byte, error) {
+	data, err := MarshalWithHeader(m)
+	if err == nil && int64(len(data)) > maxManifestBytes {
+		return nil, fmt.Errorf("%s: resulting manifest would exceed the maximum size of %d bytes; the file was not changed", path, maxManifestBytes)
+	}
+	return data, err
 }

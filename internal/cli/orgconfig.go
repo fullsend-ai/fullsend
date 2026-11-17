@@ -55,13 +55,22 @@ func tryLoadLayeredFullsendConfig(fullsendDir string, printer *ui.Printer) confi
 
 // requireFullsendConfig loads a .fullsend config.yaml from the
 // given path with strict error handling. Returns differentiated errors
-// for missing files, unreadable files, and parse failures.
+// for missing files, unreadable files, and parse failures; the
+// missing-file error names URL-referenced resources.
 func requireFullsendConfig(path string, printer *ui.Printer) (config.ConfigWriter, error) {
+	return requireFullsendConfigFor(path, printer, "URL-referenced resources require")
+}
+
+// requireFullsendConfigFor is requireFullsendConfig with the lead of the
+// missing-file message supplied by the caller, so each gate names its own
+// requirement. Unreadable and unparsable configs keep their own errors
+// either way: only a config.yaml that is absent is reported as missing.
+func requireFullsendConfigFor(path string, printer *ui.Printer, missingLead string) (config.ConfigWriter, error) {
 	writer, err := config.LoadConfigWriter(filepath.Dir(path), config.LoadOpts{MissingOK: false})
 	if err != nil {
 		printer.StepFail("Failed to load fullsend config")
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("URL-referenced resources require a config.yaml with allowed_remote_resources (expected at %s)", path)
+			return nil, fmt.Errorf("%s a config.yaml with allowed_remote_resources (expected at %s)", missingLead, path)
 		}
 		return nil, fmt.Errorf("reading fullsend config for remote resource validation: %w", err)
 	}
@@ -71,3 +80,6 @@ func requireFullsendConfig(path string, printer *ui.Printer) (config.ConfigWrite
 
 // requireOrgConfig is an alias of requireFullsendConfig (strict).
 var requireOrgConfig = requireFullsendConfig
+
+// requireOrgConfigFor is an alias of requireFullsendConfigFor (strict).
+var requireOrgConfigFor = requireFullsendConfigFor

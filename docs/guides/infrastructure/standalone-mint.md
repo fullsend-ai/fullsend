@@ -431,7 +431,7 @@ gh api -X POST /orgs/myorg/actions/variables \
 
 The standalone mint can export OpenTelemetry spans for each request to an
 OTLP/HTTP collector, following the [distributed tracing](distributed-tracing.md#mint-tracing)
-model used by the rest of Fullsend. Tracing is off by default: with no
+model used by the rest of fullsend. Tracing is off by default: with no
 traces endpoint configured the mint uses a no-op tracer and makes no
 export attempts.
 

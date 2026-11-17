@@ -70,7 +70,8 @@ func overlayRunnerSecretRefs(fc *ForgeConfig, names map[string]bool) []string {
 //
 // The check is syntactic and conservative: any reference to event, to
 // runtime other than through the .forge field, or a compile failure counts
-// as reading something else.
+// as reading something else. Any new variable declared in NewOverlayEnv
+// must be handled here, or it passes this guard unchecked.
 func overlayGuardReadsOnlyForgeOrConfig(when string) bool {
 	env, err := NewOverlayEnv()
 	if err != nil {
@@ -87,11 +88,18 @@ func overlayGuardReadsOnlyForgeOrConfig(when string) bool {
 		case celast.SelectKind:
 			sel := e.AsSelect()
 			op := sel.Operand()
-			if op.Kind() == celast.IdentKind && op.AsIdent() == "runtime" && sel.FieldName() == "forge" && !sel.IsTestOnly() {
+			if op.Kind() == celast.IdentKind && strings.TrimPrefix(op.AsIdent(), ".") == "runtime" && sel.FieldName() == "forge" && !sel.IsTestOnly() {
 				forgeOperand[op.ID()] = true
 			}
 		case celast.IdentKind:
-			switch e.AsIdent() {
+			// cel-go v0.30.0 keeps a leading dot on a global reference
+			// (".event") when a comprehension variable of the same name
+			// shadows it, so compare without the dot.
+			// Known limitation: a dotless name is treated as the global even
+			// when it is that shadowing comprehension variable (telling them
+			// apart needs scope tracking), so such a read is always refused
+			// for event and refused for runtime unless used only as .forge.
+			switch strings.TrimPrefix(e.AsIdent(), ".") {
 			case "event":
 				ok = false
 			case "runtime":

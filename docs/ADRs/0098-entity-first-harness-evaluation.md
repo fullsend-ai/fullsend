@@ -62,6 +62,11 @@ one combined logical search per source scope and local per-harness routing.
 For source-backed harnesses, even an event-supplied candidate must pass a
 current local source-query membership check before sandbox admission.
 
+Living contract:
+[Normalized entity v1](../normative/normalized-entity/v1/README.md) specifies
+the logical `entity` value, coverage states, and partial-data invariants that
+this ADR requires.
+
 ## Context
 
 [ADR 0061](0061-harness-cel-dispatch.md) made a `NormalizedEvent` the sole CEL

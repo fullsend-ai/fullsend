@@ -10,6 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // Webhook dispatcher scaffold (ADR 0125, #7771): a GitLab native "use a
@@ -78,7 +80,10 @@ func TestGitLabDispatcherJobContent(t *testing.T) {
 	assert.NotContains(t, admit, `"schedule"`, "trigger-only allowlist")
 	assert.NotContains(t, admit, `"api"`, "trigger-only allowlist")
 
-	assert.Equal(t, []string{`. "${CI_PROJECT_DIR:-.}/` + gitlabInstallCLIScriptPath + `"`}, job.BeforeScript)
+	assert.Equal(t, []string{
+		"unset " + forge.SecretTraceSigningKey,
+		`. "${CI_PROJECT_DIR:-.}/` + gitlabInstallCLIScriptPath + `"`,
+	}, job.BeforeScript)
 	assert.Equal(t, []string{`. "${CI_PROJECT_DIR:-.}/` + gitlabRunDispatcherJobScriptPath + `"`}, job.Script)
 }
 
@@ -366,6 +371,10 @@ echo "ANALYST_USER_ID=${FULLSEND_GITLAB_ANALYST_USER_ID:-<unset>}"
 echo "FORGE=${FULLSEND_FORGE_TOKEN:-<unset>}"
 echo "TRIGGER=${FULLSEND_TRIGGER_TOKEN:-<unset>}"
 echo "WEBHOOK_SECRET=${FULLSEND_WEBHOOK_SECRET:-<unset>}"
+echo "JIRA_TOKEN=${FULLSEND_JIRA_TOKEN:-<unset>}"
+echo "JIRA_EMAIL=${FULLSEND_JIRA_EMAIL:-<unset>}"
+echo "JIRA_CLIENT_ID=${FULLSEND_JIRA_CLIENT_ID:-<unset>}"
+echo "JIRA_CLIENT_SECRET=${FULLSEND_JIRA_CLIENT_SECRET:-<unset>}"
 `), 0o755))
 
 	cmd := exec.Command("bash", "-c", "set -euo pipefail; . \"$SCRIPT\"")
@@ -384,6 +393,10 @@ echo "WEBHOOK_SECRET=${FULLSEND_WEBHOOK_SECRET:-<unset>}"
 		"FULLSEND_FORGE_TOKEN=shared-pat",
 		"FULLSEND_TRIGGER_TOKEN=trigger-bearer",
 		"FULLSEND_WEBHOOK_SECRET=webhook-secret",
+		"FULLSEND_JIRA_TOKEN=jira-api-token",
+		"FULLSEND_JIRA_EMAIL=jira@example.com",
+		"FULLSEND_JIRA_CLIENT_ID=jira-client-id",
+		"FULLSEND_JIRA_CLIENT_SECRET=jira-client-secret",
 		// Deliberately distinct from the pinned identity so passing
 		// assertions prove the driver gets the pinned values.
 		"CI_PROJECT_ID=1",
@@ -397,6 +410,12 @@ echo "WEBHOOK_SECRET=${FULLSEND_WEBHOOK_SECRET:-<unset>}"
 	require.NoError(t, err, "stdout/stderr: %s", out)
 	got := string(out)
 
+	assert.Contains(t, got, "JIRA_TOKEN=<unset>", "the Jira token must not reach the dispatcher driver")
+	assert.Contains(t, got, "JIRA_EMAIL=<unset>", "the Jira email must not reach the dispatcher driver")
+	assert.Contains(t, got, "JIRA_CLIENT_ID=<unset>", "the Jira OAuth client ID must not reach the dispatcher driver")
+	assert.Contains(t, got, "JIRA_CLIENT_SECRET=<unset>", "the Jira OAuth client secret must not reach the dispatcher driver")
+	assert.NotContains(t, got, "jira-client-secret")
+	assert.NotContains(t, got, "jira-api-token")
 	assert.Contains(t, got, "FULLSEND_ARGS: poll --input-driver gitlab-webhook --project pinned/project --gitlab-url "+srv.URL+" --fullsend-dir .fullsend")
 	assert.Contains(t, got, "TRIGGER_PAYLOAD="+payload, "native TRIGGER_PAYLOAD path must be handed over unchanged")
 	assert.Contains(t, got, "CI_COMMIT_REF_NAME=main")

@@ -514,6 +514,7 @@ func TestBuildWebhookEvents_MergeRequest(t *testing.T) {
 		mr.ClosedAt = recent
 		mr.MergeUser = bob
 		mc.mr[3] = mr
+		mc.memberLevel[bob.ID] = 30
 		p := newWebhookPoller(mc)
 		got, err := p.BuildWebhookEvents(context.Background(), mrPayload(t, "merge", bob.ID, 3, nil))
 		if err != nil {
@@ -533,6 +534,7 @@ func TestBuildWebhookEvents_MergeRequest(t *testing.T) {
 		mr.ClosedAt = recent
 		mr.ClosedBy = bob
 		mc.mr[3] = mr
+		mc.memberLevel[bob.ID] = 30
 		p := newWebhookPoller(mc)
 		got, err := p.BuildWebhookEvents(context.Background(), mrPayload(t, "close", bob.ID, 3, nil))
 		if err != nil {
@@ -842,6 +844,62 @@ func noteEditPayload(t *testing.T, noteableType string, userID, noteID, iid int)
 	}
 	m["object_attributes"].(map[string]any)["action"] = "update"
 	return mustJSON(t, m)
+}
+
+// TestBuildWebhookEvents_LabelsBoundBeforeTriggerMatch verifies the
+// webhook builder bounds state.labels and the attacker-shaped single
+// strings before trigger matching, with the same bounds the dispatch door
+// applies when encoding and the poller's Route applies (poll.go): a
+// trigger keyed on a label past the 1024-byte JSON bound produces no
+// stages, and a trigger keyed on the tail of a single string past the
+// 258-byte JSON bound sees the bounded prefix, so the matcher never runs
+// on a field the transported event drops.
+func TestBuildWebhookEvents_LabelsBoundBeforeTriggerMatch(t *testing.T) {
+	mc := newMockClient()
+	mc.memberLevel[alice.ID] = 30
+	// Twenty-four forty-character pad labels overflow the 1024-byte JSON
+	// bound (2 + 24*42 + 23 = 1033 bytes with quotes and commas), so the
+	// trigger label after them is past the bound and dropped: 23 pads
+	// (990 bytes) are what fit.
+	pad := strings.Repeat("p", 40)
+	overLabels := make([]string, 0, 25)
+	for i := 0; i < 24; i++ {
+		overLabels = append(overLabels, pad)
+	}
+	overLabels = append(overLabels, "ready-to-code")
+	// A 300-character actor login overflows the 258-byte JSON single-string
+	// bound, so the built event must carry only its 256-character prefix.
+	longLogin := strings.Repeat("u", 300)
+	mc.issue[4] = &Issue{IID: 4, State: "opened", Labels: overLabels, Author: bob}
+	mc.notes[4] = []Note{
+		{ID: 12, Body: "/fs-triage please", Author: UserRef{ID: alice.ID, Username: longLogin}, CreatedAt: recent},
+	}
+	router := &labelStubRouter{trigger: "ready-to-code"}
+	p := New(mc, router, "group/project", Options{
+		BotUserID:      100,
+		GitLabURL:      "https://gitlab.example.com",
+		PipelineRef:    "main",
+		DispatchSecret: testDispatchSecret,
+	})
+	p.now = func() time.Time { return webhookTestNow }
+
+	got, err := p.BuildWebhookEvents(context.Background(), notePayload(t, "Issue", alice.ID, 12, 4))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d events, want 1", len(got))
+	}
+	if len(got[0].Stages) != 0 {
+		t.Errorf("stages = %v, want none: a trigger keyed on a label past the labels bound must not match", got[0].Stages)
+	}
+	if labels := got[0].Normalized.State.Labels; len(labels) != 23 {
+		t.Errorf("normalized labels = %d entries, want the 23-entry bounded prefix", len(labels))
+	}
+	if got, want := got[0].Normalized.Actor.ID, longLogin[:transportStringRefLimit-2]; got != want {
+		t.Errorf("normalized actor.id = %d characters, want the %d-character bounded prefix: the single-string bound must be applied before the matcher runs",
+			len(got), len(want))
+	}
 }
 
 func TestBuildWebhookEvents_InvalidPayloads(t *testing.T) {

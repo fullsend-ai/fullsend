@@ -323,6 +323,11 @@ func (p *Poller) Run(ctx context.Context) error {
 
 		normalizedEvent, actorID, err := p.toNormalizedEvent(ctx, event)
 		if err != nil {
+			if errors.Is(err, errMissingMRCloserIdentity) || errors.Is(err, errMissingMRMergerIdentity) {
+				log.Printf("WARNING: observing %s event on IID %d without dispatch: close/merge actor identity is unavailable", event.Type, event.IID)
+				observe(event)
+				continue
+			}
 			log.Printf("WARNING: skipping %s event on IID %d: %v", event.Type, event.IID, err)
 			recordEventFailure(&cycleErrs, failedKeys, mirrors, event, &minFailedAt, failedLabelEvents,
 				fmt.Errorf("skipping %s event on IID %d: %w", event.Type, event.IID, err))
@@ -336,6 +341,31 @@ func (p *Poller) Run(ctx context.Context) error {
 
 		var stages []string
 		if p.router != nil {
+			// Bound state.labels and the attacker-shaped single strings
+			// before trigger matching with the same bounds the dispatch
+			// door applies when encoding (dispatch.LogBoundTransportLabels,
+			// logBoundTransportEventStrings): a trigger keyed on a label
+			// or string tail past the bound must not launch an agent
+			// whose transported event lacks it — the silent
+			// trigger/payload mismatch the transport bounds exist to
+			// prevent, and exactly what the cel-triggers-reference
+			// bound caveat documents. The bounded event is also the one
+			// dispatch carries, so the matcher and the payload agree on
+			// those fields. The comment body is deliberately not
+			// bounded here: the routed body is the raw body while the
+			// transported body is cut at noteBodyTransportLimit, so a
+			// user-authored trigger keyed on body text past that bound
+			// (for example the review bot's changes-requested marker,
+			// matched anywhere in the body) can still fire on text the
+			// transported event drops — a known residual; bounding the
+			// body before Route is a follow-up. The Jira poller's
+			// GitLab-target door bounds state.labels the same way
+			// (jirapoll/poller.go); its dispatch door carries the other
+			// single strings as-is, failing closed on budget
+			// (jira_dispatch.go).
+			where := fmt.Sprintf("%s event on IID %d", event.Type, event.IID)
+			normalizedEvent.State.Labels = dispatch.LogBoundTransportLabels(where, normalizedEvent.State.Labels)
+			logBoundTransportEventStrings(where, &normalizedEvent)
 			stages, err = p.router.Route(&normalizedEvent)
 			if err != nil {
 				log.Printf("dispatch core error for %s: %v", eventKey, err)
@@ -396,6 +426,20 @@ func (p *Poller) Run(ctx context.Context) error {
 			}
 			allSkipped = false
 			if err := p.dispatch(ctx, p.owner, p.repo, stage, event, &normalizedEvent); err != nil {
+				if errors.Is(err, dispatch.ErrTransportBudget) {
+					// The refusal is deterministic — the same
+					// event re-marshals to the same oversized
+					// payload, for every stage — so a retry can
+					// never succeed: drop the occurrence without
+					// spending its retry budget, like an
+					// exhausted budget is dropped above, instead
+					// of wedging it behind three retries (plus a
+					// webhook handoff) of a permanent refusal.
+					log.Printf("WARNING: dropping %s for %s: %v (transport-budget refusal is permanent)", stage, eventKey, err)
+					observe(event)
+					resolvedPending[eventKey] = true
+					break
+				}
 				log.Printf("dispatch %s for %s failed: %v", stage, eventKey, err)
 				recordEventFailure(&cycleErrs, failedKeys, mirrors, event, &minFailedAt, failedLabelEvents,
 					fmt.Errorf("dispatch %s for %s failed: %w", stage, eventKey, err))

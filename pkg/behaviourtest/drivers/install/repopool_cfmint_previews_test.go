@@ -497,7 +497,7 @@ func TestNewRepoPoolCFMintPreviews_DerivedDevOrgs(t *testing.T) {
 	assert.Equal(t, DevPoolOrgCount*2, d.Capacity())
 	orgs := d.(*composedDriver).alloc.layout.Orgs()
 	assert.Equal(t, "halfsend-01", orgs[0])
-	assert.Equal(t, "halfsend-12", orgs[len(orgs)-1])
+	assert.Equal(t, "halfsend-22", orgs[len(orgs)-1])
 }
 
 // --- setupCFMintPEMDir tests ---

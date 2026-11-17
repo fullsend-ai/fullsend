@@ -8,6 +8,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -279,7 +280,7 @@ func preflightOverlay(ctx context.Context, store *presetCache, client forge.Clie
 	if !found {
 		return "", nil
 	}
-	if err := validateExistingOverlay(existing); err != nil {
+	if err := validateExistingOverlay(existing, resolved.Forge); err != nil {
 		return "", fmt.Errorf("%s: %w: fix or remove it, then re-run; nothing was written", name, err)
 	}
 	if !overlayNeedsAdoption(found, existing) {
@@ -311,16 +312,17 @@ type pendingWriteback struct {
 // EnsureManagedConfigDefaults persists install-time choices that the
 // generated managed overlay must reproduce into the manifest entry of each
 // selected repository on a first install (#8218): a no-preset first
-// install with no explicit create_issues declaration and no
+// install with no explicit tracker declaration and no
 // .fullsend/config.yaml records
-// config.create_issues.allow_targets.repos:
+// config.tracker.github.allowed_targets.repos:
 // [fullsend-ai/fullsend, fullsend-ai/agents] on GitHub, or an explicit
-// empty allow_targets policy on GitLab.
+// empty tracker.gitlab.allowed_targets policy on GitLab.
 //
-// A declared preset keeps inheriting its own create_issues, and an
+// A declared preset keeps inheriting its own tracker, and an
 // explicit manifest value is never overridden. A repository covered only
 // by a glob gets its own explicit entry copied from the glob so sibling
-// repositories are unaffected. Existing overlays are not touched here
+// repositories are unaffected, and progress names that entry and the
+// glob. Existing overlays are not touched here
 // (install excludes a repository whose markerless overlay needs adoption).
 //
 // The in-memory manifest is always updated so rendering sees the values.
@@ -351,7 +353,7 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 		if resolved.RequireInferenceAuth() != nil {
 			continue
 		}
-		// A declared preset or an explicit create_issues setting rules
+		// A declared preset or an explicit tracker setting rules
 		// out every install default, so the repository's layers and
 		// installation state are not read for this decision (#8501).
 		if !installDefaultsPossible(resolved) {
@@ -366,7 +368,7 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 			return nil, fmt.Errorf("%s/%s: reading %s: %w", rr.Owner, rr.Repo, preset.OverlayPath, err)
 		}
 		if found {
-			// An existing overlay needs no automatic create_issues
+			// An existing overlay needs no automatic tracker
 			// injection.
 			continue
 		}
@@ -393,20 +395,22 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 	}
 
 	names := make([]string, 0, len(pending))
+	// globs[i] names the glob entry pending[i]'s new entry is copied from.
+	globs := make([]string, len(pending))
 	needsNewEntry := make(map[string]bool, len(pending))
-	for _, p := range pending {
+	for i, p := range pending {
 		name := p.rr.Owner + "/" + p.rr.Repo
 		entry := findExplicitEntry(m, name)
 		if entry == nil {
 			needsNewEntry[name] = true
-			carved, _, err := carveOutForForge(m, name, p.rr.Forge)
+			carved, glob, err := carveOutForForge(m, name, p.rr.Forge, "")
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", name, err)
 			}
 			if carved == nil {
 				return nil, fmt.Errorf("no manifest entry or glob covers %q", name)
 			}
-			entry = carved
+			entry, globs[i] = carved, glob
 		}
 		entry.Config = p.cfg
 		names = append(names, name)
@@ -424,7 +428,7 @@ func EnsureManagedConfigDefaults(ctx context.Context, cfg ManagedConfigWriteback
 		if cfg.DryRun && !cfg.Deferred {
 			verb = "Would persist"
 		}
-		progress(names[i], "manifest", fmt.Sprintf("%s config.%s in the manifest entry", verb, strings.Join(p.what, ", config.")))
+		progress(names[i], "manifest", fmt.Sprintf("%s config.%s in %s", verb, strings.Join(p.what, ", config."), manifestEntryWhere(names[i], globs[i])))
 	}
 	return names, nil
 }
@@ -460,27 +464,31 @@ func pristineRepository(ctx context.Context, fc ForgeConfig, resolved ResolvedCo
 func installDefaultsFor(rr ResolvedRepo, resolved ResolvedConfig, pristine bool) (next config.ManagedConfig, what []string) {
 	next = rr.Entry.Config
 	if pristine && installDefaultsPossible(resolved) {
-		targets := []string{}
-		if rr.Forge == ForgeGitHub {
-			targets = config.DefaultIssueCreationRepos()
+		if tracking := config.DefaultIssueTracking(rr.Forge); tracking != nil {
+			provider := tracking.Provider()
+			var targets []string
+			if tracking.GitHub != nil {
+				targets = tracking.GitHub.AllowedTargets.Repos
+			}
+			next = next.WithIssueTracking(tracking)
+			what = append(what, "tracker."+provider+".allowed_targets.repos: ["+strings.Join(targets, ", ")+"]")
 		}
-		next = next.WithCreateIssuesRepos(targets)
-		what = append(what, "create_issues.allow_targets.repos: ["+strings.Join(targets, ", ")+"]")
 	}
 	return next, what
 }
 
 // installDefaultsPossible reports whether the resolved configuration alone
 // leaves room for an install default: no declared preset (which keeps
-// inheriting its own create_issues) and no explicit create_issues setting.
+// inheriting its own tracker) and no explicit tracker setting.
 // It needs no forge read, so EnsureManagedConfigDefaults checks it before
 // reading layers or probing components.
 func installDefaultsPossible(resolved ResolvedConfig) bool {
-	return resolved.Config == "" && resolved.Managed.IssueCreationConfig() == nil
+	return resolved.Config == "" && resolved.Managed.IssueTracking() == nil
 }
 
 // ManifestReadOnly reports whether the manifest at path cannot be written:
-// an HTTP(S) source or a local file without write permission.
+// an HTTP(S) source, a pipe, FIFO or device (as -f <(cmd) gives), or a
+// local file without write permission or on a read-only file system.
 func ManifestReadOnly(m *Manifest, path string) bool {
 	lower := strings.ToLower(path)
 	if m.sourceRemote || strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://") {
@@ -492,18 +500,29 @@ func ManifestReadOnly(m *Manifest, path string) bool {
 	// A local manifest without write permission cannot take the edit
 	// either; detect it before any write is attempted.
 	info, err := os.Stat(path)
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil || info.IsDir() {
 		return false
+	}
+	// A pipe, FIFO or device is a stream: it can be read only once and
+	// cannot take a rewrite.
+	if !info.Mode().IsRegular() {
+		return true
 	}
 	if info.Mode().Perm()&0o222 == 0 {
 		return true
 	}
 	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
-		return errors.Is(err, fs.ErrPermission)
+		return isWriteDenied(err)
 	}
 	_ = f.Close()
 	return false
+}
+
+// isWriteDenied reports whether an open for writing failed because the file
+// cannot be written: no write permission, or a read-only file system.
+func isWriteDenied(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EROFS)
 }
 
 func findExplicitEntryIn(platform *PlatformConfig, name string) *RepoEntry {
@@ -539,7 +558,7 @@ func newEntrySuggestion(m *Manifest, p pendingWriteback) RepoEntry {
 		entry = *existing
 	} else if platform := m.PlatformFor(p.rr.Forge); platform != nil {
 		scratch := &PlatformConfig{Repos: slices.Clone(platform.Repos)}
-		if carved, _ := carveOutGlobEntry([]*PlatformConfig{scratch}, name); carved != nil {
+		if carved, _, _ := carveOutGlobEntry([]*PlatformConfig{scratch}, name, ""); carved != nil {
 			entry = *carved
 		}
 	}

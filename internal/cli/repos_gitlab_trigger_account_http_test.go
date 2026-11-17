@@ -230,6 +230,59 @@ func (s *tahServer) protectedBranchPayload() map[string]any {
 	return map[string]any{"name": tahBranch, "push_access_levels": levels, "merge_access_levels": merges}
 }
 
+// serveTriggerPipeline emulates POST /projects/:id/ref/:ref/trigger/pipeline
+// entirely inside this isolated project: the trigger's owner starts the
+// pipeline, and on a protected branch GitLab admits an owner only through an
+// access level it holds, a per-user merge grant, or a deploy key it added to
+// the branch's push-access list. Starting a pipeline here never touches a
+// customer project, which is how the tests check the route without a probe
+// pipeline. Called with s.mu held.
+func (s *tahServer) serveTriggerPipeline(w http.ResponseWriter, r *http.Request, p string) {
+	s.hits["POST /ref/:ref/trigger/pipeline"]++
+	ref := strings.TrimSuffix(strings.TrimPrefix(p, tahProject+"/ref/"), "/trigger/pipeline")
+	token := r.URL.Query().Get("token")
+	var owner int
+	found := false
+	for _, tr := range s.triggers {
+		if token != "" && tr.Token == token {
+			owner, found = tr.OwnerID, true
+		}
+	}
+	if !found {
+		tahJSON(w, http.StatusNotFound, map[string]any{"message": "404 Not Found"})
+		return
+	}
+	level, member := s.members[owner]
+	if !member || level < 30 {
+		tahJSON(w, http.StatusBadRequest, map[string]any{"message": map[string]any{"base": []string{"Insufficient permissions to create a pipeline"}}})
+		return
+	}
+	if s.protected && ref == tahBranch && !s.mayStartPipelineOnProtected(owner, level) {
+		tahJSON(w, http.StatusBadRequest, map[string]any{"message": map[string]any{"base": []string{"Insufficient permissions to create a pipeline on protected branch " + ref}}})
+		return
+	}
+	s.logf("trigger-pipeline:%d:%s", owner, ref)
+	tahJSON(w, http.StatusCreated, map[string]any{"id": 1, "ref": ref, "status": "created"})
+}
+
+func (s *tahServer) mayStartPipelineOnProtected(owner, level int) bool {
+	for _, e := range s.push {
+		if e.DeployKeyID != 0 {
+			if k, ok := s.keys[e.DeployKeyID]; ok && k.CanPush && k.OwnerID == owner {
+				return true
+			}
+			continue
+		}
+		if e.AccessLevel > 0 && level >= e.AccessLevel {
+			return true
+		}
+	}
+	if s.mergeRole > 0 && level >= s.mergeRole {
+		return true
+	}
+	return slices.Contains(s.mergeUsers, owner)
+}
+
 var tahMaskable = regexp.MustCompile(`^[a-zA-Z0-9@:.+/=_~-]+$`)
 
 func tahRouteKey(method string, seg []string) string {
@@ -261,6 +314,12 @@ func (s *tahServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p := strings.TrimPrefix(r.URL.EscapedPath(), "/api/v4")
+	// Trigger-token requests authenticate with the token itself, not an
+	// access token.
+	if r.Method == http.MethodPost && strings.HasPrefix(p, tahProject+"/ref/") && strings.HasSuffix(p, "/trigger/pipeline") {
+		s.serveTriggerPipeline(w, r, p)
+		return
+	}
 	uid := s.authenticate(r)
 	if uid == 0 {
 		s.hits["401 "+r.Method+" "+p]++

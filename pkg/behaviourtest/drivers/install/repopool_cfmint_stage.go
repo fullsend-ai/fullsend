@@ -32,7 +32,7 @@ const (
 	StageMintWorkerName = "stage-mint"
 
 	// StageOrg is the GitHub org used for STAGE behaviour tests.
-	// Unlike the DEV pool orgs (halfsend-01 … halfsend-12), the STAGE
+	// Unlike the DEV pool orgs (halfsend-01 … halfsend-22), the STAGE
 	// driver uses a single org. Within this org, a repo pool is used
 	// just like in the DEV drivers.
 	StageOrg = "halfsend"

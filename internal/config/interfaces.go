@@ -28,10 +28,10 @@ type AllowedResourcesReader interface {
 	AllowedResources() []string
 }
 
-// CreateIssuesReader provides read access to cross-repo issue creation
-// configuration.
-type CreateIssuesReader interface {
-	IssueCreationConfig() *CreateIssuesConfig
+// TrackingReader provides read access to the issue-tracking configuration,
+// including the selected provider's cross-project allowed_targets.
+type TrackingReader interface {
+	IssueTracking() *TrackingConfig
 }
 
 // StatusNotificationsReader provides read access to status notification
@@ -49,7 +49,7 @@ type ConfigReader interface {
 	AgentLister
 	KillSwitchReader
 	AllowedResourcesReader
-	CreateIssuesReader
+	TrackingReader
 	StatusNotificationsReader
 	ConfigVersion() string
 }
@@ -90,12 +90,33 @@ type PerRepoConfigReader interface {
 	// aliases are configured: every alias resolves through the runtime's
 	// compiled-in table.
 	ConfigModelAliases() map[string]string
+	// ConfigArtifactsContent returns the effective artifacts.content
+	// level (ADR 0161); the code default is "all".
+	ConfigArtifactsContent() string
+	// ConfigArtifactsContentSet reports whether any config layer sets
+	// artifacts.content explicitly (false for the code default).
+	ConfigArtifactsContentSet() bool
+	// ConfigArtifactsBySource returns the effective artifacts.by_source
+	// map, merged per key through the parent chain. nil means no
+	// per-source levels.
+	ConfigArtifactsBySource() map[string]string
+	// ConfigProgressVerbosity returns the effective progress.verbosity
+	// level (ADR 0163); the code default is "full".
+	ConfigProgressVerbosity() string
+	// ConfigProgressBySource returns the effective progress.by_source
+	// map, merged per key through the parent chain. nil means no
+	// per-source levels.
+	ConfigProgressBySource() map[string]string
 	// IsOwnersFileAuthEnabled reports whether the owners_file
 	// authorization provider is listed.
 	IsOwnersFileAuthEnabled() bool
 	// JiraAuthorization returns the jira authorization provider entry,
 	// or nil when none is listed.
 	JiraAuthorization() *AuthorizationProvider
+	// TraceContext returns a copy of this layer's trace_context block, or
+	// nil when it has none. There is no parent fallback: config.base.yaml
+	// never supplies it (ADR 0154).
+	TraceContext() *TraceContextConfig
 }
 
 // --- Write superset interfaces ---
@@ -136,6 +157,7 @@ type PerRepoConfigWriter interface {
 	MergeInferenceGateway(InferenceGatewayConfig)
 	SetModelAliases(map[string]string)
 	SetOwnersFileAuthEnabled(bool)
+	SetIssueTracking(*TrackingConfig)
 }
 
 // --- Compile-time assertions ---
@@ -257,6 +279,18 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 // Marshal writes), as opposed to the merged set from AgentEntries.
 func (c *perRepoConfig) LocalAgentEntries() []AgentEntry { return c.Agents }
 
+// LocalAllowedRemoteResources returns only this layer's own allowlist
+// entries (what Marshal writes), as opposed to the parent-unioned set
+// from AllowedResources: nil means the key is omitted here (the parent
+// chain resolves it), an explicit empty slice is this layer's deny-all,
+// and a non-empty slice is this layer's entries without the parent
+// chain's, fullsend's default prefixes included. The agent add and
+// remove cleanup writes read this, never the union, so parent-chain
+// entries are not baked into the committed overlay; agent remove's
+// deny-all fallback, which writes the default prefixes a remaining
+// agent still uses, is the intentional exception.
+func (c *perRepoConfig) LocalAllowedRemoteResources() []string { return c.AllowedRemoteResources }
+
 // IsKillSwitchActive reports whether the kill switch is engaged.
 // KillSwitch is a *bool: nil falls through to parent, non-nil
 // (including explicit false) is the local decision.
@@ -306,14 +340,22 @@ func (c *perRepoConfig) AllowedResources() []string {
 	return result
 }
 
-// IssueCreationConfig returns the cross-repo issue creation config.
-// nil falls through to parent.
-func (c *perRepoConfig) IssueCreationConfig() *CreateIssuesConfig {
-	if c.CreateIssues != nil {
-		return c.CreateIssues
+// IssueTracking returns the tracker configuration (the tracker key). nil
+// falls through to parent; a set value replaces the parent's whole
+// mapping, so layers never combine two providers. A layer that still
+// carries the removed create_issues block and sets no tracker of its own
+// denies all extra issue destinations instead of inheriting the parent's
+// grant, so a legacy restrictive overlay is never widened by a permissive
+// base.
+func (c *perRepoConfig) IssueTracking() *TrackingConfig {
+	if c.Tracker != nil {
+		return c.Tracker
+	}
+	if c.legacyCreateIssues {
+		return &TrackingConfig{}
 	}
 	if c.parent != nil {
-		return c.parent.IssueCreationConfig()
+		return c.parent.IssueTracking()
 	}
 	return nil
 }
@@ -368,6 +410,13 @@ func (c *perRepoConfig) JiraAuthorization() *AuthorizationProvider {
 	return nil
 }
 
+// TraceContext returns a deep copy of the trace_context block, or nil when
+// none is set. Like JiraAuthorization it has no parent fallback: the block
+// belongs to one repository and is never inherited from config.base.yaml.
+func (c *perRepoConfig) TraceContext() *TraceContextConfig {
+	return cloneTraceContext(c.TraceContextBlock)
+}
+
 // ConfigRoles returns the configured agent roles. nil (key omitted)
 // falls through to parent. Non-nil (including empty) replaces the
 // parent list entirely.
@@ -419,20 +468,18 @@ func (c *perRepoConfig) ConfigKeepHistory() bool {
 	return true
 }
 
-// ConfigTracker returns the configured default issue tracker (e.g.
-// "github", "gitlab", "jira"), used as the default for `fullsend
-// issues` commands' --tracker flag when it is not set explicitly.
-// Distinct from ConfigForge: a repo's hosting forge (github/gitlab)
-// does not imply its issue tracker (e.g. a GitHub-hosted repo may
-// track issues in Jira).
+// ConfigTracker returns the provider selected by the tracker mapping
+// ("github", "gitlab", "jira"), or "" when none is selected. It is the
+// default for `fullsend issues` commands' --tracker flag when that flag
+// is not set explicitly. Like IssueTracking, a layer that sets tracker
+// replaces the parent's whole mapping, and a layer that still carries the
+// removed create_issues block selects no provider, so the provider always
+// comes from the same layer as the targets (it is derived from
+// IssueTracking). Distinct from ConfigForge: a repo's hosting
+// forge (github/gitlab) does not imply its issue tracker (e.g. a
+// GitHub-hosted repo may track issues in Jira).
 func (c *perRepoConfig) ConfigTracker() string {
-	if c.Tracker != "" {
-		return c.Tracker
-	}
-	if c.parent != nil {
-		return c.parent.ConfigTracker()
-	}
-	return ""
+	return c.IssueTracking().Provider()
 }
 
 // ConfigMintURL returns the configured token mint URL.
@@ -662,6 +709,11 @@ func (c *perRepoConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
 	c.Notifications = sn
 }
 
+// SetIssueTracking sets the tracker configuration on this layer.
+func (c *perRepoConfig) SetIssueTracking(t *TrackingConfig) {
+	c.Tracker = t
+}
+
 // SetInferenceWIFProvider sets the WIF provider resource name.
 func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
 	c.ensureInference().WIFProvider = wifProvider
@@ -776,6 +828,9 @@ func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
 	if err := checkOverlayYAML(overlayData, haveOverlay); err != nil {
 		return nil, err
 	}
+	if err := checkLegacyCreateIssues(overlayData, haveOverlay, baseData, haveBase); err != nil {
+		return nil, err
+	}
 
 	return loadPerRepoLayers(overlayData, haveOverlay, baseData, haveBase)
 }
@@ -806,8 +861,36 @@ func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
 	if err := checkOverlayYAML(overlayData, haveOverlay); err != nil {
 		return nil, err
 	}
+	if err := checkLegacyCreateIssues(overlayData, haveOverlay, baseData, haveBase); err != nil {
+		return nil, err
+	}
 
 	return loadPerRepoLayers(overlayData, haveOverlay, baseData, haveBase)
+}
+
+// checkLegacyCreateIssues rejects a config.yaml or config.base.yaml that
+// still carries the removed top-level create_issues key. Without this
+// check runtime loading would silently ignore the key, so an unmigrated
+// config would stop granting cross-repo issue creation with no signal.
+// The error names the offending file and the migration path. Malformed
+// YAML is left for loadPerRepoLayers to report.
+func checkLegacyCreateIssues(overlayData []byte, haveOverlay bool, baseData []byte, haveBase bool) error {
+	for _, layer := range []struct {
+		name string
+		data []byte
+		have bool
+	}{
+		{OverlayConfigFile, overlayData, haveOverlay},
+		{BaseConfigFile, baseData, haveBase},
+	} {
+		if !layer.have {
+			continue
+		}
+		if has, err := hasLegacyCreateIssues(layer.data); err == nil && has {
+			return fmt.Errorf("%s: %w", layer.name, errLegacyCreateIssues)
+		}
+	}
+	return nil
 }
 
 // checkOverlayYAML rejects a config.yaml that is malformed YAML or that
@@ -867,7 +950,7 @@ func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, ha
 	var baseReader PerRepoConfigReader = &perRepoDefaults{}
 	if haveBase {
 		var base perRepoConfig
-		if err := yaml.Unmarshal(baseData, &base); err != nil {
+		if err := unmarshalPerRepo(baseData, &base); err != nil {
 			return nil, fmt.Errorf("parsing base config: %w", err)
 		}
 		base.parent = &perRepoDefaults{}
@@ -877,7 +960,7 @@ func loadPerRepoLayers(overlayData []byte, haveOverlay bool, baseData []byte, ha
 	// Parse or create overlay layer; parent = base (or defaults).
 	var overlay perRepoConfig
 	if haveOverlay {
-		if err := yaml.Unmarshal(overlayData, &overlay); err != nil {
+		if err := unmarshalPerRepo(overlayData, &overlay); err != nil {
 			return nil, fmt.Errorf("parsing per-repo config: %w", err)
 		}
 	}

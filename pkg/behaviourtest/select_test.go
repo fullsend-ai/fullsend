@@ -119,10 +119,10 @@ func TestResolveConcurrency(t *testing.T) {
 		overCapacity bool
 		wantErr      string
 	}{
-		{name: "default to slots per org, not pool capacity", raw: "", defaultN: 12, capacity: 144, want: 12},
+		{name: "default to slots per org, not pool capacity", raw: "", defaultN: 12, capacity: 264, want: 12},
 		{name: "default capped at capacity", raw: "", defaultN: 12, capacity: 4, want: 4},
-		{name: "honor explicit value", raw: "4", defaultN: 12, capacity: 144, want: 4},
-		{name: "explicit value above default", raw: "30", defaultN: 12, capacity: 144, want: 30},
+		{name: "honor explicit value", raw: "4", defaultN: 12, capacity: 264, want: 4},
+		{name: "explicit value above default", raw: "30", defaultN: 12, capacity: 264, want: 30},
 		{name: "warn when over capacity", raw: "20", defaultN: 12, capacity: 12, want: 20, overCapacity: true},
 		{name: "reject zero", raw: "0", defaultN: 12, capacity: 12, wantErr: "positive integer"},
 		{name: "reject negative", raw: "-1", defaultN: 12, capacity: 12, wantErr: "positive integer"},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -22,6 +23,8 @@ import (
 type FakeJiraClient struct {
 	Issues   map[string]*jira.Issue
 	Comments map[string][]jira.Comment
+	// ProjectIDs supplies immutable project IDs for created issue reads.
+	ProjectIDs map[string]string
 
 	// CommentProperties maps "issueKey/commentID" to a map of
 	// propertyKey -> value, mirroring Jira's per-comment entity
@@ -41,6 +44,10 @@ type FakeJiraClient struct {
 	// PropertyError, when non-nil, is returned by SetCommentProperty
 	// to simulate permission failures.
 	PropertyError error
+
+	// PropertyWrites counts SetCommentProperty calls, including ones
+	// that fail with PropertyError.
+	PropertyWrites int
 
 	// UpdateError, when non-nil, is returned by UpdateComment to
 	// simulate update failures.
@@ -129,8 +136,12 @@ func (f *FakeJiraClient) CreateIssue(_ context.Context, in jira.CreateIssueInput
 		issueType.Name = in.IssueType
 	}
 	f.Issues[key] = &jira.Issue{
-		Key:    key,
-		Fields: jira.IssueFields{Summary: in.Summary, Description: description, IssueType: issueType},
+		ID:  fmt.Sprintf("%d", 10000+len(f.CreatedIssues)),
+		Key: key,
+		Fields: jira.IssueFields{
+			Summary: in.Summary, Description: description, IssueType: issueType,
+			Project: &jira.ProjectRef{ID: f.ProjectIDs[in.ProjectKey], Key: in.ProjectKey},
+		},
 	}
 	return &jira.CreatedIssue{ID: fmt.Sprintf("%d", 10000+len(f.CreatedIssues)), Key: key}, nil
 }
@@ -214,6 +225,7 @@ func (f *FakeJiraClient) UpdateComment(_ context.Context, issueIDOrKey, commentI
 }
 
 func (f *FakeJiraClient) SetCommentProperty(_ context.Context, issueIDOrKey, commentID, propertyKey string, value any) error {
+	f.PropertyWrites++
 	if f.PropertyError != nil {
 		return f.PropertyError
 	}
@@ -272,4 +284,16 @@ func NewFakeJiraClientWithFake(baseURL string) (*JiraClient, *FakeJiraClient, er
 		return nil, nil, err
 	}
 	return tc, fc, nil
+}
+
+// AddIssueLabel mirrors Jira's additive label operation.
+func (f *FakeJiraClient) AddIssueLabel(ctx context.Context, issueIDOrKey, label string) error {
+	issue, err := f.GetIssue(ctx, issueIDOrKey)
+	if err != nil {
+		return err
+	}
+	if !slices.Contains(issue.Fields.Labels, label) {
+		issue.Fields.Labels = append(issue.Fields.Labels, label)
+	}
+	return nil
 }

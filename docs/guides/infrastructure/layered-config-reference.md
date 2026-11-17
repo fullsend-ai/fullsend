@@ -71,7 +71,8 @@ Those blocks are not `config_base` presets: `config` is a sparse overlay
 written to `.fullsend/config.yaml`, while `config_base` copies a preset
 byte-for-byte to `.fullsend/config.base.yaml`. Managed blocks use this
 same schema (every field, including `runtime` and
-`allowed_remote_resources`) and the per-field merge rules below. The former
+`allowed_remote_resources`, except `trace_context`, which only a concrete
+repository entry accepts) and the per-field merge rules below. The former
 sibling `runtime` / `allowed_remote_resources` keys under `defaults` and
 repository entries are rejected. Managed configuration is
 not an opt-in: every repository selected from the manifest has a managed
@@ -139,7 +140,6 @@ the overlay → base → code defaults chain.
 | `agents` | `[]AgentEntry` | Keyed merge by `DerivedName()` | `nil` (none) |
 | `allowed_remote_resources` | `[]string` | Union with deny-all | `DefaultAllowedRemoteResources()` |
 | `forge` | `string` | Scalar override | `""` (GitHub) |
-| `tracker` | `string` | Scalar override | `""` (none) |
 | `mint_url` | `string` | Scalar override | `DefaultPerRepoMintURL` (hosted public mint) |
 | `inference.provider` | `string` (nested) | Scalar override | `"vertex"` |
 | `inference.project` | `string` (nested) | Scalar override | `""` (empty) |
@@ -156,12 +156,22 @@ the overlay → base → code defaults chain.
 | `inference.gateway.messages_auth_header` | `string` (nested) | Scalar override | `""` (empty; means `authorization`) |
 | `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
-| `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
+| `artifacts.content` | `string` (nested) | Scalar override | `"all"` |
+| `artifacts.by_source` | `map[string]string` (nested) | Per-key merge | `nil` (no per-source levels) |
+| `progress.verbosity` | `string` (nested) | Scalar override | `"full"` |
+| `progress.by_source` | `map[string]string` (nested) | Per-key merge | `nil` (no per-source levels) |
+| `tracker` | `*TrackingConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 | `authorization` | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |
+| `trace_context` | `*TraceContextConfig` | Overlay only (not layered) | `nil` |
 
 `authorization` is overlay-only: setting it in `config.base.yaml` has no
 effect, so each repo must opt in explicitly.
+
+`trace_context` is overlay-only too: `config.base.yaml` never supplies it. The
+repository's concrete `repos.yaml` entry is the only managed layer that may
+declare it, and install renders the whole block into the managed overlay. See
+[Config Reference — `trace_context`](../../reference/config-reference.md#trace_context).
 
 ### Per-agent `runtime`, `model`, `effort`, `subagents`, `trigger` on `agents:` entries
 
@@ -355,20 +365,6 @@ models:
 # opus and haiku → fleet defaults (compiled-in).
 ```
 
-### `tracker` — scalar override
-
-**`tracker`** stores the default issue tracker for `fullsend issues`
-commands (`github`, `gitlab`, or `jira`). Unset (`""`) means no default
-— `--tracker` is required on every `fullsend issues` invocation. When
-set, it is used as the default for `--tracker` on `fullsend issues
-get`, `fullsend issues create`, `fullsend issues post-comment`, and
-`fullsend issues link` (`link` supports only Jira, so a `github` or
-`gitlab` default makes it fail with a not-supported error unless
-`--tracker jira` is passed); an
-explicit `--tracker` flag overrides it. Distinct from `forge`: a repo's hosting forge does not
-imply its issue tracker (e.g. a GitHub-hosted repo may track issues in
-Jira).
-
 ### `roles` — replace if set
 
 The `roles` field uses replace-if-set semantics with **no union**:
@@ -449,12 +445,25 @@ composition). It uses special three-way semantics:
 | Non-empty list | **Union** of overlay entries ∪ parent entries |
 
 When the overlay provides a non-empty list and a parent exists, the
-effective value is the union of both lists (overlay entries first, then
-any parent entries not already present). Code defaults are provided
+accessor-level value is the union of both lists (overlay entries first,
+then any parent entries not already present). Code defaults are provided
 solely by the terminal `perRepoDefaults` parent — intermediate parents
 may return whatever allowlist they want, including omitting the built-in
 prefixes. The union does **not** force-append code defaults after the
 parent union.
+
+Command loaders then resolve the effective command-level list from that
+accessor-level value: every command family ensures fullsend's default
+prefixes on top of a non-empty result (see the rule paragraph in
+[Harness Field Reference](../../contributing/harness-fields.md)). An
+explicit `[]` as the resolved effective value stays deny-all, but a
+non-empty overlay list over a base layer's `allowed_remote_resources: []`
+(or over any parent whose list lacks the built-in prefixes, in which case
+that parent's own entries are kept too) resolves to the overlay entries
+plus the built-in prefixes. Managed `repos.yaml` layers are the one
+exception: they reject a non-empty list declared below an explicit `[]`,
+so that shape fails validation there instead of resolving (the error tells
+you to declare the full list in a single layer).
 
 Example:
 
@@ -481,20 +490,32 @@ allowed_remote_resources: []
 # Effective: [] — no remote resources allowed
 ```
 
-### `create_issues` — replace whole object if set
+### `tracker` — replace whole object if set
 
-The `create_issues` field uses replace-if-set semantics for the entire
-object:
+The `tracker` field is the single, provider-discriminated issue-tracker
+mapping (`github`, `gitlab`, or `jira`; at most one). It replaces the former
+scalar `tracker` field, which is no longer accepted. The provider block that
+is present is the default for `--tracker` on `fullsend issues get`,
+`create`, `post-comment`, `transition`, and `link` (`link` supports only Jira, so a `github`
+or `gitlab` provider makes it fail with a not-supported error unless
+`--tracker jira` is passed); an explicit `--tracker` flag overrides it. When
+no provider block is set, `--tracker` is required on every `fullsend issues`
+invocation. Distinct from `forge`: a repo's hosting forge does not imply its
+issue tracker (e.g. a GitHub-hosted repo may track issues in Jira).
+
+The field uses replace-if-set semantics for the entire object:
 
 - `nil` (key omitted) — falls through to parent, then to code default
   `nil`.
 - Non-nil — replaces the parent value entirely. There is no merge of
-  `allow_targets` lists across layers.
+  `allowed_targets` lists across layers, and an overlay that selects a
+  different provider (for example `jira` over a base `github`) replaces the
+  base's provider, so layers never combine two providers.
 
 ### `status_notifications` — replace whole object if set
 
 The `status_notifications` field uses the same replace-if-set semantics as
-`create_issues`:
+`tracker`:
 
 - `nil` (key omitted) — falls through to parent, then to code default
   `nil`.
@@ -559,9 +580,8 @@ compiled-in defaults apply:
 | `keep_history` | `true` (history appended) |
 | `roles` | `["triage", "coder", "review", "fix", "retro", "prioritize"]` |
 | `agents` | `nil` (none configured) |
-| `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]` |
+| `allowed_remote_resources` | `["https://raw.githubusercontent.com/fullsend-ai/fullsend/", "https://raw.githubusercontent.com/fullsend-ai/agents/"]`, plus `https://<host>/fullsend-ai/fullsend/raw/` and `https://<host>/fullsend-ai/agents/raw/` when `GITHUB_SERVER_URL` names a host other than `github.com` |
 | `forge` | `""` (GitHub) |
-| `tracker` | `""` (none — `--tracker` is required unless set) |
 | `mint_url` | `"https://mint.fullsend.sh"` (hosted public mint) |
 | `inference.provider` | `"vertex"` |
 | `inference.project` | `""` (empty — must be provided) |
@@ -570,9 +590,10 @@ compiled-in defaults apply:
 | `inference.wif_audience` | `""` (empty — `aud: "fullsend"`) |
 | `inference.service_account` | `""` (empty — no impersonation) |
 | `models.aliases` | `nil` (fleet alias table compiled into the runtimes) |
-| `create_issues` | `nil` |
+| `tracker` | `nil` (no provider — `--tracker` is required unless set) |
 | `status_notifications` | `nil` |
 | `authorization` | `nil` |
+| `trace_context` | `nil` (no trace-context keys) |
 
 ## Related
 

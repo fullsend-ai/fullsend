@@ -1106,6 +1106,29 @@ func clearYAMLComments(node *yaml.Node) {
 	}
 }
 
+// gitlabPreviousInputDefinitions records, per input name, the spec:inputs
+// definitions earlier fullsend releases rendered into the root
+// .gitlab-ci.yml. mergeSpecInputs replaces an existing input that matches
+// one of these with the current contract definition, so upgrading an
+// existing install converges instead of reporting a conflict. Append the
+// outgoing definition here whenever a release changes an input's contract.
+var gitlabPreviousInputDefinitions = map[string][]string{
+	// v0.52.0 and earlier, before Jira work-item keys were admitted (#8924).
+	"resource_key": {`{default: '', regex: '^((issue|mr)-[0-9]+)?$'}`},
+}
+
+// isPreviousGitLabInputDefinition reports whether decoded equals a
+// definition an earlier fullsend release shipped for the named input.
+func isPreviousGitLabInputDefinition(name string, decoded any) bool {
+	for _, previous := range gitlabPreviousInputDefinitions[name] {
+		var want any
+		if yaml.Unmarshal([]byte(previous), &want) == nil && reflect.DeepEqual(decoded, want) {
+			return true
+		}
+	}
+	return false
+}
+
 func mergeSpecInputs(existing, fixture *yaml.Node) error {
 	if existing.Kind != yaml.MappingNode {
 		return fmt.Errorf("GitLab spec header must be a mapping")
@@ -1139,7 +1162,15 @@ func mergeSpecInputs(existing, fixture *yaml.Node) error {
 				return fmt.Errorf("decoding wrapper input %q: %w", name, err)
 			}
 			if !reflect.DeepEqual(a, b) {
-				return fmt.Errorf("existing input %q conflicts with the fullsend dispatch contract", name)
+				// An input rendered by an earlier fullsend release is
+				// fullsend-owned: upgrade it in place. Anything else is a
+				// user-modified input and still conflicts. An input another
+				// node aliases is left alone, since replacing it would
+				// orphan that alias.
+				if !isPreviousGitLabInputDefinition(name, a) || yamlSubtreeHasSurvivingAlias(existing, found) {
+					return fmt.Errorf("existing input %q conflicts with the fullsend dispatch contract", name)
+				}
+				inputs.Content[findMappingKeyIndex(inputs, name)+1] = definition
 			}
 			continue
 		}
@@ -1637,8 +1668,13 @@ func removeRuleByIf(rules []*yaml.Node, ifCond string) []*yaml.Node {
 // with the wrong when: or the wrong position does not count as already
 // present (see debugTraceDenyRuleSatisfied) and is replaced rather than
 // left in place, so the merged list never carries a duplicate if:
-// condition for the same guard. Other missing rules are appended as
-// before, deduplicated by if: alone.
+// condition for the same guard. Other missing rules are deduplicated by
+// if: alone and appended — ahead of the first catch-all `when: never`
+// rule when one exists (see isCatchAllNeverRule), since GitLab stops at
+// that rule and any admit rule placed after it is unreachable. An admit
+// rule a previous installer already left after the catch-all is moved
+// ahead of it. The catch-all itself is left in place so uninstall
+// restores the original rules list.
 func mergeWorkflowRules(workflow *yaml.Node) {
 	rulesVal := findMappingValue(workflow, "rules")
 	if rulesVal == nil {
@@ -1656,37 +1692,111 @@ func mergeWorkflowRules(workflow *yaml.Node) {
 		return
 	}
 
-	// Collect existing if: conditions for deduplication of admit rules
-	// (When == "").
-	existing := make(map[string]bool)
-	for _, item := range rulesVal.Content {
-		if item.Kind == yaml.MappingNode {
-			if v := findMappingValue(item, "if"); v != nil {
-				existing[v.Value] = true
-			}
+	var prepend []*yaml.Node
+	for _, r := range fullsendWorkflowRules {
+		if r.When != "never" {
+			continue
+		}
+		if debugTraceDenyRuleSatisfied(rulesVal.Content) {
+			continue
+		}
+		// A same-if: rule with the wrong when: or wrong position is
+		// superseded by the correctly-shaped rule prepended below,
+		// rather than left in place as a duplicate if: condition.
+		rulesVal.Content = removeRuleByIf(rulesVal.Content, r.If)
+		prepend = append(prepend, makeRuleNode(r))
+	}
+
+	// Admit rules go ahead of the first catch-all `when: never`, or at the
+	// end when there is none.
+	insertAt := len(rulesVal.Content)
+	for i, item := range rulesVal.Content {
+		if isCatchAllNeverRule(item) {
+			insertAt = i
+			break
 		}
 	}
 
-	var prepend []*yaml.Node
-	var appendMissing []*yaml.Node
+	// An admit rule already ahead of the catch-all is left alone. One that
+	// an earlier installer left after it is unreachable, so the existing
+	// node is moved ahead of the catch-all (not duplicated). Any other
+	// missing rule is created.
+	var admit []*yaml.Node
 	for _, r := range fullsendWorkflowRules {
 		if r.When == "never" {
-			if debugTraceDenyRuleSatisfied(rulesVal.Content) {
-				continue
-			}
-			// A same-if: rule with the wrong when: or wrong position is
-			// superseded by the correctly-shaped rule prepended below,
-			// rather than left in place as a duplicate if: condition.
-			rulesVal.Content = removeRuleByIf(rulesVal.Content, r.If)
-			prepend = append(prepend, makeRuleNode(r))
 			continue
 		}
-		if existing[r.If] {
+		if ruleIfIndex(rulesVal.Content[:insertAt], r.If) >= 0 {
 			continue
 		}
-		appendMissing = append(appendMissing, makeRuleNode(r))
+		if idx := ruleIfIndex(rulesVal.Content[insertAt:], r.If); idx >= 0 {
+			idx += insertAt
+			admit = append(admit, rulesVal.Content[idx])
+			rest := make([]*yaml.Node, 0, len(rulesVal.Content)-1)
+			rest = append(rest, rulesVal.Content[:idx]...)
+			rest = append(rest, rulesVal.Content[idx+1:]...)
+			rulesVal.Content = rest
+			continue
+		}
+		admit = append(admit, makeRuleNode(r))
 	}
-	rulesVal.Content = append(prepend, append(rulesVal.Content, appendMissing...)...)
+
+	merged := make([]*yaml.Node, 0, len(prepend)+len(rulesVal.Content)+len(admit))
+	merged = append(merged, prepend...)
+	merged = append(merged, rulesVal.Content[:insertAt]...)
+	merged = append(merged, admit...)
+	merged = append(merged, rulesVal.Content[insertAt:]...)
+	rulesVal.Content = merged
+}
+
+// ruleIfIndex returns the index of the first mapping rule in rules whose
+// if: value equals ifCond, or -1 when there is none.
+func ruleIfIndex(rules []*yaml.Node, ifCond string) int {
+	for i, item := range rules {
+		if item.Kind != yaml.MappingNode {
+			continue
+		}
+		if v := findMappingValue(item, "if"); v != nil && v.Value == ifCond {
+			return i
+		}
+	}
+	return -1
+}
+
+// isCatchAllNeverRule reports whether a workflow:rules entry is an
+// unconditional deny — `when: never` with no if:, changes:, or exists:
+// clause. GitLab evaluates rules first-match, so every rule after it is
+// unreachable. The rule itself, each key, and the when: value are resolved
+// through YAML aliases. A rule with a `<<` merge key is not treated as a
+// catch-all: the merged mapping may supply an if:, changes:, or exists:
+// clause that cannot be seen here, and treating it as unconditional would
+// insert admit rules ahead of a conditional deny the repo intended to apply.
+// Likewise a key that cannot be classified to a plain name (see
+// classifyTopLevelKey) is not proven to be anything but a condition, so the
+// rule is not treated as a catch-all.
+func isCatchAllNeverRule(rule *yaml.Node) bool {
+	rule = resolveAlias(rule)
+	if rule == nil || rule.Kind != yaml.MappingNode {
+		return false
+	}
+	whenNever := false
+	for i := 0; i+1 < len(rule.Content); i += 2 {
+		name, ok := classifyTopLevelKey(rule.Content[i])
+		if !ok || hasInterpolationSyntax(name) {
+			return false
+		}
+		switch name {
+		case "<<", "if", "changes", "exists":
+			return false
+		case "when":
+			when, literal := isLiteralScalarValue(rule.Content[i+1])
+			if !literal || when != "never" {
+				return false
+			}
+			whenNever = true
+		}
+	}
+	return whenNever
 }
 
 // makeRuleNode creates a YAML mapping node for a workflow rule.

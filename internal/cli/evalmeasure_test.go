@@ -406,7 +406,7 @@ func TestActionYML_EvalMeasureNoFloatingV0Curl(t *testing.T) {
 	idx := strings.Index(s, "name: Eval measurements")
 	require.Greater(t, idx, 0)
 	step := s[idx:]
-	if end := strings.Index(step, "name: Upload fullsend artifacts"); end > 0 {
+	if end := strings.Index(step, "name: Prepare fullsend artifacts"); end > 0 {
 		step = step[:end]
 	}
 	assert.Contains(t, step, "eval-measure")
@@ -452,6 +452,23 @@ func TestEvalMeasureFetchContext(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, abs, opts2.WorkspaceRoot)
 	assert.True(t, opts2.FetchPolicy.Offline)
+}
+
+// TestEvalMeasureFetchContext_ConfiguredGitHubHost pins that eval-measure
+// passes the configured GitHub host to LoadWithBase, so base directories on
+// a GitHub Enterprise Server host parse as raw content (#9037).
+func TestEvalMeasureFetchContext_ConfiguredGitHubHost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	t.Setenv("GITHUB_SERVER_URL", "https://ghe.example.com")
+	opts, _ := evalMeasureFetchContext(t.TempDir(), true, ui.New(io.Discard))
+	assert.Equal(t, "https://ghe.example.com", opts.GitHubURL)
+
+	t.Setenv("GITHUB_SERVER_URL", "")
+	opts, _ = evalMeasureFetchContext(t.TempDir(), true, ui.New(io.Discard))
+	assert.Empty(t, opts.GitHubURL)
 }
 
 func TestEvalMeasureFetchContext_RejectedConfigDeniesRemote(t *testing.T) {
@@ -609,4 +626,27 @@ func TestRunEvalMeasure_OTLPFailWarns(t *testing.T) {
 		"transport failure must not claim N/M row-construction success")
 	_, statErr := os.Stat(filepath.Join(out, evalmeasure.MeasurementsFile))
 	require.NoError(t, statErr, "local JSONL must still be written")
+}
+
+// TestEvalMeasureFetchContext_HonoursGITHUBAPIURL verifies the manifest
+// lookup client targets GITHUB_API_URL on non-github.com hosts (#9041).
+func TestEvalMeasureFetchContext_HonoursGITHUBAPIURL(t *testing.T) {
+	printer := ui.New(io.Discard)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+
+	type baseURLer interface{ BaseURL() string }
+
+	t.Setenv("GITHUB_API_URL", "https://ghes.example.com/api/v3")
+	_, client := evalMeasureFetchContext(t.TempDir(), true, printer)
+	c, ok := client.(baseURLer)
+	require.True(t, ok, "client must expose BaseURL")
+	assert.Equal(t, "https://ghes.example.com/api/v3", c.BaseURL())
+
+	t.Setenv("GITHUB_API_URL", "")
+	_, client = evalMeasureFetchContext(t.TempDir(), true, printer)
+	c, ok = client.(baseURLer)
+	require.True(t, ok, "client must expose BaseURL")
+	assert.Equal(t, "https://api.github.com", c.BaseURL())
 }

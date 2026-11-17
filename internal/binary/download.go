@@ -5,9 +5,11 @@ import (
 	"bufio"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -75,23 +77,56 @@ func DownloadRelease(ver, arch, destPath string) error {
 }
 
 func downloadChecksumForAsset(ver, assetName string) (string, error) {
-	cleanVer := strings.TrimPrefix(ver, "v")
-	url := fmt.Sprintf("%s/v%s/checksums.txt", ReleaseBaseURL, cleanVer)
-
-	resp, err := HTTPClient.Get(url) //nolint:gosec // URL is constructed from known constants
+	data, err := FetchReleaseFile(context.Background(), ver, "checksums.txt", maxChecksumsSize)
 	if err != nil {
 		return "", fmt.Errorf("fetching checksums: %w", err)
 	}
+	return ChecksumForAsset(data, assetName)
+}
+
+// maxChecksumsSize caps checksums.txt downloads.
+const maxChecksumsSize = 64 * 1024
+
+// ErrReleaseFileNotFound is returned by FetchReleaseFile when the release
+// or the asset does not exist.
+var ErrReleaseFileNotFound = errors.New("not found")
+
+// FetchReleaseFile downloads the release asset named name from the GitHub
+// Release for ver ("0.4.0" or "v0.4.0") and returns its contents. It fails
+// when the asset is larger than maxSize bytes.
+func FetchReleaseFile(ctx context.Context, ver, name string, maxSize int64) ([]byte, error) {
+	cleanVer := strings.TrimPrefix(ver, "v")
+	url := fmt.Sprintf("%s/v%s/%s", ReleaseBaseURL, cleanVer, name)
+
+	resp, err := getWithContext(ctx, url)
+	if err != nil {
+		return nil, fmt.Errorf("fetching %s: %w", url, err)
+	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("GET %s returned %d: %w", url, resp.StatusCode, ErrReleaseFileNotFound)
+	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET %s returned %d", url, resp.StatusCode)
+		return nil, fmt.Errorf("GET %s returned %d", url, resp.StatusCode)
 	}
 
-	scanner := bufio.NewScanner(io.LimitReader(resp.Body, 64*1024))
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, io.LimitReader(resp.Body, maxSize+1)); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", name, err)
+	}
+	if int64(buf.Len()) > maxSize {
+		return nil, fmt.Errorf("download of %s exceeds maximum size (%d bytes)", name, maxSize)
+	}
+	return buf.Bytes(), nil
+}
+
+// ChecksumForAsset returns the lowercase hex SHA256 recorded for assetName in
+// the contents of a GoReleaser checksums.txt.
+func ChecksumForAsset(checksums []byte, assetName string) (string, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(checksums))
 	for scanner.Scan() {
-		line := scanner.Text()
-		parts := strings.Fields(line)
+		parts := strings.Fields(scanner.Text())
 		if len(parts) == 2 && parts[1] == assetName {
 			hash := strings.ToLower(parts[0])
 			if len(hash) != 64 {
@@ -112,15 +147,17 @@ func downloadChecksumForAsset(ver, assetName string) (string, error) {
 // DownloadLatestRelease resolves the latest release tag from the GitHub API
 // and downloads the Linux binary for the given arch.
 func DownloadLatestRelease(arch, destPath string) error {
-	tag, err := resolveLatestReleaseTag()
+	tag, err := ResolveLatestReleaseTag(context.Background())
 	if err != nil {
 		return err
 	}
 	return DownloadRelease(tag, arch, destPath)
 }
 
-func resolveLatestReleaseTag() (string, error) {
-	resp, err := HTTPClient.Get("https://api.github.com/repos/fullsend-ai/fullsend/releases/latest") //nolint:gosec
+// ResolveLatestReleaseTag returns the tag of the latest non-prerelease
+// fullsend GitHub Release.
+func ResolveLatestReleaseTag(ctx context.Context) (string, error) {
+	resp, err := getWithContext(ctx, "https://api.github.com/repos/fullsend-ai/fullsend/releases/latest")
 	if err != nil {
 		return "", fmt.Errorf("fetching latest release: %w", err)
 	}
@@ -140,6 +177,15 @@ func resolveLatestReleaseTag() (string, error) {
 		return "", fmt.Errorf("empty tag_name in latest release")
 	}
 	return release.TagName, nil
+}
+
+// getWithContext sends a GET for url through HTTPClient, bound to ctx.
+func getWithContext(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return HTTPClient.Do(req) //nolint:gosec // URL is constructed from known constants
 }
 
 // SourceArchiveBaseURL is the GitHub source archive base URL. Tests may override.
@@ -244,8 +290,10 @@ func extractSourceTree(r io.Reader, destDir string) error {
 			if err != nil {
 				return fmt.Errorf("creating file %s: %w", rel, err)
 			}
-			n, err := io.Copy(f, io.LimitReader(tr, int64(maxDownloadSize)+1))
-			if err != nil {
+			// The extra byte detects overflow; per-file and aggregate limits are checked below.
+			n, err := io.CopyN(f, tr, int64(maxDownloadSize)+1)
+			// CopyN returns EOF when this archive entry is smaller than the cap.
+			if err != nil && err != io.EOF {
 				f.Close()
 				return fmt.Errorf("extracting %s: %w", rel, err)
 			}
@@ -331,8 +379,9 @@ func ExtractFullsendFromTarGz(r io.Reader, destPath string) error {
 			if err != nil {
 				return fmt.Errorf("creating %s: %w", destPath, err)
 			}
-			n, copyErr := io.Copy(f, io.LimitReader(tr, maxBinarySize+1))
-			if copyErr != nil {
+			// The extra byte detects overflow and triggers removal of the oversized binary below.
+			n, copyErr := io.CopyN(f, tr, maxBinarySize+1)
+			if copyErr != nil && copyErr != io.EOF {
 				f.Close()
 				return fmt.Errorf("extracting fullsend: %w", copyErr)
 			}

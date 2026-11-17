@@ -9,7 +9,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -338,6 +337,16 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				continue
 			}
 			switch se.Subtype {
+			case "task_started", "task_progress", "task_updated", "task_notification":
+				for _, progress := range decodeClaudeTaskProgress(line, se.Subtype) {
+					onEvent(progress)
+				}
+			case "hook_started", "hook_progress", "hook_response", "task_summary",
+				"informational", "notification", "status", "session_state_changed",
+				"permission_denied", "background_tasks_changed":
+				if progress, ok := decodeClaudeStatusProgress(line, se.Subtype); ok {
+					onEvent(progress)
+				}
 			case "init":
 				onEvent(InitEvent{
 					Model:     se.Model,
@@ -360,6 +369,11 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					DelayMs:    se.RetryDelayMs,
 					Error:      se.Error,
 				})
+			}
+
+		case "rate_limit_event":
+			if progress, ok := decodeClaudeRateLimit(line); ok {
+				onEvent(progress)
 			}
 
 		case "stream_event":
@@ -640,7 +654,9 @@ func toolResultText(raw json.RawMessage) (text string, partial bool) {
 
 // progressParser reads NDJSON from Claude Code's stream-json output and emits
 // progress updates via the printer. It is a thin wrapper around parseClaudeStream
-// that creates an EventRenderer and populates RunMetrics.
+// that creates an EventRenderer and populates RunMetrics. Only tests call it,
+// and it renders at the full progress level; ClaudeRuntime.Run builds its own
+// renderer at RunParams.ProgressVerbosity (ADR 0163).
 func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error {
 	renderer := NewEventRenderer(printer)
 	return parseClaudeStream(r, func(evt AgentEvent) {
@@ -688,9 +704,6 @@ func recordClaudeMetrics(metrics *RunMetrics, evt AgentEvent) {
 		metrics.ToolCalls.Add(1)
 	}
 }
-
-// progressRedactor scrubs secrets from tool context strings before display.
-var progressRedactor = security.NewSecretRedactor()
 
 // extractSafeContext returns a safe, non-secret string for progress display.
 // The result is run through SecretRedactor to scrub tokens, keys, and

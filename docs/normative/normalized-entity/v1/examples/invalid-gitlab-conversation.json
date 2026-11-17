@@ -1,0 +1,75 @@
+{
+  "schema_version": "normalized-entity/v1",
+  "entity": {
+    "kind": "conversation",
+    "source": {
+      "system": "gitlab",
+      "host": "gitlab.example.com",
+      "repository": "Group/Subgroup/Demo",
+      "repository_id": "101"
+    },
+    "id": "fullsend:entity:v1:gitlab:gitlab.example.com:conversation:734",
+    "source_id": "734",
+    "key": "#42",
+    "number": 42,
+    "url": "https://gitlab.example.com/Group/Subgroup/Demo/-/issues/42",
+    "state": "open",
+    "title": {
+      "$unknown": "not_loaded"
+    },
+    "author": {
+      "id": "26",
+      "login": "alice",
+      "kind": "human",
+      "role": "write",
+      "role_verified": true
+    },
+    "created_at": "2026-10-12T09:00:00.000000000Z",
+    "updated_at": "2026-10-13T11:20:00.000000000Z",
+    "body": null,
+    "comments": [],
+    "label_applications": [],
+    "threads": [],
+    "labels": [
+      "bug"
+    ],
+    "assignees": [],
+    "reactions": [],
+    "lifecycle": {
+      "closed_at": {
+        "$unknown": "not_loaded"
+      },
+      "closed_by": {
+        "$unknown": "not_loaded"
+      }
+    }
+  },
+  "coverage": {
+    "labels": {
+      "status": "partial",
+      "reason": "page_boundary"
+    },
+    "comments": {
+      "status": "complete"
+    },
+    "label_applications": {
+      "status": "not_loaded"
+    },
+    "threads": {
+      "status": "complete"
+    },
+    "thread_comments": [],
+    "assignees": {
+      "status": "unsupported"
+    },
+    "reactions": {
+      "status": "not_loaded"
+    },
+    "extension_lists": []
+  },
+  "view": {
+    "human_min_role": "triage",
+    "resolved_at": "2026-10-14T06:00:02.000000000Z",
+    "filter_version": "example-filter-v1"
+  }
+}

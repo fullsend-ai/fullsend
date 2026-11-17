@@ -50,7 +50,7 @@ The prioritize agent looks for a `customer-research` skill and, when available,
 uses it to inform Reach and Impact scores. To provide it, create a skill directory
 in your target repository at `.agents/skills/customer-research/` with a `SKILL.md` and
 any helper scripts organized in a `scripts/` subdirectory. Then symlink `.claude/skills`
-to `.agents/skills` so the skill is discoverable by both Fullsend and any local
+to `.agents/skills` so the skill is discoverable by both fullsend and any local
 agent tooling:
 
 ```

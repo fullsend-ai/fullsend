@@ -487,6 +487,14 @@ func TestAddIssueLabels(t *testing.T) {
 	}
 }
 
+func TestEnsureLabel(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+
+	require.NoError(t, d.EnsureLabel(context.Background(), "org", "repo", "do-it"))
+	assert.Equal(t, []string{"do-it"}, fc.RepoLabels["org/repo"])
+}
+
 func TestCloseIssue(t *testing.T) {
 	fc := forge.NewFakeClient()
 	issue, err := fc.CreateIssue(context.Background(), "org", "repo", "test", "body")

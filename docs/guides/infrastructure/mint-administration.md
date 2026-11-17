@@ -51,7 +51,8 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   > **Note:** `iamcredentials.googleapis.com` is a runtime dependency — the deployed mint Cloud Function uses it for WIF token exchange, not the CLI itself. It must be enabled before `mint deploy`.
 
-- **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases)
+- **fullsend CLI** — download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases),
+  or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later
 
 - **GCP IAM roles** — the user running mint commands authenticates via ADC (`gcloud auth application-default login`). The required roles depend on the command:
 
@@ -80,7 +81,7 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` and `halfsend-NN/test-repo-01` … `test-repo-12` (created by each slot claim and installed on demand by the shared slot driver — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-the-shared-slot-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`). For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo-01` … `test-repo-12` (created by each slot claim and installed on demand by the shared slot driver — see [behaviour-testing.md](../dev/behaviour-testing.md#repo-allocation-via-the-shared-slot-driver)) on the hosted mint (`PER_REPO_WIF_REPOS`); use `e2e/org-pool/enroll.sh` to do it. For the STAGE environment, also enroll `halfsend/test-repo-01` … `test-repo-12` (see the STAGE enrollment block in [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment)). Do not enroll the singular `test-repo`, `*-fork` names, or the `*-mint-host` / `*-mint-unapproved` probe hosts. Repos need not exist at enrollment time — enroll is a mint allowlist / WIF-provider update only; the unified driver creates the repos when a behaviour scenario first leases them. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 

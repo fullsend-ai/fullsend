@@ -20,7 +20,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/pluginformat"
 	"github.com/fullsend-ai/fullsend/internal/skill"
-	"gopkg.in/yaml.v3"
 )
 
 // MaxBaseDepth is the maximum depth of base chain inheritance.
@@ -48,8 +47,30 @@ type ComposeOpts struct {
 	// FetchPolicy controls SSRF protection, offline mode, and size limits.
 	FetchPolicy fetch.FetchPolicy
 
+	// FetchFile, when non-nil, replaces fetch.FetchURL for the single-file
+	// reads of relative companion resources (agent, policy, scripts, ...)
+	// resolved against SourceURL. The allowlist check, cache, lock pins, and
+	// audit log still apply; only the transport differs. It lets a run on a
+	// GitHub host other than github.com read those files through that host's
+	// authenticated API instead of the default github.com-only fetch policy.
+	FetchFile func(ctx context.Context, rawURL string) ([]byte, error)
+
+	// ParseRawURL, when non-nil, replaces forge.ParseRawContentURLOnHost for the
+	// directory resources (skills, plugins, script directories) resolved
+	// against SourceURL, so a run on a GitHub host other than github.com can
+	// describe its own raw-content URLs. The ForgeURLInfo it returns is handed
+	// to TreeFetcher, which must be able to read that host.
+	ParseRawURL func(rawURL string) (*forge.ForgeURLInfo, error)
+
 	// TraceID is a correlation ID for audit log entries.
 	TraceID string
+
+	// GitHubURL is the URL of the GitHub instance the run is configured for
+	// (e.g. "https://ghe.example.com" on GitHub Enterprise Server). Raw-content
+	// URLs served by that host are accepted for directory fetches in addition
+	// to raw.githubusercontent.com URLs (see forge.ParseRawContentURLOnHost).
+	// Empty or github.com means only raw.githubusercontent.com is accepted.
+	GitHubURL string
 
 	// AuditLogPath is the path to the fetch audit log (JSONL).
 	// If empty, audit logging is skipped.
@@ -117,6 +138,16 @@ type ComposeOpts struct {
 // defaultTreeFetchFn is used when ComposeOpts.TreeFetcher is nil.
 // Override in tests to keep the nil-TreeFetcher path hermetic (see #7723).
 var defaultTreeFetchFn gitfetch.TreeFetchFunc = gitfetch.FetchTree
+
+// parseRawURL describes a directory resource URL, through opts.ParseRawURL
+// when set, else forge.ParseRawContentURLOnHost with opts.GitHubURL, so raw-content
+// URLs on the configured GitHub host parse without a hook.
+func (opts ComposeOpts) parseRawURL(rawURL string) (*forge.ForgeURLInfo, error) {
+	if opts.ParseRawURL != nil {
+		return opts.ParseRawURL(rawURL)
+	}
+	return forge.ParseRawContentURLOnHost(rawURL, opts.GitHubURL)
+}
 
 func resolveTreeFetcher(opts ComposeOpts) gitfetch.TreeFetchFunc {
 	if opts.TreeFetcher != nil {
@@ -317,6 +348,15 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			return nil, nil, fmt.Errorf("resolving URL-sourced skills before base composition: %w", err)
 		}
 		deps = append(deps, skillDeps...)
+	}
+
+	// Reject mixed-version composition before the merge runs (design D3,
+	// ADR 0127 Decision 1): the child and its base must declare compatible
+	// effective schema versions (absent = 1). child.Base still names the
+	// base reference for the error label; it is cleared below. A failure
+	// here fails the load, so no merge runs.
+	if err := checkSchemaVersionsCompose(base, child, child.Base); err != nil {
+		return nil, nil, err
 	}
 
 	// Merge base into child (child overrides base)
@@ -598,6 +638,16 @@ func loadBaseChain(
 		}
 		deps = append(deps, ancestorDeps...)
 
+		// Reject mixed-version composition before the merge runs (design
+		// D3, ADR 0127 Decision 1): this layer and its ancestor must
+		// declare compatible effective schema versions (absent = 1).
+		// base.Base still names the ancestor reference for the error
+		// label; it is cleared below. A failure here fails the whole
+		// chain's load, so no merge runs.
+		if err := checkSchemaVersionsCompose(ancestorBase, base, base.Base); err != nil {
+			return nil, nil, err
+		}
+
 		// Merge ancestor into base. The recursive call already resolved
 		// the ancestor's forge/overlays, so ancestorBase is flat (no
 		// forge or overlay blocks remain).
@@ -776,13 +826,12 @@ func fetchBaseURL(ctx context.Context, rawURL string, allowlist []string, opts C
 	return dep, content, nil
 }
 
-// parseHarnessContent parses harness YAML content without validation.
+// parseHarnessContent parses harness YAML content without validation. It
+// delegates to parseRaw so URL-fetched base layers pass the same
+// schema_version check as every other parse path (ADR 0127 Decision 1);
+// loadBaseChain wraps the returned error with the base reference.
 func parseHarnessContent(content []byte) (*Harness, error) {
-	var h Harness
-	if err := yaml.Unmarshal(content, &h); err != nil {
-		return nil, err
-	}
-	return &h, nil
+	return parseRaw(content)
 }
 
 // matchingAllowedPrefix checks if a URL matches any prefix in the allowlist.
@@ -851,6 +900,17 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	if child.Slug == "" {
 		child.Slug = base.Slug
 	}
+	// SchemaVersion (ADR 0127): deliberately not inherited. The merged
+	// harness keeps the child's own declaration — an absent child stays
+	// absent, which spells version 1, the same effective version
+	// checkSchemaVersionsCompose (already run at both merge sites,
+	// LoadWithBase and loadBaseChain) required the base to match. ADR 0127
+	// Decision 1 defers cross-version behavior to an explicit compatibility
+	// rule, so an explicit base declaration is never copied onto an absent
+	// child. Forge-path counterpart check (harness-composition invariant):
+	// schema_version is top-level only and not a ForgeConfig field — the
+	// same asymmetry as privilege_levels — so mergeForgeConfig needs no
+	// matching slot.
 	if child.Image == "" {
 		child.Image = base.Image
 	}
@@ -880,6 +940,12 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	}
 	if child.SandboxTimeoutSeconds == 0 {
 		child.SandboxTimeoutSeconds = base.SandboxTimeoutSeconds
+	}
+	// ReadonlyRepo inherits like the other scalars, so a base that makes the
+	// checkout read-only keeps it read-only (#7360). It is a pointer so that
+	// a child's explicit false is a value that wins, not an unset field.
+	if child.ReadonlyRepo == nil {
+		child.ReadonlyRepo = base.ReadonlyRepo
 	}
 
 	// Skills: base + child with child-overrides-base by skill identity
@@ -918,6 +984,8 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	// NOT merged from base harnesses to prevent privilege escalation: a base
 	// cannot inject arbitrary URL prefixes or enable runtime fetching in the
 	// child. The child must declare its own allowlist and fetch settings.
+	// AllowCIVariableCredential is not merged either, so a base cannot
+	// silence the GitLab CI/CD-variable credential warning.
 	if base.APIServers != nil {
 		merged := make([]APIServer, 0, len(base.APIServers)+len(child.APIServers))
 		merged = append(merged, base.APIServers...)
@@ -1786,7 +1854,13 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock --update' first)", field, fileURL)
 	}
 
-	content, err := fetch.FetchURL(ctx, fileURL, opts.FetchPolicy)
+	fetchFile := opts.FetchFile
+	if fetchFile == nil {
+		fetchFile = func(ctx context.Context, rawURL string) ([]byte, error) {
+			return fetch.FetchURL(ctx, rawURL, opts.FetchPolicy)
+		}
+	}
+	content, err := fetchFile(ctx, fileURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: fetching %s: %w", field, fileURL, err)
 	}
@@ -1854,7 +1928,7 @@ func fetchBaseFileFromPinnedTree(ctx context.Context, field, baseURLDir, relPath
 		if opts.FetchPolicy.Offline {
 			return Dependency{}, "", lockedNotCachedError(field, fileURL, treeHash)
 		}
-		_, parseErr := forge.ParseRawContentURL(baseURLDir + dir)
+		_, parseErr := opts.parseRawURL(baseURLDir + dir)
 		if dir == "." || parseErr != nil {
 			return Dependency{}, "", fmt.Errorf("base %s: URL %s is pinned in the lock file to directory sha256=%s, which cannot be fetched from this URL (run 'fullsend lock --update' to re-pin)", field, fileURL, treeHash)
 		}
@@ -1977,7 +2051,7 @@ func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string
 
 		if !opts.FetchPolicy.Offline && !pinnedFileCached {
 			// Probe whether the URL is parseable for directory-level fetching.
-			if _, parseErr := forge.ParseRawContentURL(scriptDirURL); parseErr == nil {
+			if _, parseErr := opts.parseRawURL(scriptDirURL); parseErr == nil {
 				allowedBy := matchingAllowedPrefix(fileURL, allowlist)
 				if allowedBy == "" {
 					return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, fileURL)
@@ -2023,7 +2097,7 @@ func fetchBaseScriptDirTree(ctx context.Context, field, scriptDirURL, scriptFile
 		return Dependency{}, "", fmt.Errorf("base %s: script directory URL %q is not in allowed_remote_resources", field, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(scriptDirURL)
+	forgeInfo, err := opts.parseRawURL(scriptDirURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for script directory fetch: %w", field, err)
 	}
@@ -2201,7 +2275,7 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 		return Dependency{}, "", fmt.Errorf("base %s: skill directory URL %q is not in allowed_remote_resources", field, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(skillDirURL)
+	forgeInfo, err := opts.parseRawURL(skillDirURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for skill directory fetch: %w", field, err)
 	}
@@ -2410,7 +2484,7 @@ func fetchBaseDirTree(ctx context.Context, kind baseDirKind, field, dirURL, keyU
 		return Dependency{}, "", fmt.Errorf("base %s: %s directory URL %q is not in allowed_remote_resources", field, kind.label, dirPrefix)
 	}
 
-	forgeInfo, err := forge.ParseRawContentURL(dirURL)
+	forgeInfo, err := opts.parseRawURL(dirURL)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for %s directory fetch: %w", field, kind.label, err)
 	}

@@ -112,5 +112,10 @@ App token.**
 - Provider definitions read from the trusted ref may now reference one more
   runner credential; repos that ship other providers should review their `${}`
   uses.
-- Shipping the provider by default and other registries such as `ghcr.io` are
-  follow-on decisions.
+- The provider-only restriction above describes delivery into sandboxed agent
+  work; on GitHub Actions, the runner also reads `GH_WORKFLOW_TOKEN` on the host
+  to pre-pull private `ghcr.io` sandbox images before sandbox creation
+  ([PR #9021](https://github.com/fullsend-ai/fullsend/pull/9021)). The token
+  does not reach harness `${}` sites or sandbox processes. Shipping the provider
+  by default and using provider credential expansion with other registries
+  such as `ghcr.io` remain follow-on decisions.

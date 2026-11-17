@@ -43,6 +43,7 @@ func (c *ForgeClient) GetIssue(ctx context.Context, project string, number int) 
 		return nil, wrapNotFound(err)
 	}
 	return &Issue{
+		ID:     issue.ID,
 		Number: issue.Number,
 		Title:  issue.Title,
 		Body:   Body(issue.Body),
@@ -72,6 +73,7 @@ func (c *ForgeClient) CreateIssue(ctx context.Context, project, title string, bo
 		return nil, wrapNotFound(err)
 	}
 	return &Issue{
+		ID:     issue.ID,
 		Number: issue.Number,
 		Title:  issue.Title,
 		Body:   Body(issue.Body),

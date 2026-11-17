@@ -86,6 +86,159 @@ model: opus
 	assert.Empty(t, h.Base)
 }
 
+// TestLoadWithBase_SchemaVersionEqualEffectiveVersionsCompose verifies that a
+// base chain composes when every layer's effective schema version is 1 (ADR
+// 0127 Decision 1): absent means version 1, so an explicit schema_version: 1
+// on either side of the merge must not block composition. The merged harness
+// keeps the child's own declaration: an absent child stays absent, and a
+// child that spelled the version explicitly keeps it.
+func TestLoadWithBase_SchemaVersionEqualEffectiveVersionsCompose(t *testing.T) {
+	tests := []struct {
+		name           string
+		baseBody       string
+		childBody      string
+		expectExplicit bool
+	}{
+		{
+			name: "explicit one base with absent child",
+			baseBody: `
+schema_version: 1
+agent: agents/base.md
+role: test
+model: base-model
+`,
+			childBody: `
+base: base.yaml
+agent: agents/child.md
+`,
+			expectExplicit: false,
+		},
+		{
+			name: "absent base with explicit one child",
+			baseBody: `
+agent: agents/base.md
+role: test
+model: base-model
+`,
+			childBody: `
+base: base.yaml
+schema_version: 1
+agent: agents/child.md
+`,
+			expectExplicit: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestHarness(t, dir, "base.yaml", tt.baseBody)
+			path := writeTestHarness(t, dir, "child.yaml", tt.childBody)
+
+			h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+			require.NoError(t, err)
+
+			// The merge ran: the child inherited the base's model.
+			assert.Equal(t, "base-model", h.Model)
+			// The merged harness keeps the child's own declaration: an
+			// absent child stays absent, an explicit child keeps it.
+			if tt.expectExplicit {
+				require.NotNil(t, h.SchemaVersion)
+				assert.Equal(t, schemaVersionValue(1), *h.SchemaVersion)
+			} else {
+				require.Nil(t, h.SchemaVersion)
+			}
+			assert.Equal(t, 1, h.EffectiveSchemaVersion())
+		})
+	}
+}
+
+// TestLoadWithBase_LocalBase_UnsupportedSchemaVersion verifies that a base
+// layer declaring a version this build does not interpret fails the child's
+// whole load (ADR 0127 Decision 1; design D3's parse-boundary integration
+// test). The base file's own parse rejects schema_version 2 (design D2), and
+// loadBaseChain surfaces that failure through the child's LoadWithBase,
+// naming the offending base file. The guard's mixed-version error is not
+// reachable through parse while every version above 1 is rejected at load;
+// TestCheckSchemaVersionsCompose_ConstructedMixedVersions covers that
+// path directly.
+func TestLoadWithBase_LocalBase_UnsupportedSchemaVersion(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+schema_version: 2
+agent: agents/base.md
+role: test
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+schema_version: 1
+agent: agents/child.md
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.Error(t, err)
+
+	// The base's own parse rejection surfaces, with the field-named message.
+	assert.ErrorContains(t, err, "parsing harness YAML:")
+	assert.ErrorContains(t, err, "schema_version 2 is not supported by this version of fullsend")
+	assert.ErrorContains(t, err, "maximum supported schema_version: 1")
+	// The error names the offending base file via the base-chain load wraps.
+	assert.ErrorContains(t, err, "loading base chain")
+	assert.ErrorContains(t, err, "loading base harness")
+	assert.ErrorContains(t, err, "base.yaml")
+}
+
+// TestCheckSchemaVersionsCompose_ConstructedMixedVersions reaches the
+// D3 guard directly with constructed Harness values: parse rejects every
+// effective version above 1 (design D2), so a base with effective version 2
+// cannot come from a file — this is the state LoadWithBase would hand the
+// guard once a version 2 exists. The child is absent (effective version 1,
+// the spelling of every harness that predates the field), and the guard must
+// reject the pair with an error naming both versions and the layer label.
+// schemaversion_test.go covers the explicit-1-child spelling.
+func TestCheckSchemaVersionsCompose_ConstructedMixedVersions(t *testing.T) {
+	child := &Harness{}                                  // absent — effective version 1
+	base := &Harness{SchemaVersion: schemaVersionPtr(2)} // parse would reject this; constructed directly
+
+	err := checkSchemaVersionsCompose(base, child, "bases/parent.yaml")
+
+	require.Error(t, err)
+	assert.ErrorContains(t, err, `base layer "bases/parent.yaml" declares schema_version 2`)
+	assert.ErrorContains(t, err, "incompatible with schema_version 1 of the harness composing it")
+	assert.ErrorContains(t, err, "mixed-version base composition is not supported")
+}
+
+// TestMergeBaseIntoChild_SchemaVersion pins the kept-child slot: an absent
+// child stays absent — its effective version 1 is what the composition guard
+// required the base to match — and an explicit child declaration is
+// preserved untouched. schema_version is never inherited from the base:
+// ADR 0127 Decision 1 defers cross-version behavior to an explicit
+// compatibility rule.
+func TestMergeBaseIntoChild_SchemaVersion(t *testing.T) {
+	t.Run("absent child stays absent, keeping effective version 1", func(t *testing.T) {
+		base := &Harness{SchemaVersion: schemaVersionPtr(1)}
+		child := &Harness{}
+
+		mergeBaseIntoChild(base, child)
+
+		require.Nil(t, child.SchemaVersion)
+		assert.Equal(t, 1, child.EffectiveSchemaVersion())
+	})
+	t.Run("explicit child declaration is preserved", func(t *testing.T) {
+		childVer := schemaVersionPtr(1)
+		base := &Harness{SchemaVersion: schemaVersionPtr(1)}
+		child := &Harness{SchemaVersion: childVer}
+
+		mergeBaseIntoChild(base, child)
+
+		// Same pointer out as in: the merge leaves a non-nil child
+		// declaration untouched rather than swapping in the base's.
+		assert.Same(t, childVer, child.SchemaVersion)
+		assert.Equal(t, schemaVersionValue(1), *child.SchemaVersion)
+	})
+}
+
 func TestLoadWithBase_LocalBase_SkillsConcat(t *testing.T) {
 	dir := t.TempDir()
 
@@ -2109,8 +2262,8 @@ func TestMergeHostFiles(t *testing.T) {
 		{Src: "base2", Dest: "/tmp/dest2"},
 	}
 	child := []HostFile{
-		{Src: "child2", Dest: "/tmp/dest2"}, // override
-		{Src: "child3", Dest: "/tmp/dest3"}, // new
+		{Src: "child2", Dest: "/tmp/dest2", AllowDurable: true}, // override
+		{Src: "child3", Dest: "/tmp/dest3"},                     // new
 	}
 
 	result := mergeHostFiles(base, child)
@@ -2120,6 +2273,7 @@ func TestMergeHostFiles(t *testing.T) {
 	assert.Equal(t, "/tmp/dest1", result[0].Dest)
 	assert.Equal(t, "child2", result[1].Src) // overridden
 	assert.Equal(t, "/tmp/dest2", result[1].Dest)
+	assert.True(t, result[1].AllowDurable, "a child re-declaring a dest can opt in")
 	assert.Equal(t, "child3", result[2].Src)
 	assert.Equal(t, "/tmp/dest3", result[2].Dest)
 }
@@ -2735,6 +2889,29 @@ model: opus
 	require.NoError(t, err)
 
 	assert.Equal(t, `event.entity.kind == "work_item"`, h.Trigger)
+}
+
+// A base two levels up that makes the checkout read-only keeps it read-only,
+// unless the child says readonly_repo: false (#7360).
+func TestLoadWithBase_ReadonlyRepoChainedInheritance(t *testing.T) {
+	for _, tc := range []struct {
+		name, child string
+		want        bool
+	}{
+		{"child is silent", "base: parent.yaml\nmodel: opus\n", true},
+		{"child says false", "base: parent.yaml\nreadonly_repo: false\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeTestHarness(t, dir, "grandparent.yaml", "agent: agents/base.md\nrole: test\nreadonly_repo: true\n")
+			writeTestHarness(t, dir, "parent.yaml", "base: grandparent.yaml\nmodel: sonnet\n")
+			path := writeTestHarness(t, dir, "child.yaml", tc.child)
+
+			h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, h.RepoReadonly())
+		})
+	}
 }
 
 func TestLoadWithBase_TriggerChildWins(t *testing.T) {
@@ -6029,6 +6206,30 @@ base: base.yaml
 	assert.Empty(t, h.AllowedRemoteResources)
 }
 
+func TestLoadWithBase_AllowCIVariableCredential(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+allow_ci_variable_credential: true
+`)
+	inherit := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+`)
+	h, _, err := LoadWithBase(context.Background(), inherit, ComposeOpts{})
+	require.NoError(t, err)
+	assert.False(t, h.AllowCIVariableCredential, "a base cannot silence the warning for its children")
+
+	own := writeTestHarness(t, dir, "child-own.yaml", `
+base: base.yaml
+allow_ci_variable_credential: true
+`)
+	h, _, err = LoadWithBase(context.Background(), own, ComposeOpts{})
+	require.NoError(t, err)
+	assert.True(t, h.AllowCIVariableCredential)
+}
+
 func TestMergeBaseIntoChild_PanicsOnUnresolvedForge(t *testing.T) {
 	base := &Harness{Forge: map[string]*ForgeConfig{"github": {}}}
 	child := &Harness{}
@@ -6146,6 +6347,25 @@ func TestMergeBaseIntoChild_TriggerEmptyBaseNoEffect(t *testing.T) {
 	require.NoError(t, mergeBaseIntoChild(base, child))
 
 	assert.Equal(t, `event.entity.kind == "work_item"`, child.Trigger)
+}
+
+func TestMergeBaseIntoChild_ReadonlyRepo(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name        string
+		base, child *bool
+		want        bool
+	}{
+		{"inherited", &yes, nil, true},
+		{"child turns it on", nil, &yes, true},
+		{"child turns it off", &yes, &no, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			child := &Harness{ReadonlyRepo: tc.child}
+			require.NoError(t, mergeBaseIntoChild(&Harness{ReadonlyRepo: tc.base}, child))
+			assert.Equal(t, tc.want, child.RepoReadonly())
+		})
+	}
 }
 
 func TestFetchBaseSkill_FullDirectory(t *testing.T) {
@@ -10398,4 +10618,39 @@ plugins:
 	require.NoError(t, h.ResolveRelativeTo(fullsendDir))
 	h.Policy = writeTestPolicy(t, fullsendDir)
 	require.NoError(t, h.ValidateFilesExist())
+}
+
+// TestFetchBaseSkillDir_ConfiguredGitHubHost verifies that a skill directory
+// URL served by the configured GitHub host (GitHub Enterprise Server) is
+// parsed and cloned from that host (#9037), and is refused when the host is
+// not configured.
+func TestFetchBaseSkillDir_ConfiguredGitHubHost(t *testing.T) {
+	skillDirURL := "https://ghe.example.com/org/repo/raw/abc123/skills/triage"
+	skillFileURL := skillDirURL + "/SKILL.md"
+	allowlist := []string{"https://ghe.example.com/org/repo/"}
+
+	var gotCloneURL, gotPath, gotRef string
+	fetcher := func(_ context.Context, cloneURL, path, ref, _ string) (map[string][]byte, error) {
+		gotCloneURL, gotPath, gotRef = cloneURL, path, ref
+		return map[string][]byte{"SKILL.md": []byte("---\nname: triage\n---\n")}, nil
+	}
+
+	_, _, err := fetchBaseSkillDir(context.Background(), "skills", skillDirURL, skillFileURL,
+		"skills/triage", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: t.TempDir(),
+			TreeFetcher:   fetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a raw.githubusercontent.com URL")
+
+	_, _, err = fetchBaseSkillDir(context.Background(), "skills", skillDirURL, skillFileURL,
+		"skills/triage", "matched", allowlist, ComposeOpts{
+			WorkspaceRoot: t.TempDir(),
+			TreeFetcher:   fetcher,
+			GitHubURL:     "https://ghe.example.com",
+		})
+	require.NoError(t, err)
+	assert.Equal(t, "https://ghe.example.com/org/repo.git", gotCloneURL)
+	assert.Equal(t, "skills/triage", gotPath)
+	assert.Equal(t, "abc123", gotRef)
 }

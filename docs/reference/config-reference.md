@@ -10,6 +10,8 @@ field below, including `runtime` and `allowed_remote_resources`) as
 `config_base`, which is the configuration-preset path written to
 `.fullsend/config.base.yaml`); see
 [Repo Management — Managed configuration](../guides/getting-started/repo-management.md#managed-configuration).
+[`trace_context`](#trace_context) is the exception: only a concrete
+repository entry may declare it.
 For initial setup, see
 [Configuring GitHub](../guides/getting-started/configuring-github.md) or
 [Configuring GitLab](../guides/getting-started/configuring-gitlab.md).
@@ -20,7 +22,6 @@ version: "1"                         # Schema version (required)
 
 # ── Platform ─────────────────────────────────────────────────
 forge: github                        # Hosting platform: github, gitlab (auto-detected if omitted)
-tracker: jira                        # Default issue tracker for `fullsend issues` commands: github, gitlab, jira
 
 # ── Operations ───────────────────────────────────────────────
 kill_switch: false                   # Emergency stop — disables all agent dispatch when true
@@ -57,14 +58,28 @@ allowed_remote_resources:            # URL prefixes allowed for remote resources
   - https://raw.githubusercontent.com/fullsend-ai/fullsend/
   - https://raw.githubusercontent.com/fullsend-ai/agents/
 
-# ── Cross-repo issue creation ────────────────────────────────
-create_issues:
-  allow_targets:
-    orgs:                            # GitHub orgs agents may create issues in
-      - my-org
-    repos:                           # Specific repos (owner/name) agents may create issues in
-      - fullsend-ai/fullsend
-      - fullsend-ai/agents
+# ── Issue tracker ────────────────────────────────────────────
+tracker:                             # Issue tracker. At most one provider block: github, gitlab, or jira
+  github:
+    allowed_targets:
+      orgs:                          # GitHub orgs agents may create issues in
+        - my-org
+      repos:                         # Specific repos (owner/name) agents may create issues in
+        - fullsend-ai/fullsend
+        - fullsend-ai/agents
+  # gitlab:
+  #   allowed_targets:
+  #     groups: [my-group]           # GitLab groups (projects in the group and its subgroups)
+  #     repos: [my-group/sub/project] # Full project paths
+  # jira:
+  #   base_url: https://example.atlassian.net # Jira site URL (required with any Jira setting below)
+  #   api_url: https://api.atlassian.com      # Jira API gateway URL (optional; this is the default)
+  #   project: PROJ                  # This repository's Jira project key (required with base_url)
+  #   allowed_targets:
+  #     projects: [OTHER]            # Jira project keys for cross-project issue creation or moves
+  #   poll:
+  #     enabled: true                # Managed poll workflow switch (see the tracker.jira section)
+  #     query: 'labels = "fullsend" ORDER BY updated DESC' # JQL; always scoped to project
 
 # ── Authorization ────────────────────────────────────────────
 authorization:                       # Extra sources of permission for triggering agents
@@ -117,6 +132,27 @@ models:
     sonnet: claude-sonnet-5
     haiku: claude-haiku-3-5
     fable: claude-fable-5-1
+
+# ── Run artifacts ────────────────────────────────────────────
+artifacts:
+  content: all                       # Every run: all (default) | metadata | none
+  by_source:                         # Per run source (event.source.system); stricter level wins
+    jira: metadata                   # e.g. runs started from a Jira issue
+
+# ── Live progress log ────────────────────────────────────────
+progress:
+  verbosity: full                    # Every run: full (default) | tools | quiet
+  by_source:                         # Per run source (event.source.system); stricter level wins
+    jira: quiet                      # e.g. runs started from a Jira issue
+
+# ── Trace context ────────────────────────────────────────────
+trace_context:                       # Trace-context keys of this repository (ADR 0154)
+  installation_id: 0f1e2d3c4b5a69788796a5b4c3d2e1f0  # 32 lowercase hex characters, not all zero
+  signing_key:
+    secret: FULLSEND_TRACE_SIGNING_KEY # Secret holding the private key; the only accepted value
+  verification_keys:
+    active: <public key>             # Standard base64 of the 32-byte Ed25519 public key
+    retained: [<public key>]         # Earlier public keys that still verify
 ```
 
 ## Field details
@@ -133,15 +169,6 @@ Schema version string. Must be `"1"`. Present in every config file.
 Hosting platform for the repository (`github` or `gitlab`). When omitted,
 fullsend auto-detects the forge from CI environment variables. Most
 installations do not need to set this explicitly.
-
-### `tracker`
-
-Default issue tracker for `fullsend issues` commands' `--tracker` flag
-(`github`, `gitlab`, or `jira`). Distinct from `forge` — a repository hosted
-on GitHub may track issues in Jira. When omitted, `--tracker` is required on
-every `fullsend issues` invocation. See
-[Jira Integration](../guides/user/jira-integration.md) for cross-platform
-setup.
 
 ### `kill_switch`
 
@@ -234,6 +261,10 @@ effort, sub-agent models and the trigger.
   invalid `model` or `effort`, an invalid `trigger` makes every agent run in
   the repository fail with `invalid agent config`, not only built-in routing, so
   check the expression before you merge the change.
+- **`harness`** — Decided, not yet implemented:
+  [ADR 0162](../ADRs/0162-agent-entries-may-carry-harness-overrides.md) adds a
+  block that overrides the agent's harness fields without a `base:`
+  harness.
 
 In the layered config system, agents use keyed merge by `DerivedName()` — see
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
@@ -249,35 +280,221 @@ URL prefixes allowed for remote resources in harness files — agent sources
 and `base:` composition. The config-level list acts as a fallback for all URL
 resolution: a URL is accepted if it matches either the harness-level or the
 config-level list. Default prefixes cover the fullsend and agents repositories.
+The same config-level list is also the ceiling for harness-level
+`allowed_remote_resources`: whenever a harness's runtime fetch service can
+start (`allow_runtime_fetch: true`, URL-sourced skill or plugin directories,
+or a bare, deprecated `allowed_remote_resources` declaration), every
+harness-level prefix must be covered by the config-level list (the built-in
+default prefixes are included when the list is omitted or non-empty; an
+explicit `allowed_remote_resources: []` stays deny-all and cannot cover a
+harness prefix), and `fullsend run`, `fullsend lint` and `fullsend lock` fail
+naming the uncovered entry, and fail closed when no repository config
+(`config.yaml` or `config.base.yaml`) exists.
+
+When the `GITHUB_SERVER_URL` environment variable names a GitHub host other
+than `github.com` (for example a GitHub Enterprise Server), the defaults also
+include the raw-content prefixes for the same two repositories on that host:
+`https://<host>/fullsend-ai/fullsend/raw/` and
+`https://<host>/fullsend-ai/agents/raw/`. GitHub Actions sets this variable on
+every runner. No other path on that host is added.
 
 In the layered config system, this field uses union-with-deny-all semantics:
 omitted inherits from parent; explicit empty (`[]`) denies all remote
 resources; a non-empty list is unioned with the parent's list. See
 [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
 
-### `create_issues`
+That is the accessor-level value. Commands resolve one step further: the
+`run`/`lint`/`lock` family, harness dispatch, `dispatch --route`, the
+Jira poll and the agent-editing commands (`agent set/add/update/remove`)
+all resolve the list through `EffectiveAllowedResources`, which
+ensures fullsend's default prefixes on top of a non-empty result, so a
+first-party agent source covered only by a default prefix resolves with no
+configuration. `perRepoConfig.Validate` validates agents against the
+same effective list, so `github setup` re-runs and `repos install`
+admit the same shapes as the commands above; `config_base` preset
+validation parses the preset standalone (preset list plus the
+defaults, no overlay), so it is stricter than the read for
+overlay-only prefixes and for a preset `[]`, and looser over a runtime
+overlay `[]`; and managed `repos.yaml` validation
+(`ValidateMergedManaged`) checks merged managed agents against it too.
+A resolved empty list (an explicit `[]`) stays deny-all.
+The rendered effective config (`EffectiveYAML`) shows the accessor-level
+list, which may omit the ensured defaults.
 
-Controls cross-repo issue creation by agents. The `allow_targets` field
-restricts which orgs and repos agents may create issues in.
+### `tracker`
 
-- **`allow_targets.orgs`** — GitHub organizations. All repos in these orgs are
-  allowed.
-- **`allow_targets.repos`** — Specific repos in `owner/name` format.
+The issue tracker, as a single provider-discriminated mapping. `tracker` holds
+at most one provider block — `github`, `gitlab`, or `jira` — and the block that
+is present selects the provider. It is the default backend for the `--tracker`
+flag of `fullsend issues` commands (distinct from `forge`: a repository hosted
+on GitHub may track issues in Jira), and its `allowed_targets` restrict where
+agents may create issues. Declare a provider with no extra targets as an empty
+block (for example `tracker: {jira: {}}`). When omitted, no provider is
+selected, `--tracker` is required on every `fullsend issues` invocation, and
+agents cannot create issues outside the repository they run in. Validation
+rejects a `tracker` mapping with more than one provider block. See
+[Jira Integration](../guides/user/jira-integration.md) for cross-platform
+setup.
 
-When omitted, agents cannot create issues outside the repository they are
-running in. That repository is always allowed, so it does not need an
+- **`tracker.github.allowed_targets.orgs`** — GitHub organizations. All repos
+  in these orgs are allowed.
+- **`tracker.github.allowed_targets.repos`** — Specific repos in exactly
+  `owner/name` format.
+- **`tracker.gitlab.allowed_targets.groups`** — GitLab groups (full group
+  path). Projects in the group and its subgroups are allowed.
+- **`tracker.gitlab.allowed_targets.repos`** — Specific projects by full
+  project path (for example `group/subgroup/project`).
+- **`tracker.jira.allowed_targets.projects`** — Jira project keys (an
+  uppercase letter followed by uppercase letters, digits, or underscores).
+
+#### `tracker.jira` connection and polling settings
+
+`tracker.jira` also holds the Jira site, project, and poller settings. The
+mapping can be set in `.fullsend/config.yaml` or in a repository's managed
+`config:` block in `repos.yaml`:
+
+```yaml
+tracker:
+  jira:
+    base_url: https://example.atlassian.net
+    api_url: https://api.atlassian.com
+    project: PROJ
+    allowed_targets:
+      projects: [OTHER]
+    poll:
+      enabled: true
+      query: 'labels = "fullsend" AND statusCategory != Done ORDER BY updated DESC'
+```
+
+- **`tracker.jira.base_url`** — The Jira site URL. It must be an `https` URL
+  with no credentials, query, or fragment. It has no default. When
+  `fullsend run` mints the sandbox's Jira token from OAuth 2.0 client
+  credentials, set `base_url` and `project`: the run looks up this site's
+  cloud ID and limits the `jira` provider to it, and fails before minting
+  without them. See
+  [Read-only Jira access from the sandbox](../guides/user/jira-integration.md#read-only-jira-access-from-the-sandbox-jira-provider).
+- **`tracker.jira.api_url`** — The Jira API gateway URL. It is optional and
+  defaults to `https://api.atlassian.com`. It is validated like `base_url`.
+  Fullsend's shared Jira client sends REST requests to
+  `{api_url}/ex/jira/{cloudId}/rest/api/3/...`. It discovers the cloud ID
+  from `{base_url}/_edge/tenant_info` and keeps `base_url` for issue browse
+  links. An override must serve the same gateway path layout. The Jira
+  poller (`fullsend poll --input-driver jira-poll`), `fullsend issues`,
+  run-status updates, and `fullsend reconcile-status` all use this client.
+  `api_url` holds only the gateway host. It is not the same as the
+  `JIRA_API_URL` variable that `fullsend run` sets for Jira-sourced agent
+  runs. That variable is the full per-site base `{api_url}/ex/jira/{cloudId}`
+  that agents append `/rest/api/3/...` to. For those runs `fullsend run` also
+  sets `JIRA_BASE_URL` to `base_url`. See
+  [Jira connection variables in agent runs](../guides/user/jira-integration.md#jira-connection-variables-in-agent-runs).
+  When `fullsend run` mints the sandbox's Jira token, leave `api_url` unset
+  or set it to `https://api.atlassian.com`. Any other value makes the run
+  fail before minting, because the `jira` provider allows only that gateway.
+- **`tracker.jira.project`** — The key of the single Jira project for this
+  repository. It is not a fallback project, and it has no default.
+- **`tracker.jira.run_label`** — Optional label added to the source Jira issue
+  when any Jira-sourced agent run starts, before sandbox setup. Default: empty
+  (disabled, with a skip log). Use a nonempty name without whitespace or control
+  characters, for example `fs-code-agent`; no product-branded label is supplied.
+  Configuration validation rejects invalid names. At runtime, an invalid name
+  produces a warning and skips labeling without blocking Jira runs or polling.
+  Existing labels are preserved, and an issue that already has the label is not
+  updated. This runs independently of status-comment settings. API failures
+  warn without failing the run. The label remains after cancellation or failure.
+  Choose a name that does not collide with your poll query's trigger/exclusion
+  labels. See [Tracking runs in Jira](../guides/user/jira-integration.md#tracking-runs-with-an-optional-label).
+- **`tracker.jira.poll.enabled`** — Controls the managed poll workflow. `true`
+  installs or enables it, `false` removes or disables it. When `poll` or
+  `poll.enabled` is omitted, the workflow is not installed. `fullsend poll
+  --input-driver jira-poll` also reads it: unless it is `true`, the poller
+  skips the cycle without contacting Jira, and writes an empty dispatch
+  list to `--output` when that flag is set. It does not affect
+  `fullsend issues`. `fullsend repos install`
+  converges it. When it is `true`, install writes the Jira credentials from
+  `--jira-token` and `--jira-email`, or the OAuth client ID and secret, and
+  ensures the managed poll resources.
+  When it is `false` or omitted, install removes those resources and keeps
+  the credentials. On GitHub, install manages
+  `.github/workflows/fullsend-poll-jira.yml`. On GitLab, it manages the
+  `fullsend jira poll` pipeline schedule. See
+  [Jira polling](../cli/repos.md#jira-polling).
+- **`tracker.jira.poll.query`** — The JQL the poller runs. It defaults to
+  `statusCategory != Done ORDER BY updated DESC`. The query is always scoped
+  to `project`: the poller runs `project = "<project>" AND (<query>)` and
+  keeps a trailing `ORDER BY` after the closing parenthesis. The parentheses
+  in the query must be balanced. For example, the query above runs as
+  `project = "PROJ" AND (labels = "fullsend" AND statusCategory != Done) ORDER BY updated DESC`.
+
+`base_url` and `project` are required once `base_url`, `api_url`, `project`,
+a nonempty `run_label`, or `poll` is set. A mapping that only selects Jira (`jira: {}`) or only sets
+`allowed_targets` stays valid. This includes a mapping migrated from the
+legacy scalar `tracker: jira`.
+
+Credentials are never part of this mapping. Keys such as `token`,
+`api_token`, `email`, `password`, `client_id`, or `client_secret` are
+rejected. Supply either a Jira token and optional account email as the
+`FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL` repository secrets, or an
+Atlassian service account's OAuth 2.0 client ID and secret as
+`FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET`. These credential
+sets are mutually exclusive. The shared Jira client treats the token as a
+scoped API token. When `FULLSEND_JIRA_EMAIL` is set, the client uses Basic auth
+with that email and a scoped user token (a bot user). When it is absent, the
+client sends the token as a Bearer token from a scoped
+service account. The token string does not show its type, so the email alone
+selects the mode. An Atlassian service account can use an OAuth 2.0
+credential instead of a token. Supply it as the `FULLSEND_JIRA_CLIENT_ID`
+and `FULLSEND_JIRA_CLIENT_SECRET` repository secrets, and leave
+`FULLSEND_JIRA_TOKEN` and `FULLSEND_JIRA_EMAIL` unset. Setting both
+credential types, or only one of the client ID and secret, is an error. The
+client exchanges the credential with the `client_credentials` grant at
+`https://auth.atlassian.com/oauth/token`. It sends the resulting Bearer
+access token to the same `api_url` gateway and refreshes it before it
+expires. Other unknown keys under
+`tracker.jira`, `tracker.jira.poll`, and `tracker.jira.allowed_targets` are
+rejected too.
+
+`fullsend poll --input-driver jira-poll` reads the Jira site, API gateway,
+project, and query only from the effective `tracker.jira` config, so it
+requires `base_url` and `project`. The removed `--jira-url`,
+`--jira-project`, and `--jql` flags are rejected, and environment variables
+such as `JIRA_BASE_URL` are not read. The poller authenticates with the
+shared Jira client: `FULLSEND_JIRA_TOKEN` is required and
+`FULLSEND_JIRA_EMAIL` is optional, or `FULLSEND_JIRA_CLIENT_ID` and
+`FULLSEND_JIRA_CLIENT_SECRET` replace both, as described above. The legacy
+`JIRA_TOKEN` and `JIRA_USER_EMAIL` variables are not used by the poller.
+
+The `fullsend issues` commands (`get`, `create`, `post-comment`, `link`, `transition`),
+`fullsend run` Jira status updates, and `fullsend reconcile-status` read the
+Jira connection only from these settings, with no flag or environment
+fallback: `base_url` and `project` must be set, and Jira API calls fail
+without them. `project` is the default `--project` of the issues commands.
+`fullsend issues create` and `fullsend issues transition` refuse any other Jira
+project unless it is listed
+in `allowed_targets.projects`. See
+[Issue commands](../guides/user/issues-commands.md#jira-connection-settings).
+
+For GitHub and GitLab the scopes are additive: a destination is allowed if it
+matches a configured org or group, or a configured repo. Malformed entries
+are rejected: an empty org or group, an org containing `/`, a GitHub repo not
+in `owner/name` form, a GitLab path with empty segments or a repo without a
+namespace, or an invalid Jira project key.
+
+The repository agents run in is always allowed, so it does not need an
 entry. The default GitHub per-repo configuration generated without a preset lists
-both `fullsend-ai/fullsend` and `fullsend-ai/agents` in `allow_targets.repos`,
+both `fullsend-ai/fullsend` and `fullsend-ai/agents` in
+`tracker.github.allowed_targets.repos`,
 so retro proposals and triage prerequisites can reach the platform or agent
 repository that owns the change. These are installation defaults, not an
 automatic grant for every repository in `allowed_remote_resources`.
-Fresh GitLab installations instead record an explicit empty `allow_targets`
-policy: cross-project targets must be configured for the GitLab host.
+Fresh GitLab installations instead record an explicit empty
+`tracker.gitlab.allowed_targets` policy: cross-project targets must be
+configured for the GitLab host.
 Explicit settings are preserved. Retro and triage post-scripts currently read
 only the overlay (`.fullsend/config.yaml`), not the preset
 (`.fullsend/config.base.yaml`). Until
 [agents#1728](https://github.com/fullsend-ai/agents/issues/1728) is fixed,
-preset users must declare the required `config.create_issues.allow_targets` in the
+preset users must declare the required
+`config.tracker.<provider>.allowed_targets` in the
 managed repository’s `repos.yaml` entry and rerun `fullsend repos install`,
 or edit `.fullsend/config.yaml` for an unmanaged installation. Updating only
 the preset does not enable these cross-repository operations. Include all
@@ -286,6 +503,67 @@ Existing installations retain their permissions on upgrade; on GitHub, to opt in
 `fullsend-ai/agents` to the existing target list in the managed repository’s
 `repos.yaml` configuration, or in `.fullsend/config.yaml` for an installation
 not managed through `fullsend repos`. Preserve any other targets you need.
+
+In the layered config system, `tracker` replaces the parent's whole object
+when set, so layers never combine two providers. See
+[Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+
+**Breaking change — migration from the scalar `tracker`:** `tracker` used to be
+a scalar (`tracker: jira`). A scalar value is no longer accepted: validation
+(`fullsend lint` and CLI config writes) and config loading reject it with a
+migration message. A `repos.yaml` managed `config:` block containing it is
+converted by `fullsend repos install` (see below). Replace it with the provider
+block:
+
+```yaml
+# before
+tracker: jira
+# after
+tracker:
+  jira: {}
+```
+
+**Migration from `create_issues`:** the top-level `create_issues` key is
+removed. Runtime config loading fails with a migration error when either
+`.fullsend/config.yaml` or `.fullsend/config.base.yaml` still contains
+`create_issues`; the key is never silently ignored. Validation also rejects it.
+Move `create_issues.allow_targets.orgs` and `repos`
+to `tracker.github.allowed_targets.orgs` and `repos` on GitHub, to
+`tracker.gitlab.allowed_targets.groups` and `repos` on GitLab, or to
+`tracker.jira.allowed_targets.projects` on Jira, and keep only one provider
+block.
+
+**Automatic migration of managed configuration:** `fullsend repos install`
+converts the legacy scalar `tracker` and `create_issues` keys in `repos.yaml`
+managed `config:` blocks (`defaults.config`, the forge section's `config`, and
+each repository entry's `config`) before the manifest is decoded, writes the
+converted manifest, and re-renders each fullsend-managed `.fullsend/config.yaml`
+from it. Each layer that set a legacy key gets the full `tracker` mapping that
+was in effect there, because the legacy keys were inherited separately while a
+`tracker` mapping replaces the parent's. The effective provider and targets of
+every repository stay the same:
+
+- A layer with no provider uses the repository's forge (`github` or `gitlab`).
+  A `create_issues` block in `defaults.config` with no provider is moved to each
+  forge section's `config`, because `defaults.config` applies to both forges.
+- GitHub `orgs` and `repos` stay organization and repository grants under
+  `tracker.github.allowed_targets`. GitLab `repos` move to
+  `tracker.gitlab.allowed_targets.repos`.
+- Install stops before any write, naming the manifest path and the edit to
+  make, when a target has no unambiguous equivalent. That covers repository or
+  organization targets under a Jira provider (Jira targets are project keys
+  under `tracker.jira.allowed_targets.projects` and are never derived from
+  repository paths), organization targets on GitLab (list the groups under
+  `tracker.gitlab.allowed_targets.groups`), and a layer that combines a
+  `tracker` mapping with `create_issues`.
+- A scalar `tracker` with no `create_issues` in the manifest becomes a provider
+  block with no `allowed_targets`. As a `tracker` mapping it replaces any
+  `tracker` mapping in the preset (`.fullsend/config.base.yaml`).
+
+Running install again changes nothing. A read-only or HTTPS manifest is
+converted in memory for that run and install prints the edits to apply to its
+source. `--dry-run` reports the conversion without writing. Markerless
+`.fullsend/config.yaml` files and presets are not converted; edit them by hand.
 
 ### `authorization`
 
@@ -320,8 +598,8 @@ GitLab authorization
 
 | Key | Meaning |
 |---|---|
-| `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the Fullsend `write` role |
-| `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the Fullsend `triage` role |
+| `write.groups`, `write.accounts` | Jira groups (by name or group ID) and Jira account IDs granted the fullsend `write` role |
+| `triage.groups`, `triage.accounts` | Jira groups and account IDs granted the fullsend `triage` role |
 | `labels` | How a label-added event is authorized: `jira_editors` (default once the entry is present), `allowlist`, or `project_roles` |
 
 - **Slash commands and other non-label events:** when the entry sets a
@@ -666,6 +944,263 @@ Model configuration, currently containing only `aliases`.
   opus` would reach the provider as the literal id "opus". In the layered
   config system, aliases merge per key across layers. See
   [Layered Config Reference](../guides/infrastructure/layered-config-reference.md).
+
+### `artifacts`
+
+Limits what the CI run artifact publishes: the `fullsend-<agent>` artifact on
+GitHub Actions and the job artifact on GitLab CI. For a walkthrough, see
+[Run artifacts and private data](../guides/user/run-artifacts-and-private-data.md).
+
+```yaml
+artifacts:
+  content: all            # every run: all (default) | metadata | none
+  by_source:              # per run source; the stricter level wins
+    jira: metadata        # runs started from a Jira issue
+```
+
+The runner leaves `output/` untouched, so `fullsend eval-measure` and
+post-scripts read the full run. `fullsend prepare-artifacts` then builds a
+filtered copy, and CI uploads only that copy
+([ADR 0161](../ADRs/0161-repo-config-limits-run-artifact-content.md)).
+
+| Level | Artifact holds |
+|---|---|
+| `all` | Everything in `output/`. This is the default, so an unset block keeps the artifact as before. |
+| `metadata` | Only `metrics.json`, `eval-measurements.jsonl` and `run-telemetry.jsonl` of each run directory, with content removed as listed below. |
+| `none` | No artifact is uploaded. The job still succeeds. |
+
+Under `metadata`:
+
+- `metrics.json` is copied as written. It holds counts, costs, model fallback
+  reasons and runner paths.
+- The telemetry copy loses every attribute and event that content capture
+  adds (`gen_ai.input.messages`, `gen_ai.output.messages`,
+  `fullsend.content.*` and the other GenAI content attributes).
+- The telemetry copy also loses span status messages, exception messages and
+  stack traces, and the pre-script skip reason
+  (`fullsend.prescript.skip_reason`; `fullsend.prescript.skipped` stays).
+- In the measurements copy, every row labelled `skip` gets a fixed
+  explanation, because skip explanations can quote pre-script output.
+- If a record of the telemetry or measurements file can't be parsed, that
+  file is left out.
+- Every `iteration-<N>/` directory, `security/findings.jsonl` and any other
+  file is left out.
+
+- **`content`** — The level for every run. Unset means `all`.
+- **`by_source`** — Levels for runs started from one source. Keys are the
+  normalized event's `source.system`, the same value CEL triggers see as
+  `event.source.system`. Today's adapters emit `github`, `gitlab` and `jira`.
+  `manual` and `schedule` are reserved source names that no adapter emits
+  yet; an entry for them is accepted but matches no run. A later adapter's
+  source name works as a key with no schema change: validation rejects
+  unknown levels, not unknown keys. Keys must be lowercase with no
+  surrounding spaces; `Jira: none` is rejected with a hint to use `jira`,
+  both by config validation and by `fullsend prepare-artifacts`, which then
+  prepares nothing.
+
+**Resolution.** The runner picks one level per run: the stricter of
+`content` and the `by_source` entry for the run's source. A source with no
+entry gets `content`. `none` is stricter than `metadata`, which is stricter
+than `all`, so a `by_source` entry can tighten a run's level but never loosen
+`content`. With `content: none` and `by_source: {jira: metadata}`, a Jira run
+uploads nothing.
+
+**Run source.** `fullsend prepare-artifacts` finds the source in this order
+and prints the rule it applied on stderr:
+
+1. A run with a valid normalized event uses its `source.system`, trimmed and
+   lowercased before the lookup.
+2. A run with no normalized event in any payload, on GitHub Actions, started
+   by a native GitHub event (`issues`, `issue_comment`, `pull_request`,
+   `pull_request_target`, `pull_request_review` or
+   `pull_request_review_comment`) is `github`. This covers the standard
+   GitHub stage jobs, which receive no normalized event.
+3. Everything else is unknown: manual and scheduled runs, a dispatch without
+   a valid normalized event, a dispatch payload that names a source in
+   `_normalized_event.source.system` whose event is invalid or names a
+   different source, and a GitLab event too large for the dispatch payload.
+   There is no other forge fallback. A run with an unknown source gets the
+   strictest of `content` and every `by_source` entry; when that is stricter
+   than `content`, the rule line is a warning (and a GitHub Actions warning
+   annotation).
+
+**Warning.** A run from an external tracker (a source other than `github`,
+`gitlab`, `forgejo`, `manual` or `schedule`) that uploads at `all` logs a
+warning, and a GitHub Actions warning annotation, unless the repository set
+`content` explicitly in any layer, has a `by_source` entry for that source,
+or is known to be private.
+
+**Fails closed.** If the level cannot be resolved — an invalid level, a
+config file that cannot be loaded, an unreadable event, or a CLI too old to
+know `fullsend prepare-artifacts` — the artifact directory is empty and no
+artifact is uploaded. The raw `output/` is never uploaded in its place.
+
+**Layers.** Across `config.base.yaml` and `config.yaml`, an explicit
+`content` overrides and `by_source` merges per key. When `fullsend repos`
+writes managed configuration from the `repos.yaml` manifest, its safety gate
+([ADR 0122](../ADRs/0122-declarative-repo-configuration.md)) treats lowering
+an effective level toward `all` (for example by dropping a `by_source` entry
+or a base's `content`) as a relaxation, so the proposed `config.yaml` must
+declare that key explicitly. The gate does not check a direct commit to
+`config.yaml` or `config.base.yaml`; that change goes through the
+repository's normal review and CODEOWNERS.
+
+`by_source` looks only at where the run started. For when to choose each
+level, what `metadata` still publishes and what follow-up workflows lose, see
+[Run artifacts and private data](../guides/user/run-artifacts-and-private-data.md).
+
+### `progress`
+
+Limits what `fullsend run` prints to the CI job log while an agent runs, and
+the GitHub Actions annotations that come with it
+([ADR 0163](../ADRs/0163-repo-config-limits-live-progress-log.md)). On a
+public repository, anyone can read the job log until log retention expires.
+
+```yaml
+progress:
+  verbosity: full         # every run: full (default) | tools | quiet
+  by_source:              # per run source; the stricter level wins
+    jira: quiet           # runs started from a Jira issue
+```
+
+| Level | The log shows |
+|---|---|
+| `full` | Everything, as before. This is the default, so an unset block leaves the log unchanged. |
+| `tools` | Everything except the model's reasoning and replies: tool lines, task and status progress, token counts, errors, validation output and the result. Tool lines and task labels can still carry text from the source, so use `quiet` for a source that isn't public. |
+| `quiet` | Only lines fullsend writes from its own fields. Text from the agent or the source is left out; see the lists below. |
+
+At `quiet`:
+
+- **Shown:** the heartbeat, the model, event kinds and states (`Task — running`,
+  `Status: hook — running`; a value fullsend does not set itself prints as
+  `other`), token counts, cost, error types and transcript error types
+  (an unknown type prints as `other`), validation passed or failed, output file, transcript and scan finding
+  counts, failed step names, and the result.
+- **Left out:** reasoning, replies, tool lines, task labels, status details,
+  error messages, plugin and retry messages, validation output, output file
+  and transcript names, the error text of a failed extraction step and the
+  agent CLI's stderr. No notice carries agent or source text: the notices that
+  remain hold fullsend's own fields, such as `Agent completed (4m12s)`.
+- **Errors:** transcript `::error::` annotations carry the error type only.
+  Once the run has started (from sandbox setup on), its final error prints as
+  this fixed message, and telemetry keeps the full text:
+
+  ```text
+  agent run failed (error details are not printed at progress level quiet; see telemetry or the run artifact)
+  ```
+
+  A setup error before that, such as a config or provider error, prints in
+  full. The level covers the job log only: the status comment on the issue or
+  pull request still carries the full run error
+  ([#9627](https://github.com/fullsend-ai/fullsend/issues/9627)).
+
+**Agent CLI stderr at `quiet`.** The agent CLI (Claude Code, pi, Codex or
+OpenCode) writes its own diagnostics to stderr, and they can quote what the
+agent read. At `quiet`, fullsend writes that stderr to `agent-stderr.log` in
+the iteration directory, next to `output.jsonl`, instead of the job log. The
+log gets one line with the count, never the text, even when the run fails:
+
+```text
+Agent CLI stderr: 3 line(s) kept out of the log at quiet, in agent-stderr.log
+```
+
+The file follows the same [`artifacts`](#artifacts) rule as the transcripts:
+`all` uploads it, while `metadata` and `none` leave it out. At `full` and
+`tools`, stderr goes to the job log as before.
+
+Only the printed log changes. Telemetry spans, Level 3 content capture
+([ADR 0050](../ADRs/0050-distributed-tracing-instrumentation.md)), the
+validation feedback that the next iteration gets, and the run artifact still
+receive everything. To keep reasoning and tool content under `quiet`, export
+it over OTLP to a backend you control (see
+[Distributed tracing](../guides/infrastructure/distributed-tracing.md)), and
+set [`artifacts`](#artifacts) separately for the run artifact.
+
+- **`verbosity`** — The level for every run. Unset means `full`.
+- **`by_source`** — Levels for runs started from one source. Keys follow the
+  same rules as [`artifacts.by_source`](#artifacts): the normalized event's
+  `source.system`, lowercase with no surrounding spaces, and open strings, so
+  a later adapter's source name works with no schema change.
+
+**Resolution.** The stricter level wins: the runner uses the stricter of
+`verbosity` and the `by_source` entry for the run's source, where `quiet` is
+stricter than `tools`, which is stricter than `full`. A source with no entry
+gets `verbosity`.
+
+- `fullsend run` finds the run's source the same way as
+  [`artifacts`](#artifacts): a valid normalized event, else a native GitHub
+  event.
+- A run whose source is unknown gets the strictest of `verbosity` and every
+  `by_source` entry.
+- When the level isn't `full`, the run prints one line naming the level and
+  how it was chosen, for example:
+
+```text
+Progress log: quiet (run source "jira" from the normalized event)
+```
+
+**Fails closed.** If the level can't be resolved, for example because of an
+invalid level or a `by_source` key that isn't lowercase, the run logs at
+`quiet`. An event file that can't be read or parsed doesn't get that far: the
+run stops before it starts the agent, with `reading event file ...` or
+`parsing event file ...`.
+
+**Layers.** Across `config.base.yaml` and `config.yaml`, an explicit
+`verbosity` overrides and `by_source` merges per key. The `fullsend repos`
+safety gate ([ADR 0122](../ADRs/0122-declarative-repo-configuration.md))
+treats lowering an effective level toward `full` as a relaxation, as it does
+for `artifacts`.
+
+Logs written by pre-scripts and post-scripts aren't covered; those scripts are
+the repository owner's own code.
+
+### `trace_context`
+
+The repository's trace-context keys
+([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)):
+its installation ID, the public keys that verify its trace-context envelopes,
+and the name of the secret that holds its private signing key. Every value in
+the block is public. `fullsend repos install` generates the keys of GitHub
+repositories (see
+[Trace Context Reference — Key lifecycle](trace-context.md#key-lifecycle)).
+Nothing signs or verifies an envelope with them yet.
+
+- **`installation_id`** — Identifies the repository's key set: exactly 32
+  lowercase hex characters (128 bits), not all zero. Install keeps it through
+  recovery, rotation and reinstall while the `repos.yaml` entry keeps its
+  `trace_context`; a fully uninstalled repository declared again without it
+  starts a new installation.
+- **`signing_key.secret`** — The secret that holds the private signing key. It
+  must be exactly `FULLSEND_TRACE_SIGNING_KEY`. The key itself never appears in
+  configuration.
+- **`verification_keys.active`** — The public key of the current signing key:
+  standard base64, with padding, of a 32-byte Ed25519 public key.
+- **`verification_keys.retained`** — Optional. Earlier public keys, in the same
+  form, so that envelopes signed with their private keys still verify. Within
+  an installation, install never removes one; enrolling a fully uninstalled
+  repository again replaces the whole block.
+
+On GitHub, `fullsend repos install` records the block in the repository's
+concrete `repos.yaml` entry as `config.trace_context`. Install renders the
+block into the managed `.fullsend/config.yaml`. Commit the `repos.yaml`
+changes install makes. Only a concrete repository entry may declare it:
+manifest validation rejects it in `defaults.config`, `github.config`,
+`gitlab.config` and glob entries. `repos install` also rejects a configuration
+preset or an existing `.fullsend/config.base.yaml` that contains it, and
+`github setup` rejects a `--config` preset that contains it. `config.base.yaml`
+never supplies the block.
+
+A block must be complete: it needs `installation_id`, `signing_key.secret` and
+`verification_keys.active`. No two keys may share a key ID (the first 8 bytes
+of the SHA-256 hash of the public key), so a key cannot be both active and
+retained or be listed twice. Validation errors name the field, for example
+`trace_context.verification_keys.retained[1]`, and never show its value. A
+value of the wrong YAML type, such as text where `signing_key` needs a
+mapping, fails parsing before validation. The parse error can quote the
+value's first characters, and `fullsend repos set` repeats the whole value
+when it is not the mapping or list the path needs. `fullsend lint` reports a
+malformed block in `.fullsend/config.yaml`, manifest validation refuses one in
+`repos.yaml`, and `fullsend run` fails on one before it creates the sandbox.
 
 ## Installation model
 

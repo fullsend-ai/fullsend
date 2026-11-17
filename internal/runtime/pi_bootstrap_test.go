@@ -57,7 +57,7 @@ if [ "$2" = "exec" ]; then
     "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
     *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
-    *"--print --mode json"*) cat '` + streamFixture + `'; exit 0 ;;
+    *"--print --mode json"*) ` + fakeAgentStderrArm + `cat '` + streamFixture + `'; exit 0 ;;
   esac
   exit 0
 fi
@@ -150,6 +150,9 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 	require.NotNil(t, m.Hooks)
 	assert.Equal(t, cfg+"/hooks", m.Hooks.Dir)
 	assert.Equal(t, "Bash", m.Hooks.ToolNames["bash"])
+	assert.Equal(t, "ListMcpResourcesTool", m.Hooks.ToolNames["list_mcp_resources"])
+	assert.Equal(t, "ListMcpResourcesTool", m.Hooks.ToolNames["list_mcp_resource_templates"])
+	assert.Equal(t, "ReadMcpResourceTool", m.Hooks.ToolNames["read_mcp_resource"])
 	var phases []string
 	for _, g := range m.Hooks.Groups {
 		phases = append(phases, g.Phase)
@@ -636,7 +639,7 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	out := filepath.Join(work, "transcripts")
-	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "triage", out))
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "triage", out, ""))
 	entries, err := os.ReadDir(out)
 	require.NoError(t, err)
 	var names []string
@@ -682,7 +685,7 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	out := filepath.Join(work, "transcripts")
-	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "review", out))
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "review", out, ""))
 	entries, err := os.ReadDir(out)
 	require.NoError(t, err)
 	var names []string
@@ -729,7 +732,7 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	out := filepath.Join(work, "artifacts", "transcripts")
-	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "../../escaped", out),
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "../../escaped", out, ""),
 		"a rejected name is reported and skipped, not an extraction failure")
 
 	// The usage file and a session transcript go through the same check,
@@ -795,6 +798,18 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		return &m, store, string(storedUpload(t, store, cfg+"/APPEND_SYSTEM.md"))
 	}
 
+	t.Run("mapped-empty parent has no child dispatcher", func(t *testing.T) {
+		m, _, _ := bootstrap(t, "---\nname: review\ntools: [Skill]\n---\nReview.", false)
+		assert.Nil(t, m.Agent)
+	})
+
+	t.Run("Agent-only parent has explicit empty child selection", func(t *testing.T) {
+		m, _, _ := bootstrap(t, "---\nname: review\ntools: [Agent]\n---\nReview.", false)
+		require.NotNil(t, m.Agent)
+		assert.Equal(t, "explicit", m.Agent.ToolMode)
+		assert.Empty(t, m.Agent.Tools)
+	})
+
 	t.Run("enabled without tools frontmatter, hooks on", func(t *testing.T) {
 		m, store, appendSystem := bootstrap(t, "---\nname: review\nmodel: opus\n---\nReview the PR.", true)
 		require.NotNil(t, m.Agent)
@@ -820,7 +835,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			"the publisher-qualified wire id the vendored extension registers, so xai-vertex/xai/grok-4.6 resolves and an invented Grok id does not")
 		hooksExt := cfg + "/fullsend-hooks.js"
 		editExt := cfg + "/fullsend-edit-repair.js"
-		require.Len(t, m.Agent.ExtensionDigests, 2,
+		require.Len(t, m.Agent.ExtensionDigests, 3,
 			"both child -e entries Bootstrap wrote into the config dir are digest-covered, so the extension can re-check them before every dispatch")
 		require.NotEmpty(t, m.Agent.ExtensionDigests[hooksExt])
 		assert.Contains(t, piHooksGuard(hooksExt, cfg+"/fullsend-manifest.json"), m.Agent.ExtensionDigests[hooksExt],
@@ -835,6 +850,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 			"the vendored provider extension is root-owned and read-only in the image; nothing to re-check")
 		assert.Equal(t, "medium", m.Agent.Thinking, "children default to medium: the roster overran the review budget at high")
 		assert.Equal(t, piDefaultTools, m.Agent.Tools, "no tools: frontmatter → the default built-in set")
+		assert.Equal(t, "default", m.Agent.ToolMode)
 		assert.Equal(t, piExploreTools, m.Agent.ExploreTools)
 		assert.Equal(t, piAgentMaxConcurrent, m.Agent.MaxConcurrent)
 		assert.Equal(t, piAgentTimeoutSeconds, m.Agent.TimeoutSeconds)
@@ -857,8 +873,11 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		require.NotNil(t, m.Agent)
 		assert.Equal(t, []string{"read", "grep", "Agent", "Task"}, m.Tools, "--tools carries both tool names")
 		assert.Equal(t, []string{"read", "grep"}, m.Agent.Tools, "children get the built-ins only")
+		assert.Equal(t, "explicit", m.Agent.ToolMode)
 		assert.Equal(t, []string{piVertexExtensionPath}, m.Agent.Extensions, "no hook adapter without security")
-		assert.Empty(t, m.Agent.ExtensionDigests, "no hook adapter and no edit repair (no edit tool), hence no digests")
+		require.Len(t, m.Agent.ExtensionDigests, 1, "the child loadout guard is always checked")
+		assert.NotEmpty(t, m.Agent.ExtensionDigests[cfg+"/fullsend-agent.js"])
+		assert.Equal(t, piMCPResourceTools, m.Agent.MCPResourceTools)
 		assert.Empty(t, m.Agent.EditRepairExtension, "the tools: list names no edit")
 		_, err := os.Stat(filepath.Join(store, strings.ReplaceAll(cfg+"/fullsend-edit-repair.js", "/", "_")))
 		assert.True(t, os.IsNotExist(err), "not uploaded for an agent without edit")
@@ -872,7 +891,7 @@ func TestPiAgentTool_ManifestBlock(t *testing.T) {
 		assert.Equal(t, []string{"read", "edit"}, m.Agent.Tools, "children keep edit, minus the sub-agent tools")
 		assert.Equal(t, cfg+"/fullsend-edit-repair.js", m.Agent.EditRepairExtension, "a declared list naming Edit carries the extension")
 		assert.NotContains(t, m.Agent.Extensions, cfg+"/fullsend-edit-repair.js", "never in the shared list: a child without edit must not load it")
-		require.Len(t, m.Agent.ExtensionDigests, 1, "hooks are off, so the repair is the only digest")
+		require.Len(t, m.Agent.ExtensionDigests, 2, "repair and child loadout guard are checked")
 		require.NotEmpty(t, m.Agent.ExtensionDigests[cfg+"/fullsend-edit-repair.js"])
 		assert.Equal(t, piEditRepairExtensionJS, storedUpload(t, store, cfg+"/fullsend-edit-repair.js"))
 	})

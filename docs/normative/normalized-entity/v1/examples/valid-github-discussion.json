@@ -1,0 +1,146 @@
+{
+  "schema_version": "normalized-entity/v1",
+  "entity": {
+    "kind": "conversation",
+    "source": {
+      "system": "github",
+      "host": "github.com",
+      "repository": "fullsend-ai/demo",
+      "repository_id": "R_kgDOExample"
+    },
+    "id": "fullsend:entity:v1:github:github.com:conversation:D_kwDOExample53",
+    "source_id": "D_kwDOExample53",
+    "key": "#53",
+    "number": 53,
+    "url": "https://github.com/fullsend-ai/demo/discussions/53",
+    "state": "open",
+    "title": "Discuss entity snapshots",
+    "author": {
+      "id": "U_kgDOBob",
+      "login": "bob",
+      "kind": "human",
+      "role": "write",
+      "role_verified": true
+    },
+    "created_at": "2026-10-12T09:00:00.000000000Z",
+    "updated_at": "2026-10-13T11:20:00.000000000Z",
+    "body": {
+      "id": "D_kwDOExample53",
+      "created_at": "2026-10-12T09:00:00.000000000Z",
+      "revised_at": "2026-10-12T09:00:00.000000000Z",
+      "actor": {
+        "id": "U_kgDOBob",
+        "login": "bob",
+        "kind": "human",
+        "role": "write",
+        "role_verified": true
+      },
+      "text": "Opening proposal.",
+      "command": null,
+      "is_entity_author": true
+    },
+    "comments": [
+      {
+        "id": "DC_kwDOExample1",
+        "created_at": "2026-10-12T10:00:00.000000000Z",
+        "revised_at": "2026-10-12T10:00:00.000000000Z",
+        "actor": {
+          "id": "U_kgDOBob",
+          "login": "bob",
+          "kind": "human",
+          "role": "write",
+          "role_verified": true
+        },
+        "text": "/fs-triage\nPlease review the proposal.",
+        "command": "/fs-triage",
+        "parent_id": "DC_kwDOExample1",
+        "thread_id": "DC_kwDOExample1",
+        "is_entity_author": true
+      },
+      {
+        "id": "DC_kwDOExample2",
+        "created_at": "2026-10-12T10:03:00.000000000Z",
+        "revised_at": "2026-10-12T10:03:00.000000000Z",
+        "actor": {
+          "id": "U_kgDOBob",
+          "login": "bob",
+          "kind": "human",
+          "role": "write",
+          "role_verified": true
+        },
+        "text": "I agree.",
+        "command": null,
+        "parent_id": "DC_kwDOExample1",
+        "thread_id": "DC_kwDOExample1",
+        "is_entity_author": true
+      }
+    ],
+    "label_applications": [],
+    "threads": [
+      {
+        "id": "DC_kwDOExample1",
+        "created_at": "2026-10-12T10:00:00.000000000Z",
+        "comment_ids": [
+          "DC_kwDOExample1",
+          "DC_kwDOExample2"
+        ],
+        "resolved": null,
+        "outdated": null,
+        "review_id": null,
+        "location": null
+      }
+    ],
+    "labels": [],
+    "conversation": {
+      "category": {
+        "name": "Q&A",
+        "id": "DIC_kwDOExample2",
+        "slug": "q-a",
+        "format": "question_answer"
+      }
+    },
+    "assignees": [],
+    "reactions": [],
+    "lifecycle": {
+      "closed_at": {
+        "$unknown": "not_loaded"
+      },
+      "closed_by": {
+        "$unknown": "not_loaded"
+      }
+    }
+  },
+  "coverage": {
+    "labels": {
+      "status": "complete"
+    },
+    "comments": {
+      "status": "complete"
+    },
+    "label_applications": {
+      "status": "unsupported",
+      "reason": "application_provenance_unmapped"
+    },
+    "threads": {
+      "status": "complete"
+    },
+    "thread_comments": [
+      {
+        "thread_id": "DC_kwDOExample1",
+        "status": "complete"
+      }
+    ],
+    "assignees": {
+      "status": "unsupported"
+    },
+    "reactions": {
+      "status": "not_loaded"
+    },
+    "extension_lists": []
+  },
+  "view": {
+    "human_min_role": "triage",
+    "resolved_at": "2026-10-14T06:00:02.000000000Z",
+    "filter_version": "example-filter-v1"
+  }
+}

@@ -105,7 +105,9 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 					IssueURL:  issueURL,
 					UpdatedAt: createdAt,
 					Labels:    issue.Fields.Labels,
+					IssueType: issue.Fields.IssueType,
 					Reporter:  issue.Fields.Reporter,
+					Assignee:  issue.Fields.Assignee,
 				})
 			}
 		}
@@ -178,10 +180,12 @@ func (p *Poller) detectChanges(ctx context.Context, issue jira.Issue, lastCheck 
 			UpdatedAt:     activityAt,
 			CommentEdited: edited,
 			Labels:        issue.Fields.Labels,
+			IssueType:     issue.Fields.IssueType,
 			CommentID:     comment.ID,
 			CommentBody:   extractPlainText(comment.Body),
 			CommentAuthor: author,
 			Reporter:      issue.Fields.Reporter,
+			Assignee:      issue.Fields.Assignee,
 		})
 	}
 
@@ -242,8 +246,10 @@ func (p *Poller) mapChangelogItem(ctx context.Context, item jira.ChangeItem, iss
 		IssueURL:     issueURL,
 		UpdatedAt:    createdAt,
 		Labels:       issue.Fields.Labels,
+		IssueType:    issue.Fields.IssueType,
 		ChangeAuthor: entry.Author,
 		Reporter:     issue.Fields.Reporter,
+		Assignee:     issue.Fields.Assignee,
 	}
 
 	switch item.Field {

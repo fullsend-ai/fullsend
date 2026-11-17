@@ -205,9 +205,10 @@ permission list, not by bypassing the check.
 > Mutation stages (code, fix, and other write-gated slash commands)
 > remain at `min=write`. Label-triggered `ready-to-code` requires a
 > write+ labeler (or a bot, for agent handoff). Exception:
-> `pull_request_target.closed` → retro stays intentionally ungated so
-> any closer can trigger read-only lifecycle accounting. This follows
-> the extension path above rather than bypassing the check.
+> `pull_request_target.closed` → retro was intentionally ungated so any
+> closer could trigger what was then described as read-only lifecycle
+> accounting (superseded by [#8912](https://github.com/fullsend-ai/fullsend/issues/8912)).
+> This followed the extension path above rather than bypassing the check.
 
 > **Note (2026-08-10, [#6042](https://github.com/fullsend-ai/fullsend/issues/6042)):**
 > Prow-based repositories (e.g., OpenShift) use OWNERS files rather than
@@ -245,6 +246,17 @@ permission list, not by bypassing the check.
 > classification is required, but the forge's accepted label mutation remains
 > sufficient platform evidence and no bot-role lookup or label allowlist is
 > introduced.
+
+> **Update (2026-11-02, amended 2026-11-04, [#8912](https://github.com/fullsend-ai/fullsend/issues/8912)):**
+> GitHub close-event retro requires the event sender to have write access,
+> including merge-queue merges; a failed permission lookup denies dispatch.
+> The `/fs-retro` command has the same fixed write floor, regardless of the
+> selected harness role. If CEL routing fails for a close event, the workflow
+> skips retro instead of falling back to the Bash route. GitLab merged and
+> closed merge requests use the same write-equivalent threshold: the actor
+> must have Developer access, checked in routing and again in the agent job.
+> If GitLab omits the closer identity, polling skips retro without using the
+> merge request author as a substitute.
 
 ## Consequences
 

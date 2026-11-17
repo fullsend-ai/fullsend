@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch/input"
@@ -75,6 +76,49 @@ type dispatchOpts struct {
 	route string
 }
 
+// newDispatchFetchPolicy returns the fetch policy `fullsend dispatch`
+// uses when it resolves and loads harnesses, for both the dispatch matrix
+// and --route. It is the default policy extended to admit the configured
+// GitHub host exactly as fullsend run does: the GITHUB_SERVER_URL
+// instance, when the fallback client's API (GITHUB_API_URL) is that
+// instance's API (the token is optional, as fullsend-ai/agents is public
+// and the client here only names the host). On github.com the default
+// policy is returned unchanged.
+func newDispatchFetchPolicy(forgeToken string) fetch.FetchPolicy {
+	token, err := resolveGitHubToken(forgeToken)
+	if err != nil {
+		token = ""
+	}
+	return withAgentsRepoHostAllowed(fetch.DefaultPolicy, newConfiguredHostGitHubClient(token))
+}
+
+// newDispatchRouteOpts returns the options `fullsend dispatch --route`
+// routes with. The route gets its own agents-repo client from
+// newConfiguredHostGitHubClient rather than the authenticated client
+// runDispatch uses for event and bot-role lookups: that one follows
+// GITHUB_API_URL on its own, and the route sends the token in the
+// fallback's ref lookup, so it stays on api.github.com unless
+// GITHUB_SERVER_URL and GITHUB_API_URL name the same instance. The token
+// is optional, as fullsend-ai/agents is public.
+func newDispatchRouteOpts(opts dispatchOpts, route string, event *normevent.Event, fetchPolicy *fetch.FetchPolicy, printer *ui.Printer) routeOpts {
+	token, err := resolveGitHubToken(opts.forgeToken)
+	if err != nil {
+		token = ""
+	}
+	client := newConfiguredHostGitHubClient(token)
+	if testAfterFunc != nil {
+		client = client.WithAfterFunc(testAfterFunc)
+	}
+	return routeOpts{
+		agent:       route,
+		configDir:   opts.configDir,
+		event:       event,
+		forgeClient: client,
+		fetchPolicy: fetchPolicy,
+		printer:     printer,
+	}
+}
+
 func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	route := strings.ToLower(strings.TrimSpace(opts.route))
 	if _, ok := routableAgents[route]; opts.route != "" && !ok {
@@ -96,6 +140,15 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	if c, err := newAuthenticatedGitHubClient(opts.forgeToken, ""); err == nil {
 		client = c
 	}
+
+	// The harnesses dispatch enumerates and routes load can pin base:
+	// chains and companion files to the configured GitHub host — the same
+	// host fullsend run's agents-repo fallback resolves through
+	// newConfiguredHostGitHubClient. The default fetch policy names only github.com
+	// hosts, so it is extended from the fallback client's base URL exactly
+	// as runAgent does; without that, loading such a harness fails with
+	// "domain not in allowlist" before any agent job is reached.
+	dispatchFetchPolicy := newDispatchFetchPolicy(opts.forgeToken)
 
 	var event *normevent.Event
 	var err error
@@ -125,13 +178,7 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	}
 
 	if route != "" {
-		decision, err := routeBuiltinAgent(ctx, routeOpts{
-			agent:       route,
-			configDir:   opts.configDir,
-			event:       event,
-			forgeClient: client,
-			printer:     printer,
-		})
+		decision, err := routeBuiltinAgent(ctx, newDispatchRouteOpts(opts, route, event, &dispatchFetchPolicy, printer))
 		if err != nil {
 			return err
 		}
@@ -144,8 +191,9 @@ func runDispatch(ctx context.Context, opts dispatchOpts) error {
 	}
 
 	refs, err := harnessdispatch.Dispatch(ctx, harnessdispatch.Options{
-		ConfigDir: opts.configDir,
-		Event:     event,
+		ConfigDir:   opts.configDir,
+		Event:       event,
+		FetchPolicy: &dispatchFetchPolicy,
 	})
 	if err != nil {
 		return err

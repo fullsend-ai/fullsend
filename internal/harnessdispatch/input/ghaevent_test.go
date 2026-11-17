@@ -591,6 +591,178 @@ func TestLoadGHAEvent_IssuesClosed(t *testing.T) {
 	assert.Equal(t, normevent.TransitionClosed, ev.Transition.Kind)
 }
 
+// TestLoadGHAEvent_IssueCommentAssignee covers actor.is_entity_assignee on
+// an issue comment: the assignee (matched case-insensitively) yields true,
+// another write-role user yields false, and an unassigned issue yields false.
+func TestLoadGHAEvent_IssueCommentAssignee(t *testing.T) {
+	issueComment := func(assignees []any, sender string) map[string]any {
+		return map[string]any{
+			"action": "created",
+			"issue": map[string]any{
+				"number":    float64(42),
+				"html_url":  "https://github.com/o/r/issues/42",
+				"user":      map[string]any{"login": "pm"},
+				"labels":    []any{},
+				"assignees": assignees,
+			},
+			"comment": map[string]any{"body": "/fs-code"},
+			"sender":  map[string]any{"login": sender, "type": "User"},
+		}
+	}
+	assigned := []any{
+		map[string]any{"login": "someone-else"},
+		map[string]any{"login": "Dev"},
+	}
+
+	tests := []struct {
+		name         string
+		raw          map[string]any
+		wantAuthor   bool
+		wantAssignee bool
+	}{
+		{"assignee comments", issueComment(assigned, "dev"), false, true},
+		{"other write user comments", issueComment(assigned, "carol"), false, false},
+		{"unassigned issue", issueComment([]any{}, "dev"), false, false},
+		{"null assignees field", issueComment(nil, "dev"), false, false},
+		{"author is not assignee", issueComment(assigned, "pm"), true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := forge.NewFakeClient()
+			client.CollaboratorPermissions = map[string]string{
+				"o/r/dev":   "write",
+				"o/r/carol": "write",
+				"o/r/pm":    "write",
+			}
+			ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+				EventPath:  writeEventFile(t, tc.raw),
+				EventName:  "issue_comment",
+				Repository: "o/r",
+				Forge:      client,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, normevent.RoleWrite, ev.Actor.Role)
+			assert.Equal(t, tc.wantAuthor, ev.Actor.IsEntityAuthor)
+			assert.Equal(t, tc.wantAssignee, ev.Actor.IsEntityAssignee)
+		})
+	}
+}
+
+// TestLoadGHAEvent_IssuesLegacySingleAssignee covers the legacy single
+// assignee field when the payload carries no assignees array.
+func TestLoadGHAEvent_IssuesLegacySingleAssignee(t *testing.T) {
+	raw := map[string]any{
+		"action": "labeled",
+		"issue": map[string]any{
+			"number":   float64(42),
+			"html_url": "https://github.com/o/r/issues/42",
+			"user":     map[string]any{"login": "pm"},
+			"labels":   []any{map[string]any{"name": "ready-to-code"}},
+			"assignee": map[string]any{"login": "dev"},
+		},
+		"label":  map[string]any{"name": "ready-to-code"},
+		"sender": map[string]any{"login": "dev", "type": "User"},
+	}
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  writeEventFile(t, raw),
+		EventName:  "issues",
+		Repository: "o/r",
+		Forge:      forge.NewFakeClient(),
+	})
+	require.NoError(t, err)
+	assert.True(t, ev.Actor.IsEntityAssignee)
+	assert.False(t, ev.Actor.IsEntityAuthor)
+}
+
+// TestLoadGHAEvent_EmptyAssigneesIgnoresLegacyField checks that an explicit
+// empty assignees array wins over a stale legacy assignee field.
+func TestLoadGHAEvent_EmptyAssigneesIgnoresLegacyField(t *testing.T) {
+	raw := map[string]any{
+		"action": "labeled",
+		"issue": map[string]any{
+			"number":    float64(42),
+			"html_url":  "https://github.com/o/r/issues/42",
+			"user":      map[string]any{"login": "pm"},
+			"labels":    []any{map[string]any{"name": "ready-to-code"}},
+			"assignees": []any{},
+			"assignee":  map[string]any{"login": "dev"},
+		},
+		"label":  map[string]any{"name": "ready-to-code"},
+		"sender": map[string]any{"login": "dev", "type": "User"},
+	}
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  writeEventFile(t, raw),
+		EventName:  "issues",
+		Repository: "o/r",
+		Forge:      forge.NewFakeClient(),
+	})
+	require.NoError(t, err)
+	assert.False(t, ev.Actor.IsEntityAssignee)
+}
+
+// TestLoadGHAEvent_PRAssignee covers pull request events: an assignee who
+// acts on the PR yields true, while a requested reviewer who submits a
+// review yields false because reviewers are not assignees.
+func TestLoadGHAEvent_PRAssignee(t *testing.T) {
+	pr := func() map[string]any {
+		return map[string]any{
+			"number":              float64(99),
+			"html_url":            "https://github.com/o/r/pull/99",
+			"user":                map[string]any{"login": "bob"},
+			"labels":              []any{},
+			"assignees":           []any{map[string]any{"login": "dev"}},
+			"requested_reviewers": []any{map[string]any{"login": "rev"}},
+			"head": map[string]any{
+				"ref":  "feature",
+				"sha":  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"repo": map[string]any{"full_name": "o/r"},
+			},
+			"base": map[string]any{
+				"ref":  "main",
+				"repo": map[string]any{"full_name": "o/r"},
+			},
+		}
+	}
+	review := func(login string) map[string]any {
+		return map[string]any{
+			"action":       "submitted",
+			"review":       map[string]any{"user": map[string]any{"login": login, "type": "User"}, "state": "COMMENTED"},
+			"pull_request": pr(),
+			"sender":       map[string]any{"login": login, "type": "User"},
+		}
+	}
+	load := func(t *testing.T, raw map[string]any, eventName string) *normevent.Event {
+		t.Helper()
+		ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+			EventPath:  writeEventFile(t, raw),
+			EventName:  eventName,
+			Repository: "o/r",
+			Forge:      forge.NewFakeClient(),
+		})
+		require.NoError(t, err)
+		return ev
+	}
+
+	t.Run("reviewer comments", func(t *testing.T) {
+		ev := load(t, review("rev"), "pull_request_review")
+		assert.False(t, ev.Actor.IsEntityAssignee)
+	})
+	t.Run("assignee reviews", func(t *testing.T) {
+		ev := load(t, review("dev"), "pull_request_review")
+		assert.True(t, ev.Actor.IsEntityAssignee)
+	})
+	t.Run("assignee labels PR", func(t *testing.T) {
+		raw := map[string]any{
+			"action":       "labeled",
+			"pull_request": pr(),
+			"label":        map[string]any{"name": "x"},
+			"sender":       map[string]any{"login": "DEV", "type": "User"},
+		}
+		ev := load(t, raw, "pull_request_target")
+		assert.True(t, ev.Actor.IsEntityAssignee)
+	})
+}
+
 func copyMap(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {

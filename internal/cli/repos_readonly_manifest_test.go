@@ -10,7 +10,7 @@ import (
 )
 
 // A read-only manifest is never written by install. A first install of a
-// glob-covered repository that needs the upstream create_issues default
+// glob-covered repository that needs the upstream tracking default
 // fails before any write with the exact entry to add; dry run and live
 // install agree (#8218). Selecting the repository adds nothing itself
 // (#8219).

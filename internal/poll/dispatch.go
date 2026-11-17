@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -62,7 +63,7 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		// Only a /fs-* command body is carried untruncated, so this
 		// rejects a command that cannot be transported intact rather
 		// than letting the agent run on a shortened instruction.
-		return fmt.Errorf("event payload for %s/%s needs %d base64 characters, exceeding the %d-character dispatch budget; refusing to dispatch a truncated note body", stage, resourceKey(event), len(encoded), budget)
+		return fmt.Errorf("event payload for %s/%s needs %d base64 characters, exceeding the %d-character dispatch budget; refusing to dispatch a truncated note body: %w", stage, resourceKey(event), len(encoded), budget, dispatch.ErrTransportBudget)
 	}
 	// Fork detection applies only to MR events. Issue events never
 	// populate MRSource/MRTarget — they are "not applicable", not
@@ -228,9 +229,10 @@ func gitlabWrapperDeclaresTypedDispatch(content []byte) bool {
 // run-agent-job.sh and computeDispatchHMAC use) to the lowercase GitLab
 // CI/CD pipeline input identifier fullsend-agent.yml declares for it
 // (spec:inputs). EVENT_PAYLOAD_B64 is handled separately by
-// eventPayloadChunks because a single pipeline-input string value
-// is capped around 1 KB (https://docs.gitlab.com/ci/inputs/) — too small
-// for a base64 event payload with a long note body.
+// eventPayloadChunks because the payload is split across the fixed
+// event_payload_chunk_NN inputs, each capped at dispatchPayloadChunkSize
+// base64 characters by the scaffold's own chunk-input pattern — a base64
+// event payload with a long note body is far larger than any one chunk.
 var dispatchInputNames = map[string]string{
 	"STAGE":               "stage",
 	"EVENT_TYPE":          "event_type",
@@ -292,23 +294,30 @@ const (
 	// internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml.
 	dispatchPayloadFile = "/tmp/.fs-dispatch-payload.b64"
 	// dispatchPayloadChunkSize is the max size, in base64 characters, of
-	// each event_payload_chunk_NN pipeline-input value. Kept safely under
-	// GitLab's ~1 KB per-pipeline-input-string-value limit
-	// (https://docs.gitlab.com/ci/inputs/).
+	// each event_payload_chunk_NN pipeline-input value. Kept at 1000 to
+	// fit the chunk-input pattern the scaffold's own configuration
+	// enforces (regex: '^[A-Za-z0-9+/=]{0,1000}$' on each
+	// event_payload_chunk_NN input) — the bound this repository
+	// controls; GitLab's documented input limits are far larger (a
+	// string that uses an input must be less than 1 MB,
+	// https://docs.gitlab.com/ci/inputs/).
 	dispatchPayloadChunkSize = 1000
 	// maxEventPayloadChunks is the number of event_payload_chunk_NN
-	// scalar inputs fullsend-agent.yml declares. GitLab caps the number
-	// of pipeline inputs a single configuration can declare at 20; the 11
-	// other named dispatch fields (dispatchInputNames) already consume 11
-	// of that budget, leaving at most 9 for chunks — a 10th
-	// (event_payload_chunk_09) would be the pipeline's 21st declared
-	// input and GitLab would reject the configuration outright,
-	// independently of how many chunks any given dispatch actually
-	// fills in. This bounds the largest EVENT_PAYLOAD_B64 dispatch() can
+	// scalar inputs fullsend-agent.yml declares. GitLab limits a
+	// pipeline contract to 20 inputs (ADR 0131;
+	// https://docs.gitlab.com/ci/inputs/), and the configuration
+	// declares the 11 other named dispatch fields (dispatchInputNames)
+	// plus these 9 chunks, using every root input GitLab allows — so a
+	// 10th chunk (event_payload_chunk_09) would be the pipeline's 21st
+	// declared input, a shape GitLab rejects and repos install's
+	// dispatch gate refuses rather than growing
+	// (internal/repos/gitlabci.go), independently of how many chunks
+	// any given dispatch actually fills in. This
+	// bounds the largest EVENT_PAYLOAD_B64 dispatch() can
 	// transport to maxEventPayloadChunks*dispatchPayloadChunkSize base64
 	// characters, which is why buildEventPayload truncates a non-command
 	// note body to a smaller bound than before this limit was enforced
-	// (see noteBodyTransportLimit): an 800-rune note body, after JSON
+	// (see noteBodyTransportLimit): a 270-rune note body, after JSON
 	// escaping (Go's encoder expands a run of HTML-sensitive runes like
 	// '<' up to 6x) and base64 encoding (4/3x), still leaves margin for
 	// the payload's other fields within the 9-chunk budget. A /fs-*
@@ -387,13 +396,56 @@ func computeDispatchHMAC(secret string, variables map[string]string) string {
 const noteBodyTruncationNotice = " […truncated]"
 
 // noteBodyTransportLimit is the rune bound buildEventPayload applies to a
-// note body that is not a /fs-* command. 800, not the 4096 convert.go uses
+// note body that is not a /fs-* command. 270, not the 4096 convert.go uses
 // for display truncation: this payload travels as event_payload_chunk_NN
-// pipeline inputs (see maxEventPayloadChunks), which GitLab's 20-input
-// ceiling caps at 9 chunks of dispatchPayloadChunkSize base64 characters
-// — far less room than a bare 4096-byte note body's worst-case
-// JSON-escaped, base64-encoded size would need.
-const noteBodyTransportLimit = 800
+// pipeline inputs (see maxEventPayloadChunks), which the dispatch
+// configuration's 20-input shape caps at 9 chunks of
+// dispatchPayloadChunkSize base64 characters — far less room than a bare
+// 4096-byte note body's worst-case
+// JSON-escaped, base64-encoded size would need. Lowered from the 800 of
+// earlier releases as the budget became the sum of every independently
+// bounded attacker-controlled field; see transportStringRefLimit for the
+// attacker-chosen-fact rationale and the worst-case budget pin.
+const noteBodyTransportLimit = 270
+
+// transportStringRefLimit is the JSON-byte bound transport applies to each
+// attacker-shaped single string the payload carries: the branch refs (the
+// flat source_branch/target_branch and the normalized event's
+// head_ref/base_ref), the repo paths head_repo/base_repo carry (a fork's
+// path is event-author-chosen; a same-project MR carries the operator's
+// own project path there, which this bound cuts even though repo travels
+// whole), the
+// logins (actor.id, author_id, reviewer_id) and the label name. The
+// config-derived repo, entity.url and entity.linked_change_proposal.url
+// are operator-chosen, not attacker-shaped, and travel whole: a config
+// whose lengths push the complete payload past the chunk budget fails
+// closed there (comment-only fallback for a note, command refusal) rather
+// than being silently cut. An event author who can name a branch, a label or a login controls
+// that string's content, and Go's JSON encoder expands <, > and & to six
+// bytes per rune, so without a bound a single 255-rune escape-heavy ref
+// would push the complete normalized event past
+// maxEventPayloadChunks*dispatchPayloadChunkSize and force
+// buildEventPayload's comment-only fallback — making "no event", and with
+// it which overlays match, an attacker-chosen fact (ADR 0112 Decision 2
+// trusts event absence: the fallback run gets no event file, so its CEL
+// event variable is an empty map and event-keyed overlays stop matching
+// while eventless ones such as !has(event.source) start — the run never
+// binds event as CEL null). Like the labels bound, the truncation
+// is unconditional and a documented behavior change: a string whose JSON
+// form exceeds the bound travels as the longest rune-aligned prefix that
+// fits, so an overlay keyed on the dropped tail no longer matches there.
+// A plain ASCII branch name always fits: the normalized-event schema caps
+// head_ref/base_ref at 255 characters, which costs 257 JSON bytes with the
+// quotes. A plain non-ASCII name within that ceiling can still exceed the
+// bound (a 130-rune CJK ref costs about 392 JSON bytes), and so can any
+// escape-heavy or oversized string; those are cut. Forge-assigned ids
+// (comment id/parent_id, head SHA, entity key) are not bounded — the
+// forge, not the event author, chooses them. Together with
+// noteBodyTransportLimit and dispatch.TransportLabelsLimit this keeps the worst
+// attacker-shaped payload — at a plausible operator config for the
+// whole-travelling config-derived fields — inside the transport budget,
+// which TestBuildEventPayload_WorstCaseFitsTransportBudget pins.
+const transportStringRefLimit = 258
 
 // isFullsendCommandBody reports whether body is a /fs-* slash command,
 // matching the poller's slash-command detection (isSlashCommandEvent).
@@ -439,9 +491,12 @@ func truncateNoteBody(s string, maxLen int) string {
 // When ne is the event's normalized form and passes fullsend run's
 // validation, the payload carries it whole as _normalized_event (#9014), so
 // run-agent-job.sh can hand it to fullsend run as --event-file the way the
-// Jira path does. If it is missing, invalid, or would not fit the transport
-// budget, the payload falls back to the comment-only _normalized_event, so
-// such a dispatch behaves as it did before.
+// Jira path does. If it is missing or invalid, the payload falls back to the
+// comment-only _normalized_event, so such a dispatch behaves as it did
+// before. A complete form that would not fit the transport budget falls back
+// the same way — unless the note body is a /fs-* command, whose payload is
+// carried untruncated and so cannot shrink to fit: that dispatch fails
+// closed with an error instead, never on a partial event (see below).
 func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byte, error) {
 	m := map[string]interface{}{
 		"type":       event.Type,
@@ -452,6 +507,10 @@ func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byt
 	if body != "" && !isFullsendCommandBody(body) {
 		body = truncateNoteBody(body, noteBodyTransportLimit)
 	}
+	// where names the event for the transport-bound cut WARNINGs below
+	// and inside transportNormalizedEvent (logBoundTransportString /
+	// dispatch.LogBoundTransportLabels).
+	where := fmt.Sprintf("%s event on IID %d", event.Type, event.IID)
 	if body != "" {
 		m["_normalized_event"] = map[string]any{
 			"transition": normevent.Transition{
@@ -467,6 +526,13 @@ func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byt
 		m["note_author_id"] = event.NoteAuthorID
 	}
 	if event.Labels != nil {
+		// The raw slice is stored here and bounded only on the fallback
+		// path (the return below): the complete form deletes this copy
+		// in favour of _normalized_event.state.labels, so bounding it up
+		// front would be discarded work there. In the comment-only
+		// fallback this outer copy is the payload's only labels, and an
+		// unbounded one would reopen the very size channel into "no
+		// event" that dispatch.TransportLabelsLimit closes.
 		m["labels"] = event.Labels
 	}
 	if event.MRSource != 0 {
@@ -476,10 +542,10 @@ func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byt
 		m["mr_target_project_id"] = event.MRTarget
 	}
 	if event.SourceBranch != "" {
-		m["source_branch"] = event.SourceBranch
+		m["source_branch"] = logBoundTransportString(where, "source_branch", event.SourceBranch)
 	}
 	if event.TargetBranch != "" {
-		m["target_branch"] = event.TargetBranch
+		m["target_branch"] = logBoundTransportString(where, "target_branch", event.TargetBranch)
 	}
 	if event.MRAuthorID != 0 {
 		m["mr_author_id"] = event.MRAuthorID
@@ -490,12 +556,17 @@ func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byt
 	if event.Action != "" {
 		m["action"] = event.Action
 	}
-	norm, err := transportNormalizedEvent(ne, body)
+	norm, err := transportNormalizedEvent(where, ne, body)
 	switch {
 	case err != nil:
 		log.Printf("WARNING: %s event on IID %d: sending the comment-only normalized event; the complete event is invalid: %v", event.Type, event.IID, err)
 	case norm != nil:
 		full := maps.Clone(m)
+		// The complete form carries state.labels inside _normalized_event
+		// (bounded above), and run-agent-job.sh reads labels only from
+		// there, so the payload's flat labels copy is dropped rather than
+		// paid for a second time against the transport budget.
+		delete(full, "labels")
 		full["_normalized_event"] = norm
 		data, err := json.Marshal(full)
 		if err != nil {
@@ -506,23 +577,167 @@ func buildEventPayload(event RoutableEvent, ne *dispatch.NormalizedEvent) ([]byt
 		if n <= budget {
 			return data, nil
 		}
+		if isFullsendCommandBody(body) {
+			// A /fs-* command body is carried untruncated, so its
+			// payload cannot shrink to fit: fail closed here, the
+			// way dispatch() refuses an untransportable command,
+			// instead of falling back to the comment-only normalized
+			// event — a partial _normalized_event the run would
+			// reject, leaving the run with an empty event map (no
+			// --event-file), so event-keyed overlays stop matching
+			// and eventless ones such as !has(event.source) match —
+			// an attacker-chosen routing fact (ADR 0112 Decision 2).
+			return nil, fmt.Errorf("event payload on IID %d needs %d base64 characters, exceeding the %d-character dispatch budget; refusing to dispatch a command note without its complete event: %w", event.IID, n, budget, dispatch.ErrTransportBudget)
+		}
 		log.Printf("WARNING: %s event on IID %d: sending the comment-only normalized event; the complete event needs %d base64 characters, over the %d-character budget", event.Type, event.IID, n, budget)
 	}
+	if event.Labels != nil {
+		// The fallback path only, so the complete form above never pays
+		// for the bound. The cut logs only when this copy is what ships
+		// (no normalized event); otherwise it stays silent — with a
+		// normalized event the state.labels cut inside
+		// transportNormalizedEvent already logged the one WARNING for
+		// the same slice, so a second line would describe a copy that
+		// never ships.
+		if ne == nil {
+			m["labels"] = dispatch.LogBoundTransportLabels(where, event.Labels)
+		} else {
+			m["labels"] = dispatch.BoundTransportLabels(event.Labels)
+		}
+	}
 	return json.Marshal(m)
+}
+
+// boundTransportString returns s unchanged when its JSON serialization fits
+// transportStringRefLimit, and otherwise the longest rune-aligned prefix
+// whose JSON serialization does. The bound is measured on the JSON form
+// because that is what the transport budget pays: an escape-heavy string
+// costs up to six bytes per rune where a plain one costs one.
+func boundTransportString(s string) string {
+	size := 2 // the quotes
+	for i, r := range s {
+		size += jsonRuneLen(r)
+		if size > transportStringRefLimit {
+			return s[:i]
+		}
+	}
+	return s
+}
+
+// jsonRuneLen is an upper bound on the bytes Go's JSON encoder writes for r
+// inside a string: <, >, & and U+2028/U+2029 escape to six-byte \u forms,
+// ASCII control characters, the quote and the backslash to two- or six-byte
+// escapes, and every other rune travels as its UTF-8 encoding (at most four
+// bytes). A byte that is not valid UTF-8 decodes as U+FFFD over the range
+// loop, and the encoder writes it as the six-byte \ufffd escape, so
+// utf8.RuneError estimates six: a genuinely encoded U+FFFD costs only its
+// three UTF-8 bytes there, which over-estimates. Estimating high is safe:
+// the bound may cut a string slightly shorter than strictly needed, never
+// longer.
+func jsonRuneLen(r rune) int {
+	switch {
+	case r == '<' || r == '>' || r == '&':
+		return 6
+	case r == utf8.RuneError:
+		return 6
+	case r >= 0x20 && r != '"' && r != '\\' && r != '\u2028' && r != '\u2029':
+		return utf8.RuneLen(r)
+	default:
+		return 6
+	}
+}
+
+// boundTransportEventStrings bounds every attacker-shaped single-string
+// field of a transported normalized event to transportStringRefLimit JSON
+// bytes (see boundTransportString): branch refs, the head_repo/base_repo
+// paths (cut even when a same-project MR carries the operator's own
+// project path there), logins
+// and the label name. The config-derived repo, entity.url and
+// entity.linked_change_proposal.url travel whole (see
+// transportStringRefLimit). Forge-assigned ids (comment id/parent_id, head
+// SHA, entity key) are left alone — the forge, not the event author, chooses
+// them, and cutting an id would corrupt reply threading rather than trim
+// attacker padding. The cuts are silent; dispatch routes its events through
+// the logging variant below so an operator sees each one. This silent
+// variant has no production caller — the drift-guard test in
+// dispatch_normalized_test.go calls it directly, so it stays.
+func boundTransportEventStrings(ev *dispatch.NormalizedEvent) {
+	boundEventStrings(ev, func(_, s string) string { return boundTransportString(s) })
+}
+
+// logBoundTransportEventStrings bounds ev exactly like
+// boundTransportEventStrings and routes every cut through
+// logBoundTransportString, so each field the bound actually cut leaves the
+// same operator WARNING the flat payload fields do: a trigger keyed on
+// a cut field's tail stops matching, and the WARNING is the only signal.
+func logBoundTransportEventStrings(where string, ev *dispatch.NormalizedEvent) {
+	boundEventStrings(ev, func(field, s string) string { return logBoundTransportString(where, field, s) })
+}
+
+// boundEventStrings is the shared core of boundTransportEventStrings and its
+// logging variant: cut bounds each attacker-shaped single-string field,
+// receiving the field's name for the WARNING the logging variant logs. The
+// config-derived repo, entity.url and entity.linked_change_proposal.url
+// stay whole — the operator's config, not the event author, picks them, and
+// a config that pushes the payload past the chunk budget fails closed there
+// (see transportStringRefLimit). head_repo/base_repo are the exception in
+// the other direction: they are cut unconditionally, so a same-project MR
+// (whose head_repo/base_repo carry the operator's own project path, the
+// same value repo carries) sees that path cut there while repo travels
+// whole.
+func boundEventStrings(ev *dispatch.NormalizedEvent, cut func(field, s string) string) {
+	if label := ev.Transition.Label; label != nil {
+		bounded := *label
+		bounded.Name = cut("transition.label.name", bounded.Name)
+		ev.Transition.Label = &bounded
+	}
+	if review := ev.Transition.Review; review != nil {
+		bounded := *review
+		bounded.ReviewerID = cut("transition.review.reviewer_id", bounded.ReviewerID)
+		ev.Transition.Review = &bounded
+	}
+	ev.Actor.ID = cut("actor.id", ev.Actor.ID)
+	if cp := ev.State.ChangeProposal; cp != nil {
+		bounded := *cp
+		bounded.HeadRepo = cut("state.change_proposal.head_repo", bounded.HeadRepo)
+		bounded.BaseRepo = cut("state.change_proposal.base_repo", bounded.BaseRepo)
+		bounded.HeadRef = cut("state.change_proposal.head_ref", bounded.HeadRef)
+		bounded.BaseRef = cut("state.change_proposal.base_ref", bounded.BaseRef)
+		bounded.AuthorID = cut("state.change_proposal.author_id", bounded.AuthorID)
+		ev.State.ChangeProposal = &bounded
+	}
+}
+
+// logBoundTransportString bounds s like boundTransportString and logs a
+// one-line WARNING when the bound actually cut it: the cut is a documented
+// behavior change, and the WARNING is the operator signal that a value's
+// tail — and with it any overlay or trigger keyed on that tail — was
+// dropped in transport.
+func logBoundTransportString(where, field, s string) string {
+	bounded := boundTransportString(s)
+	if bounded != s {
+		log.Printf("WARNING: %s: %s cut to the transport bound (%d of %d bytes)", where, field, len(bounded), len(s))
+	}
+	return bounded
 }
 
 // transportNormalizedEvent returns ne as a payload's _normalized_event map,
 // with its comment body replaced by the transport-bounded body and the
 // command and instruction re-derived from that body, so they always agree
-// with what run-agent-job.sh reads. It returns nil and no error when ne is
-// nil, and an error when ne would fail normevent.ParseJSON — the check
-// fullsend run applies to --event-file — so run-agent-job.sh never hands run
-// an event it would refuse.
-func transportNormalizedEvent(ne *dispatch.NormalizedEvent, body string) (map[string]any, error) {
+// with what run-agent-job.sh reads, its state.labels bounded by
+// dispatch.LogBoundTransportLabels and its attacker-shaped single strings bounded by
+// logBoundTransportEventStrings, so every cut leaves the operator WARNING
+// the flat payload fields do. It returns nil and no error when ne is nil,
+// and an error when ne would fail normevent.ParseJSON — the check fullsend
+// run applies to --event-file — so run-agent-job.sh never hands run an
+// event it would refuse.
+func transportNormalizedEvent(where string, ne *dispatch.NormalizedEvent, body string) (map[string]any, error) {
 	if ne == nil {
 		return nil, nil
 	}
 	ev := *ne
+	ev.State.Labels = dispatch.LogBoundTransportLabels(where, ev.State.Labels)
+	logBoundTransportEventStrings(where, &ev)
 	if ev.Transition.Comment != nil {
 		c := *ev.Transition.Comment
 		c.Body = body

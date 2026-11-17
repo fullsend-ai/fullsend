@@ -136,6 +136,7 @@ func mapIssuesEvent(ev *normevent.Event, raw map[string]any, action, actorID str
 	}
 	ev.Entity = entityFromIssue(issue)
 	ev.Actor.IsEntityAuthor = strings.EqualFold(stringField(issue, "user", "login"), actorID)
+	ev.Actor.IsEntityAssignee = isAssignee(issue, actorID)
 	ev.State.Labels = labelNames(issue)
 
 	switch action {
@@ -184,6 +185,7 @@ func mapPRReviewEvent(ev *normevent.Event, raw map[string]any, action, actorID s
 		reviewerID = actorID
 	}
 	ev.Actor.IsEntityAuthor = strings.EqualFold(stringField(pr, "user", "login"), reviewerID)
+	ev.Actor.IsEntityAssignee = isAssignee(pr, reviewerID)
 	ev.State.Labels = labelNames(pr)
 	ev.State.ChangeProposal = changeProposalFromPR(pr)
 
@@ -222,6 +224,7 @@ func mapPREvent(ev *normevent.Event, raw map[string]any, action, actorID string)
 	}
 	ev.Entity = entityFromPR(pr)
 	ev.Actor.IsEntityAuthor = strings.EqualFold(stringField(pr, "user", "login"), actorID)
+	ev.Actor.IsEntityAssignee = isAssignee(pr, actorID)
 	ev.State.Labels = labelNames(pr)
 	ev.State.ChangeProposal = changeProposalFromPR(pr)
 
@@ -307,6 +310,7 @@ func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, raw map[str
 
 	ev.Entity = entityFromIssue(issue)
 	ev.Actor.IsEntityAuthor = strings.EqualFold(stringField(issue, "user", "login"), actorID)
+	ev.Actor.IsEntityAssignee = isAssignee(issue, actorID)
 	ev.State.Labels = labelNames(issue)
 
 	if _, isPR := issue["pull_request"]; isPR {
@@ -456,6 +460,28 @@ func labelNames(obj map[string]any) []string {
 		return []string{}
 	}
 	return names
+}
+
+// isAssignee reports whether actorID is one of the current assignees of an
+// issue or pull request webhook object, compared case-insensitively like the
+// author check. It reads the assignees array the payload already carries
+// (no API call). Only when the payload has no assignees array does it fall
+// back to the legacy single assignee field, so a stale assignee cannot
+// match an empty array. Requested reviewers are not assignees. An empty
+// actorID never matches.
+func isAssignee(obj map[string]any, actorID string) bool {
+	if actorID == "" {
+		return false
+	}
+	if assignees, ok := obj["assignees"].([]any); ok {
+		for _, a := range assignees {
+			if m, ok := a.(map[string]any); ok && strings.EqualFold(stringField(m, "login"), actorID) {
+				return true
+			}
+		}
+		return false
+	}
+	return strings.EqualFold(stringField(obj, "assignee", "login"), actorID)
 }
 
 func nestedMap(m map[string]any, keys ...string) map[string]any {

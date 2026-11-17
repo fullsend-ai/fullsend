@@ -5,6 +5,7 @@ package normevent
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -125,20 +126,39 @@ const (
 // not performed a lookup (legacy input, or the label exception where bot-role
 // lookup is not applicable); for bots, true means the bot-role lookup
 // completed (including a successful no-match) and false means it failed.
+//
+// IsEntityAuthor and IsEntityAssignee are best-effort routing facts, never
+// authorization: anyone who can open an issue is its author, and anyone who
+// can assign issues can assign themselves. IsEntityAssignee is optional in
+// the v1 schema so producers that predate it stay valid, but it is always
+// serialized here (false when unknown) so a CEL trigger such as
+// `is_entity_author || is_entity_assignee` never reads a missing key.
 type Actor struct {
-	ID             string    `json:"id"`
-	Kind           ActorKind `json:"kind"`
-	Role           ActorRole `json:"role"`
-	BotRole        string    `json:"bot_role,omitempty"`
-	RoleVerified   *bool     `json:"role_verified,omitempty"`
-	IsEntityAuthor bool      `json:"is_entity_author"`
+	ID               string    `json:"id"`
+	Kind             ActorKind `json:"kind"`
+	Role             ActorRole `json:"role"`
+	BotRole          string    `json:"bot_role,omitempty"`
+	RoleVerified     *bool     `json:"role_verified,omitempty"`
+	IsEntityAuthor   bool      `json:"is_entity_author"`
+	IsEntityAssignee bool      `json:"is_entity_assignee"`
 }
 
 // State is a snapshot of entity metadata at event time.
 type State struct {
+	IssueType      *IssueType         `json:"issue_type,omitempty"`
 	Labels         []string           `json:"labels"`
 	ChangeProposal *ChangeProposal    `json:"change_proposal,omitempty"`
 	Conversation   *ConversationState `json:"conversation,omitempty"`
+}
+
+// IssueType is the current work-item type supplied by the tracker.
+// IDs are stable within an instance; names may be customized or renamed.
+// The field names match issue_type in the normalized-entity v1 contract
+// (normentity.IssueType), not the Jira wire format.
+type IssueType struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	IsSubtask bool   `json:"is_subtask"`
 }
 
 // ConversationState is conversation-level metadata (ADR 0086).
@@ -288,12 +308,30 @@ func (e *Event) Validate() error {
 		return fmt.Errorf("normalized event: entity.linked_change_proposal required when state.change_proposal is set on work_item")
 	}
 
-	if e.Source.System == SystemJira && e.Entity.Key == "" {
-		return fmt.Errorf("normalized event: entity.key required when source.system is jira")
+	if e.Source.System == SystemJira {
+		if e.Entity.Key == "" {
+			return fmt.Errorf("normalized event: entity.key required when source.system is jira")
+		}
+		if !jiraWorkItemKeyPattern.MatchString(e.Entity.Key) {
+			return fmt.Errorf("normalized event: entity.key %q is not a Jira work item key like PROJ-123 when source.system is jira", e.Entity.Key)
+		}
 	}
 
 	return nil
 }
+
+// jiraWorkItemKeyPattern is the Jira work item key shape every dispatch
+// consumer requires: fullsend run's identity resolution and the GitLab jira
+// dispatch driver both refuse a key that does not match it, after the event
+// was already dispatched. Validating the shape here means an adapter's
+// Validate gate refuses a malformed key once, before dispatch (a Jira poll
+// event with such a key is skipped like any invalid event instead of
+// dispatching and failing downstream with the checkpoint held). The
+// per-consumer copies of the pattern stay as defence in depth; they are
+// byte-identical and must change together with this one:
+// jiraWorkItemKeyPattern in internal/cli/run_workitem.go and
+// jiraIssueKeyPattern in internal/poll/jira_dispatch.go.
+var jiraWorkItemKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]+-[1-9][0-9]*$`)
 
 // ToMap converts the event to a map for CEL evaluation.
 func (e *Event) ToMap() (map[string]any, error) {

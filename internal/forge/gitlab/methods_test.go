@@ -606,6 +606,45 @@ func TestAddIssueLabels_MultipleLabels(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestEnsureLabel(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]string
+		readJSONBody(t, r, &body)
+		assert.Equal(t, map[string]string{"name": "do-it", "color": "#ededed"}, body)
+		writeJSON(t, w, http.StatusCreated, map[string]any{"id": 1, "name": "do-it"})
+	})
+
+	require.NoError(t, client.EnsureLabel(ctx, "myorg", "myrepo", "do-it"))
+}
+
+func TestEnsureLabel_AlreadyExists(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusConflict, map[string]string{"message": "Label already exists"})
+	})
+
+	require.NoError(t, client.EnsureLabel(ctx, "myorg", "myrepo", "do-it"))
+}
+
+func TestEnsureLabel_Error(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/labels", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+	})
+
+	err := client.EnsureLabel(ctx, "myorg", "myrepo", "do-it")
+	require.ErrorContains(t, err, `create label "do-it"`)
+	require.ErrorIs(t, err, forge.ErrForbidden)
+}
+
 func TestListIssueComments(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
@@ -1065,6 +1104,47 @@ func TestListPullRequestFileDiffs(t *testing.T) {
 	assert.Equal(t, "file.go", diffs[0].Path)
 	assert.Contains(t, diffs[0].Patch, "+new line")
 	assert.Equal(t, "other.go", diffs[1].Path)
+}
+
+func TestListPullRequestFileDiffs_NormalizesStatusAndRenamePath(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/diffs", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"new_path": "added.go", "new_file": true, "diff": "@@ -0,0 +1 @@\n+new"},
+			{"old_path": "removed.go", "new_path": "removed.go", "deleted_file": true, "diff": "@@ -1 +0,0 @@\n-old"},
+			{"old_path": "old.go", "new_path": "new.go", "renamed_file": true, "diff": "@@ -1 +1 @@\n-old\n+new"},
+			{"new_path": "modified.go", "diff": "@@ -1 +1 @@\n-old\n+new"},
+		})
+	})
+
+	diffs, err := client.ListPullRequestFileDiffs(ctx, "myorg", "myrepo", 5)
+	require.NoError(t, err)
+	require.Len(t, diffs, 4)
+	assert.Equal(t, "added", diffs[0].Status)
+	assert.Equal(t, "removed", diffs[1].Status)
+	assert.Equal(t, "renamed", diffs[2].Status)
+	assert.Equal(t, "old.go", diffs[2].PreviousPath)
+	assert.Equal(t, "modified", diffs[3].Status)
+	assert.Empty(t, diffs[3].PreviousPath)
+}
+
+func TestListPullRequestFileDiffs_ReturnsAvailableFilesWithPaginationError(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5/diffs", func(w http.ResponseWriter, r *http.Request) {
+		files := make([]map[string]any, 100)
+		for i := range files {
+			files[i] = map[string]any{"new_path": "file-" + strconv.Itoa(i), "diff": "@@ -1 +1 @@\n-old\n+new"}
+		}
+		writeJSON(t, w, http.StatusOK, files)
+	})
+
+	diffs, err := client.ListPullRequestFileDiffs(ctx, "myorg", "myrepo", 5)
+	require.ErrorIs(t, err, forge.ErrDiffListingTruncated)
+	assert.Len(t, diffs, 10000)
 }
 
 func TestMergeChangeProposal(t *testing.T) {
@@ -2370,7 +2450,7 @@ func TestListRepoVariables_WildcardScopeWinsOverEnvironmentScope(t *testing.T) {
 }
 
 func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
-	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN", forge.SecretTraceSigningKey} {
 		t.Run(name, func(t *testing.T) {
 			client, mux := setupTest(t)
 			ctx := context.Background()
@@ -2393,7 +2473,7 @@ func TestCreateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
 }
 
 func TestUpdateRepoSecret_WebhookCredentialsRequireMasking(t *testing.T) {
-	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN"} {
+	for _, name := range []string{forge.SecretTriggerToken, forge.SecretWebhookSecret, forge.SecretGitLabTriggerAccountToken, forge.SecretGitLabPollerToken, forge.SecretGitLabAnalystToken, forge.SecretGitLabCoderToken, "FULLSEND_GITLAB_ROLE_REVIEWER_TOKEN", forge.SecretTraceSigningKey} {
 		t.Run(name, func(t *testing.T) {
 			client, mux := setupTest(t)
 			ctx := context.Background()
@@ -3617,6 +3697,26 @@ func TestErrNotSupported_WorkflowMethods(t *testing.T) {
 	})
 }
 
+func TestErrNotSupported_E2EGateMethods(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx := context.Background()
+
+	t.Run("GetPullRequestAuthorizationContext", func(t *testing.T) {
+		_, err := client.GetPullRequestAuthorizationContext(ctx, "o", "r", 1)
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+
+	t.Run("ListIssueLabelEvents", func(t *testing.T) {
+		_, err := client.ListIssueLabelEvents(ctx, "o", "r", 1)
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+
+	t.Run("RemoveIssueLabel", func(t *testing.T) {
+		err := client.RemoveIssueLabel(ctx, "o", "r", 1, "ok-to-test")
+		require.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+}
+
 func TestGetLatestWorkflowRun(t *testing.T) {
 	client, mux := setupTest(t)
 	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines", func(w http.ResponseWriter, _ *http.Request) {
@@ -4006,6 +4106,47 @@ func TestListWorkflowRunJobs_Error(t *testing.T) {
 	})
 	_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
 	require.Error(t, err)
+	assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
+}
+
+// TestListWorkflowRunJobs_FirstPageNotFoundCarriesSentinel covers the
+// not-found classification adapters attach to a first-page 404, and the
+// later-page 404 that must not carry it: page 1 was already readable and
+// may hold a completed job.
+func TestListWorkflowRunJobs_FirstPageNotFoundCarriesSentinel(t *testing.T) {
+	t.Run("first page 404 carries the sentinel", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		})
+		_, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, forge.ErrNotFound)
+		assert.ErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage)
+	})
+	t.Run("later page 404 does not carry it", func(t *testing.T) {
+		client, mux := setupTest(t)
+		mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/10/jobs", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			switch r.URL.Query().Get("page") {
+			case "1":
+				jobs := make([]string, 100)
+				for i := range jobs {
+					jobs[i] = fmt.Sprintf(`{"id":%d,"name":"job-%d","status":"success"}`, i+1, i+1)
+				}
+				w.Header().Set("X-Next-Page", "2")
+				fmt.Fprint(w, "["+strings.Join(jobs, ",")+"]")
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		})
+		jobs, err := client.ListWorkflowRunJobs(context.Background(), "o", "r", 10)
+		require.Error(t, err)
+		assert.Nil(t, jobs)
+		assert.ErrorIs(t, err, forge.ErrNotFound, "the 404 stays classified as not found")
+		assert.NotErrorIs(t, err, forge.ErrJobsListingNotFoundFirstPage, "a partially readable listing never carries the sentinel")
+		assert.Contains(t, err.Error(), "page 2")
+	})
 }
 
 func TestListWorkflowRunArtifacts_Error(t *testing.T) {
@@ -4105,6 +4246,62 @@ func TestGetWorkflowRunLogs_MultipleJobs(t *testing.T) {
 	assert.Contains(t, logs, "test failure output")
 	assert.Contains(t, logs, "Job 1 (build)")
 	assert.Contains(t, logs, "Job 2 (test)")
+}
+
+// TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote verifies that a skipped
+// job, which has no trace, is left out without a trace request, so its 404
+// does not read as a fetch that failed — the mirror of the GitHub client's
+// test of the same name.
+func TestGetWorkflowRunLogs_SkippedJobHasNoFetchNote(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"failed"},{"id":2,"name":"deploy","status":"skipped"}]`)
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("build failure output"))
+	})
+	skippedTraceRequests := 0
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, r *http.Request) {
+		skippedTraceRequests++
+		http.NotFound(w, r)
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "Job 1 (build)")
+	assert.Contains(t, logs, "build failure output")
+	// The literal is the shared forge log-note constant's text
+	// (forge.LogNoteErrorFetchingTrace); the note spelling itself is pinned
+	// by TestLogNoteMarkersAreSharedWithForge in pkg/behaviourtest/steps.
+	assert.NotContains(t, logs, "error fetching trace:")
+	assert.Zero(t, skippedTraceRequests, "a skipped job's trace is never requested")
+}
+
+// TestGetWorkflowRunLogs_AllJobsRan_EveryTraceFetched verifies the other
+// side of the skipped-job skip: a pipeline whose jobs all ran still has
+// every job's trace requested and included, as before.
+func TestGetWorkflowRunLogs_AllJobsRan_EveryTraceFetched(t *testing.T) {
+	client, mux := setupTest(t)
+	mux.HandleFunc("/api/v4/projects/o%2Fr/pipelines/30/jobs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":1,"name":"build","status":"success"},{"id":2,"name":"test","status":"success"}]`)
+	})
+	traceRequests := map[int]int{}
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/1/trace", func(w http.ResponseWriter, _ *http.Request) {
+		traceRequests[1]++
+		_, _ = w.Write([]byte("build output"))
+	})
+	mux.HandleFunc("/api/v4/projects/o%2Fr/jobs/2/trace", func(w http.ResponseWriter, _ *http.Request) {
+		traceRequests[2]++
+		_, _ = w.Write([]byte("test output"))
+	})
+	logs, err := client.GetWorkflowRunLogs(context.Background(), "o", "r", 30)
+	require.NoError(t, err)
+	assert.Contains(t, logs, "Job 1 (build)")
+	assert.Contains(t, logs, "build output")
+	assert.Contains(t, logs, "Job 2 (test)")
+	assert.Contains(t, logs, "test output")
+	assert.Equal(t, map[int]int{1: 1, 2: 1}, traceRequests, "every job that ran has its trace fetched exactly once")
 }
 
 func TestGetWorkflowRunLogs_TraceError(t *testing.T) {
@@ -5166,6 +5363,13 @@ func TestCreateRepoSecret_MaskingRequiredGenericValueInvalid(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must not be stored unmasked")
 	assert.Equal(t, 1, callCount, "must not retry with masked:false")
+}
+
+func TestMaskingRequired_JiraSecrets(t *testing.T) {
+	assert.True(t, maskingRequired(forge.SecretJiraToken), "the Jira token is a bearer credential")
+	assert.False(t, maskingRequired(forge.SecretJiraEmail), "the Jira account email is not a bearer credential")
+	assert.True(t, maskingRequired(forge.SecretJiraClientSecret), "the Jira OAuth client secret mints bearer credentials")
+	assert.False(t, maskingRequired(forge.SecretJiraClientID), "the Jira OAuth client ID is not a bearer credential")
 }
 
 func TestIsMaskingError(t *testing.T) {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // ErrAllOrgsRateLimited is returned by AcquireOrg when every pool org
@@ -87,6 +87,16 @@ var orgPool = []string{
 	"halfsend-10",
 	"halfsend-11",
 	"halfsend-12",
+	"halfsend-13",
+	"halfsend-14",
+	"halfsend-15",
+	"halfsend-16",
+	"halfsend-17",
+	"halfsend-18",
+	"halfsend-19",
+	"halfsend-20",
+	"halfsend-21",
+	"halfsend-22",
 }
 
 var (
@@ -120,7 +130,7 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 	// same first org (thundering herd).
 	shuffled := make([]string, len(pool))
 	copy(shuffled, pool)
-	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	randutil.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 
 	// First pass: try each org without waiting. If a lock exists but is
 	// stale (older than staleLockTimeout), force-acquire it so we don't
@@ -284,7 +294,7 @@ func acquireOrgWithClient(ctx context.Context, client forge.Client, token, runID
 func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
 	shuffled := make([]string, len(pool))
 	copy(shuffled, pool)
-	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+	randutil.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 
 	sawRateLimit := false
 	for _, org := range shuffled {

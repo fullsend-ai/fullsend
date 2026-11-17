@@ -18,9 +18,10 @@ roles: [triage]
 runtime: claude
 allowed_remote_resources:
   - https://example.com/
-create_issues:
-  allow_targets:
-    repos: [acme/other]
+tracker:
+  github:
+    allowed_targets:
+      repos: [acme/other]
 inference:
   provider: vertex
   project: proj
@@ -48,7 +49,7 @@ models:
 	assert.Equal(t, "https://mint.example.com", got["mint_url"])
 	assert.Equal(t, []any{"triage"}, got["roles"])
 	assert.Contains(t, got["allowed_remote_resources"], "https://example.com/", "base prefixes merge with the code defaults")
-	assert.Contains(t, got, "create_issues")
+	assert.Equal(t, map[string]any{"github": map[string]any{"allowed_targets": map[string]any{"repos": []any{"acme/other"}}}}, got["tracker"])
 	assert.Equal(t, []any{"owners_file"}, got["authorization"])
 	assert.Equal(t, map[string]any{"aliases": map[string]any{"fast": "some-model"}}, got["models"])
 	inference, ok := got["inference"].(map[string]any)

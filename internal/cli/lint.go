@@ -13,6 +13,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -21,7 +22,17 @@ import (
 
 // lintJSONSchemaVersion is the schema_version --format json writes. Keep it
 // in lockstep with docs/cli/lint.schema.json.
-const lintJSONSchemaVersion = 1
+const lintJSONSchemaVersion = 2
+
+// Stable JSON diagnostic codes for findings that do not come from
+// harness.Lint(). Lowercase kebab-case, independent of message text.
+const (
+	lintCodeConfigInvalid         = "config-invalid"
+	lintCodeAgentsSiblingsInvalid = "agents-siblings-invalid"
+	lintCodeAgentUnavailable      = "agent-unavailable"
+	lintCodeHarnessFailed         = "harness-failed"
+	lintCodeReservedSandboxEnv    = "reserved-sandbox-env"
+)
 
 type lintJSONReport struct {
 	SchemaVersion int                  `json:"schema_version"`
@@ -36,6 +47,7 @@ type lintJSONSummary struct {
 }
 
 type lintJSONDiagnostic struct {
+	Code     string `json:"code"`
 	Agent    string `json:"agent"`
 	Severity string `json:"severity"`
 	Field    string `json:"field"`
@@ -119,6 +131,7 @@ func newLintEmitter(cmd *cobra.Command, format string) *lintEmitter {
 func (e *lintEmitter) diagnostic(agent string, diag harness.Diagnostic) {
 	if e.jsonMode {
 		e.report.Diagnostics = append(e.report.Diagnostics, lintJSONDiagnostic{
+			Code:     diag.Code,
 			Agent:    agent,
 			Severity: diag.Severity.String(),
 			Field:    diag.Field,
@@ -138,11 +151,12 @@ func (e *lintEmitter) diagnostic(agent string, diag harness.Diagnostic) {
 // counting it as a harness lint diagnostic. Text mode already surfaces these
 // through the returned error; JSON mode needs them in the document so
 // success:false is explained on stdout.
-func (e *lintEmitter) failure(agent string, err error) {
+func (e *lintEmitter) failure(agent, code string, err error) {
 	if !e.jsonMode {
 		return
 	}
 	e.report.Diagnostics = append(e.report.Diagnostics, lintJSONDiagnostic{
+		Code:     code,
 		Agent:    agent,
 		Severity: harness.SeverityError.String(),
 		Message:  err.Error(),
@@ -151,7 +165,10 @@ func (e *lintEmitter) failure(agent string, err error) {
 
 func (e *lintEmitter) writeJSON(w io.Writer, success bool) error {
 	e.report.Success = success
-	for _, d := range e.report.Diagnostics {
+	for i, d := range e.report.Diagnostics {
+		if d.Code == "" {
+			return fmt.Errorf("lint JSON diagnostic %d missing code (agent %q field %q)", i, d.Agent, d.Field)
+		}
 		if d.Severity == harness.SeverityError.String() {
 			e.report.Summary.Errors++
 		} else {
@@ -202,7 +219,17 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 
 	forgePlatform, err := detectForgePlatform(forgeFlag, cfg)
 	if err != nil {
-		return fmt.Errorf("invalid --forge flag: %w", err)
+		if forgeFlag != "" {
+			return fmt.Errorf("invalid --forge flag: %w", err)
+		}
+		// Invalid config.forge is a semantic config error, not a flag
+		// usage error. Leave the platform empty; do not invent a fallback.
+		emitter.diagnostic("config", harness.Diagnostic{
+			Code:     lintCodeConfigInvalid,
+			Severity: harness.SeverityError,
+			Field:    "forge",
+			Message:  err.Error(),
+		})
 	}
 
 	composeGitToken, tokenErr := resolveToken()
@@ -221,6 +248,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		OrgAllowlist:  cfg.AllowedResources(),
 		Config:        harness.BuildConfigMap(cfg),
 		GitToken:      composeGitToken,
+		GitHubURL:     forge.ConfiguredGitHubURL(),
 	}
 
 	// Always create a GitHub client for the agents-repo fallback —
@@ -245,6 +273,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 	}
 	if configErr != nil {
 		emitter.diagnostic("config", harness.Diagnostic{
+			Code:     lintCodeConfigInvalid,
 			Severity: harness.SeverityError,
 			Field:    "config.yaml",
 			Message:  configErr.Error(),
@@ -264,6 +293,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 				noun, verb = "agent", "has"
 			}
 			emitter.diagnostic("config", harness.Diagnostic{
+				Code:     lintCodeAgentsSiblingsInvalid,
 				Severity: harness.SeverityWarning,
 				Field:    "agents",
 				Message:  fmt.Sprintf("%d other %s %s lint errors; run `fullsend lint` to inspect them", siblingErrs, noun, verb),
@@ -271,7 +301,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		}
 		if err != nil {
 			errs = append(errs, err)
-			emitter.failure("config", err)
+			emitter.failure("config", lintCodeAgentUnavailable, err)
 		}
 		entries = selected
 		resolveCfg = lintScopedConfig{ConfigReader: cfg, entries: selected}
@@ -284,7 +314,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		if configErr == nil || !strings.Contains(configErr.Error(), err.Error()) {
 			wrapped := fmt.Errorf("invalid agent config: %w", err)
 			errs = append(errs, wrapped)
-			emitter.failure("config", wrapped)
+			emitter.failure("config", lintCodeConfigInvalid, wrapped)
 		}
 		entries = nil
 	}
@@ -303,7 +333,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		if err != nil {
 			wrapped := fmt.Errorf("resolving harness for agent %q: %w", agentName, err)
 			errs = append(errs, wrapped)
-			emitter.failure(agentName, wrapped)
+			emitter.failure(agentName, lintCodeHarnessFailed, wrapped)
 			continue
 		}
 		agentOpts := composeOpts
@@ -314,7 +344,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		if err != nil {
 			wrapped := fmt.Errorf("loading harness for agent %q: %w", agentName, err)
 			errs = append(errs, wrapped)
-			emitter.failure(agentName, wrapped)
+			emitter.failure(agentName, lintCodeHarnessFailed, wrapped)
 			continue
 		}
 		// Same path resolution as fullsend run: relative paths resolve
@@ -323,7 +353,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		if err := h.ResolveRelativeTo(absFullsendDir); err != nil {
 			wrapped := fmt.Errorf("resolving paths for agent %q: %w", agentName, err)
 			errs = append(errs, wrapped)
-			emitter.failure(agentName, wrapped)
+			emitter.failure(agentName, lintCodeHarnessFailed, wrapped)
 			continue
 		}
 		// Same ${VAR} reference check as fullsend run, minus the host
@@ -335,23 +365,29 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		}); err != nil {
 			wrapped := fmt.Errorf("validating env for agent %q: %w", agentName, err)
 			errs = append(errs, wrapped)
-			emitter.failure(agentName, wrapped)
+			emitter.failure(agentName, lintCodeHarnessFailed, wrapped)
 			continue
 		}
 		// Same allowlist checks as fullsend run: the harness allowlist must
 		// be covered by config.yaml's, and every URL reference must match
-		// one of the two. String comparison only, nothing is fetched.
-		if h.HasURLReferences() {
+		// one of the two. String comparison only, nothing is fetched. The
+		// subset check runs for URL-referencing harnesses (as before) and
+		// for every harness whose runtime fetch service can start
+		// (shouldStartFetchService: allow_runtime_fetch, URL-dir resources,
+		// or a bare allowed_remote_resources declaration) (#9291).
+		if h.HasURLReferences() || shouldStartFetchService(h) {
 			if err := h.ValidateAllowedRemoteResources(cfg.AllowedResources()); err != nil {
 				wrapped := fmt.Errorf("validating allowed remote resources for agent %q: %w", agentName, err)
 				errs = append(errs, wrapped)
-				emitter.failure(agentName, wrapped)
+				emitter.failure(agentName, lintCodeHarnessFailed, wrapped)
 				continue
 			}
+		}
+		if h.HasURLReferences() {
 			if err := validateURLReferencesAllowed(h, cfg.AllowedResources()); err != nil {
 				wrapped := fmt.Errorf("validating allowed remote resources for agent %q: %w", agentName, err)
 				errs = append(errs, wrapped)
-				emitter.failure(agentName, wrapped)
+				emitter.failure(agentName, lintCodeHarnessFailed, wrapped)
 				continue
 			}
 		}
@@ -369,7 +405,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 		if err := h.ValidateFilesExist(); err != nil {
 			wrapped := fmt.Errorf("validating files for agent %q: %w", agentName, err)
 			errs = append(errs, wrapped)
-			emitter.failure(agentName, wrapped)
+			emitter.failure(agentName, lintCodeHarnessFailed, wrapped)
 			continue
 		}
 		// ValidateFilesExist leaves local OpenShell profiles and provider
@@ -381,7 +417,7 @@ func runLint(cmd *cobra.Command, fullsendDir, forgeFlag, only string, strict, of
 			if _, err := resolve.ResolveHarness(cmd.Context(), local, resolve.ResolveOpts{WorkspaceRoot: absFullsendDir}); err != nil {
 				wrapped := fmt.Errorf("resolving local profiles/providers for agent %q: %w", agentName, err)
 				errs = append(errs, wrapped)
-				emitter.failure(agentName, wrapped)
+				emitter.failure(agentName, lintCodeHarnessFailed, wrapped)
 			}
 		}
 	}
@@ -420,21 +456,25 @@ func (c lintScopedConfig) AgentEntries() []config.AgentEntry { return c.entries 
 // check, including duplicate detection, on the entry's name: validating
 // each name's entries on their own reports exactly the errors validating
 // the whole list would, without one agent's error masking the others.
+// Each entry's position in the full list is kept so errors name the same
+// agents[N] a full lint does.
 func selectLintAgent(entries []config.AgentEntry, name string, allowlist []string) ([]config.AgentEntry, int, error) {
 	groups := make(map[string][]config.AgentEntry)
+	positions := make(map[string][]int)
 	var order []string
-	for _, e := range entries {
+	for i, e := range entries {
 		key := strings.ToLower(e.DerivedName())
 		if _, ok := groups[key]; !ok {
 			order = append(order, key)
 		}
 		groups[key] = append(groups[key], e)
+		positions[key] = append(positions[key], i)
 	}
 
 	selectedKey := strings.ToLower(name)
 	siblingErrs := 0
 	for _, key := range order {
-		if key != selectedKey && config.ValidateAgentEntries(groups[key], allowlist) != nil {
+		if key != selectedKey && config.ValidateAgentEntriesAt(groups[key], positions[key], allowlist) != nil {
 			siblingErrs++
 		}
 	}
@@ -454,7 +494,7 @@ func selectLintAgent(entries []config.AgentEntry, name string, allowlist []strin
 		sort.Strings(enabled)
 		return nil, siblingErrs, fmt.Errorf("agent %q is not registered in config.yaml; registered agents that can be linted: %s", name, strings.Join(enabled, ", "))
 	}
-	if err := config.ValidateAgentEntries(selected, allowlist); err != nil {
+	if err := config.ValidateAgentEntriesAt(selected, positions[selectedKey], allowlist); err != nil {
 		return nil, siblingErrs, fmt.Errorf("invalid agent config: %w", err)
 	}
 	if config.IsAgentExplicitlyDisabled(selected, name) {

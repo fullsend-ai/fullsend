@@ -85,6 +85,31 @@ type ConvergeConfig struct {
 	// manifest and never logged or reported.
 	OpenAIAPIKey string
 
+	// JiraToken and JiraEmail are written as FULLSEND_JIRA_TOKEN and
+	// FULLSEND_JIRA_EMAIL to repositories whose effective
+	// tracker.jira.poll.enabled is true (#9076). The token is required
+	// when the repository has no FULLSEND_JIRA_TOKEN yet; an omitted value
+	// preserves the existing secret. Command-line input only: never
+	// persisted to the manifest and never logged or reported.
+	JiraToken string
+	JiraEmail string
+	// JiraClientID and JiraClientSecret are written as
+	// FULLSEND_JIRA_CLIENT_ID and FULLSEND_JIRA_CLIENT_SECRET instead of
+	// the token, for an Atlassian service account's OAuth 2.0 credential
+	// (#9176). Supplying them removes an existing token and email, and
+	// supplying a token removes existing client credentials. Command-line
+	// input only: never persisted to the manifest
+	// and never logged or reported.
+	JiraClientID     string
+	JiraClientSecret string
+
+	// TraceKeyPlans holds the trace signing key writes planned by
+	// EnsureTraceSigningKeys, keyed "owner/repo" (ADR 0154). A repository
+	// with a plan gets FULLSEND_TRACE_SIGNING_KEY and
+	// FULLSEND_TRACE_SIGNING_KEY_ID before its scaffold or config commit
+	// (convergeTraceSigningKey). Never logged or reported.
+	TraceKeyPlans map[string]*TraceKeyPlan
+
 	// ReviewAppClientID is the OAuth client ID of the review agent's
 	// GitHub App, pre-resolved by the caller for ReviewAppClientIDAppSet.
 	// It seeds the per-repo resolution cache so repos on that app set
@@ -245,6 +270,11 @@ type convergeDiscovery struct {
 	components    []ComponentStatus
 	preset        []byte
 	managedConfig []byte
+	// overlay is the installed .fullsend/config.yaml read once to select
+	// the pinned fullsend_ref's configuration schema (#9292); nil when the
+	// repository follows the running release, in which case the overlay
+	// gates read it themselves.
+	overlay *overlaySnapshot
 	// appSet is the effective FULLSEND_APP_SET value to persist (GitHub
 	// only). When app_set is explicitly configured it is the resolved
 	// value; otherwise it preserves an existing repo variable, falling
@@ -288,6 +318,11 @@ type convergeDiscovery struct {
 	// region the probe does not report the variable, so discovery
 	// records its presence separately.
 	gcpRegionExists bool
+
+	// jira is the repository's Jira polling state: the effective
+	// tracker.jira mapping, whether polling is enabled, and whether the
+	// Jira credential secrets exist (#9076).
+	jira jiraPollState
 }
 
 // withVertexInputs returns cfg with this repository's effective Vertex
@@ -757,6 +792,10 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	// (e.g. a trailing newline from a pipe) would otherwise defeat GitLab
 	// masking and be trimmed only at runtime.
 	cfg.OpenAIAPIKey = strings.TrimSpace(cfg.OpenAIAPIKey)
+	cfg.JiraToken = strings.TrimSpace(cfg.JiraToken)
+	cfg.JiraEmail = strings.TrimSpace(cfg.JiraEmail)
+	cfg.JiraClientID = strings.TrimSpace(cfg.JiraClientID)
+	cfg.JiraClientSecret = strings.TrimSpace(cfg.JiraClientSecret)
 
 	manifest := cfg.Manifest
 	if err := manifest.Validate(); err != nil {
@@ -776,7 +815,8 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			return nil, err
 		}
 	}
-	excludedUsesOpenAI, excludedUsesVertex := false, false
+	store := newPresetCache()
+	excludedUsesOpenAI, excludedUsesVertex, excludedUsesJira := false, false, false
 	if len(cfg.ExcludeRepos) > 0 {
 		excluded := make(map[string]bool, len(cfg.ExcludeRepos))
 		for _, name := range cfg.ExcludeRepos {
@@ -791,11 +831,27 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			// An excluded repo takes no write, but it is still part of the
 			// selection the credential inputs are validated against, so a
 			// skipped consumer does not fail the run for the others.
-			switch manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry).InferenceAuth {
+			excludedResolved := manifest.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+			switch excludedResolved.InferenceAuth {
 			case InferenceAuthOpenAIAPIKey:
 				excludedUsesOpenAI = true
 			case InferenceAuthVertexWIF, InferenceAuthOpenAIWIF:
 				excludedUsesVertex = true
+			}
+			// Polling can be enabled by the declared preset alone, so the
+			// preset is read (never written) to see the same effective
+			// configuration a selected repo would. A preset that cannot be
+			// loaded, or a configuration that does not resolve, counts the
+			// repo as a consumer: the run is not failed on its account.
+			var excludedPreset []byte
+			var presetErr error
+			if excludedResolved.Config != "" {
+				excludedPreset, presetErr = store.Load(ctx, excludedResolved.Config, excludedResolved.ConfigHash)
+			}
+			if presetErr != nil {
+				excludedUsesJira = true
+			} else if jira, jiraErr := effectiveJiraTracking(excludedResolved, excludedPreset); jiraErr != nil || jira.PollEnabled() {
+				excludedUsesJira = true
 			}
 		}
 		repos = kept
@@ -885,7 +941,6 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	discoveries := make([]convergeDiscovery, len(repos))
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
-	store := newPresetCache()
 
 	for i, r := range repos {
 		wg.Add(1)
@@ -932,6 +987,12 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: inputErr}
 				return
 			}
+			jiraTracking, jiraErr := effectiveJiraTracking(resolved, presetData)
+			if jiraErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: jiraErr}
+				return
+			}
+			jiraState := jiraPollState{jira: jiraTracking, enabled: jiraTracking.PollEnabled()}
 			repoFullName := rr.Owner + "/" + rr.Repo
 			progress(repoFullName, "discover", "Checking installation status")
 
@@ -1023,7 +1084,14 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				}
 			}
 
+			jiraState, jiraErr = probeJiraPollSecrets(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, jiraState)
+			if jiraErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: jiraErr}
+				return
+			}
+
 			discoveries[idx] = convergeDiscovery{
+				jira:              jiraState,
 				repo:              rr,
 				resolved:          resolved,
 				components:        probed,
@@ -1063,6 +1131,28 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 	}
 	if cfg.WIFProvider != "" && !usesVertex {
 		return nil, fmt.Errorf("--vertex-wif-provider was supplied but no selected repository uses inference.auth %s or %s", InferenceAuthVertexWIF, InferenceAuthOpenAIWIF)
+	}
+	// A repository whose discovery failed may still enable Jira polling;
+	// it is reported on its own rather than failing the whole run.
+	usesJira := excludedUsesJira
+	for _, d := range discoveries {
+		if d.jira.enabled || d.configErr != nil || d.err != nil {
+			usesJira = true
+		}
+	}
+	if !usesJira {
+		if cfg.JiraToken != "" {
+			return nil, fmt.Errorf("--jira-token was supplied but no selected repository sets tracker.jira.poll.enabled: true")
+		}
+		if cfg.JiraEmail != "" {
+			return nil, fmt.Errorf("--jira-email was supplied but no selected repository sets tracker.jira.poll.enabled: true")
+		}
+		if cfg.JiraClientID != "" {
+			return nil, fmt.Errorf("--jira-client-id was supplied but no selected repository sets tracker.jira.poll.enabled: true")
+		}
+		if cfg.JiraClientSecret != "" {
+			return nil, fmt.Errorf("--jira-client-secret was supplied but no selected repository sets tracker.jira.poll.enabled: true")
+		}
 	}
 
 	// Phase 2: parallel convergence — apply needed actions.
@@ -1145,6 +1235,29 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		// Render the managed configuration before any writes so a
 		// validation failure fails the repo without applying changes.
 		if d.resolved.ConfigManaged {
+			// Render in the schema the repository's effective
+			// fullsend_ref reads (#9292).
+			// The installed overlay is read for a pinned ref only, as
+			// status does, so a schema-neutral desired config still
+			// resolves the schema when the overlay is schema-dependent.
+			// A read error fails the repo before any write.
+			// That read is kept as a snapshot the overlay gates reuse, so
+			// it adds no forge read.
+			var installedOverlay []byte
+			if pinnedFullsendRef(d.resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag) {
+				data, found, readErr := readManagedConfigOverlayFile(ctx, d.resolved)
+				if readErr != nil {
+					result.Results[i] = ConvergeResult{
+						Owner: d.repo.Owner,
+						Repo:  d.repo.Repo,
+						Error: fmt.Errorf("reading %s: %w", preset.OverlayPath, readErr),
+					}
+					continue
+				}
+				installedOverlay = data
+				d.overlay = &overlaySnapshot{data: data, found: found}
+			}
+			d.resolved.ConfigSchema = selectManagedConfigSchema(ctx, d.resolved, installedOverlay, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
 			body, _, configErr := desiredManagedConfig(d.resolved)
 			if configErr != nil {
 				result.Results[i] = ConvergeResult{
@@ -1161,7 +1274,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			// would fire only after they had changed the repository. A
 			// fresh install is gated before Install in its own path.
 			if workflowPresent(d.components) {
-				if gateErr := checkEstablishedOverlayGate(ctx, d.resolved, body); gateErr != nil {
+				if gateErr := checkEstablishedOverlayGateFrom(ctx, d.resolved, body, d.overlay); gateErr != nil {
 					result.Results[i] = ConvergeResult{
 						Owner: d.repo.Owner,
 						Repo:  d.repo.Repo,
@@ -1248,6 +1361,18 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				Repo:  d.repo.Repo,
 				Error: fmt.Errorf("%s/%s: the OpenAI API key cannot be stored as a masked GitLab CI/CD variable (at least 8 characters from A-Z a-z 0-9 _ + = / @ : . ~ -, no whitespace); check the --openai-api-key value",
 					d.repo.Owner, d.repo.Repo),
+			}
+			continue
+		}
+
+		// A repository with Jira polling enabled needs a usable Jira token
+		// or OAuth 2.0 client credentials (existing or supplied) before
+		// any write.
+		if jiraErr := validateJiraPollInputs(d, cfg); jiraErr != nil {
+			result.Results[i] = ConvergeResult{
+				Owner: d.repo.Owner,
+				Repo:  d.repo.Repo,
+				Error: jiraErr,
 			}
 			continue
 		}
@@ -1415,6 +1540,14 @@ func convergeRepo(ctx context.Context,
 			return cr
 		}
 	}
+	if err := checkGitHubJiraPollWorkflow(ctx, d, cfg, refResolver); err != nil {
+		cr.Error = err
+		return cr
+	}
+	if err := checkGitLabJiraOAuthSupport(ctx, d, cfg, refResolver); err != nil {
+		cr.Error = err
+		return cr
+	}
 
 	auth := resolved.InferenceAuth
 	// A pinned scaffold that predates the OpenAI credential mapping cannot
@@ -1517,7 +1650,7 @@ func convergeRepo(ctx context.Context,
 		var configSafetyRejected *ComponentAction
 		var existingUnmanagedConfig []byte
 		if resolved.ConfigManaged {
-			existing, found, readErr := readExistingFile(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo, preset.OverlayPath)
+			existing, found, readErr := d.overlay.readOverlay(ctx, resolved)
 			if readErr != nil {
 				cr.Error = fmt.Errorf("reading existing %s: %w", preset.OverlayPath, readErr)
 				return cr
@@ -1526,7 +1659,7 @@ func convergeRepo(ctx context.Context,
 			// established-path gate, status and preflight do: the safety
 			// comparison does not check decoded values such as runtime.
 			if found {
-				if valErr := validateExistingOverlay(existing); valErr != nil {
+				if valErr := validateExistingOverlay(existing, resolved.Forge); valErr != nil {
 					cr.Error = fmt.Errorf("convergence errors: %w", valErr)
 					return cr
 				}
@@ -1567,6 +1700,7 @@ func convergeRepo(ctx context.Context,
 		// on preview fidelity).
 		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
 		ref, tag, manifestRef := rref.ref, rref.tag, rref.manifestRef
+		jiraRender := scaffold.RenderOptions{UpstreamRef: ref, UpstreamTag: tag}
 
 		vendor := resolved.Vendor
 		if vendor && resolved.Forge == ForgeGitLab {
@@ -1673,6 +1807,17 @@ func convergeRepo(ctx context.Context,
 			_, staleVendoredActions = applyStaleVendoredPlan(installFiles, plan, cfg.DryRun, repoFullName, progress)
 		}
 
+		// The trace signing key is written before Install, so the seed never
+		// trails the commit that delivers the config naming its key
+		// (ADR 0154). A dry run reports it; a failure stops the repository
+		// before Install.
+		traceActions := convergeTraceSigningKey(ctx, d, cfg, progress)
+		cr.Actions = append(cr.Actions, traceActions...)
+		if actionsError(traceActions) != nil {
+			cr.Error = actionsError(cr.Actions)
+			return cr
+		}
+
 		if cfg.DryRun {
 			cr.Installed = true
 			if resolved.Forge == ForgeGitLab {
@@ -1699,6 +1844,13 @@ func convergeRepo(ctx context.Context,
 			// the preview must not be reported as successful.
 			var dryCleanupErrors []string
 			for _, a := range dryCleanup {
+				if a.Action == "error" {
+					dryCleanupErrors = append(dryCleanupErrors, a.Detail)
+				}
+			}
+			dryJira := convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{render: jiraRender}, progress)
+			cr.Actions = append(cr.Actions, dryJira...)
+			for _, a := range dryJira {
 				if a.Action == "error" {
 					dryCleanupErrors = append(dryCleanupErrors, a.Detail)
 				}
@@ -1732,9 +1884,23 @@ func convergeRepo(ctx context.Context,
 			}
 		}
 
+		// Jira polling converges when the install commits its scaffold:
+		// its credentials are written after Install has written its own,
+		// and a file-based poll resource joins the same scaffold commit.
+		var jiraActions []ComponentAction
+		scaffoldCommit := installCommit
+		installCommit = func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, installed bool) error {
+			jiraActions = convergeJiraPoll(ctx, d, cfg, jiraPollDelivery{
+				render: jiraRender,
+				stage:  func(f forge.TreeFile) { files = append(files, f) },
+			}, progress)
+			return scaffoldCommit(ctx, owner, repo, files, direct, installed)
+		}
+
 		installResult, installErr := Install(ctx, installCfg, resolved.ForgeConfig.Client, installCommit, progress)
 		if installErr != nil {
 			cr.Error = installErr
+			cr.Actions = append(cr.Actions, jiraActions...)
 			if installResult != nil {
 				cr.WIFProvider = installResult.WIFProvider
 			}
@@ -1755,6 +1921,7 @@ func convergeRepo(ctx context.Context,
 		// earlier run wrote the credentials but failed to complete setup or
 		// to delete the obsolete secrets.
 		cleanup := removeObsoleteInferenceSecrets(ctx, resolved, false, false, installResult.ScaffoldFiles, progress)
+		cleanup = append(cleanup, jiraActions...)
 		cr.Actions = append(cr.Actions, cleanup...)
 		var cleanupErrors []string
 		for _, a := range cleanup {
@@ -1774,6 +1941,29 @@ func convergeRepo(ctx context.Context,
 	cr.Actions = append(cr.Actions, orderedActions...)
 	cr.Error = phaseErr
 	if cr.Error != nil {
+		return cr
+	}
+
+	// 2d': Converge Jira polling: credential secrets and the forge's poll
+	// resources, or their removal when polling is disabled (#9076). A
+	// file-based poll resource joins the scaffold commit below (#9109).
+	jiraDelivery := jiraPollDelivery{
+		stage: func(f forge.TreeFile) { allScaffoldFiles = append(allScaffoldFiles, f) },
+	}
+	if d.jira.enabled {
+		rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
+		jiraDelivery.render = scaffold.RenderOptions{UpstreamRef: rref.ref, UpstreamTag: rref.tag}
+	}
+	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, jiraDelivery, progress)...)
+
+	// 2d'': The trace signing key (ADR 0154), before the commit that delivers
+	// the config naming it. A failure stops the repository here. Until that
+	// commit is on the default branch, the default branch's config does not
+	// list the key the secret holds.
+	traceActions := convergeTraceSigningKey(ctx, d, cfg, progress)
+	cr.Actions = append(cr.Actions, traceActions...)
+	if actionsError(traceActions) != nil {
+		cr.Error = actionsError(cr.Actions)
 		return cr
 	}
 

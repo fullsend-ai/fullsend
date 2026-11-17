@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/url"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/randutil"
 )
 
 // LiveClient implements forge.Client for the GitLab REST API v4.
@@ -81,6 +81,13 @@ func validateBaseURL(rawURL string) error {
 		return nil
 	}
 	return fmt.Errorf("base URL %q uses insecure scheme %q; only https is allowed for non-loopback hosts", rawURL, u.Scheme)
+}
+
+// ValidateBaseURL applies the client's base URL rule: https, or any scheme
+// for a loopback host (localhost, 127.0.0.1, ::1). Callers that derive
+// other settings from the GitLab URL use it to accept the same URLs.
+func ValidateBaseURL(rawURL string) error {
+	return validateBaseURL(rawURL)
 }
 
 // New creates a new GitLab client with the given project access token.
@@ -212,6 +219,11 @@ func (c *LiveClient) doAttempts(ctx context.Context, method, path string, body a
 		}
 
 		resp, err := c.http.Do(req)
+		status := 0
+		if err == nil {
+			status = resp.StatusCode
+		}
+		logRequest(ctx, method, path, status)
 		if err != nil {
 			if isTransientError(err) && isIdempotent(method) && attempt < attempts-1 {
 				delay := retryDelay(nil, attempt)
@@ -288,7 +300,7 @@ func retryDelay(resp *http.Response, attempt int) time.Duration {
 	}
 	base := time.Duration(math.Pow(2, float64(attempt))) * time.Second
 	half := base / 2
-	return half + time.Duration(rand.Int64N(int64(half)+1))
+	return half + time.Duration(randutil.Int64N(int64(half)+1))
 }
 
 func checkStatus(resp *http.Response, acceptable ...int) error {

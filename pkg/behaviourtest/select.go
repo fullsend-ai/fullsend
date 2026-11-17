@@ -29,7 +29,7 @@ func installFactoryFor(environment string) install.Factory {
 
 // poolConfigFor returns the slot pool and runtime dependencies the
 // install factory needs: the environment's layout (derived DEV orgs
-// halfsend-01 … halfsend-12, or the unsuffixed STAGE org halfsend; see
+// halfsend-01 … halfsend-22, or the unsuffixed STAGE org halfsend; see
 // install.PoolLayoutForEnvironment), one installation token per org via
 // e2etest.TokenForOrg, and live forge clients.
 func poolConfigFor(environment string, e2eCfg e2etest.EnvConfig, binary string, logf func(string, ...any)) install.PoolConfig {

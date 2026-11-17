@@ -77,6 +77,7 @@ func (c *LiveClient) createMergeRequest(ctx context.Context, projPath string, pa
 	}
 
 	var mr struct {
+		ID           int64  `json:"id"`
 		IID          int    `json:"iid"`
 		Title        string `json:"title"`
 		WebURL       string `json:"web_url"`
@@ -88,6 +89,7 @@ func (c *LiveClient) createMergeRequest(ctx context.Context, projPath string, pa
 	}
 
 	return &forge.ChangeProposal{
+		ID:     mr.ID,
 		Number: mr.IID,
 		URL:    mr.WebURL,
 		Title:  mr.Title,
@@ -112,6 +114,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 		}
 
 		var mrs []struct {
+			ID              int64  `json:"id"`
 			IID             int    `json:"iid"`
 			Title           string `json:"title"`
 			WebURL          string `json:"web_url"`
@@ -151,6 +154,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 				headRepo = resolved
 			}
 			result = append(result, forge.ChangeProposal{
+				ID:       mr.ID,
 				Number:   mr.IID,
 				URL:      mr.WebURL,
 				Title:    mr.Title,
@@ -241,6 +245,11 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		AuthorID: mr.Author.Username,
 		IsFork:   isFork,
 	}, nil
+}
+
+// GetPullRequestAuthorizationContext is not supported on GitLab (e2e gate is GitHub-only).
+func (c *LiveClient) GetPullRequestAuthorizationContext(_ context.Context, _, _ string, _ int) (*forge.PullRequestAuthorizationContext, error) {
+	return nil, forge.ErrNotSupported
 }
 
 // GetPullRequestHeadSHA returns the current HEAD commit SHA of a merge request.
@@ -345,22 +354,49 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 		}
 
 		var diffs []struct {
-			NewPath string `json:"new_path"`
-			Diff    string `json:"diff"`
+			OldPath     string `json:"old_path"`
+			NewPath     string `json:"new_path"`
+			NewFile     bool   `json:"new_file"`
+			RenamedFile bool   `json:"renamed_file"`
+			DeletedFile bool   `json:"deleted_file"`
+			OldMode     string `json:"a_mode"`
+			NewMode     string `json:"b_mode"`
+			Diff        string `json:"diff"`
 		}
 		if err := decodeJSON(resp, &diffs); err != nil {
 			return nil, fmt.Errorf("decode merge request file diffs page %d: %w", page, err)
 		}
 
 		for _, d := range diffs {
+			status := "modified"
+			previousPath := ""
+			switch {
+			case d.NewFile:
+				status = "added"
+			case d.DeletedFile:
+				status = "removed"
+			case d.RenamedFile:
+				status = "renamed"
+				previousPath = d.OldPath
+			}
 			files = append(files, forge.PullRequestFileDiff{
-				Path:  d.NewPath,
+				Path:         d.NewPath,
+				PreviousPath: previousPath,
+				Status:       status,
+				OldMode:      d.OldMode,
+				NewMode:      d.NewMode,
+				ModesVerified: (status == "added" && d.NewMode != "") ||
+					(status == "removed" && d.OldMode != "") ||
+					(status != "added" && status != "removed" && d.OldMode != "" && d.NewMode != ""),
 				Patch: d.Diff,
 			})
 		}
 
 		if len(diffs) < 100 {
 			break
+		}
+		if page == 100 {
+			return files, fmt.Errorf("%w at page 100", forge.ErrDiffListingTruncated)
 		}
 	}
 

@@ -6,6 +6,9 @@ func TestAgentEventInterfaceSatisfied(t *testing.T) {
 	// Compile-time verification that all concrete types satisfy AgentEvent.
 	var events []AgentEvent
 	events = append(events,
+		TaskProgressEvent{TaskID: "task", State: TaskRunning},
+		StatusProgressEvent{Kind: "hook", Label: "Hook"},
+		ModelFallbackEvent{From: "old", To: "new"},
 		InitEvent{Model: "claude-opus-4-6", Version: "1.0.0"},
 		ThinkingEvent{Text: "thinking..."},
 		TextEvent{Text: "hello"},
@@ -17,7 +20,7 @@ func TestAgentEventInterfaceSatisfied(t *testing.T) {
 		ToolResultEvent{ID: "toolu_01abc", Result: "file contents"},
 		PluginErrorEvent{Plugin: "demo@inline", Type: "path-not-found", Path: "/plugins/demo", Message: "not found"},
 	)
-	if len(events) != 10 {
-		t.Errorf("expected 10 event types, got %d", len(events))
+	if len(events) != 13 {
+		t.Errorf("expected 13 event types, got %d", len(events))
 	}
 }

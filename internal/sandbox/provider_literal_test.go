@@ -229,3 +229,20 @@ func TestProviderConfigCannotExpandCredentialOnlyKeys(t *testing.T) {
 	assert.Contains(t, upd, "URL=https://x/")
 	assert.NotContains(t, strings.Join(upd, " "), token)
 }
+
+func TestProviderCredentialEmpty(t *testing.T) {
+	t.Setenv("PCE_SET", "a-value")
+	t.Setenv("PCE_BLANK", " \n")
+	t.Setenv("PCE_DENIED", "denied-value")
+	t.Setenv("PCE_CRED_ONLY", "cred-only-value")
+	DenyExpansionKeys("PCE_DENIED")
+	CredentialOnlyExpansionKeys("PCE_CRED_ONLY")
+
+	assert.False(t, ProviderCredentialEmpty("${PCE_SET}"))
+	assert.False(t, ProviderCredentialEmpty("${PCE_CRED_ONLY}"), "a credential value may expand a credential-only key")
+	assert.False(t, ProviderCredentialEmpty("literal"))
+	assert.True(t, ProviderCredentialEmpty(""))
+	assert.True(t, ProviderCredentialEmpty("${PCE_UNSET_FOR_TEST}"))
+	assert.True(t, ProviderCredentialEmpty("${PCE_BLANK}"), "whitespace counts as empty")
+	assert.True(t, ProviderCredentialEmpty("${PCE_DENIED}"), "a denied key expands empty")
+}

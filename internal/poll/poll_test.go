@@ -66,6 +66,27 @@ func (r *stubRouter) Route(_ *dispatch.NormalizedEvent) ([]string, error) {
 	return r.stages, r.err
 }
 
+// labelStubRouter routes to one stage only when the event's state.labels
+// carry the trigger label — the shape of a CEL trigger keyed on
+// state.labels — and records the events it routed, so a test can assert on
+// the bounded fields the poller hands the matcher.
+type labelStubRouter struct {
+	trigger string
+	matched []int
+	routed  []*dispatch.NormalizedEvent
+}
+
+func (r *labelStubRouter) Route(ev *dispatch.NormalizedEvent) ([]string, error) {
+	r.routed = append(r.routed, ev)
+	for _, label := range ev.State.Labels {
+		if label == r.trigger {
+			r.matched = append(r.matched, ev.Entity.ID)
+			return []string{"triage"}, nil
+		}
+	}
+	return nil, nil
+}
+
 func TestRunEmptyPoll(t *testing.T) {
 	mc := newMockClient()
 
@@ -509,6 +530,80 @@ func TestRunConversionErrorSkipsEvent(t *testing.T) {
 	}
 }
 
+func TestRunMissingMRCloserIsObservedWithoutFailure(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
+	mc.mrs = []MergeRequest{{
+		IID:             11,
+		State:           "closed",
+		ClosedAt:        now,
+		UpdatedAt:       now,
+		Author:          UserRef{ID: 42, Username: "alice"},
+		SourceProjectID: 1,
+		TargetProjectID: 1,
+	}}
+	mc.mrNotes[11] = []Note{}
+
+	router := &stubRouter{stages: []string{"retro"}}
+	p := New(mc, router, "group/project", withTestSecret(Options{Mode: "events"}))
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v, want missing-closer event to be observed without failure", err)
+	}
+	if mc.pipelineCounter != 0 {
+		t.Fatalf("pipeline count = %d, want 0", mc.pipelineCounter)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("poll state was not persisted")
+	}
+	eventKey := (RoutableEvent{Type: "mr_event", Action: "closed", IID: 11, UpdatedAt: now}).Key()
+	if got.FailedKeysFull[eventKey] != 0 {
+		t.Errorf("failed-key count for %s = %d, want 0", eventKey, got.FailedKeysFull[eventKey])
+	}
+	if got.LastPollAtFull == since.Format(time.RFC3339) {
+		t.Errorf("watermark remained at %s; unrouteable close should be observed", got.LastPollAtFull)
+	}
+}
+
+func TestRunMissingMRMergerIsObservedWithoutFailure(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
+	mc.mrs = []MergeRequest{{
+		IID:             11,
+		State:           "merged",
+		MergedAt:        now,
+		UpdatedAt:       now,
+		Author:          UserRef{ID: 42, Username: "alice"},
+		SourceProjectID: 1,
+		TargetProjectID: 1,
+	}}
+	mc.mrNotes[11] = []Note{}
+
+	router := &stubRouter{stages: []string{"retro"}}
+	p := New(mc, router, "group/project", withTestSecret(Options{Mode: "events"}))
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v, want missing-merger event to be observed without failure", err)
+	}
+	if mc.pipelineCounter != 0 {
+		t.Fatalf("pipeline count = %d, want 0", mc.pipelineCounter)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("poll state was not persisted")
+	}
+	eventKey := (RoutableEvent{Type: "mr_event", IID: 11, UpdatedAt: now}).Key()
+	if got.FailedKeysFull[eventKey] != 0 {
+		t.Errorf("failed-key count for %s = %d, want 0", eventKey, got.FailedKeysFull[eventKey])
+	}
+	if got.LastPollAtFull == since.Format(time.RFC3339) {
+		t.Errorf("watermark remained at %s; unrouteable merge should be observed", got.LastPollAtFull)
+	}
+}
+
 func TestRunAllEventsFailWatermarkNotAdvanced(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-20 * time.Minute)
@@ -806,6 +901,124 @@ func TestRunLastRetrySurfacesDrop(t *testing.T) {
 	got, ok := mc.getPollState()
 	if !ok || got.FailedKeysFull["note-10"] != maxEventRetries {
 		t.Errorf("failed keys = %v, want note-10:%d", got.FailedKeysFull, maxEventRetries)
+	}
+}
+
+// TestRunTransportBudgetRefusalDropsEventWithoutRetry verifies a dispatch
+// refused by the transport budget — deterministic, so a retry can never
+// succeed — is dropped without spending its retry budget: no failure count
+// is recorded and the watermark advances past the event, instead of three
+// retries (plus a webhook handoff) of a permanent refusal.
+func TestRunTransportBudgetRefusalDropsEventWithoutRetry(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	mc.setPollState(persistedPollState{LastPollAtFull: since.Format(time.RFC3339)})
+	mc.issues = []Issue{
+		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+	}
+	// A /fs-* command body past the transport budget: buildEventPayload
+	// fails closed (a command note is never dispatched without its
+	// complete event) and dispatch() wraps ErrTransportBudget.
+	mc.notes[1] = []Note{
+		{ID: 10, Body: "/fs-triage " + strings.Repeat("<", 6000), CreatedAt: now, Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
+
+	router := &stubRouter{stages: []string{"triage", "code"}}
+	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v, want a clean cycle: the refusal is permanent, not a retryable failure", err)
+	}
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines, got %d", mc.pipelineCounter)
+	}
+	got, ok := mc.getPollState()
+	if !ok {
+		t.Fatal("expected poll state to be persisted")
+	}
+	if n := got.FailedKeysFull["note-10"]; n != 0 {
+		t.Errorf("failed keys = %v, want no retry count recorded for note-10", got.FailedKeysFull)
+	}
+	if got.LastPollAtFull == "" || got.LastPollAtFull == since.Format(time.RFC3339) {
+		t.Error("watermark should advance past the refused event so the poller does not retry it forever")
+	}
+}
+
+// TestRunLabelsBoundBeforeTriggerMatch verifies the GitLab poller bounds
+// state.labels and the attacker-shaped single strings before trigger
+// matching, with the same bounds the dispatch door applies when encoding
+// the payload: a trigger keyed on a label past the 1024-byte JSON bound
+// does not route, and a trigger keyed on the tail of a single string past
+// the 258-byte JSON bound sees the bounded prefix, so the matcher never
+// runs on a field the transported event drops — the poller twin of the
+// jirapoll GitLab-target test, and exactly what the cel-triggers-reference
+// bound caveat documents.
+func TestRunLabelsBoundBeforeTriggerMatch(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-20 * time.Minute)
+	mc := newMockClient()
+	// Twenty-four forty-character pad labels overflow the 1024-byte JSON
+	// bound (2 + 24*42 + 23 = 1033 bytes with quotes and commas), so the
+	// trigger label after them is past the bound and dropped; the
+	// in-bound issue carries it alone.
+	pad := strings.Repeat("p", 40)
+	overLabels := make([]string, 0, 25)
+	for i := 0; i < 24; i++ {
+		overLabels = append(overLabels, pad)
+	}
+	overLabels = append(overLabels, "ready-to-code")
+	// A 300-character actor login overflows the 258-byte JSON single-string
+	// bound, so the routed event must carry only its 256-character prefix.
+	longLogin := strings.Repeat("u", 300)
+	// The labels are already known state, so discovery emits no label
+	// events and the cycle routes the two notes only.
+	mc.setPollState(persistedPollState{
+		LastPollAtFull: since.Format(time.RFC3339),
+		LabelState:     LabelState{1: overLabels, 2: {"ready-to-code"}},
+	})
+	mc.issues = []Issue{
+		{IID: 1, Labels: overLabels, UpdatedAt: now, Author: UserRef{ID: 42}},
+		{IID: 2, Labels: []string{"ready-to-code"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+	}
+	mc.notes[1] = []Note{
+		{ID: 10, Body: "/fs-triage handle this", CreatedAt: now, Author: UserRef{ID: 42, Username: longLogin}},
+	}
+	mc.notes[2] = []Note{
+		{ID: 11, Body: "/fs-triage handle this", CreatedAt: now, Author: UserRef{ID: 42, Username: longLogin}},
+	}
+	mc.memberLevel[42] = 30
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
+	mc.issue[2] = &Issue{IID: 2, Author: UserRef{ID: 42}}
+
+	router := &labelStubRouter{trigger: "ready-to-code"}
+	p := New(mc, router, "group/project", withTestSecret(Options{PipelineRef: "main"}))
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if len(router.matched) != 1 || router.matched[0] != 2 {
+		t.Fatalf("routed %v, want exactly IID 2: a trigger keyed on a label past the labels bound must not match", router.matched)
+	}
+	if mc.pipelineCounter != 1 {
+		t.Errorf("expected 1 pipeline (the in-bound issue only), got %d", mc.pipelineCounter)
+	}
+	// Both notes reach the router; only the in-bound issue's event matches
+	// the trigger (asserted above through matched).
+	var routedInBound *dispatch.NormalizedEvent
+	for _, ev := range router.routed {
+		if ev.Entity.ID == 2 {
+			routedInBound = ev
+		}
+	}
+	if routedInBound == nil {
+		t.Fatal("the in-bound issue's event never reached the router")
+	}
+	if got, want := routedInBound.Actor.ID, longLogin[:transportStringRefLimit-2]; got != want {
+		t.Errorf("routed actor.id = %d characters, want the %d-character bounded prefix: the single-string bound must be applied before the matcher runs",
+			len(got), len(want))
 	}
 }
 

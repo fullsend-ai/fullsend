@@ -77,6 +77,28 @@ func TestDiscoverAgents(t *testing.T) {
 		assert.Equal(t, "triage", agents[0].Role)
 	})
 
+	t.Run("unsupported schema_version returns multi-error with valid files", func(t *testing.T) {
+		// A schema_version this build does not interpret is rejected at
+		// parse (ADR 0127 Decision 1), so discovery treats it like any
+		// other per-file parse failure: the valid file's identity is
+		// still returned, and the multi-error names the offending file.
+		dir := t.TempDir()
+		writeFile(t, dir, "good.yaml", "agent: agents/good.md\nrole: triage\nslug: fs-triage\n")
+		writeFile(t, dir, "future.yaml", "schema_version: 2\nagent: agents/future.md\nrole: coder\nslug: fs-coder\n")
+
+		agents, err := DiscoverAgents(dir)
+		require.Error(t, err)
+		require.Len(t, agents, 1)
+		assert.Equal(t, "triage", agents[0].Role)
+		assert.Equal(t, "fs-triage", agents[0].Slug)
+		assert.Equal(t, "good.yaml", agents[0].Filename)
+		// The per-file error carries the parse wrap and the field-named
+		// version rejection, prefixed by the offending file's name.
+		assert.ErrorContains(t, err, "future.yaml")
+		assert.ErrorContains(t, err, "parsing harness YAML:")
+		assert.ErrorContains(t, err, "schema_version 2 is not supported by this version of fullsend")
+	})
+
 	t.Run("empty directory returns empty list", func(t *testing.T) {
 		dir := t.TempDir()
 

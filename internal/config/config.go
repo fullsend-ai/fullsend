@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+	"net/url"
+	"os"
 	"path"
 	"regexp"
 	"slices"
@@ -271,17 +273,6 @@ type CommentNotificationConfig struct {
 type ReactionNotificationConfig struct {
 	Start      string `yaml:"start,omitempty"`
 	Completion string `yaml:"completion,omitempty"`
-}
-
-// AllowTargets defines which orgs and repos agents may create issues in.
-type AllowTargets struct {
-	Orgs  []string `yaml:"orgs,omitempty"`
-	Repos []string `yaml:"repos,omitempty"`
-}
-
-// CreateIssuesConfig controls cross-repo issue creation by agents.
-type CreateIssuesConfig struct {
-	AllowTargets AllowTargets `yaml:"allow_targets"`
 }
 
 // Authorization provider names accepted under authorization:.
@@ -651,13 +642,64 @@ func PerRepoDefaultRoles() []string {
 	return []string{"triage", "coder", "review", "fix", "retro", "prioritize"}
 }
 
+// defaultAllowedRepos are the repositories whose raw content the default
+// allowlist admits.
+var defaultAllowedRepos = []string{"fullsend-ai/fullsend", "fullsend-ai/agents"}
+
 // DefaultAllowedRemoteResources returns the standard allowlist prefixes
 // for base composition and agent registration URLs.
+//
+// The raw.githubusercontent.com prefixes are always included. When
+// GITHUB_SERVER_URL names a GitHub host other than github.com (for
+// example GitHub Enterprise Server), the raw-content prefixes for the
+// same repositories on that host (https://<host>/<owner>/<repo>/raw/)
+// are appended, so their copies on the configured host are admitted too.
 func DefaultAllowedRemoteResources() []string {
-	return []string{
-		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
-		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	prefixes := make([]string, 0, 2*len(defaultAllowedRepos))
+	for _, repo := range defaultAllowedRepos {
+		prefixes = append(prefixes, "https://raw.githubusercontent.com/"+repo+"/")
 	}
+	if base := GitHubServerBaseURL(os.Getenv("GITHUB_SERVER_URL")); base != "" {
+		for _, repo := range defaultAllowedRepos {
+			prefixes = append(prefixes, base+"/"+repo+"/raw/")
+		}
+	}
+	return prefixes
+}
+
+// GitHubServerBaseURL returns "https://<host>" for a GitHub server URL
+// naming a host other than github.com. It returns "" for empty input,
+// github.com, and any value that is not a bare HTTPS origin (userinfo,
+// a path, a query or a fragment), so a malformed value never widens
+// the default allowlist. The CLI derives the agents-repo fallback host
+// from it too, so that host and the allowlist entries always agree.
+func GitHubServerBaseURL(serverURL string) string {
+	serverURL = strings.TrimSpace(serverURL)
+	if serverURL == "" {
+		return ""
+	}
+	u, err := url.Parse(serverURL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return ""
+	}
+	if (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+		return ""
+	}
+	if strings.EqualFold(u.Hostname(), "github.com") {
+		return ""
+	}
+	return "https://" + strings.ToLower(u.Host)
+}
+
+// EffectiveAllowedResources returns the config-level allowlist the command
+// families that run or edit agents resolve — run/lint/lock, harness
+// dispatch, dispatch --route, the Jira poll and the agent-editing commands
+// (agent set/add/update/remove): the layered chain as-is (an omitted key
+// falls through to the parent, an explicit [] denies all remote resources,
+// a non-empty list unions with the parent's), then fullsend's default
+// prefixes ensured on top of a non-empty result.
+func EffectiveAllowedResources(cfg ConfigReader) []string {
+	return EnsureDefaultAllowedRemoteResources(cfg.AllowedResources())
 }
 
 // EnsureDefaultAllowedRemoteResources returns a new slice with default
@@ -727,6 +769,18 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 	return validateAgentEntries(agents, allowlist, true, true)
 }
 
+// ValidateAgentEntriesAt is ValidateAgentEntries for a subset of a
+// config's agents list: positions[i] is agents[i]'s index in the full
+// list, and errors report it as agents[N] so they point at the entry in
+// config.yaml rather than its index within the subset. positions must
+// have one element per entry.
+func ValidateAgentEntriesAt(agents []AgentEntry, positions []int, allowlist []string) error {
+	if len(positions) != len(agents) {
+		return fmt.Errorf("internal error: %d agent positions for %d agent entries", len(positions), len(agents))
+	}
+	return validateAgentEntriesAt(agents, positions, allowlist, true, true)
+}
+
 // validateAgentEntries is ValidateAgentEntries with two checks made
 // conditional for repos.yaml config overlay validation (ADR 0122), where
 // the resolved allowlist or the parent's registered agents may not be
@@ -745,6 +799,13 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 // self-contained agent list (a per-repo config with its full parent
 // chain resolved).
 func validateAgentEntries(agents []AgentEntry, allowlist []string, enforceAllowlist, requireBuiltinName bool) error {
+	return validateAgentEntriesAt(agents, nil, allowlist, enforceAllowlist, requireBuiltinName)
+}
+
+// validateAgentEntriesAt is validateAgentEntries reporting agents[k] as
+// agents[positions[k]] when positions is non-nil (see
+// ValidateAgentEntriesAt).
+func validateAgentEntriesAt(agents []AgentEntry, positions []int, allowlist []string, enforceAllowlist, requireBuiltinName bool) error {
 	// seen tracks agent names for duplicate detection. Each state
 	// (enabled/disabled) is tracked independently so that exactly one
 	// disable-then-enable or enable-then-disable pair is accepted while
@@ -754,7 +815,12 @@ func validateAgentEntries(agents []AgentEntry, allowlist []string, enforceAllowl
 		seenDisabled bool
 	}
 	seen := make(map[string]seenState, len(agents))
-	for i, entry := range agents {
+	for k, entry := range agents {
+		// i is the index errors report for the entry.
+		i := k
+		if positions != nil {
+			i = positions[k]
+		}
 		// A suppression-only entry (enabled: false, no source) is valid —
 		// it exists solely to disable a scaffold default by name.
 		if entry.Source == "" && !entry.IsEnabled() {
@@ -911,13 +977,18 @@ type perRepoConfig struct {
 	// fallback chain to inherit version from the parent layer.
 	Version string `yaml:"version,omitempty"`
 	Forge   string `yaml:"forge,omitempty"`
-	// Tracker is the default issue tracker backend (github, gitlab, or
-	// jira) for `fullsend issues` commands' --tracker flag. Distinct
-	// from Forge, which is the repo's hosting platform — a repo can be
-	// hosted on GitHub but track issues in Jira.
-	Tracker    string `yaml:"tracker,omitempty"`
-	KillSwitch *bool  `yaml:"kill_switch,omitempty"`
-	Runtime    string `yaml:"runtime,omitempty"`
+	// Tracker is the single canonical issue-tracker setting: a
+	// provider-discriminated mapping (github, gitlab, or jira, at most
+	// one) holding that provider's settings, including the cross-project
+	// issue destinations agents may use (allowed_targets). The provider
+	// present is the default backend for `fullsend issues` commands'
+	// --tracker flag. Distinct from Forge, which is the repo's hosting
+	// platform — a repo can be hosted on GitHub but track issues in Jira.
+	// nil falls through to parent; a set value replaces the parent's
+	// whole mapping. The legacy scalar form (tracker: jira) is rejected.
+	Tracker    *TrackingConfig `yaml:"tracker,omitempty"`
+	KillSwitch *bool           `yaml:"kill_switch,omitempty"`
+	Runtime    string          `yaml:"runtime,omitempty"`
 
 	// KeepHistory controls whether sticky comment updates append the
 	// previous body as a collapsed "Previous run" <details> block. When
@@ -933,10 +1004,9 @@ type perRepoConfig struct {
 	// distinction: nil (unset) is omitted, empty (deny-all) is
 	// marshaled as `allowed_remote_resources: []`.
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig     `yaml:"create_issues,omitempty"`
 	Authorization          []AuthorizationProvider `yaml:"authorization,omitempty"`
 	// Notifications backs the StatusNotifications() accessor. Named
-	// distinctly from the method (unlike CreateIssues/IssueCreationConfig)
+	// distinctly from the method (unlike Tracker/IssueTracking)
 	// because "StatusNotifications" is the established ConfigReader
 	// accessor name, and Go forbids a field and method sharing a name on
 	// the same type.
@@ -954,10 +1024,54 @@ type perRepoConfig struct {
 	// overrides of fullsend's pinned alias table (#6882, #6527 item 2).
 	Models *ModelsConfig `yaml:"models,omitempty"`
 
+	// Artifacts limits what the run artifact publishes (ADR 0161).
+	// content overrides the parent layer; by_source merges per key.
+	Artifacts *ArtifactsConfig `yaml:"artifacts,omitempty"`
+
+	// Progress limits what the live progress log shows (ADR 0163).
+	// verbosity overrides the parent layer; by_source merges per key.
+	Progress *ProgressConfig `yaml:"progress,omitempty"`
+
+	// TraceContextBlock is the trace_context block (ADR 0154). It backs
+	// the TraceContext() accessor and is named distinctly from it because
+	// Go forbids a field and method sharing a name on the same type.
+	TraceContextBlock *TraceContextConfig `yaml:"trace_context,omitempty"`
+
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
 	// serialization so Marshal emits only locally-set values.
 	parent PerRepoConfigReader `yaml:"-"`
+
+	// legacyCreateIssues records that the parsed YAML carried the removed
+	// top-level create_issues block, so validation can reject it instead
+	// of silently ignoring it. It is never serialized.
+	legacyCreateIssues bool `yaml:"-"`
+}
+
+// unmarshalPerRepo decodes per-repo config YAML into cfg and records a
+// leftover create_issues block (see legacyCreateIssues).
+func unmarshalPerRepo(data []byte, cfg *perRepoConfig) error {
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return err
+	}
+	has, err := hasLegacyCreateIssues(data)
+	if err != nil {
+		return err
+	}
+	cfg.legacyCreateIssues = has
+	return nil
+}
+
+// hasLegacyCreateIssues reports whether the YAML carries the removed
+// top-level create_issues key.
+func hasLegacyCreateIssues(data []byte) (bool, error) {
+	var probe struct {
+		CreateIssues *yaml.Node `yaml:"create_issues"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false, err
+	}
+	return probe.CreateIssues != nil, nil
 }
 
 const perRepoConfigHeader = `# fullsend per-repo configuration
@@ -986,11 +1100,7 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 		// triage and retro post-scripts, so only the upstream
 		// cross-repo permissions (retro proposals, triage prerequisites)
 		// need explicit entries (#8218, #8504).
-		cfg.CreateIssues = &CreateIssuesConfig{
-			AllowTargets: AllowTargets{
-				Repos: DefaultIssueCreationRepos(),
-			},
-		}
+		cfg.Tracker = DefaultIssueTracking(TrackingProviderGitHub)
 	}
 	return cfg
 }
@@ -1008,7 +1118,7 @@ func NewEmptyPerRepoOverlay() PerRepoConfigWriter {
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfigReader.
 func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
 	var cfg perRepoConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalPerRepo(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
 	cfg.parent = &perRepoDefaults{}
@@ -1019,7 +1129,7 @@ func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
 // for callers that need to modify the config after parsing.
 func ParsePerRepoConfigWriter(data []byte) (PerRepoConfigWriter, error) {
 	var cfg perRepoConfig
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := unmarshalPerRepo(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
 	cfg.parent = &perRepoDefaults{}
@@ -1048,19 +1158,21 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 type perRepoConfigMarshal struct {
 	Version                string                    `yaml:"version,omitempty"`
 	Forge                  string                    `yaml:"forge,omitempty"`
-	Tracker                string                    `yaml:"tracker,omitempty"`
+	Tracker                *TrackingConfig           `yaml:"tracker,omitempty"`
 	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
 	Runtime                string                    `yaml:"runtime,omitempty"`
 	KeepHistory            *bool                     `yaml:"keep_history,omitempty"`
 	Roles                  *[]string                 `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
 	Authorization          *[]AuthorizationProvider  `yaml:"authorization,omitempty"`
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 	MintURL                string                    `yaml:"mint_url,omitempty"`
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
 	Models                 *ModelsConfig             `yaml:"models,omitempty"`
+	Artifacts              *ArtifactsConfig          `yaml:"artifacts,omitempty"`
+	Progress               *ProgressConfig           `yaml:"progress,omitempty"`
+	TraceContext           *TraceContextConfig       `yaml:"trace_context,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -1078,9 +1190,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Runtime:             c.Runtime,
 		KeepHistory:         c.KeepHistory,
 		Agents:              c.Agents,
-		CreateIssues:        c.CreateIssues,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
+		TraceContext:        c.TraceContextBlock,
 	}
 	// Only emit inference block when at least one field is set locally.
 	if c.Inference != nil && *c.Inference != (PerRepoInferenceConfig{}) {
@@ -1088,6 +1200,12 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	}
 	if c.Models != nil && len(c.Models.Aliases) > 0 {
 		h.Models = c.Models
+	}
+	if !c.Artifacts.IsZero() {
+		h.Artifacts = c.Artifacts
+	}
+	if !c.Progress.IsZero() {
+		h.Progress = c.Progress
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -1109,12 +1227,16 @@ func (c *perRepoConfig) Validate() error {
 	if err := c.validateLocalFields(); err != nil {
 		return err
 	}
-	// Agents are validated against the resolved allowlist (including
-	// parent resources) so that URL agents covered by a parent or
-	// default prefix pass validation.
+	// Agents are validated against the effective allowlist — the
+	// resolved chain with fullsend's default prefixes ensured on a
+	// non-empty result — the same list every command family that runs
+	// or edits agents resolves through EffectiveAllowedResources, so a
+	// config one of those commands accepts validates here too. An
+	// explicit [] as the resolved value still denies all remote
+	// resources.
 	// The merged set is validated so an overlay entry that only tunes an
 	// agent registered in the base layer sees that agent's source.
-	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, true)
+	return validateAgentEntries(c.AgentEntries(), EffectiveAllowedResources(c), true, true)
 }
 
 // ValidateGlobal runs Validate's checks except the agents[] entry
@@ -1164,7 +1286,7 @@ func ValidateRuntimeAuthorization(r ConfigReader) error {
 }
 
 // validateLocalFields checks the fields that do not need a resolved
-// parent chain: version, roles, create_issues, runtime,
+// parent chain: version, roles, tracker, runtime, trace_context,
 // status_notifications, inference provider, authorization providers,
 // and model aliases. It is split out of Validate so a repos.yaml config
 // managed-configuration layer (ADR 0122) can be checked without pulling in
@@ -1192,7 +1314,10 @@ func (c *perRepoConfig) validateLocalFields() error {
 			seen[role] = true
 		}
 	}
-	if err := validateCreateIssues(c.CreateIssues); err != nil {
+	if c.legacyCreateIssues {
+		return errLegacyCreateIssues
+	}
+	if err := validateTracking(c.Tracker); err != nil {
 		return err
 	}
 	if rt := c.Runtime; rt != "" {
@@ -1216,6 +1341,15 @@ func (c *perRepoConfig) validateLocalFields() error {
 		}
 	}
 	if err := c.ValidateAuthorization(); err != nil {
+		return err
+	}
+	if err := validateArtifacts(c.Artifacts); err != nil {
+		return err
+	}
+	if err := validateProgress(c.Progress); err != nil {
+		return err
+	}
+	if err := ValidateTraceContext(c.TraceContextBlock); err != nil {
 		return err
 	}
 	// Validate the merged view, as ValidateAgentEntries does above: a bad
@@ -1254,13 +1388,25 @@ func ValidateManagedLayer(w PerRepoConfigWriter) error {
 
 // ValidateMergedManaged validates a repos.yaml managed configuration
 // (ADR 0122) after defaults.config, the platform config, and the
-// repository config have been merged (mergeManagedConfig). The resolved
-// allowlist is now correct, so
-// a URL-sourced agent entry is checked against it; an override-only entry
-// is still not required to name a compiled-in agent, since
-// config.base.yaml — which may register the agent it tunes — is not
-// layered on until the managed file is written and later read through
-// LayeredConfig.
+// repository config have been merged (mergeManagedConfig). A URL-sourced
+// agent entry is checked against the effective allowlist — the resolved
+// list with fullsend's default prefixes ensured on a non-empty result,
+// the same list every command family resolves through
+// EffectiveAllowedResources; an explicit [] as the resolved value still
+// denies all remote resources. Every writer reaching this function
+// carries the perRepoDefaults terminal parent, so the accessor already
+// resolves the defaults and the explicit call records the rule. A
+// managed block that declares its list validates the same for the
+// prefixes the merged managed blocks resolve once it is written and
+// read through LayeredConfig; a prefix declared only in
+// config.base.yaml or a config_base preset is not visible here, so
+// validation is stricter than the read for that shape. A block that
+// omits the key validates against the defaults alone and still
+// inherits a base [] (deny-all) at LayeredConfig read time, which
+// this validation cannot see. An override-only entry is still not required to name a
+// compiled-in agent, since config.base.yaml — which may register the
+// agent it tunes — is not layered on until the managed file is written
+// and later read through LayeredConfig.
 func ValidateMergedManaged(w PerRepoConfigWriter) error {
 	c := asPerRepo(w)
 	if c == nil {
@@ -1269,7 +1415,7 @@ func ValidateMergedManaged(w PerRepoConfigWriter) error {
 	if err := c.validateLocalFields(); err != nil {
 		return err
 	}
-	return validateAgentEntries(c.AgentEntries(), c.AllowedResources(), true, false)
+	return validateAgentEntries(c.AgentEntries(), EffectiveAllowedResources(c), true, false)
 }
 
 // ValidateModelAliases checks a models.aliases map: every key is one of
@@ -1306,22 +1452,4 @@ func ValidateModelAliases(aliases map[string]string) error {
 // used in validation error messages.
 var roleAliasHints = map[string]string{
 	"coder": "code",
-}
-
-func validateCreateIssues(cfg *CreateIssuesConfig) error {
-	if cfg == nil {
-		return nil
-	}
-	for _, org := range cfg.AllowTargets.Orgs {
-		if org == "" {
-			return fmt.Errorf("create_issues: empty org in allow_targets.orgs")
-		}
-	}
-	for _, repo := range cfg.AllowTargets.Repos {
-		parts := strings.SplitN(repo, "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("create_issues: repo %q in allow_targets.repos must contain owner/name", repo)
-		}
-	}
-	return nil
 }
