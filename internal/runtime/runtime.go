@@ -176,10 +176,11 @@ func (te TranscriptError) DisplayMessage() string {
 }
 
 // QuietDisplayMessage returns the transcript error as printed at the quiet
-// progress level (ADR 0163): the error type (subtype), sanitized and
-// bounded, without ErrorMessage. Telemetry keeps using DisplayMessage.
+// progress level (ADR 0163): the error type (subtype), if it is a known
+// one (quietErrorType), without ErrorMessage. Telemetry keeps using
+// DisplayMessage.
 func (te TranscriptError) QuietDisplayMessage() string {
-	return fmt.Sprintf("agent terminated with error (subtype: %s)", quietField(te.Subtype, "unknown"))
+	return fmt.Sprintf("agent terminated with error (subtype: %s)", quietErrorType(te.Subtype, "unknown"))
 }
 
 // Runtime is an agent execution backend (LLM tool-use loop) inside the sandbox.

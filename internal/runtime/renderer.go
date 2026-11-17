@@ -154,7 +154,7 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		r.endBlock()
 		subtype := sanitizeOutput(e.Subtype)
 		if r.quiet() {
-			subtype = quietField(e.Subtype, "")
+			subtype = quietErrorType(e.Subtype, "")
 		}
 		label := "Result"
 		if subtype != "" {
@@ -188,7 +188,7 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 	case ErrorEvent:
 		r.endBlock()
 		if r.quiet() {
-			r.printer.StepFail(quietField(e.ErrorType, "error"))
+			r.printer.StepFail(quietErrorType(e.ErrorType, "error"))
 			return
 		}
 		r.printer.StepFail(fmt.Sprintf("%s: %s",
@@ -210,7 +210,7 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		if r.quiet() {
 			msg := "Plugin failed to load"
 			if e.Type != "" {
-				msg += " (" + quietField(e.Type, "") + ")"
+				msg += " (" + quietErrorType(e.Type, "") + ")"
 			}
 			r.printer.StepWarn(msg)
 			return
@@ -219,21 +219,50 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 	}
 }
 
-// maxQuietFieldLen bounds a type or state printed at quiet. These fields
-// name a kind of event, not its content, so a long value is cut short.
-const maxQuietFieldLen = 40
+// quietErrorTypes are the result subtypes, error types, stop reasons and
+// plugin error types quiet prints as they are. The runtimes copy these
+// from the stream or from a transcript the agent can write, so quiet
+// prints only a value listed here, with its source:
+var quietErrorTypes = map[string]bool{
+	// Claude Code result subtypes (Agent SDK SDKResultMessage; success,
+	// error_max_turns, error_during_execution and error_max_budget_usd
+	// also appear in the tests). error_unknown is in the transcript tests.
+	"success": true, "error_max_turns": true, "error_during_execution": true,
+	"error_max_budget_usd": true, "error_max_structured_output_retries": true,
+	"error_unknown": true,
+	// Claude Code stream error types: the Anthropic API error types
+	// (API docs "Errors"); api_error and overloaded_error are in the tests.
+	"invalid_request_error": true, "authentication_error": true, "billing_error": true,
+	"permission_error": true, "not_found_error": true, "request_too_large": true,
+	"rate_limit_error": true, "api_error": true, "timeout_error": true,
+	"overloaded_error": true,
+	// Claude Code plugin_errors types seen in claude_progress_test.go.
+	"path-not-found": true, "manifest-validation-error": true, "generic-error": true,
+	// Codex: codexSubtypeFailed and codexSubtypeIncomplete.
+	codexSubtypeFailed: true, codexSubtypeIncomplete: true,
+	// OpenCode step_finish reasons (AI SDK FinishReason; stop and
+	// tool-calls are in the tests) and the transcript fallback "error".
+	"stop": true, "length": true, "content-filter": true, "tool-calls": true,
+	"error": true, "other": true, "unknown": true,
+	// OpenCode error names (session error union; APIError and
+	// UnknownError are in the tests).
+	"APIError": true, "UnknownError": true, "ProviderAuthError": true,
+	"MessageOutputLengthError": true, "MessageAbortedError": true,
+	// pi stopReasons (packages/ai/src/types.ts, see piIsErrorStop).
+	"pending": true, "toolUse": true, "aborted": true, "deferred": true,
+}
 
-// quietField returns a sanitized, bounded type or state for a quiet line,
-// or fallback when it sanitizes to empty.
-func quietField(s, fallback string) string {
-	s = sanitizeOutput(s)
+// quietErrorType is a result subtype, error type, stop reason or plugin
+// error type at quiet: the value if it is on quietErrorTypes, "other" if
+// it is not, and fallback when it is empty.
+func quietErrorType(s, fallback string) string {
 	if s == "" {
 		return fallback
 	}
-	if r := []rune(s); len(r) > maxQuietFieldLen {
-		s = string(r[:maxQuietFieldLen]) + "…"
+	if quietErrorTypes[s] {
+		return s
 	}
-	return s
+	return "other"
 }
 
 // quietStatusKinds and quietStatusStates are the status kinds and states

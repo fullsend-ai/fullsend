@@ -113,7 +113,7 @@ func detailWarning(label, detail, progressVerbosity string) string {
 // can quote what the agent read; other levels print what they always have.
 func exitedZeroStreamError(cli, detail, subtype, progressVerbosity string) string {
 	if config.ProgressIsQuiet(progressVerbosity) {
-		return cli + " exited 0 but the stream reports an error (subtype: " + quietField(subtype, "unknown") + ")"
+		return cli + " exited 0 but the stream reports an error (subtype: " + quietErrorType(subtype, "unknown") + ")"
 	}
 	return cli + " exited 0 but the stream reports an error: " + sanitizeOutput(detail)
 }

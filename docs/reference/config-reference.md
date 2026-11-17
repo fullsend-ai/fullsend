@@ -1073,8 +1073,8 @@ At `quiet`:
 
 - **Shown:** the heartbeat, the model, event kinds and states (`Task — running`,
   `Status: hook — running`; a value fullsend does not set itself prints as
-  `other`), token counts, cost, error types, transcript error types,
-  validation passed or failed, output file, transcript and scan finding
+  `other`), token counts, cost, error types and transcript error types
+  (an unknown type prints as `other`), validation passed or failed, output file, transcript and scan finding
   counts, failed step names, and the result.
 - **Left out:** reasoning, replies, tool lines, task labels, status details,
   error messages, plugin and retry messages, validation output, output file

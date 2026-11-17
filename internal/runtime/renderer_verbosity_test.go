@@ -24,7 +24,7 @@ func verbosityEvents() []AgentEvent {
 		TokensEvent{InputTokens: 10, OutputTokens: 5},
 		ErrorEvent{ErrorType: "api_error", Message: "SECRET-ERROR"},
 		RetryEvent{Attempt: 1, MaxRetries: 3, Error: "SECRET-RETRY", DelayMs: 500},
-		PluginErrorEvent{Plugin: "SECRET-PLUGIN", Type: "load_error", Message: "SECRET-PLUGIN-MSG"},
+		PluginErrorEvent{Plugin: "SECRET-PLUGIN", Type: "path-not-found", Message: "SECRET-PLUGIN-MSG"},
 		ResultEvent{IsError: true, Subtype: "error_during_execution", NumTurns: 3, TotalCostUSD: 0.5, ErrorMessage: "SECRET-RESULT"},
 	}
 }
@@ -110,7 +110,7 @@ func TestRendererVerbosityQuiet(t *testing.T) {
 			"TOKENS in=10 out=5",
 			"api_error",
 			"Retry 1/3 (delay 500ms)",
-			"Plugin failed to load (load_error)",
+			"Plugin failed to load (path-not-found)",
 			"Result: ERROR (error_during_execution)",
 			"Turns", "$0.5000")
 	}
@@ -154,12 +154,70 @@ func TestQuietStatusLineAndField(t *testing.T) {
 			t.Errorf("quietStatusLine(%+v) = %q, want %q", tc.e, got, tc.want)
 		}
 	}
-	long := strings.Repeat("x", maxQuietFieldLen+10)
-	if got := quietField(long, ""); got != strings.Repeat("x", maxQuietFieldLen)+"…" {
-		t.Errorf("quietField did not bound a long value: %q", got)
+}
+
+// At quiet, a result subtype, error type, plugin error type or transcript
+// subtype prints only if it is on the known list; anything else prints as
+// "other", since it came from the stream or a file the agent can write.
+func TestQuietErrorType(t *testing.T) {
+	for _, known := range []string{
+		"success", "error_max_turns", "error_during_execution", "error_max_budget_usd",
+		"overloaded_error", "api_error", "path-not-found", "generic-error",
+		codexSubtypeFailed, codexSubtypeIncomplete, "tool-calls", "APIError",
+		"stop", "length", "toolUse", "error", "aborted",
+	} {
+		if got := quietErrorType(known, "fb"); got != known {
+			t.Errorf("quietErrorType(%q) = %q, want it unchanged", known, got)
+		}
 	}
-	if got := quietField("\x1b[31m", "fallback"); got != "fallback" {
-		t.Errorf("quietField fallback = %q", got)
+	for _, unknown := range []string{"SECRET-TYPE", "error_max_turns\n::error::x", strings.Repeat("x", 100), "Success"} {
+		if got := quietErrorType(unknown, "fb"); got != "other" {
+			t.Errorf("quietErrorType(%q) = %q, want other", unknown, got)
+		}
+	}
+	if got := quietErrorType("", "fb"); got != "fb" {
+		t.Errorf("quietErrorType(\"\") = %q, want fallback", got)
+	}
+}
+
+// Stream-supplied type values print as "other" at quiet on every line that
+// names one, and verbatim (sanitized) at full and tools, as before.
+func TestQuietErrorTypeLines(t *testing.T) {
+	events := []AgentEvent{
+		ErrorEvent{ErrorType: "SECRET-ERRTYPE", Message: "m"},
+		PluginErrorEvent{Plugin: "p", Type: "SECRET-PLUGTYPE", Message: "m"},
+		ResultEvent{IsError: true, Subtype: "SECRET-SUBTYPE"},
+	}
+	render := func(level string) string {
+		var buf bytes.Buffer
+		r := newEventRendererAt(ui.New(&buf), level)
+		for _, e := range events {
+			r.Handle(e)
+		}
+		return buf.String()
+	}
+	quiet := render(config.ProgressVerbosityQuiet)
+	assertContainsNone(t, "quiet", quiet, "SECRET-")
+	assertContainsAll(t, "quiet", quiet, "other", "Plugin failed to load (other)", "Result: ERROR (other)")
+	for _, level := range []string{config.ProgressVerbosityFull, config.ProgressVerbosityTools} {
+		assertContainsAll(t, level, render(level), "SECRET-ERRTYPE: m", "SECRET-PLUGTYPE", "Result: ERROR (SECRET-SUBTYPE)")
+	}
+
+	te := TranscriptError{IsError: true, Subtype: "SECRET-SUBTYPE"}
+	if got := te.QuietDisplayMessage(); got != "agent terminated with error (subtype: other)" {
+		t.Errorf("QuietDisplayMessage = %q", got)
+	}
+	if got := te.DisplayMessage(); got != "agent terminated with error (subtype: SECRET-SUBTYPE)" {
+		t.Errorf("DisplayMessage = %q", got)
+	}
+	if got := exitedZeroStreamError("pi", "d", "SECRET-SUBTYPE", config.ProgressVerbosityQuiet); got != "pi exited 0 but the stream reports an error (subtype: other)" {
+		t.Errorf("exitedZeroStreamError quiet = %q", got)
+	}
+	if got := exitedZeroStreamError("pi", "d", "length", config.ProgressVerbosityQuiet); got != "pi exited 0 but the stream reports an error (subtype: length)" {
+		t.Errorf("exitedZeroStreamError quiet known = %q", got)
+	}
+	if got := exitedZeroStreamError("pi", "d", "", config.ProgressVerbosityQuiet); got != "pi exited 0 but the stream reports an error (subtype: unknown)" {
+		t.Errorf("exitedZeroStreamError quiet empty = %q", got)
 	}
 }
 
