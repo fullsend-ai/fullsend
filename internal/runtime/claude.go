@@ -504,6 +504,15 @@ func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFall
 	}
 	defer cancel()
 
+	// stallKill terminates the agent inside the sandbox, then cancels the
+	// sandbox command's own context (derived inside ExecStreamReader) to
+	// release the local exec client — see the stallKill doc. The watchdog
+	// never touches ctx, which the caller owns. It arms per attempt, so a
+	// fallback attempt starts with a fresh silence clock.
+	stall := startStallWatchdog(params.StallTimeout, printer,
+		stallKill(sandbox.Exec, params.SandboxName, os.Stderr, cancel))
+	defer stall.stop()
+
 	var reader io.Reader = stdout
 	if params.OutputPath != "" {
 		f, ferr := os.Create(params.OutputPath)
@@ -518,6 +527,7 @@ func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFall
 	var lastResult *ResultEvent
 	sessionID := ""
 	onEvent := func(evt AgentEvent) {
+		stall.note()
 		switch e := evt.(type) {
 		case ResultEvent:
 			lastResult = &e
@@ -530,16 +540,28 @@ func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFall
 		gate.handle(evt)
 	}
 
-	if parseErr := parseClaudeStream(reader, onEvent); parseErr != nil {
+	// stall.note as the line hook: every well-formed stream line — including
+	// lines that map to no AgentEvent — resets the silence clock, so an
+	// actively streaming tool is never mistaken for a stall.
+	if parseErr := parseClaudeStreamLines(reader, onEvent, stall.note); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, reader)
 	}
+	// The stream is over, so no further event can arrive: disarm before Wait
+	// so a slow reap is never mistaken for a stall.
+	stall.stop()
 
 	waitErr := execCmd.Wait()
 	exitCode := -1
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
+	}
+
+	// A stall is the cause of whatever Wait reports, so it is checked first.
+	// It travels as execErr, which claudeShouldFallBack never retries.
+	if stallErr := stall.stalledErr(); stallErr != nil {
+		return claudeAttemptResult{exitCode: exitCode, execErr: stallErr, lastResult: lastResult, sessionID: sessionID}
 	}
 
 	if waitErr != nil && execCmd.ProcessState == nil {

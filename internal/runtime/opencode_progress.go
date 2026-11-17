@@ -109,6 +109,15 @@ type ocErrorEvent struct {
 // step_finish accumulation for the ResultEvent synthesized at EOF. It emits
 // no InitEvent: the stream has no model metadata, so Run emits it.
 func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID string, malformedLines int, err error) {
+	return parseOpenCodeStreamLines(r, onEvent, nil)
+}
+
+// parseOpenCodeStreamLines is parseOpenCodeStream with a per-line liveness
+// hook: onLine (nil ok) is called for every well-formed JSON line —
+// including lines that map to no AgentEvent — and for every fully consumed
+// line too large to parse. The stall watchdog counts lines, not just the
+// sparser semantic events.
+func parseOpenCodeStreamLines(r io.Reader, onEvent func(AgentEvent), onLine func()) (sessionID string, malformedLines int, err error) {
 	br := bufio.NewReaderSize(r, streamBufSize)
 
 	var (
@@ -138,6 +147,9 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 			for isPrefix && err == nil {
 				_, isPrefix, err = br.ReadLine()
 			}
+			if err == nil && onLine != nil {
+				onLine()
+			}
 			continue
 		}
 		if len(line) == 0 {
@@ -148,6 +160,9 @@ func parseOpenCodeStream(r io.Reader, onEvent func(AgentEvent)) (sessionID strin
 		if jsonErr := json.Unmarshal(line, &env); jsonErr != nil {
 			malformedLines++
 			continue
+		}
+		if onLine != nil {
+			onLine()
 		}
 
 		// Capture sessionID from the first event that has one.

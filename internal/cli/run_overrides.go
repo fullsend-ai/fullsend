@@ -3,9 +3,11 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // Runtime-neutral override environment variables. They are overrides of the
@@ -18,6 +20,7 @@ const (
 	envModel          = "FULLSEND_MODEL"
 	envEffort         = "FULLSEND_EFFORT"
 	envFallbackModels = "FULLSEND_FALLBACK_MODELS"
+	envStallTimeout   = "FULLSEND_STALL_TIMEOUT"
 	// envPiModel is the pre-#6526 pi-only model override, kept as an alias of
 	// FULLSEND_MODEL for pi runs. FULLSEND_PI_PROVIDER stays pi-only (it is
 	// the provider prefix for bare ids, not a model choice).
@@ -125,6 +128,120 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 		}
 	}
 	return o, nil
+}
+
+// defaultStallTimeout is how long the runtime event stream may stay silent
+// before the run is killed as stalled. Streaming tool output counts as
+// liveness (every well-formed stream line resets the clock), so it only has
+// to cover genuinely silent stretches.
+//
+// The 10m it clears is a Claude-only lower bound: Claude Code's bash
+// ceiling, BASH_MAX_TIMEOUT_MS, defaults to 600000ms and the model routinely
+// requests the full ceiling for test suites. Nothing bounds the other
+// runtimes the same way: pi's bash tool has no default timeout and writes a
+// tool_execution_update only when output arrives, codex writes nothing while
+// a command runs (parseCodexStreamLines), and opencode writes a tool line only
+// when the call ends. A quiet pi, codex or opencode command longer than 15m is
+// therefore killed as stalled. Claude without --include-partial-messages has
+// its own silent stretches (a long thinking block, a large Write tool_use),
+// which 15m is assumed, not measured, to cover. 15m is not yet backed by
+// measured inter-line gaps from real output.jsonl artifacts; repos that know
+// their cadence, or run longer quiet commands, tune FULLSEND_STALL_TIMEOUT.
+const defaultStallTimeout = 15 * time.Minute
+
+// subagentLivenessTick mirrors DEFAULT_LIVENESS_MS in
+// internal/runtime/pi_extension/fullsend-agent.js: while a pi sub-agent runs,
+// the Agent tool feeds the parent stream a progress line only this often, so
+// a parent waiting on a healthy child is silent for up to one tick (plus the
+// setInterval delay before the first tick). Keep the two in sync on a bump.
+const subagentLivenessTick = 30 * time.Second
+
+// minStallTimeout floors a non-zero FULLSEND_STALL_TIMEOUT. At or below one
+// liveness tick a parent waiting on a healthy child would be killed as
+// stalled between ticks; two ticks give the margin (first-tick delay + the
+// gap to the next). 0 (explicitly disabled) is left untouched.
+const minStallTimeout = 2 * subagentLivenessTick
+
+// codexPollSilence mirrors codex's DEFAULT_MAX_BACKGROUND_TERMINAL_TIMEOUT_MS
+// (codex-rs/core/src/unified_exec/mod.rs, 300000 at rust-v0.166.0): an empty
+// write_stdin poll of a running command waits up to this long, and the exec
+// JSONL processor writes no line for it (its catch-all arm), so one poll is
+// that much silence on its own. Codex runs are floored at this plus
+// minStallTimeout. Re-check it on a CODEX_VERSION bump.
+const codexPollSilence = 5 * time.Minute
+
+// stallTimeoutFloor is the least non-zero stall timeout runtimeName can run
+// under without a healthy run reading as silence, and why.
+func stallTimeoutFloor(runtimeName string) (time.Duration, string) {
+	if runtimeName == "codex" {
+		return codexPollSilence + minStallTimeout, fmt.Sprintf("a codex poll of a running command writes nothing for up to %s", codexPollSilence)
+	}
+	return minStallTimeout, fmt.Sprintf("a pi sub-agent feeds the watchdog only every %s", subagentLivenessTick)
+}
+
+// resolveStallTimeout returns the event-inactivity timeout for the run:
+// FULLSEND_STALL_TIMEOUT when it parses as a non-negative Go duration ("0"
+// disables the watchdog), the default when it is unset. A malformed value
+// returns the default plus an error, so the caller can say so instead of
+// silently running without the watchdog it thinks it configured.
+func resolveStallTimeout(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(envStallTimeout))
+	if raw == "" {
+		return defaultStallTimeout, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return defaultStallTimeout, fmt.Errorf("%s=%q is not a duration (e.g. 10m, 0 to disable): %w", envStallTimeout, raw, err)
+	}
+	if d < 0 {
+		return defaultStallTimeout, fmt.Errorf("%s=%q must not be negative (0 disables the watchdog)", envStallTimeout, raw)
+	}
+	return d, nil
+}
+
+// effectiveStallTimeout disables the watchdog (returns 0) when it could never
+// fire: sandbox.ExecStreamReader wraps the command in the global run
+// timeout's context, so a stall the global deadline reaches first is never
+// reported as one. The comparison is against the kill's worst case, not the
+// threshold — the watchdog polls, so a stall crossing the threshold right
+// after a tick is noticed one interval later (StallDetectionLatency), and a
+// value just under the run timeout would otherwise be reported as armed while
+// usually losing the race anyway. Clear of that, the configured value stands
+// unchanged — no clamping or deriving, existing configs keep their behavior.
+func effectiveStallTimeout(stall, run time.Duration) time.Duration {
+	if stall+agentruntime.StallDetectionLatency(stall) >= run {
+		return 0
+	}
+	return stall
+}
+
+// runStallTimeout is the whole stall-timeout decision for one run: resolve
+// FULLSEND_STALL_TIMEOUT, report a malformed value rather than silently
+// running without the watchdog it configured, and disarm — saying so — when
+// the run's own timeout would always win the race. Zero means no watchdog.
+func runStallTimeout(getenv func(string) string, run time.Duration, runtimeName string, printer *ui.Printer) time.Duration {
+	stall, err := resolveStallTimeout(getenv)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Stall watchdog: %v; using %s", err, stall))
+	}
+	if floor, why := stallTimeoutFloor(runtimeName); stall > 0 && stall < floor {
+		// Below the floor a healthy run can be silent for longer than the
+		// timeout (a pi parent waiting on a child between liveness ticks, a
+		// codex poll), so it would be killed as stalled. Raise it and say so.
+		printer.StepWarn(fmt.Sprintf(
+			"Stall watchdog: FULLSEND_STALL_TIMEOUT (%s) is below the %s floor (%s); using %s",
+			stall, floor, why, floor))
+		stall = floor
+	}
+	if effective := effectiveStallTimeout(stall, run); effective != stall {
+		// The watchdog could never fire — the global deadline always wins the
+		// race. Say so instead of arming one that silently protects nothing.
+		printer.StepInfo(fmt.Sprintf(
+			"Stall watchdog inactive: FULLSEND_STALL_TIMEOUT (%s) is not below the run timeout (timeout_minutes, %s) by more than the %s detection interval",
+			stall, run, agentruntime.StallDetectionLatency(stall)))
+		return effective
+	}
+	return stall
 }
 
 // validateRuntimeName mirrors the config validation so a flag/env override
