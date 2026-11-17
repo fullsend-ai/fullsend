@@ -47,11 +47,12 @@ func (p *ProgressConfig) IsZero() bool {
 }
 
 // progressVerbosityRank orders levels by strictness: full < tools < quiet.
-// An unknown level ranks strictest, so a comparison never treats it as a
-// relaxation target or lets it lower an effective level.
+// An empty level ranks as full, as in the other helpers. An unknown level
+// ranks strictest, so a comparison never treats it as a relaxation target
+// or lets it lower an effective level.
 func progressVerbosityRank(level string) int {
 	switch level {
-	case ProgressVerbosityFull:
+	case "", ProgressVerbosityFull:
 		return 0
 	case ProgressVerbosityTools:
 		return 1

@@ -26,6 +26,16 @@ func TestStricterProgressVerbosity(t *testing.T) {
 	assert.Equal(t, []string{"full", "tools", "quiet"}, ValidProgressVerbosities())
 }
 
+// An empty level ranks as full, like every other progress helper; an
+// unknown level ranks strictest.
+func TestProgressVerbosityRank(t *testing.T) {
+	assert.Equal(t, 0, progressVerbosityRank(""))
+	assert.Equal(t, 0, progressVerbosityRank(ProgressVerbosityFull))
+	assert.Equal(t, 1, progressVerbosityRank(ProgressVerbosityTools))
+	assert.Equal(t, 2, progressVerbosityRank(ProgressVerbosityQuiet))
+	assert.Equal(t, 2, progressVerbosityRank("loud"))
+}
+
 func TestValidateProgress(t *testing.T) {
 	tests := []struct {
 		name    string
