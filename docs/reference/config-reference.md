@@ -1213,9 +1213,10 @@ malformed block in `.fullsend/config.yaml`, manifest validation refuses one in
 Reviews pull requests from forks automatically when the author owns the fork
 and has triage access or higher (ADR 0171). GitHub only. To turn it on, set
 `enabled: true` in `.fullsend/config.yaml` and run `fullsend repos install`,
-which writes the scheduled workflow. A review starts about five minutes after
-each push, later when GitHub delays scheduled runs; `/fs-review` still starts
-one at once.
+which writes the scheduled workflow. The `*/5` schedule is best-effort: a
+review usually starts within several minutes of a push, but GitHub can delay
+or skip scheduled runs, and on a new repository the first one can take hours.
+`/fs-review` still starts a review at once.
 
 ```yaml
 fork_pr_review_poll:
