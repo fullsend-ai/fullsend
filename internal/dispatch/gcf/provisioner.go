@@ -1510,9 +1510,14 @@ var (
 // of which name the repo or its owner. Every other condition — empty, constant
 // true, prefix or numeric-owner matches, the public-mint not-equal-empty form, or any
 // unrecognized CEL — is treated as covering the repo, which keeps the IAM
-// binding. Matching is case-insensitive.
+// binding. A condition containing a backslash may use CEL escape sequences
+// that make a literal differ from its raw text, so it is also treated as
+// covering. Matching is case-insensitive.
 func conditionCoversRepo(condition, owner, repo string) bool {
 	c := strings.TrimSpace(condition)
+	if strings.Contains(c, `\`) {
+		return true
+	}
 	first := func(m []string) string {
 		if m[1] != "" {
 			return m[1]

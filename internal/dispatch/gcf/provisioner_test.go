@@ -3664,6 +3664,11 @@ func TestConditionCoversRepo(t *testing.T) {
 		{"assertion.repository == 'acme/gadget' || assertion.repository_owner == 'acme'", true},
 		{"assertion.repository_owner in ['other'] || true", true},
 		{"assertion.repository == 'acme/gadget' || assertion.repository.startsWith('acme/')", true},
+		// Escape sequences make raw literal text unreliable; keep the binding.
+		{`assertion.repository == 'acme/\x77idget'`, true},
+		{`assertion.repository_owner == "acme"`, true},
+		{`assertion.repository_owner in ['other', 'ac\x6de']`, true},
+		{`assertion.repository == 'acme/gadget\n'`, true},
 	}
 	for _, tc := range tests {
 		assert.Equal(t, tc.want, conditionCoversRepo(tc.condition, "acme", "acme/widget"), tc.condition)
