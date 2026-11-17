@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
@@ -187,22 +188,51 @@ func TestReviewBotLogins(t *testing.T) {
 	assert.Equal(t, []string{"o-review[bot]", "fullsend-ai-review[bot]", "x-review[bot]"}, reviewBotLogins("o", "x"))
 }
 
-func TestOwnersFileResolver(t *testing.T) {
-	root := t.TempDir()
-	resolve := ownersFileResolver(root)
+func TestPRPollAuthorizer(t *testing.T) {
+	repoRoot := t.TempDir()
+	fullsendDir := filepath.Join(repoRoot, ".fullsend")
+	require.NoError(t, os.Mkdir(fullsendDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(fullsendDir, "config.yaml"),
+		[]byte("version: \"1\"\n"+enabledPRPollConfig+"authorization:\n  - provider: owners_file\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(repoRoot, "OWNERS"), []byte("reviewers:\n  - alice\n"), 0o600))
+	cfg, err := config.LoadConfig(fullsendDir, config.LoadOpts{})
+	require.NoError(t, err)
+	authorize := prPollAuthorizer(fullsendDir+"/", cfg)
 
-	// A missing OWNERS file keeps the collaborator role.
-	role, err := resolve("alice", normevent.RoleRead)
-	require.NoError(t, err)
-	assert.Equal(t, normevent.RoleRead, role)
+	event := func(login string, kind normevent.ActorKind, role normevent.ActorRole, verified bool) *normevent.Event {
+		return &normevent.Event{
+			Repo:   "o/r",
+			Source: normevent.Source{System: normevent.SystemGitHub, RawType: "pull_request"},
+			Actor:  normevent.Actor{ID: login, Kind: kind, Role: role, RoleVerified: &verified, IsEntityAuthor: true},
+		}
+	}
+	tests := map[string]struct {
+		ev   *normevent.Event
+		want bool
+	}{
+		"OWNERS reviewer who is not a collaborator": {ev: event("alice", normevent.ActorHuman, normevent.RoleNone, true), want: true},
+		"triage collaborator":                       {ev: event("carol", normevent.ActorHuman, normevent.RoleTriage, true), want: true},
+		"read-only collaborator":                    {ev: event("bob", normevent.ActorHuman, normevent.RoleRead, true), want: false},
+		"not a collaborator":                        {ev: event("bob", normevent.ActorHuman, normevent.RoleNone, true), want: false},
+		"lookup failure for an OWNERS reviewer":     {ev: event("alice", normevent.ActorHuman, normevent.RoleNone, false), want: false},
+		"lookup failure for a writer":               {ev: event("carol", normevent.ActorHuman, normevent.RoleWrite, false), want: false},
+		"bot with write access":                     {ev: event("dep[bot]", normevent.ActorBot, normevent.RoleWrite, true), want: false},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			before := tt.ev.Actor.Role
+			assert.Equal(t, tt.want, authorize(tt.ev))
+			assert.Equal(t, before, tt.ev.Actor.Role, "the OWNERS upgrade does not mutate the event")
+		})
+	}
 
-	require.NoError(t, os.WriteFile(filepath.Join(root, "OWNERS"), []byte("approvers:\n  - bob\nreviewers:\n  - alice\n"), 0o600))
-	role, err = resolve("alice", normevent.RoleNone)
-	require.NoError(t, err)
-	assert.Equal(t, normevent.RoleTriage, role)
-	role, err = resolve("bob", normevent.RoleRead)
-	require.NoError(t, err)
-	assert.Equal(t, normevent.RoleWrite, role)
+	t.Run("OWNERS ignored when the provider is off", func(t *testing.T) {
+		dir := writeJiraPollConfig(t, enabledPRPollConfig)
+		require.NoError(t, os.WriteFile(filepath.Join(filepath.Dir(dir), "OWNERS"), []byte("reviewers:\n  - alice\n"), 0o600))
+		cfg, err := config.LoadConfig(dir, config.LoadOpts{})
+		require.NoError(t, err)
+		assert.False(t, prPollAuthorizer(dir, cfg)(event("alice", normevent.ActorHuman, normevent.RoleNone, true)))
+	})
 }
 
 func TestWritePRPollDispatches(t *testing.T) {

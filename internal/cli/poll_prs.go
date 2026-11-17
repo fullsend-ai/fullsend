@@ -3,7 +3,6 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
-	"github.com/fullsend-ai/fullsend/internal/owners"
 	"github.com/fullsend-ai/fullsend/internal/prpoll"
 )
 
@@ -120,9 +118,7 @@ func runGitHubPRPoll(cmd *cobra.Command, flags prPollFlags) error {
 			return total
 		},
 	}
-	if perRepo.IsOwnersFileAuthEnabled() {
-		opts.Owners = ownersFileResolver(filepath.Dir(filepath.Clean(flags.fullsendDir)))
-	}
+	opts.Authorize = prPollAuthorizer(flags.fullsendDir, cfg)
 
 	refs, err := prpoll.New(client, opts).Run(cmd.Context())
 	if err != nil {
@@ -143,19 +139,15 @@ func reviewBotLogins(owner, appSet string) []string {
 	return logins
 }
 
-// ownersFileResolver upgrades a collaborator role from the OWNERS and
-// OWNERS_ALIASES files at repoRoot, as harnessdispatch.AuthCheckEvent
-// does: a resolution failure is logged and keeps the collaborator role.
-func ownersFileResolver(repoRoot string) prpoll.OwnersResolver {
-	ownersPath := filepath.Join(repoRoot, "OWNERS")
-	aliasesPath := filepath.Join(repoRoot, "OWNERS_ALIASES")
-	return func(login string, role normevent.ActorRole) (normevent.ActorRole, error) {
-		r, err := owners.Resolve(ownersPath, aliasesPath, login)
-		if err != nil {
-			log.Printf("fork PR review poll: OWNERS resolution failed for %s: %v", login, err)
-			return role, nil
-		}
-		return owners.MapToActorRole(r, role), nil
+// prPollAuthorizer returns the poll's authorization gate: the shared
+// dispatch core (ADR 0054, authorization contract v1) with the OWNERS
+// upgrade of harnessdispatch.AuthCheckEvent, for the review harness.
+func prPollAuthorizer(fullsendDir string, cfg config.ConfigReader) func(*normevent.Event) bool {
+	configDir := filepath.Clean(fullsendDir)
+	authOpts := harnessdispatch.AuthOptionsFor(cfg)
+	return func(ev *normevent.Event) bool {
+		chk := harnessdispatch.AuthCheckEvent(configDir, cfg, ev)
+		return harnessdispatch.IsHarnessAuthorizedWith(&chk, "review", authOpts)
 	}
 }
 
