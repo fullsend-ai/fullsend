@@ -982,7 +982,10 @@ func (c *LiveGCFClient) RemoveProjectIAMBinding(ctx context.Context, projectID, 
 // member from the unconditional bindings for role. A binding left with no
 // members is dropped from the policy.
 func (c *LiveGCFClient) tryRemoveIAMBinding(ctx context.Context, getURL, setURL, member, role string) (bool, error) {
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, getURL, "{}")
+	// Request policy version 3 so conditional bindings are returned with their
+	// conditions; the returned policy (including its version) is written back
+	// unchanged apart from the removed member.
+	resp, err := c.Client.DoRequest(ctx, http.MethodPost, getURL, `{"options":{"requestedPolicyVersion":3}}`)
 	if err != nil {
 		return false, fmt.Errorf("getting IAM policy: %w", err)
 	}

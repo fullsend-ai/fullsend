@@ -843,6 +843,13 @@ func runInferenceDeprovision(cmd *cobra.Command, printer *ui.Printer, org, repo,
 		printer.StepStart(fmt.Sprintf("Deleting WIF provider %s and revoking roles/aiplatform.user", providerID))
 		result, err := provisioner.DeprovisionRepoWIF(ctx, repo)
 		if err != nil {
+			if result != nil {
+				// The provider was deleted before the revoke step failed.
+				printer.StepDone("WIF provider deleted")
+				printer.StepFail("IAM binding (roles/aiplatform.user) was NOT revoked; remove it manually: " + result.Principal)
+				return fmt.Errorf("WIF provider %s was deleted but the IAM binding for %s must be removed manually: %w",
+					result.ProviderID, result.Principal, err)
+			}
 			printer.StepFail("Inference deprovisioning failed")
 			return fmt.Errorf("deprovisioning repo inference: %w", err)
 		}

@@ -1488,24 +1488,52 @@ func (p *Provisioner) DeprovisionRepoWIF(ctx context.Context, repo string) (*Rep
 	return result, nil
 }
 
+// Condition shapes whose exclusion of a repo can be proven. Each is matched
+// against the whole condition; anything else is treated as possibly covering.
+var (
+	// assertion.repository == 'owner/repo'
+	repoEqualsCondition = regexp.MustCompile(`^assertion\.repository\s*==\s*(?:'([^']*)'|"([^"]*)")$`)
+	// assertion.repository_owner == 'owner'
+	ownerEqualsCondition = regexp.MustCompile(`^assertion\.repository_owner\s*==\s*(?:'([^']*)'|"([^"]*)")$`)
+	// assertion.repository_owner in ['a', "b"]
+	ownerInCondition = regexp.MustCompile(`^assertion\.repository_owner\s+in\s*\[(.*)\]$`)
+	// one quoted string literal inside a list
+	quotedLiteral = regexp.MustCompile(`'([^']*)'|"([^"]*)"`)
+	// a list body consisting only of comma-separated quoted literals
+	quotedListBody = regexp.MustCompile(`^\s*(?:(?:'[^']*'|"[^"]*")\s*(?:,\s*(?:'[^']*'|"[^"]*")\s*)*)?$`)
+)
+
 // conditionCoversRepo reports whether a WIF attribute condition may admit
-// tokens from repo, either by naming the repo or by naming its owner in a
-// repository_owner clause. An empty condition admits every token and so
-// covers every repo. Matching is case-insensitive and textual: it errs on
-// the side of reporting coverage, which keeps the IAM binding.
+// tokens from repo. It returns false only when the condition is one of a
+// small set of recognized forms that provably exclude the repo: an exact
+// repository or repository_owner equality, or a repository_owner list, none
+// of which name the repo or its owner. Every other condition — empty, constant
+// true, prefix or numeric-owner matches, the public-mint not-equal-empty form, or any
+// unrecognized CEL — is treated as covering the repo, which keeps the IAM
+// binding. Matching is case-insensitive.
 func conditionCoversRepo(condition, owner, repo string) bool {
-	c := strings.ToLower(strings.TrimSpace(condition))
-	if c == "" {
-		return true
+	c := strings.TrimSpace(condition)
+	first := func(m []string) string {
+		if m[1] != "" {
+			return m[1]
+		}
+		return m[2]
 	}
-	quoted := func(s string) bool {
-		s = strings.ToLower(s)
-		return strings.Contains(c, "'"+s+"'") || strings.Contains(c, `"`+s+`"`)
+	if m := repoEqualsCondition.FindStringSubmatch(c); m != nil {
+		return strings.EqualFold(first(m), repo)
 	}
-	if quoted(repo) {
-		return true
+	if m := ownerEqualsCondition.FindStringSubmatch(c); m != nil {
+		return strings.EqualFold(first(m), owner)
 	}
-	return strings.Contains(c, "repository_owner") && quoted(owner)
+	if m := ownerInCondition.FindStringSubmatch(c); m != nil && quotedListBody.MatchString(m[1]) {
+		for _, lit := range quotedLiteral.FindAllStringSubmatch(m[1], -1) {
+			if strings.EqualFold(first(lit), owner) {
+				return true
+			}
+		}
+		return false
+	}
+	return true
 }
 
 // RemoveOrgFromWIFCondition removes an org from the org-level WIF provider's

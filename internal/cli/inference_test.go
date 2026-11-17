@@ -634,6 +634,21 @@ func TestRunInferenceDeprovision_RepoError(t *testing.T) {
 	err := runInferenceDeprovision(cmd, ui.New(buf), "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", client)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "revoking Agent Platform access")
+	assert.Contains(t, err.Error(), "was deleted")
+	assert.Contains(t, err.Error(), "must be removed manually")
+	assert.Contains(t, buf.String(), "WIF provider deleted")
+	assert.Contains(t, buf.String(), "NOT revoked; remove it manually")
+}
+
+func TestRunInferenceDeprovision_RepoDeleteFailureKeepsGenericMessage(t *testing.T) {
+	client := gcf.NewFakeGCFClient(gcf.WithFakeErrors(map[string]error{
+		"DeleteWIFProvider": errors.New("denied"),
+	}))
+	cmd, buf := newStatusCmd(client)
+	err := runInferenceDeprovision(cmd, ui.New(buf), "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", client)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "was deleted")
+	assert.Contains(t, buf.String(), "Inference deprovisioning failed")
 }
 
 func TestRunInferenceDeprovision_OrgKeepsManualNote(t *testing.T) {

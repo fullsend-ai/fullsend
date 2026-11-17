@@ -1049,12 +1049,21 @@ func TestLiveGCFClient_RemoveProjectIAMBinding(t *testing.T) {
 			assert.Equal(t, http.MethodPost, r.Method)
 			if callCount == 1 {
 				assert.Contains(t, r.URL.Path, ":getIamPolicy")
-				fmt.Fprintln(w, policy)
+				var req struct {
+					Options struct {
+						RequestedPolicyVersion int `json:"requestedPolicyVersion"`
+					} `json:"options"`
+				}
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+				// Conditions are only returned for a version-3 request.
+				require.Equal(t, 3, req.Options.RequestedPolicyVersion)
+				fmt.Fprintln(w, strings.Replace(policy, `"etag":"v1"`, `"version":3,"etag":"v1"`, 1))
 				return
 			}
 			assert.Contains(t, r.URL.Path, ":setIamPolicy")
 			var body struct {
 				Policy struct {
+					Version  int    `json:"version"`
 					Etag     string `json:"etag"`
 					Bindings []struct {
 						Role      string          `json:"role"`
@@ -1065,6 +1074,7 @@ func TestLiveGCFClient_RemoveProjectIAMBinding(t *testing.T) {
 			}
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			assert.Equal(t, "v1", body.Policy.Etag)
+			assert.Equal(t, 3, body.Policy.Version, "policy version preserved")
 			require.Len(t, body.Policy.Bindings, 4)
 			assert.Equal(t, []string{"principalSet://other"}, body.Policy.Bindings[0].Members)
 			assert.NotEmpty(t, body.Policy.Bindings[1].Condition, "conditional binding untouched")

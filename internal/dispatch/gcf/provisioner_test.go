@@ -3581,6 +3581,10 @@ func TestDeprovisionRepoWIF_RetainsBindingWhenCovered(t *testing.T) {
 		{"org single", "assertion.repository_owner == 'acme'"},
 		{"org list double quotes", `assertion.repository_owner in ["other", "acme"]`},
 		{"empty condition", "  "},
+		{"public mint condition", publicAttributeCondition},
+		{"constant true", "true"},
+		{"prefix match", "assertion.repository.startsWith('acme/')"},
+		{"numeric owner id", "assertion.repository_owner_id == '12345'"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3650,6 +3654,16 @@ func TestConditionCoversRepo(t *testing.T) {
 		{"assertion.repository == 'acme/gadget'", false},
 		{"assertion.repository_owner in ['x0fullsend0placeholder']", false},
 		{"", true},
+		{`assertion.repository_owner in ["other", "ACME"]`, true},
+		{"assertion.repository_owner in ['other', 'another']", false},
+		// Unrecognized or permissive forms must be treated as covering.
+		{"assertion.repository_owner != ''", true},
+		{"true", true},
+		{"assertion.repository.startsWith('acme/')", true},
+		{"assertion.repository_owner_id == '12345'", true},
+		{"assertion.repository == 'acme/gadget' || assertion.repository_owner == 'acme'", true},
+		{"assertion.repository_owner in ['other'] || true", true},
+		{"assertion.repository == 'acme/gadget' || assertion.repository.startsWith('acme/')", true},
 	}
 	for _, tc := range tests {
 		assert.Equal(t, tc.want, conditionCoversRepo(tc.condition, "acme", "acme/widget"), tc.condition)
