@@ -339,9 +339,9 @@ RUN mkdir -p /etc/codex \
 # (same shadow-proof pattern as Claude Code above).
 # To update: bump OPENCODE_VERSION and OPENCODE_SHA256_{AMD64,ARM64} from:
 #   https://github.com/anomalyco/opencode/releases
-ARG OPENCODE_VERSION=1.19.1
-ARG OPENCODE_SHA256_AMD64=6f1904b860bdbd32e90e679c9e1b0e64e78269a353e1497d5ea792dfa449538c
-ARG OPENCODE_SHA256_ARM64=3840e9afb2462a666d31816b20bc13b91af9845c329cff660a972aa9cfaee3a2
+ARG OPENCODE_VERSION=1.19.6
+ARG OPENCODE_SHA256_AMD64=47734e08968b30cc22a0bffb6d9feeed76ad4aa743213a12122040392d09a057
+ARG OPENCODE_SHA256_ARM64=5b68c1f4c5e75b4134e664cc8f36d634d64208d4fcfe5bcf3b48bab699c2dbac
 RUN case "$TARGETARCH" in \
       amd64) OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/v${OPENCODE_VERSION}/opencode-linux-x64.tar.gz" \
              EXPECTED="${OPENCODE_SHA256_AMD64}" ;; \
