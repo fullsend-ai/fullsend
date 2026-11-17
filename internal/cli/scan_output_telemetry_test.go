@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -157,6 +158,33 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	for key := range keySanitized {
 		assert.NotContains(t, key, "ghp_FAKEtest", "secret must be redacted from JSON object keys")
 	}
+
+	content5, err := os.ReadFile(jsonFile5)
+	require.NoError(t, err)
+	var collisionResult struct {
+		Tokens []string `json:"tokens"`
+	}
+	var collisionDocument map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(content5, &collisionDocument))
+	require.NoError(t, json.Unmarshal(content5, &collisionResult))
+	assert.Len(t, collisionResult.Tokens, 1)
+	assert.NotContains(t, collisionResult.Tokens[0], "ghp_FAKEtest", "array token must be redacted and retained")
+
+	var preservedValues []int
+	var sanitizedKeys []string
+	for key, rawValue := range collisionDocument {
+		if key == "tokens" {
+			continue
+		}
+		sanitizedKeys = append(sanitizedKeys, key)
+		var value int
+		require.NoError(t, json.Unmarshal(rawValue, &value))
+		preservedValues = append(preservedValues, value)
+	}
+	assert.ElementsMatch(t, []int{1, 2}, preservedValues, "both colliding-key values must survive under distinct sanitized keys")
+	assert.Len(t, sanitizedKeys, 2, "both colliding keys must be retained")
+	sort.Strings(sanitizedKeys)
+	assert.NotEqual(t, sanitizedKeys[0], sanitizedKeys[1], "colliding keys must be made distinct")
 }
 
 // TestScanOutputFiles_DuplicateJSONKeys verifies that JSON files containing
@@ -208,6 +236,18 @@ func TestScanOutputFiles_SingleRecordJSONL_PreservesLineCount(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(string(got), "\n"), "single-record jsonl must remain exactly 1 line")
 	lines := strings.Split(strings.TrimSpace(string(got)), "\n")
 	assert.Len(t, lines, 1)
+}
+
+func TestScanOutputFiles_ReturnsErrorWhenSanitizedWriteFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.txt")
+	require.NoError(t, os.WriteFile(path, []byte("Token: ghp_FAKEtesttoken000000000000000000000000"), 0o644))
+
+	err := scanOutputFilesWithWriter(dir, "trace-id", ui.New(&bytes.Buffer{}), func(string, []byte, os.FileMode) error {
+		return os.ErrPermission
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not write sanitized secret.txt")
 }
 
 // TestScanOutputFiles_CleanJSON verifies that clean JSON files with no findings

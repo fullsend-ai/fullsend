@@ -3365,7 +3365,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.SecurityEnabled() {
 		printer.StepStart("Running post-agent output scan")
 		if err := scanOutputFiles(runDir, securityTraceID, printer); err != nil {
-			printer.StepWarn("Output scan error: " + err.Error())
+			printer.StepFail("Output scan failed: " + err.Error())
+			return fmt.Errorf("post-agent output scan failed: %w", err)
 		}
 
 		// Extract sandbox-side security findings for audit trail.
@@ -6754,6 +6755,10 @@ func scanRepoContextFiles(repoDir string) []security.Finding {
 // secret redaction) on extracted output files, recursively walking all
 // subdirectories (iteration-N/output/, etc.).
 func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
+	return scanOutputFilesWithWriter(outputDir, traceID, printer, os.WriteFile)
+}
+
+func scanOutputFilesWithWriter(outputDir, traceID string, printer *ui.Printer, writeFile func(string, []byte, os.FileMode) error) error {
 	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
 		printer.StepInfo("No output files to scan")
 		return nil
@@ -6855,8 +6860,8 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 									marshaled = []byte(backstop.Sanitized)
 								}
 							}
-							if writeErr := os.WriteFile(path, marshaled, 0o644); writeErr != nil {
-								printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
+							if writeErr := writeFile(path, marshaled, 0o644); writeErr != nil {
+								return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 							}
 							return nil
 						}
@@ -6886,8 +6891,8 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			}
 			// Sanitized may be empty when all content was invisible characters.
 			out := result.Sanitized
-			if writeErr := os.WriteFile(path, []byte(out), 0o644); writeErr != nil {
-				printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
+			if writeErr := writeFile(path, []byte(out), 0o644); writeErr != nil {
+				return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 			}
 		}
 		return nil
