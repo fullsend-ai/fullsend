@@ -180,6 +180,13 @@ func addGitHubForgeEndpoints(data []byte, host string, port int) ([]byte, bool, 
 		return data, false, nil
 	}
 	root := doc.Content[0]
+	// profileIssuesCredential and yamlMappingValue read literal keys, so a
+	// merge key could hide GH_TOKEN or an endpoint's host. Refuse those
+	// shapes, as the GitLab binding does, rather than leave the profile
+	// silently unbound while GH_HOST points gh at the server.
+	if err := checkProfileKeys(root); err != nil {
+		return nil, false, err
+	}
 	if !profileIssuesCredential(root, githubTokenEnvVar) {
 		return data, false, nil
 	}

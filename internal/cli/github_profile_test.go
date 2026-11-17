@@ -380,3 +380,29 @@ func TestGitHubForgeSandboxEnvLinesThroughTheRuntimeLoader(t *testing.T) {
 		assert.NotContains(t, stderr.String(), "ignored", "%s: the loader dropped a line", name)
 	}
 }
+
+func TestAddGitHubForgeEndpointsRefusesMergeKeys(t *testing.T) {
+	for name, in := range map[string]string{
+		"merged credential": `id: merged
+base: &cred {name: t, env_vars: [GH_TOKEN]}
+credentials:
+  - <<: *cred
+endpoints:
+  - host: api.github.com
+    port: 443
+    protocol: rest
+`,
+		"merged endpoint host": `id: merged
+credentials:
+  - name: t
+    env_vars: [GH_TOKEN]
+gh: &gh {host: api.github.com, port: 443}
+endpoints:
+  - <<: *gh
+    protocol: rest
+`,
+	} {
+		_, _, err := addGitHubForgeEndpoints([]byte(in), "ghes.example.com", 443)
+		assert.Error(t, err, name)
+	}
+}
