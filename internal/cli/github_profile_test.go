@@ -406,3 +406,17 @@ endpoints:
 		assert.Error(t, err, name)
 	}
 }
+
+func TestAddGitHubForgeEndpointsRefusesASecondDocument(t *testing.T) {
+	for name, in := range map[string]string{
+		"profile that needs cloning": "id: a\ncredentials: [{name: t, env_vars: [GH_TOKEN]}]\nendpoints: [{host: api.github.com, port: 443, protocol: rest}]\n---\nid: b\n",
+		"profile left unchanged":     "id: a\ncredentials: [{name: k, env_vars: [OTHER]}]\n---\nid: b\n",
+	} {
+		_, _, err := addGitHubForgeEndpoints([]byte(in), "ghes.example.com", 443)
+		assert.ErrorContains(t, err, "more than one YAML document", name)
+	}
+	out, changed, err := addGitHubForgeEndpoints([]byte(""), "ghes.example.com", 443)
+	require.NoError(t, err)
+	assert.False(t, changed)
+	assert.Empty(t, out)
+}

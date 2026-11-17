@@ -172,11 +172,13 @@ func bindGitHubForgeHostBytes(data []byte, getenv func(string) string) ([]byte, 
 // with the input returned as is, when the profile does not issue GH_TOKEN,
 // names no github.com endpoint, or already names every clone.
 func addGitHubForgeEndpoints(data []byte, host string, port int) ([]byte, bool, error) {
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return nil, false, fmt.Errorf("parsing profile YAML: %w", err)
+	// One document only, as the GitLab binding requires: yaml.Unmarshal
+	// would read the first and drop the rest on rewrite.
+	doc, err := parseSingleProfileDocument(data)
+	if err != nil {
+		return nil, false, err
 	}
-	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+	if doc == nil || doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return data, false, nil
 	}
 	root := doc.Content[0]
@@ -257,7 +259,7 @@ func addGitHubForgeEndpoints(data []byte, host string, port int) ([]byte, bool, 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
+	if err := enc.Encode(doc); err != nil {
 		return nil, false, fmt.Errorf("marshaling profile YAML: %w", err)
 	}
 	if err := enc.Close(); err != nil {
