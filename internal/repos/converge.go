@@ -1657,7 +1657,9 @@ func convergeRepo(ctx context.Context,
 					return cr
 				}
 			}
-			configAdoptionRequired = overlayNeedsAdoption(found, existing)
+			// A markerless overlay acknowledged with --adopt is replaced
+			// by Install once the safety gate below passes.
+			configAdoptionRequired = resolved.adoptionBlocks(found, existing)
 			configSafetyRejected = managedSafetyRejectedAction(ctx, resolved)
 		} else if auth == InferenceAuthOpenAIWIF {
 			// Readiness above may have been satisfied by identifiers in an

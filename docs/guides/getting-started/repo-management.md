@@ -453,9 +453,19 @@ If a config-managed repository already has an existing
 `.fullsend/config.yaml` without that marker, `repos status` reports it as
 `managed configuration (adoption required)` rather than ordinary drift,
 and `repos install`/convergence leave the file untouched until it is
-manually adopted (edited to carry the marker, or replaced with the
-rendered managed body). An existing zero-byte file counts as an existing
-file without the marker. The status output (table and JSON `detail`) also
+adopted: edited to carry the marker or replaced with the rendered managed
+body by hand, or replaced by `repos install --adopt <owner/repo>`. An
+existing zero-byte file counts as an existing file without the marker.
+`--adopt` (repeatable) names exactly one declared and selected repository
+per value; patterns are rejected, because adoption is acknowledged per
+repository. For each named repository, install prints the same proposed
+entry and differences as an adoption plan. It then writes the marker and
+the managed body through the normal delivery path (the scaffold PR, or
+directly with `--direct`) in the same run. The safety gate below still
+applies, and `--dry-run` shows the plan without writing. Update
+`repos.yaml` with every setting to keep before you run it: settings the
+file declares that `repos.yaml` does not are dropped. Without `--adopt`
+the markerless file still stops that repository. The status output (table and JSON `detail`) also
 shows the proposed `repos.yaml` entry that carries every setting the
 existing file declares, including values equal to the code defaults, and
 the difference between the existing file and the managed file adoption

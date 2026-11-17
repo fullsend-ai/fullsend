@@ -131,11 +131,18 @@ the marker is reported by `repos status` as "managed configuration (adoption
 required)" rather than ordinary drift, and install skips that repository, with
 no manifest or forge write for it and the file left untouched, until it is
 adopted (manually edited to carry the marker, or replaced with the rendered
-managed body). This applies even when the repository has no `config` key.
+managed body, or replaced by `--adopt`). This applies even when the repository has no `config` key.
 Install prints the adoption guidance (the proposed `repos.yaml` entry and the
 setting-level difference) for each skipped repository, lists it as `FAILED` in
 the summary, converges the other selected repositories, and exits non-zero;
-`--dry-run` does the same. Other configuration preflight problems (an
+`--dry-run` does the same. `--adopt <owner/repo>` (repeatable) acknowledges
+the handoff for one named repository: install prints the same guidance as an
+adoption plan and, if the safety gate below passes, writes the marker and
+the managed body in place of the existing file through the normal delivery
+path (scaffold PR, or direct with `--direct`) in the same run. Each value must
+be an exact `owner/repo` that the manifest declares and the run selects;
+patterns are rejected. A named repository with no markerless file is left as
+is with a warning, and `--dry-run` shows the plan without writing. Other configuration preflight problems (an
 unreadable, malformed or non-per-repo `.fullsend/config.yaml`, an existing
 `.fullsend/config.base.yaml` with no declared preset or with invalid content,
 and a selector that matches no declared repository) still stop the whole run
@@ -649,6 +656,7 @@ Install flags supply only secrets and sensitive provisioning inputs, local vendo
 | `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--force` | `false` | Allow scaffold ref downgrades |
+| `--adopt` | | Adopt this repository's existing `.fullsend/config.yaml` that lacks the managed-configuration ownership marker: replace it with the managed file rendered from `repos.yaml` (marker included) if the ADR-0122 safety gate passes. Repeatable; each value is an exact `owner/repo` the manifest declares and the run selects (no patterns). See [Repo Management — Managed configuration](../guides/getting-started/repo-management.md#managed-configuration) |
 | `--reactivate-schedules` | `false` | Reactivate required GitLab pipeline schedules that exist but are disabled (leave disabled by default so off-system polling setups are not silently reverted). A schedule the GitLab trigger account owns can be edited only by that account, so the trigger-account stage reactivates it by replacing it |
 | `--vertex-project` | | GCP project ID for Vertex inference, written as the `FULLSEND_GCP_PROJECT_ID` secret. Optional when the effective configuration declares `inference.project`; a different value from the declared one fails that repo. See [Effective infrastructure values](#effective-infrastructure-values) |
 | `--vertex-wif-provider` | | Full WIF provider resource name (`projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}`), written as the `FULLSEND_GCP_WIF_PROVIDER` secret instead of deriving per-repo providers. The project number is embedded in the path, so no lookup is needed. Optional when the effective configuration declares `inference.wif_provider`; a different value from the declared one fails that repo. Requires a project |

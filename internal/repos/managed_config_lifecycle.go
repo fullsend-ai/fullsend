@@ -40,7 +40,10 @@ const ActionSafetyRejected = "safety-rejected"
 // work rather than AlreadyCurrent — and leaves the file untouched until it
 // is manually adopted (edited to carry the marker, or replaced with the
 // rendered managed body) so a later run's whole-file compare starts from
-// a marked baseline.
+// a marked baseline. When the operator acknowledged the handoff for this
+// repository (`repos install --adopt`, resolved.AdoptOverlay), the
+// markerless file is instead replaced with the managed body, marker
+// included, once the same safety gate passes (#8512).
 func convergeManagedConfigFiles(ctx context.Context, resolved ResolvedConfig, desired []byte, dryRun bool, progress ProgressFunc) ([]forge.TreeFile, []ComponentAction) {
 	if !resolved.ConfigManaged {
 		return nil, nil
@@ -61,8 +64,10 @@ func convergeManagedConfigFiles(ctx context.Context, resolved ResolvedConfig, de
 	}
 
 	// A zero-byte file exists and carries no marker, so it is an adoption
-	// case like any other markerless file.
-	if overlayNeedsAdoption(found, existing) {
+	// case like any other markerless file. With --adopt (AdoptOverlay) the
+	// markerless file is replaced below once the safety gate passes.
+	adopting := overlayNeedsAdoption(found, existing)
+	if resolved.adoptionBlocks(found, existing) {
 		detail := fmt.Sprintf("%s exists without the managed-configuration ownership marker; adoption required before it can be converged automatically (ADR-0122)", preset.OverlayPath)
 		if rejected := managedSafetyRejectedAction(ctx, resolved); rejected != nil && rejected.Action == ActionSafetyRejected {
 			detail = detail + "; " + rejected.Detail
@@ -87,14 +92,20 @@ func convergeManagedConfigFiles(ctx context.Context, resolved ResolvedConfig, de
 
 	action := "update"
 	detail := fmt.Sprintf("updated %s from managed configuration", preset.OverlayPath)
-	if len(existing) == 0 {
+	switch {
+	case adopting:
+		detail = fmt.Sprintf("adopted %s: replaced the file without the ownership marker with the managed configuration (--adopt, ADR-0122)", preset.OverlayPath)
+	case len(existing) == 0:
 		action = "add"
 		detail = fmt.Sprintf("added %s from managed configuration", preset.OverlayPath)
 	}
 	if dryRun {
-		if action == "add" {
+		switch {
+		case adopting:
+			detail = fmt.Sprintf("would adopt %s: replace the file without the ownership marker with the managed configuration (--adopt, ADR-0122)", preset.OverlayPath)
+		case action == "add":
 			detail = fmt.Sprintf("would add %s from managed configuration", preset.OverlayPath)
-		} else {
+		default:
 			detail = fmt.Sprintf("would update %s from managed configuration", preset.OverlayPath)
 		}
 		actions = append(actions, ComponentAction{
@@ -173,7 +184,8 @@ func checkEstablishedOverlayGateFrom(ctx context.Context, resolved ResolvedConfi
 			return fmt.Errorf("convergence errors: %w", err)
 		}
 	}
-	if overlayNeedsAdoption(found, existing) {
+	// An overlay acknowledged with --adopt falls through to the safety gate.
+	if resolved.adoptionBlocks(found, existing) {
 		return fmt.Errorf("%s/%s: %s exists without the managed-configuration ownership marker; adoption required (ADR-0122): "+
 			"put every existing setting you want to keep into the repository's config in repos.yaml "+
 			"or accept its removal, then remove or replace the file; nothing was written\n%s",
@@ -470,8 +482,10 @@ func validateExistingBase(data []byte) error {
 // one (proposed overlay over the declared preset) before the base layer is
 // replaced. The proposed overlay is the rendered managed configuration,
 // except that a markerless overlay awaiting adoption stays as installed so
-// only the base change is judged. A preset source change alone never
-// counts as an explicit declaration of a less-restrictive setting.
+// only the base change is judged (one acknowledged with --adopt is replaced
+// by the managed configuration, so that is the proposed overlay). A preset
+// source change alone never counts as an explicit declaration of a
+// less-restrictive setting.
 //
 // baseFound is false when no base file is installed yet: the absent base is
 // then an empty layer, so adding a preset is compared like replacing one,
@@ -486,7 +500,7 @@ func presetReplacementRelaxations(ctx context.Context, resolved ResolvedConfig, 
 		return nil, nil
 	}
 	candidate := resolved.Managed
-	if overlayNeedsAdoption(found, existingOverlay) {
+	if resolved.adoptionBlocks(found, existingOverlay) {
 		if len(bytes.TrimSpace(existingOverlay)) == 0 {
 			candidate = config.NewEmptyPerRepoOverlay()
 		} else if candidate, err = config.ParsePerRepoConfigWriter(existingOverlay); err != nil {

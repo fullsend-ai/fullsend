@@ -129,6 +129,11 @@ type Manifest struct {
 	legacyTrackingMigrations []LegacyTrackingMigration
 	// sourceData is the content LoadManifest parsed.
 	sourceData []byte
+	// adoptOverlays holds the lowercased owner/repo names whose markerless
+	// .fullsend/config.yaml the operator acknowledged for adoption in this
+	// run (`repos install --adopt`, ADR-0122). It is run-scoped input set by
+	// SetAdoptOverlays and is never written to the manifest file.
+	adoptOverlays map[string]bool
 }
 
 // PlatformConfig holds per-platform infrastructure settings and the
@@ -392,6 +397,12 @@ type ResolvedConfig struct {
 	// was loaded from a local path (whose machine-specific location is not
 	// meaningful to readers of the target repository) or built in memory.
 	ManifestSource string
+	// AdoptOverlay reports that the operator named this repository with
+	// `repos install --adopt` (see Manifest.SetAdoptOverlays): an existing
+	// .fullsend/config.yaml without the ownership marker is then replaced
+	// by the managed file, subject to the ADR-0122 safety gate, instead of
+	// blocking the install as adoption required.
+	AdoptOverlay bool
 }
 
 func parseManifestBytes(data []byte, m *Manifest) error {
@@ -1334,6 +1345,7 @@ func (m *Manifest) resolveWithEntry(owner, repo, forgeName string, platform *Pla
 	cfg.ConfigManaged = true
 	cfg.Managed = m.mergeManagedConfig(platform, entry)
 	cfg.ManifestSource = m.sourceURL
+	cfg.AdoptOverlay = m.adoptsOverlay(owner, repo)
 
 	// Source infrastructure config from the platform-level section,
 	// with per-repo overrides via the string fallback chain.
