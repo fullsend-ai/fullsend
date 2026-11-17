@@ -497,6 +497,13 @@ func TestSecretRedactor(t *testing.T) {
 		assert.NotContains(t, result.Sanitized, "abcdefghijkl")
 	})
 
+	t.Run("json_field masks backslashes in literal quoted values", func(t *testing.T) {
+		result := r.Scan(`'password': 'ab\\cdef'`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, `ab\\cdef`)
+	})
+
 	t.Run("mask does not leave dangling escape sequence", func(t *testing.T) {
 		input1 := `Authorization: Bearer abc\ndefghijkl`
 		result1 := r.Scan(input1)

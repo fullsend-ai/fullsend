@@ -118,6 +118,12 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	validJSON5 := `{"tokens":["ghp_FAKEtesttoken000000000000000000000001"],"ghp_FAKEtesttoken000000000000000000000002":1,"ghp_FAKEtesttoken000000000000000000000003":2}`
 	require.NoError(t, os.WriteFile(jsonFile5, []byte(validJSON5), 0o644))
 
+	// Structural findings plus a private-key marker spanning separate values
+	// must still be written as valid JSON after the serialized-text backstop.
+	jsonFile8 := filepath.Join(dir, "private_key_and_password.json")
+	validJSON8 := `["see -----BEGIN RSA` + ` PRIVATE KEY----- marker", {"note": "and -----END RSA` + ` PRIVATE KEY----- marker", "password": "a-long-sensitive-value"}]`
+	require.NoError(t, os.WriteFile(jsonFile8, []byte(validJSON8), 0o644))
+
 	// Regression for #5705: an env assignment mentioned in ordinary prose is
 	// redacted structurally without corrupting JSON syntax.
 	jsonFile6 := filepath.Join(dir, "scribe_secret_backend.json")
@@ -212,6 +218,10 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	assert.True(t, json.Valid(content7), "cross-value private-key match must not corrupt JSON")
 	assert.Contains(t, string(content7), "-----BEGIN RSA"+" PRIVATE KEY-----")
 	assert.Contains(t, string(content7), "-----END RSA"+" PRIVATE KEY-----")
+	content8, err := os.ReadFile(jsonFile8)
+	require.NoError(t, err)
+	assert.True(t, json.Valid(content8), "backstop handling must preserve valid JSON")
+	assert.Contains(t, string(content8), "output removed", "cross-value backstop match must fail closed")
 
 	// jq is the parser implicated by the original incident; exercise it when
 	// available, while keeping the Go validity assertions portable.

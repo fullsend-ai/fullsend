@@ -6841,9 +6841,37 @@ func scanOutputFilesWithWriter(outputDir, traceID string, printer *ui.Printer, w
 							// Fall through to plain text scan below instead of failing open.
 						} else {
 							marshaled := buf.Bytes()
-							// Structural scanning is authoritative here. A raw-text
-							// backstop can match escaped syntax across value boundaries
-							// and double-redact an already-masked value.
+							// Backstop the serialized output. If text redaction finds
+							// another secret, only accept it when the result remains valid
+							// JSON; otherwise discard the potentially malformed payload.
+							backstop := pipeline.Scan(string(marshaled))
+							if len(backstop.Findings) > 0 {
+								changed := len(findings) == 0
+								for _, finding := range backstop.Findings {
+									if finding.Name == "private_key" {
+										changed = true
+										marshaled = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
+										break
+									}
+								}
+								if changed {
+									findingCount += len(backstop.Findings)
+									for _, f := range backstop.Findings {
+										printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s (backstop): %s", f.Name, relPath, f.Detail))
+										security.AppendFinding(findingsPath, security.TracedFinding{
+											TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
+											Phase: "host_output", Finding: f,
+										})
+									}
+									if backstop.Sanitized != "" {
+										if !json.Valid([]byte(backstop.Sanitized)) {
+											marshaled = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
+										} else {
+											marshaled = []byte(backstop.Sanitized)
+										}
+									}
+								}
+							}
 							if writeErr := writeFile(path, marshaled, 0o644); writeErr != nil {
 								return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 							}
