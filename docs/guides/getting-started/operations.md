@@ -262,6 +262,7 @@ When using the split-responsibility workflow, each standalone command requires a
 | `roles/run.admin` | | | | x | | x | x | x | x | |
 | `roles/iam.workloadIdentityPoolViewer` | | | x† | | | | | | | |
 | `roles/secretmanager.viewer` | | | | | | § | | | | x‡ |
+| `roles/serviceusage.serviceUsageAdmin` | ¶ | | | | | | | | | |
 
 \* `roles/resourcemanager.projectIamAdmin` is required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). `roles/secretmanager.admin` is required for `mint deploy` only when using `--pem-dir` or `--otlp-headers-file` (which creates a collector headers secret and grants access to it). Standard deploys without these flags do not need these roles.
 
@@ -273,6 +274,8 @@ When using the split-responsibility workflow, each standalone command requires a
 
 † All commands that call GCP APIs also require `resourcemanager.projects.get` (typically available via `roles/browser` or any project-level viewer role). This is only notable for `inference status` where it is not covered by the other listed roles.
 
+¶ `roles/serviceusage.serviceUsageAdmin` is optional for `inference provision`. Without it, the command prints the `gcloud services enable` command for a GCP admin to run instead of enabling missing APIs itself.
+
 ‡ GCP viewer roles for `mint status` are only required when using `--project` (GCP-based) mode. The API-based mode (`--mint-url` / `FULLSEND_MINT_URL`) requires only valid GitHub credentials and no GCP IAM roles.
 
 Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI access is provisioned separately via `inference provision`.
@@ -280,7 +283,9 @@ Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI acces
 Required GCP APIs also differ by command group:
 
 ```bash
-# Inference commands (inference provision/deprovision/status):
+# Inference commands (inference provision/deprovision/status).
+# inference provision enables any that are missing when the caller
+# holds roles/serviceusage.serviceUsageAdmin.
 gcloud services enable \
   iam.googleapis.com \
   cloudresourcemanager.googleapis.com \
