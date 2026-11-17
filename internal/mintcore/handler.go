@@ -154,6 +154,9 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	if err != nil {
 		return nil, err
 	}
+	if err := checkIssuerMatchesAPI(oidcVerifier, githubBaseURL); err != nil {
+		return nil, err
+	}
 
 	h := &Handler{
 		pemAccessor:          pemAccessor,
@@ -969,14 +972,38 @@ const defaultGitHubAPIBaseURL = "https://api.github.com"
 // and status callers' tokens are sent there, so the override must pass
 // CheckServiceBaseURL.
 func githubAPIBaseURL() (string, error) {
-	v := strings.TrimRight(strings.TrimSpace(mintEnv("MINT_GITHUB_API_URL")), "/")
-	if v == "" {
+	raw := strings.TrimSpace(mintEnv("MINT_GITHUB_API_URL"))
+	if raw == "" {
 		return defaultGitHubAPIBaseURL, nil
 	}
+	// Set but only slashes is an error, not the default.
+	v := strings.TrimRight(raw, "/")
 	if err := CheckServiceBaseURL("MINT_GITHUB_API_URL", v); err != nil {
 		return "", err
 	}
 	return v, nil
+}
+
+// githubActionsOIDCIssuer is GitHub Actions' github.com OIDC issuer. It is
+// declared here, not taken from sts_verifier.go, because handler.go also
+// builds for the Cloudflare Worker.
+const githubActionsOIDCIssuer = "https://token.actions.githubusercontent.com"
+
+// checkIssuerMatchesAPI refuses a GitHub API other than github.com's while
+// the verifier still trusts GitHub Actions' github.com issuer. That pair
+// would admit github.com workflows to mint tokens on another server, where
+// the same owner and repository names can belong to someone else. Every load
+// site builds its handler here, so the rule holds for each: the Cloudflare
+// Worker and GCF mints, whose issuer is fixed, cannot set MINT_GITHUB_API_URL
+// at all, and the standalone mint needs MINT_OIDC_ISSUER_URL with it.
+func checkIssuerMatchesAPI(verifier OIDCVerifier, apiBaseURL string) error {
+	if apiBaseURL == defaultGitHubAPIBaseURL {
+		return nil
+	}
+	if j, ok := verifier.(*JWKSVerifier); ok && j.issuerURL != githubActionsOIDCIssuer {
+		return nil
+	}
+	return errors.New("MINT_GITHUB_API_URL names a GitHub server other than github.com, but the mint trusts github.com's Actions issuer; set MINT_OIDC_ISSUER_URL to that server's issuer (standalone mint only)")
 }
 
 // CheckServiceBaseURL checks an operator-set base URL the mint trusts or
