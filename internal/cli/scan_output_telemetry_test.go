@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -117,6 +118,19 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	validJSON5 := `{"tokens":["ghp_FAKEtesttoken000000000000000000000001"],"ghp_FAKEtesttoken000000000000000000000002":1,"ghp_FAKEtesttoken000000000000000000000003":2}`
 	require.NoError(t, os.WriteFile(jsonFile5, []byte(validJSON5), 0o644))
 
+	// Regression for #5705: an env assignment mentioned in ordinary prose is
+	// redacted structurally without corrupting JSON syntax.
+	jsonFile6 := filepath.Join(dir, "scribe_secret_backend.json")
+	validJSON6 := `{"body":"Changed SCRIBE_SECRET_BACKEND=env"}`
+	require.NoError(t, os.WriteFile(jsonFile6, []byte(validJSON6), 0o644))
+
+	// The private-key pattern can match across separate JSON string values in
+	// raw text, even though neither value contains a complete key block.
+	// Structural scanning must not let such a cross-value match corrupt JSON.
+	jsonFile7 := filepath.Join(dir, "private_key_markers.json")
+	validJSON7 := `["see -----BEGIN RSA PRIVATE` + ` KEY----- marker", {"note": "and -----END RSA PRIVATE` + ` KEY----- marker"}]`
+	require.NoError(t, os.WriteFile(jsonFile7, []byte(validJSON7), 0o644))
+
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	require.NoError(t, scanOutputFiles(dir, "trace-id", printer))
@@ -185,6 +199,25 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	assert.Len(t, sanitizedKeys, 2, "both colliding keys must be retained")
 	sort.Strings(sanitizedKeys)
 	assert.NotEqual(t, sanitizedKeys[0], sanitizedKeys[1], "colliding keys must be made distinct")
+
+	content6, err := os.ReadFile(jsonFile6)
+	require.NoError(t, err)
+	assert.True(t, json.Valid(content6), "sanitized #5705 fixture must remain valid JSON")
+	var scribeResult map[string]string
+	require.NoError(t, json.Unmarshal(content6, &scribeResult))
+	assert.Contains(t, scribeResult["body"], "SCRIBE_SECRET_BACKEND=env")
+
+	content7, err := os.ReadFile(jsonFile7)
+	require.NoError(t, err)
+	assert.True(t, json.Valid(content7), "cross-value private-key match must not corrupt JSON")
+	assert.Contains(t, string(content7), "output removed", "ambiguous whole-document match must fail closed")
+
+	// jq is the parser implicated by the original incident; exercise it when
+	// available, while keeping the Go validity assertions portable.
+	if _, err := exec.LookPath("jq"); err == nil {
+		cmd := exec.Command("jq", ".", jsonFile6)
+		assert.NoError(t, cmd.Run(), "jq must parse the sanitized incident-shaped fixture")
+	}
 }
 
 // TestScanOutputFiles_DuplicateJSONKeys verifies that JSON files containing
