@@ -370,7 +370,7 @@ func claudeShouldFallBack(res claudeAttemptResult) bool {
 // abandoned for a fallback, within timeout. The transcript would otherwise
 // be extracted and reported as an error on a run that went on to succeed;
 // a failure to remove it is only reported.
-func (r ClaudeRuntime) claudeRemoveTranscript(sandboxName, sessionID string, timeout time.Duration, printer *ui.Printer) {
+func (r ClaudeRuntime) claudeRemoveTranscript(sandboxName, sessionID string, timeout time.Duration, progressVerbosity string, printer *ui.Printer) {
 	if !claudeSessionIDPattern.MatchString(sessionID) {
 		return
 	}
@@ -380,7 +380,7 @@ func (r ClaudeRuntime) claudeRemoveTranscript(sandboxName, sessionID string, tim
 		if cerr != nil {
 			msg = cerr.Error()
 		}
-		printer.StepWarn("Could not remove the abandoned attempt's transcript: " + sanitizeOutput(msg))
+		printer.StepWarn(detailWarning("Could not remove the abandoned attempt's transcript", sanitizeOutput(msg), progressVerbosity))
 	}
 }
 
@@ -411,7 +411,7 @@ func (r ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pr
 
 	handler := params.OnEvent
 	if handler == nil {
-		renderer := NewEventRenderer(printer)
+		renderer := newEventRendererAt(printer, params.ProgressVerbosity)
 		handler = renderer.Handle
 	}
 	// Always wrap handler to capture metrics regardless of custom/default path.
@@ -420,6 +420,11 @@ func (r ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pr
 		recordClaudeMetrics(metrics, evt)
 		innerHandler(evt)
 	}
+
+	// Every model attempt writes to the same stderr sink, so at quiet a
+	// fallback run keeps one file and prints one count line.
+	agentStderr, endAgentStderr := openAgentStderr(params, printer)
+	defer endAgentStderr()
 
 	chain := claudeModelChain(params, gw != nil)
 	// lastSession is the session of the attempt that just ended. It is
@@ -430,13 +435,13 @@ func (r ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pr
 		attemptParams := params
 		attemptParams.Model = model
 		attemptParams.Timeout = timeout
-		res := r.runAttempt(ctx, attemptParams, mayFallBack, handler, printer)
+		res := r.runAttempt(ctx, attemptParams, mayFallBack, agentStderr, handler, printer)
 		lastSession = res.sessionID
 		return res
 	}
 	onFallback := func(prev, next string, budget time.Duration) bool {
 		printer.StepWarn(modelFallbackWarning(prev, next, fallbackReasonNotServed))
-		r.claudeRemoveTranscript(params.SandboxName, lastSession, min(10*time.Second, budget), printer)
+		r.claudeRemoveTranscript(params.SandboxName, lastSession, min(10*time.Second, budget), params.ProgressVerbosity, printer)
 		return true
 	}
 	var result claudeAttemptResult
@@ -482,7 +487,7 @@ func (r ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pr
 // params.Timeout. When mayFallBack is set, its events are withheld until
 // the model produces output (see attemptGate), so an attempt abandoned
 // for a fallback leaves nothing behind in the run's output.
-func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFallBack bool, handler func(AgentEvent), printer *ui.Printer) (res claudeAttemptResult) {
+func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFallBack bool, agentStderr io.Writer, handler func(AgentEvent), printer *ui.Printer) (res claudeAttemptResult) {
 	// synthetic is set while the assistant message being read is one
 	// Claude Code wrote itself: the parser emits an InitEvent with the
 	// message's model ahead of its content, and text under
@@ -498,7 +503,7 @@ func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFall
 	defer func() { res.model, res.held, res.answered = params.Model, gate.held, gate.answered }()
 
 	cmd := buildRunCommand(params)
-	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
+	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, agentStderr)
 	if err != nil {
 		return claudeAttemptResult{exitCode: -1, execErr: err}
 	}
@@ -558,7 +563,8 @@ func (r ClaudeRuntime) ClearIterationArtifacts(sandboxName string) error {
 	return err
 }
 
-func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string) error {
+func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir, progressVerbosity string) error {
+	rep := newTranscriptReport(agentLabel, progressVerbosity)
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
@@ -577,10 +583,11 @@ func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir str
 	if err != nil {
 		return fmt.Errorf("finding transcripts: %w", err)
 	}
+	defer rep.end()
 
 	trimmed := strings.TrimSpace(stdout)
 	if trimmed == "" {
-		fmt.Fprintf(os.Stderr, "  [%s] No transcripts found\n", agentLabel)
+		rep.noneFound("No transcripts found")
 		return nil
 	}
 
@@ -593,7 +600,7 @@ func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir str
 
 		f, createErr := root.Create(localName)
 		if createErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentLabel, localName, createErr)
+			rep.skip("Skipping (path rejected): %s: %v", localName, createErr)
 			continue
 		}
 		f.Close()
@@ -601,10 +608,10 @@ func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir str
 		localPath := filepath.Join(outputDir, localName)
 		os.Remove(localPath)
 		if dlErr := sandbox.DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Failed to copy transcript: %v\n", agentLabel, dlErr)
+			rep.skip("Failed to copy transcript: %v", dlErr)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "  [%s] Saved transcript: %s\n", agentLabel, localName)
+		rep.saved("Saved transcript: %s", localName)
 	}
 
 	return nil

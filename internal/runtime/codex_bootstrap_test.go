@@ -28,7 +28,7 @@ func fakeOpenshellCodex(t *testing.T, logPath, storeDir, versionOutput string, s
 	require.NoError(t, os.MkdirAll(storeDir, 0o755))
 	streamCase := "exit 0"
 	if len(streamFixture) > 0 && streamFixture[0] != "" {
-		streamCase = "cat '" + streamFixture[0] + "'; exit 0"
+		streamCase = fakeAgentStderrArm + "cat '" + streamFixture[0] + "'; exit 0"
 	}
 	findCase := "exit 0"
 	if len(streamFixture) > 1 && streamFixture[1] != "" {
