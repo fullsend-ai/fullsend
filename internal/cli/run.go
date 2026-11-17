@@ -1163,6 +1163,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if progressRule != "" {
 		printer.StepInfo(progressRule)
 	}
+	// At quiet the run's final error leaves as a fixed message (ADR 0163):
+	// main prints it as "Error: %v", and the wrapped text can quote sandbox
+	// output or paths the agent chose. This defer is registered before the
+	// telemetry and status defers, so it runs after them, and it swaps only
+	// an error the root span has recorded in full. Setup errors from before
+	// the root span starts carry no agent text and print as before.
+	var runErrRecorded bool
+	defer func() {
+		runErr = quietRunError(runErr, runErrRecorded, progressVerbosity)
+	}()
 	// resolvedModel is the alias-table target when models.aliases remaps
 	// h.Model, h.Model otherwise. It is what the echo and the Claude Code
 	// warning look at; pi still prefixes a bare id with its provider.
@@ -2152,6 +2162,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		finalizeRootSpan(rootSpan, runErr, exitCode, validationPassed)
+		runErrRecorded = true
 
 		flushCtx, cancel := context.WithTimeout(context.Background(), telemetry.FlushTimeout)
 		defer cancel()
@@ -5044,12 +5055,48 @@ func failureLine(label string, err error, progressVerbosity string) string {
 
 // auditChainFailure returns the failure line and the run error for a broken
 // security audit log. The broken-chain message quotes hash fields read from
-// a file the agent can write, so at quiet (ADR 0163) neither carries it.
+// a file the agent can write, so at quiet (ADR 0163) the line leaves it out.
+// The error keeps it at every level, so telemetry records it; at quiet
+// quietRunError replaces the error main prints.
 func auditChainFailure(brokenMsg, progressVerbosity string) (string, error) {
+	err := fmt.Errorf("audit log integrity check failed: %s", brokenMsg)
 	if config.ProgressIsQuiet(progressVerbosity) {
-		return "Audit log integrity check FAILED", errors.New("audit log integrity check failed")
+		return "Audit log integrity check FAILED", err
 	}
-	return "Audit log integrity check FAILED: " + brokenMsg, fmt.Errorf("audit log integrity check failed: %s", brokenMsg)
+	return "Audit log integrity check FAILED: " + brokenMsg, err
+}
+
+// quietRunErrorMessage is what fullsend run prints as its final error at
+// the quiet progress level.
+const quietRunErrorMessage = "agent run failed (error details are not printed at progress level quiet; see telemetry or the run artifact)"
+
+// quietRunErr is the run's final error at quiet: it prints as
+// quietRunErrorMessage and keeps the original for errors.Is, errors.As and
+// the exit code.
+type quietRunErr struct{ err error }
+
+func (e *quietRunErr) Error() string { return quietRunErrorMessage }
+func (e *quietRunErr) Unwrap() error { return e.err }
+
+// ExitCode keeps the exit code the original error asks main for, and 1
+// otherwise, as main does for a plain error.
+func (e *quietRunErr) ExitCode() int {
+	var ec interface{ ExitCode() int }
+	if errors.As(e.err, &ec) {
+		return ec.ExitCode()
+	}
+	return 1
+}
+
+// quietRunError returns the error runAgent hands back to main. At quiet
+// (ADR 0163) an error the root span has recorded is replaced by a fixed
+// message; any other level, or an error telemetry has not recorded, is
+// returned unchanged.
+func quietRunError(err error, recorded bool, progressVerbosity string) error {
+	if err == nil || !recorded || !config.ProgressIsQuiet(progressVerbosity) {
+		return err
+	}
+	return &quietRunErr{err: err}
 }
 
 // emitTranscriptErrorsAt writes the transcript error annotations at the

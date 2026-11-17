@@ -226,3 +226,45 @@ func TestRunAgent_QuietKeepsExtractionNamesAndErrorsOutOfTheLog(t *testing.T) {
 		}
 	}
 }
+
+// A run with no validation loop returns the target-repo extraction error
+// to main, which prints it as "Error: %v". At quiet that error prints as a
+// fixed message, and neither the job log nor stderr carries the sandbox
+// text it wraps; telemetry still records the full error. Unset prints the
+// error as before.
+func TestRunAgent_QuietFinalErrorIsFixed(t *testing.T) {
+	for _, k := range []string{"OTEL_SDK_DISABLED", "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"} {
+		t.Setenv(k, "")
+	}
+	const marker = "SECRET-EXTRACT-PATH"
+	for _, verbosity := range []string{config.ProgressVerbosityQuiet, ""} {
+		t.Run("verbosity="+verbosity, func(t *testing.T) {
+			repoDir := newShallowTestRepo(t)
+			useFakeOpenshellRepoDownload(t, "echo '"+marker+"' >&2; exit 1", "")
+			dir := writeValidationLoopFullsendDir(t, passingValidationScript, "", 1, "")
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "code.yaml"),
+				[]byte("agent: agents/code.md\nrole: test\npolicy: policies/base.yaml\nsecurity:\n  enabled: false\n"), 0o644))
+			writeProgressConfig(t, dir, verbosity)
+			outputBase := t.TempDir()
+
+			var out string
+			var err error
+			stderr := stderrToTempFile(t, func() {
+				out, err = runValidationLoopAgent(t, dir, outputBase, repoDir)
+			})
+			require.Error(t, err)
+			raw, readErr := os.ReadFile(onlyTelemetryFile(t, outputBase))
+			require.NoError(t, readErr)
+			assert.Contains(t, string(raw), marker, "telemetry records the full error at every level")
+
+			if verbosity == config.ProgressVerbosityQuiet {
+				assert.EqualError(t, err, quietRunErrorMessage, "what main prints")
+				assert.NotContains(t, out, marker)
+				assert.NotContains(t, stderr, marker)
+				return
+			}
+			assert.Contains(t, err.Error(), "extracting target repo (iteration 1)")
+			assert.Contains(t, err.Error(), marker, "unset returns the error as before")
+		})
+	}
+}

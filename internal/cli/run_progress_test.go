@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -295,6 +296,33 @@ func TestAuditChainFailure(t *testing.T) {
 	for _, level := range []string{config.ProgressVerbosityQuiet, "bogus"} {
 		line, err := auditChainFailure(broken, level)
 		assert.Equal(t, "Audit log integrity check FAILED", line)
-		assert.EqualError(t, err, "audit log integrity check failed")
+		assert.EqualError(t, err, "audit log integrity check failed: "+broken,
+			"the error keeps the message for telemetry; quietRunError replaces what main prints")
 	}
+}
+
+// At quiet the run's final error prints as a fixed message, but only once
+// telemetry has recorded it; the original stays reachable for errors.Is
+// and the exit code. Other levels return the error unchanged.
+func TestQuietRunError(t *testing.T) {
+	orig := fmt.Errorf("extracting target repo (iteration 1): %w", errors.New("SECRET-PATH"))
+	for _, level := range []string{"", config.ProgressVerbosityFull, config.ProgressVerbosityTools} {
+		assert.Same(t, orig, quietRunError(orig, true, level), "level %q", level)
+	}
+	assert.Same(t, orig, quietRunError(orig, false, config.ProgressVerbosityQuiet),
+		"an error telemetry never recorded prints as before")
+	assert.NoError(t, quietRunError(nil, true, config.ProgressVerbosityQuiet))
+
+	for _, level := range []string{config.ProgressVerbosityQuiet, "bogus"} {
+		got := quietRunError(orig, true, level)
+		assert.EqualError(t, got, quietRunErrorMessage)
+		assert.ErrorIs(t, got, orig)
+		var ec interface{ ExitCode() int }
+		require.ErrorAs(t, got, &ec)
+		assert.Equal(t, 1, ec.ExitCode(), "a plain error still exits 1")
+	}
+	stale := quietRunError(&staleHeadError{}, true, config.ProgressVerbosityQuiet)
+	var ec interface{ ExitCode() int }
+	require.ErrorAs(t, stale, &ec)
+	assert.Equal(t, StaleHeadExitCode, ec.ExitCode(), "an error with its own exit code keeps it")
 }
