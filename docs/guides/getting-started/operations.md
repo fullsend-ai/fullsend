@@ -128,7 +128,10 @@ This is idempotent — it provisions new repos, repairs missing or drifted
 components (workflow, thin callers, variables, secrets, pipeline schedules,
 GitLab poller protected-ref pipeline access — a disabled GitLab schedule is
 reported as drift and reactivated only when `--reactivate-schedules` is
-passed; the GitLab webhook fast path — a trigger token, webhook secret, and
+passed, and a polling schedule whose cron differs from a key set in
+[`poll_schedules`](../../reference/config-reference.md#poll_schedules) is
+replaced by one on the configured cron with the same active state; the GitLab
+webhook fast path — a trigger token, webhook secret, and
 project webhook, provisioned only once the dispatcher template defines a
 runnable dispatcher job that admits trigger pipelines and its scripts are on
 the default branch, the default branch is protected and is the project's only

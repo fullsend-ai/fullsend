@@ -2555,6 +2555,87 @@ func scheduleDeferredActions(names []string, detail string) []ComponentAction {
 	return actions
 }
 
+// schedulePreflight is the result of gitlabScheduleMutationPreflight.
+type schedulePreflight int
+
+const (
+	// schedulePreflightReady means schedule mutations may proceed.
+	schedulePreflightReady schedulePreflight = iota
+	// schedulePreflightDefer is a benign wait state: the repair that makes
+	// schedule mutations safe has not landed yet.
+	schedulePreflightDefer
+	// schedulePreflightError means readiness could not be established.
+	schedulePreflightError
+)
+
+// gitlabScheduleMutationPreflight reports whether creating, reactivating or
+// replacing a managed polling schedule is safe. The detail explains a
+// deferral or error. convergeSchedules and convergeScheduleCadence share it so
+// neither resumes scheduled polling ahead of compatible scaffold delivery.
+func gitlabScheduleMutationPreflight(ctx context.Context, client forge.Client, owner, repo string) (schedulePreflight, string) {
+	// The installed wrapper must be on the typed pipeline-input contract;
+	// a legacy variable-based or otherwise incompatible wrapper defers
+	// schedule mutations until a scaffold repair lands. Checked once per
+	// call against the currently effective wrapper — not any scaffold
+	// queued by this same convergence run, which hasn't committed yet.
+	// Checked before every mutation (reactivating, creating or replacing),
+	// not just before creating: each action resumes scheduled polling, and
+	// resuming it ahead of the required pipeline-variable override
+	// restriction would let credential-bearing polling run under a weaker
+	// policy with no rollback once convergeGitLabRootCIFiles reports the
+	// restriction error later in this same convergence pass — see the
+	// review finding on this ordering.
+	//
+	// A typed wrapper alone is not sufficient evidence that scheduled
+	// polling is actually safe to resume: the root .gitlab-ci.yml may not
+	// yet declare/forward the dispatch-input contract, or a sibling agent
+	// or poll template repair may still be unmerged, leaving the legacy
+	// template's event-based polling in place. Gate typed schedule
+	// creation and reactivation on the same committed-template readiness
+	// checks ActivateGitLabTypedDispatch uses before activation, so a
+	// missing schedule can't start (or a disabled one resume) polling
+	// under a stale template ahead of compatible scaffold delivery.
+	typed, typedErr := GitLabUsesTypedDispatch(ctx, client, owner, repo)
+	if errors.Is(typedErr, errGitLabIncompatibleWrapper) {
+		// The installed wrapper's content is incompatible; a scaffold
+		// repair (collected by convergeRepo only when no action is an
+		// "error") is what fixes it. Defer schedule mutations instead of
+		// failing, so the repair can land. API/read failures below stay
+		// hard errors.
+		detail := fmt.Sprintf("deferring pipeline schedule creation/reactivation until the installed GitLab wrapper is repaired: %v", typedErr)
+		return schedulePreflightDefer, detail
+	}
+	if typedErr != nil {
+		detail := fmt.Sprintf("checking effective GitLab dispatch transport for schedule creation: %v", typedErr)
+		return schedulePreflightError, detail
+	}
+	if typed {
+		rootReady, rootErr := gitlabRootDeclaresDispatchInputs(ctx, client, owner, repo)
+		if rootErr != nil {
+			detail := fmt.Sprintf("checking committed GitLab root CI input contract for schedule creation: %v", rootErr)
+			return schedulePreflightError, detail
+		}
+		if !rootReady {
+			detail := "deferring pipeline schedule creation/reactivation until the root .gitlab-ci.yml declares and forwards the pipeline-input contract"
+			return schedulePreflightDefer, detail
+		}
+		landed, landedErr := gitlabPollAndAgentTemplatesLanded(ctx, client, owner, repo)
+		if landedErr != nil {
+			detail := fmt.Sprintf("checking committed GitLab agent/poll templates for schedule creation: %v", landedErr)
+			return schedulePreflightError, detail
+		}
+		if !landed {
+			detail := "deferring pipeline schedule creation/reactivation until compatible agent and poll templates land"
+			return schedulePreflightDefer, detail
+		}
+		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
+			detail := fmt.Sprintf("refusing to create or reactivate pipeline schedules before the GitLab pipeline-variable override restriction is established: %v", err)
+			return schedulePreflightError, detail
+		}
+	}
+	return schedulePreflightReady, ""
+}
+
 // convergeSchedules creates missing managed polling schedules from specs
 // (the repository's effective schedules, PipelineScheduleSpecsFor) and, with
 // reactivate set, reactivates disabled ones.
@@ -2631,65 +2712,14 @@ func convergeSchedules(ctx context.Context,
 		return actions
 	}
 
-	// The installed wrapper must be on the typed pipeline-input contract;
-	// a legacy variable-based or otherwise incompatible wrapper defers
-	// schedule mutations until a scaffold repair lands. Checked once per
-	// call against the currently effective wrapper — not any scaffold
-	// queued by this same convergence run, which hasn't committed yet.
-	// Checked before either mutation below (reactivating or creating),
-	// not just before creating: both actions resume scheduled polling, and
-	// resuming it ahead of the required pipeline-variable override
-	// restriction would let credential-bearing polling run under a weaker
-	// policy with no rollback once convergeGitLabRootCIFiles reports the
-	// restriction error later in this same convergence pass — see the
-	// review finding on this ordering.
-	//
-	// A typed wrapper alone is not sufficient evidence that scheduled
-	// polling is actually safe to resume: the root .gitlab-ci.yml may not
-	// yet declare/forward the dispatch-input contract, or a sibling agent
-	// or poll template repair may still be unmerged, leaving the legacy
-	// template's event-based polling in place. Gate typed schedule
-	// creation and reactivation on the same committed-template readiness
-	// checks ActivateGitLabTypedDispatch uses before activation, so a
-	// missing schedule can't start (or a disabled one resume) polling
-	// under a stale template ahead of compatible scaffold delivery.
-	typed, typedErr := GitLabUsesTypedDispatch(ctx, client, owner, repo)
-	if errors.Is(typedErr, errGitLabIncompatibleWrapper) {
-		// The installed wrapper's content is incompatible; a scaffold
-		// repair (collected by convergeRepo only when no action is an
-		// "error") is what fixes it. Defer schedule mutations instead of
-		// failing, so the repair can land. API/read failures below stay
-		// hard errors.
-		detail := fmt.Sprintf("deferring pipeline schedule creation/reactivation until the installed GitLab wrapper is repaired: %v", typedErr)
-		return append(actions, scheduleDeferredActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
-	}
-	if typedErr != nil {
-		detail := fmt.Sprintf("checking effective GitLab dispatch transport for schedule creation: %v", typedErr)
-		return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
-	}
-	if typed {
-		rootReady, rootErr := gitlabRootDeclaresDispatchInputs(ctx, client, owner, repo)
-		if rootErr != nil {
-			detail := fmt.Sprintf("checking committed GitLab root CI input contract for schedule creation: %v", rootErr)
-			return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
-		}
-		if !rootReady {
-			detail := "deferring pipeline schedule creation/reactivation until the root .gitlab-ci.yml declares and forwards the pipeline-input contract"
-			return append(actions, scheduleDeferredActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
-		}
-		landed, landedErr := gitlabPollAndAgentTemplatesLanded(ctx, client, owner, repo)
-		if landedErr != nil {
-			detail := fmt.Sprintf("checking committed GitLab agent/poll templates for schedule creation: %v", landedErr)
-			return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
-		}
-		if !landed {
-			detail := "deferring pipeline schedule creation/reactivation until compatible agent and poll templates land"
-			return append(actions, scheduleDeferredActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
-		}
-		if err := requireGitLabRestrictionBeforeDelivery(ctx, client, owner, repo); err != nil {
-			detail := fmt.Sprintf("refusing to create or reactivate pipeline schedules before the GitLab pipeline-variable override restriction is established: %v", err)
-			return append(actions, scheduleErrorActions(append(append([]string{}, inactiveSchedules...), missingSchedules...), detail)...)
-		}
+	// Defer or fail schedule mutations until the committed GitLab wrapper,
+	// root CI file and templates are ready; see gitlabScheduleMutationPreflight.
+	mutated := append(append([]string{}, inactiveSchedules...), missingSchedules...)
+	switch outcome, detail := gitlabScheduleMutationPreflight(ctx, client, owner, repo); outcome {
+	case schedulePreflightDefer:
+		return append(actions, scheduleDeferredActions(mutated, detail)...)
+	case schedulePreflightError:
+		return append(actions, scheduleErrorActions(mutated, detail)...)
 	}
 
 	if len(inactiveSchedules) > 0 {

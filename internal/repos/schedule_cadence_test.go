@@ -66,6 +66,8 @@ func TestConverge_GitLab_UnsetPollSchedulesKeepsEditedCron(t *testing.T) {
 		{ID: 41, Description: "fullsend slash poll", Ref: "main", Cron: "0 * * * *", Active: true},
 		{ID: 42, Description: "fullsend event poll", Ref: "main", Cron: "30 */4 * * *", Active: true},
 	}
+	populateGitLabTypedWrapper(t, fc, "acme", "api")
+	trustCadenceOwner(fc)
 	cfg := gitlabConvergeCfg("acme/api")
 	cfg.Manifest.GitLab.Repos[0].Config = mustManagedConfig(t, "poll_schedules:\n  event_poll: \"7 * * * *\"\n")
 
@@ -81,6 +83,18 @@ func TestConverge_GitLab_UnsetPollSchedulesKeepsEditedCron(t *testing.T) {
 	assert.Equal(t, "7 * * * *", crons["fullsend event poll"])
 }
 
+// cadenceOwnerID is a project Maintainer, the access level installing needs.
+const cadenceOwnerID = 7
+
+// trustCadenceOwner makes every seeded schedule of acme/api owned by a
+// project Maintainer, so the cadence step may replace it.
+func trustCadenceOwner(fc *forge.FakeClient) {
+	fc.ProjectMemberAccess[cadenceOwnerID] = forge.GitLabAccessLevelMaintainer
+	for i := range fc.PipelineSchedules["acme/api"] {
+		fc.PipelineSchedules["acme/api"][i].OwnerID = cadenceOwnerID
+	}
+}
+
 func cadenceResolved(fc forge.Client) ResolvedConfig {
 	return ResolvedConfig{Owner: "acme", Repo: "api", ForgeConfig: ForgeConfig{Client: fc}}
 }
@@ -92,6 +106,7 @@ func TestConvergeScheduleCadence_ReplacesOutOfDateSchedules(t *testing.T) {
 		{ID: 42, Description: "fullsend event poll", Ref: "refs/heads/main", Cron: "2,17,32,47 * * * *", Active: false},
 		{ID: 43, Description: "nightly build", Ref: "main", Cron: "0 0 * * *", Active: true},
 	}
+	trustCadenceOwner(fc)
 	specs := PipelineScheduleSpecsFor(config.PollSchedulesConfig{SlashPoll: "*/30 * * * *", EventPoll: "7 * * * *"})
 	var progress []string
 	actions := convergeScheduleCadence(context.Background(), cadenceResolved(fc), specs, false, func(_, _, msg string) { progress = append(progress, msg) })
@@ -142,8 +157,11 @@ func TestConvergeScheduleCadence_DryRun(t *testing.T) {
 	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
 		{ID: 41, Description: "fullsend slash poll", Ref: "main", Cron: "*/5 * * * *", Active: true},
 	}
+	trustCadenceOwner(fc)
 	specs := PipelineScheduleSpecsFor(config.PollSchedulesConfig{SlashPoll: "0 * * * *"})
-	actions := convergeScheduleCadence(context.Background(), cadenceResolved(fc), specs, true, noopProgress)
+	var progress []string
+	actions := convergeScheduleCadence(context.Background(), cadenceResolved(fc), specs, true, func(_, stage, _ string) { progress = append(progress, stage) })
+	assert.Equal(t, []string{"dry-run"}, progress)
 	require.Len(t, actions, 1)
 	assert.Equal(t, "update", actions[0].Action)
 	assert.Equal(t, `would change the cron of slash-poll from "*/5 * * * *" to "0 * * * *"`, actions[0].Detail)
@@ -159,6 +177,7 @@ func TestConvergeScheduleCadence_InterruptedReplacementOnlyDeletes(t *testing.T)
 		{ID: 41, Description: "fullsend slash poll", Ref: "main", Cron: "*/5 * * * *", Active: true},
 		{ID: 50, Description: "fullsend slash poll", Ref: "main", Cron: "0 * * * *", Active: true},
 	}
+	trustCadenceOwner(fc)
 	specs := PipelineScheduleSpecsFor(config.PollSchedulesConfig{SlashPoll: "0 * * * *"})
 	actions := convergeScheduleCadence(context.Background(), cadenceResolved(fc), specs, false, noopProgress)
 	require.Len(t, actions, 1)
@@ -172,6 +191,7 @@ func TestConvergeScheduleCadence_EmptyRefUsesDefaultBranch(t *testing.T) {
 	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
 		{ID: 41, Description: "fullsend slash poll", Cron: "*/5 * * * *", Active: true},
 	}
+	trustCadenceOwner(fc)
 	specs := PipelineScheduleSpecsFor(config.PollSchedulesConfig{SlashPoll: "0 * * * *"})
 	actions := convergeScheduleCadence(context.Background(), cadenceResolved(fc), specs, false, noopProgress)
 	require.Len(t, actions, 1)
@@ -183,6 +203,7 @@ func TestConvergeScheduleCadence_EmptyRefUsesDefaultBranch(t *testing.T) {
 	fc2.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
 		{ID: 41, Description: "fullsend slash poll", Cron: "*/5 * * * *", Active: true},
 	}
+	trustCadenceOwner(fc2)
 	fc2.Errors["GetRepo"] = errors.New("boom")
 	actions = convergeScheduleCadence(context.Background(), cadenceResolved(fc2), specs, false, noopProgress)
 	require.Len(t, actions, 1)
@@ -198,6 +219,7 @@ func TestConvergeScheduleCadence_Errors(t *testing.T) {
 		fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
 			{ID: 41, Description: "fullsend slash poll", Ref: "main", Cron: "*/5 * * * *", Active: true},
 		}
+		trustCadenceOwner(fc)
 		return fc
 	}
 
@@ -229,8 +251,11 @@ func TestConvergeScheduleCadence_Errors(t *testing.T) {
 		assert.Contains(t, actions[0].Detail, "failed to delete slash-poll (ID 41)")
 		require.Len(t, fc.CreatedSchedules, 1, "the replacement exists, so polling continues")
 
-		// The retry deletes the original without another replacement.
+		// The retry deletes the original without another replacement. The
+		// forge records the installer, a Maintainer, as the replacement's
+		// owner.
 		delete(fc.Errors, "DeletePipelineSchedule")
+		trustCadenceOwner(fc)
 		actions = convergeScheduleCadence(context.Background(), cadenceResolved(fc), specs, false, noopProgress)
 		require.Len(t, actions, 1)
 		assert.Equal(t, "update", actions[0].Action)
@@ -260,6 +285,8 @@ func TestConverge_GitLab_PollSchedulesCadence(t *testing.T) {
 	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
 		{ID: 41, Description: "fullsend slash poll", Ref: "main", Cron: "*/5 * * * *", Active: true},
 	}
+	populateGitLabTypedWrapper(t, fc, "acme", "api")
+	trustCadenceOwner(fc)
 	cfg := gitlabConvergeCfg("acme/api")
 	cfg.Manifest.GitLab.Repos[0].Config = mustManagedConfig(t, "poll_schedules:\n  slash_poll: \"*/30 * * * *\"\n  event_poll: \"7 * * * *\"\n")
 
@@ -276,9 +303,9 @@ func TestConverge_GitLab_PollSchedulesCadence(t *testing.T) {
 		crons[s.Description] = append(crons[s.Description], s.Cron)
 	}
 	assert.Equal(t, []string{"*/30 * * * *"}, crons["fullsend slash poll"], "the existing schedule moved to the configured cron")
-	// The legacy wrapper defers creating the missing event poll; the cadence
-	// step never creates a schedule that has no predecessor.
-	assert.Empty(t, crons["fullsend event poll"])
+	// The event poll has no predecessor, so convergeSchedules creates it on
+	// the configured cron rather than the cadence step.
+	assert.Equal(t, []string{"7 * * * *"}, crons["fullsend event poll"])
 }
 
 func TestConvergeSchedules_CreatesMissingOnConfiguredCron(t *testing.T) {
@@ -346,4 +373,146 @@ func TestReleaseGitLabTriggerSchedules_HandsBackOnConfiguredCron(t *testing.T) {
 	require.Len(t, live, 1)
 	assert.Equal(t, "7 * * * *", live[0].Cron)
 	assert.NotEqual(t, int64(acct), live[0].OwnerID, "the copy is installer-owned")
+}
+
+func cadenceSlashSpecs() []ScheduleSpec {
+	return PipelineScheduleSpecsFor(config.PollSchedulesConfig{SlashPoll: "0 * * * *"})
+}
+
+func TestConvergeScheduleCadence_LeavesUntrustedOwnerAndRefAlone(t *testing.T) {
+	seed := func(s forge.PipelineSchedule) *forge.FakeClient {
+		fc := newFakeClientForBatch("acme/api")
+		fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{s}
+		fc.ProjectMemberAccess[cadenceOwnerID] = forge.GitLabAccessLevelMaintainer
+		fc.ProjectMemberAccess[8] = forge.GitLabAccessLevelDeveloper
+		return fc
+	}
+	base := forge.PipelineSchedule{ID: 41, Description: "fullsend slash poll", Ref: "main", Cron: "*/5 * * * *", Active: true}
+	cases := map[string]forge.PipelineSchedule{
+		"developer on the default branch": {ID: 41, Description: base.Description, Ref: "main", Cron: base.Cron, Active: true, OwnerID: 8},
+		"developer on an attacker branch": {ID: 41, Description: base.Description, Ref: "attacker", Cron: base.Cron, Active: true, OwnerID: 8},
+		"maintainer on a non-default ref": {ID: 41, Description: base.Description, Ref: "feature", Cron: base.Cron, Active: true, OwnerID: cadenceOwnerID},
+		"unknown owner":                   {ID: 41, Description: base.Description, Ref: "main", Cron: base.Cron, Active: true},
+		"owner without project access":    {ID: 41, Description: base.Description, Ref: "main", Cron: base.Cron, Active: true, OwnerID: 99},
+	}
+	for name, s := range cases {
+		t.Run(name, func(t *testing.T) {
+			fc := seed(s)
+			actions := convergeScheduleCadence(context.Background(), cadenceResolved(fc), cadenceSlashSpecs(), false, noopProgress)
+			for _, a := range actions {
+				assert.Equal(t, "none", a.Action, a.Detail)
+			}
+			assert.Empty(t, fc.CreatedSchedules, "no installer-owned schedule is created")
+			assert.Empty(t, fc.DeletedScheduleIDs)
+		})
+	}
+
+	t.Run("owner lookup failure fails closed", func(t *testing.T) {
+		fc := seed(forge.PipelineSchedule{ID: 41, Description: base.Description, Ref: "main", Cron: base.Cron, Active: true, OwnerID: cadenceOwnerID})
+		fc.Errors["GetProjectMemberAccessLevel"] = errors.New("boom")
+		actions := convergeScheduleCadence(context.Background(), cadenceResolved(fc), cadenceSlashSpecs(), false, noopProgress)
+		require.Len(t, actions, 1)
+		assert.Equal(t, "error", actions[0].Action)
+		assert.Contains(t, actions[0].Detail, "failed to verify the owner")
+		assert.Empty(t, fc.CreatedSchedules)
+		assert.Empty(t, fc.DeletedScheduleIDs)
+	})
+
+	t.Run("an untrusted schedule on the effective cron is no replacement", func(t *testing.T) {
+		fc := newFakeClientForBatch("acme/api")
+		fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+			{ID: 41, Description: base.Description, Ref: "main", Cron: base.Cron, Active: true, OwnerID: cadenceOwnerID},
+			{ID: 50, Description: base.Description, Ref: "main", Cron: "0 * * * *", Active: true, OwnerID: 8},
+		}
+		fc.ProjectMemberAccess[cadenceOwnerID] = forge.GitLabAccessLevelMaintainer
+		fc.ProjectMemberAccess[8] = forge.GitLabAccessLevelDeveloper
+		actions := convergeScheduleCadence(context.Background(), cadenceResolved(fc), cadenceSlashSpecs(), false, noopProgress)
+		require.Len(t, actions, 1)
+		assert.Equal(t, "update", actions[0].Action, actions[0].Detail)
+		require.Len(t, fc.CreatedSchedules, 1, "the Maintainer's schedule gets its own replacement")
+		assert.Equal(t, []int64{41}, fc.DeletedScheduleIDs)
+	})
+}
+
+func TestConvergeScheduleCadence_ReplacementMustMatchRef(t *testing.T) {
+	fc := newFakeClientForBatch("acme/api")
+	fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 41, Description: "fullsend slash poll", Ref: "main", Cron: "*/5 * * * *", Active: true},
+		// An active schedule on the configured cron on another ref does
+		// not stand in for the one on main.
+		{ID: 50, Description: "fullsend slash poll", Ref: "feature", Cron: "0 * * * *", Active: true},
+	}
+	trustCadenceOwner(fc)
+	actions := convergeScheduleCadence(context.Background(), cadenceResolved(fc), cadenceSlashSpecs(), false, noopProgress)
+	require.Len(t, actions, 1)
+	assert.Equal(t, "update", actions[0].Action, actions[0].Detail)
+	require.Len(t, fc.CreatedSchedules, 1)
+	assert.Equal(t, "main", fc.CreatedSchedules[0].Ref)
+	assert.Equal(t, []int64{41}, fc.DeletedScheduleIDs)
+	assert.NotContains(t, fc.DeletedScheduleIDs, int64(50))
+
+	// A retry after an interrupted replacement finds the copy on main.
+	fc2 := newFakeClientForBatch("acme/api")
+	fc2.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+		{ID: 41, Description: "fullsend slash poll", Ref: "refs/heads/main", Cron: "*/5 * * * *", Active: true},
+		{ID: 50, Description: "fullsend slash poll", Ref: "main", Cron: "0 * * * *", Active: true},
+	}
+	trustCadenceOwner(fc2)
+	actions = convergeScheduleCadence(context.Background(), cadenceResolved(fc2), cadenceSlashSpecs(), false, noopProgress)
+	require.Len(t, actions, 1)
+	assert.Equal(t, "update", actions[0].Action, actions[0].Detail)
+	assert.Empty(t, fc2.CreatedSchedules)
+	assert.Equal(t, []int64{41}, fc2.DeletedScheduleIDs)
+}
+
+func TestConvergeScheduleCadence_WaitsForScheduleReadiness(t *testing.T) {
+	seed := func(t *testing.T) *forge.FakeClient {
+		fc := newFakeClientForBatch("acme/api")
+		populateGitLabInstalled(fc, "acme", "api")
+		populateGitLabTypedWrapper(t, fc, "acme", "api")
+		fc.PipelineSchedules["acme/api"] = []forge.PipelineSchedule{
+			{ID: 41, Description: "fullsend slash poll", Ref: "main", Cron: "*/5 * * * *", Active: true},
+		}
+		trustCadenceOwner(fc)
+		return fc
+	}
+	run := func(fc *forge.FakeClient) []ComponentAction {
+		return convergeScheduleCadence(context.Background(), cadenceResolved(fc), cadenceSlashSpecs(), false, noopProgress)
+	}
+
+	t.Run("ready", func(t *testing.T) {
+		fc := seed(t)
+		actions := run(fc)
+		require.Len(t, actions, 1)
+		assert.Equal(t, "update", actions[0].Action, actions[0].Detail)
+	})
+	t.Run("incompatible wrapper defers", func(t *testing.T) {
+		fc := seed(t)
+		fc.FileContents["acme/api/"+fullsendPipelineInclude] = []byte("  ref: v2.5.0\n")
+		actions := run(fc)
+		require.Len(t, actions, 1)
+		assert.Equal(t, "none", actions[0].Action, actions[0].Detail)
+		assert.Contains(t, actions[0].Detail, "deferring")
+		assert.Empty(t, fc.CreatedSchedules)
+		assert.Empty(t, fc.DeletedScheduleIDs)
+	})
+	t.Run("unlanded templates defer", func(t *testing.T) {
+		fc := seed(t)
+		fc.FileContents["acme/api/"+fullsendPollTemplatePath] = []byte("fullsend-poll:\n  script:\n    - echo \"legacy poll using $FULLSEND_POLL_MODE\"\n")
+		actions := run(fc)
+		require.Len(t, actions, 1)
+		assert.Equal(t, "none", actions[0].Action, actions[0].Detail)
+		assert.Contains(t, actions[0].Detail, "templates land")
+		assert.Empty(t, fc.CreatedSchedules)
+		assert.Empty(t, fc.DeletedScheduleIDs)
+	})
+	t.Run("failed restriction preflight errors", func(t *testing.T) {
+		fc := seed(t)
+		fc.Errors["GetPipelineVariablesMinimumOverrideRole"] = errors.New("boom")
+		actions := run(fc)
+		require.Len(t, actions, 1)
+		assert.Equal(t, "error", actions[0].Action, actions[0].Detail)
+		assert.Empty(t, fc.CreatedSchedules)
+		assert.Empty(t, fc.DeletedScheduleIDs)
+	})
 }

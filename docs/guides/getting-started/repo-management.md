@@ -836,7 +836,13 @@ stale vendored assets (`vendored-assets` drift when a GitHub repo resolves
 `vendor: false`; see [Turning vendoring off](../../cli/repos.md#turning-vendoring-off)),
 and scaffold workflow refs against the manifest. Missing or drifted
 components are repaired automatically (disabled pipeline schedules are the
-exception — see above); a changed preset replaces only
+exception — see above). A GitLab polling schedule whose cron differs from a
+key set in [`poll_schedules`](../../reference/config-reference.md#poll_schedules)
+is replaced by one on the configured cron, with the same ref and active state.
+Only schedules on the default branch owned by a project Maintainer are
+replaced, and the replacement waits for the same wrapper and template readiness
+as schedule creation; a schedule an unverified owner created is left alone.
+A changed preset replaces only
 `.fullsend/config.base.yaml` and leaves the managed configuration intact. A
 drifted managed configuration file is rewritten wholesale, unless the
 existing file predates managed-configuration adoption (missing the
