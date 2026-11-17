@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -149,10 +150,15 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		workflowHostRepos["fullsend-ai/fullsend"] = true
 	}
 
+	githubBaseURL, err := githubAPIBaseURL()
+	if err != nil {
+		return nil, err
+	}
+
 	h := &Handler{
 		pemAccessor:          pemAccessor,
 		oidcVerifier:         oidcVerifier,
-		githubBaseURL:        githubAPIBaseURL(),
+		githubBaseURL:        githubBaseURL,
 		foreignCache:         make(map[string]foreignCacheEntry),
 		foreignInflight:      make(map[string]*foreignInflight),
 		foreignCacheTTL:      defaultForeignCacheTTL,
@@ -956,12 +962,44 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 const defaultGitHubAPIBaseURL = "https://api.github.com"
 
 // githubAPIBaseURL is the REST API the mint calls to mint installation
-// tokens. MINT_GITHUB_API_URL points it at another GitHub API, such as an
-// emulator in a test. It is not GITHUB_API_URL: a mint started as a step of
-// an Actions job would otherwise inherit the job's API URL.
-func githubAPIBaseURL() string {
-	if v := strings.TrimRight(strings.TrimSpace(mintEnv("MINT_GITHUB_API_URL")), "/"); v != "" {
-		return v
+// tokens and to check status callers. MINT_GITHUB_API_URL points it at
+// another GitHub API, such as GitHub Enterprise Server or an emulator in a
+// test. It is not GITHUB_API_URL: a mint started as a step of an Actions job
+// would otherwise inherit the job's API URL. The App JWT, installation tokens
+// and status callers' tokens are sent there, so the override must pass
+// CheckServiceBaseURL.
+func githubAPIBaseURL() (string, error) {
+	v := strings.TrimRight(strings.TrimSpace(mintEnv("MINT_GITHUB_API_URL")), "/")
+	if v == "" {
+		return defaultGitHubAPIBaseURL, nil
 	}
-	return defaultGitHubAPIBaseURL
+	if err := CheckServiceBaseURL("MINT_GITHUB_API_URL", v); err != nil {
+		return "", err
+	}
+	return v, nil
+}
+
+// CheckServiceBaseURL checks an operator-set base URL the mint trusts or
+// sends credentials to, such as the OIDC issuer or the GitHub API: https
+// with a host, or plain http only on localhost or 127.0.0.1 (the rule the
+// mint client applies to mint URLs), and no userinfo, query or fragment.
+// The error names the setting, not the value, which may carry userinfo.
+func CheckServiceBaseURL(name, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Opaque != "" || u.Hostname() == "" {
+		return fmt.Errorf("%s is not an absolute URL with a host", name)
+	}
+	if u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return fmt.Errorf("%s must not carry userinfo, a query or a fragment", name)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if h := u.Hostname(); h == "localhost" || h == "127.0.0.1" {
+			return nil
+		}
+		return fmt.Errorf("%s must use https; plain http is allowed only on localhost or 127.0.0.1", name)
+	}
+	return fmt.Errorf("%s must use https", name)
 }

@@ -106,8 +106,9 @@ its platform, then passes them into `NewHandler`:
 
 ```go
 // cmd/mint (standalone)
+issuerURL, _ := oidcIssuerURL() // defaults to GitHub Actions unless MINT_OIDC_ISSUER_URL is set
 verifier, _ := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-    IssuerURL: "https://token.actions.githubusercontent.com",
+    IssuerURL: issuerURL,
 })
 pemAccessor, _ := mintcore.NewFilesystemPEMAccessor(os.Getenv("PEM_DIR"))
 handler, _ := mintcore.NewHandler(pemAccessor, verifier)
