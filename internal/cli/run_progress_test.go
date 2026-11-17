@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,24 +78,58 @@ func TestResolveRunProgressVerbosity(t *testing.T) {
 	}
 }
 
-// An event file runAgent cannot read fails the run earlier, with "reading
-// event file ..." (runAgent reads it before it resolves the level), so in
-// a real run this branch is reached only if the file changes between the
-// two reads. It is kept as a defensive branch: the source counts as
-// unknown, so the run gets the strictest of progress.verbosity and every
-// by_source entry. With no progress setting the log stays as it is today.
-func TestResolveRunProgressVerbosity_UnreadableEventIsUnknownSource(t *testing.T) {
+// An event file that cannot be read leaves the run source unresolvable.
+// With any progress setting the run logs at quiet, as ADR 0163 says for an
+// unresolvable level; with none it logs as today. runAgent reads the event
+// file first and fails on an unreadable one (see
+// TestRunAgent_UnreadableEventFileFailsBeforeProgressLevel), so this rule
+// does not depend on that ordering.
+func TestResolveRunProgressVerbosity_UnreadableEventFile(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing.json")
+	const wantRule = "Progress log: quiet (the run source could not be resolved: the event file could not be read)"
 
-	rc, dir := progressFixture(t, "version: \"1\"\n")
-	level, rule := resolveRunProgressVerbosity(rc, dir, missing)
-	assert.Equal(t, config.ProgressVerbosityFull, level, "unset must log as today")
-	assert.Empty(t, rule)
+	for name, cfg := range map[string]string{
+		"no config file":    "",
+		"no progress block": "version: \"1\"\n",
+		"explicit full":     "version: \"1\"\nprogress:\n  verbosity: full\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rc, dir := progressFixture(t, cfg)
+			level, rule := resolveRunProgressVerbosity(rc, dir, missing)
+			assert.Equal(t, config.ProgressVerbosityFull, level, "unset must log as today")
+			assert.Empty(t, rule)
+		})
+	}
+	for name, cfg := range map[string]string{
+		"by_source only":  "version: \"1\"\nprogress:\n  by_source:\n    jira: tools\n",
+		"by_source full":  "version: \"1\"\nprogress:\n  by_source:\n    github: full\n",
+		"repo-wide tools": "version: \"1\"\nprogress:\n  verbosity: tools\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rc, dir := progressFixture(t, cfg)
+			level, rule := resolveRunProgressVerbosity(rc, dir, missing)
+			assert.Equal(t, config.ProgressVerbosityQuiet, level, "an unresolvable source fails closed")
+			assert.Equal(t, wantRule, rule)
+		})
+	}
+}
 
-	rc, dir = progressFixture(t, "version: \"1\"\nprogress:\n  by_source:\n    jira: quiet\n")
-	level, rule = resolveRunProgressVerbosity(rc, dir, missing)
-	assert.Equal(t, config.ProgressVerbosityQuiet, level, "a source level still applies when the source is unknown")
-	assert.Equal(t, "Progress log: quiet (run source unknown: the event file could not be read)", rule)
+// runAgent reads the event file before it resolves the progress level, so
+// an unreadable one fails the run before any progress line prints.
+func TestRunAgent_UnreadableEventFileFailsBeforeProgressLevel(t *testing.T) {
+	repoDir := newShallowTestRepo(t)
+	useFakeOpenshellRepoDownload(t, "cp -R "+shellQuoteForTest(repoDir)+"/. \"$dest\"/", "")
+	useProgressProbeRuntime(t)
+	dir := writeValidationLoopFullsendDir(t, passingValidationScript, "", 1, "")
+	writeProgressConfig(t, dir, config.ProgressVerbosityQuiet)
+
+	var out strings.Builder
+	err := runAgent(context.Background(), "code", dir, t.TempDir(), repoDir, fakeSandboxBinary(t),
+		nil, false, "", "github", filepath.Join(t.TempDir(), "missing.json"), resolveFlags{maxDepth: 10, maxResources: 50},
+		statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading event file")
+	assert.NotContains(t, out.String(), "Progress log:")
 }
 
 // The standard GitHub stage jobs carry no normalized event; a native

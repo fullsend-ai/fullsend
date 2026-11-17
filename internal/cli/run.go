@@ -582,6 +582,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// When --event-file is provided, the event is passed to ComposeOpts.Event
 	// so ResolveOverlays can evaluate overlay when expressions.
 	var eventMap map[string]any
+	// INVARIANT: the event file is read, and an unreadable one fails the
+	// run, before resolveRunProgressVerbosity runs below; that function
+	// still fails closed on its own when it cannot read the file.
 	if eventFile != "" {
 		eventData, readErr := os.ReadFile(eventFile)
 		if readErr != nil {
@@ -5054,16 +5057,19 @@ func emitTranscriptErrorsAt(tx agentruntime.TranscriptHandler, w io.Writer, summ
 // chosen. The run source is read the way prepare-artifacts reads it
 // (artifactRunSource): a valid normalized event, else a native GitHub
 // event; an unknown source gets the strictest of progress.verbosity and
-// every progress.by_source entry. An event file that cannot be read also
-// counts as an unknown source; runAgent has already failed on such a file
-// before it gets here, so that branch is defensive only. It fails closed:
-// a level that cannot be resolved logs at quiet. A level that resolves to
-// full returns no line, so a run without the setting logs exactly as
-// before.
+// every progress.by_source entry. It fails closed: a level that cannot
+// be resolved logs at quiet, and so does a run whose event file cannot be
+// read when the repo has any progress setting. A run with no progress
+// setting gets full and no line, so it logs exactly as before. runAgent
+// reads the event file before it calls this and fails on an unreadable
+// one; this rule does not rely on that ordering.
 func resolveRunProgressVerbosity(rc runConfig, absFullsendDir, eventFile string) (level, rule string) {
 	source, how, err := artifactRunSource(absFullsendDir, eventFile)
 	if err != nil {
-		source, how = "", "the event file could not be read"
+		if !hasProgressSetting(rc.perRepo) {
+			return config.ProgressVerbosityFull, ""
+		}
+		return config.ProgressVerbosityQuiet, "Progress log: quiet (the run source could not be resolved: the event file could not be read)"
 	}
 	level, err = config.ResolveProgressVerbosity(rc.perRepo, source)
 	if err != nil {
@@ -5077,6 +5083,19 @@ func resolveRunProgressVerbosity(rc runConfig, absFullsendDir, eventFile string)
 		return level, fmt.Sprintf("Progress log: %s (run source %q %s)", level, agentruntime.SanitizeOutput(source), how)
 	}
 	return level, fmt.Sprintf("Progress log: %s (run source unknown: %s)", level, how)
+}
+
+// hasProgressSetting reports whether the effective config sets a progress
+// level other than the default: a progress.verbosity that is not full, or
+// any progress.by_source entry.
+func hasProgressSetting(r config.PerRepoConfigReader) bool {
+	if r == nil {
+		return false
+	}
+	if v := r.ConfigProgressVerbosity(); v != "" && v != config.ProgressVerbosityFull {
+		return true
+	}
+	return len(r.ConfigProgressBySource()) > 0
 }
 
 // stripOIDCEnv returns a copy of env with OIDC credential entries and
