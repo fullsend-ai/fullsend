@@ -140,6 +140,20 @@ func TestQuietStatusLineAndField(t *testing.T) {
 	if got := quietStatusLine(StatusProgressEvent{}); got != "Status: status" {
 		t.Errorf("got %q", got)
 	}
+	// A notification's priority comes from the stream: it prints as
+	// "other", and so does a kind no decoder sets.
+	for _, tc := range []struct {
+		e    StatusProgressEvent
+		want string
+	}{
+		{StatusProgressEvent{Kind: "notification", State: "SECRET-PRIORITY"}, "Status: notification — other"},
+		{StatusProgressEvent{Kind: "SECRET-KIND", State: "running"}, "Status: other — running"},
+		{StatusProgressEvent{Kind: "session_state_changed", State: "requires action"}, "Status: session_state_changed — requires action"},
+	} {
+		if got := quietStatusLine(tc.e); got != tc.want {
+			t.Errorf("quietStatusLine(%+v) = %q, want %q", tc.e, got, tc.want)
+		}
+	}
 	long := strings.Repeat("x", maxQuietFieldLen+10)
 	if got := quietField(long, ""); got != strings.Repeat("x", maxQuietFieldLen)+"…" {
 		t.Errorf("quietField did not bound a long value: %q", got)
@@ -159,5 +173,54 @@ func TestEmitQuietTranscriptErrors(t *testing.T) {
 		"::error title=Agent Error::agent terminated with error (subtype: unknown)\n"
 	if buf.String() != want {
 		t.Errorf("got:\n%s\nwant:\n%s", buf.String(), want)
+	}
+}
+
+// Every kind and state the Claude decoders set themselves is on the quiet
+// allowlist, so quiet prints them as before; only a notification's
+// stream-supplied priority prints as "other".
+func TestQuietStatusLine_DecoderValuesAllowed(t *testing.T) {
+	status := []struct{ subtype, line string }{
+		{"hook_started", `{"hook_id":"h1"}`},
+		{"hook_response", `{"hook_id":"h1","outcome":"success"}`},
+		{"hook_response", `{"hook_id":"h1","outcome":"error"}`},
+		{"hook_response", `{"hook_id":"h1","outcome":"cancelled"}`},
+		{"task_summary", `{"detail":"x"}`},
+		{"informational", `{"level":"notice","content":"x","prevent_continuation":true}`},
+		{"status", `{"compact_result":"failed"}`},
+		{"status", `{}`},
+		{"status", `{"status":"compacting"}`},
+		{"session_state_changed", `{"state":"idle"}`},
+		{"session_state_changed", `{"state":"running"}`},
+		{"session_state_changed", `{"state":"requires_action"}`},
+		{"permission_denied", `{"tool_name":"Bash"}`},
+		{"background_tasks_changed", `{"tasks":[]}`},
+	}
+	var events []StatusProgressEvent
+	for _, tc := range status {
+		e, ok := decodeClaudeStatusProgress([]byte(tc.line), tc.subtype)
+		if !ok {
+			t.Fatalf("%s %s did not decode", tc.subtype, tc.line)
+		}
+		events = append(events, e)
+	}
+	for _, st := range []string{"allowed", "allowed_warning", "rejected"} {
+		e, ok := decodeClaudeRateLimit([]byte(`{"rate_limit_info":{"status":"` + st + `"}}`))
+		if !ok {
+			t.Fatalf("rate limit %s did not decode", st)
+		}
+		events = append(events, e)
+	}
+	for _, e := range events {
+		if got := quietStatusLine(e); strings.Contains(got, "other") {
+			t.Errorf("quietStatusLine(%+v) = %q: a decoder value is missing from the allowlist", e, got)
+		}
+	}
+	e, ok := decodeClaudeStatusProgress([]byte(`{"text":"x","priority":"SECRET-PRIORITY"}`), "notification")
+	if !ok {
+		t.Fatal("notification did not decode")
+	}
+	if got := quietStatusLine(e); got != "Status: notification — other" {
+		t.Errorf("notification = %q", got)
 	}
 }

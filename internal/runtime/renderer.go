@@ -236,12 +236,42 @@ func quietField(s, fallback string) string {
 	return s
 }
 
+// quietStatusKinds and quietStatusStates are the status kinds and states
+// the Claude decoders set themselves (decodeClaudeStatusProgress,
+// decodeClaudeRateLimit). A notification's priority is copied from the
+// stream, so it is not on the list.
+var (
+	quietStatusKinds = map[string]bool{
+		"hook": true, "task_summary": true, "informational": true,
+		"notification": true, "status": true, "session_state_changed": true,
+		"permission_denied": true, "background_tasks_changed": true, "rate_limit": true,
+	}
+	quietStatusStates = map[string]bool{
+		"running": true, "completed": true, "failed": true, "stopped": true,
+		"continuation stopped": true, "compaction failed": true, "ready": true,
+		"compacting": true, "idle": true, "requires action": true,
+		"allowed": true, "approaching limit": true, "rejected": true,
+	}
+)
+
 // quietStatusLine is a status row at quiet: the event kind and state. The
 // label, subject, context and detail are left out, since they can carry
-// text the agent wrote.
+// text the agent wrote. A kind or state the decoders do not set themselves
+// prints as "other", since it came from the stream.
 func quietStatusLine(e StatusProgressEvent) string {
-	msg := "Status: " + quietField(e.Kind, "status")
-	if state := quietField(e.State, ""); state != "" {
+	kind := "status"
+	if e.Kind != "" {
+		kind = "other"
+		if quietStatusKinds[e.Kind] {
+			kind = e.Kind
+		}
+	}
+	msg := "Status: " + kind
+	if e.State != "" {
+		state := "other"
+		if quietStatusStates[e.State] {
+			state = e.State
+		}
 		msg += " — " + state
 	}
 	return msg
