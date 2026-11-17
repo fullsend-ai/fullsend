@@ -226,18 +226,12 @@ func (h *Handler) handleGitHubWebhook(w http.ResponseWriter, r *http.Request) {
 		writeWebhookDrop(w, webhookOutcomeNotEnrolled)
 		return
 	}
-	// Answer from the per-instance limiter when it can, without any GitHub
-	// call. A miss reserves the repository, so concurrent deliveries for
-	// it are debounced while this one dispatches.
-	if reason, ok := h.webhookLimits.reserve(base.FullName); !ok {
-		l.write(reason+" source=cache", nil)
-		writeWebhookDrop(w, reason)
+	outcome, status, cached, err := h.limitedPollDispatch(r.Context(), "", base.FullName)
+	if cached {
+		l.write(outcome+" source=cache", nil)
+		writeWebhookDrop(w, outcome)
 		return
 	}
-
-	owner, name, _ := strings.Cut(base.FullName, "/")
-	outcome, status, err := h.dispatchPollWorkflow(r.Context(), owner, name)
-	h.webhookLimits.settle(base.FullName, outcome)
 	l.write(outcome, err)
 	switch status {
 	case http.StatusAccepted:
@@ -286,18 +280,42 @@ func (h *Handler) fromOrchestratorApp(header http.Header) bool {
 	return strconv.FormatInt(target, 10) == canonicalAppID(appID)
 }
 
+// limitedPollDispatch is the one dispatch path of the webhook route and of
+// the mint timer's sweep (tick.go). It first asks the per-instance
+// webhookLimiter: a repository that was dispatched moments ago, or whose
+// app_not_installed or workflow_not_dispatchable result is remembered, is
+// answered from the cache without any GitHub call (cached is true and
+// outcome is the remembered reason). A miss reserves fullName, so
+// concurrent callers for it are debounced while this one dispatches, and
+// the dispatch's outcome is recorded for both callers. jwt is the
+// orchestrator App JWT, or "" to mint one. fullName must already have
+// passed validBotRoleRepo.
+func (h *Handler) limitedPollDispatch(ctx context.Context, jwt, fullName string) (outcome string, status int, cached bool, err error) {
+	if reason, ok := h.webhookLimits.reserve(fullName); !ok {
+		return reason, http.StatusAccepted, true, nil
+	}
+	owner, name, _ := strings.Cut(fullName, "/")
+	outcome, status, err = h.dispatchPollWorkflow(ctx, jwt, owner, name)
+	h.webhookLimits.settle(fullName, outcome)
+	return outcome, status, false, err
+}
+
 // dispatchPollWorkflow sends one workflow_dispatch of pollWorkflowFile on
 // the current default branch of owner/name with a token limited to that
-// repository and to webhookDispatchPermissions. It reads the default
-// branch from GitHub with the same token rather than trusting the payload.
-// It returns the outcome to log and the status class to answer with: 202
-// for a dispatch or a repository that cannot take one, 502 for any other
-// GitHub failure, 500 for a mint credential failure. The token is never
-// returned, logged or kept beyond this call.
-func (h *Handler) dispatchPollWorkflow(ctx context.Context, owner, name string) (string, int, error) {
-	jwt, err := h.appJWT(ctx, webhookRole)
-	if err != nil {
-		return webhookOutcomeCredentialError, http.StatusInternalServerError, err
+// repository and to webhookDispatchPermissions. jwt is the orchestrator
+// App JWT, or "" to mint one. It reads the default branch from GitHub with
+// the same token rather than trusting any payload. It makes at most
+// dispatchGitHubCalls GitHub calls. It returns the outcome to log and the
+// status class to answer with: 202 for a dispatch or a repository that
+// cannot take one, 502 for any other GitHub failure, 500 for a mint
+// credential failure. The token is never returned, logged or kept beyond
+// this call.
+func (h *Handler) dispatchPollWorkflow(ctx context.Context, jwt, owner, name string) (string, int, error) {
+	if jwt == "" {
+		var err error
+		if jwt, err = h.appJWT(ctx, webhookRole); err != nil {
+			return webhookOutcomeCredentialError, http.StatusInternalServerError, err
+		}
 	}
 	instID, err := FindInstallation(ctx, h.githubBaseURL, jwt, owner, name)
 	if errors.Is(err, ErrInstallationNotFound) {

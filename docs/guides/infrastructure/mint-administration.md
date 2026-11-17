@@ -848,7 +848,9 @@ If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs
 **What you get:** a push to a fork PR starts the repository's fork PR review
 poll (`.github/workflows/fullsend-poll-prs.yml`) within seconds. Without the
 webhook, the poll waits for its `*/5` schedule, which GitHub runs late and
-sometimes skips. The schedule stays on, best-effort, for a lost delivery; the mint timer planned in #9636 will make that reliable.
+sometimes skips. A delivery that fails is redelivered by the
+[mint timer](#mint-timer), whose sweep also starts every repository's poll
+once per sweep period; the schedule stays on, best-effort.
 
 **What you do:** two manual steps, because `mint deploy` has no flag for
 either of them.
@@ -1129,6 +1131,95 @@ github webhook: delivery="local-1" event="ping" action="" repo="" outcome=ping
 | `502` `{"error":"dispatch failed"}` | A GitHub API call failed: the installation lookup, the token request (for example, the App lacks **Actions: Read and write**), the repository read with an answer other than `200` or `404`, or a dispatch answer other than 2xx, `404` or `422`. The mint's log line for the delivery holds the error. | Fix the cause, then **Redeliver** from the **Advanced** tab. |
 | `500` `{"error":"dispatch failed"}` | The mint could not read the `fullsend` private key or sign the App JWT (`outcome=credential_error` in the log). | Check the `fullsend` PEM (see [PEM secret errors](#pem-secret-errors)). |
 | GitHub shows the delivery as timed out | GitHub waits 10 seconds for an answer. A cold start plus the four GitHub calls can take longer. The dispatch may still have happened. | Check the repository's **Actions** tab, or the mint log for the delivery ID with `outcome=dispatched`. A **Redeliver** is harmless: at most one more poll run, or a `debounced` answer. |
+
+## Mint timer
+
+**What you get:** the fork PR review poll of every served repository starts
+at least once per sweep period (15 minutes by default), even with no
+webhook, and a webhook delivery the mint failed is redelivered within about
+one tick. Without it, a repository relies on the poll's `*/5` schedule,
+which GitHub runs late and sometimes skips.
+
+**Where it runs today:** the standalone mint runs it in-process (see
+[Standalone mint](standalone-mint.md#mint-timer)). The Cloudflare Worker
+(Cron Trigger) and Cloud Function (Cloud Scheduler) wiring follows in the
+next commit. Until then, those hosts check the settings below at startup
+(a bad value stops the mint from starting) but run no tick.
+
+**What each tick does** (every `FULLSEND_MINT_TICK_INTERVAL`):
+
+| Job | Runs when | What it does |
+|-----|-----------|--------------|
+| Redelivery | `FULLSEND_WEBHOOK_SECRET` is set and the `fullsend` role is allowed (the [webhook route](#github-webhook-for-fork-pr-reviews) is on) | Lists the orchestrator App's webhook deliveries of the last sweep period. Redelivers each delivery that has no `2xx` attempt and fewer than 3 attempts. At most 50 per tick. |
+| Sweep | `ROLE_APP_IDS` has a `fullsend` entry, `ALLOWED_ROLES` allows it, and `FULLSEND_POLL_SWEEP` is not `off` | Sends the poll's `workflow_dispatch` for the repositories due this tick, exactly as the webhook route does. Every repository is due once per sweep period. Does not need the webhook secret. |
+
+The sweep serves the repositories in `PER_REPO_WIF_REPOS`. With `*` (public
+mode), it serves every repository of every installation of the
+orchestrator App, skipping suspended installations and archived or disabled
+repositories. It shares the webhook route's debounce and 5-minute negative
+cache: a repository the route just dispatched, or one without a
+dispatchable poll workflow, is skipped with no GitHub call (`cached` in the
+log).
+
+### Settings
+
+| Variable | Default | Allowed values |
+|----------|---------|----------------|
+| `FULLSEND_MINT_TICK_INTERVAL` | `5m` | A Go duration from `1m` to `5m`, in whole seconds |
+| `FULLSEND_POLL_SWEEP_PERIOD` | `15m` | A Go duration of at least the tick interval |
+| `FULLSEND_POLL_SWEEP` | on | `off` turns the sweep off; unset or `on` leaves it on |
+
+A value outside these rules stops the mint at startup with an error that
+names the variable.
+
+**Opt out of the sweep:** set `FULLSEND_POLL_SWEEP=off`. Redelivery keeps
+running while the webhook secret is set. With both off, the mint logs
+`mint tick: disabled` at startup and runs no timer.
+
+### Limits
+
+- **Per tick:** at most 900 GitHub calls in all (so a Cloudflare Worker
+  invocation stays under its subrequest limit), at most 100 dispatches per
+  repository owner, and at most 50 redeliveries. A dispatch costs up to 4
+  calls; public mode also spends calls listing installations and
+  repositories.
+- **Deferred repositories:** a due repository over a limit is counted in
+  `deferred=` and is due again next sweep period, not next tick.
+- **Redelivery window:** only deliveries whose first attempt is within the
+  last sweep period are retried, so a delivery gets at most 3 attempts.
+
+### Check the timer
+
+Each tick logs one line. This one comes from the unit tests, which run a
+tick against a fake GitHub API (not a live run):
+
+```text
+mint tick: redelivery=off sweep=tight deliveries=0 redelivered=0 repos=121 due=121 dispatched=101 not_dispatchable=0 not_installed=0 cached=0 deferred=20 errors=0 budget=404/900 budget_exhausted=false duration=0s
+```
+
+- `repos` is how many repositories the sweep serves, `due` how many were
+  due this tick. With the defaults, about a third of `repos` is due per
+  tick.
+- `dispatched` repositories show a `workflow_dispatch` run of the poll
+  workflow in their **Actions** tab.
+- `redelivered` deliveries show a new attempt, marked as a redelivery,
+  under **Recent Deliveries** in the App's **Advanced** tab.
+
+### Troubleshooting the timer
+
+| Log text | Cause | Fix |
+|----------|-------|-----|
+| `mint tick: disabled (redelivery needs FULLSEND_WEBHOOK_SECRET; ...)` | No webhook secret, and the sweep is off or the `fullsend` role has no App ID or is not in `ALLOWED_ROLES`. | Expected when you opted out. Otherwise add the `fullsend` entry to `ROLE_APP_IDS` (and to `ALLOWED_ROLES` if you set it). |
+| `FULLSEND_MINT_TICK_INTERVAL is "30s": must be from 1m0s to 5m0s, in whole seconds` | The interval is out of range. | Use `1m` to `5m`. |
+| `FULLSEND_POLL_SWEEP_PERIOD (...) must be at least FULLSEND_MINT_TICK_INTERVAL (...)` | The sweep period is shorter than a tick. | Raise the period or lower the interval. |
+| `mint tick: error step=app_jwt` | The mint could not read the `fullsend` private key or sign the App JWT. Nothing else ran this tick. | Check the `fullsend` PEM (see [PEM secret errors](#pem-secret-errors)). |
+| `mint tick: error step=list_deliveries` | GitHub did not list the App's webhook deliveries; the error has its status. Redelivery skips this tick. | Check that the App's webhook is on (see [Turn on the orchestrator App's webhook](#turn-on-the-orchestrator-apps-webhook)), or unset `FULLSEND_WEBHOOK_SECRET` if you do not use the webhook. |
+| `mint tick: error step=redeliver` | GitHub refused a redelivery. | None if it is rare. The next tick tries again while the delivery has fewer than 3 attempts. |
+| `mint tick: error step=dispatch err=<owner>/<repo>: ...` | The same failures as a webhook `502`: the installation lookup, the token request (for example, the App lacks **Actions: Read and write**), the repository read or the dispatch. | Fix the cause. The repository is due again next sweep period. |
+| `mint tick: error step=list_installations`, `step=installation_token` or `step=list_repositories` | Public mode could not list the App's installations or one installation's repositories. | Check the App's private key and that the installation is not suspended. |
+| `not_dispatchable=` above zero | Those repositories have no dispatchable `fullsend-poll-prs.yml` on their default branch. | Install or update the poll workflow. |
+| `deferred=` above zero, or `budget_exhausted=true` | More repositories were due than one tick may dispatch. | Lengthen `FULLSEND_POLL_SWEEP_PERIOD`, or shorten `FULLSEND_MINT_TICK_INTERVAL`, so fewer repositories are due per tick. |
+| `mint tick: further errors this tick are counted, not logged` | More than 10 errors in one tick. | Read the first 10 error lines; `errors=` in the summary has the total. |
 
 ## Bot-role lookup endpoint
 

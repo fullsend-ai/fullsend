@@ -98,8 +98,21 @@ type Handler struct {
 	webhookSecret []byte
 
 	// webhookLimits debounces dispatches and remembers negative results
-	// per repository, in this instance only.
+	// per repository, in this instance only. The webhook route and the
+	// mint timer's sweep share it. Nil while both are off.
 	webhookLimits *webhookLimiter
+
+	// Mint timer (tick.go), read once in NewHandler by readTickSettings.
+	// tickInterval is how often a host calls Tick, sweepPeriod how often
+	// the sweep reaches each repository; sweepEnabled is false when
+	// FULLSEND_POLL_SWEEP is off or the fullsend App is not configured.
+	tickInterval time.Duration
+	sweepPeriod  time.Duration
+	sweepEnabled bool
+	// tickNow is the mint timer's clock and tickMaxCalls its GitHub call
+	// budget per tick; tests replace both.
+	tickNow      func() time.Time
+	tickMaxCalls int
 }
 
 type foreignInflight struct {
@@ -111,7 +124,9 @@ type foreignInflight struct {
 // NewHandler creates a Handler with the given dependencies.
 // Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES,
 // ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS,
-// FULLSEND_WEBHOOK_SECRET) are read once at construction time via the
+// FULLSEND_WEBHOOK_SECRET, FULLSEND_MINT_TICK_INTERVAL,
+// FULLSEND_POLL_SWEEP_PERIOD, FULLSEND_POLL_SWEEP) are read once at
+// construction time via the
 // package-internal mintEnv accessor. On native platforms mintEnv
 // delegates to os.Getenv; on WASM the CF Worker calls RegisterEnv before
 // constructing the handler.
@@ -213,11 +228,25 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	if secret := mintEnv(webhookSecretEnv); secret != "" {
 		if h.checkAllowedRole(webhookRole) {
 			h.webhookSecret = []byte(secret)
-			h.webhookLimits = newWebhookLimiter()
 		} else {
 			log.Printf("github webhook: %s is set but ALLOWED_ROLES does not allow role %q; the route is off",
 				webhookSecretEnv, webhookRole)
 		}
+	}
+
+	settings, err := readTickSettings()
+	if err != nil {
+		return nil, err
+	}
+	h.tickInterval, h.sweepPeriod = settings.interval, settings.sweepPeriod
+	h.tickNow, h.tickMaxCalls = time.Now, tickMaxGitHubCalls
+	h.sweepEnabled = settings.sweepOn && h.pemAccessor != nil && h.checkAllowedRole(webhookRole)
+	if h.sweepEnabled {
+		_, err := h.lookupRoleAppID(webhookRole)
+		h.sweepEnabled = err == nil
+	}
+	if h.webhookSecret != nil || h.sweepEnabled {
+		h.webhookLimits = newWebhookLimiter()
 	}
 
 	return h, nil

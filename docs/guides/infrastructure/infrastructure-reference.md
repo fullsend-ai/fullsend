@@ -321,6 +321,19 @@ inputs, and no webhook field reaches a job. Setup and troubleshooting:
   event, action, repository and outcome. An answer from the limiter is
   logged with `source=cache`. Never the body, the signature or the token.
 
+### Mint Timer
+
+The mint timer redelivers the orchestrator App's failed webhook deliveries
+(only while the webhook route is on) and dispatches the poll of every served
+repository once per sweep period through the same path as the webhook route
+(the sweep). It has no HTTP route on the standalone mint, which runs it
+in-process; the Cloudflare and Cloud Function wiring follows. Settings, read
+at startup on every host: `FULLSEND_MINT_TICK_INTERVAL` (default `5m`, `1m`
+to `5m`), `FULLSEND_POLL_SWEEP_PERIOD` (default `15m`, at least the
+interval) and `FULLSEND_POLL_SWEEP` (`off` turns the sweep off). Details,
+limits and troubleshooting:
+[Mint administration](mint-administration.md#mint-timer).
+
 ---
 
 ## Inference — Agent Platform with Workload Identity Federation
