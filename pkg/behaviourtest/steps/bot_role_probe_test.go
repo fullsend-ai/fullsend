@@ -997,6 +997,35 @@ func TestBotRoleProbeScript_Lookup(t *testing.T) {
 	assert.Equal(t, botRoleOutcomeNoMatch, classifyBotRoleResult(out.res, botRoleModeLookup).outcome)
 }
 
+// TestBotRoleProbeScript_JWKSKeyForms covers the forms GitHub publishes a
+// signing key in: the probe verifies the token from the key's x5c certificate
+// and, for a key without x5c, from its RSA n and e values.
+func TestBotRoleProbeScript_JWKSKeyForms(t *testing.T) {
+	for name, tc := range map[string]struct {
+		oidc   probeOIDC
+		reason string // "" when the token verifies
+	}{
+		"x5c key":                    {oidc: probeOIDC{keyForm: probeKeyX5C}},
+		"x5c key, other signer":      {oidc: probeOIDC{keyForm: probeKeyX5C, wrongKey: true}, reason: "signature does not verify"},
+		"n and e key":                {oidc: probeOIDC{keyForm: probeKeyNE}},
+		"n and e key, other signer":  {oidc: probeOIDC{keyForm: probeKeyNE, wrongKey: true}, reason: "signature does not verify"},
+		"key without x5c or n and e": {oidc: probeOIDC{keyForm: probeKeyNone}, reason: "no signing key for the token's kid"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out := runBotRoleProbeScript(t, botRoleScriptRun{oidc: tc.oidc, mintStatus: "200", mintBody: `{"outcome":"recognized","role":"review"}`})
+			if tc.reason == "" {
+				assert.True(t, out.res.OIDCVerified)
+				assert.Equal(t, "Authorization: Bearer "+out.token, out.auth, "the mint is called with the verified token")
+				return
+			}
+			assert.Equal(t, "oidc", out.raw["error"])
+			assert.Equal(t, false, out.raw["oidc_verified"])
+			assert.Empty(t, out.auth, "the mint is not called")
+			assert.Contains(t, out.output, "the OIDC token failed verification: "+tc.reason)
+		})
+	}
+}
+
 func TestBotRoleProbeScript_ClaimedRole(t *testing.T) {
 	out := runBotRoleProbeScript(t, botRoleScriptRun{claimedRole: "review", mintStatus: "200", mintBody: `{"outcome":"no_match"}`})
 	assert.JSONEq(t, `{"actor_login":"app-review[bot]","repo":"o/r","role":"review"}`, out.body)

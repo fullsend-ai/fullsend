@@ -103,14 +103,32 @@ jobs:
             base64 -d <<<"${v}"
           }
 
+          # rsa_jwk_pem N E DIR writes DIR/pub.pem, the PEM public key of a
+          # JWKS RSA key given as its base64url modulus N and exponent E.
+          rsa_jwk_pem() {
+            local n e
+            n="$(b64url_decode "$1" 2>/dev/null | od -An -v -tx1 | tr -d ' \n')" || return 1
+            e="$(b64url_decode "$2" 2>/dev/null | od -An -v -tx1 | tr -d ' \n')" || return 1
+            [[ -n "${n}" && -n "${e}" ]] || return 1
+            printf '%s\n' 'asn1=SEQUENCE:spki' \
+              '[spki]' 'algorithm=SEQUENCE:alg' 'key=BITWRAP,SEQUENCE:rsakey' \
+              '[alg]' 'algorithm=OID:rsaEncryption' 'parameter=NULL' \
+              '[rsakey]' "n=INTEGER:0x${n}" "e=INTEGER:0x${e}" >"$3/spki.cnf"
+            openssl asn1parse -genconf "$3/spki.cnf" -noout -out "$3/pub.der" >/dev/null 2>&1 \
+              && openssl pkey -pubin -inform DER -in "$3/pub.der" -out "$3/pub.pem" >/dev/null 2>&1
+          }
+
           # verify_oidc_token JWT checks the GitHub Actions OIDC token the way
           # the mint does: RS256 signature against GitHub's published signing
           # key, issuer, audience and time claims. It prints the failing
           # check on stderr and succeeds only for a fully verified token.
+          # The signing key comes from the JWKS key's x5c certificate when it
+          # has one, and otherwise from its RSA n and e values: GitHub also
+          # publishes keys without x5c.
           oidc_issuer='https://token.actions.githubusercontent.com'
           oidc_audience='fullsend-mint'
           verify_oidc_token() {
-            local h p s header kid cert dir now jwks
+            local h p s header kid key kind k1 k2 pub_ok dir now jwks
             IFS=. read -r h p s <<<"$1"
             if [[ -z "${h}" || -z "${p}" || -z "${s}" ]]; then
               echo "not a three-part JWT" >&2
@@ -133,15 +151,29 @@ jobs:
               echo "fetching GitHub's signing keys failed" >&2
               return 1
             fi
-            cert="$(jq -er --arg kid "${kid}" '[.keys[] | select(.kid == $kid)][0].x5c[0] | select(type == "string" and test("^[A-Za-z0-9+/=]+$"))' <<<"${jwks}" 2>/dev/null)" \
+            key="$(jq -er --arg kid "${kid}" '
+                [.keys[] | select(.kid == $kid)][0]
+                | (try .x5c[0] catch null) as $cert
+                | if ($cert | type == "string" and test("^[A-Za-z0-9+/=]+$")) then "x5c \($cert)"
+                  elif .kty == "RSA"
+                    and (.n | type == "string" and test("^[A-Za-z0-9_-]+$"))
+                    and (.e | type == "string" and test("^[A-Za-z0-9_-]+$")) then "rsa \(.n) \(.e)"
+                  else empty end' <<<"${jwks}" 2>/dev/null)" \
               || { echo "no signing key for the token's kid" >&2; return 1; }
+            read -r kind k1 k2 <<<"${key}"
             dir="$(mktemp -d)" || return 1
-            {
-              echo '-----BEGIN CERTIFICATE-----'
-              fold -w 64 <<<"${cert}"
-              echo '-----END CERTIFICATE-----'
-            } >"${dir}/cert.pem"
-            if ! openssl x509 -in "${dir}/cert.pem" -pubkey -noout >"${dir}/pub.pem" 2>/dev/null \
+            pub_ok=1
+            if [[ "${kind}" == x5c ]]; then
+              {
+                echo '-----BEGIN CERTIFICATE-----'
+                fold -w 64 <<<"${k1}"
+                echo '-----END CERTIFICATE-----'
+              } >"${dir}/cert.pem"
+              openssl x509 -in "${dir}/cert.pem" -pubkey -noout >"${dir}/pub.pem" 2>/dev/null || pub_ok=0
+            else
+              rsa_jwk_pem "${k1}" "${k2}" "${dir}" || pub_ok=0
+            fi
+            if [[ "${pub_ok}" == 0 ]] \
               || ! b64url_decode "${s}" >"${dir}/sig.bin" 2>/dev/null \
               || ! printf '%s' "${h}.${p}" | openssl dgst -sha256 -verify "${dir}/pub.pem" -signature "${dir}/sig.bin" >/dev/null 2>&1; then
               rm -rf "${dir}"
