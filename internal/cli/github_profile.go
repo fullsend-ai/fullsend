@@ -76,12 +76,13 @@ func githubForgeSandboxEnvLines(getenv func(string) string) []string {
 	} else if strings.Contains(host, ":") {
 		ghHost = "[" + host + "]"
 	}
-	// A plain export, not a conditional: the sandbox .env loader and the
-	// env manifest collector read assignments and exports only. An empty
-	// GH_TOKEN leaves GH_ENTERPRISE_TOKEN empty, which gh treats as unset.
+	// A plain export in the form the runtime .env loader expands
+	// (internal/runtime/env_data.go takes $NAME and ${NAME}, not ${NAME:-x})
+	// and the env manifest collector reads. An unset GH_TOKEN leaves
+	// GH_ENTERPRISE_TOKEN empty, which gh treats as unset.
 	return []string{
 		fmt.Sprintf("export GH_HOST='%s'", ghHost),
-		`export GH_ENTERPRISE_TOKEN="${GH_TOKEN:-}"`,
+		`export GH_ENTERPRISE_TOKEN="${GH_TOKEN}"`,
 	}
 }
 

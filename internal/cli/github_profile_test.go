@@ -2,7 +2,9 @@ package cli
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -10,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/resolve"
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
@@ -179,7 +182,7 @@ func TestGitHubForgeSandboxEnvLines(t *testing.T) {
 
 	assert.Equal(t, []string{
 		"export GH_HOST='ghemu.localhost'",
-		`export GH_ENTERPRISE_TOKEN="${GH_TOKEN:-}"`,
+		`export GH_ENTERPRISE_TOKEN="${GH_TOKEN}"`,
 	}, githubForgeSandboxEnvLines(envOf(map[string]string{"GITHUB_SERVER_URL": "https://ghemu.localhost:443"})))
 
 	// An IPv6 literal keeps its brackets, with and without a port.
@@ -352,4 +355,28 @@ func TestBindGitHubForgeHostSkipsProfilesItLeavesAlone(t *testing.T) {
 	defer cleanup()
 	require.NoError(t, err)
 	assert.Equal(t, other, out[0].LocalPath, "an unchanged profile keeps its source file")
+}
+
+// The lines go through the runtime .env loader the agent launch and the
+// in-sandbox probes use, not a shell source: a line it rejects is dropped.
+func TestGitHubForgeSandboxEnvLinesThroughTheRuntimeLoader(t *testing.T) {
+	envFile := filepath.Join(t.TempDir(), ".env")
+	lines := githubForgeSandboxEnvLines(envOf(map[string]string{"GITHUB_SERVER_URL": "https://ghes.example.com:8443"}))
+	require.NoError(t, os.WriteFile(envFile, []byte(strings.Join(lines, "\n")+"\n"), 0o600))
+	for name, tc := range map[string]struct {
+		env  []string
+		want string
+	}{
+		"placeholder": {[]string{"GH_TOKEN=openshell:resolve:env:GH_TOKEN"}, "ghes.example.com:8443|openshell:resolve:env:GH_TOKEN"},
+		"unset":       {nil, "ghes.example.com:8443|"},
+	} {
+		cmd := exec.Command("/bin/sh", "-c", agentruntime.EnvDataLoad(envFile)+` && printf '%s|%s' "$GH_HOST" "$GH_ENTERPRISE_TOKEN"`)
+		cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "HOME=/home/agent"}, tc.env...)
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		out, err := cmd.Output()
+		require.NoError(t, err, "%s: %s", name, stderr.String())
+		assert.Equal(t, tc.want, string(out), name)
+		assert.NotContains(t, stderr.String(), "ignored", "%s: the loader dropped a line", name)
+	}
 }
