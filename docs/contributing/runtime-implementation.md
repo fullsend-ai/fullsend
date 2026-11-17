@@ -61,6 +61,13 @@ content that must be updated whenever a runtime is added or renamed.
   if the runtime is user-selectable).
 - [x] `internal/config/config_test.go` — update any assertion on
   `ValidRuntimes()` to include the new name.
+- [x] `internal/runtime/token_semantics.go` and
+  `internal/runtime/token_semantics_test.go` — say whether the runtime's
+  `RunMetrics.OutputTokens` leaves reasoning tokens out.
+  `OutputExcludesReasoning` decides whether the `agent` span adds reasoning
+  to `gen_ai.usage.output_tokens`, and
+  `TestOutputExcludesReasoning_ClassifiesEveryRuntime` fails until the new
+  name is classified.
 - [x] `internal/cli/env_manifest_collector_test.go` and
   `internal/cli/env_manifest_golden_test.go` — the runtime's `EnvExports()`
   names must land in the generated
@@ -449,6 +456,14 @@ Net: after #6358 and #6357, both PreToolUse and PostToolUse halves of the contra
 | `pi-xai-vertex` | `ARG PI_XAI_VERTEX_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/xai-vertex` | its `peerDependencies` floor (it mirrors no pi internals; declared only — `--omit=peer` never installs it); `piXaiVertexModels` in `pi_bootstrap.go`, the ids it registers and what the `Agent` tool accepts as a Grok id |
 | `pi-inference-gateway` | `ARG PI_INFERENCE_GATEWAY_VERSION` + tarball SHA256, under `/usr/local/share/pi-extensions/inference-gateway` (no runtime dependencies, so no `npm ci`). Loaded when `run.go` registers a gateway run for a `gateway/` model (`PrepareGatewayRun`, which calls `SetPiGatewayRun`): the run then gets the `-e` load, the `INFERENCE_GATEWAY_*` clear, the `inference-gateway.json` guard (with the Agent extension's per-dispatch re-check of it) and `INFERENCE_GATEWAY_CONFIG_FILE` (v0.1.2 and later), which names the one config file the extension reads, so no other config-dir file or overlay is read | the extension's own CI matrix (pinned `PI_VERSION` + latest pi) |
 | Codex | `ARG CODEX_VERSION` (npm, Renovate-tracked; `TestSandboxImagePinsAreRenovateTracked`). The OpenShell base image already installs `@openai/codex` under the same npm prefix (`/usr`, binary `/usr/bin/codex`) — 0.117.0 on the base pinned today — so the pinned install replaces it in place. `/usr/local/bin/codex` is then symlinked at the npm install and the build fails unless `codex --version` reports `codex-cli <pin>`: nothing shadows the pin there today, and the symlink plus assertion make sure nothing can start to, the way the base image's Claude Code did in #6612. `TestSandboxImageCodexPinWins` guards the step | the codex stream parser fixtures (#6920); the JSONL event and hook wire shapes the codex runtime depends on |
+
+On any runtime bump, including OpenCode (`ARG OPENCODE_VERSION`, which has
+no row above), re-check how the new version reports output and reasoning
+tokens against `OutputExcludesReasoning` in
+`internal/runtime/token_semantics.go`. The `agent` span adds reasoning to
+`gen_ai.usage.output_tokens` only for the runtimes that function names, so
+a runtime that starts or stops counting reasoning inside output needs its
+entry changed.
 
 The run log's `Agent: <model> (vX.Y.Z)` line is the ground truth for which Claude Code version served a run; the Containerfile pin is a claim, the assertion at build time is what makes it true.
 

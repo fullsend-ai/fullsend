@@ -4828,6 +4828,15 @@ func rootSpanEndAttrs(agg aggregateMetrics, runCount int) []attribute.KeyValue {
 }
 
 func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *agentruntime.RunMetrics) []attribute.KeyValue {
+	// The GenAI semconv defines output_tokens as including reasoning tokens,
+	// and the reasoning key below as a subset of it. Codex and OpenCode
+	// metrics keep reasoning out of OutputTokens, so add it back here: a
+	// backend that subtracts the reasoning key from output would otherwise
+	// subtract it twice (#9386). RunMetrics and metrics.json are unchanged.
+	outputTokens := m.OutputTokens
+	if agentruntime.OutputExcludesReasoning(runtimeName) {
+		outputTokens += m.ReasoningTokens
+	}
 	attrs := []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.Int("exit_code", exitCode),
@@ -4838,16 +4847,17 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 		boundedStringAttr("gen_ai.request.model", m.Model),
 		stringAttr("fullsend.runtime", runtimeName),
 		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
-		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
+		attribute.Int("gen_ai.usage.output_tokens", outputTokens),
 		attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
 		attribute.Int("gen_ai.usage.cache_read.input_tokens", m.CacheReadInputTokens),
 		attribute.Float64("fullsend.cost_usd", roundUSD(m.TotalCostUSD)),
 		attribute.Int("fullsend.tool_calls", int(m.ToolCalls.Load())),
 	}
 	if m.ReasoningTokens > 0 {
-		// gen_ai.usage.reasoning.output_tokens is the semconv key (v1.41.0+);
-		// gen_ai.usage.reasoning_tokens is the legacy fullsend key, kept for
-		// one release so existing consumers can migrate (#9386).
+		// gen_ai.usage.reasoning.output_tokens is the semconv key (v1.41.0+).
+		// gen_ai.usage.reasoning_tokens is the deprecated fullsend key. It
+		// is emitted through the first release that has the new key so
+		// consumers can migrate; removing it is part of #9386.
 		attrs = append(attrs,
 			attribute.Int("gen_ai.usage.reasoning.output_tokens", m.ReasoningTokens),
 			attribute.Int("gen_ai.usage.reasoning_tokens", m.ReasoningTokens),

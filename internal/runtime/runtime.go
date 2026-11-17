@@ -11,6 +11,8 @@ import (
 )
 
 // RunMetrics collects execution statistics from stream parsing.
+// ReasoningTokens is part of OutputTokens on some runtimes and counted on
+// top of it on others; OutputExcludesReasoning says which.
 type RunMetrics struct {
 	ToolCalls                atomic.Int32
 	NumTurns                 int     `json:"num_turns"`

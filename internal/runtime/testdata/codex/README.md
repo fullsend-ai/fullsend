@@ -175,12 +175,14 @@ in `parseCodexStream`:
 - **The usage categories are nested, not disjoint.** Following the OpenAI
   Responses API, `input_tokens` is the whole input *including*
   `cached_input_tokens` and `cache_write_input_tokens`, and `output_tokens` is
-  the whole output *including* `reasoning_output_tokens`. Anthropic's
-  convention — the one fullsend's `RunMetrics` and the renderer's total assume
-  — is the opposite: cache and reasoning are separate from input and output.
+  the whole output *including* `reasoning_output_tokens`. Fullsend's
+  `RunMetrics` keeps cache separate from input, as Anthropic's convention
+  does, and the renderer's total sums the counters.
   `codexUsage.counters()` subtracts the subsets so the five normalized
   counters sum to the tokens actually used. In `basic_run.ndjson` that is
-  57,617; passed through unchanged it would render as 106,662.
+  57,617; passed through unchanged it would render as 106,662. Keeping
+  reasoning out of output is specific to this parser and to OpenCode: Claude
+  Code and pi count reasoning inside output (`OutputExcludesReasoning`).
 - **An `error` item is not a failure.** The processor emits one for config
   warnings, generic warnings, deprecation notices and model reroutes, and keeps
   the status `Running`.
