@@ -81,6 +81,16 @@ type WIFProviderInfo struct {
 	Disabled bool
 }
 
+// WIFProviderSummary describes one provider returned by ListWIFProviders.
+type WIFProviderSummary struct {
+	// ProviderID is the short provider ID (the last segment of the
+	// provider resource name).
+	ProviderID         string
+	AttributeCondition string
+	State              string
+	Disabled           bool
+}
+
 // WIFProviderStateActive is the State of a provider that is not soft-deleted.
 const WIFProviderStateActive = "ACTIVE"
 
@@ -156,6 +166,9 @@ type GCFClient interface {
 	UpdateWIFProvider(ctx context.Context, projectNumber, poolID, providerID string, cfg OIDCProviderConfig) error
 	DisableWIFProvider(ctx context.Context, projectNumber, poolID, providerID string) error
 	DeleteWIFProvider(ctx context.Context, projectNumber, poolID, providerID string) error
+	// ListWIFProviders returns the providers in a WIF pool. Soft-deleted
+	// providers are excluded. A missing pool returns an empty list.
+	ListWIFProviders(ctx context.Context, projectNumber, poolID string) ([]WIFProviderSummary, error)
 
 	// Secret Manager
 	GetSecret(ctx context.Context, projectID, secretID string) error
@@ -179,6 +192,11 @@ type GCFClient interface {
 	// project. This is intentionally additive (unlike ReplaceSecretIAMBinding)
 	// because project-level roles may have multiple legitimate members.
 	SetProjectIAMBinding(ctx context.Context, projectID, member, role string) error
+	// RemoveProjectIAMBinding removes a member from the unconditional
+	// binding for a role on a Cloud Resource Manager project. It reports
+	// whether the member was present. Other members of the role and
+	// conditional bindings are left unchanged.
+	RemoveProjectIAMBinding(ctx context.Context, projectID, member, role string) (bool, error)
 
 	// Cloud Run IAM (for function invoker policy)
 	SetCloudRunInvoker(ctx context.Context, projectID, region, serviceName string) error
@@ -859,6 +877,177 @@ func (c *LiveGCFClient) DeleteWIFProvider(ctx context.Context, projectNumber, po
 	}
 
 	return c.waitForIAMOperation(ctx, resp.Body)
+}
+
+// maxWIFProviderPages bounds ListWIFProviders pagination so a misbehaving
+// API cannot loop forever.
+const maxWIFProviderPages = 50
+
+// ListWIFProviders lists the providers in a WIF pool, following pagination.
+// providers.list excludes soft-deleted providers unless showDeleted is set.
+// A 404 (pool not found) returns an empty list.
+func (c *LiveGCFClient) ListWIFProviders(ctx context.Context, projectNumber, poolID string) ([]WIFProviderSummary, error) {
+	baseURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers",
+		url.PathEscape(projectNumber), url.PathEscape(poolID))
+
+	var out []WIFProviderSummary
+	pageToken := ""
+	for range maxWIFProviderPages {
+		q := url.Values{}
+		q.Set("pageSize", "100")
+		if pageToken != "" {
+			q.Set("pageToken", pageToken)
+		}
+		resp, err := c.Client.DoRequest(ctx, http.MethodGet, baseURL+"?"+q.Encode(), "")
+		if err != nil {
+			return nil, fmt.Errorf("listing WIF providers: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusNotFound {
+			resp.Body.Close()
+			return out, nil
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			return nil, fmt.Errorf("listing WIF providers returned %d: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+		}
+
+		var page struct {
+			Providers []struct {
+				Name               string `json:"name"`
+				AttributeCondition string `json:"attributeCondition"`
+				State              string `json:"state"`
+				Disabled           bool   `json:"disabled"`
+			} `json:"workloadIdentityPoolProviders"`
+			NextPageToken string `json:"nextPageToken"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&page)
+		resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("decoding WIF provider list: %w", err)
+		}
+
+		for _, p := range page.Providers {
+			id := p.Name
+			if i := strings.LastIndex(id, "/"); i >= 0 {
+				id = id[i+1:]
+			}
+			out = append(out, WIFProviderSummary{
+				ProviderID:         id,
+				AttributeCondition: p.AttributeCondition,
+				State:              p.State,
+				Disabled:           p.Disabled,
+			})
+		}
+
+		if page.NextPageToken == "" {
+			return out, nil
+		}
+		pageToken = page.NextPageToken
+	}
+	return nil, fmt.Errorf("listing WIF providers: exceeded %d pages", maxWIFProviderPages)
+}
+
+// RemoveProjectIAMBinding removes a member from the unconditional binding
+// for a role on a GCP project. Uses read-modify-write with retry on 409
+// Conflict (etag mismatch), with the same retry budget as
+// SetProjectIAMBinding. Reports whether the member was present; when it is
+// absent no setIamPolicy call is made.
+func (c *LiveGCFClient) RemoveProjectIAMBinding(ctx context.Context, projectID, member, role string) (bool, error) {
+	const maxRetries = 7
+	getURL := fmt.Sprintf("https://cloudresourcemanager.googleapis.com/v1/projects/%s:getIamPolicy",
+		url.PathEscape(projectID))
+	setURL := fmt.Sprintf("https://cloudresourcemanager.googleapis.com/v1/projects/%s:setIamPolicy",
+		url.PathEscape(projectID))
+
+	for attempt := range maxRetries {
+		removed, err := c.tryRemoveIAMBinding(ctx, getURL, setURL, member, role)
+		if err == nil {
+			return removed, nil
+		}
+		if !isConflict(err) || attempt == maxRetries-1 {
+			return false, err
+		}
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(iamRetryDelay(attempt)):
+		}
+	}
+	return false, fmt.Errorf("project IAM policy update failed after %d retries", maxRetries)
+}
+
+// tryRemoveIAMBinding performs a single read-modify-write that removes
+// member from the unconditional bindings for role. A binding left with no
+// members is dropped from the policy.
+func (c *LiveGCFClient) tryRemoveIAMBinding(ctx context.Context, getURL, setURL, member, role string) (bool, error) {
+	resp, err := c.Client.DoRequest(ctx, http.MethodPost, getURL, "{}")
+	if err != nil {
+		return false, fmt.Errorf("getting IAM policy: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return false, fmt.Errorf("getting IAM policy returned %d: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+
+	var policy map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&policy); err != nil {
+		return false, fmt.Errorf("decoding IAM policy: %w", err)
+	}
+
+	bindings, _ := policy["bindings"].([]interface{})
+	removed := false
+	kept := make([]interface{}, 0, len(bindings))
+	for _, b := range bindings {
+		binding, ok := b.(map[string]interface{})
+		if !ok || binding["role"] != role || binding["condition"] != nil {
+			kept = append(kept, b)
+			continue
+		}
+		members, _ := binding["members"].([]interface{})
+		remaining := make([]interface{}, 0, len(members))
+		for _, m := range members {
+			if m == member {
+				removed = true
+				continue
+			}
+			remaining = append(remaining, m)
+		}
+		if len(remaining) == 0 {
+			continue
+		}
+		binding["members"] = remaining
+		kept = append(kept, binding)
+	}
+
+	if !removed {
+		return false, nil
+	}
+	policy["bindings"] = kept
+
+	payloadBytes, err := json.Marshal(map[string]interface{}{"policy": policy})
+	if err != nil {
+		return false, fmt.Errorf("marshaling IAM policy: %w", err)
+	}
+
+	setResp, err := c.Client.DoRequest(ctx, http.MethodPost, setURL, string(payloadBytes))
+	if err != nil {
+		return false, fmt.Errorf("setting IAM policy: %w", err)
+	}
+	defer setResp.Body.Close()
+
+	if setResp.StatusCode == http.StatusConflict {
+		io.Copy(io.Discard, io.LimitReader(setResp.Body, 1<<20))
+		return false, &conflictError{status: setResp.StatusCode}
+	}
+	if setResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(setResp.Body, 1<<20))
+		return false, fmt.Errorf("unexpected status %d setting IAM policy: %s", setResp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+	return true, nil
 }
 
 // SetSecretIAMBinding sets an IAM binding on a Secret Manager resource.

@@ -1407,13 +1407,105 @@ func (p *Provisioner) grantOrgVertexAIAccessWithNumber(ctx context.Context, proj
 	return nil
 }
 
+// RepoVertexAIPrincipal returns the principalSet that repo-scoped inference
+// provisioning grants roles/aiplatform.user to.
+func RepoVertexAIPrincipal(projectNumber, pool, repo string) string {
+	return fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
+		projectNumber, pool, repo)
+}
+
 func (p *Provisioner) grantRepoVertexAIAccessWithNumber(ctx context.Context, projectNumber, repo string) error {
-	principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
-		projectNumber, p.cfg.WIFPoolName, repo)
+	principal := RepoVertexAIPrincipal(projectNumber, p.cfg.WIFPoolName, repo)
 	if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
 		return fmt.Errorf("granting Agent Platform access for repo %s: %w", repo, err)
 	}
 	return nil
+}
+
+// RepoDeprovisionResult reports what DeprovisionRepoWIF did.
+type RepoDeprovisionResult struct {
+	// ProviderID is the repo's dedicated WIF provider that was deleted.
+	ProviderID string
+	// Principal is the repo's roles/aiplatform.user principalSet.
+	Principal string
+	// RetainedBy lists remaining providers in the pool whose attribute
+	// condition still covers the repo or its owner. When non-empty the
+	// IAM binding was left in place.
+	RetainedBy []string
+	// BindingRemoved reports whether the IAM binding was found and removed.
+	// It is false when the binding was retained or was already absent.
+	BindingRemoved bool
+}
+
+// DeprovisionRepoWIF tears down repo-scoped inference WIF access: it deletes
+// the repo's dedicated provider, then revokes roles/aiplatform.user from the
+// repo's principalSet unless another provider in the pool still has an
+// attribute condition covering the repo or its owner.
+//
+// WARNING: the coverage check and the IAM update are not atomic; a provider
+// created concurrently for the same repo may lose its binding.
+func (p *Provisioner) DeprovisionRepoWIF(ctx context.Context, repo string) (*RepoDeprovisionResult, error) {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" {
+		return nil, fmt.Errorf("invalid repo %q: expected owner/repo", repo)
+	}
+
+	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("getting project number: %w", err)
+	}
+
+	result := &RepoDeprovisionResult{
+		ProviderID: mintcore.BuildRepoProviderID(owner, name),
+		Principal:  RepoVertexAIPrincipal(projectNumber, p.cfg.WIFPoolName, repo),
+	}
+
+	if err := p.gcpAPI.DeleteWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, result.ProviderID); err != nil {
+		return nil, fmt.Errorf("deleting WIF provider: %w", err)
+	}
+
+	providers, err := p.gcpAPI.ListWIFProviders(ctx, projectNumber, p.cfg.WIFPoolName)
+	if err != nil {
+		return result, fmt.Errorf("listing remaining WIF providers (IAM binding not revoked): %w", err)
+	}
+	for _, prov := range providers {
+		if prov.ProviderID == result.ProviderID || prov.State == "DELETED" {
+			continue
+		}
+		if conditionCoversRepo(prov.AttributeCondition, owner, repo) {
+			result.RetainedBy = append(result.RetainedBy, prov.ProviderID)
+		}
+	}
+	if len(result.RetainedBy) > 0 {
+		return result, nil
+	}
+
+	removed, err := p.gcpAPI.RemoveProjectIAMBinding(ctx, p.cfg.ProjectID, result.Principal, "roles/aiplatform.user")
+	if err != nil {
+		return result, fmt.Errorf("revoking Agent Platform access for repo %s: %w", repo, err)
+	}
+	result.BindingRemoved = removed
+	return result, nil
+}
+
+// conditionCoversRepo reports whether a WIF attribute condition may admit
+// tokens from repo, either by naming the repo or by naming its owner in a
+// repository_owner clause. An empty condition admits every token and so
+// covers every repo. Matching is case-insensitive and textual: it errs on
+// the side of reporting coverage, which keeps the IAM binding.
+func conditionCoversRepo(condition, owner, repo string) bool {
+	c := strings.ToLower(strings.TrimSpace(condition))
+	if c == "" {
+		return true
+	}
+	quoted := func(s string) bool {
+		s = strings.ToLower(s)
+		return strings.Contains(c, "'"+s+"'") || strings.Contains(c, `"`+s+`"`)
+	}
+	if quoted(repo) {
+		return true
+	}
+	return strings.Contains(c, "repository_owner") && quoted(owner)
 }
 
 // RemoveOrgFromWIFCondition removes an org from the org-level WIF provider's

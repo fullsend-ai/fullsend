@@ -1033,6 +1033,256 @@ func TestLiveGCFClient_SetProjectIAMBinding(t *testing.T) {
 	})
 }
 
+// --- RemoveProjectIAMBinding ---
+
+func TestLiveGCFClient_RemoveProjectIAMBinding(t *testing.T) {
+	const policy = `{"etag":"v1","bindings":[
+		{"role":"roles/aiplatform.user","members":["principalSet://repo","principalSet://other"]},
+		{"role":"roles/aiplatform.user","members":["principalSet://repo"],"condition":{"title":"t","expression":"true"}},
+		{"role":"roles/viewer","members":["principalSet://repo"]},
+		{"role":"roles/owner","members":["user:a@example.com"]}]}`
+
+	t.Run("removes member and keeps other bindings", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			assert.Equal(t, http.MethodPost, r.Method)
+			if callCount == 1 {
+				assert.Contains(t, r.URL.Path, ":getIamPolicy")
+				fmt.Fprintln(w, policy)
+				return
+			}
+			assert.Contains(t, r.URL.Path, ":setIamPolicy")
+			var body struct {
+				Policy struct {
+					Etag     string `json:"etag"`
+					Bindings []struct {
+						Role      string          `json:"role"`
+						Members   []string        `json:"members"`
+						Condition json.RawMessage `json:"condition"`
+					} `json:"bindings"`
+				} `json:"policy"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			assert.Equal(t, "v1", body.Policy.Etag)
+			require.Len(t, body.Policy.Bindings, 4)
+			assert.Equal(t, []string{"principalSet://other"}, body.Policy.Bindings[0].Members)
+			assert.NotEmpty(t, body.Policy.Bindings[1].Condition, "conditional binding untouched")
+			assert.Equal(t, []string{"principalSet://repo"}, body.Policy.Bindings[1].Members)
+			assert.Equal(t, []string{"principalSet://repo"}, body.Policy.Bindings[2].Members, "other role untouched")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		removed, err := newTestClient(srv).RemoveProjectIAMBinding(context.Background(), "proj", "principalSet://repo", "roles/aiplatform.user")
+		require.NoError(t, err)
+		assert.True(t, removed)
+		assert.Equal(t, 2, callCount)
+	})
+
+	t.Run("drops binding left with no members", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if callCount == 1 {
+				fmt.Fprintln(w, `{"etag":"v1","bindings":[{"role":"roles/aiplatform.user","members":["principalSet://repo"]},{"role":"roles/owner","members":["user:a@example.com"]}]}`)
+				return
+			}
+			var body map[string]map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			bindings := body["policy"]["bindings"].([]any)
+			require.Len(t, bindings, 1)
+			assert.Equal(t, "roles/owner", bindings[0].(map[string]any)["role"])
+		}))
+		defer srv.Close()
+
+		removed, err := newTestClient(srv).RemoveProjectIAMBinding(context.Background(), "proj", "principalSet://repo", "roles/aiplatform.user")
+		require.NoError(t, err)
+		assert.True(t, removed)
+		assert.Equal(t, 2, callCount)
+	})
+
+	t.Run("absent member makes no set call", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			fmt.Fprintln(w, `{"etag":"v1","bindings":[{"role":"roles/aiplatform.user","members":["principalSet://other"]}]}`)
+		}))
+		defer srv.Close()
+
+		removed, err := newTestClient(srv).RemoveProjectIAMBinding(context.Background(), "proj", "principalSet://repo", "roles/aiplatform.user")
+		require.NoError(t, err)
+		assert.False(t, removed)
+		assert.Equal(t, 1, callCount)
+	})
+
+	t.Run("retries on 409 conflict", func(t *testing.T) {
+		origDelay := iamRetryDelay
+		defer func() { iamRetryDelay = origDelay }()
+		iamRetryDelay = func(int) time.Duration { return time.Millisecond }
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount%2 == 1 {
+				fmt.Fprintln(w, `{"etag":"v1","bindings":[{"role":"r","members":["m"]}]}`)
+				return
+			}
+			if callCount == 2 {
+				w.WriteHeader(http.StatusConflict)
+				fmt.Fprintln(w, `{"error":{"message":"conflict"}}`)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		removed, err := newTestClient(srv).RemoveProjectIAMBinding(context.Background(), "proj", "m", "r")
+		require.NoError(t, err)
+		assert.True(t, removed)
+		assert.Equal(t, 4, callCount)
+	})
+
+	t.Run("exhausts retries on persistent 409", func(t *testing.T) {
+		origDelay := iamRetryDelay
+		defer func() { iamRetryDelay = origDelay }()
+		iamRetryDelay = func(int) time.Duration { return time.Millisecond }
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount%2 == 1 {
+				fmt.Fprintln(w, `{"etag":"v1","bindings":[{"role":"r","members":["m"]}]}`)
+				return
+			}
+			w.WriteHeader(http.StatusConflict)
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).RemoveProjectIAMBinding(context.Background(), "proj", "m", "r")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "IAM policy conflict")
+		assert.Equal(t, 14, callCount)
+	})
+
+	t.Run("getIamPolicy error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"denied"}}`)
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).RemoveProjectIAMBinding(context.Background(), "proj", "m", "r")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "getting IAM policy returned 403")
+	})
+
+	t.Run("invalid policy JSON", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintln(w, `not json`)
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).RemoveProjectIAMBinding(context.Background(), "proj", "m", "r")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decoding IAM policy")
+	})
+
+	t.Run("setIamPolicy error", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount == 1 {
+				fmt.Fprintln(w, `{"bindings":[{"role":"r","members":["m"]}]}`)
+				return
+			}
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"denied"}}`)
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).RemoveProjectIAMBinding(context.Background(), "proj", "m", "r")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status 403 setting IAM policy")
+	})
+}
+
+// --- ListWIFProviders ---
+
+func TestLiveGCFClient_ListWIFProviders(t *testing.T) {
+	t.Run("follows pagination", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			assert.Equal(t, http.MethodGet, r.Method)
+			assert.True(t, strings.HasSuffix(r.URL.Path, "/workloadIdentityPools/pool/providers"), r.URL.Path)
+			if r.URL.Query().Get("pageToken") == "" {
+				fmt.Fprintln(w, `{"workloadIdentityPoolProviders":[
+					{"name":"projects/123/locations/global/workloadIdentityPools/pool/providers/gh-acme-widget","attributeCondition":"assertion.repository == 'acme/widget'","state":"ACTIVE"}],
+					"nextPageToken":"p2"}`)
+				return
+			}
+			assert.Equal(t, "p2", r.URL.Query().Get("pageToken"))
+			fmt.Fprintln(w, `{"workloadIdentityPoolProviders":[
+				{"name":"projects/123/locations/global/workloadIdentityPools/pool/providers/github-oidc","attributeCondition":"assertion.repository_owner == 'acme'","state":"ACTIVE","disabled":true}]}`)
+		}))
+		defer srv.Close()
+
+		got, err := newTestClient(srv).ListWIFProviders(context.Background(), "123", "pool")
+		require.NoError(t, err)
+		assert.Equal(t, 2, callCount)
+		assert.Equal(t, []WIFProviderSummary{
+			{ProviderID: "gh-acme-widget", AttributeCondition: "assertion.repository == 'acme/widget'", State: "ACTIVE"},
+			{ProviderID: "github-oidc", AttributeCondition: "assertion.repository_owner == 'acme'", State: "ACTIVE", Disabled: true},
+		}, got)
+	})
+
+	t.Run("pool not found returns empty", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		got, err := newTestClient(srv).ListWIFProviders(context.Background(), "123", "pool")
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("error status", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"denied"}}`)
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).ListWIFProviders(context.Background(), "123", "pool")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "listing WIF providers returned 403")
+	})
+
+	t.Run("invalid JSON", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintln(w, `not json`)
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).ListWIFProviders(context.Background(), "123", "pool")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decoding WIF provider list")
+	})
+
+	t.Run("page limit", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			fmt.Fprintln(w, `{"workloadIdentityPoolProviders":[],"nextPageToken":"again"}`)
+		}))
+		defer srv.Close()
+
+		_, err := newTestClient(srv).ListWIFProviders(context.Background(), "123", "pool")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "exceeded")
+	})
+}
+
 // --- SetCloudRunInvoker ---
 
 func TestLiveGCFClient_SetCloudRunInvoker(t *testing.T) {
