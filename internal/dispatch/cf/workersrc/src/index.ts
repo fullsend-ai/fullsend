@@ -25,6 +25,13 @@
 //     Resolves to {status: number, headers: string, body: string}
 //     where headers is a JSON-encoded map.
 //
+//   - mintcoreTick(): Promise<string>
+//     Runs one mint timer tick (Handler.Tick: webhook redelivery and the
+//     fork PR review poll sweep, ADR 0171) and resolves to its JSON
+//     summary. Called only by the scheduled handler (Cron Trigger); there
+//     is no HTTP route for the tick. `fullsend mint deploy` sets the cron
+//     from the tick interval.
+//
 // wasm_exec.js is the Go WASM support file from the Go toolchain
 // ($(go env GOROOT)/lib/wasm/wasm_exec.js for Go ≥1.24). It must be
 // copied into this directory at build time. The Go class it exports
@@ -315,6 +322,15 @@ function createFetchCallback(): (
 const HANDLE_FETCH_TIMEOUT_MS = 25_000;
 
 /**
+ * Backstop wall-clock budget (ms) for one mintcoreTick call. The Go side
+ * bounds a tick by its context (one tick interval, at most 5 minutes);
+ * this is longer, so it fires only when the Go scheduler is wedged. A
+ * scheduled event may run for up to 15 minutes of wall time:
+ * https://developers.cloudflare.com/workers/platform/limits/#duration
+ */
+const TICK_TIMEOUT_MS = 330_000;
+
+/**
  * GoWasm manages the lifecycle of the Go WASM runtime.
  *
  * Architecture note — single shared instance per warm isolate:
@@ -351,10 +367,11 @@ const HANDLE_FETCH_TIMEOUT_MS = 25_000;
  * from wasm_exec.js provides the import object that satisfies the
  * WASM binary's host imports (gojs.*, syscall/js bridges).
  *
- * The WASM bridge (cmd/mint-wasm) registers two functions on globalThis:
+ * The WASM bridge (cmd/mint-wasm) registers three functions on globalThis:
  *
  *   - mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback): string
  *   - mintcoreHandleFetch(method, url, headersJSON, body): Promise<{status, headers, body}>
+ *   - mintcoreTick(): Promise<string>
  */
 class GoWasm {
   private initPromise: Promise<void> | null = null;
@@ -695,6 +712,32 @@ class GoWasm {
       clearTimeout(timeoutId),
     );
   }
+
+  /**
+   * Run one mint timer tick via mintcoreTick() and return its JSON
+   * summary. Wrapped in TICK_TIMEOUT_MS, like handleFetch, so a wedged Go
+   * scheduler surfaces as a "timed out" error.
+   */
+  async tick(): Promise<string> {
+    const mintcoreTick = (globalThis as Record<string, unknown>)[
+      "mintcoreTick"
+    ] as (() => Promise<string>) | undefined;
+
+    if (typeof mintcoreTick !== "function") {
+      throw new Error("mintcoreTick not registered — WASM bridge may not be loaded");
+    }
+
+    const result = mintcoreTick();
+    let timeoutId!: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutId = setTimeout(() => {
+        reject(new Error(`mintcoreTick timed out after ${TICK_TIMEOUT_MS}ms`));
+      }, TICK_TIMEOUT_MS);
+    });
+    return Promise.race([result, timeout]).finally(() =>
+      clearTimeout(timeoutId),
+    );
+  }
 }
 
 // Module-scoped singleton: one Go WASM instance per warm Worker isolate.
@@ -755,7 +798,55 @@ function clientIp(request: Request): string {
   return request.headers.get("CF-Connecting-IP") ?? "unknown";
 }
 
+/**
+ * Run one mint timer tick for a Cron Trigger. Never throws: every failure
+ * is logged, because a scheduled event has no caller to report to and the
+ * next cron run is the retry. The summary holds counts only (no token).
+ */
+async function runScheduledTick(env: Env, cron: string): Promise<void> {
+  if (goWasm.exhausted) {
+    console.error(
+      "mint tick skipped: mint instance exhausted after repeated timeouts",
+    );
+    return;
+  }
+  let generation: number;
+  try {
+    await goWasm.init(mintcoreWasm, env);
+    generation = goWasm.generation;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("mint tick: WASM init failed:", msg);
+    return;
+  }
+  try {
+    const summary = await goWasm.tick();
+    goWasm.resetTimeoutCounter();
+    console.log(`mint tick finished: cron=${cron} summary=${summary}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("mint tick failed:", msg);
+    if (msg.includes("timed out")) {
+      goWasm.markTimedOut(generation);
+    }
+  }
+}
+
 export default {
+  /**
+   * Cron Trigger entry point: the mint timer (ADR 0171). `fullsend mint
+   * deploy` sets the durable Worker's cron to the tick interval; preview
+   * versions have no cron. The tick runs under ctx.waitUntil so the
+   * event stays alive until it finishes.
+   */
+  async scheduled(
+    controller: ScheduledController,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<void> {
+    ctx.waitUntil(runScheduledTick(env, controller.cron));
+  },
+
   async fetch(
     request: Request,
     env: Env,

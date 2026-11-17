@@ -129,6 +129,30 @@ Authentication (one of):
 - `CLOUDFLARE_API_TOKEN` env var (+ `CLOUDFLARE_ACCOUNT_ID`) — API token with Workers write permission
 - Wrangler OAuth session (`wrangler login`, then `wrangler whoami`) — when `CLOUDFLARE_API_TOKEN` is unset, the CLI falls back to the Wrangler login session. If `CLOUDFLARE_ACCOUNT_ID` is also unset, the CLI discovers the account from `wrangler whoami`.
 
+#### Mint timer
+
+`mint deploy` also sets up the mint timer (the reliable starter of the fork
+PR review poll, ADR 0171) on durable deploys. `--tick-interval` (`1m` to
+`5m`, whole minutes, default `5m`) sets `FULLSEND_MINT_TICK_INTERVAL` and the
+host schedule together. Pass it on every deploy that should keep a
+non-default value; a deploy without it resets both to `5m`.
+
+- **Cloudflare:** sets `FULLSEND_MINT_TICK_INTERVAL` and replaces the
+  Worker's Cron Triggers with the matching cron (`*/5 * * * *`) through the
+  Cloudflare API. `--preview` deploys set neither and reject
+  `--tick-interval`.
+- **GCP:** creates the `fullsend-mint-tick@<project>.iam.gserviceaccount.com`
+  service account, grants it `roles/run.invoker` on the `fullsend-mint`
+  service only, sets `FULLSEND_MINT_TICK_INTERVAL`, `FULLSEND_TICK_AUDIENCE`
+  (the function URL) and `FULLSEND_TICK_SERVICE_ACCOUNT`, raises the function
+  timeout to 360 s, and creates or updates the Cloud Scheduler job
+  `fullsend-mint-tick` (`POST <function URL>/v1/tick` with an OIDC token, the
+  interval's cron in UTC, no retries). `--skip-deploy` leaves all of this
+  unchanged and rejects `--tick-interval`.
+
+What each tick does, how to see one work, and troubleshooting:
+[Mint timer](../guides/infrastructure/mint-administration.md#mint-timer).
+
 #### Webhook secret
 
 `mint deploy` has no flag for `FULLSEND_WEBHOOK_SECRET`, which turns on the
@@ -189,6 +213,7 @@ Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `
 | `--otlp-endpoint` | | OTLP/HTTP base URL; `/v1/traces` is appended. Ignored when `--otlp-traces-endpoint` is set |
 | `--otlp-headers-file` | | `chmod 600` file with collector auth headers in `OTEL_EXPORTER_OTLP_HEADERS` syntax. GCP: stored in a per-deploy Secret Manager secret (`fullsend-mint-otlp-headers-<random>`). Cloudflare: stored as a Worker secret (`MINT_OTLP_HEADERS` for previews, `MINT_OTLP_HEADERS_<random>` for durable deploys). Requires an endpoint flag. Required with an endpoint on GCP and Cloudflare durable deploys unless `--otlp-no-headers` is set |
 | `--otlp-no-headers` | `false` | The collector needs no auth headers; binds no collector headers to the new endpoint. Requires an endpoint flag; mutually exclusive with `--otlp-headers-file` |
+| `--tick-interval` | `5m` | Mint timer interval, `1m` to `5m` in whole minutes. Sets `FULLSEND_MINT_TICK_INTERVAL` and the Worker Cron Trigger (Cloudflare) or the Cloud Scheduler job (GCP). Durable deploys only; not allowed with `--preview` or `--skip-deploy`. See [Mint timer](#mint-timer) |
 
 ### Required IAM roles (GCP)
 
@@ -200,6 +225,8 @@ Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `
 | `roles/run.admin` | Set Cloud Run IAM policy |
 | `roles/secretmanager.admin` | Create secrets (only with `--pem-dir` or `--otlp-headers-file`) |
 | `roles/resourcemanager.projectIamAdmin` | Set project IAM policy (only with `--pem-dir`) |
+| `roles/cloudscheduler.admin` | Create and update the `fullsend-mint-tick` Cloud Scheduler job (mint timer) |
+| `roles/iam.serviceAccountUser` | Let the job act as `fullsend-mint-tick` (mint timer) |
 
 ### Required GCP APIs
 
@@ -211,8 +238,13 @@ gcloud services enable \
   run.googleapis.com \
   secretmanager.googleapis.com \
   iamcredentials.googleapis.com \
+  cloudscheduler.googleapis.com \
   --project="$GCP_PROJECT"
 ```
+
+`cloudscheduler.googleapis.com` is for the mint timer job. When it is
+enabled, Google grants the Cloud Scheduler service agent the role it needs
+to sign the job's ID tokens.
 
 ## `mint delete`
 
@@ -220,7 +252,7 @@ Tears down mint infrastructure. This is the inverse of `mint deploy`. Use `--pla
 
 ### GCP mode (`--platform=gcp`)
 
-Deletes all GCP mint infrastructure in order: Cloud Function, PEM secrets, service account, and WIF pool (with all providers). Non-critical resource failures (service account, WIF pool) are reported as warnings rather than hard errors.
+Deletes all GCP mint infrastructure in order: the mint timer (Cloud Scheduler job `fullsend-mint-tick` and the `fullsend-mint-tick` service account), Cloud Function, PEM secrets, service account, and WIF pool (with all providers). Non-critical resource failures (mint timer, service account, WIF pool) are reported as warnings rather than hard errors.
 
 ```bash
 fullsend mint delete \
@@ -269,6 +301,7 @@ fullsend mint delete --platform cloudflare --preview bt-run-42
 | `roles/secretmanager.admin` | Delete PEM secrets |
 | `roles/iam.serviceAccountAdmin` | Delete the mint service account |
 | `roles/iam.workloadIdentityPoolAdmin` | Delete the WIF pool and providers |
+| `roles/cloudscheduler.admin` | Delete the mint timer job |
 
 ## `mint add-role`
 

@@ -167,6 +167,8 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 		printer.Blank()
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
+		printer.StepInfo(fmt.Sprintf("  Would delete Cloud Scheduler job: %s (mint timer)", gcf.TickJobID))
+		printer.StepInfo(fmt.Sprintf("  Would delete service account: %s (mint timer)", gcf.TickServiceAccountEmail(project)))
 		printer.StepInfo(fmt.Sprintf("  Would delete Cloud Function: %s", "fullsend-mint"))
 		for _, role := range pemRoles {
 			printer.StepInfo(fmt.Sprintf("  Would delete PEM secret: fullsend-%s-app-pem", mintcore.PemSecretRole(role)))
@@ -186,6 +188,20 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 		printer.Blank()
 	}
 
+	// Track whether any non-critical resources failed to delete.
+	var hadWarnings bool
+
+	// Step 0: Stop the mint timer first, so its Cloud Scheduler job does
+	// not call a deleted function. A failure is a warning: the function
+	// delete below still runs.
+	printer.StepStart("Deleting mint timer (Cloud Scheduler job and service account)")
+	if err := provisioner.DeleteMintTimer(ctx); err != nil {
+		hadWarnings = true
+		printer.StepWarn(fmt.Sprintf("Failed to delete the mint timer: %v (remove it with: gcloud scheduler jobs delete %s --location %s)", err, gcf.TickJobID, region))
+	} else {
+		printer.StepDone("Mint timer deleted")
+	}
+
 	// Step 1: Delete Cloud Function.
 	printer.StepStart("Deleting Cloud Function")
 	if err := provisioner.DeleteMintFunction(ctx); err != nil {
@@ -193,9 +209,6 @@ func runMintDeleteGCP(ctx context.Context, project, region string, dryRun, yolo 
 		return fmt.Errorf("deleting Cloud Function: %w", err)
 	}
 	printer.StepDone("Cloud Function deleted")
-
-	// Track whether any non-critical resources failed to delete.
-	var hadWarnings bool
 
 	// Step 2: Delete PEM secrets.
 	if len(pemRoles) > 0 {

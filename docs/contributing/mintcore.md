@@ -40,7 +40,7 @@ parsing, OIDC verification, claims validation, authorization (org,
 workflow-ref, repos scope), GitHub App token creation, bot-role lookup
 (`POST /v1/bot-role`), the GitHub webhook route that starts the fork PR
 review poll (`POST /v1/webhooks/github`, `webhook.go`), the mint timer
-(`Handler.Tick`, `tick.go`), and status endpoints. It compiles to both native (`!js`) and WASM (`js`) targets.
+(`Handler.Tick`, `tick.go`, and its Cloud Function route `POST /v1/tick`, `tick_route.go`), and status endpoints. It compiles to both native (`!js`) and WASM (`js`) targets.
 It is a nested module with a local-only `replace`; packages reachable
 from `pkg/behaviourtest` must not import it (including `mintconsts`).
 See [Go Code](go-code.md).
@@ -52,7 +52,7 @@ No mint logic lives in entrypoints.
 
 **The CF Worker TypeScript adapter** (`workersrc/src/index.ts`) handles
 I/O only — Worker secrets, host fetch, Fetch Request/Response mapping.
-It calls `mintcoreInitMint` and `mintcoreHandleFetch` registered on
+It calls `mintcoreInitMint`, `mintcoreHandleFetch` and (from its `scheduled` handler) `mintcoreTick` registered on
 `globalThis` by the Go WASM bridge in `cmd/mint-wasm`.
 
 ## Platform accessors
@@ -73,8 +73,9 @@ Reads environment/configuration values.
 `ALLOWED_WORKFLOW_FILES`, `PER_REPO_WIF_REPOS`,
 `WORKFLOW_HOST_REPOS`, `CUSTOM_ROLE_PERMISSIONS`, `ALLOWED_ROLES`,
 `FULLSEND_WEBHOOK_SECRET`, and the mint timer settings
-`FULLSEND_MINT_TICK_INTERVAL`, `FULLSEND_POLL_SWEEP_PERIOD` and
-`FULLSEND_POLL_SWEEP`) via `mintEnv` at construction time.
+`FULLSEND_MINT_TICK_INTERVAL`, `FULLSEND_POLL_SWEEP_PERIOD`,
+`FULLSEND_POLL_SWEEP`, `FULLSEND_TICK_AUDIENCE` and
+`FULLSEND_TICK_SERVICE_ACCOUNT`) via `mintEnv` at construction time.
 
 ### `mintHTTP(req *http.Request) (*http.Response, error)`
 
@@ -391,9 +392,28 @@ Hosts: the standalone mint (`cmd/mint`) runs `runTicker` in a goroutine,
 with a random first delay of up to a tenth of the interval, a per-tick
 context that ends after one interval, and a stop on shutdown. Several
 replicas each tick; that is harmless, because the poll's concurrency group
-coalesces their dispatches. The Cloudflare Worker (a Cron Trigger and a
-`scheduled` handler) and the Cloud Function (an OIDC-verified tick route
-called by Cloud Scheduler) follow in the next commit.
+coalesces their dispatches.
+
+The Cloudflare Worker runs a tick from a Cron Trigger: `cmd/mint-wasm`
+registers `mintcoreTick()`, which runs `Tick` on a goroutine (as
+`mintcoreHandleFetch` does) with a context of one interval and resolves to
+the JSON `TickResult`. The adapter's `scheduled` handler calls it under
+`ctx.waitUntil`, never throws, and logs `mint tick finished: ...`. There is
+no HTTP route. `mint deploy` sets the cron (`SetWorkerSchedules` in
+`internal/dispatch/cf`) on durable deploys only.
+
+The Cloud Function runs a tick on `POST /v1/tick` (`tick_route.go`), called
+by Cloud Scheduler. The route answers `404` unless `FULLSEND_TICK_AUDIENCE`
+and `FULLSEND_TICK_SERVICE_ACCOUNT` are set and `TickEnabled()` is true. It
+checks the Google ID token in the handler. The JWT split and the RS256
+check (`splitRS256JWT`, `verifyRS256Signature`) are shared with
+`JWKSVerifier.Verify`, and the keys come from a
+`JWKSVerifier` whose `jwks_uri` is preset to Google's keys, so no discovery
+runs; then issuer, `exp`/`iat` with `maxClockSkew`, the pinned audience, and
+the pinned email with `email_verified`. The token is never logged and the
+body is never read. `ensureMintTimer` in `internal/dispatch/gcf` creates the
+service account, the invoker grant, the env vars and the job. The standalone
+mint and the Worker do not set the route's settings.
 
 ## Tracing
 

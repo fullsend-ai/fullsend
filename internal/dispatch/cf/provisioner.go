@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
@@ -138,6 +139,14 @@ type Config struct {
 	// stamped: they are stored in a Worker secret (Secrets for previews,
 	// StoreTraceHeaders for durable).
 	Tracing TracingStamp
+
+	// TickInterval is the mint timer interval (ADR 0171), whole minutes
+	// from 1m to 5m; zero means dispatch.DefaultMintTickInterval. A
+	// durable deploy sets FULLSEND_MINT_TICK_INTERVAL to it and the
+	// Worker's Cron Trigger to the matching cron, so the two never
+	// disagree. Preview deploys set neither: a Cron Trigger fires only
+	// the deployed version.
+	TickInterval time.Duration
 }
 
 // TraceHeadersSecretName is the default Worker secret holding OTLP
@@ -270,13 +279,19 @@ func (p *Provisioner) SetCloudflareAPI(client CloudflareAPIClient) {
 	p.cfAPI = client
 }
 
+// newCloudflareAPIClient creates the client ensureCFAPI uses when none
+// was set. Tests replace it so no test can reach the Cloudflare API.
+var newCloudflareAPIClient = func() CloudflareAPIClient {
+	return NewLiveCloudflareAPIClient()
+}
+
 // ensureCFAPI returns the Cloudflare API client, creating a live
 // client if none was set.
 func (p *Provisioner) ensureCFAPI() CloudflareAPIClient {
 	if p.cfAPI != nil {
 		return p.cfAPI
 	}
-	p.cfAPI = NewLiveCloudflareAPIClient()
+	p.cfAPI = newCloudflareAPIClient()
 	return p.cfAPI
 }
 
@@ -350,9 +365,31 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 		}
 	}
 
+	// Durable deploys set the mint timer interval together with the Cron
+	// Trigger below, so the sweep's rotation (which uses the interval)
+	// matches how often the cron fires.
+	var tickCron string
+	if p.cfg.DeployMode == DeployDurable {
+		interval := p.cfg.TickInterval
+		if interval == 0 {
+			interval = dispatch.DefaultMintTickInterval
+		}
+		p.cfg.EnvVars[dispatch.MintTickIntervalEnv] = dispatch.MintTickIntervalValue(interval)
+		tickCron = dispatch.MintTickCron(interval)
+	}
+
 	url, err := p.wrangler.Deploy(ctx, sourceDir, p.cfg.WorkerName, p.cfg.PreviewAlias, p.cfg.EnvVars, p.cfg.Secrets)
 	if err != nil {
 		return nil, fmt.Errorf("deploying worker: %w", err)
+	}
+
+	// The mint timer's Cron Trigger. Only durable deploys set it: the
+	// schedule belongs to the script and fires its deployed version, so
+	// a preview upload must leave it alone.
+	if tickCron != "" {
+		if err := p.ensureCFAPI().SetWorkerSchedules(ctx, p.cfg.AccountID, p.cfg.WorkerName, []string{tickCron}); err != nil {
+			return nil, fmt.Errorf("setting the mint timer Cron Trigger: %w", err)
+		}
 	}
 
 	// Attach custom domain for durable deploys. Preview deploys use
@@ -501,6 +538,14 @@ func (p *Provisioner) validate() error {
 	// Validate custom domain hostname syntax when provided.
 	if p.cfg.CustomDomain != "" && !ValidateHostname(p.cfg.CustomDomain) {
 		return fmt.Errorf("invalid CustomDomain %q: must be a valid DNS hostname (e.g. mint.fullsend.sh)", p.cfg.CustomDomain)
+	}
+	if p.cfg.TickInterval != 0 {
+		if p.cfg.DeployMode == DeployPreview {
+			return fmt.Errorf("TickInterval is not supported for preview deploys: a preview version has no Cron Trigger")
+		}
+		if _, err := dispatch.ParseMintTickInterval(p.cfg.TickInterval.String()); err != nil {
+			return err
+		}
 	}
 	if p.cfg.Tracing.Endpoint != "" {
 		if err := ValidateTraceEndpoint(p.cfg.Tracing.Endpoint); err != nil {

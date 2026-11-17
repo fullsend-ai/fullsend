@@ -28,6 +28,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/cf"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
@@ -38,6 +39,13 @@ import (
 // mintGCFClientFactory creates GCF clients for mint operations. Overridden in tests.
 var mintGCFClientFactory = func(projectID string) gcf.GCFClient {
 	return gcf.NewLiveGCFClient(projectID)
+}
+
+// mintCFAPIFactory creates the Cloudflare API client for CF mint deploy
+// (custom domain, mint timer Cron Trigger). Overridden in tests so no test
+// reaches the Cloudflare API.
+var mintCFAPIFactory = func() cf.CloudflareAPIClient {
+	return cf.NewLiveCloudflareAPIClient()
 }
 
 // mintCFWranglerFactory creates Wrangler runners for CF mint deploy. Overridden in tests.
@@ -445,6 +453,9 @@ func newMintDeployCmd() *cobra.Command {
 	var otlpHeadersFile string
 	var otlpNoHeaders bool
 
+	// Mint timer flag.
+	var tickIntervalFlag string
+
 	cmd := &cobra.Command{
 		Use:   "deploy",
 		Short: "Deploy or update the token mint",
@@ -468,15 +479,26 @@ GCP mode (--platform=gcp):
     - run.googleapis.com
     - secretmanager.googleapis.com
     - iamcredentials.googleapis.com            (runtime: used by deployed function, not CLI)
+    - cloudscheduler.googleapis.com            (mint timer job)
 
   Required IAM roles on the target project:
     - roles/iam.serviceAccountAdmin
     - roles/iam.workloadIdentityPoolAdmin
     - roles/cloudfunctions.developer
     - roles/run.admin
+    - roles/cloudscheduler.admin               (mint timer job)
+    - roles/iam.serviceAccountUser             (the job acts as fullsend-mint-tick)
   When using --pem-dir, additionally requires:
     - roles/secretmanager.admin
     - roles/resourcemanager.projectIamAdmin
+
+  Mint timer (ADR 0171): unless --skip-deploy is set, deploy also creates
+  the fullsend-mint-tick service account, grants it roles/run.invoker on
+  the fullsend-mint service only, sets FULLSEND_MINT_TICK_INTERVAL,
+  FULLSEND_TICK_AUDIENCE and FULLSEND_TICK_SERVICE_ACCOUNT, raises the
+  function timeout to 360s, and creates or updates the Cloud Scheduler job
+  fullsend-mint-tick (POST <function URL>/v1/tick, OIDC token, no
+  retries) on the --tick-interval cron.
 
 Cloudflare mode (--platform=cloudflare):
   Deploys the fullsend-mint Cloudflare Worker. The Worker runs the mintcore
@@ -495,6 +517,11 @@ Cloudflare mode (--platform=cloudflare):
   When CLOUDFLARE_API_TOKEN is unset, the CLI falls back to the Wrangler
   login session. If CLOUDFLARE_ACCOUNT_ID is also unset, the CLI discovers
   the account from 'wrangler whoami'.
+
+  Mint timer (ADR 0171): a durable deploy sets FULLSEND_MINT_TICK_INTERVAL
+  and replaces the Worker's Cron Triggers with the --tick-interval cron
+  (Cloudflare API PUT .../workers/scripts/<name>/schedules). Preview
+  deploys set neither.
 
   Mint configuration flags (set Worker env vars during deploy):
     --per-repo-wif-repos=a/b,c/d   Set PER_REPO_WIF_REPOS
@@ -644,9 +671,29 @@ Tracing (GCP and Cloudflare):
 				return err
 			}
 
+			// The mint timer interval sets the mint's
+			// FULLSEND_MINT_TICK_INTERVAL and the host's schedule together.
+			// A preview version has no Cron Trigger, and --skip-deploy
+			// leaves the Cloud Function's timer as it is.
+			tickInterval, err := dispatch.ParseMintTickInterval(tickIntervalFlag)
+			if err != nil {
+				return fmt.Errorf("invalid --tick-interval: %w", err)
+			}
+			if cmd.Flags().Changed("tick-interval") {
+				if preview != "" {
+					return fmt.Errorf("--tick-interval applies to durable deploys only: a preview version has no Cron Trigger")
+				}
+				if skipDeploy && platform == "gcp" {
+					return fmt.Errorf("--tick-interval cannot be combined with --skip-deploy: --skip-deploy leaves the mint timer unchanged")
+				}
+			}
+			if preview != "" {
+				tickInterval = 0
+			}
+
 			switch platform {
 			case "gcp":
-				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, appSet, roles, public, statusGitHub, tracing)
+				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, appSet, roles, public, statusGitHub, tracing, tickInterval)
 			case "cloudflare":
 				// Reject conflicting flags: --public widens auth to all repos,
 				// so combining it with an explicit --per-repo-wif-repos list
@@ -657,7 +704,7 @@ Tracing (GCP and Cloudflare):
 				cfStatusGitHub := cf.StatusGitHubAuth{
 					Group: statusGitHubGroup,
 				}
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, customDomain, cfStatusGitHub, cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"), tracing)
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, appSet, roles, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles, public, customDomain, cfStatusGitHub, cmd.Flags().Changed("per-repo-wif-repos"), cmd.Flags().Changed("workflow-host-repos"), cmd.Flags().Changed("allowed-workflow-files"), tracing, tickInterval)
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -717,6 +764,9 @@ Ignored when --otlp-traces-endpoint is set`)
 Must be chmod 600. GCP: stored in Secret Manager (fullsend-mint-otlp-headers-<random>).
 Cloudflare: stored as a Worker secret (MINT_OTLP_HEADERS for previews, MINT_OTLP_HEADERS_<random> for durable deploys)
 Required with an endpoint on GCP and Cloudflare durable deploys unless --otlp-no-headers is set`)
+	cmd.Flags().StringVar(&tickIntervalFlag, "tick-interval", "5m", `mint timer interval: 1m, 2m, 3m, 4m or 5m. Sets FULLSEND_MINT_TICK_INTERVAL and
+the host schedule together (Cloudflare Cron Trigger, GCP Cloud Scheduler job).
+Durable deploys only; pass it on every deploy that should keep a non-default value`)
 	cmd.Flags().BoolVar(&otlpNoHeaders, "otlp-no-headers", false, `the collector needs no auth headers; no collector headers are bound to the new endpoint
 Mutually exclusive with --otlp-headers-file`)
 
@@ -752,7 +802,7 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 	}
 }
 
-func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, roles []string, public bool, statusGitHub gcf.StatusGitHubAuth, tracing mintTracingConfig) error {
+func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, roles []string, public bool, statusGitHub gcf.StatusGitHubAuth, tracing mintTracingConfig, tickInterval time.Duration) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
@@ -809,6 +859,13 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		if public {
 			printer.StepInfo("Would deploy public mint (PER_REPO_WIF_REPOS=*, permissive WIF)")
 		}
+		if skipDeploy {
+			printer.StepInfo("Would leave the mint timer unchanged (--skip-deploy)")
+		} else {
+			printer.StepInfo(fmt.Sprintf("Would create service account %s with roles/run.invoker on the %s Cloud Run service", gcf.TickServiceAccountEmail(project), "fullsend-mint"))
+			printer.StepInfo(fmt.Sprintf("Would set FULLSEND_MINT_TICK_INTERVAL=%s, FULLSEND_TICK_AUDIENCE=<function URL>, FULLSEND_TICK_SERVICE_ACCOUNT=%s", dispatch.MintTickIntervalValue(tickInterval), gcf.TickServiceAccountEmail(project)))
+			printer.StepInfo(fmt.Sprintf("Would create or update Cloud Scheduler job %s in %s: POST <function URL>/v1/tick on %q (UTC), no retries", gcf.TickJobID, region, dispatch.MintTickCron(tickInterval)))
+		}
 		if tracing.enabled() {
 			printer.StepInfo(fmt.Sprintf("Would stamp OTLP traces endpoint %s into the function source (deployment %s)", tracing.endpointOrigin(), gcf.TraceDeploymentName(region)))
 			if tracing.headers != nil {
@@ -843,6 +900,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		PublicMint:        public,
 		StatusGitHub:      statusGitHub,
 		Tracing:           gcf.TracingConfig{Endpoint: tracing.endpoint, Headers: tracing.headers},
+		TickInterval:      tickInterval,
 	}
 
 	if pemDir != "" {
@@ -893,6 +951,11 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	default:
 		summaryLines = append(summaryLines, "Tracing: disabled")
 	}
+	if skipDeploy {
+		summaryLines = append(summaryLines, "Mint timer: unchanged (--skip-deploy)")
+	} else {
+		summaryLines = append(summaryLines, fmt.Sprintf("Mint timer: Cloud Scheduler job %s, %q (UTC), as %s", gcf.TickJobID, dispatch.MintTickCron(tickInterval), gcf.TickServiceAccountEmail(project)))
+	}
 	if pemDir != "" {
 		summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appSet))
 	}
@@ -907,7 +970,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, customDomain string, statusGitHub cf.StatusGitHubAuth, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool, tracing mintTracingConfig) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, appSet string, roles []string, perRepoWIFRepos, workflowHostRepos, allowedWorkflowFiles string, public bool, customDomain string, statusGitHub cf.StatusGitHubAuth, perRepoWIFReposExplicit, workflowHostReposExplicit, allowedWorkflowFilesExplicit bool, tracing mintTracingConfig, tickInterval time.Duration) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
 	}
@@ -1048,6 +1111,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 			printer.StepInfo(fmt.Sprintf("Note: if Worker %s does not exist, a one-time empty durable deploy will create the script shell (mint config applies to the preview version only)", effectiveName))
 		} else {
 			printer.StepInfo("Mode: durable (persistent)")
+			printer.StepInfo(fmt.Sprintf("Would set %s=%s and the Worker's Cron Trigger to %q", dispatch.MintTickIntervalEnv, dispatch.MintTickIntervalValue(tickInterval), dispatch.MintTickCron(tickInterval)))
 		}
 		// Sort keys for deterministic output across runs.
 		envKeys := make([]string, 0, len(cfEnvVars))
@@ -1184,10 +1248,12 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		CustomDomain: customDomain,
 		StatusGitHub: statusGitHub,
 		Tracing:      tracingStamp,
+		TickInterval: tickInterval,
 	}
 
 	wrangler := mintCFWranglerFactory(accountID)
 	provisioner := cf.NewProvisioner(cfg, wrangler)
+	provisioner.SetCloudflareAPI(mintCFAPIFactory())
 
 	modeLabel := "durable"
 	if previewAlias != "" {
@@ -1251,6 +1317,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		summaryLines = append(summaryLines, "Teardown: preview alias is abandoned (Worker script is preserved)")
 	} else {
 		summaryLines = append(summaryLines, "Mode: durable")
+		summaryLines = append(summaryLines, fmt.Sprintf("Mint timer: Cron Trigger %q", dispatch.MintTickCron(tickInterval)))
 	}
 	if pemDir != "" {
 		summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appSet))

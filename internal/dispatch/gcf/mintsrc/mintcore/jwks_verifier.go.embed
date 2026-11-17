@@ -88,29 +88,9 @@ type discoveryDoc struct {
 
 // Verify validates a raw JWT string and returns the parsed claims.
 func (v *JWKSVerifier) Verify(ctx context.Context, rawToken string) (*Claims, error) {
-	parts := strings.Split(rawToken, ".")
-	if len(parts) != 3 {
-		return nil, fmt.Errorf("invalid JWT format: expected 3 segments, got %d", len(parts))
-	}
-
-	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
+	parts, header, claimsJSON, err := splitRS256JWT(rawToken)
 	if err != nil {
-		return nil, fmt.Errorf("decoding JWT header: %w", err)
-	}
-	var header jwtHeader
-	if err := json.Unmarshal(headerJSON, &header); err != nil {
-		return nil, fmt.Errorf("parsing JWT header: %w", err)
-	}
-	if header.Alg != "RS256" {
-		return nil, fmt.Errorf("unsupported signing algorithm: %s", header.Alg)
-	}
-	if header.Kid == "" {
-		return nil, fmt.Errorf("missing kid in JWT header")
-	}
-
-	claimsJSON, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return nil, fmt.Errorf("decoding JWT claims: %w", err)
+		return nil, err
 	}
 	var claims Claims
 	if err := json.Unmarshal(claimsJSON, &claims); err != nil {
@@ -142,22 +122,61 @@ func (v *JWKSVerifier) Verify(ctx context.Context, rawToken string) (*Claims, er
 		return nil, fmt.Errorf("missing repository claim")
 	}
 
-	key, err := v.getKey(ctx, header.Kid)
+	if err := v.verifyRS256Signature(ctx, header.Kid, parts); err != nil {
+		return nil, err
+	}
+	return &claims, nil
+}
+
+// splitRS256JWT splits a compact JWT, checks that its header names RS256
+// and a kid, and returns the segments, the header and the decoded claims
+// JSON. It does not verify the signature: call verifyRS256Signature after
+// checking the claims. The mint timer route (tick_route.go) shares it.
+func splitRS256JWT(rawToken string) (parts []string, header jwtHeader, claimsJSON []byte, err error) {
+	parts = strings.Split(rawToken, ".")
+	if len(parts) != 3 {
+		return nil, header, nil, fmt.Errorf("invalid JWT format: expected 3 segments, got %d", len(parts))
+	}
+
+	headerJSON, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return nil, fmt.Errorf("getting signing key: %w", err)
+		return nil, header, nil, fmt.Errorf("decoding JWT header: %w", err)
+	}
+	if err := json.Unmarshal(headerJSON, &header); err != nil {
+		return nil, header, nil, fmt.Errorf("parsing JWT header: %w", err)
+	}
+	if header.Alg != "RS256" {
+		return nil, header, nil, fmt.Errorf("unsupported signing algorithm: %s", header.Alg)
+	}
+	if header.Kid == "" {
+		return nil, header, nil, fmt.Errorf("missing kid in JWT header")
+	}
+
+	claimsJSON, err = base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, header, nil, fmt.Errorf("decoding JWT claims: %w", err)
+	}
+	return parts, header, claimsJSON, nil
+}
+
+// verifyRS256Signature checks the RS256 signature of a JWT split by
+// splitRS256JWT against the issuer key named kid.
+func (v *JWKSVerifier) verifyRS256Signature(ctx context.Context, kid string, parts []string) error {
+	key, err := v.getKey(ctx, kid)
+	if err != nil {
+		return fmt.Errorf("getting signing key: %w", err)
 	}
 
 	signature, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return nil, fmt.Errorf("decoding JWT signature: %w", err)
+		return fmt.Errorf("decoding JWT signature: %w", err)
 	}
 	signingInput := parts[0] + "." + parts[1]
 	hashed := sha256.Sum256([]byte(signingInput))
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, hashed[:], signature); err != nil {
-		return nil, fmt.Errorf("invalid JWT signature")
+		return fmt.Errorf("invalid JWT signature")
 	}
-
-	return &claims, nil
+	return nil
 }
 
 // getKey returns the RSA public key for the given kid, refreshing the

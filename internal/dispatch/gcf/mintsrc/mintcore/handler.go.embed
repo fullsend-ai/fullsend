@@ -113,6 +113,14 @@ type Handler struct {
 	// budget per tick; tests replace both.
 	tickNow      func() time.Time
 	tickMaxCalls int
+
+	// Mint timer route (tick_route.go), read once in NewHandler by
+	// readTickRouteSettings: the pinned audience and service account of
+	// the Google ID token POST /v1/tick accepts, and the verifier holding
+	// Google's keys. tickVerifier is nil while the route is off.
+	tickAudience       string
+	tickServiceAccount string
+	tickVerifier       *JWKSVerifier
 }
 
 type foreignInflight struct {
@@ -248,6 +256,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	if h.webhookSecret != nil || h.sweepEnabled {
 		h.webhookLimits = newWebhookLimiter()
 	}
+	h.readTickRouteSettings()
 
 	return h, nil
 }
@@ -294,6 +303,13 @@ func (h *Handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	// fullsend role.
 	if r.URL.Path == webhookPath && h.webhookSecret != nil {
 		h.handleGitHubWebhook(w, r)
+		return
+	}
+	// The mint timer route answers 404 like an unknown path until
+	// FULLSEND_TICK_AUDIENCE and FULLSEND_TICK_SERVICE_ACCOUNT are set and
+	// the timer has work.
+	if r.URL.Path == tickPath && h.tickRouteEnabled() {
+		h.handleTickRoute(w, r)
 		return
 	}
 

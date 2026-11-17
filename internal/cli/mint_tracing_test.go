@@ -514,7 +514,7 @@ func TestRunMintDeployGCP_TracingStoresHeadersSecret(t *testing.T) {
 
 	var deployErr error
 	out := captureStdout(t, func() {
-		deployErr = runMintDeployGCP(context.Background(), "my-project-id", "us-central1", filepath.Join(t.TempDir(), "missing"), false, false, "", "", nil, false, gcf.StatusGitHubAuth{}, tracing)
+		deployErr = runMintDeployGCP(context.Background(), "my-project-id", "us-central1", filepath.Join(t.TempDir(), "missing"), false, false, "", "", nil, false, gcf.StatusGitHubAuth{}, tracing, 0)
 	})
 	require.Error(t, deployErr)
 	assert.Contains(t, deployErr.Error(), "upload stopped by test")

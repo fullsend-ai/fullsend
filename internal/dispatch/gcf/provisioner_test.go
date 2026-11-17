@@ -284,6 +284,13 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 		"CreateFunction",
 		"WaitForOperation",
 		"GetFunction",
+		// Mint timer: service account, invoker grant, env vars (the
+		// function URL is only known after create), Cloud Scheduler job.
+		"CreateServiceAccount",
+		"AddCloudRunInvoker",
+		"GetServiceTrafficEnvVars",
+		"UpdateServiceEnvVars",
+		"UpsertSchedulerJob",
 		"SetCloudRunInvoker",
 	}
 	assert.Equal(t, expected, fake.calls)
@@ -573,6 +580,10 @@ func TestProvisioner_Provision_SameCodeNewOrg_NoMintUpdate(t *testing.T) {
 			"ROLE_APP_IDS":           `{"coder":"99999"}`,
 			"FULLSEND_SOURCE_HASH":   srcHash,
 			"ALLOWED_WORKFLOW_FILES": "*",
+			// Already wired to the mint timer.
+			"FULLSEND_MINT_TICK_INTERVAL":   "5m",
+			"FULLSEND_TICK_AUDIENCE":        "https://fullsend-mint-abc123.run.app",
+			"FULLSEND_TICK_SERVICE_ACCOUNT": "fullsend-mint-tick@my-project.iam.gserviceaccount.com",
 		},
 	}
 
@@ -1408,7 +1419,8 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "mintcore/bot_role_trace.go")
 	assert.Contains(t, names, "mintcore/webhook.go")
 	assert.Contains(t, names, "mintcore/tick.go")
-	assert.Len(t, names, 31)
+	assert.Contains(t, names, "mintcore/tick_route.go")
+	assert.Len(t, names, 32)
 }
 
 func TestBundleEmbeddedMintSource_StampsVersion(t *testing.T) {
@@ -2025,8 +2037,10 @@ func TestProvisioner_Provision_MultiOrg_MergeDoesNotOverwriteExistingPEMs(t *tes
 	assert.Equal(t, "assertion.repository_owner == 'existing-org'",
 		fake.lastWIFProviderConfig.AttributeCondition)
 
-	// The installing org is never registered in the mint's ALLOWED_ORGS.
-	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+	// The installing org is never registered in the mint's ALLOWED_ORGS;
+	// the only env update is the mint timer's.
+	assert.NotContains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "new-org")
+	assert.Equal(t, "https://mint.run.app", fake.lastUpdateServiceEnvVars["FULLSEND_TICK_AUDIENCE"])
 	require.NotNil(t, fake.lastCreateFunctionEnvVars)
 	assert.NotContains(t, fake.lastCreateFunctionEnvVars["ALLOWED_ORGS"], "new-org")
 }
@@ -2686,7 +2700,9 @@ func TestProvisioner_Provision_PublicMintFirstDeploy(t *testing.T) {
 	assert.NotContains(t, fake.lastCreateFunctionEnvVars, "ALLOWED_ORGS")
 	assert.Equal(t, "*", fake.lastCreateFunctionEnvVars["PER_REPO_WIF_REPOS"])
 	assert.NotContains(t, fake.calls, "SetProjectIAMBinding")
-	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+	// The only env update is the mint timer's, and it keeps public mode.
+	assert.Equal(t, "*", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
+	assert.Equal(t, "https://fullsend-mint-public.run.app", fake.lastUpdateServiceEnvVars["FULLSEND_TICK_AUDIENCE"])
 }
 
 func TestProvisioner_Provision_PublicMintRedeploy(t *testing.T) {

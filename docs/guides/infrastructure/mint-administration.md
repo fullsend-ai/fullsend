@@ -46,8 +46,11 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
     run.googleapis.com \
     secretmanager.googleapis.com \
     iamcredentials.googleapis.com \
+    cloudscheduler.googleapis.com \
     --project="$GCP_PROJECT"
   ```
+
+  > **Note:** `cloudscheduler.googleapis.com` is for the [mint timer](#mint-timer) job that `mint deploy` creates.
 
   > **Note:** `iamcredentials.googleapis.com` is a runtime dependency — the deployed mint Cloud Function uses it for WIF token exchange, not the CLI itself. It must be enabled before `mint deploy`.
 
@@ -66,6 +69,8 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
   | `roles/cloudfunctions.viewer` | | | x | x | x | x | x‡ |
   | `roles/run.admin` | x | | x | x | x | x | |
   | `roles/secretmanager.viewer` | | | § | | | | x‡ |
+  | `roles/cloudscheduler.admin` | x | x | | | | | |
+  | `roles/iam.serviceAccountUser` | x | | | | | | |
 
   \* `roles/resourcemanager.projectIamAdmin` is required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). `roles/secretmanager.admin` is required for `mint deploy` only when using `--pem-dir` or `--otlp-headers-file` (which creates a collector headers secret and grants access to it). Standard deploys without these flags do not need these roles.
 
@@ -95,7 +100,9 @@ The CLI defaults to this URL. You can also set the `FULLSEND_MINT_URL` repositor
     roles/resourcemanager.projectIamAdmin \
     roles/secretmanager.admin \
     roles/cloudfunctions.developer \
-    roles/run.admin; do
+    roles/run.admin \
+    roles/cloudscheduler.admin \
+    roles/iam.serviceAccountUser; do
     gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
       --member="user:$USER_EMAIL" \
       --role="$ROLE"
@@ -1140,11 +1147,82 @@ webhook, and a webhook delivery the mint failed is redelivered within about
 one tick. Without it, a repository relies on the poll's `*/5` schedule,
 which GitHub runs late and sometimes skips.
 
-**Where it runs today:** the standalone mint runs it in-process (see
-[Standalone mint](standalone-mint.md#mint-timer)). The Cloudflare Worker
-(Cron Trigger) and Cloud Function (Cloud Scheduler) wiring follows in the
-next commit. Until then, those hosts check the settings below at startup
-(a bad value stops the mint from starting) but run no tick.
+**How each host runs it:**
+
+| Host | What starts a tick | What sets it up |
+|------|--------------------|-----------------|
+| Standalone (`cmd/mint`) | An in-process timer | Nothing to create; see [Standalone mint](standalone-mint.md#mint-timer) |
+| Cloudflare Worker | The Worker's Cron Trigger calls its `scheduled` handler (no HTTP route) | `fullsend mint deploy --platform cloudflare` (durable deploys) |
+| Cloud Function | Cloud Scheduler calls `POST /v1/tick` with a Google-signed ID token | `fullsend mint deploy --platform gcp` (unless `--skip-deploy`) |
+
+Set the interval with `mint deploy --tick-interval` (`1m` to `5m`, whole
+minutes, default `5m`). The deploy writes it to `FULLSEND_MINT_TICK_INTERVAL`
+and to the host's schedule in the same step, so the two always match; the
+sweep's rotation depends on that. Pass the flag on every deploy that should
+keep a non-default value: a deploy without it resets both to `5m`.
+
+### What `mint deploy` creates on Cloudflare
+
+A durable deploy (no `--preview`):
+
+1. Sets the Worker variable `FULLSEND_MINT_TICK_INTERVAL` (for example `5m`).
+2. Replaces the Worker script's Cron Triggers with the matching cron (`*/5 * * * *`;
+   `* * * * *` for `1m`), through the Cloudflare API
+   (`PUT /accounts/<account>/workers/scripts/<worker>/schedules`). The PUT
+   replaces every cron of the script, so do not add other crons to the mint
+   Worker.
+
+A `--preview` deploy sets neither: a Cron Trigger fires only the deployed
+version, never a preview. Deleting the Worker removes its cron.
+
+Prerequisites: the same Cloudflare API token as the deploy (Workers Scripts
+edit). On the Workers Free plan an invocation may make only 50 subrequests,
+so a tick with work can run out of them; the tick's 900-call budget assumes
+the Paid plan's 1,000.
+
+### What `mint deploy` creates on GCP
+
+Unless `--skip-deploy` is set, `mint deploy --platform gcp` (for a project
+`<project>` and region `<region>`):
+
+| Resource | Name | Settings |
+|----------|------|----------|
+| Service account | `fullsend-mint-tick@<project>.iam.gserviceaccount.com` | No project roles |
+| IAM binding | `roles/run.invoker` for that account | On the `fullsend-mint` Cloud Run service only |
+| Function env vars | `FULLSEND_MINT_TICK_INTERVAL`, `FULLSEND_TICK_AUDIENCE` (the function URL), `FULLSEND_TICK_SERVICE_ACCOUNT` (the account above) | Other env vars are kept |
+| Function timeout | `fullsend-mint` | Raised to 360 s, above the longest tick (5 minutes). A function at the old 60 s default is redeployed |
+| Cloud Scheduler job | `fullsend-mint-tick` in `<region>` | `POST <function URL>/v1/tick`, OIDC token of the account with the function URL as audience, the interval's cron in UTC, `retryCount: 0`, attempt deadline 360 s |
+
+Every step is idempotent, so re-running the deploy after a partial failure
+is safe. The deploy updates an existing job but does not resume a paused
+one. `fullsend mint delete --platform gcp` deletes the job and the account
+before the function.
+
+**Prerequisites (GCP):**
+
+- APIs: `cloudscheduler.googleapis.com` in addition to the deploy's usual
+  APIs (`iam.googleapis.com`, `run.googleapis.com`, `cloudfunctions.googleapis.com`, ...).
+  Enable it with `gcloud services enable cloudscheduler.googleapis.com --project <project>` (not run here).
+- Roles for whoever runs `mint deploy`, in addition to the usual ones:
+  `roles/cloudscheduler.admin` (create and update the job) and
+  `roles/iam.serviceAccountUser` (the job acts as `fullsend-mint-tick`).
+  `roles/iam.serviceAccountAdmin` and `roles/run.admin`, already required,
+  cover the account and the invoker binding.
+- The Cloud Scheduler service agent
+  (`service-<project number>@gcp-sa-cloudscheduler.iam.gserviceaccount.com`)
+  signs the ID tokens. Google grants it `roles/cloudscheduler.serviceAgent`
+  when the API is enabled; if someone removed that grant, the job fails
+  with a permission error.
+
+**How the route checks the token:** `POST /v1/tick` answers `404` unless
+`FULLSEND_TICK_AUDIENCE` and `FULLSEND_TICK_SERVICE_ACCOUNT` are both set and
+the timer has work. Otherwise it needs a Google ID token signed by a key from
+`https://www.googleapis.com/oauth2/v3/certs`, with issuer
+`https://accounts.google.com` (or `accounts.google.com`), unexpired
+`exp` and past `iat` (30 s skew), `aud` equal to `FULLSEND_TICK_AUDIENCE`,
+and `email` equal to `FULLSEND_TICK_SERVICE_ACCOUNT` with `email_verified`.
+Anything else gets `401`. The route ignores any request body, never logs the
+token, and answers `200` with the tick's JSON summary.
 
 **What each tick does** (every `FULLSEND_MINT_TICK_INTERVAL`):
 
@@ -1205,6 +1283,19 @@ mint tick: redelivery=off sweep=tight deliveries=0 redelivered=0 repos=121 due=1
 - `redelivered` deliveries show a new attempt, marked as a redelivery,
   under **Recent Deliveries** in the App's **Advanced** tab.
 
+Where to find the line on each host (these commands were not run for this
+change; no live mint was deployed):
+
+- **Cloudflare:** `npx wrangler tail <worker-name>` while a cron fires, or
+  the Worker's **Logs**. After the Go summary line the adapter logs
+  `mint tick finished: cron=*/5 * * * * summary={...}` with the same counts
+  as JSON. The Worker's **Settings > Triggers** lists the cron.
+- **GCP:** `gcloud scheduler jobs describe fullsend-mint-tick --location <region>`
+  shows the schedule and the last attempt's status. To run a tick now:
+  `gcloud scheduler jobs run fullsend-mint-tick --location <region>`. The
+  summary line is in the function's logs
+  (`gcloud functions logs read fullsend-mint --region <region>`).
+
 ### Troubleshooting the timer
 
 | Log text | Cause | Fix |
@@ -1220,6 +1311,16 @@ mint tick: redelivery=off sweep=tight deliveries=0 redelivered=0 repos=121 due=1
 | `not_dispatchable=` above zero | Those repositories have no dispatchable `fullsend-poll-prs.yml` on their default branch. | Install or update the poll workflow. |
 | `deferred=` above zero, or `budget_exhausted=true` | More repositories were due than one tick may dispatch. | Lengthen `FULLSEND_POLL_SWEEP_PERIOD`, or shorten `FULLSEND_MINT_TICK_INTERVAL`, so fewer repositories are due per tick. |
 | `mint tick: further errors this tick are counted, not logged` | More than 10 errors in one tick. | Read the first 10 error lines; `errors=` in the summary has the total. |
+| GCP: the Cloud Scheduler job's last attempt is `404` (`NOT_FOUND`) | The route is off: `FULLSEND_TICK_AUDIENCE` or `FULLSEND_TICK_SERVICE_ACCOUNT` is missing (the log has `mint tick route: ... must both be set`), or the timer has no work (no webhook secret and the sweep is off or has no `fullsend` App). | Re-run `mint deploy`. If the timer is off on purpose, pause the job: `gcloud scheduler jobs pause fullsend-mint-tick --location <region>`. |
+| GCP: last attempt `401`, log `mint tick route: rejected: "audience mismatch"` | The job's audience is not `FULLSEND_TICK_AUDIENCE`, for example after the function URL changed. | Re-run `mint deploy`; it sets both from the same URL. |
+| GCP: log `mint tick route: rejected: "service account mismatch"` or `"email not verified"` | The job signs as another account, or someone else is calling the route. | Re-run `mint deploy`. Callers other than the job are expected to get `401`. |
+| GCP: log `mint tick route: rejected: "getting signing key: ..."` | The function could not fetch Google's keys. | None if it is rare; the next tick fetches again. |
+| GCP: `mint deploy` fails with `creating the mint timer Cloud Scheduler job: ... 403` | `cloudscheduler.googleapis.com` is not enabled, or the deployer lacks `roles/cloudscheduler.admin` or `roles/iam.serviceAccountUser`. | Enable the API or grant the roles, then re-run `mint deploy`. |
+| GCP: the job shows `PERMISSION_DENIED` getting an OIDC token | The Cloud Scheduler service agent lost `roles/cloudscheduler.serviceAgent`. | Grant it back to `service-<project number>@gcp-sa-cloudscheduler.iam.gserviceaccount.com`. |
+| GCP: no tick runs | The job is paused, or was deleted. | `gcloud scheduler jobs resume fullsend-mint-tick --location <region>`, or re-run `mint deploy`. |
+| Cloudflare: no `mint tick` lines | The Worker has no cron (a preview, or the cron was removed in the dashboard), or the deploy failed at `setting the mint timer Cron Trigger`. | Re-run a durable `mint deploy`; check **Settings > Triggers**. |
+| Cloudflare: `mint tick failed: mintcoreTick timed out after 330000ms` | The Go runtime stalled. The next request or cron re-initializes it. | None if it is rare. |
+| Cloudflare: `errors=` from `Too many subrequests` | The Workers Free plan allows 50 subrequests per invocation. | Use the Workers Paid plan, or lengthen `FULLSEND_POLL_SWEEP_PERIOD` so fewer repositories are due per tick. |
 
 ## Bot-role lookup endpoint
 

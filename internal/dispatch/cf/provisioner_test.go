@@ -2060,6 +2060,20 @@ type fakeCloudflareAPIClient struct {
 	// lookupZoneID controls the return value of LookupZoneID.
 	lookupZoneID    string
 	lookupZoneIDErr error
+
+	scheduleCalls []scheduleCall
+	scheduleErr   error
+}
+
+type scheduleCall struct {
+	accountID  string
+	workerName string
+	crons      []string
+}
+
+func (f *fakeCloudflareAPIClient) SetWorkerSchedules(_ context.Context, accountID, workerName string, crons []string) error {
+	f.scheduleCalls = append(f.scheduleCalls, scheduleCall{accountID: accountID, workerName: workerName, crons: crons})
+	return f.scheduleErr
 }
 
 type removeDomainCall struct {
@@ -2431,6 +2445,12 @@ func TestEnsureCFAPI_LazyInit(t *testing.T) {
 
 	// cfAPI starts nil.
 	assert.Nil(t, p.cfAPI)
+
+	// TestMain replaces the factory with a fake; restore the production
+	// one for this test (it creates the client but makes no call).
+	prev := newCloudflareAPIClient
+	newCloudflareAPIClient = func() CloudflareAPIClient { return NewLiveCloudflareAPIClient() }
+	t.Cleanup(func() { newCloudflareAPIClient = prev })
 
 	client := p.ensureCFAPI()
 	require.NotNil(t, client)

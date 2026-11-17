@@ -326,12 +326,24 @@ inputs, and no webhook field reaches a job. Setup and troubleshooting:
 The mint timer redelivers the orchestrator App's failed webhook deliveries
 (only while the webhook route is on) and dispatches the poll of every served
 repository once per sweep period through the same path as the webhook route
-(the sweep). It has no HTTP route on the standalone mint, which runs it
-in-process; the Cloudflare and Cloud Function wiring follows. Settings, read
-at startup on every host: `FULLSEND_MINT_TICK_INTERVAL` (default `5m`, `1m`
-to `5m`), `FULLSEND_POLL_SWEEP_PERIOD` (default `15m`, at least the
-interval) and `FULLSEND_POLL_SWEEP` (`off` turns the sweep off). Details,
-limits and troubleshooting:
+(the sweep). How each host starts a tick:
+
+| Host | Trigger | Created by |
+|------|---------|------------|
+| Standalone | In-process timer | Nothing to create |
+| Cloudflare Worker | Cron Trigger on the Worker script, calling the `scheduled` handler (no HTTP route) | `mint deploy --platform cloudflare` (durable only) |
+| Cloud Function | Cloud Scheduler job `fullsend-mint-tick` calling `POST /v1/tick` with an OIDC ID token of `fullsend-mint-tick@<project>.iam.gserviceaccount.com` | `mint deploy --platform gcp` (not with `--skip-deploy`) |
+
+Settings, read at startup on every host: `FULLSEND_MINT_TICK_INTERVAL`
+(default `5m`, `1m` to `5m`; `mint deploy --tick-interval` sets it and the
+host schedule together), `FULLSEND_POLL_SWEEP_PERIOD` (default `15m`, at
+least the interval) and `FULLSEND_POLL_SWEEP` (`off` turns the sweep off).
+The Cloud Function's tick route also needs `FULLSEND_TICK_AUDIENCE` (the
+function URL) and `FULLSEND_TICK_SERVICE_ACCOUNT`, both set by `mint deploy`;
+it answers `404` without them. On GCP the deploy needs
+`cloudscheduler.googleapis.com`, `roles/cloudscheduler.admin` and
+`roles/iam.serviceAccountUser`, and raises the function timeout to 360 s.
+Details, limits and troubleshooting:
 [Mint administration](mint-administration.md#mint-timer).
 
 ---

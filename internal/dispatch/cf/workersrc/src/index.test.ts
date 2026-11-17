@@ -7,6 +7,7 @@
 import { env, exports } from "cloudflare:workers";
 import {
   createExecutionContext,
+  createScheduledController,
   waitOnExecutionContext,
 } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -369,5 +370,82 @@ describe("mint worker tracing disabled", () => {
     expect(res.status).toBeLessThan(500);
     expect(res.status).not.toBe(429);
     expect(urls).toEqual([]);
+  });
+});
+
+describe("mint worker scheduled tick", () => {
+  const globals = globalThis as Record<string, unknown>;
+  let savedTick: unknown;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (savedTick !== undefined) {
+      globals["mintcoreTick"] = savedTick;
+      savedTick = undefined;
+    }
+  });
+
+  async function runScheduled(): Promise<void> {
+    const ctx = createExecutionContext();
+    await worker.scheduled(
+      createScheduledController({
+        cron: "*/5 * * * *",
+        scheduledTime: Date.now(),
+      }),
+      env as Env,
+      ctx,
+    );
+    await waitOnExecutionContext(ctx);
+  }
+
+  // Boot the Go runtime first, so the bridge functions are on globalThis.
+  async function bootBridge(): Promise<void> {
+    const resp = await exports.default.fetch("https://worker.test/health");
+    expect(resp.status).toBe(200);
+  }
+
+  it("calls the mintcoreTick bridge and logs its summary", async () => {
+    await bootBridge();
+    savedTick = globals["mintcoreTick"];
+    expect(typeof savedTick).toBe("function");
+    const tickSpy = vi.fn(() => (savedTick as () => Promise<string>)());
+    globals["mintcoreTick"] = tickSpy;
+    const logSpy = vi.spyOn(console, "log");
+
+    await runScheduled();
+
+    expect(tickSpy).toHaveBeenCalledTimes(1);
+    // The smoke bindings have no fullsend App and no webhook secret, so
+    // the real Go tick has no work and reports both jobs off.
+    const finished = logSpy.mock.calls
+      .map((args) => args.join(" "))
+      .find((line) => line.startsWith("mint tick finished:"));
+    expect(finished).toBeDefined();
+    expect(finished).toContain("cron=*/5 * * * *");
+    expect(finished).toContain('"redelivery":false');
+    expect(finished).toContain('"sweep":false');
+  });
+
+  it("does not throw when the tick rejects", async () => {
+    await bootBridge();
+    savedTick = globals["mintcoreTick"];
+    globals["mintcoreTick"] = () => Promise.reject(new Error("boom"));
+    const errSpy = vi.spyOn(console, "error");
+
+    await expect(runScheduled()).resolves.toBeUndefined();
+    expect(errSpy).toHaveBeenCalledWith("mint tick failed:", "boom");
+  });
+
+  it("does not throw when the bridge is missing", async () => {
+    await bootBridge();
+    savedTick = globals["mintcoreTick"];
+    globals["mintcoreTick"] = undefined;
+    const errSpy = vi.spyOn(console, "error");
+
+    await expect(runScheduled()).resolves.toBeUndefined();
+    expect(errSpy).toHaveBeenCalledWith(
+      "mint tick failed:",
+      expect.stringContaining("mintcoreTick not registered"),
+    );
   });
 });

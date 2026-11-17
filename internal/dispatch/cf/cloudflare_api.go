@@ -65,6 +65,11 @@ type CloudflareAPIClient interface {
 	// until a matching zone is found. Returns an error if the zone is
 	// not in the account.
 	LookupZoneID(ctx context.Context, domain string) (string, error)
+
+	// SetWorkerSchedules replaces the Worker script's Cron Triggers with
+	// crons. The schedules belong to the script, not to a version, so
+	// they fire the deployed version only, never a preview.
+	SetWorkerSchedules(ctx context.Context, accountID, workerName string, crons []string) error
 }
 
 // --- LiveCloudflareAPIClient ---
@@ -250,6 +255,26 @@ func (c *LiveCloudflareAPIClient) findCustomDomainID(ctx context.Context, accoun
 		}
 	}
 	return "", nil
+}
+
+// SetWorkerSchedules replaces a Worker script's Cron Triggers via
+// PUT /accounts/{account_id}/workers/scripts/{script_name}/schedules with
+// the body [{"cron": "..."}]. The PUT replaces every schedule of the
+// script. Endpoint:
+// https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/methods/update/
+// It is the call `wrangler deploy` makes when the Wrangler configuration
+// has triggers.crons; without that key, `wrangler deploy` leaves the
+// schedules unchanged, so a later durable deploy does not remove them.
+func (c *LiveCloudflareAPIClient) SetWorkerSchedules(ctx context.Context, accountID, workerName string, crons []string) error {
+	reqURL := fmt.Sprintf("%s/accounts/%s/workers/scripts/%s/schedules", c.cfBaseURL(), url.PathEscape(accountID), url.PathEscape(workerName))
+	body := make([]map[string]string, 0, len(crons))
+	for _, cron := range crons {
+		body = append(body, map[string]string{"cron": cron})
+	}
+	if _, err := c.cfAPIRequest(ctx, http.MethodPut, reqURL, body); err != nil {
+		return fmt.Errorf("setting Cron Triggers of Worker %s: %w", workerName, err)
+	}
+	return nil
 }
 
 // LookupZoneID resolves the Cloudflare zone ID for a domain by walking

@@ -143,37 +143,39 @@ func (h *Handler) TickInterval() time.Duration {
 	return h.tickInterval
 }
 
-// TickResult counts what one Tick did. It holds no token or payload.
+// TickResult counts what one Tick did. It holds no token or payload, so
+// hosts may return it as JSON (the Cloud Function tick route and the
+// Worker's scheduled handler do).
 type TickResult struct {
 	// Redelivery and Sweep report which jobs ran.
-	Redelivery bool
-	Sweep      bool
+	Redelivery bool `json:"redelivery"`
+	Sweep      bool `json:"sweep"`
 
 	// DeliveriesScanned counts the deliveries within the sweep period;
 	// Redelivered the redeliveries GitHub accepted.
-	DeliveriesScanned int
-	Redelivered       int
+	DeliveriesScanned int `json:"deliveries_scanned"`
+	Redelivered       int `json:"redelivered"`
 
 	// Repos counts the repositories the sweep served, Due those due this
 	// tick. A due repository ends up Dispatched, NotDispatchable (no
 	// dispatchable poll workflow), NotInstalled, Cached (answered from the
 	// shared limiter without a GitHub call), Deferred (over a bound; due
 	// again next period) or counted in Errors.
-	Repos           int
-	Due             int
-	Dispatched      int
-	NotDispatchable int
-	NotInstalled    int
-	Cached          int
-	Deferred        int
+	Repos           int `json:"repos"`
+	Due             int `json:"due"`
+	Dispatched      int `json:"dispatched"`
+	NotDispatchable int `json:"not_dispatchable"`
+	NotInstalled    int `json:"not_installed"`
+	Cached          int `json:"cached"`
+	Deferred        int `json:"deferred"`
 
 	// Errors counts every failed step; none is fatal.
-	Errors int
+	Errors int `json:"errors"`
 
 	// BudgetUsed is the GitHub call budget the tick reserved (a dispatch
 	// reserves dispatchGitHubCalls), BudgetExhausted whether it ran out.
-	BudgetUsed      int
-	BudgetExhausted bool
+	BudgetUsed      int  `json:"budget_used"`
+	BudgetExhausted bool `json:"budget_exhausted"`
 }
 
 // tickRun is the state of one Tick.

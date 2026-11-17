@@ -170,7 +170,7 @@ func (g *tickGitHub) snapshot() (calls []string, redelivered []int64, dispatched
 // GitHub API, and the mint timer clock at tickTestNow.
 func newTickHandler(t *testing.T, env map[string]string, gh *tickGitHub) *Handler {
 	t.Helper()
-	for _, k := range []string{webhookSecretEnv, tickIntervalEnv, sweepPeriodEnv, sweepEnv} {
+	for _, k := range []string{webhookSecretEnv, tickIntervalEnv, sweepPeriodEnv, sweepEnv, tickAudienceEnv, tickServiceAccountEnv} {
 		t.Setenv(k, "")
 	}
 	for k, v := range env {

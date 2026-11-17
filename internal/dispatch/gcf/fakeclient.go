@@ -61,6 +61,15 @@ type fakeGCFClient struct {
 
 	// Captured project IAM binding arguments.
 	projectIAMBindings []projectIAMBinding
+
+	// Mint timer wiring: service account IDs created, Cloud Run invoker
+	// members added, the last function timeout deployed, and Cloud
+	// Scheduler jobs upserted or deleted.
+	createdServiceAccounts []string
+	invokerMembers         []string
+	lastFunctionTimeout    int
+	schedulerJobs          []SchedulerJob
+	deletedSchedulerJobs   []string
 }
 
 type projectIAMBinding struct {
@@ -81,7 +90,8 @@ func (f *fakeGCFClient) record(method string) error {
 	return f.errs[method]
 }
 
-func (f *fakeGCFClient) CreateServiceAccount(_ context.Context, _, _, _ string) error {
+func (f *fakeGCFClient) CreateServiceAccount(_ context.Context, _, saName, _ string) error {
+	f.createdServiceAccounts = append(f.createdServiceAccounts, saName)
 	return f.record("CreateServiceAccount")
 }
 func (f *fakeGCFClient) DeleteServiceAccount(_ context.Context, _, _ string) error {
@@ -181,6 +191,18 @@ func (f *fakeGCFClient) SetProjectIAMBinding(_ context.Context, projectID, membe
 func (f *fakeGCFClient) SetCloudRunInvoker(_ context.Context, _, _, _ string) error {
 	return f.record("SetCloudRunInvoker")
 }
+func (f *fakeGCFClient) AddCloudRunInvoker(_ context.Context, _, _, _, member string) error {
+	f.invokerMembers = append(f.invokerMembers, member)
+	return f.record("AddCloudRunInvoker")
+}
+func (f *fakeGCFClient) UpsertSchedulerJob(_ context.Context, _, _ string, job SchedulerJob) error {
+	f.schedulerJobs = append(f.schedulerJobs, job)
+	return f.record("UpsertSchedulerJob")
+}
+func (f *fakeGCFClient) DeleteSchedulerJob(_ context.Context, _, _, jobID string) error {
+	f.deletedSchedulerJobs = append(f.deletedSchedulerJobs, jobID)
+	return f.record("DeleteSchedulerJob")
+}
 func (f *fakeGCFClient) DeleteFunction(_ context.Context, _, _, _ string) error {
 	return f.record("DeleteFunction")
 }
@@ -217,6 +239,7 @@ func (f *fakeGCFClient) UploadFunctionSource(_ context.Context, _, _ string, sou
 func (f *fakeGCFClient) CreateFunction(_ context.Context, _, _, _ string, cfg FunctionConfig) (string, error) {
 	f.calls = append(f.calls, "CreateFunction")
 	f.lastCreateFunctionEnvVars = cfg.EnvVars
+	f.lastFunctionTimeout = cfg.TimeoutSeconds
 	if err := f.errs["CreateFunction"]; err != nil {
 		return "", err
 	}
@@ -225,6 +248,7 @@ func (f *fakeGCFClient) CreateFunction(_ context.Context, _, _, _ string, cfg Fu
 func (f *fakeGCFClient) UpdateFunction(_ context.Context, _, _, _ string, cfg FunctionConfig) (string, error) {
 	f.calls = append(f.calls, "UpdateFunction")
 	f.lastCreateFunctionEnvVars = cfg.EnvVars
+	f.lastFunctionTimeout = cfg.TimeoutSeconds
 	if err := f.errs["UpdateFunction"]; err != nil {
 		return "", err
 	}
