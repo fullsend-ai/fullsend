@@ -26,8 +26,9 @@ func codexDelegates(def *piAgentDef, securityEnabled bool) bool {
 
 // codexRole is one native Codex sub-agent role, written to
 // $CODEX_HOME/agents/<Name>.toml. Instructions is the child's
-// developer_instructions: codexChildNote, then the persona body; nothing of
-// the dropped frontmatter (#6970).
+// developer_instructions: the collaboration version's child note
+// (codexChildNote, codexChildNoteV2), then the persona body; nothing of the
+// dropped frontmatter (#6970).
 type codexRole struct {
 	Name, Description, Instructions string
 	// Model is the child's model, set only for a skill persona with its own
@@ -224,14 +225,28 @@ func (role codexRole) toml() []byte {
 		"developer_instructions = " + codexTOMLString(role.Instructions) + "\n")
 }
 
-// codexChildNote opens every role's developer_instructions. A native child
-// runs with its role's developer_instructions in place of the parent's, so
-// nothing of codexNoSubagentNote reaches it: the note carries the child
-// contract (pi's CHILD_SYSTEM_NOTE, word for word) and the chunked-read rule.
+// codexChildNote opens every V1 role's developer_instructions. A native
+// child runs with its role's developer_instructions in place of the
+// parent's, so nothing of codexNoSubagentNote reaches it: the note carries
+// the child contract (pi's CHILD_SYSTEM_NOTE, word for word) and the
+// chunked-read rule.
 const codexChildNote = "## Runtime note\n\n" +
 	"You are a sub-agent dispatched by another agent. Carry out the single task in the message you " +
 	"were given and then stop. You have no sub-agent tool of your own and cannot dispatch further " +
 	"work. Your final assistant message is the entire result handed back to the agent that " +
+	"dispatched you, so make it self-contained.\n\n" +
+	codexChunkedReadNote + "\n"
+
+// codexChildNoteV2 is codexChildNote for a V2 child. The child inherits the
+// feature table (ADR 0159 decision 1), and codex gives it the multi-agent
+// tools only when its own model selects V2 in the catalog
+// (collab_tools_enabled, codex-rs/core/src/tools/spec_plan.rs). Either way
+// the hook denies every such call from a child (ADR 0159 decision 3), and
+// the note says so where V1's says the child has no tool.
+const codexChildNoteV2 = "## Runtime note\n\n" +
+	"You are a sub-agent dispatched by another agent. Carry out the single task in the message you " +
+	"were given and then stop. Do not spawn, wait on, list, message or interrupt agents; any such call " +
+	"is denied. Your final assistant message is the entire result handed back to the agent that " +
 	"dispatched you, so make it self-contained.\n\n" +
 	codexChunkedReadNote + "\n"
 
@@ -256,8 +271,9 @@ const (
 // fails Bootstrap: a stray sub-agents/*.md must not stop a run that never
 // dispatches it, the rule discoverPersonas already applies. The second
 // value maps each skipped name to its reason, so a subagents key naming one
-// fails with that reason, as on pi (resolveCodexChildModels).
-func codexRoles(skillDirs []string, agentName string) ([]codexRole, map[string]string) {
+// fails with that reason, as on pi (resolveCodexChildModels). version is
+// the collaboration version the gate admitted, which picks the child note.
+func codexRoles(skillDirs []string, agentName, version string) ([]codexRole, map[string]string) {
 	// discoverPersonas never returns a non-nil error; the value exists for
 	// the pi call site's shape.
 	personas, skipped, _ := discoverPersonas(skillDirs, agentName)
@@ -266,9 +282,13 @@ func codexRoles(skillDirs []string, agentName string) ([]codexRole, map[string]s
 		fmt.Fprintf(os.Stderr, "Warning: persona %q skipped: %s\n", sk.Path, sk.Reason)
 		reasons[sk.Name] = sk.Path + ": " + sk.Reason
 	}
+	note := codexChildNote
+	if version == "v2" {
+		note = codexChildNoteV2
+	}
 	roles := []codexRole{
-		{Name: "default", Description: codexDefaultRoleDescription, Instructions: codexChildNote + codexDefaultRoleInstructions},
-		{Name: "explore", Description: codexExploreRoleDescription, Instructions: codexChildNote + codexExploreRoleInstructions},
+		{Name: "default", Description: codexDefaultRoleDescription, Instructions: note + codexDefaultRoleInstructions},
+		{Name: "explore", Description: codexExploreRoleDescription, Instructions: note + codexExploreRoleInstructions},
 	}
 	for _, p := range personas {
 		var reason string
@@ -290,7 +310,7 @@ func codexRoles(skillDirs []string, agentName string) ([]codexRole, map[string]s
 				"(the role's model is its subagents entry, else the run-level child model) and the parent's tools apply\n",
 				p.Name, strings.Join(keys, ", "))
 		}
-		roles = append(roles, codexRole{Name: p.Name, Description: p.Description, Instructions: codexChildNote + p.Body + "\n"})
+		roles = append(roles, codexRole{Name: p.Name, Description: p.Description, Instructions: note + p.Body + "\n"})
 	}
 	slices.SortFunc(roles, func(a, b codexRole) int { return strings.Compare(a.Name, b.Name) })
 	return roles, reasons
@@ -392,14 +412,12 @@ func parseCodexCatalog(data []byte) (codexCatalog, error) {
 // extended by ADR 0159): the collaboration version the gate takes for the
 // parent Run will launch ("v1" or "v2", else ""), and the one-line reason
 // Bootstrap prints when the parent runs in one context. Bootstrap delegates
-// only a "v1" parent: the reason explains a decline and never decides one. A
-// V2 parent is returned as "v2" with the ADR 0159 reason, and Bootstrap
-// declines it until its child-result delivery path is implemented and
-// verified live (ADR 0159 decision 4). A parent that does not translate is
-// reported by Run with the same error; the gate only declines here. A
-// gateway/ parent is declined whatever its id: children would inherit the
-// gateway provider with bare OpenAI ids it may not serve, and native children
-// have not run on that route.
+// a "v1" or "v2" parent, the latter subject to codexV2ChildModelReason: the
+// reason explains a decline and never decides one. A parent that does not
+// translate is reported by Run with the same error; the gate only declines
+// here. A gateway/ parent is declined whatever its id: children would
+// inherit the gateway provider with bare OpenAI ids it may not serve, and
+// native children have not run on that route.
 func codexParentCollabVersion(catalog codexCatalog, parentModel, agentModel string) (version, reason string) {
 	model, err := translateCodexModel(EffectiveModel(parentModel, agentModel), true)
 	if err != nil {
@@ -412,14 +430,33 @@ func codexParentCollabVersion(catalog codexCatalog, parentModel, agentModel stri
 	if !catalog.has(id) {
 		return "", fmt.Sprintf("parent model %q is not in the bundled catalog of the pinned codex", id)
 	}
-	switch catalog.collabVersion(id) {
-	case "v1":
-		return "v1", ""
-	case "v2":
-		return "v2", fmt.Sprintf("parent model %q selects collaboration \"v2\"; V2 delegation is off until its child-result delivery path is verified live (ADR 0159)", id)
+	if version := catalog.collabVersion(id); version != "" {
+		return version, ""
 	}
 	if catalog[id].Version == "disabled" {
 		return "", fmt.Sprintf("parent model %q has native sub-agents disabled in the bundled catalog", id)
 	}
 	return "", fmt.Sprintf("parent model %q selects collaboration %q, which the runner does not support", id, catalog[id].Version)
+}
+
+// codexV2ChildModelReason is the V2 spawn's backstop (#9085). Codex applies
+// no agents.max_depth under V2 and gives a child of a V2 parent the
+// multi-agent tools only when the child's own model selects V2
+// (collab_tools_enabled, codex-rs/core/src/tools/spec_plan.rs,
+// rust-v0.166.0). With every model the runner binds off V2, a child it
+// starts holds no spawn_agent. A spawn the guard did not screen can still
+// name a model (the schema hides the argument; the handler accepts it) or
+// use a rewritten role file, so for such a spawn depth one still rests on
+// the guard (ADR 0159). It returns the reason Bootstrap prints when the
+// run-level child model or a persona's own model selects V2, else "".
+func codexV2ChildModelReason(catalog codexCatalog, roles []codexRole, defaultModel string) string {
+	if catalog.collabVersion(defaultModel) == "v2" {
+		return fmt.Sprintf("child model %q (the run-level child model) selects collaboration \"v2\", so under a V2 parent its children would keep codex's spawn tool", defaultModel)
+	}
+	for _, role := range roles {
+		if role.Model != "" && catalog.collabVersion(role.Model) == "v2" {
+			return fmt.Sprintf("child model %q (subagents.%s) selects collaboration \"v2\", so under a V2 parent that child would keep codex's spawn tool", role.Model, role.Name)
+		}
+	}
+	return ""
 }
