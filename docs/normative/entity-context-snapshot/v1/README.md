@@ -12,6 +12,11 @@ agent runtimes.
 > bundle retains its observation/mutation-derived `triage` or `write` threshold;
 > snapshot producers need a v2 contract before applying the configurable
 > threshold or its expanded role values.
+> [Entity-context-snapshot v2](../v2/README.md)
+> ([ADR 0170](../../../ADRs/0170-align-entity-context-snapshot-with-normalized-entity.md))
+> is that contract. It also covers Jira issues and GitHub Discussions and
+> aligns field names with [Normalized entity v1](../../normalized-entity/v1/README.md).
+> New producers implement v2.
 
 Here, *entity-context-snapshot* means the staged data snapshot for a handled
 Git-forge entity. The qualified name distinguishes this data structure from

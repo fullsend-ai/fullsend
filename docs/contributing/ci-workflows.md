@@ -290,8 +290,10 @@ updates keep the Semgrep version and `uv.lock` together; weekly lock
 maintenance refreshes transitive dependencies, and Semgrep updates stay out of
 automerge.
 
-The pre-commit hook scans changed files of all types, except paths matched by
-its `exclude:` expression in `.pre-commit-config.yaml`. Semgrep's full-directory
+The pre-commit hook scans only changed Go files (`types: [go]`), except paths
+matched by its `exclude:` expression in `.pre-commit-config.yaml`. When a commit
+contains no Go files, pre-commit skips the hook without preparing the ruleset or
+Semgrep environment. Semgrep's full-directory
 scan in CI honors `.semgrepignore`, which excludes Go, Python, JavaScript, and
 TypeScript test and spec files plus synthetic fixtures. Explicit file arguments
 bypass it, so keep the hook expression aligned with that file. CI scans in a
