@@ -904,7 +904,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	// resolved here (including dry runs), from the edited manifest, since a
 	// new entry copied from a glob takes that glob's settings, so a refused
 	// flag or a missing identity fails before repos.yaml or any key is
-	// written. Trailers are resolved once per forge before convergence.
+	// written. Trailers are resolved once per forge before convergence, and
+	// a repository convergence leaves out gets no commit, so it needs no
+	// identity.
 	if opts.fullsendBinary != "" || opts.fullsendSource != "" {
 		vendored, vendorErr := manifest.VendorSelected(opts.repoFilter)
 		if vendorErr != nil {
@@ -919,7 +921,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 	}
 	signOffTrailers, err := resolveRepoSignOffTrailers(ctx, clients, printer, manifest,
-		opts.repoFilter, opts.dryRun)
+		opts.repoFilter, append(containFailedKeys(containFailedRepos), skipped...), opts.dryRun)
 	if err != nil {
 		return err
 	}
@@ -1882,8 +1884,8 @@ func checkAllForgeScopes(ctx context.Context, clients repos.ForgeClientFactory, 
 // identity is an error. In a dry run the trailer that would be added is
 // reported for each forge.
 func resolveRepoSignOffTrailers(ctx context.Context, clients repos.ForgeClientFactory, printer *ui.Printer,
-	manifest *repos.Manifest, filter []string, dryRun bool) (map[string]string, error) {
-	forges, err := manifest.SignoffForgesFor(filter)
+	manifest *repos.Manifest, filter, skip []string, dryRun bool) (map[string]string, error) {
+	forges, err := manifest.SignoffForgesFor(filter, skip)
 	if err != nil {
 		return nil, fmt.Errorf("determining signoff settings: %w", err)
 	}

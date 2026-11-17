@@ -816,6 +816,11 @@ func TestRunReposInstall_TraceKeyRefusalSkipsOnlyThatRepo(t *testing.T) {
 			}, sentinel: repos.ErrTraceKeyIDInvalid},
 		{name: "mint URL conflict", manifest: githubUnmanagedManifestYAML + "      config:\n        mint_url: https://other-mint.example.com\n" + web,
 			setup: malformed, sentinel: repos.ErrTraceKeyIDInvalid},
+		// The fake token has no user identity. acme/api gets no scaffold
+		// commit, so its sign-off needs none and acme/web still installs.
+		{name: "sign-off on the refused repository, token without a user identity",
+			manifest: strings.Replace(githubUnmanagedManifestYAML, "    - name: acme/api\n", "    - name: acme/api\n      signoff: true\n", 1) + web,
+			setup:    malformed, sentinel: repos.ErrTraceKeyIDInvalid},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

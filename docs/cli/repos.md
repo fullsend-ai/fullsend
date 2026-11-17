@@ -267,7 +267,8 @@ so a run they stop leaves `repos.yaml` unchanged:
 - the sign-off identity, and the check that a selected repository resolves
   `vendor: true` when `--fullsend-binary` or `--fullsend-source` is given:
   install resolves both from the edited manifest, because a new entry copied
-  from a glob takes that glob's settings.
+  from a glob takes that glob's settings. A repository install skips needs no
+  sign-off identity.
 
 Install also stops before that write when the file changed after the run
 loaded it, as when another install that uses the same file runs at the same
@@ -374,7 +375,7 @@ gitlab:
 
 A repo entry (or the glob entry that matches the repo) takes precedence over its forge section (`github` or `gitlab`), which takes precedence over `defaults`. Signoff is off when no level sets it. There is no command-line override: the former `--signoff` flag was removed, so set the level you want with, for example, `fullsend repos set defaults.signoff true`.
 
-When signoff is enabled for any selected repo, the identity is resolved once per forge before anything is committed. A missing identity, such as a GitHub App installation token that cannot read `/user`, or an identity without a name or email fails the install before any scaffold commit is made. `--dry-run` runs the same identity check and reports the trailer that would be added. When signoff is disabled, no trailer is added and no identity lookup is made. Uninstall commits (file deletions) do not add a trailer.
+When signoff is enabled for any selected repo, the identity is resolved once per forge before anything is committed. A repo that install skips, such as one that needs adoption or whose trace signing keys it refuses, gets no commit, so its signoff setting needs no identity, unless a glob entry with signoff may also select other repos. A missing identity, such as a GitHub App installation token that cannot read `/user`, or an identity without a name or email fails the install before any scaffold commit is made. `--dry-run` runs the same identity check and reports the trailer that would be added. When signoff is disabled, no trailer is added and no identity lookup is made. Uninstall commits (file deletions) do not add a trailer.
 
 ### Signed commits
 
