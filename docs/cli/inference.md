@@ -10,7 +10,7 @@ Manage the inference credentials agent runs use. `provision`, `deprovision` and 
 
 | Command | Description | Who runs it / permission |
 |---------|-------------|--------------------------|
-| `fullsend inference provision <org\|owner/repo\|group/project>` | Create WIF pool/provider and grant Agent Platform access (GitLab projects with `--forge gitlab`) | GCP project admin, with `roles/iam.workloadIdentityPoolAdmin` and `roles/resourcemanager.projectIamAdmin` |
+| `fullsend inference provision <org\|owner/repo\|group/project>` | Create WIF pool/provider and grant Agent Platform access (GitLab projects with `--forge gitlab`) | GCP project admin, with `roles/iam.workloadIdentityPoolAdmin` and `roles/resourcemanager.projectIamAdmin` (plus `roles/serviceusage.serviceUsageAdmin` to enable missing APIs automatically) |
 | `fullsend inference deprovision <org\|owner/repo>` | Remove org or repo from WIF | GCP project admin, with `roles/iam.workloadIdentityPoolAdmin` |
 | `fullsend inference status <org\|owner/repo>` | Check WIF health and print config values | Read access on the GCP project: `roles/iam.workloadIdentityPoolViewer` and `roles/browser` |
 | `fullsend inference openai request <owner/repo>[,…]` | Generate WIF provider/mapping request for OpenAI admin | Anyone; needs no credentials |
@@ -70,8 +70,19 @@ Find the numeric project ID on the project's **Settings → General** page. The 
 |------|-------------|
 | `roles/iam.workloadIdentityPoolAdmin` | Create WIF pool and provider |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to WIF principals |
+| `roles/serviceusage.serviceUsageAdmin` | Optional. Lets the command enable missing GCP APIs automatically |
 
 ### Required GCP APIs
+
+The command needs these APIs on the target project:
+
+- `iam.googleapis.com`
+- `cloudresourcemanager.googleapis.com`
+- `aiplatform.googleapis.com`
+
+Before provisioning, the command checks these APIs and enables any that are disabled. Newly enabled APIs can take a few minutes to become usable, so the command retries provisioning with bounded backoff while they propagate. `--dry-run` lists the APIs without checking or enabling them.
+
+If the command cannot check or enable the APIs, for example because the caller lacks Service Usage permissions, it prints the `gcloud` command to run and continues. If provisioning then fails because an API is disabled, enable the APIs manually and re-run:
 
 ```bash
 gcloud services enable \

@@ -280,7 +280,9 @@ Enrollment (org- or repo-scoped) does not grant IAM bindings — Vertex AI acces
 Required GCP APIs also differ by command group:
 
 ```bash
-# Inference commands (inference provision/deprovision/status):
+# Inference commands (inference provision/deprovision/status).
+# inference provision enables any that are missing when the caller
+# holds roles/serviceusage.serviceUsageAdmin.
 gcloud services enable \
   iam.googleapis.com \
   cloudresourcemanager.googleapis.com \

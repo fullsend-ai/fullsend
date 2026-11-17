@@ -84,6 +84,9 @@ gcloud services enable \
   --project="$GCP_PROJECT"
 ```
 
+If you hold `roles/serviceusage.serviceUsageAdmin`, you can skip this step:
+`fullsend inference provision` enables any of these APIs that are missing.
+
 **Note**: enable Anthropic's models Opus and Sonnet as well.
 
 Then give yourself the roles `roles/iam.workloadIdentityPoolAdmin`

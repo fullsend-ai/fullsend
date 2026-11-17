@@ -2,9 +2,11 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -959,7 +961,7 @@ func TestRunInferenceProvisionGitLab(t *testing.T) {
 	t.Run("success prints handoff", func(t *testing.T) {
 		client := gcf.NewFakeGCFClient()
 		cmd, buf := newStatusCmd(client)
-		err := runInferenceProvisionGitLab(cmd, ui.New(buf), gl, "my-project", "fullsend-inference", client)
+		err := runInferenceProvisionGitLab(cmd, ui.New(buf), gl, "my-project", "fullsend-inference", client, newFakeServiceUsage())
 		require.NoError(t, err)
 		out := buf.String()
 		assert.Contains(t, out, "providers/gl-acme-team-app")
@@ -972,8 +974,234 @@ func TestRunInferenceProvisionGitLab(t *testing.T) {
 			"SetProjectIAMBinding": errors.New("denied"),
 		}))
 		cmd, buf := newStatusCmd(client)
-		err := runInferenceProvisionGitLab(cmd, ui.New(buf), gl, "my-project", "fullsend-inference", client)
+		err := runInferenceProvisionGitLab(cmd, ui.New(buf), gl, "my-project", "fullsend-inference", client, newFakeServiceUsage())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "provisioning WIF for inference")
 	})
+
+	t.Run("enables missing APIs and retries", func(t *testing.T) {
+		noSleep(t)
+		su := newFakeServiceUsage("iam.googleapis.com")
+		client := &flakyProjectNumberClient{GCFClient: gcf.NewFakeGCFClient(), failures: 1}
+		cmd, buf := newProvisionCmd()
+		err := runInferenceProvisionGitLab(cmd, ui.New(buf), gl, "my-project", "fullsend-inference", client, su)
+		require.NoError(t, err)
+		assert.Equal(t, [][]string{{"iam.googleapis.com"}}, su.enableCalls)
+		assert.Contains(t, buf.String(), "providers/gl-acme-team-app")
+	})
+}
+
+// --- inference provision API enablement ---
+
+// fakeServiceUsage is an in-memory gcf.ServiceUsageClient.
+type fakeServiceUsage struct {
+	disabled    map[string]bool
+	checkErr    error
+	enableErr   error
+	enableCalls [][]string
+}
+
+func newFakeServiceUsage(disabled ...string) *fakeServiceUsage {
+	f := &fakeServiceUsage{disabled: map[string]bool{}}
+	for _, s := range disabled {
+		f.disabled[s] = true
+	}
+	return f
+}
+
+func (f *fakeServiceUsage) ServiceEnabled(_ context.Context, _, service string) (bool, error) {
+	if f.checkErr != nil {
+		return false, f.checkErr
+	}
+	return !f.disabled[service], nil
+}
+
+func (f *fakeServiceUsage) EnableServices(_ context.Context, _ string, services []string) error {
+	f.enableCalls = append(f.enableCalls, services)
+	if f.enableErr != nil {
+		return f.enableErr
+	}
+	for _, s := range services {
+		delete(f.disabled, s)
+	}
+	return nil
+}
+
+// flakyProjectNumberClient fails GetProjectNumber with a SERVICE_DISABLED
+// error for the first failures calls (negative: always), simulating API
+// activation lag.
+type flakyProjectNumberClient struct {
+	gcf.GCFClient
+	failures int
+	calls    int
+}
+
+func (c *flakyProjectNumberClient) GetProjectNumber(ctx context.Context, projectID string) (string, error) {
+	c.calls++
+	if c.failures < 0 || c.calls <= c.failures {
+		return "", errors.New("unexpected status 403 looking up project: Cloud Resource Manager API has not been used in project 123 before or it is disabled. Enable it by visiting the console then retry.")
+	}
+	return c.GCFClient.GetProjectNumber(ctx, projectID)
+}
+
+// noSleep replaces inferenceSleep with a recorder for the test's duration.
+func noSleep(t *testing.T) *[]time.Duration {
+	t.Helper()
+	var slept []time.Duration
+	orig := inferenceSleep
+	inferenceSleep = func(ctx context.Context, d time.Duration) error {
+		slept = append(slept, d)
+		return ctx.Err()
+	}
+	t.Cleanup(func() { inferenceSleep = orig })
+	return &slept
+}
+
+func newProvisionCmd() (*cobra.Command, *bytes.Buffer) {
+	cmd, buf := newStatusCmd(nil)
+	cmd.SetContext(context.Background())
+	return cmd, buf
+}
+
+func TestRunInferenceProvision_APIsAlreadyEnabled(t *testing.T) {
+	slept := noSleep(t)
+	su := newFakeServiceUsage()
+	client := gcf.NewFakeGCFClient()
+	cmd, buf := newProvisionCmd()
+
+	err := runInferenceProvision(cmd, ui.New(buf), "acme", "acme/widget", "my-project", "fullsend-inference", "github-oidc", client, su)
+	require.NoError(t, err)
+	assert.Empty(t, su.enableCalls)
+	assert.Empty(t, *slept)
+	assert.Contains(t, buf.String(), "Required GCP APIs already enabled")
+	assert.Contains(t, buf.String(), "fullsend github setup acme/widget")
+}
+
+func TestRunInferenceProvision_EnablesAPIsAndRetries(t *testing.T) {
+	slept := noSleep(t)
+	su := newFakeServiceUsage("iam.googleapis.com", "aiplatform.googleapis.com")
+	client := &flakyProjectNumberClient{GCFClient: gcf.NewFakeGCFClient(), failures: 2}
+	cmd, buf := newProvisionCmd()
+
+	err := runInferenceProvision(cmd, ui.New(buf), "acme", "", "my-project", "fullsend-inference", "github-oidc", client, su)
+	require.NoError(t, err)
+	assert.Equal(t, [][]string{{"iam.googleapis.com", "aiplatform.googleapis.com"}}, su.enableCalls)
+	assert.Equal(t, inferenceAPIRetryDelays[:2], *slept)
+	assert.Equal(t, 3, client.calls)
+	out := buf.String()
+	assert.Contains(t, out, "Enabled GCP APIs: iam.googleapis.com, aiplatform.googleapis.com")
+	assert.Contains(t, out, "retrying in")
+	assert.Contains(t, out, "fullsend github setup acme")
+}
+
+func TestRunInferenceProvision_RetriesAreBounded(t *testing.T) {
+	slept := noSleep(t)
+	su := newFakeServiceUsage("iam.googleapis.com")
+	client := &flakyProjectNumberClient{GCFClient: gcf.NewFakeGCFClient(), failures: -1}
+	cmd, buf := newProvisionCmd()
+
+	err := runInferenceProvision(cmd, ui.New(buf), "acme", "", "my-project", "fullsend-inference", "github-oidc", client, su)
+	require.Error(t, err)
+	assert.Equal(t, inferenceAPIRetryDelays, *slept)
+	assert.Equal(t, len(inferenceAPIRetryDelays)+1, client.calls)
+	assert.Contains(t, err.Error(), "provisioning WIF for inference")
+	assert.Contains(t, err.Error(), "gcloud services enable iam.googleapis.com cloudresourcemanager.googleapis.com aiplatform.googleapis.com --project=my-project")
+}
+
+func TestRunInferenceProvision_EnableFailsFallsBackToManualInstructions(t *testing.T) {
+	slept := noSleep(t)
+	su := newFakeServiceUsage("aiplatform.googleapis.com")
+	su.enableErr = errors.New("permission denied")
+	client := &flakyProjectNumberClient{GCFClient: gcf.NewFakeGCFClient(), failures: -1}
+	cmd, buf := newProvisionCmd()
+
+	err := runInferenceProvision(cmd, ui.New(buf), "acme", "", "my-project", "fullsend-inference", "github-oidc", client, su)
+	require.Error(t, err)
+	assert.Empty(t, *slept, "no retries when APIs were not enabled by this run")
+	assert.Equal(t, 1, client.calls)
+	out := buf.String()
+	assert.Contains(t, out, "Could not enable GCP APIs: permission denied")
+	assert.Contains(t, out, "gcloud services enable aiplatform.googleapis.com --project=my-project")
+	assert.Contains(t, err.Error(), "required GCP APIs are not enabled")
+}
+
+func TestRunInferenceProvision_CheckFailsStillProvisions(t *testing.T) {
+	noSleep(t)
+	su := newFakeServiceUsage()
+	su.checkErr = errors.New("serviceusage.services.get denied")
+	client := gcf.NewFakeGCFClient()
+	cmd, buf := newProvisionCmd()
+
+	err := runInferenceProvision(cmd, ui.New(buf), "acme", "", "my-project", "fullsend-inference", "github-oidc", client, su)
+	require.NoError(t, err)
+	assert.Empty(t, su.enableCalls)
+	out := buf.String()
+	assert.Contains(t, out, "Could not check GCP API status")
+	assert.Contains(t, out, "gcloud services enable iam.googleapis.com cloudresourcemanager.googleapis.com aiplatform.googleapis.com --project=my-project")
+	assert.Contains(t, out, "WIF infrastructure ready")
+}
+
+func TestRunInferenceProvision_NonAPIErrorNotRetried(t *testing.T) {
+	slept := noSleep(t)
+	su := newFakeServiceUsage("iam.googleapis.com")
+	client := gcf.NewFakeGCFClient(gcf.WithFakeErrors(map[string]error{
+		"SetProjectIAMBinding": errors.New("denied"),
+	}))
+	cmd, buf := newProvisionCmd()
+
+	err := runInferenceProvision(cmd, ui.New(buf), "acme", "", "my-project", "fullsend-inference", "github-oidc", client, su)
+	require.Error(t, err)
+	assert.Empty(t, *slept)
+	assert.NotContains(t, err.Error(), "gcloud services enable")
+}
+
+func TestProvisionWithAPIRetry_StopsOnContextCancel(t *testing.T) {
+	orig := inferenceSleep
+	t.Cleanup(func() { inferenceSleep = orig })
+	inferenceSleep = func(context.Context, time.Duration) error { return context.Canceled }
+
+	calls := 0
+	apiErr := errors.New("SERVICE_DISABLED")
+	_, err := provisionWithAPIRetry(context.Background(), ui.New(&bytes.Buffer{}), "my-project", true, func() (string, error) {
+		calls++
+		return "", apiErr
+	})
+	require.ErrorIs(t, err, apiErr)
+	assert.Equal(t, 1, calls)
+}
+
+func TestInferenceSleep(t *testing.T) {
+	require.NoError(t, inferenceSleep(context.Background(), time.Millisecond))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	require.ErrorIs(t, inferenceSleep(ctx, time.Hour), context.Canceled)
+}
+
+func TestInferenceClients(t *testing.T) {
+	client := gcf.NewFakeGCFClient()
+	su := newFakeServiceUsage()
+	gotClient, gotSU := inferenceClients("my-project", client, su)
+	assert.Same(t, client, gotClient)
+	assert.Same(t, su, gotSU)
+
+	gotClient, gotSU = inferenceClients("my-project", nil, nil)
+	_, ok := gotClient.(*gcf.LiveGCFClient)
+	assert.True(t, ok)
+	_, ok = gotSU.(*gcf.LiveGCFClient)
+	assert.True(t, ok)
+}
+
+func TestInferenceProvisionCmd_DryRunListsAPIs(t *testing.T) {
+	for _, args := range [][]string{
+		{"acme"},
+		{"acme/team/app", "--forge", "gitlab", "--gitlab-project-id", "12345"},
+	} {
+		var buf bytes.Buffer
+		cmd := newRootCmd()
+		cmd.SetOut(&buf)
+		cmd.SetArgs(append(append([]string{"inference", "provision"}, args...), "--project", "my-project", "--dry-run"))
+		require.NoError(t, cmd.Execute())
+		assert.Contains(t, buf.String(), "GCP APIs (enabled if missing): iam.googleapis.com, cloudresourcemanager.googleapis.com, aiplatform.googleapis.com")
+	}
 }
