@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -344,8 +345,9 @@ var inferenceAPIRetryDelays = []time.Duration{
 	90 * time.Second,
 }
 
-// inferenceSleep waits for d or until ctx is done. Tests override it.
-var inferenceSleep = func(ctx context.Context, d time.Duration) error {
+// inferenceSleepFn waits for d or until ctx is done. Override in tests to
+// record delays and return immediately instead of sleeping.
+var inferenceSleepFn = func(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
 	select {
@@ -435,8 +437,8 @@ func provisionWithAPIRetry(ctx context.Context, printer *ui.Printer, project str
 		delay := inferenceAPIRetryDelays[attempt]
 		printer.StepWarn(fmt.Sprintf("GCP APIs not active yet, retrying in %s (attempt %d of %d)",
 			delay, attempt+2, len(inferenceAPIRetryDelays)+1))
-		if sleepErr := inferenceSleep(ctx, delay); sleepErr != nil {
-			return "", err
+		if sleepErr := inferenceSleepFn(ctx, delay); sleepErr != nil {
+			return "", errors.Join(sleepErr, err)
 		}
 	}
 }

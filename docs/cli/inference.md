@@ -60,6 +60,7 @@ Find the numeric project ID on the project's **Settings → General** page. The 
 |------|---------|-------------|
 | `--project` | | GCP project ID |
 | `--region` | `global` | GCP region |
+| `--dry-run` | `false` | Preview changes without making them |
 | `--forge` | `github` | Forge whose CI identities the provider trusts: `github` or `gitlab` |
 | `--gitlab-project-id` | | Numeric GitLab project ID. Required with `--forge gitlab` |
 | `--gitlab-url` | `https://gitlab.com` | GitLab instance URL used as the OIDC issuer. Must match the instance that signs the project's `id_tokens` (`--forge gitlab` only) |

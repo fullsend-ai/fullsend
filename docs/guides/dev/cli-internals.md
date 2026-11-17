@@ -313,7 +313,7 @@ The `mint`, `inference`, and `github` subcommands decompose setup into role-spec
 |---------------|--------------------|-----------------|
 | Phases 1-3: Mint deployment | `fullsend mint deploy` | GCP project (mint): `roles/iam.serviceAccountAdmin`, `roles/iam.workloadIdentityPoolAdmin`, `roles/cloudfunctions.developer`, `roles/run.admin`; with `--pem-dir` also `roles/secretmanager.admin`, `roles/resourcemanager.projectIamAdmin`; with `--otlp-headers-file` also `roles/secretmanager.admin` |
 | Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin` |
-| Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin` |
+| Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin`; optionally `roles/serviceusage.serviceUsageAdmin` to enable missing APIs |
 | Phases 5-7: GitHub setup + enrollment | `fullsend github setup` | GitHub only |
 
 The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Advanced setup](../infrastructure/advanced-setup.md).

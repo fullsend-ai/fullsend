@@ -11,7 +11,8 @@ sidebar_position: 2
 >
 > - **GCP project admin**, with IAM admin on the GCP project: enables the APIs and runs
 >   `fullsend inference provision`, which needs `roles/iam.workloadIdentityPoolAdmin` and
->   `roles/resourcemanager.projectIamAdmin`. They hand over the **GCP project ID** and the
+>   `roles/resourcemanager.projectIamAdmin` (plus the optional
+>   `roles/serviceusage.serviceUsageAdmin`, so the command can enable missing APIs). They hand over the **GCP project ID** and the
 >   **WIF provider**.
 > - **Repo admin**: passes those two values to `fullsend github setup`
 >   ([Configuring GitHub](configuring-github.md)).
@@ -90,7 +91,8 @@ If you hold `roles/serviceusage.serviceUsageAdmin`, you can skip this step:
 **Note**: enable Anthropic's models Opus and Sonnet as well.
 
 Then give yourself the roles `roles/iam.workloadIdentityPoolAdmin`
-and `roles/resourcemanager.projectIamAdmin`.
+and `roles/resourcemanager.projectIamAdmin`. Optionally also grant
+`roles/serviceusage.serviceUsageAdmin` so `fullsend inference provision` can enable missing APIs.
 
 ## Configure inference in your GCP project
 

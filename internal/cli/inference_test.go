@@ -1044,16 +1044,16 @@ func (c *flakyProjectNumberClient) GetProjectNumber(ctx context.Context, project
 	return c.GCFClient.GetProjectNumber(ctx, projectID)
 }
 
-// noSleep replaces inferenceSleep with a recorder for the test's duration.
+// noSleep replaces inferenceSleepFn with a recorder for the test's duration.
 func noSleep(t *testing.T) *[]time.Duration {
 	t.Helper()
 	var slept []time.Duration
-	orig := inferenceSleep
-	inferenceSleep = func(ctx context.Context, d time.Duration) error {
+	orig := inferenceSleepFn
+	inferenceSleepFn = func(ctx context.Context, d time.Duration) error {
 		slept = append(slept, d)
 		return ctx.Err()
 	}
-	t.Cleanup(func() { inferenceSleep = orig })
+	t.Cleanup(func() { inferenceSleepFn = orig })
 	return &slept
 }
 
@@ -1156,9 +1156,9 @@ func TestRunInferenceProvision_NonAPIErrorNotRetried(t *testing.T) {
 }
 
 func TestProvisionWithAPIRetry_StopsOnContextCancel(t *testing.T) {
-	orig := inferenceSleep
-	t.Cleanup(func() { inferenceSleep = orig })
-	inferenceSleep = func(context.Context, time.Duration) error { return context.Canceled }
+	orig := inferenceSleepFn
+	t.Cleanup(func() { inferenceSleepFn = orig })
+	inferenceSleepFn = func(context.Context, time.Duration) error { return context.Canceled }
 
 	calls := 0
 	apiErr := errors.New("SERVICE_DISABLED")
@@ -1166,16 +1166,17 @@ func TestProvisionWithAPIRetry_StopsOnContextCancel(t *testing.T) {
 		calls++
 		return "", apiErr
 	})
+	require.ErrorIs(t, err, context.Canceled)
 	require.ErrorIs(t, err, apiErr)
 	assert.Equal(t, 1, calls)
 }
 
 func TestInferenceSleep(t *testing.T) {
-	require.NoError(t, inferenceSleep(context.Background(), time.Millisecond))
+	require.NoError(t, inferenceSleepFn(context.Background(), time.Millisecond))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	require.ErrorIs(t, inferenceSleep(ctx, time.Hour), context.Canceled)
+	require.ErrorIs(t, inferenceSleepFn(ctx, time.Hour), context.Canceled)
 }
 
 func TestInferenceClients(t *testing.T) {
