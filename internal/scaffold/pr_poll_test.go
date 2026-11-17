@@ -25,7 +25,11 @@ type prPollWorkflow struct {
 		CancelInProgress *bool  `yaml:"cancel-in-progress"`
 	} `yaml:"concurrency"`
 	Jobs map[string]struct {
-		Name     string `yaml:"name"`
+		Name        string `yaml:"name"`
+		Concurrency struct {
+			Group            string `yaml:"group"`
+			CancelInProgress *bool  `yaml:"cancel-in-progress"`
+		} `yaml:"concurrency"`
 		Strategy struct {
 			FailFast *bool  `yaml:"fail-fast"`
 			Matrix   string `yaml:"matrix"`
@@ -62,12 +66,13 @@ func TestRenderPRPollCaller(t *testing.T) {
 		assert.Contains(t, wf.On, "workflow_dispatch")
 		assert.Len(t, wf.On, 2, "the caller runs only on its schedule and manual dispatch")
 		assert.Empty(t, wf.Permissions, "the workflow grants nothing by default")
-		assert.Equal(t, "fullsend-poll-prs", wf.Concurrency.Group, "the concurrency group is workflow-level")
-		require.NotNil(t, wf.Concurrency.CancelInProgress)
-		assert.False(t, *wf.Concurrency.CancelInProgress, "overlapping cycles queue")
+		assert.Empty(t, wf.Concurrency.Group, "reviews a cycle starts must not hold back the next cycle")
 
 		require.Contains(t, wf.Jobs, "poll")
 		poll := wf.Jobs["poll"]
+		assert.Equal(t, "fullsend-poll-prs", poll.Concurrency.Group, "only the poll job is serialized")
+		require.NotNil(t, poll.Concurrency.CancelInProgress)
+		assert.False(t, *poll.Concurrency.CancelInProgress, "overlapping poll jobs queue")
 		assert.Equal(t, map[string]string{
 			"contents":      "read",
 			"pull-requests": "read",

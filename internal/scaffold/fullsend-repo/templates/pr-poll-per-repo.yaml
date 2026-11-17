@@ -21,8 +21,10 @@
 # Security: the poll job is read-only and receives no secrets; it reads pull
 # requests with GITHUB_TOKEN only.
 #
-# Concurrency: overlapping poll cycles queue rather than cancel each other,
-# so one cycle's starts are visible to the next.
+# Concurrency: only the poll job is serialized. Overlapping poll jobs queue
+# rather than cancel each other, so one cycle's starts are visible to the
+# next. The reviews a cycle starts are not in the group: a long review must
+# not hold back the next cycle, which sees it running and skips its head.
 name: fullsend fork PR review poll
 
 on:
@@ -30,14 +32,13 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
-concurrency:
-  group: fullsend-poll-prs
-  cancel-in-progress: false
-
 permissions: {}
 
 jobs:
   poll:
+    concurrency:
+      group: fullsend-poll-prs
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: read
