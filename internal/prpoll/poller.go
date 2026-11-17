@@ -93,7 +93,23 @@ var (
 	reviewSkipHeadRe = regexp.MustCompile(`<!-- fullsend:review-skip-head:([0-9a-fA-F]{7,64}) -->`)
 	// statusCommitRe extracts the short commit SHA of a status comment.
 	statusCommitRe = regexp.MustCompile("Commit: `([0-9a-f]{7,64})`")
+	// statusSuccessRe matches the GitHub body of a status comment whose
+	// run finished with success, as statuscomment's buildCompletionBody
+	// renders it: the run marker and the terminal marker on lines of their
+	// own at the start, the "Finished <description> · ✅ Success · Started"
+	// line (a success has no detail, and the description is the runner's
+	// agent name, which holds no "·"), then the Commit line. Group 1 is the
+	// short commit SHA. A failure renders "❌ Failure (<detail>)" right
+	// after the description, so its detail cannot reach this position.
+	statusSuccessRe = regexp.MustCompile("\\A<!-- fullsend:agent-status:[0-9]+ -->\n" +
+		regexp.QuoteMeta(statusTerminalMarker) + "\n" +
+		"🤖 Finished [^·\n]+ · ✅ Success · Started [^\n]*\n\n" +
+		"Commit: `([0-9a-f]{7,64})`")
 )
+
+// statusTerminalMarker is the marker statuscomment writes on a status
+// comment once its run has finished.
+const statusTerminalMarker = "<!-- fullsend:status:terminal -->"
 
 // failedRunLookback bounds the completed (failed or cancelled) poll
 // workflow runs whose jobs loadJobs lists: only runs created in the last
@@ -141,8 +157,9 @@ type Options struct {
 	MaxAttempts int
 	// ReviewBotLogins are the logins of fullsend's review App.
 	ReviewBotLogins []string
-	// ReviewAppClientID is the client ID of fullsend's review App. Empty
-	// disables the comment-based checks, which cannot be verified then.
+	// ReviewAppClientID is the client ID of fullsend's review App. It is
+	// required: without it the poll cannot tell the App's comments from
+	// anyone else's, so Run fails rather than risk duplicate reviews.
 	ReviewAppClientID string
 	// Authorize is the shared dispatch core's authorization gate (ADR
 	// 0054, authorization contract v1): it reports whether the event's
@@ -194,16 +211,20 @@ type decision struct {
 	detail string
 }
 
+// ErrNoReviewAppClientID reports that Options.ReviewAppClientID is empty.
+var ErrNoReviewAppClientID = errors.New("the review App client ID (FULLSEND_REVIEW_CLIENT_ID) is not set; the poll cannot verify which comments the review App wrote, so it starts no review")
+
 // Run executes one poll cycle and returns the dispatches to start, oldest
-// updated_at first.
+// updated_at first. It fails, with no dispatches, when the review App
+// client ID is not set.
 func (p *Poller) Run(ctx context.Context) ([]harnessdispatch.ExecutionRef, error) {
+	if p.opts.ReviewAppClientID == "" {
+		return nil, ErrNoReviewAppClientID
+	}
 	start := p.opts.Now()
 	var callsBefore int64
 	if p.opts.APICalls != nil {
 		callsBefore = p.opts.APICalls()
-	}
-	if p.opts.ReviewAppClientID == "" {
-		fmt.Fprintf(p.opts.Log, "warning: the review App client ID is not set; comment-based finished and running checks are disabled\n")
 	}
 
 	prs, err := p.client.ListRepoPullRequests(ctx, p.opts.Owner, p.opts.Repo)
@@ -377,10 +398,13 @@ func (p *Poller) isReviewAppComment(c forge.IssueComment) bool {
 
 // finished reports whether the review App already reviewed the PR's head
 // commit: a submitted formal review against it, an App-authored sticky
-// comment whose current section names it, or an App-authored review-skip
-// note for it (the route found the diff unchanged since the last review).
-// A running review status comment for the head commit is reported through
-// jobState.
+// comment whose current section names it, an App-authored review-skip
+// note for it (the route found the diff unchanged since the last review),
+// or an App-authored status comment whose run finished with success for
+// it. The status comment covers a review that succeeded without leaving a
+// head-keyed review record (a failure notice, for one), whose run loadJobs
+// no longer lists once it completed successfully. A running review status
+// comment for the head commit is reported through jobState.
 func (p *Poller) finished(ctx context.Context, pr forge.ChangeProposal) (bool, error) {
 	reviews, err := p.client.ListPullRequestReviews(ctx, p.opts.Owner, p.opts.Repo, pr.Number)
 	if err != nil {
@@ -390,9 +414,6 @@ func (p *Poller) finished(ctx context.Context, pr forge.ChangeProposal) (bool, e
 		if p.isReviewBot(r.User) && r.SubmittedAt != "" && r.CommitID == pr.HeadSHA {
 			return true, nil
 		}
-	}
-	if p.opts.ReviewAppClientID == "" {
-		return false, nil
 	}
 	comments, err := p.client.ListIssueComments(ctx, p.opts.Owner, p.opts.Repo, pr.Number)
 	if err != nil {
@@ -416,6 +437,14 @@ func (p *Poller) finished(ctx context.Context, pr forge.ChangeProposal) (bool, e
 			if shaMatches(pr.HeadSHA, m[1]) {
 				return true, nil
 			}
+		}
+	}
+	for _, c := range comments {
+		if !p.isReviewAppComment(c) {
+			continue
+		}
+		if m := statusSuccessRe.FindStringSubmatch(c.Body); m != nil && shaMatches(pr.HeadSHA, m[1]) {
+			return true, nil
 		}
 	}
 	return false, nil
@@ -477,7 +506,9 @@ func isFailedConclusion(conclusion string) bool {
 
 // statusCommentRunning reports whether an App-authored status comment for
 // the PR's head commit belongs to a run that is still in progress. It uses
-// the comments finished already listed.
+// the comments finished already listed. A run the forge reports as not
+// found (deleted, or older than the run retention) is not running; any
+// other lookup error fails closed.
 func (p *Poller) statusCommentRunning(ctx context.Context, pr forge.ChangeProposal) (bool, error) {
 	for _, c := range p.comments {
 		if !p.isReviewAppComment(c) {
@@ -496,6 +527,9 @@ func (p *Poller) statusCommentRunning(ctx context.Context, pr forge.ChangePropos
 			continue
 		}
 		run, err := p.client.GetWorkflowRun(ctx, p.opts.Owner, p.opts.Repo, runID)
+		if errors.Is(err, forge.ErrNotFound) {
+			continue
+		}
 		if err != nil {
 			return false, fmt.Errorf("get status comment run %d: %w", runID, err)
 		}

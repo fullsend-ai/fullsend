@@ -92,15 +92,30 @@ func TestRunGitHubPRPoll_ArgumentErrors(t *testing.T) {
 		"dotdot target repo": {flags: prPollFlags{targetRepo: "a/..b"}, want: "must be an owner/repo slug"},
 		"missing since":      {config: enabledPRPollConfig, want: "--since is required"},
 		"invalid since":      {config: enabledPRPollConfig, flags: prPollFlags{since: "yesterday"}, want: "must be an RFC 3339 timestamp"},
-		"missing token":      {config: enabledPRPollConfig, flags: prPollFlags{since: "2026-11-17T18:00:00Z"}, want: "no GitHub token found"},
-		"invalid config":     {config: "fork_pr_review_poll:\n  enabled: [\n", want: "load config"},
+		"missing token": {
+			config: enabledPRPollConfig, flags: prPollFlags{since: "2026-11-17T18:00:00Z"},
+			env:  map[string]string{forge.VarReviewClientID: "Iv1.review"},
+			want: "no GitHub token found",
+		},
+		// Without the review App client ID the poll fails before it reads
+		// GitHub, and writes no dispatch file.
+		"missing review client ID": {
+			config: enabledPRPollConfig, flags: prPollFlags{since: "2026-11-17T18:00:00Z"},
+			env:  map[string]string{"GITHUB_TOKEN": "tok"},
+			want: "FULLSEND_REVIEW_CLIENT_ID",
+		},
+		"invalid config": {config: "fork_pr_review_poll:\n  enabled: [\n", want: "load config"},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
 			prPollTestEnv(t)
-			_, _, err := runPRPoll(t, tt.config, tt.flags)
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			out, _, err := runPRPoll(t, tt.config, tt.flags)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.want)
+			assert.Empty(t, out, "no dispatch file is written")
 		})
 	}
 

@@ -1264,7 +1264,10 @@ all of these conditions:
 
 The poll identifies the review App by its client ID, which it reads from the
 `FULLSEND_REVIEW_CLIENT_ID` repository variable that `fullsend repos install`
-sets.
+sets. If the variable is empty, the poll job fails and starts no review:
+without the client ID the poll cannot tell which reviews are finished or
+running, and it would start the same review again every cycle. Set the
+variable to the review App's client ID to fix it.
 
 ## Installation model
 

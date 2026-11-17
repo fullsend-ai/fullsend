@@ -1,7 +1,6 @@
 package scaffold
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -194,13 +193,10 @@ func TestPRPollCallerDispatchAlignment(t *testing.T) {
 }
 
 // TestPRPollCallerPollAlignment checks the poll job against the workflow_call
-// contract of reusable-poll-prs.yml once that workflow is in the tree.
+// contract of reusable-poll-prs.yml. Like the Jira poll contract test, it
+// fails when the workflow is missing from the checkout.
 func TestPRPollCallerPollAlignment(t *testing.T) {
-	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-poll-prs.yml"))
-	if errors.Is(err, os.ErrNotExist) {
-		t.Skip("reusable-poll-prs.yml is not in this tree")
-	}
-	require.NoError(t, err)
+	content := loadRepoFile(".github/workflows/reusable-poll-prs.yml")(t)
 	out, err := RenderPRPollCaller(RenderOptions{}, testPRPollSince)
 	require.NoError(t, err)
 	var caller callerWorkflow
@@ -219,6 +215,13 @@ func TestPRPollCallerPollAlignment(t *testing.T) {
 			"input %q is not declared by reusable-poll-prs.yml", name)
 	}
 	assert.Empty(t, job.Secrets, "the poll job passes no secrets")
+	for _, name := range []string{"since", "runner_image", "timeout_minutes"} {
+		assert.Contains(t, job.With, name, "the poll job must pass %q", name)
+		assert.Contains(t, reusable.On.WorkflowCall.Inputs, name, "reusable-poll-prs.yml must declare %q", name)
+	}
+	assert.Equal(t, testPRPollSince, job.With["since"], "the poll job passes the stamped enable time")
+	assert.True(t, reusable.On.WorkflowCall.Inputs["since"].Required, "since is required")
+	assert.Equal(t, "number", reusable.On.WorkflowCall.Inputs["timeout_minutes"].Type)
 }
 
 func TestIsManagedPRPollCaller(t *testing.T) {

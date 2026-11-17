@@ -43,6 +43,7 @@ type fakeGitHub struct {
 	jobs     map[int][]map[string]any
 	created  []string          // created= query values seen on run listings
 	byStatus map[string]string // status= → created= of run listings
+	runErr   map[int]int       // run ID → HTTP status a run lookup fails with
 	requests int
 }
 
@@ -54,6 +55,7 @@ func newFakeGitHub() *fakeGitHub {
 		comments: map[int][]map[string]any{},
 		jobs:     map[int][]map[string]any{},
 		byStatus: map[string]string{},
+		runErr:   map[int]int{},
 	}
 }
 
@@ -127,6 +129,10 @@ func (f *fakeGitHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"jobs": jobs})
 	case len(parts) == 3 && parts[0] == "actions" && parts[1] == "runs":
 		id, _ := strconv.Atoi(parts[2])
+		if code, ok := f.runErr[id]; ok {
+			http.Error(w, `{"message":"boom"}`, code)
+			return
+		}
 		for _, run := range f.runs {
 			if run["id"] == id {
 				writeJSON(w, run)
@@ -517,11 +523,10 @@ func TestRun_DispatchCases(t *testing.T) {
 			},
 		},
 		{
-			name: "no review App client ID",
+			name: "status comment of a run that no longer exists",
 			setup: func(h *harness) {
 				h.fake.perms["alice"] = "write"
-				h.opts.ReviewAppClientID = ""
-				h.fake.comments[7] = []map[string]any{stickyComment(testBot, "", testSHA)}
+				h.fake.comments[7] = []map[string]any{statusComment(testBot, testClientID, 999, testSHA[:7])}
 			},
 		},
 	}
@@ -867,9 +872,20 @@ func TestRun_Errors(t *testing.T) {
 		h := newHarness(t)
 		h.fake.prs = []map[string]any{forkPR(7, "alice", testSHA, after)}
 		h.fake.perms["alice"] = "write"
+		h.fake.runErr[999] = http.StatusForbidden
 		h.fake.comments[7] = []map[string]any{statusComment(testBot, testClientID, 999, testSHA[:7])}
 		assert.Empty(t, h.run(t))
 		assert.Contains(t, h.log.String(), ReasonLookupFailed)
+	})
+	t.Run("no review App client ID", func(t *testing.T) {
+		h := newHarness(t)
+		h.fake.prs = []map[string]any{forkPR(7, "alice", testSHA, after)}
+		h.fake.perms["alice"] = "write"
+		h.opts.ReviewAppClientID = ""
+		refs, err := New(h.client, h.opts).Run(context.Background())
+		require.ErrorIs(t, err, ErrNoReviewAppClientID)
+		assert.Empty(t, refs)
+		assert.Zero(t, h.fake.requests, "the poll reads nothing without the client ID")
 	})
 }
 

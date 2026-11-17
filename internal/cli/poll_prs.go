@@ -93,6 +93,15 @@ func runGitHubPRPoll(cmd *cobra.Command, flags prPollFlags) error {
 		return fmt.Errorf("--since %q must be an RFC 3339 timestamp", flags.since)
 	}
 
+	// Without the review App's client ID the poll cannot tell the App's
+	// comments from anyone else's, so it cannot see finished or running
+	// reviews. Fail the job, writing no dispatch file, rather than start
+	// duplicate reviews.
+	reviewClientID := os.Getenv(forge.VarReviewClientID)
+	if reviewClientID == "" {
+		return fmt.Errorf("--input-driver %s: %w", prPollInputDriver, prpoll.ErrNoReviewAppClientID)
+	}
+
 	// The poll job's read-only GITHUB_TOKEN, through the CLI's shared
 	// credential resolution.
 	token, err := resolveGitHubToken("")
@@ -108,7 +117,7 @@ func runGitHubPRPoll(cmd *cobra.Command, flags prPollFlags) error {
 		MaxStarts:         pollCfg.EffectiveMaxStartsPerCycle(),
 		MaxAttempts:       pollCfg.EffectiveMaxAttemptsPerHead(),
 		ReviewBotLogins:   reviewBotLogins(owner, os.Getenv(forge.VarAppSet)),
-		ReviewAppClientID: os.Getenv(forge.VarReviewClientID),
+		ReviewAppClientID: reviewClientID,
 		Log:               stderr,
 		APICalls: func() int64 {
 			var total int64
