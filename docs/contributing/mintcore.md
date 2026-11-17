@@ -69,8 +69,8 @@ Reads environment/configuration values.
 
 `NewHandler` reads all configuration variables (`ROLE_APP_IDS`,
 `ALLOWED_WORKFLOW_FILES`, `PER_REPO_WIF_REPOS`,
-`WORKFLOW_HOST_REPOS`, `CUSTOM_ROLE_PERMISSIONS`, `ALLOWED_ROLES`)
-via `mintEnv` at construction time.
+`WORKFLOW_HOST_REPOS`, `CUSTOM_ROLE_PERMISSIONS`, `ALLOWED_ROLES`,
+`MINT_GITHUB_API_URL`) via `mintEnv` at construction time.
 
 ### `mintHTTP(req *http.Request) (*http.Response, error)`
 

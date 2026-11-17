@@ -717,6 +717,10 @@ set this to their own URL. See
 [Standalone Mint](../guides/infrastructure/standalone-mint.md) and
 [Mint Administration](../guides/infrastructure/mint-administration.md).
 
+The URL must use `https`. Plain `http` is accepted only for `localhost` or
+`127.0.0.1`, for a mint that runs on the same machine as the CLI or runner,
+such as in a test. A URL with userinfo (`user:pass@`) is rejected.
+
 For GitHub repositories managed with `fullsend repos install`, a `mint_url`
 declared in the managed configuration (`config.mint_url` in `repos.yaml`) or
 the `config_base` preset also sets the `FULLSEND_MINT_URL` repository
