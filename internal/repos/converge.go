@@ -32,6 +32,15 @@ type ConvergeConfig struct {
 	ExcludeRepos   []string
 	MaxConcurrency int
 
+	// GlobClients, when set, is the factory Converge expands glob entries
+	// through instead of the clients it converges with. `repos install`
+	// passes the read cache its preflights expanded the same globs through
+	// (NewPreflightReadCache), so convergence acts on exactly the
+	// repositories the preflights checked: a repository created in a glob
+	// org after the preflights listed it is not converged (#9571). Every
+	// other forge read and write still goes through the converge clients.
+	GlobClients ForgeClientFactory
+
 	// UpstreamRef is the git ref (SHA) used to pin scaffold workflow refs.
 	UpstreamRef string
 	// UpstreamTag is the version tag corresponding to UpstreamRef.
@@ -795,7 +804,11 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		return nil, fmt.Errorf("invalid manifest: %w", err)
 	}
 
-	repos, err := manifest.ExpandGlobsFor(ctx, clients, cfg.RepoFilter)
+	globClients := clients
+	if cfg.GlobClients != nil {
+		globClients = cfg.GlobClients
+	}
+	repos, err := manifest.ExpandGlobsFor(ctx, globClients, cfg.RepoFilter)
 	if err != nil {
 		return nil, fmt.Errorf("expanding globs: %w", err)
 	}
