@@ -238,6 +238,10 @@ effort, sub-agent models and the trigger.
   delegates, the values must be OpenAI ids and a key must name a registered
   persona or `default`; see
   [Codex › Child models](../runtimes/codex.md#child-models).
+  [ADR 0155](../ADRs/0155-subagent-entries-may-source-or-disable-personas.md)
+  decides that `subagents` moves into the entry's `harness:` block
+  (`harness.subagents`) with an object form, leaving this entry field as a
+  deprecated alias for model strings; neither is available yet.
 - **`trigger`** — A [CEL trigger](../guides/user/cel-triggers-reference.md)
   (a boolean over the normalized `event`). It decides routing for the
   built-in review, retro, triage and prioritize agents only: on one of those
