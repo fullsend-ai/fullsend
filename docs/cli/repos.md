@@ -820,7 +820,8 @@ The poll is GitHub only. It needs no secrets, but it needs the
 - **Enabled.** Install writes the scheduled caller
   `.github/workflows/fullsend-poll-prs.yml` in the scaffold commit. It runs
   every five minutes and on manual dispatch. Its `poll` job runs in the
-  `fullsend-poll-prs` concurrency group, which queues rather than cancels. The
+  `fullsend-poll-prs` concurrency group: one poll job at a time, at most one
+  waiting. The
   `poll` job calls Fullsend's `reusable-poll-prs.yml` with a read-only token
   (`contents`, `pull-requests`, `issues` and `actions`: `read`), and its
   `dispatch` job calls `reusable-dispatch.yml` once per pull request to review,
@@ -828,7 +829,7 @@ The poll is GitHub only. It needs no secrets, but it needs the
 - **Enable time.** When install first writes the caller, it stamps the
   current UTC time into the poll job's `since` input and keeps that value on
   later converges. A fork PR last updated before that time is not reviewed
-  until its next push, so enabling the poll does not review the backlog. Re-enabling
+  until it is updated again (a push, but also a comment or a label), so enabling the poll does not review the backlog. Re-enabling
   after the caller was removed stamps a new time.
 - **Disabled (`enabled: false` or omitted).** Install removes the managed
   caller.
