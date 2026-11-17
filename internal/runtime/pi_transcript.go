@@ -57,6 +57,9 @@ func piSubagentUsageLocalName(agentLabel string) string {
 // alongside them.
 func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir, progressVerbosity string) error {
 	rep := newTranscriptReport(agentLabel, progressVerbosity)
+	// The quiet count line prints however extraction ends, so a usage file
+	// saved before a failed find is still counted.
+	defer rep.end()
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
@@ -102,7 +105,6 @@ func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir, progre
 	if err != nil {
 		return fmt.Errorf("finding transcripts: %w", err)
 	}
-	defer rep.end()
 	trimmed := strings.TrimSpace(stdout)
 	if trimmed == "" {
 		rep.noneFound("No transcripts found")

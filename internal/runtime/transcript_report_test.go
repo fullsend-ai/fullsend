@@ -130,3 +130,31 @@ func TestTranscriptReport_QuietCounts(t *testing.T) {
 	assert.Equal(t, "  [code] Saved transcript: code-a.jsonl\n  [code] Failed to copy transcript: boom\n", log.String(),
 		"full prints the same lines as before and no count line")
 }
+
+// pi: a usage file saved before the transcript find fails is still counted
+// at quiet, because the count line prints however extraction ends.
+func TestPiExtractTranscripts_QuietCountsWhenFindFails(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    if\ \[\ -s*) echo /sandbox/usage.jsonl.read; exit 0 ;;
+    find\ *) exit 124 ;;
+  esac
+  exit 0
+fi
+if [ "$2" = "download" ]; then
+  printf '{}\n' > "$5/$(basename "$4")"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	log := captureTranscriptLog(t)
+
+	err := PiRuntime{}.ExtractTranscripts("sb", "SECRET-LABEL", filepath.Join(t.TempDir(), "out"), config.ProgressVerbosityQuiet)
+	require.ErrorContains(t, err, "finding transcripts")
+	assert.Equal(t, "  Transcripts: 1 file(s) saved, 0 skipped or failed to copy\n", log.String())
+}
