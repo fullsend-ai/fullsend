@@ -14,6 +14,13 @@
 # passes it to reusable-dispatch.yml at the same ref (ADR 62), which routes
 # the review entries to the built-in review job.
 #
+# State: the poll keeps per-head dispatch counts and finished heads in a JSON
+# file carried between cycles in the Actions cache (newest
+# fullsend-poll-prs-state-* entry). It bounds every re-dispatch of a head and
+# lets finished heads cost no API calls. Runs on a fork pull request cannot
+# save into the default branch's cache scope. A missing or evicted entry only
+# costs fresh API checks.
+#
 # Security: the poll job takes no secrets. It reads pull requests, reviews,
 # comments and the poll workflow's own runs with a read-only GITHUB_TOKEN,
 # and never checks out or runs code from a pull request. The checkout is the
@@ -98,21 +105,50 @@ jobs:
           workflow_sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
 
+      - name: Restore poll state
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .fullsend-poll-state/state.json
+          key: fullsend-poll-prs-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fullsend-poll-prs-state-
+
       - name: Poll fork PRs
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TARGET_REPO: ${{ github.repository }}
           SINCE: ${{ inputs.since }}
+          # A schedule event payload may have no repository object; scheduled runs
+          # always run on the default branch, so ref_name is it then.
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || github.ref_name }}
           FULLSEND_APP_SET: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
           FULLSEND_REVIEW_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
         run: |
           set -euo pipefail
+          mkdir -p .fullsend-poll-state
           fullsend poll \
             --input-driver github-pr-poll \
             --target-repo "${TARGET_REPO}" \
             --since "${SINCE}" \
+            --default-branch "${DEFAULT_BRANCH}" \
+            --state-file .fullsend-poll-state/state.json \
             --output dispatches.json \
             --fullsend-dir .fullsend
+
+      # Saved before the matrix is handed on, so the next cycle sees this
+      # cycle's dispatches even while the reviews it starts are still running.
+      # The poll writes state.json.changed only when the cycle changed the
+      # state. Only scheduled and manual runs on the default branch save, so
+      # the entry always comes from the trusted caller.
+      - name: Save poll state
+        if: >-
+          (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+          && github.ref_name == (github.event.repository.default_branch || github.ref_name)
+          && hashFiles('.fullsend-poll-state/state.json.changed') != ''
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .fullsend-poll-state/state.json
+          key: fullsend-poll-prs-state-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Build dispatch matrix
         id: matrix

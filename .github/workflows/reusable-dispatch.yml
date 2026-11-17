@@ -383,10 +383,18 @@ jobs:
               echo "::notice::PR #${poll_number} is ${poll_state}; not routed"
             elif [[ "${poll_head_sha}" != "${poll_sha}" ]]; then
               echo "::notice::PR #${poll_number} head moved from ${poll_sha} to ${poll_head_sha}; the next poll cycle picks up the new head"
-            elif [[ -z "${poll_head_repo}" || -z "${poll_head_owner}" || -z "${poll_author}" || "${poll_head_repo}" == "${poll_base_repo}" ]]; then
-              echo "::notice::PR #${poll_number} is not a fork PR with a readable head repository; not routed"
+            elif [[ -z "${poll_head_repo}" || -z "${poll_head_owner}" || -z "${poll_author}" ]]; then
+              # A deleted fork or account: a race with the poll, not a gate
+              # disagreement.
+              echo "::notice::PR #${poll_number} has no readable head repository or author; not routed"
+            elif [[ "${poll_head_repo}" == "${poll_base_repo}" ]]; then
+              # The poll only offers fork PRs. Disagreeing with it fails the
+              # run so the mismatch is visible and counts as an attempt.
+              echo "::error::PR #${poll_number} is not a fork PR, but the poll offered it; not routed"
+              exit 1
             elif [[ "${poll_head_owner,,}" != "${poll_author,,}" ]]; then
-              echo "::notice::PR #${poll_number} head repository is not owned by its author; not routed"
+              echo "::error::PR #${poll_number} head repository is not owned by its author, but the poll offered it; not routed"
+              exit 1
             elif is_event_actor_authorized "${poll_author}" triage; then
               STAGE="review"
               TRIGGER_SOURCE="fork-pr-poll"
@@ -395,7 +403,8 @@ jobs:
                 echo "poll_head_sha=${poll_sha}"
               } >> "${GITHUB_OUTPUT}"
             else
-              echo "::notice::PR #${poll_number} author ${poll_author} is not authorized for automatic review; not routed"
+              echo "::error::PR #${poll_number} author ${poll_author} is not authorized for automatic review, but the poll offered it; not routed"
+              exit 1
             fi
             if [[ -z "${STAGE}" ]]; then
               echo "stage=" >> "${GITHUB_OUTPUT}"
