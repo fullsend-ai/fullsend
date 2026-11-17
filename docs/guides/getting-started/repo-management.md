@@ -651,7 +651,11 @@ trailer for the authenticated installing user to every scaffold commit,
 on GitHub and GitLab, whether delivered directly or by PR/MR. A repo entry
 overrides its forge section, which overrides `defaults`, and an explicit
 `false` disables an inherited `true`. Install fails before committing
-anything if the token's user identity cannot be resolved. See
+anything if a user token's identity cannot be resolved or has no name or
+email. Automation that runs under a GitHub App installation token can
+keep the same manifest: the App has no user identity to sign off as, so
+install prints a notice and commits without the trailer, and the DCO
+check exempts App-authored commits. See
 [DCO sign-off](../../cli/repos.md#dco-sign-off).
 
 ```bash

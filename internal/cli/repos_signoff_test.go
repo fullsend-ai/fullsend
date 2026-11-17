@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"strings"
 	"testing"
 
@@ -12,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 const signoffTestTrailer = "Signed-off-by: Install User <install@example.com>"
@@ -173,6 +176,8 @@ func TestRunReposInstall_Signoff_MissingIdentity(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			manifestPath := writeTestManifest(t, signoffManifest("true", "", ""))
 			fc := newInstallFakeClient("acme/api")
+			// A user token: only App installation tokens skip the trailer.
+			fc.InstallationToken = false
 			fc.AuthenticatedUserIdentity = tt.identity
 
 			opts := signoffInstallOpts(manifestPath, fc, false)
@@ -182,6 +187,88 @@ func TestRunReposInstall_Signoff_MissingIdentity(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 			assert.Empty(t, scaffoldCommitMessages(fc), "no scaffold commit may be created without a valid identity")
 			assert.Empty(t, fc.CreatedProposals)
+		})
+	}
+}
+
+func TestRunReposInstall_Signoff_InstallationTokenSkipsTrailer(t *testing.T) {
+	for _, direct := range []bool{true, false} {
+		t.Run(fmt.Sprintf("direct=%t", direct), func(t *testing.T) {
+			manifestPath := writeTestManifest(t, signoffManifest("true", "", ""))
+			fc := newInstallFakeClient("acme/api")
+			fc.InstallationToken = true
+			fc.AuthenticatedUserIdentity = nil // /user is unavailable to App tokens
+
+			var err error
+			out := captureStdout(t, func() {
+				err = runReposInstall(context.Background(), signoffInstallOpts(manifestPath, fc, direct))
+			})
+			require.NoError(t, err)
+			requireNoneSignedOff(t, fc)
+			for _, msg := range scaffoldCommitMessages(fc) {
+				assert.False(t, strings.HasSuffix(msg, "\n\n"), "no empty trailer paragraph, got %q", msg)
+			}
+			assert.Contains(t, out, "Skipping Signed-off-by trailer on GitHub scaffold commits")
+			assert.Contains(t, out, "GitHub App installation token")
+		})
+	}
+}
+
+func TestRunReposInstall_Signoff_InstallationTokenDryRun(t *testing.T) {
+	manifestPath := writeTestManifest(t, signoffManifest("true", "", ""))
+	fc := newInstallFakeClient("acme/api")
+	fc.InstallationToken = true
+
+	opts := signoffInstallOpts(manifestPath, fc, false)
+	opts.dryRun = true
+	var err error
+	out := captureStdout(t, func() {
+		err = runReposInstall(context.Background(), opts)
+	})
+	require.NoError(t, err)
+	assert.Contains(t, out, "Would skip Signed-off-by trailer on GitHub scaffold commits")
+	assert.NotContains(t, out, "Would add trailer")
+	assert.Empty(t, scaffoldCommitMessages(fc), "dry run must not commit")
+}
+
+func TestRunReposInstall_Signoff_InstallationTokenStillFails(t *testing.T) {
+	tests := []struct {
+		name     string
+		errs     map[string]error
+		identity *forge.UserIdentity
+		wantErr  string
+	}{
+		{
+			name:    "generic identity lookup failure",
+			errs:    map[string]error{"GetAuthenticatedUserIdentity": errors.New("connection reset")},
+			wantErr: "connection reset",
+		},
+		{
+			name:    "installation token probe failure",
+			errs:    map[string]error{"IsInstallationToken": errors.New("probe failed")},
+			wantErr: "detecting installation token: probe failed",
+		},
+		{
+			name:     "incomplete identity",
+			identity: &forge.UserIdentity{Name: "Install User"},
+			wantErr:  "with both name and email set",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifestPath := writeTestManifest(t, signoffManifest("true", "", ""))
+			fc := newInstallFakeClient("acme/api")
+			fc.InstallationToken = true
+			fc.AuthenticatedUserIdentity = tt.identity
+			// Checked through resolveRepoSignOffTrailers directly: earlier
+			// install steps also call IsInstallationToken.
+			maps.Copy(fc.Errors, tt.errs)
+
+			manifest, err := repos.LoadManifest(context.Background(), manifestPath)
+			require.NoError(t, err)
+			_, err = resolveRepoSignOffTrailers(context.Background(), newSingleClientFactory(fc), ui.New(io.Discard), manifest, nil, false)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
 }
