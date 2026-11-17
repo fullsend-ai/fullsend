@@ -848,7 +848,7 @@ If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs
 **What you get:** a push to a fork PR starts the repository's fork PR review
 poll (`.github/workflows/fullsend-poll-prs.yml`) within seconds. Without the
 webhook, the poll waits for its `*/5` schedule, which GitHub runs late and
-sometimes skips. The schedule stays on as the backstop for any lost delivery.
+sometimes skips. The schedule stays on, best-effort, for a lost delivery; the mint timer planned in #9636 will make that reliable.
 
 **What you do:** two manual steps, because `mint deploy` has no flag for
 either of them.

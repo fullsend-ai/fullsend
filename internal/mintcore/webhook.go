@@ -332,7 +332,7 @@ func (h *Handler) dispatchPollWorkflow(ctx context.Context, owner, name string) 
 		return webhookOutcomeDispatched, http.StatusAccepted, nil
 	case status == http.StatusNotFound || status == http.StatusUnprocessableEntity:
 		// No poll workflow, no workflow_dispatch trigger, Actions off or
-		// a bad ref: the scheduled poll remains the backstop.
+		// a bad ref: the best-effort scheduled poll still runs.
 		return webhookOutcomeNotDispatchable, http.StatusAccepted, nil
 	default:
 		return webhookOutcomeGitHubError, http.StatusBadGateway,
