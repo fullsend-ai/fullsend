@@ -416,8 +416,17 @@ A range is `complete` only when every condition holds:
      canonical IDs and no entity returned by the later pass was updated after
      the baseline pass began. Requiring identical sets catches departures
      during either pass, because an entity that left the range after being
-     read is missing from the next pass. If the two passes differ, the later
-     pass becomes the baseline and the adapter reads the range again,
+     read is missing from the next pass. Identical sets prove coverage only if
+     pagination follows a deterministic total order: the adapter MUST request
+     the provider sort key together with a unique, stable tie-breaker such as
+     the immutable provider ID, on every request of every pass. A sort key
+     that can tie, such as an update time shared by several entities, lets
+     the provider resolve ties differently between requests, so two passes
+     can return the same IDs while unchanged tied entities stay unread. If
+     the provider offers no such total order, the adapter MUST NOT use
+     `overlap_reconciliation` to complete the range, and the range stays
+     `incomplete` unless `stable_view` applies. If the two passes differ, the
+     later pass becomes the baseline and the adapter reads the range again,
      keeping the entities it has discovered. If it cannot obtain a validated
      pair of passes within its bounded scan budget, the range stays
      `incomplete` with a durable retry record, and the retry starts a new
@@ -507,7 +516,7 @@ An adapter may choose others if it meets every rule in this document.
 | `state` | Provider open/closed state filters; `merged` decided locally from merge status |
 | `labels` | Positive `has` conditions may narrow the provider filter; negated label conditions are never pushed down |
 | `draft`, `base_ref`, `category` | Local evaluation; may narrow the provider filter only where the endpoint supports exact filtering |
-| Limits | The REST issue listing returns pull requests as well as issues, so the adapter separates kinds locally. Page-based listings over a mutable sort need `overlap_reconciliation`. The Search API returns at most 1,000 results per query, its index is eventually consistent, and its default order is relevance; an adapter that uses it MUST set an explicit sort, keep each window below the cap, and apply an indexing-delay allowance |
+| Limits | The REST issue listing returns pull requests as well as issues, so the adapter separates kinds locally. Page-based listings over a mutable sort need `overlap_reconciliation`, which also requires a unique tie-breaker after the update-time sort, such as the issue or pull-request number or node ID; where the endpoint cannot sort by one, the range stays `incomplete`. The Search API returns at most 1,000 results per query, its index is eventually consistent, and its default order is relevance; an adapter that uses it MUST set an explicit sort, keep each window below the cap, and apply an indexing-delay allowance |
 
 ### GitLab
 
@@ -519,7 +528,7 @@ An adapter may choose others if it meets every rule in this document.
 | `state` | Provider state filters; `merged` decided locally |
 | `labels` | Positive `has` conditions may narrow the provider filter. Provider label negation exists, but negated label conditions are never pushed down |
 | `draft`, `base_ref` | Local evaluation, or exact provider filters where supported |
-| Limits | Offset pagination over a mutable sort needs `overlap_reconciliation` unless the endpoint documents keyset pagination for that ordering. Project-scoped IIDs are not identities; deduplicate by canonical ID |
+| Limits | Offset pagination over a mutable sort needs `overlap_reconciliation` unless the endpoint documents keyset pagination for that ordering; `overlap_reconciliation` also requires a unique tie-breaker after the update-time ordering, such as the global ID, and otherwise the range stays `incomplete`. Project-scoped IIDs are not identities; deduplicate by canonical ID |
 
 ### Forgejo
 
@@ -531,7 +540,7 @@ contract covers Forgejo.
 | Scope | Host, immutable repository ID, kind, discovery credential |
 | Kinds | `work_item` (issues), `change_proposal` (pull requests) |
 | Listing | Repository issue listing with `type`, `state`, `labels`, and `since`/`before` filters |
-| Limits | Page and limit pagination with a server-configured maximum page size; the adapter reads the effective maximum and needs `overlap_reconciliation`. Forgejo must provide a verified effective role, or the actor-admission path is denied, as ADR 0151 states |
+| Limits | Page and limit pagination with a server-configured maximum page size; the adapter reads the effective maximum and needs `overlap_reconciliation`, which also requires a unique tie-breaker after the update-time sort; where the endpoint cannot provide one, the range stays `incomplete`. Forgejo must provide a verified effective role, or the actor-admission path is denied, as ADR 0151 states |
 
 ### Jira
 
@@ -630,7 +639,8 @@ implementation MUST pass them.
 | ESD-56 | Provider guarantees per-entity page completeness | Entity may be routed after its page; the range is still not `complete` until all rules hold |
 | ESD-57 | Rate limit response with a retry hint | Work deferred with backoff; no coverage claimed; checkpoint does not advance |
 | ESD-58 | Range holds entities A, B, C, D with page size two; after page one, A is updated past the range's upper bound, so page two returns D and skips unchanged C; C lies outside the next range's boundary overlap | Overlap alone does not complete the range; the next full read returns a different ID set from the first pass, so it becomes the baseline and the range is read again, or the range stays `incomplete` with a durable retry record; checkpoint does not advance |
-| ESD-59 | Range holds entities A to F with page size two; entity E is skipped in the first pass because A departs after page one, and in the validating pass B and C depart after page one, so E is skipped again | The two passes return different ID sets, so the range is not validated and stays `incomplete` unless a later pair of passes returns identical ID sets with no entity updated after the baseline began; checkpoint does not advance until then |
+| ESD-59 | Range holds entities A to F in ascending update order with page size two, and a departure means an update past the range's upper bound. First pass: page one returns A and B, page two returns C and D, then A departs, so page three returns only F and E is skipped. Validating pass over B, C, D, E, F: page one returns B and C, then B and C depart, so page two returns only F and D and E are skipped | The first pass returns {A, B, C, D, F} and the validating pass returns {B, C, F}. The sets differ, so the range is not validated and stays `incomplete` unless a later pair of passes returns identical ID sets with no entity updated after the baseline began; checkpoint does not advance until then |
+| ESD-65 | Pagination sorts by update time only, and four unchanged entities A to D share one update time; with page size two, the provider resolves ties differently between requests, so in each of two passes page one returns A and B and page two returns A and B again | The two passes return identical ID sets but pagination has no unique tie-breaker, so the range is not validated and stays `incomplete`; with a unique tie-breaker added to the sort, ties resolve identically on every request and C and D are read |
 
 ### Time-dependent queries and retry
 
@@ -652,7 +662,7 @@ implementation MUST pass them.
 | Deduplication and local routing | ESD-30 to ESD-36 |
 | Unknown is never non-match | ESD-32 to ESD-34, ESD-41, ESD-63 |
 | Bound-run membership before every sandbox cycle | ESD-40 to ESD-44 |
-| Last page is not completeness | ESD-50 to ESD-59 |
+| Last page is not completeness | ESD-50 to ESD-59, ESD-65 |
 | Time-dependent rediscovery | ESD-07, ESD-60 |
 | Durable retry | ESD-53, ESD-57, ESD-61 to ESD-64 |
 | Event-only harnesses unaffected | ESD-01, ESD-44 |
