@@ -1210,8 +1210,12 @@ malformed block in `.fullsend/config.yaml`, manifest validation refuses one in
 
 ### `fork_pr_review_poll`
 
-An opt-in scheduled poll that starts the built-in review for pull requests
-from forks (ADR 0171). GitHub only.
+Reviews pull requests from forks automatically when the author owns the fork
+and has triage access or higher (ADR 0171). GitHub only. To turn it on, set
+`enabled: true` in `.fullsend/config.yaml` and run `fullsend repos install`,
+which writes the scheduled workflow. A review starts about five minutes after
+each push, later when GitHub delays scheduled runs; `/fs-review` still starts
+one at once.
 
 ```yaml
 fork_pr_review_poll:
@@ -1235,8 +1239,9 @@ Validation rejects a value outside its range.
 **Managed workflow.** While the effective `enabled` is `true`,
 `fullsend repos install` writes `.github/workflows/fullsend-poll-prs.yml` in
 the same scaffold commit as the rest of the scaffold. It runs every five
-minutes and on manual dispatch. Overlapping runs queue rather than cancel each
-other. The poll job is read-only, gets no secrets, and lists pull requests with
+minutes and on manual dispatch. Overlapping poll jobs queue rather than
+cancel each other; the reviews a run starts are outside that queue, so a long
+review never delays the next poll. The poll job is read-only, gets no secrets, and lists pull requests with
 `GITHUB_TOKEN`. When it finds pull requests to review, it hands them to
 Fullsend's dispatch workflow, which runs the review. Both workflows are pinned
 to the same Fullsend ref as the rest of the scaffold. When `enabled` is
@@ -1257,17 +1262,32 @@ a new file with a new `since`.
 all of these conditions:
 
 - It comes from a fork, and the fork is owned by the pull request's author.
-- Its author is not a bot.
-- Its author has at least the triage role on the repository, or is listed as
-  a `reviewers` or `approvers` entry in `OWNERS` when the
-  [`owners_file`](#owners_file) authorization provider is on.
+- Its author passes the same authorization as automatic review: at least the
+  triage role on the repository, or a `reviewers` or `approvers` entry in
+  `OWNERS` when the [`owners_file`](#owners_file) authorization provider is on.
+- It was last updated after `since` (see above).
+- The review App has not finished or started a review of that head commit.
+- That head commit has fewer than `max_attempts_per_head` failed attempts.
 
-The poll identifies the review App by its client ID, which it reads from the
-`FULLSEND_REVIEW_CLIENT_ID` repository variable that `fullsend repos install`
-sets. If the variable is empty, the poll job fails and starts no review:
-without the client ID the poll cannot tell which reviews are finished or
-running, and it would start the same review again every cycle. Set the
-variable to the review App's client ID to fix it.
+A cycle starts nothing when the kill switch is on or the `review` agent is
+disabled.
+
+**Check that it works.** Open the repository's **Actions** tab and the
+**fullsend fork PR review poll** workflow, or start a run at once with
+`gh workflow run fullsend-poll-prs.yml`. The `poll` job log has one line per
+open pull request with its decision, such as `PR #12 head 3b82c7b: dispatch`
+or `PR #7 head ccb6c37: skip: fork not owned by author`, and a summary line
+with the number of reviews started, GitHub API calls and wall time. Each
+review it starts runs as a job named `Review (#<number>@<head commit>)`.
+
+**Troubleshooting.**
+
+| What you see | Cause | What to do |
+|---|---|---|
+| The `poll` job fails with an error about `FULLSEND_REVIEW_CLIENT_ID` | The repository variable is empty. Without the review App's client ID, the poll cannot tell which reviews are finished or running, so it starts none. | Run `fullsend repos install` again, which sets the variable, or set it with `gh variable set FULLSEND_REVIEW_CLIENT_ID --body <client ID>`. |
+| `skip: denied by dispatch core` for a pull request you expected to be reviewed | The author lacks triage access, or the role lookup failed. | Give the author triage access, or comment `/fs-review`. |
+| `skip: attempts exhausted` | The review of that head commit failed `max_attempts_per_head` times. | Check the failed `Review (#…)` jobs, then push a new commit or comment `/fs-review`. |
+| No scheduled runs appear | GitHub delays or skips scheduled runs, and turns them off in a public repository after 60 days without activity. | Start a run with `gh workflow run fullsend-poll-prs.yml`, or re-enable the workflow in the **Actions** tab. |
 
 ## Installation model
 

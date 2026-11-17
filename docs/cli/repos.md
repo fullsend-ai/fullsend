@@ -808,24 +808,27 @@ fullsend repos install acme/api --rotate-trace-signing-key
 
 ### Fork PR review poll
 
-`repos install` converges the fork PR review poll
+To review pull requests from forks automatically, set
+`fork_pr_review_poll.enabled: true` in `.fullsend/config.yaml` and run
+`repos install`. Install converges the fork PR review poll
 ([ADR 0171](https://github.com/fullsend-ai/fullsend/pull/9381)) from each
-repo's effective `fork_pr_review_poll.enabled` in `.fullsend/config.yaml`
-(see [Config Reference](../reference/config-reference.md)). The poll is
-GitHub only and needs no secrets.
+repo's effective setting (see
+[Config Reference](../reference/config-reference.md#fork_pr_review_poll)).
+The poll is GitHub only. It needs no secrets, but it needs the
+`FULLSEND_REVIEW_CLIENT_ID` repository variable, which install sets.
 
 - **Enabled.** Install writes the scheduled caller
   `.github/workflows/fullsend-poll-prs.yml` in the scaffold commit. It runs
-  every five minutes and on manual dispatch, in one
-  `fullsend-poll-prs` concurrency group that queues rather than cancels. Its
+  every five minutes and on manual dispatch. Its `poll` job runs in the
+  `fullsend-poll-prs` concurrency group, which queues rather than cancels. The
   `poll` job calls Fullsend's `reusable-poll-prs.yml` with a read-only token
   (`contents`, `pull-requests`, `issues` and `actions`: `read`), and its
-  `dispatch` job hands the resulting matrix to `reusable-dispatch.yml`, both
-  pinned to the same ref as the rest of the scaffold.
+  `dispatch` job calls `reusable-dispatch.yml` once per pull request to review,
+  both pinned to the same ref as the rest of the scaffold.
 - **Enable time.** When install first writes the caller, it stamps the
   current UTC time into the poll job's `since` input and keeps that value on
-  later converges. A fork PR last updated before it is not reviewed until its
-  next push, so enabling the poll does not review the backlog. Re-enabling
+  later converges. A fork PR last updated before that time is not reviewed
+  until its next push, so enabling the poll does not review the backlog. Re-enabling
   after the caller was removed stamps a new time.
 - **Disabled (`enabled: false` or omitted).** Install removes the managed
   caller.
