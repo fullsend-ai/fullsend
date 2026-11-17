@@ -136,11 +136,27 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 		assert.NotContains(t, string(content), p.secret, "secret must be redacted from %s", filepath.Base(p.path))
 	}
 
+	// Decode the escaped-newline case and check the decoded credential. The
+	// unescaped spelling does not occur in the raw JSON, so a raw substring
+	// assertion alone would pass even if sanitization missed it.
+	content3, err := os.ReadFile(jsonFile3)
+	require.NoError(t, err)
+	var split struct {
+		Auth string `json:"auth"`
+	}
+	require.NoError(t, json.Unmarshal(content3, &split))
+	assert.NotContains(t, split.Auth, "abc\ndefghijkl1234", "decoded credential must be redacted")
+
 	content4, err := os.ReadFile(jsonFile4)
 	require.NoError(t, err)
 	assert.Contains(t, string(content4), "12345678901234567891", "large integer precision must be preserved")
 	assert.Contains(t, string(content4), "1.0", "float formatting must be preserved")
 	assert.Contains(t, string(content4), "<tag>&val</tag>", "HTML characters must not be escaped")
+	var keySanitized map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(content4, &keySanitized))
+	for key := range keySanitized {
+		assert.NotContains(t, key, "ghp_FAKEtest", "secret must be redacted from JSON object keys")
+	}
 }
 
 // TestScanOutputFiles_DuplicateJSONKeys verifies that JSON files containing
