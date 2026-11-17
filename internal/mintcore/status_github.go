@@ -20,11 +20,16 @@ import (
 //  3. Checks that the caller is a member of the configured
 //     StatusGitHubGroup (ORG/TEAM format).
 //
+// githubBaseURL is the GitHub REST API base URL the handler uses for
+// every other GitHub call (https://api.github.com unless the load site
+// configured another server), so the user and team lookups reach the
+// same server that issued the caller's token.
+//
 // Returns nil on success. Returns errStatusAuthSkip when the
 // validator is not configured (group empty).
 // Returns an error on all other failures (invalid token, not a
 // member, API error). All status-auth failures collapse to 401.
-func validateStatusGitHub(ctx context.Context, r *http.Request) error {
+func validateStatusGitHub(ctx context.Context, r *http.Request, githubBaseURL string) error {
 	if StatusGitHubGroup == "" {
 		return errStatusAuthSkip
 	}
@@ -42,13 +47,13 @@ func validateStatusGitHub(ctx context.Context, r *http.Request) error {
 	org, team := parts[0], parts[1]
 
 	// Step 1: verify the token by fetching the authenticated user.
-	username, err := githubGetUser(ctx, token)
+	username, err := githubGetUser(ctx, githubBaseURL, token)
 	if err != nil {
 		return fmt.Errorf("github user lookup failed: %w", err)
 	}
 
 	// Step 2: check team membership.
-	if err := githubCheckTeamMembership(ctx, token, org, team, username); err != nil {
+	if err := githubCheckTeamMembership(ctx, githubBaseURL, token, org, team, username); err != nil {
 		return fmt.Errorf("github team membership check failed: %w", err)
 	}
 
@@ -58,8 +63,8 @@ func validateStatusGitHub(ctx context.Context, r *http.Request) error {
 
 // githubGetUser calls GET /user with the given token and returns the
 // login name. Uses mintHTTP for all outbound HTTP.
-func githubGetUser(ctx context.Context, token string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/user", nil)
+func githubGetUser(ctx context.Context, githubBaseURL, token string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubBaseURL+"/user", nil)
 	if err != nil {
 		return "", fmt.Errorf("creating /user request: %w", err)
 	}
@@ -95,8 +100,8 @@ func githubGetUser(ctx context.Context, token string) (string, error) {
 // githubCheckTeamMembership verifies that username is a member of
 // org/team. Uses the user's own token for the membership check
 // (GET /orgs/{org}/teams/{team}/memberships/{username}).
-func githubCheckTeamMembership(ctx context.Context, token, org, team, username string) error {
-	membershipURL := fmt.Sprintf("https://api.github.com/orgs/%s/teams/%s/memberships/%s",
+func githubCheckTeamMembership(ctx context.Context, githubBaseURL, token, org, team, username string) error {
+	membershipURL := fmt.Sprintf("%s/orgs/%s/teams/%s/memberships/%s", githubBaseURL,
 		url.PathEscape(org), url.PathEscape(team), url.PathEscape(username))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, membershipURL, nil)
 	if err != nil {

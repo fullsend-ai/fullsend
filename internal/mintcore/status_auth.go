@@ -50,7 +50,7 @@ func (h *Handler) authenticateStatus(ctx context.Context, r *http.Request) (*sta
 	log.Printf("OIDC verification failed for /v1/status: %v", oidcErr)
 
 	// --- GitHub validator (compile-time selected) ---
-	ghErr := validateStatusGitHub(ctx, r)
+	ghErr := validateStatusGitHub(ctx, r, h.githubBaseURL)
 	if ghErr == nil {
 		return &statusAuthResult{}, nil
 	}

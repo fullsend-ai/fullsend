@@ -203,6 +203,19 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	return h, nil
 }
 
+// SetGitHubBaseURL points every GitHub REST API call the handler makes
+// (installation lookups, token creation, foreign allowlists, bot-role
+// lookups and the GitHub user/team status check) at baseURL instead of
+// the default https://api.github.com. A trailing slash is removed. An
+// empty baseURL keeps the current value. Load sites that support a
+// GitHub server other than github.com call it after NewHandler and
+// before the handler serves requests; baseURL must already be validated.
+func (h *Handler) SetGitHubBaseURL(baseURL string) {
+	if baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/"); baseURL != "" {
+		h.githubBaseURL = baseURL
+	}
+}
+
 // SetTracer enables request tracing. Load sites call it after
 // NewHandler when an OTLP traces endpoint is configured; a nil tracer
 // (the default) disables tracing with no export attempts. It must be

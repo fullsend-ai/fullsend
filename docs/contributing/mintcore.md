@@ -106,11 +106,16 @@ its platform, then passes them into `NewHandler`:
 
 ```go
 // cmd/mint (standalone)
+// GITHUB_API_URL is optional; the issuer is derived from it and
+// defaults to https://token.actions.githubusercontent.com.
+apiURL, _ := githubAPIBaseURL(os.Getenv("GITHUB_API_URL"))
+issuerURL, _ := oidcIssuerForAPI(apiURL)
 verifier, _ := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-    IssuerURL: "https://token.actions.githubusercontent.com",
+    IssuerURL: issuerURL,
 })
 pemAccessor, _ := mintcore.NewFilesystemPEMAccessor(os.Getenv("PEM_DIR"))
 handler, _ := mintcore.NewHandler(pemAccessor, verifier)
+handler.SetGitHubBaseURL(apiURL) // no-op when apiURL is ""
 ```
 
 ```go

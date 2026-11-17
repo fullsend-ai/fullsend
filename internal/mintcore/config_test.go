@@ -356,6 +356,27 @@ func TestNewHandler_DefaultGithubBaseURL(t *testing.T) {
 	}
 }
 
+func TestHandler_SetGitHubBaseURL(t *testing.T) {
+	setBindings(t, map[string]string{
+		"ROLE_APP_IDS":           `{"coder":"200"}`,
+		"ALLOWED_WORKFLOW_FILES": "*",
+	})
+	h, err := NewHandler(&fakePEMAccessor{}, &fakeOIDCVerifier{})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+
+	h.SetGitHubBaseURL("  ")
+	if h.githubBaseURL != "https://api.github.com" {
+		t.Fatalf("empty base URL should keep the default, got %s", h.githubBaseURL)
+	}
+
+	h.SetGitHubBaseURL("https://ghes.example.com/api/v3/")
+	if h.githubBaseURL != "https://ghes.example.com/api/v3" {
+		t.Fatalf("expected configured base URL without trailing slash, got %s", h.githubBaseURL)
+	}
+}
+
 func TestNewHandler_PerRepoOnlyConfig(t *testing.T) {
 	// Verifies that a PER_REPO_WIF_REPOS-only configuration (no
 	// ALLOWED_ORGS, which is no longer read) produces a healthy handler.
