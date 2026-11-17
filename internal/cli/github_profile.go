@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 
@@ -130,8 +131,8 @@ func githubURLHostPort(raw string) (string, int, error) {
 // temporary file, and printer (if not nil) gets one line naming the
 // profile and the endpoints added. The returned cleanup removes those
 // files and is never nil. A profile whose YAML does not parse, has more
-// than one document, or (when it issues GH_TOKEN) uses a merge key, an
-// alias key or a duplicate key stops the run with an error.
+// than one document, or uses a merge key, an alias key or a duplicate key
+// stops the run with an error.
 func bindGitHubCredentialToServer(profiles []resolve.ResolvedProfile, s githubServerHosts, printer *ui.Printer) ([]resolve.ResolvedProfile, func(), error) {
 	noop := func() {}
 	var tmpDir string
@@ -194,11 +195,26 @@ func bindGitHubServerProfileBytes(profileID string, data []byte, s *githubServer
 	return patched, nil
 }
 
+// logGitHubServerEndpoints logs the endpoints added to a profile. The path of
+// an endpoint comes from the profile file, so one with a control or other
+// non-printing character is Go-quoted: it cannot start a new log line, inject
+// a workflow command or send a terminal escape.
 func logGitHubServerEndpoints(printer *ui.Printer, profileID string, added []string) {
-	if printer != nil {
-		printer.StepInfo(fmt.Sprintf("GitHub credential profile %q: added GitHub server endpoints %s",
-			profileID, strings.Join(added, ", ")))
+	if printer == nil {
+		return
 	}
+	shown := make([]string, len(added))
+	for i, name := range added {
+		shown[i] = name
+		for _, r := range name {
+			if !unicode.IsPrint(r) {
+				shown[i] = strconv.Quote(name)
+				break
+			}
+		}
+	}
+	printer.StepInfo(fmt.Sprintf("GitHub credential profile %q: added GitHub server endpoints %s",
+		profileID, strings.Join(shown, ", ")))
 }
 
 // addGitHubServerEndpoints adds the configured GitHub server's endpoints to
@@ -215,11 +231,14 @@ func addGitHubServerEndpoints(data []byte, s githubServerHosts) ([]byte, []strin
 		return data, nil, nil
 	}
 	root := doc.Content[0]
-	if !profileIssuesCredential(root, githubTokenEnvVar) {
-		return data, nil, nil
-	}
+	// Reject merge, alias and duplicate keys first, as the GitLab binding
+	// does: profileIssuesCredential reads literal keys only, so a profile
+	// that gets GH_TOKEN through a merge would otherwise pass unchanged.
 	if err := checkProfileKeys(root); err != nil {
 		return nil, nil, err
+	}
+	if !profileIssuesCredential(root, githubTokenEnvVar) {
+		return data, nil, nil
 	}
 	rawEndpoints := yamlMappingValue(root, "endpoints")
 	endpoints := resolveYAMLAlias(rawEndpoints)

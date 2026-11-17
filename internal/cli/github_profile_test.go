@@ -279,6 +279,8 @@ func TestAddGitHubServerEndpoints_Errors(t *testing.T) {
 		{"two documents", "id: a\n---\nid: b\n", "more than one YAML document"},
 		{"merge key", "base: &b\n  host: github.com\nid: p\ncredentials:\n  - name: GH_TOKEN\nendpoints:\n  - <<: *b\n    port: 443\n", "merge key"},
 		{"duplicate key", "id: p\ncredentials:\n  - name: GH_TOKEN\nendpoints: []\nendpoints:\n  - host: github.com\n    port: 443\n", "duplicate"},
+		{"GH_TOKEN credentials from a root merge", "base: &b\n  credentials:\n    - name: GH_TOKEN\nid: p\n<<: *b\nendpoints:\n  - host: github.com\n    port: 443\n", "merge key"},
+		{"GH_TOKEN name from a credential merge", "base: &b\n  name: GH_TOKEN\nid: p\ncredentials:\n  - <<: *b\nendpoints:\n  - host: github.com\n    port: 443\n", "merge key"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err := addGitHubServerEndpoints([]byte(tc.profile), ghesHosts)
@@ -286,6 +288,21 @@ func TestAddGitHubServerEndpoints_Errors(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+func TestLogGitHubServerEndpoints_QuotesNonPrintingCharacters(t *testing.T) {
+	var log bytes.Buffer
+	logGitHubServerEndpoints(ui.New(&log), "p", []string{
+		"ghes.example.com:443/ok",
+		"ghes.example.com:443/a\n::add-mask::x",
+		"ghes.example.com:443/b\x1b[2K",
+	})
+	out := log.String()
+	assert.Contains(t, out, "ghes.example.com:443/ok")
+	assert.Contains(t, out, `"ghes.example.com:443/a\n::add-mask::x"`)
+	assert.Contains(t, out, `"ghes.example.com:443/b\x1b[2K"`)
+	assert.NotContains(t, out, "\n::add-mask::")
+	assert.NotContains(t, out, "\x1b")
 }
 
 func TestBindGitHubCredentialToServer(t *testing.T) {
