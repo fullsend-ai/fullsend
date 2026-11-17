@@ -267,7 +267,9 @@ func (v *JWKSVerifier) refreshKeys(ctx context.Context) error {
 }
 
 func (v *JWKSVerifier) discoverJWKSURI(ctx context.Context) (string, error) {
-	discoveryURL := v.issuerURL + "/.well-known/openid-configuration"
+	// The issuer is compared to the token's iss exactly, so it is kept as
+	// configured; only the discovery URL drops a trailing slash.
+	discoveryURL := strings.TrimRight(v.issuerURL, "/") + "/.well-known/openid-configuration"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("creating discovery request: %w", err)
