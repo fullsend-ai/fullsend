@@ -284,3 +284,17 @@ func TestFailureLine(t *testing.T) {
 		assert.Equal(t, "Failed to extract output files", failureLine("Failed to extract output files", err, level))
 	}
 }
+
+func TestAuditChainFailure(t *testing.T) {
+	const broken = "entry 2: hash mismatch: expected abc, got SECRET-HASH"
+	for _, level := range []string{"", config.ProgressVerbosityFull, config.ProgressVerbosityTools} {
+		line, err := auditChainFailure(broken, level)
+		assert.Equal(t, "Audit log integrity check FAILED: "+broken, line, "level %q prints as before", level)
+		assert.EqualError(t, err, "audit log integrity check failed: "+broken)
+	}
+	for _, level := range []string{config.ProgressVerbosityQuiet, "bogus"} {
+		line, err := auditChainFailure(broken, level)
+		assert.Equal(t, "Audit log integrity check FAILED", line)
+		assert.EqualError(t, err, "audit log integrity check failed")
+	}
+}

@@ -3406,8 +3406,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if verifyErr != nil {
 				printer.StepWarn(failureLine("Audit log verification error", verifyErr, progressVerbosity))
 			} else if !cv.Valid {
-				printer.StepFail(fmt.Sprintf("Audit log integrity check FAILED: %s", cv.BrokenMsg))
-				return fmt.Errorf("audit log integrity check failed: %s", cv.BrokenMsg)
+				line, chainErr := auditChainFailure(cv.BrokenMsg, progressVerbosity)
+				printer.StepFail(line)
+				return chainErr
 			} else if cv.Entries > 0 {
 				printer.StepDone(fmt.Sprintf("Audit log integrity verified (%d entries)", cv.Entries))
 			}
@@ -5039,6 +5040,16 @@ func failureLine(label string, err error, progressVerbosity string) string {
 		return label
 	}
 	return label + ": " + err.Error()
+}
+
+// auditChainFailure returns the failure line and the run error for a broken
+// security audit log. The broken-chain message quotes hash fields read from
+// a file the agent can write, so at quiet (ADR 0163) neither carries it.
+func auditChainFailure(brokenMsg, progressVerbosity string) (string, error) {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		return "Audit log integrity check FAILED", errors.New("audit log integrity check failed")
+	}
+	return "Audit log integrity check FAILED: " + brokenMsg, fmt.Errorf("audit log integrity check failed: %s", brokenMsg)
 }
 
 // emitTranscriptErrorsAt writes the transcript error annotations at the
