@@ -240,6 +240,10 @@ it stays on the runner.
 - The level changes only what is printed. The next iteration still gets the
   full validation feedback, and OTLP export and Level 3 content capture still
   receive everything ([Keep conversation content privately](#keep-conversation-content-privately)).
+- The level covers the live job log only. The status comment fullsend posts
+  on the issue or pull request when a run ends still carries the full run
+  error, and output from your own pre-scripts and post-scripts prints as
+  before.
 - For every level and for how the level is chosen, see
   [`progress`](../../reference/config-reference.md#progress).
 
