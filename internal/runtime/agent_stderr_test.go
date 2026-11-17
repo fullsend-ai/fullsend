@@ -377,3 +377,38 @@ func TestOpenAgentStderr_QuietWriteFailureKeepsDraining(t *testing.T) {
 	assert.Contains(t, out.String(), "Agent CLI stderr: 2 line(s) kept out of the log at quiet; writing agent-stderr.log failed, so it is incomplete")
 	assert.NotContains(t, out.String(), "PRIVATE")
 }
+
+// The stderr file can quote text the agent read, so only the runner's
+// user can read it.
+func TestOpenAgentStderr_QuietFileIsPrivate(t *testing.T) {
+	captureAgentStderrLog(t)
+	path := filepath.Join(t.TempDir(), AgentStderrFile)
+	w, end := openAgentStderr(RunParams{ProgressVerbosity: config.ProgressVerbosityQuiet, StderrPath: path}, ui.New(&bytes.Buffer{}))
+	_, _ = io.WriteString(w, agentStderrText)
+	end()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
+const claudeErrorStream = `{"type":"system","subtype":"init","model":"claude-test-model","claude_code_version":"2.1.296","session_id":"2d9d8e0c-0000-4750-89b9-3129edaa5ccf"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"result":"failed","num_turns":1,"total_cost_usd":0}
+`
+
+// The count line prints when the agent CLI exits non-zero too.
+func TestClaudeRun_AgentStderrCountOnNonZeroExit(t *testing.T) {
+	t.Setenv("FULLSEND_TEST_AGENT_STDERR", agentStderrText)
+	jobLog := captureAgentStderrLog(t)
+	fakeOpenshellClaude(t, filepath.Join(t.TempDir(), "openshell.log"), map[string]string{
+		"claude-test-model": claudeErrorStream,
+	})
+	path := filepath.Join(t.TempDir(), AgentStderrFile)
+	var out bytes.Buffer
+	exit, _ := ClaudeRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "fs-claude-stderr", AgentBaseName: "code", RepoDir: "/r", Model: "claude-test-model",
+		Timeout: 30 * time.Second, OnEvent: func(AgentEvent) {},
+		ProgressVerbosity: config.ProgressVerbosityQuiet, StderrPath: path,
+	}, ui.New(&out), time.Now(), &RunMetrics{})
+	assert.NotEqual(t, 0, exit)
+	assertQuietStderrRouted(t, jobLog, out.String(), path, agentStderrText, 2)
+}
