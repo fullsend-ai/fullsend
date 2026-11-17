@@ -71,10 +71,11 @@ type Policy struct {
 // document does not represent itself. A missing entry is unresolved
 // attribution, never an admitted actor.
 type Provenance struct {
-	// SourceRevision is the source revision established for this check.
-	// When set, a collection whose coverage records a different revision is
-	// stale, and a complete coverage that records no revision cannot prove
-	// completeness at this revision.
+	// SourceRevision is the source revision established for this check. It
+	// is required: Build fails closed without it. A collection whose
+	// coverage records a different revision is stale, and a complete
+	// coverage that records no revision cannot prove completeness at this
+	// revision.
 	SourceRevision string
 	// TitleEditor is the source-authenticated actor of the title's current
 	// revision. The entity author does not substitute for it.
@@ -189,6 +190,9 @@ const (
 	ReasonStaleSourceRevision   = "stale_source_revision"
 	ReasonUnboundRevision       = "source_revision_unbound"
 	ReasonApprovalNotRecomputed = "approval_not_recomputed_for_harness"
+	// ReasonUpdatedAtNotAttributed marks an update timestamp that cannot be
+	// attributed to an admitted actor.
+	ReasonUpdatedAtNotAttributed = "updated_at_not_attributed"
 )
 
 // VerdictSource identifies where a role verdict came from.
@@ -293,6 +297,9 @@ func Build(in Input) (*View, error) {
 	}
 	if err := in.Document.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	if in.Provenance.SourceRevision == "" {
+		return nil, fmt.Errorf("%w: source revision is required", ErrInvalidInput)
 	}
 	if in.Now.IsZero() {
 		return nil, fmt.Errorf("%w: check time is required", ErrInvalidInput)

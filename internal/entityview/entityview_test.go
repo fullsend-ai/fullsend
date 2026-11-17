@@ -638,13 +638,118 @@ func TestChangeProposalCollections(t *testing.T) {
 	assert.Equal(t, ReasonApprovalNotRecomputed, v.Evidence.Fields["change_proposal.approval.gate"].Reason)
 }
 
-func TestApprovalGateUnsatisfiedIsKept(t *testing.T) {
+func TestApprovalGateActorDependentResultsAreUnknown(t *testing.T) {
+	// An excluded changes-requested review can leave a concrete "unsatisfied"
+	// gate in the shared document; CEL testing for it must not see it.
 	doc := changeProposal(t)
 	doc.Entity.ChangeProposal.Ptr().Approval = normentity.Known(normentity.Approval{Gate: normentity.Known(normentity.GateUnsatisfied)})
-	v := build(t, input(t, doc, normentity.RoleTriage))
+	in := input(t, doc, normentity.RoleTriage)
+	in.Document.Entity.Reviews.Known[1].Actor = human(reader)
+	v := build(t, in)
+	assert.Len(t, v.Document.Entity.Reviews.Known, 1, "the below-minimum review is excluded")
+	_, ok := v.Document.Entity.ChangeProposal.Ptr().Approval.Ptr().Gate.Value()
+	assert.False(t, ok)
+	assert.Equal(t, ReasonApprovalNotRecomputed, v.Evidence.Fields["change_proposal.approval.gate"].Reason)
+
+	doc = changeProposal(t)
+	doc.Entity.ChangeProposal.Ptr().Approval = normentity.Known(normentity.Approval{Gate: normentity.Known(normentity.GateNotRequired)})
+	v = build(t, input(t, doc, normentity.RoleTriage))
 	g, ok := v.Document.Entity.ChangeProposal.Ptr().Approval.Ptr().Gate.Value()
-	assert.True(t, ok)
-	assert.Equal(t, normentity.GateUnsatisfied, g)
+	assert.True(t, ok, "a gate that requires no approval does not depend on actors")
+	assert.Equal(t, normentity.GateNotRequired, g)
+}
+
+func TestUpdatedAtIsUnknown(t *testing.T) {
+	doc := workItem(t)
+	doc.Entity.UpdatedAt = normentity.Known(normentity.Timestamp("2026-11-17T11:00:00.000000000Z"))
+	v := build(t, input(t, doc, normentity.RoleTriage))
+	_, known := v.Document.Entity.UpdatedAt.Value()
+	assert.False(t, known, "an unauthorized actor can advance the update time")
+	assert.Equal(t, Unresolved, v.Evidence.Fields["updated_at"].Outcome)
+	assert.Equal(t, ReasonUpdatedAtNotAttributed, v.Evidence.Fields["updated_at"].Reason)
+	_, known = doc.Entity.UpdatedAt.Value()
+	assert.True(t, known, "the shared document is unchanged")
+}
+
+func TestNestedCollectionsAreRevisionChecked(t *testing.T) {
+	stale := normentity.Coverage{Status: normentity.CoverageComplete, SourceRevision: "rev-1"}
+	unbound := normentity.Coverage{Status: normentity.CoverageComplete}
+
+	t.Run("thread comment IDs", func(t *testing.T) {
+		for name, cov := range map[string]normentity.Coverage{"stale": stale, "unbound": unbound} {
+			doc := workItem(t)
+			doc.Entity.Threads.Known[0].CommentIDs.Coverage = cov
+			view := build(t, input(t, doc, normentity.RoleTriage))
+			ids := view.Document.Entity.Threads.Known[0].CommentIDs
+			assert.Equal(t, normentity.CoverageUnknown, ids.Coverage.Status, name)
+			if name == "stale" {
+				assert.Empty(t, ids.Known)
+				assert.Equal(t, ReasonStaleSourceRevision, ids.Coverage.Reason)
+			} else {
+				assert.Equal(t, []string{"C_writer", "C_bot"}, ids.Known)
+				assert.Equal(t, ReasonUnboundRevision, ids.Coverage.Reason)
+			}
+		}
+
+		// An empty complete stale list is not conclusively empty.
+		doc := workItem(t)
+		doc.Entity.Threads.Known[0].CommentIDs = normentity.List[string]{Known: []string{}, Coverage: stale}
+		view := build(t, input(t, doc, normentity.RoleTriage))
+		assert.Equal(t, normentity.CoverageUnknown, view.Document.Entity.Threads.Known[0].CommentIDs.Coverage.Status)
+	})
+
+	t.Run("extension lists", func(t *testing.T) {
+		doc := workItem(t)
+		doc.Entity.Extensions.CustomFields["labels"] = normentity.ExtensionEntry{
+			SourceKey: "customfield_3",
+			Value: normentity.Known(normentity.ExtensionValue{List: &normentity.List[normentity.ExtensionAtom]{
+				Known:    []normentity.ExtensionAtom{{String: new("a")}},
+				Coverage: stale,
+			}}),
+			ChangedBy: normentity.Known(human(writer)),
+		}
+		view := build(t, input(t, doc, normentity.RoleTriage))
+		entry := view.Document.Entity.Extensions.CustomFields["labels"]
+		l := entry.Value.Ptr().List
+		require.NotNil(t, l)
+		assert.Empty(t, l.Known)
+		assert.Equal(t, normentity.CoverageUnknown, l.Coverage.Status)
+	})
+
+	t.Run("check logs and annotations", func(t *testing.T) {
+		doc := changeProposal(t)
+		ck := &doc.Entity.Checks.Known[0]
+		ck.Log.Ascending = normentity.List[normentity.LogEntry]{Known: []normentity.LogEntry{{}}, Coverage: stale}
+		ck.Log.Descending = normentity.List[normentity.LogEntry]{Known: []normentity.LogEntry{}, Coverage: unbound}
+		ck.Report.Annotations = normentity.List[normentity.CheckAnnotation]{Known: []normentity.CheckAnnotation{}, Coverage: stale}
+		view := build(t, input(t, doc, normentity.RoleTriage))
+		got := view.Document.Entity.Checks.Known[0]
+		assert.Empty(t, got.Log.Ascending.Known)
+		for _, c := range []normentity.Coverage{got.Log.Ascending.Coverage, got.Log.Descending.Coverage, got.Report.Annotations.Coverage} {
+			assert.Equal(t, normentity.CoverageUnknown, c.Status, "an empty stale or unbound list is not conclusively empty")
+		}
+		assert.Equal(t, Counts{Unresolved: 3}, view.Evidence.Values["nested_collections"])
+	})
+
+	t.Run("current nested lists are unchanged", func(t *testing.T) {
+		doc := changeProposal(t)
+		doc.Entity.Checks.Known[0].Log.Ascending = normentity.List[normentity.LogEntry]{Known: []normentity.LogEntry{{}}, Coverage: complete()}
+		view := build(t, input(t, doc, normentity.RoleTriage))
+		l := view.Document.Entity.Checks.Known[0].Log.Ascending
+		assert.Len(t, l.Known, 1)
+		assert.Equal(t, normentity.CoverageComplete, l.Coverage.Status)
+	})
+}
+
+func TestMissingSourceRevisionFailsClosed(t *testing.T) {
+	// A stale comments collection is removed with the revision supplied; the
+	// same document must not be admitted by omitting the revision.
+	doc := workItem(t)
+	doc.Entity.Comments.Coverage.SourceRevision = "rev-1"
+	in := input(t, doc, normentity.RoleTriage)
+	in.Provenance.SourceRevision = ""
+	_, err := Build(in)
+	assert.ErrorIs(t, err, ErrInvalidInput)
 }
 
 func marshal(t *testing.T, d *normentity.Document) string {
@@ -982,9 +1087,10 @@ func TestSpecExamplesProduceSerializableViews(t *testing.T) {
 			var doc normentity.Document
 			require.NoError(t, json.Unmarshal(raw, &doc))
 			v, err := Build(Input{
-				Document: &doc,
-				Policy:   Policy{Identity: "p", HumanMinRole: normentity.RoleWrite},
-				Now:      checkTime,
+				Document:   &doc,
+				Policy:     Policy{Identity: "p", HumanMinRole: normentity.RoleWrite},
+				Provenance: Provenance{SourceRevision: revision},
+				Now:        checkTime,
 			})
 			require.NoError(t, err)
 			out, err := json.Marshal(v.Document)

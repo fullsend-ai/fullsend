@@ -14,9 +14,11 @@ import (
 // lifecycle actors, thread resolvers, extension values) pass the actor gate.
 // Current labels, assignees, and reviewers are relationships: their members
 // are admitted through the action that produced them, never through the
-// subject's own role. Raw source state (state, timestamps, checks, commits,
-// changed files) is not an actor-originated action and is kept, subject only
-// to source-revision checks.
+// subject's own role. Raw source state (state, checks, commits, changed
+// files) is not an actor-originated action and is kept, subject only to
+// source-revision checks, including those of collections nested in records.
+// The update timestamp and actor-dependent approval gate results are
+// unknown: any actor can advance or change them.
 func (b *builder) entity(e *normentity.Entity) {
 	b.title(e)
 	if a := e.Author.Ptr(); a != nil {
@@ -25,6 +27,7 @@ func (b *builder) entity(e *normentity.Entity) {
 	b.lifecycleActor("lifecycle.closed_by", &e.Lifecycle.ClosedBy)
 	b.lifecycleActor("lifecycle.merged_by", &e.Lifecycle.MergedBy)
 	b.extensions(e.Extensions)
+	b.updatedAt(e)
 	b.body(e)
 
 	comments := map[string]Outcome{}
@@ -74,7 +77,11 @@ func (b *builder) entity(e *normentity.Entity) {
 	}
 	filterList(b, "checks", &e.Checks, nil)
 	for i := range e.Checks.Known {
-		b.extensions(e.Checks.Known[i].Extensions)
+		c := &e.Checks.Known[i]
+		b.extensions(c.Extensions)
+		nested(b, &c.Log.Ascending)
+		nested(b, &c.Log.Descending)
+		nested(b, &c.Report.Annotations)
 	}
 	if cp := e.ChangeProposal.Ptr(); cp != nil {
 		filterList(b, "changed_files", &cp.ChangedFiles, nil)
@@ -127,15 +134,28 @@ func (b *builder) lifecycleActor(name string, f *normentity.Field[normentity.Act
 	b.field(name, d.outcome, d.reason)
 }
 
-// approval keeps a raw approval gate only when it cannot be a positive
-// signal. A shared document cannot have applied this harness's actor
-// admission to the approvals behind "satisfied", so it becomes unknown.
+// updatedAt makes the raw update timestamp unknown. Any actor, including one
+// below the harness minimum, can advance it, and the input carries no trusted
+// classification proving that a predicate uses it only in an actor-neutral
+// way, so it cannot be a recent-activity signal in this view.
+func (b *builder) updatedAt(e *normentity.Entity) {
+	if _, ok := e.UpdatedAt.Value(); !ok {
+		return
+	}
+	e.UpdatedAt = normentity.Unknown[normentity.Timestamp](normentity.ReasonPartial)
+	b.field("updated_at", Unresolved, ReasonUpdatedAtNotAttributed)
+}
+
+// approval keeps a raw approval gate only when it is independent of actors. A
+// shared document cannot have applied this harness's actor admission to the
+// approvals behind "satisfied" or "unsatisfied", and CEL can test either
+// result, so both become unknown. Only "not_required" is kept.
 func (b *builder) approval(cp *normentity.ChangeProposal) {
 	ap := cp.Approval.Ptr()
 	if ap == nil {
 		return
 	}
-	if g, ok := ap.Gate.Value(); ok && g == normentity.GateSatisfied {
+	if g, ok := ap.Gate.Value(); ok && g != normentity.GateNotRequired {
 		ap.Gate = normentity.Unknown[normentity.ApprovalGate](normentity.ReasonPartial)
 		b.field("change_proposal.approval.gate", Unresolved, ReasonApprovalNotRecomputed)
 	}
@@ -183,10 +203,16 @@ func (b *builder) relationship(subject *normentity.Actor, by map[string]normenti
 func (b *builder) thread(t *normentity.Thread, comments map[string]Outcome) {
 	counts := b.ev.Values["threads.comment_ids"]
 	if !t.CommentIDs.IsZero() {
+		// The membership list has its own coverage revision, independent of
+		// the comments it names: a stale list keeps no member.
+		stale := b.revise(&t.CommentIDs.Coverage)
 		kept := make([]string, 0, len(t.CommentIDs.Known))
 		unresolved := false
 		for _, id := range t.CommentIDs.Known {
 			o := outcomeOr(comments, id, Unresolved)
+			if stale {
+				o = Unresolved
+			}
 			counts.add(o)
 			switch o {
 			case Admitted:
@@ -255,6 +281,7 @@ func (b *builder) extensionActors(v *normentity.ExtensionValue) {
 		*v.Atom.Actor = b.subject(*v.Atom.Actor)
 	}
 	if v.List != nil {
+		nested(b, v.List)
 		for i := range v.List.Known {
 			if a := v.List.Known[i].Actor; a != nil {
 				*a = b.subject(*a)
@@ -312,17 +339,45 @@ func filterList[T any](b *builder, name string, l *normentity.List[T], keep func
 	b.ev.Totals.Unresolved += ev.Unresolved
 }
 
+// nested applies the source-revision checks to a collection nested inside a
+// record (extension lists, check logs, check annotations). Its members are
+// raw source facts that stay when current; a stale collection loses every
+// known member. Build requires a source revision, so no nested collection can
+// supply witnesses or absence claims without current-revision evidence.
+func nested[T any](b *builder, l *normentity.List[T]) {
+	if l.IsZero() {
+		return
+	}
+	if b.revise(&l.Coverage) {
+		l.Known = nil
+	}
+}
+
+// revise downgrades a nested collection's coverage when it is stale or its
+// complete coverage is unbound, and reports whether the coverage is stale.
+func (b *builder) revise(c *normentity.Coverage) (stale bool) {
+	switch {
+	case b.stale(*c):
+		downgrade(c, ReasonStaleSourceRevision)
+		b.value("nested_collections", Unresolved)
+		return true
+	case b.unbound(*c):
+		downgrade(c, ReasonUnboundRevision)
+		b.value("nested_collections", Unresolved)
+	}
+	return false
+}
+
 // stale reports whether coverage was recorded at a different source revision
 // than the one established for this check.
 func (b *builder) stale(c normentity.Coverage) bool {
-	rev := b.in.Provenance.SourceRevision
-	return rev != "" && c.SourceRevision != "" && c.SourceRevision != rev
+	return c.SourceRevision != "" && c.SourceRevision != b.in.Provenance.SourceRevision
 }
 
 // unbound reports whether a complete coverage cannot be tied to the source
 // revision established for this check.
 func (b *builder) unbound(c normentity.Coverage) bool {
-	return b.in.Provenance.SourceRevision != "" && c.Status == normentity.CoverageComplete && c.SourceRevision == ""
+	return c.Status == normentity.CoverageComplete && c.SourceRevision == ""
 }
 
 func (b *builder) field(name string, o Outcome, reason string) {
