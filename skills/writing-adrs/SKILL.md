@@ -53,13 +53,56 @@ reflect the current state of architectural decisions. When a new ADR is accepted
 to reflect the latest decision. It is the single place a reader can go to
 understand what is true *now*, without tracing a chain of ADRs.
 
-## When to Use
+## When to Use This Skill
 
 - A specific decision has emerged from discussion in a problem doc
 - You need to frame an upcoming decision
 - An ADR has been accepted and living documents need updating
 
 Do NOT use for open-ended exploration -- that belongs in problem docs.
+
+## Decide whether to write a new ADR
+
+An ADR is most useful when it establishes an **invariant**: a durable rule that
+future designs, implementations, and reviews must preserve. Before writing one,
+state the proposed invariant in a sentence and check existing ADRs and normative
+contracts for it. The size of the implementation does not determine whether it
+needs an ADR.
+
+**Write a new ADR when:**
+
+- The choice establishes a new architectural invariant, such as the forge
+  abstraction in [ADR 0005](../../docs/ADRs/0005-forge-abstraction-layer.md) or
+  the credential boundary in
+  [ADR 0017](../../docs/ADRs/0017-credential-isolation-for-sandboxed-agents.md).
+- Credible alternatives would leave future contributors with materially
+  different security boundaries, cross-component contracts, compatibility
+  obligations, or operating models. Record the choice and why it should hold.
+- The choice changes or supersedes an invariant in an Accepted ADR. Preserve
+  the old record and write a new one for the changed decision.
+
+**Do not write a new ADR when:**
+
+- You are **applying an existing invariant** to another runtime, provider,
+  forge, field, or workflow. For example,
+  [ADR 0094](../../docs/ADRs/0094-pi-extensions-are-harness-resources.md)
+  requires extension tools to obey the same tool allowlist as other
+  tools. With that in mind, the proposed ADR in
+  [PR#9265](https://github.com/fullsend-ai/fullsend/pull/9265) is unnecessary;
+  it just makes Pi select exact names from vetted extensions.
+- The change fixes a bug, chooses an internal algorithm, tunes a limit, or
+  adds a test mechanism without changing a durable rule. Send a normal PR that explains the rationale
+  and update the relevant guide, reference, normative spec or user doc.
+- The change only sets a local file location, internal naming convention, or
+  documentation layout. Put the convention in contributor guidance and enforce
+  it with linters where useful.
+- You are correcting or clarifying an Accepted ADR without changing its
+  decision. Use a minor annotation as allowed above, and keep living documents
+  current.
+
+If the choice is still open, explore the alternatives in a problem doc. A new
+field, command, forge, agent, or security-sensitive implementation does not by itself
+establish a new invariant.
 
 ## The Rules
 
