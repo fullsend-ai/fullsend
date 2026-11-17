@@ -1142,13 +1142,17 @@ same oversized payload — so the refused record never holds the checkpoint
 back; the checkpoint advances past it once the issue's other records have
 dispatched. That event's activity is lost, not repeated: an
 oversized `/fs-*` command, for example, never runs and leaves only the
-WARNING log line. The largest `/fs-*` command that still dispatches is about
-3,000 ASCII characters — fewer when the text is escape-heavy, since JSON
-encoding expands `<`, `>`, and `&` sixfold — because the complete event
-carries the command text twice (as `comment.body` and as the re-derived
-`comment.instruction`); commands between that boundary and the roughly
-6,550 ASCII characters the comment-only fallback used to carry whole on the
-GitLab transport are now refused instead of dispatched.
+WARNING log line. The largest one-line `/fs-*` command that still dispatches
+is about 3,000 ASCII characters — fewer when the text is escape-heavy, since
+JSON encoding expands `<`, `>`, and `&` sixfold — because the event carries a
+one-line command's text twice (as `comment.body` and as the re-derived
+`comment.instruction`, which is the first line only); a multi-line command
+with a short first line can be about twice as long. Earlier releases
+shortened every `/fs-*` command
+longer than 800 characters with the shortening ladder — 800, 400, 200, 100,
+then only the `[…truncated]` marker — and ran it shortened. A one-line
+command up to about 3,000 ASCII characters now runs whole, and a longer one
+is refused instead of dispatched.
 
 GitLab targets keep their lock and checkpoint properties in their own
 namespace, `fullsend.poll.gitlab.{instance}.{group path}.{project}.*`, where
