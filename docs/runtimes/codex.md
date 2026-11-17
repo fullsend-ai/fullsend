@@ -465,7 +465,9 @@ one, with `gpt-5.6-luna` children, `review` ran eight personas and `retro` four 
 macOS, and each child's result reached the parent once
 ([#9085](https://github.com/fullsend-ai/fullsend/issues/9085#issuecomment-6920231259)); the `review`
 parent then dropped the challenger's kept findings after its own check of the repository
-([#9657](https://github.com/fullsend-ai/fullsend/issues/9657)).
+([#9657](https://github.com/fullsend-ai/fullsend/issues/9657)). To keep either agent on Claude Code,
+set `runtime: claude` on its `agents:` entry ([per-agent
+settings](../runtimes.md#per-agent-runtime-model-and-effort)).
 
 **`code` and `fix` delegate too.** They declare no `tools:`, so under the same conditions they get
 the `default` and `explore` roles, children with the parent's shell and `apply_patch`,
