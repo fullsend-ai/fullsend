@@ -12,6 +12,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/gitlablifecycle"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -85,9 +86,12 @@ func maybeConvergeGitLabTriggerAccount(ctx context.Context, opts *reposInstallCo
 			return err
 		}
 		// Once activation is recorded, managed polling schedules move to the
-		// trigger account. Otherwise hand them to the installer. A failed hand-back
-		// can leave account-owned schedules temporarily; the next install retries.
-		return reconcileGitLabTriggerScheduleOwnership(ctx, lifecycleOpts, printer, repoFullName, gate.Ready)
+		// trigger account when it may own them (merge access, which GitLab
+		// requires of a protected-branch schedule owner, is evaluated
+		// separately from activation, #9343). Otherwise hand them to the
+		// installer. A failed hand-back can leave account-owned schedules
+		// temporarily; the next install retries.
+		return reconcileGitLabTriggerScheduleOwnership(ctx, lifecycleOpts, printer, repoFullName, gate.Ready && gate.ScheduleOwnerDeferred == "")
 	}
 	return nil
 }
@@ -391,15 +395,35 @@ func reportGitLabTriggerDispatchGate(ctx context.Context, client forge.Client, a
 	return gate
 }
 
-// printGitLabTriggerDispatchGate prints a dispatch-gate result.
+// printGitLabTriggerDispatchGate prints a dispatch-gate result. Each deferred
+// reason gets its own line, because a reason can itself contain semicolons
+// and a single joined line cannot be split back into reasons (#9248). Reasons
+// can embed repository text (such as a CI job key), so each one is sanitized
+// here, at the output boundary, so it cannot inject terminal control
+// sequences or fake output lines. The repository name and the inherited scope
+// names are sanitized the same way.
 func printGitLabTriggerDispatchGate(printer *ui.Printer, repoFullName string, gate repos.GitLabTriggerDispatchGate) {
+	repoFullName = scaffold.SanitizeDisplayText(repoFullName)
 	if !gate.Ready {
-		printer.StepInfo(fmt.Sprintf("[%s] GitLab trigger dispatch activation deferred: %s. Polling stays the dispatch path", repoFullName, strings.Join(gate.Deferred, "; ")))
+		printer.StepInfo(fmt.Sprintf("[%s] GitLab trigger dispatch activation deferred. Polling stays the dispatch path. Reasons:", repoFullName))
+		for _, reason := range gate.Deferred {
+			printer.StepInfo(fmt.Sprintf("[%s]   - %s", repoFullName, scaffold.SanitizeDisplayText(reason)))
+		}
 		return
 	}
 	printer.StepInfo(fmt.Sprintf("[%s] GitLab trigger dispatch prerequisites verified (schedules migrated off pipeline variables, override role no_one_allowed, job-token repository push disabled, trigger account ready); the dispatch activation is recorded for pipelines the trigger account creates", repoFullName))
+	if g := gate.PushGrant; g != nil {
+		printer.StepInfo(fmt.Sprintf("[%s] The GitLab trigger account %s (user %d) stays at Developer access and reaches protected branch %s through deploy key %d in that branch's push-access list. That grant also permits direct pushes to %s through the key; it grants no merge permission", repoFullName, g.AccountName, g.AccountID, g.Branch, g.DeployKeyID, g.Branch))
+	}
+	if gate.ScheduleOwnerDeferred != "" {
+		printer.StepInfo(fmt.Sprintf("[%s] GitLab polling schedules stay installer-owned on the Poller route: %s. This does not defer the webhook route, and fullsend does not widen merge access", repoFullName, gate.ScheduleOwnerDeferred))
+	}
 	if len(gate.UnverifiedInheritedScopes) > 0 {
-		printer.StepInfo(fmt.Sprintf("[%s] Unverified inherited CI/CD variable scopes (the installing credential cannot read them): %s. An override there of an execution-controlling variable such as PATH, LD_PRELOAD, BASH_ENV, or GIT_TEMPLATE_DIR would run before the job verifies its creator, with the trigger account's credentials; fullsend trusts instance administrators and group Owners not to set one. See the inherited CI/CD variable trust section of the GitLab configuration guide", repoFullName, strings.Join(gate.UnverifiedInheritedScopes, ", ")))
+		scopes := make([]string, len(gate.UnverifiedInheritedScopes))
+		for i, scope := range gate.UnverifiedInheritedScopes {
+			scopes[i] = scaffold.SanitizeDisplayText(scope)
+		}
+		printer.StepInfo(fmt.Sprintf("[%s] Unverified inherited CI/CD variable scopes (the installing credential cannot read them): %s. An override there of an execution-controlling variable such as PATH, LD_PRELOAD, BASH_ENV, or GIT_TEMPLATE_DIR would run before the job verifies its creator, with the trigger account's credentials; fullsend trusts instance administrators and group Owners not to set one. See the inherited CI/CD variable trust section of the GitLab configuration guide", repoFullName, strings.Join(scopes, ", ")))
 	}
 }
 

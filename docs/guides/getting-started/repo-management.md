@@ -20,7 +20,8 @@ configuration flags to `repos install`, see
 
 ## Prerequisites
 
-- **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
+- **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases),
+  or run [`fullsend self-update`](../../cli/self-update.md) on v0.55.0 or later)
 
 The remaining prerequisites are forge-specific:
 
@@ -36,8 +37,9 @@ agent's provider is selected when it runs; see
 
 **GitLab:**
 
-GitLab does not use `gh`, `fullsend inference provision`, or mint
-enrollment. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
+GitLab does not use `gh` or mint enrollment.
+`fullsend inference provision --forge gitlab` is optional; it creates a
+per-project Vertex WIF provider. See [Configuring GitLab § Prerequisites](configuring-gitlab.md#prerequisites)
 for the GitLab token and runner requirements. A GCP inference project is
 needed only for Vertex agents.
 
@@ -119,12 +121,24 @@ For GitLab repos, set the `GITLAB_TOKEN` environment variable or pass
 (`repos install` and `repos status`) require `gitlab.url` whenever GitLab
 repos are present, including gitlab.com; there is no manifest default. Set
 it with `fullsend repos set gitlab.url <url>` before declaring the first
-GitLab repository. The env-var fallback chain
-(`FULLSEND_GITLAB_URL` → `GITLAB_API_URL` → `CI_SERVER_URL`, defaulting to
-gitlab.com) applies only to call paths without a manifest URL; it does
-not override manifest validation. Self-hosted
-instances that use a private CA need runner `tls-ca-file` plus separate
-sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
+GitLab repository.
+
+`fullsend run` does not read the manifest. It reads the GitLab URL from
+the first one set of `FULLSEND_GITLAB_URL`, `GITLAB_API_URL` and
+`CI_SERVER_URL`. These variables never override `gitlab.url` in
+manifest validation. `fullsend run` limits `GITLAB_TOKEN` in the
+sandbox to that URL's host and port. It stops before setup if the URL
+is invalid. With the stock GitLab agents, it also stops if no URL is
+set. For a local run, set it:
+
+```bash
+export FULLSEND_GITLAB_URL=https://gitlab.example.com
+```
+
+For each stop and its fix, see [Self-Hosted GitLab Instances](configuring-gitlab.md#self-hosted-gitlab-instances).
+
+Self-hosted instances that use a private CA need runner `tls-ca-file`
+plus separate sandbox-host trust — see [Private CA (self-hosted GitLab)](operations.md#private-ca-self-hosted-gitlab).
 
 Per-repo fields inherit from the platform-level default when omitted.
 To explicitly stop a field from inheriting, set it to the literal value
@@ -288,8 +302,9 @@ installed base) with the proposed one (proposed overlay over the declared
 preset). If the replacement would implicitly relax a restriction the
 overlay does not declare — `kill_switch`, `roles`,
 `allowed_remote_resources`, agent suppressions,
-`tracker.<provider>.allowed_targets`, `inference.gateway.url`, or
-`inference.gateway.audience` — that repository fails before any write and
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`,
+`inference.gateway.audience`, `artifacts.content`, or
+`artifacts.by_source.<source>` — that repository fails before any write and
 the output names the keys. Changing a preset source alone is not an
 explicit declaration of a less-restrictive setting.
 
@@ -312,8 +327,10 @@ repositories it can also supply `inference.wif_audience` and
 `repos.yaml` can also declare a sparse managed `.fullsend/config.yaml` in
 `defaults.config`, `github.config`, `gitlab.config`, and each repository
 entry's `config`. Every section uses the same schema as per-repo
-`config.yaml`, including `runtime` and `allowed_remote_resources`, and
-each is sparse: declare only the values you want to set.
+`config.yaml`, including `runtime` and `allowed_remote_resources`, except
+`trace_context`, which only a concrete repository entry accepts (see
+[Config Reference — `trace_context`](../../reference/config-reference.md#trace_context)).
+Each section is sparse: declare only the values you want to set.
 
 ```yaml
 version: 1
@@ -449,14 +466,18 @@ drop, or that changes only through the base layer, is visible first. A
 markerless file that is malformed or not a per-repo configuration is
 reported by `repos status` as an error instead. Once
 a file carries the marker, `repos install`
-writes the canonical sparse `.fullsend/config.yaml`, `repos status`
+writes the canonical sparse `.fullsend/config.yaml` (for an explicitly pinned
+`fullsend_ref`, rendered in the configuration schema that ref reads, and left
+unchanged with an error when that schema cannot be determined; see
+[Configuration schema of a pinned ref](../../cli/repos.md#configuration-schema-of-a-pinned-ref)), `repos status`
 reports any whole-file difference (including a single-key change) as
 drift, and convergence rewrites the file deterministically — unless the
 candidate would become less restrictive than the current effective
 configuration without an explicit manifest declaration. That pre-write
 safety gate compares `kill_switch`, `roles`, `allowed_remote_resources`,
 agent `enabled: false` suppressions, `tracker.<provider>.allowed_targets`,
-`inference.gateway.url`, and `inference.gateway.audience` through the full
+`inference.gateway.url`, `inference.gateway.audience`, `artifacts.content`,
+and `artifacts.by_source.<source>` through the full
 overlay → base → code-defaults accessor chain. Omitted
 keys fall through rather than being treated as unset; an explicit empty
 `allowed_remote_resources: []` remains deny-all. A change to either
@@ -485,10 +506,10 @@ non-per-repo file, or a read error, fails with a clear error and is never
 replaced. `.fullsend/config.base.yaml` is managed as described under
 [Configuration presets](#configuration-presets).
 
-When the manifest is read-only (an HTTPS URL, or a local file without write
-permission), install fails before attempting any manifest write and prints
-the exact entry to add to its source, including for a glob-covered
-repository whose first-install `tracker` default needs an explicit
+When the manifest is read-only (an HTTPS URL, a pipe or FIFO such as `<(cmd)`,
+or a local file without write permission), install fails before attempting any
+manifest write and prints the exact entry to add to its source, including for a
+glob-covered repository whose first-install `tracker` default needs an explicit
 entry. `--dry-run`, live install and `repos status` agree.
 
 ```bash
@@ -527,10 +548,10 @@ types, and migration from the removed `repos set-default`.
 
 ### Manifest paths and URLs
 
-The `-f`/`--manifest` flag accepts either a local file path or an HTTPS
-URL. Remote manifests are fetched with a 30-second timeout and a 1 MB
-size limit. Most `repos` subcommands support this — see the
-[CLI reference](../../cli/repos.md) for details.
+The `-f`/`--manifest` flag accepts either a local file path or an HTTPS URL.
+Most `repos` subcommands support this — see the
+[CLI reference](../../cli/repos.md) for details. Remote manifests are fetched
+with a 30-second timeout. A manifest, local or remote, can be at most 1 MB.
 
 ```bash
 fullsend repos status -f https://example.com/manifests/repos.yaml
@@ -656,9 +677,12 @@ For GitLab repos, install also converges a dedicated trigger-only service
 account that owns a push-capable deploy key on the default branch's
 exact-name protected-branch rule and a pipeline trigger token. It uses only
 project-scoped authority, so it works on GitLab.com Free. Once the trigger
-dispatch activation is recorded, it also owns the managed polling schedules, so
-a scheduled poll runs as that account, and the managed webhook posts to its
-published trigger token instead of the Poller-owned one. Details are in
+dispatch activation is recorded, the managed webhook posts to its published
+trigger token instead of the Poller-owned one. The managed polling schedules
+move to that account, so a scheduled poll runs as it, only when the account
+also has merge permission on the protected default branch. Otherwise the
+schedules stay installer-owned on the Poller route while the webhook route is
+active. Details are in
 [Configuring GitLab](configuring-gitlab.md) and the
 [`repos install` reference](../../cli/repos.md).
 
@@ -731,8 +755,17 @@ For GitLab repos, status also reports the trigger-only service account as
 `cleanup-pending`, or `unreadable`, with the reason and resource IDs and never
 a token value. Every state except `not-installed`, `deferred`, and `ready` is
 drift. The managed `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET`
-variables are not reported as orphans; any other unrecognised `FULLSEND_`
-variable still is.
+variables and the reserved `FULLSEND_TRACE_SIGNING_KEY` are not reported as
+orphans; any other unrecognised `FULLSEND_` variable still is.
+
+For repos with a managed `.fullsend/config.yaml` and an explicitly pinned
+`fullsend_ref`, status also checks the installed file against the
+configuration schema that ref reads. It reports
+`config compatibility (fullsend_ref <ref>)` as `incompatible` when the ref
+cannot read the installed file, or as `unknown` (and the file as drift
+rather than current) when the schema cannot be determined. `--json` output
+carries `config_compatibility`, `config_compatibility_reason` and
+`config_schema_ref`. See [`repos status` output](../../cli/repos.md#output).
 
 For GitLab repos, status also reports the webhook fast path as a
 `gitlab_webhook` object with a `state`, the booleans `webhook_present`,
@@ -946,6 +979,22 @@ detect downgrades. If the ancestry check fails (e.g., API error), the
 upgrade proceeds rather than blocking — graceful degradation.
 
 ## Troubleshooting
+
+### Errors that say "server error text withheld"
+
+By default, `fullsend repos` reports a failed credential-bearing API call
+without the server's response, for example:
+
+```
+GitLab Poller membership reconciliation failed: resolving the GitLab Poller identity: request failed (server error text withheld)
+```
+
+Re-run the command with `--verbose` to see the scrubbed HTTP status and
+server message, and a stderr log line for each GitLab API request
+(method, path and status). This shows which call failed. Known credentials
+and token-shaped values are redacted; see
+[Verbose output](../../cli/repos.md#verbose-output) for what is shown and
+what is redacted.
 
 ### Unknown field errors in repos.yaml
 

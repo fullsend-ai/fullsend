@@ -4,8 +4,8 @@
 # Source this file from the generated poll and agent jobs' before_script
 # (do not execute it) so CA-trust exports persist into the job script.
 # Installs the fullsend CLI at the version pinned during
-# `fullsend repos install`. Mirrors the GitHub Actions
-# install-fullsend-cli action (#6445).
+# `fullsend repos install`, unless the runner image already ships that
+# release. Mirrors the GitHub Actions install-fullsend-cli action (#6445).
 #
 # FULLSEND_VERSION is an install-time placeholder replaced when the
 # scaffold is rendered.
@@ -55,31 +55,41 @@ if [ "${FULLSEND_VERSION}" = "latest" ]; then
 fi
 case "${FULLSEND_VERSION}" in
   v*)
-    # Release version — download pre-built binary with checksum
-    # verification from GitHub Releases.
     FS_VER="${FULLSEND_VERSION#v}"
-    FS_ARCH="$(uname -m)"
-    case "${FS_ARCH}" in
-      x86_64)  FS_ARCH="amd64" ;;
-      aarch64) FS_ARCH="arm64" ;;
-      *)       echo "ERROR: unsupported architecture: ${FS_ARCH} (supported: x86_64, aarch64)" >&2; exit 1 ;;
-    esac
-    FS_BASE="https://github.com/${FULLSEND_REPO}/releases/download/${FULLSEND_VERSION}"
-    curl -q -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
-      "${FS_BASE}/fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz" \
-      -o /tmp/fullsend.tar.gz
-    curl -q -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
-      "${FS_BASE}/checksums.txt" -o /tmp/checksums.txt
-    FS_CHECKSUM_LINE=$(grep "fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz$" /tmp/checksums.txt || true)
-    if [ -z "${FS_CHECKSUM_LINE}" ]; then
-      echo "ERROR: checksum entry not found for fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz" >&2
-      exit 1
+    # The runner image rendered for a release pin (X.Y.Z) or an unset pin
+    # (latest) already carries this release's CLI. Skip the download when
+    # the CLI on PATH reports exactly the pinned release (#9251). An
+    # outdated cached :latest image, or a missing or broken binary, still
+    # downloads.
+    FS_PATH_VERSION=$(fullsend --version 2>/dev/null) || FS_PATH_VERSION=""
+    if [ "${FS_PATH_VERSION}" = "fullsend version ${FS_VER}" ]; then
+      echo "fullsend CLI ${FULLSEND_VERSION} is already installed in the runner image; skipping download"
+    else
+      # Release version — download pre-built binary with checksum
+      # verification from GitHub Releases.
+      FS_ARCH="$(uname -m)"
+      case "${FS_ARCH}" in
+        x86_64)  FS_ARCH="amd64" ;;
+        aarch64) FS_ARCH="arm64" ;;
+        *)       echo "ERROR: unsupported architecture: ${FS_ARCH} (supported: x86_64, aarch64)" >&2; exit 1 ;;
+      esac
+      FS_BASE="https://github.com/${FULLSEND_REPO}/releases/download/${FULLSEND_VERSION}"
+      curl -q -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+        "${FS_BASE}/fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz" \
+        -o /tmp/fullsend.tar.gz
+      curl -q -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+        "${FS_BASE}/checksums.txt" -o /tmp/checksums.txt
+      FS_CHECKSUM_LINE=$(grep "fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz$" /tmp/checksums.txt || true)
+      if [ -z "${FS_CHECKSUM_LINE}" ]; then
+        echo "ERROR: checksum entry not found for fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz" >&2
+        exit 1
+      fi
+      echo "${FS_CHECKSUM_LINE}" \
+        | sed "s|fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz|/tmp/fullsend.tar.gz|" \
+        | sha256sum -c -
+      TAR_OPTIONS='' tar --no-same-owner -xzf /tmp/fullsend.tar.gz -C /usr/local/bin fullsend
+      rm -f /tmp/fullsend.tar.gz /tmp/checksums.txt
     fi
-    echo "${FS_CHECKSUM_LINE}" \
-      | sed "s|fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz|/tmp/fullsend.tar.gz|" \
-      | sha256sum -c -
-    TAR_OPTIONS='' tar --no-same-owner -xzf /tmp/fullsend.tar.gz -C /usr/local/bin fullsend
-    rm -f /tmp/fullsend.tar.gz /tmp/checksums.txt
     ;;
   *)
     # Untagged SHA — clone and build from source (Go toolchain

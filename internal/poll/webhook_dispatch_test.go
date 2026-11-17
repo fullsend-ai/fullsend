@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -893,5 +894,42 @@ func TestRunWebhook_FixCommandCarriesRefetchedBodyAtCanonicalPath(t *testing.T) 
 	}
 	if bytes.Contains(payload, []byte("payload body must not be used")) || bytes.Contains(payload, []byte(`"note_body"`)) {
 		t.Errorf("payload carries the raw webhook note or legacy note_body: %s", payload)
+	}
+}
+
+// TestRunWebhook_TransportBudgetRefusalFailsClosed covers the webhook
+// dispatcher's dispatch step, the third runtime consumer of the
+// ErrTransportBudget refusal beside the GitLab poller's drop
+// (TestRunTransportBudgetRefusalDropsEventWithoutRetry) and the Jira
+// poller's checkpoint advance
+// (TestRunGitLabTarget_TransportBudgetRefusalAdvancesCheckpoint): a
+// webhook-delivered /fs-* command whose payload exceeds the chunk budget
+// fails the job with ErrTransportBudget, creates no pipeline, persists no
+// dispatch key for the occurrence, and adds no eyes reaction — the command
+// never runs anywhere, so nothing may claim it was picked up.
+func TestRunWebhook_TransportBudgetRefusalFailsClosed(t *testing.T) {
+	mc := newMockClient()
+	mc.memberLevel[alice.ID] = 30
+	mc.mr[3] = sameProjectMR(3, "opened")
+	mc.projectPaths[7] = "group/project"
+	// A command body far past the chunk budget: the body is carried
+	// untruncated, so the complete normalized event cannot fit and the
+	// dispatch must refuse rather than shorten an instruction.
+	overBudgetBody := "/fs-fix " + strings.Repeat("x", 4*maxEventPayloadChunks*dispatchPayloadChunkSize)
+	mc.mrNotes[3] = []Note{{ID: 21, Body: overBudgetBody, Author: alice, CreatedAt: recent}}
+	mc.setSlashState(persistedPollState{LastPollAtFast: beforeRecent})
+
+	err := newWebhookPoller(mc).RunWebhook(context.Background(), notePayload(t, "MergeRequest", alice.ID, 21, 3))
+	if !errors.Is(err, dispatch.ErrTransportBudget) {
+		t.Fatalf("err = %v, want dispatch.ErrTransportBudget", err)
+	}
+	if len(mc.pipelineCalls) != 0 {
+		t.Errorf("pipeline calls = %+v, want none", mc.pipelineCalls)
+	}
+	if mc.forceCommits != 0 {
+		t.Errorf("state commits = %d, want none (no dispatch key persisted)", mc.forceCommits)
+	}
+	if len(mc.emojis) != 0 {
+		t.Errorf("emojis = %+v, want none (the command never ran)", mc.emojis)
 	}
 }

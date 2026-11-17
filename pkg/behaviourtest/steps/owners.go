@@ -2,6 +2,7 @@ package steps
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -245,13 +246,22 @@ func waitForDispatchRun(w *world.World) (*forge.WorkflowRun, error) {
 	if err == nil {
 		return run, nil
 	}
+	// Only a timeout with no run (any driver's, marked by the shared
+	// sentinel) is retried; any other error, such as one from a run that
+	// did dispatch or a cancelled context, is the real failure.
+	if !errors.Is(err, ci.ErrWorkflowNotDispatched) {
+		return nil, fmt.Errorf("waiting for dispatch workflow (issue_comment): %w", err)
+	}
 
 	worldLogf(w, "dispatch run: retrying with skew buffer: %v", err)
 	buffered := w.ScenarioStart.Add(-issueOpenDrainSkewBuffer)
-	if retryRun, retryErr := w.CI.WaitForWorkflow(ctx, w.RepoOwner, repo, file, buffered, issueCommentEvent); retryErr == nil {
+	retryRun, retryErr := w.CI.WaitForWorkflow(ctx, w.RepoOwner, repo, file, buffered, issueCommentEvent)
+	if retryErr == nil {
 		return retryRun, nil
 	}
-	return nil, fmt.Errorf("waiting for dispatch workflow (issue_comment): %w", err)
+	// Wrap the retry's error: its wait ended last, so its detail matches
+	// the window the dispatch diagnostics measure from.
+	return nil, fmt.Errorf("waiting for dispatch workflow (issue_comment): %w", retryErr)
 }
 
 func disableOwnersAuth(w *world.World) error {

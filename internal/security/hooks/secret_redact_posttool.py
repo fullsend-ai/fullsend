@@ -88,10 +88,14 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("perplexity_key", re.compile(r"pplx-[a-f0-9]{48}")),
     ("databricks_token", re.compile(r"dapi[a-f0-9]{32}")),
     ("telegram_bot", re.compile(r"\d{8,10}:[A-Za-z0-9_-]{35}")),
+    # A header line or a quoted key (JSON, Python dict, YAML):
+    # ``{"Authorization": "Bearer <token>"}``. Only the ``secret`` group is
+    # masked, so the key and the scheme word stay visible (see redact_text).
     (
         "auth_header",
         re.compile(
-            r"(?:Authorization|authorization)\s*:\s*(?:Bearer|Basic|Token)\s+[A-Za-z0-9_.+/=-]{20,}"
+            r"""(?i:authorization)["']?\s*:\s*["']?(?i:bearer|basic|token)\s+"""
+            r"(?P<secret>[A-Za-z0-9_.+/=-]{20,})"
         ),
     ),
 ]
@@ -506,13 +510,23 @@ def _credential_like(value: str, strength: str, *, literal: bool = True) -> bool
     return len(value) >= 20 and classes >= 2 and (has_digit or has_upper)
 
 
+# An auth scheme word inside the quotes, before the credential:
+# ``TOKEN="basic <base64>"``, ``{"token": "Bearer <token>"}``. Non-capturing,
+# so the value group holds only the credential: _credential_like judges it and
+# the mask keeps the scheme word visible. Only after an opening quote — a bare
+# value ends at the first space.
+_SCHEME_PREFIX = r"""(?:(?<=["'])(?i:basic|bearer|token)[ \t]+)?"""
+
 # NAME=value / export NAME=value / name = "value". Group 4 is the opening
 # quote (empty when bare); the closing quote must match it. The chain driver
 # additionally re-runs redact_text on an NFKC copy of each field (fullwidth
 # obfuscation); the standalone main() below does not — adapters call the chain.
 _ENV_ASSIGN_RE = re.compile(
     r"(?:^|(?<=[\s;,(]))(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)([ \t]*)=([ \t]*)(['\"]?)"
-    r"(" + _VALUE_CLASS + r"{8,})\4",
+    + _SCHEME_PREFIX
+    + r"("
+    + _VALUE_CLASS
+    + r"{8,})\4",
     re.MULTILINE,
 )
 # What may follow an unquoted value for it to be a value and not the head of an
@@ -522,7 +536,7 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # "name": "value" / 'name': 'value' / name: "value" (JSON, dicts, YAML).
 _KV_RE = re.compile(
     r"""(?:(["'])([^"'\n]{1,64})\1|(?<![A-Za-z0-9_.-])([A-Za-z_][A-Za-z0-9_-]{0,63}))"""
-    r"""\s*:\s*(["'])(""" + _VALUE_CLASS + r"""{8,})\4"""
+    r"""\s*:\s*(["'])""" + _SCHEME_PREFIX + r"""(""" + _VALUE_CLASS + r"""{8,})\4"""
 )
 
 _PRIVATE_KEY_RE = re.compile(
@@ -604,8 +618,20 @@ def redact_text(text: str, *, skip: frozenset[str] = frozenset()) -> tuple[str, 
     findings: list[dict] = []
     result = text
 
+    def mask_secret_group(match: re.Match, name: str) -> str:
+        # Mask in place: a global replace of the credential would also clip a
+        # longer secret that starts with it and hide that one from later passes.
+        token = match.group("secret")
+        masked = mask_token(token)
+        findings.append({"pattern": name, "masked": masked})
+        whole, start = match.group(0), match.start("secret") - match.start()
+        return whole[:start] + masked + whole[start + len(token) :]
+
     for name, pattern in _PREFIX_PATTERNS:
         if name in skip:
+            continue
+        if "secret" in pattern.groupindex:
+            result = pattern.sub(lambda m, n=name: mask_secret_group(m, n), result)
             continue
         for match in pattern.finditer(result):
             token = match.group(0)

@@ -432,6 +432,42 @@ agents:
 	assert.NoError(t, ValidateMergedManaged(w))
 }
 
+// ValidateMergedManaged checks agents against the effective allowlist —
+// the merged managed list with fullsend's default prefixes ensured on a
+// non-empty result — the same list every command family resolves. A
+// managed block that declares its list validates the same for the
+// prefixes the merged managed blocks resolve once written and read
+// through LayeredConfig; a prefix declared only in config.base.yaml or
+// a config_base preset is not visible to merged validation, which is
+// stricter than the read for that shape. A block that omits the key
+// validates against the defaults alone and still inherits a base []
+// (deny-all) at LayeredConfig read time. An explicit [] stays deny-all.
+func TestValidateMergedManaged_EffectiveAllowlist(t *testing.T) {
+	defaultPrefix := DefaultAllowedRemoteResources()[0]
+	integrity := "#sha256=" + strings.Repeat("a", 64)
+	agentYAML := "agents:\n  - name: probe\n    source: \"" + defaultPrefix + "harness/probe.yaml" + integrity + "\"\n"
+
+	t.Run("non-empty merged list admits a default-prefix agent", func(t *testing.T) {
+		var o ManagedConfig
+		require.NoError(t, yaml.Unmarshal([]byte("allowed_remote_resources:\n  - https://overlay.example.com/\n"+agentYAML), &o))
+		assert.NoError(t, ValidateMergedManaged(o.Writer()))
+	})
+
+	t.Run("omitted list resolves the defaults alone", func(t *testing.T) {
+		var o ManagedConfig
+		require.NoError(t, yaml.Unmarshal([]byte(agentYAML), &o))
+		assert.NoError(t, ValidateMergedManaged(o.Writer()))
+	})
+
+	t.Run("explicit [] stays deny-all", func(t *testing.T) {
+		var o ManagedConfig
+		require.NoError(t, yaml.Unmarshal([]byte("allowed_remote_resources: []\n"+agentYAML), &o))
+		err := ValidateMergedManaged(o.Writer())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not covered by allowed_remote_resources")
+	})
+}
+
 func TestMergeManaged_AllFieldsAndAgentClone(t *testing.T) {
 	enabled := false
 	sub := "sonnet"

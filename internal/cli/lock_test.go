@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
@@ -316,6 +317,38 @@ skills:
 
 	_, err = os.Stat(filepath.Join(dir, "lock.yaml"))
 	assert.True(t, os.IsNotExist(err), "lock file should not be created for local-only harness")
+}
+
+func TestRunLock_FetchOnlyHarnessRemoteResourcesNotSubset(t *testing.T) {
+	// A harness with no URL references that opts into runtime fetching
+	// (allow_runtime_fetch + allowed_remote_resources) still starts the
+	// fetch service at run time, so lock must check its allowlist against
+	// config.yaml's — not only when HasURLReferences() is true (#9291).
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	harnessContent := `agent: agents/code.md
+role: test
+allow_runtime_fetch: true
+allowed_remote_resources:
+  - "https://disallowed.example.com/"
+`
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "local.yaml"),
+		[]byte(harnessContent),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\nallowed_remote_resources:\n  - \"https://allowed.example.com/\"\n"),
+		0o644,
+	))
+
+	printer := ui.New(os.Stdout)
+	err := runLock(context.Background(), "local", dir, "", false, resolveFlags{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validating allowed remote resources")
+	assert.Contains(t, err.Error(), `"https://disallowed.example.com/" is not covered by the org allowlist`)
 }
 
 func TestRunLock_AlreadyUpToDate(t *testing.T) {
@@ -2858,6 +2891,31 @@ func TestLockTreeDirName(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+// TestLockTreeDirName_ConfiguredGitHubHost pins that a raw marker URL on the
+// configured GitHub host (GHES) names the skill or plugin directory, as
+// fetchBaseSkillDir does, rather than the marker file (#9037).
+func TestLockTreeDirName_ConfiguredGitHubHost(t *testing.T) {
+	skillURL := "https://ghe.example.com/org/repo/raw/abc123/skills/triage/SKILL.md"
+
+	t.Setenv(forge.GitHubServerURLEnv, "")
+	got, err := lockTreeDirName("skills[0]", skillURL)
+	require.NoError(t, err)
+	assert.Equal(t, "SKILL.md", got, "without the configured host the URL is not parsed as raw content")
+
+	t.Setenv(forge.GitHubServerURLEnv, "https://ghe.example.com")
+	got, err = lockTreeDirName("skills[0]", skillURL)
+	require.NoError(t, err)
+	assert.Equal(t, "triage", got)
+
+	got, err = lockTreeDirName("plugins[0]", "https://ghe.example.com/org/repo/raw/abc123/plugins/gopls-lsp/plugin.json")
+	require.NoError(t, err)
+	assert.Equal(t, "gopls-lsp", got)
+
+	_, err = lockTreeDirName("skills[0]", "https://ghe.example.com/org/repo/raw/abc123/SKILL.md")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must point to a marker file inside a directory")
 }
 
 func TestResolveFromLock_LocalPathsSurviveStrip(t *testing.T) {

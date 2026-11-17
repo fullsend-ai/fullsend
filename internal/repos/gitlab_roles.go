@@ -577,7 +577,7 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 				result.Failed = append(result.Failed, RoleProvisionFailure{
 					Role:   rec.Name,
 					Secret: secret,
-					Reason: "storing administrator-provided credential failed",
+					Reason: failureReason("storing administrator-provided credential failed", err, provided),
 				})
 				continue
 			}
@@ -630,7 +630,7 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 			result.Failed = append(result.Failed, RoleProvisionFailure{
 				Role:   rec.Name,
 				Secret: secret,
-				Reason: "project access token creation failed",
+				Reason: failureReason(roleTokenCreationFailureReason(err), err),
 			})
 			continue
 		}
@@ -676,7 +676,7 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 				result.Failed = append(result.Failed, RoleProvisionFailure{
 					Role:   rec.Name,
 					Secret: secret,
-					Reason: "storing role credential failed",
+					Reason: failureReason("storing role credential failed", err, tok.Token),
 				})
 				continue
 			}
@@ -692,7 +692,7 @@ func provisionOwnRoles(ctx context.Context, cfg RoleProvisionConfig, reg gitlabr
 			result.Failed = append(result.Failed, RoleProvisionFailure{
 				Role:   rec.Name,
 				Secret: secret,
-				Reason: "storing role credential failed",
+				Reason: failureReason("storing role credential failed", err, tok.Token),
 			})
 			continue
 		}

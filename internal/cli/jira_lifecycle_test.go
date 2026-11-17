@@ -22,6 +22,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/fullsend-ai/fullsend/internal/jiradispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
@@ -39,7 +40,7 @@ import (
 //     jiramock Jira server through jira.LiveClient;
 //   - the production CEL matcher (newCELMatcher) over harness triggers;
 //   - the GitHub output (the dispatches.json the poll workflow reads) or the
-//     GitLab output driver (gitlabJiraDispatcher), stopped at the
+//     GitLab output driver (jiradispatch.GitLabDispatcher), stopped at the
 //     DispatchJiraEvent boundary that poll.Poller tests cover;
 //   - the work-item identity that `fullsend run` derives for the code run,
 //     from the dispatch payload (GitHub) or --event-file (GitLab);
@@ -258,7 +259,7 @@ func (l *jiraLifecycle) options() jirapoll.Options {
 	if l.host == jirapoll.TargetForgeGitLab {
 		opts.TargetForge = jirapoll.TargetForgeGitLab
 		opts.GitLabURL = lifecycleGitLabURL
-		opts.Dispatcher = gitlabJiraDispatcher{poller: l.pipelines}
+		opts.Dispatcher = jiradispatch.GitLabDispatcher{Poller: l.pipelines}
 		return opts
 	}
 	opts.OutputPath = l.output
@@ -296,7 +297,7 @@ func (l *jiraLifecycle) poll(t *testing.T) ([]lifecycleDispatch, error) {
 		require.NoError(t, parseErr)
 		assert.Equal(t, l.repo, r.SourceRepo)
 		assert.Equal(t, l.repo, r.StatusRepo)
-		out = append(out, lifecycleDispatch{agent: r.Agent, event: ev, payload: r.EventPayload, statusNumber: r.StatusNumber})
+		out = append(out, lifecycleDispatch{agent: r.Agent, event: ev, payload: string(r.EventPayload), statusNumber: r.StatusNumber})
 	}
 	return out, nil
 }

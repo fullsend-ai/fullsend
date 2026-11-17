@@ -16,6 +16,28 @@ const changesRequestedMarker = forge.ChangesRequestedMarker
 // check-fix-eligibility.sh. Applied by /fs-fix-stop; see docs/agents/fix.md.
 const noFixLabel = "fullsend-no-fix"
 
+// fixOptInLabel enables bot-triggered fix dispatch on human-authored PRs
+// and PRs from bots other than the fullsend code agent; see
+// docs/agents/fix.md's Control labels section (not yet enforced by this
+// router for GitLab, but kept through the transport bound so user CEL
+// triggers keyed on it see it).
+const fixOptInLabel = "fullsend-fix"
+
+// IsControlLabel reports whether label is one of fullsend's own control
+// labels — the labels the router's gates and the shipped agent triggers
+// evaluate as control flow rather than data (the fix gate's stop and
+// opt-in labels; docs/agents/fix.md's Control labels section). The
+// transport labels bound (transport.go in this package) keeps them even past its byte
+// cap: the router matches on the bounded list, and dropping a stop label
+// under padding labels would fail that gate open — a kill switch must
+// survive its own transport bound. Keeping a control label can only
+// suppress or enable what the gates already decided, never widen it:
+// anyone who can label the work item can also add or remove the label
+// itself.
+func IsControlLabel(label string) bool {
+	return label == noFixLabel || label == fixOptInLabel
+}
+
 // HarnessRouter implements EventRouter by applying the default routing
 // rules from ADR 0067's event routing table. Slash commands (/fs-X)
 // dispatch to any agent in the valid set; label, merge, MR-open, and

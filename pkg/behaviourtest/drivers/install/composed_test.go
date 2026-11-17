@@ -50,6 +50,9 @@ type slotEnsurer struct {
 	// ReleaseRepo call.
 	releasedOwns []bool
 	failNext     error
+	// failAlways, when set, is returned by every EnsureRepo call after
+	// failNext.
+	failAlways error
 	// ownerChecks are the OwnerChecks the driver passed to EnsureRepo.
 	ownerChecks []OwnerCheck
 
@@ -109,6 +112,10 @@ func (e *slotEnsurer) EnsureRepo(ctx context.Context, org, repo string, owner ..
 	e.mu.Lock()
 	if err := e.failNext; err != nil {
 		e.failNext = nil
+		e.mu.Unlock()
+		return err
+	}
+	if err := e.failAlways; err != nil {
 		e.mu.Unlock()
 		return err
 	}
@@ -651,6 +658,44 @@ func TestComposedDriver_ProvisioningFailureReleasesSlot(t *testing.T) {
 	l, err = td.AllocateLease(ctx)
 	require.NoError(t, err, "the slot is claimable again")
 	require.NoError(t, td.DeallocateLease(ctx, l.Org, l.Repo))
+}
+
+func TestComposedDriver_SettleTimeoutClaimsFreshRepo(t *testing.T) {
+	td := newTestPoolDriver(t, StagePoolLayout(1))
+	ctx := context.Background()
+
+	// First lease sets the org up; make the next install time out
+	// waiting for Actions once.
+	l, err := td.AllocateLease(ctx)
+	require.NoError(t, err)
+	require.NoError(t, td.DeallocateLease(ctx, l.Org, l.Repo))
+	ens := td.ensurer(StageOrg)
+	callsBefore := len(ens.ownerChecks)
+	ens.failNext = fmt.Errorf("%w: never indexed", errWorkflowNotReady)
+
+	l, err = td.AllocateLease(ctx)
+	require.NoError(t, err, "a settle timeout claims a fresh repo instead of failing")
+	assert.Equal(t, 2, len(ens.ownerChecks)-callsBefore, "the fresh repo is provisioned once more")
+	assert.Equal(t, []Slot{{Org: l.Org, Repo: l.Repo}}, td.alloc.Held(), "only the fresh slot is held")
+	require.NoError(t, td.DeallocateLease(ctx, l.Org, l.Repo))
+}
+
+func TestComposedDriver_SettleTimeoutGivesUpAfterLimit(t *testing.T) {
+	td := newTestPoolDriver(t, StagePoolLayout(1))
+	ctx := context.Background()
+
+	l, err := td.AllocateLease(ctx)
+	require.NoError(t, err)
+	require.NoError(t, td.DeallocateLease(ctx, l.Org, l.Repo))
+	ens := td.ensurer(StageOrg)
+	callsBefore := len(ens.ownerChecks)
+	ens.failAlways = fmt.Errorf("%w: never indexed", errWorkflowNotReady)
+
+	_, err = td.AllocateLease(ctx)
+	require.ErrorIs(t, err, errWorkflowNotReady)
+	assert.Equal(t, settleRecreateAttempts, len(ens.ownerChecks)-callsBefore, "one provisioning per claimed repo")
+	assert.Empty(t, td.alloc.Held(), "every timed-out slot is released")
+	assert.False(t, td.pool.exists(t, Slot{Org: StageOrg, Repo: "test-repo-01"}), "the last timed-out repo is deleted")
 }
 
 func TestComposedDriver_OrgSetupFailureIsRetried(t *testing.T) {

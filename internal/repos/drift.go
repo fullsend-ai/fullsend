@@ -238,6 +238,9 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 		// listing returns them, but they are managed, not orphans.
 		managedNames[forge.SecretTriggerToken] = true
 		managedNames[forge.SecretWebhookSecret] = true
+		// Fullsend reserves the trace signing key's name (ADR 0154). The
+		// variable listing returns it, but it is managed, not an orphan.
+		managedNames[forge.SecretTraceSigningKey] = true
 		for _, name := range gitlabRetiredLegacyVars {
 			managedNames[name] = true
 		}

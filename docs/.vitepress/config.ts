@@ -331,7 +331,15 @@ export default defineConfig({
               link: "/guides/user/owners-file-authorization",
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
+            {
+              text: "Tightening Command Scanning",
+              link: "/guides/user/tightening-command-scanning",
+            },
             { text: "Jira Integration", link: "/guides/user/jira-integration" },
+            {
+              text: "Run Artifacts and Private Data",
+              link: "/guides/user/run-artifacts-and-private-data",
+            },
             { text: "How To Emit Traces", link: "/guides/user/how-to-emit-traces" },
             { text: "Tracing with MLflow", link: "/guides/user/tracing-with-mlflow" },
           ],

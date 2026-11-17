@@ -19,9 +19,10 @@
 // adapter's PreToolUse input — with the prepared, validated arguments, so the
 // security hooks inspect exactly the edits that get applied.
 //
-// PiRuntime.Run loads it with -e only when the agent's tools include edit:
-// under --no-builtin-tools with no --tools list pi does not filter extension
-// tools, so loading it there would grant edit to an agent that has none.
+// Parent and child launches load it only when their selection includes edit.
+// The parent gate prevents a grant under --no-builtin-tools, which does not
+// filter extension tools. Children always use explicit --tools (even ''), so
+// their gate avoids loading an unused extension rather than enforcing access.
 //
 // Delete this file and its wiring once the pinned pi repairs both shapes
 // itself; see the note next to ARG PI_VERSION in images/sandbox/Containerfile.

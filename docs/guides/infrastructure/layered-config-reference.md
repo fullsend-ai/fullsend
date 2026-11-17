@@ -71,7 +71,8 @@ Those blocks are not `config_base` presets: `config` is a sparse overlay
 written to `.fullsend/config.yaml`, while `config_base` copies a preset
 byte-for-byte to `.fullsend/config.base.yaml`. Managed blocks use this
 same schema (every field, including `runtime` and
-`allowed_remote_resources`) and the per-field merge rules below. The former
+`allowed_remote_resources`, except `trace_context`, which only a concrete
+repository entry accepts) and the per-field merge rules below. The former
 sibling `runtime` / `allowed_remote_resources` keys under `defaults` and
 repository entries are rejected. Managed configuration is
 not an opt-in: every repository selected from the manifest has a managed
@@ -155,12 +156,20 @@ the overlay → base → code defaults chain.
 | `inference.gateway.messages_auth_header` | `string` (nested) | Scalar override | `""` (empty; means `authorization`) |
 | `inference.gateway.models` / `inference.gateway.models_file` | `map` / `string` (nested) | Model list replaced as one unit | `nil` (none) |
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
+| `artifacts.content` | `string` (nested) | Scalar override | `"all"` |
+| `artifacts.by_source` | `map[string]string` (nested) | Per-key merge | `nil` (no per-source levels) |
 | `tracker` | `*TrackingConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 | `authorization` | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |
+| `trace_context` | `*TraceContextConfig` | Overlay only (not layered) | `nil` |
 
 `authorization` is overlay-only: setting it in `config.base.yaml` has no
 effect, so each repo must opt in explicitly.
+
+`trace_context` is overlay-only too: `config.base.yaml` never supplies it. The
+repository's concrete `repos.yaml` entry is the only managed layer that may
+declare it, and install renders the whole block into the managed overlay. See
+[Config Reference — `trace_context`](../../reference/config-reference.md#trace_context).
 
 ### Per-agent `runtime`, `model`, `effort`, `subagents`, `trigger` on `agents:` entries
 
@@ -434,12 +443,25 @@ composition). It uses special three-way semantics:
 | Non-empty list | **Union** of overlay entries ∪ parent entries |
 
 When the overlay provides a non-empty list and a parent exists, the
-effective value is the union of both lists (overlay entries first, then
-any parent entries not already present). Code defaults are provided
+accessor-level value is the union of both lists (overlay entries first,
+then any parent entries not already present). Code defaults are provided
 solely by the terminal `perRepoDefaults` parent — intermediate parents
 may return whatever allowlist they want, including omitting the built-in
 prefixes. The union does **not** force-append code defaults after the
 parent union.
+
+Command loaders then resolve the effective command-level list from that
+accessor-level value: every command family ensures fullsend's default
+prefixes on top of a non-empty result (see the rule paragraph in
+[Harness Field Reference](../../contributing/harness-fields.md)). An
+explicit `[]` as the resolved effective value stays deny-all, but a
+non-empty overlay list over a base layer's `allowed_remote_resources: []`
+(or over any parent whose list lacks the built-in prefixes, in which case
+that parent's own entries are kept too) resolves to the overlay entries
+plus the built-in prefixes. Managed `repos.yaml` layers are the one
+exception: they reject a non-empty list declared below an explicit `[]`,
+so that shape fails validation there instead of resolving (the error tells
+you to declare the full list in a single layer).
 
 Example:
 
@@ -472,7 +494,7 @@ The `tracker` field is the single, provider-discriminated issue-tracker
 mapping (`github`, `gitlab`, or `jira`; at most one). It replaces the former
 scalar `tracker` field, which is no longer accepted. The provider block that
 is present is the default for `--tracker` on `fullsend issues get`,
-`create`, `post-comment`, and `link` (`link` supports only Jira, so a `github`
+`create`, `post-comment`, `transition`, and `link` (`link` supports only Jira, so a `github`
 or `gitlab` provider makes it fail with a not-supported error unless
 `--tracker jira` is passed); an explicit `--tracker` flag overrides it. When
 no provider block is set, `--tracker` is required on every `fullsend issues`
@@ -569,6 +591,7 @@ compiled-in defaults apply:
 | `tracker` | `nil` (no provider — `--tracker` is required unless set) |
 | `status_notifications` | `nil` |
 | `authorization` | `nil` |
+| `trace_context` | `nil` (no trace-context keys) |
 
 ## Related
 

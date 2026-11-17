@@ -82,11 +82,18 @@ func ChmodPluginDir(dir string) error {
 // content are expanded from the host environment before copying to the sandbox.
 // Use this for env files that contain variable references which must be resolved
 // on the host (because the sandbox does not have those variables set).
+//
+// AllowDurable opts the entry into mounting a credential the run cannot
+// revoke (a service_account key, an authorized_user file, an
+// impersonated_service_account file whose source is not an
+// external_account, or a PEM private key). Without it, fullsend run fails
+// before the sandbox is created when Src holds one.
 type HostFile struct {
-	Src      string `yaml:"src"`                // host path (may use ${VAR} expansion)
-	Dest     string `yaml:"dest"`               // destination path inside the sandbox
-	Expand   bool   `yaml:"expand,omitempty"`   // expand ${VAR} in file content before copying
-	Optional bool   `yaml:"optional,omitempty"` // skip if src path is missing or expands to empty
+	Src          string `yaml:"src"`                     // host path (may use ${VAR} expansion)
+	Dest         string `yaml:"dest"`                    // destination path inside the sandbox
+	Expand       bool   `yaml:"expand,omitempty"`        // expand ${VAR} in file content before copying
+	Optional     bool   `yaml:"optional,omitempty"`      // skip if src path is missing or expands to empty
+	AllowDurable bool   `yaml:"allow_durable,omitempty"` // allow a durable credential the run cannot revoke
 }
 
 // ProviderDef is a declarative definition of an OpenShell provider. Files in
@@ -233,6 +240,12 @@ type EscalationConfig struct {
 // TraceConfig controls trace ID generation for security finding correlation.
 type TraceConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty"` // default: true
+}
+
+// RepoReadonly reports whether the checked-out repository is made read-only
+// in the sandbox (default: false).
+func (h *Harness) RepoReadonly() bool {
+	return BoolDefault(h.ReadonlyRepo, false)
 }
 
 // BoolDefault returns the value of a *bool, or the default if nil.
@@ -393,7 +406,7 @@ type Harness struct {
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
 	Env                    *EnvConfig              `yaml:"env,omitempty"`
 	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
-	ReadonlyRepo           bool                    `yaml:"readonly_repo,omitempty"`
+	ReadonlyRepo           *bool                   `yaml:"readonly_repo,omitempty"` // nil = unset: inherited from base, else false
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
@@ -402,6 +415,11 @@ type Harness struct {
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
+
+	// AllowCIVariableCredential downgrades the GitLab CI/CD-variable
+	// provider credential warning to an info line. Top level only and not
+	// inherited from a base, so a base cannot silence it for its children.
+	AllowCIVariableCredential bool `yaml:"allow_ci_variable_credential,omitempty"`
 
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
