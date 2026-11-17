@@ -90,6 +90,10 @@ type Handler struct {
 
 	// tracer records and exports request spans. Nil disables tracing.
 	tracer *Tracer
+
+	// webhookSecret is FULLSEND_WEBHOOK_SECRET, the HMAC secret of the
+	// orchestrator App's webhook. Nil turns the webhook route off.
+	webhookSecret []byte
 }
 
 type foreignInflight struct {
@@ -100,10 +104,11 @@ type foreignInflight struct {
 
 // NewHandler creates a Handler with the given dependencies.
 // Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES,
-// ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS)
-// are read once at construction time via the package-internal mintEnv
-// accessor. On native platforms mintEnv delegates to os.Getenv; on WASM
-// the CF Worker calls RegisterEnv before constructing the handler.
+// ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS,
+// FULLSEND_WEBHOOK_SECRET) are read once at construction time via the
+// package-internal mintEnv accessor. On native platforms mintEnv
+// delegates to os.Getenv; on WASM the CF Worker calls RegisterEnv before
+// constructing the handler.
 //
 // The HTTP client for GitHub API calls is obtained from the
 // package-internal mintHTTP accessor. On native platforms this is a
@@ -159,6 +164,9 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		perRepoWIFRepos:      perRepoWIFRepos,
 		allowedWorkflowFiles: SplitCSV(mintEnv("ALLOWED_WORKFLOW_FILES")),
 		workflowHostRepos:    workflowHostRepos,
+	}
+	if secret := mintEnv(webhookSecretEnv); secret != "" {
+		h.webhookSecret = []byte(secret)
 	}
 
 	if raw := mintEnv("ROLE_APP_IDS"); raw != "" {
@@ -238,6 +246,12 @@ func (h *Handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if r.URL.Path == botRolePath {
 		h.handleBotRole(w, r)
+		return
+	}
+	// The webhook route answers 404 like an unknown path until
+	// FULLSEND_WEBHOOK_SECRET is configured.
+	if r.URL.Path == webhookPath && h.webhookSecret != nil {
+		h.handleGitHubWebhook(w, r)
 		return
 	}
 

@@ -843,6 +843,111 @@ The rate limit key incorporates the request hostname, so preview deployments (wh
 
 If the `[[ratelimits]]` section is removed from `wrangler.toml`, the Worker logs a warning and continues without rate limiting (fail-open).
 
+## GitHub webhook for fork PR reviews
+
+A repository's fork PR review poll (`.github/workflows/fullsend-poll-prs.yml`)
+runs on a `*/5` schedule. GitHub runs such schedules late and sometimes
+skips them. The mint can start the poll within seconds of a push to a fork
+PR instead: the orchestrator (`fullsend`) App sends its `pull_request`
+webhook to the mint, and the mint sends one `workflow_dispatch` of the poll
+workflow on the repository's default branch, with no inputs. The poll then
+does exactly what it does on a scheduled tick. No webhook field reaches a
+job, and the schedule stays as the backstop for any delivery that is lost.
+
+The route is `POST /v1/webhooks/github`. It is **off** (answers `404`) until
+`FULLSEND_WEBHOOK_SECRET` is set, and the App's webhook is off until you
+turn it on. Both steps are manual. The endpoint contract is in the
+[Infrastructure Reference](infrastructure-reference.md#github-webhook-endpoint).
+
+### 1. Create the secret
+
+```bash
+openssl rand -hex 32 | tr -d '\n' > webhook-secret
+chmod 600 webhook-secret
+```
+
+The mint compares the exact value, so it must not end with a newline.
+
+### 2. Set `FULLSEND_WEBHOOK_SECRET` on the mint
+
+**GCP (Cloud Function).** Merge it into the mint service's env vars, then
+route traffic to the new revision (see
+[REVISION-pinned traffic routing](#revision-pinned-traffic-routing)):
+
+```bash
+gcloud run services update fullsend-mint \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" \
+  --update-env-vars="FULLSEND_WEBHOOK_SECRET=$(cat webhook-secret)"
+REV=$(gcloud run services describe fullsend-mint \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" \
+  --format="value(status.latestCreatedRevisionName)")
+gcloud run services update-traffic fullsend-mint \
+  --project="$GCP_PROJECT" --region="$MINT_REGION" \
+  --to-revisions="$REV=100"
+```
+
+Use `--update-env-vars`, never `--set-env-vars` (see
+[Debugging with gcloud](#debugging-with-gcloud)). A plain env var is kept by
+`mint deploy`, `mint enroll`, `mint unenroll` and `mint workflow-host`. You
+can bind a Secret Manager secret instead (`--update-secrets`), but
+`mint enroll`, `mint unenroll` and `mint workflow-host` rewrite the env vars
+as plain values and drop that binding. The route then answers `404` until you
+bind the secret again.
+
+**Cloudflare Worker.** Store it as a Worker secret:
+
+```bash
+wrangler secret put FULLSEND_WEBHOOK_SECRET --name "$WORKER_NAME" < webhook-secret
+```
+
+Durable `mint deploy` keeps Worker secrets. Preview versions do not inherit
+them, so the route stays off on previews.
+
+**Standalone mint.** Export `FULLSEND_WEBHOOK_SECRET` before starting the
+mint (see [Standalone mint](standalone-mint.md#optional-variables)).
+
+### 3. Turn on the orchestrator App's webhook
+
+In the settings of the GitHub App registered as `fullsend` in
+`ROLE_APP_IDS`:
+
+1. **General → Webhook:** check **Active**, set **Webhook URL** to
+   `<mint URL>/v1/webhooks/github` and **Webhook secret** to the content of
+   `webhook-secret`. Save.
+2. **Permissions & events → Subscribe to events:** check **Pull request**.
+   Save.
+
+The mint acts only on deliveries for that App ID. A hook from another App, or
+a repository or organization webhook, is answered `202` and ignored.
+
+### What success looks like
+
+In the App's **Advanced** tab, under **Recent Deliveries**:
+
+- the `ping` sent when the webhook is turned on is answered `200`;
+- a `pull_request` delivery for a push to a fork PR on an enrolled
+  repository is answered `202` with `{"dispatched":true}`.
+
+The repository's **Actions** tab then shows a `workflow_dispatch` run of the
+poll workflow. Other deliveries (same-repository PRs, other actions, other
+events, repositories not in `PER_REPO_WIF_REPOS`) are answered `202` with
+`{"dispatched":false,"reason":"..."}` and start nothing. The mint logs one
+line per delivery with the delivery ID, event, action, repository and
+outcome.
+
+### Troubleshooting the webhook
+
+| Delivery response | Cause | Fix |
+|-------------------|-------|-----|
+| `404` `{"error":"not found"}` | `FULLSEND_WEBHOOK_SECRET` is not set on the revision or Worker that serves traffic, or the Webhook URL path is wrong. | Set the secret (step 2). On GCP, check the traffic-serving revision's env vars (see [Debugging with gcloud](#debugging-with-gcloud)). Check that the URL ends in `/v1/webhooks/github`. |
+| `401` `{"error":"invalid signature"}` | The App's webhook secret and `FULLSEND_WEBHOOK_SECRET` differ. A trailing newline in either one is enough. | Set both from the same `webhook-secret` file, then **Redeliver**. |
+| `202` `{"dispatched":false,"reason":"workflow_not_dispatchable"}` | GitHub answered the dispatch with `404` or `422`. The repository has no `.github/workflows/fullsend-poll-prs.yml` on its default branch, the workflow has no `workflow_dispatch` trigger, or Actions is disabled. | Install or update the poll workflow. The schedule still picks up the PR. |
+| `202` `{"dispatched":false,"reason":"app_not_installed"}` | The orchestrator App is not installed on the repository. | Install the App on the repository. |
+| `202` `{"dispatched":false,"reason":"not_orchestrator_app"}` | The delivery is for an App whose ID is not the `fullsend` entry of `ROLE_APP_IDS`, or for a repository or organization webhook. | Configure the webhook on the App registered as `fullsend`. |
+| `202` `{"dispatched":false,"reason":"repo_not_enrolled"}` | The base repository is not in `PER_REPO_WIF_REPOS`. | [Enroll the repository](#enrolling-repositories). |
+| `413` | The payload is larger than 1 MiB. | None: the schedule picks up the PR. |
+| `502` `{"error":"dispatch failed"}` | A GitHub API call failed (installation lookup, token request, or a dispatch answer other than `204`, `404` or `422`). The mint's log line for the delivery holds the error. | **Redeliver** from the **Advanced** tab once GitHub recovers. |
+
 ## Bot-role lookup endpoint
 
 `POST /v1/bot-role` resolves a bot login to a registered role for dispatch

@@ -257,6 +257,53 @@ fullsend's own bots.
 - **Transient GitHub failures:** A transport error, 5xx or rate limit on the `/apps` or installation lookup is retried up to three attempts in all, honoring `Retry-After` (or `X-RateLimit-Reset` for an exhausted primary quota) and otherwise backing off from 500 ms. A wait over 5 seconds, or one the request deadline cannot cover, ends the retries with the failure. A rate-limit `403` is never treated as a rejected installation token: only a `401`, or a `403` that is not a rate limit, makes the `/apps` lookup fall back to an anonymous request.
 - **Response (200):** `{"outcome": "recognized", "role": "review"}` or `{"outcome": "no_match"}`. A failed GitHub lookup returns `502` with `{"error": "bot-role lookup failed"}`, which callers must not treat as a no-match. The endpoint returns role names only, never credentials.
 
+### GitHub Webhook Endpoint
+
+`POST /v1/webhooks/github` receives the orchestrator (`fullsend`) App's
+webhook and starts a repository's fork PR review poll
+(`.github/workflows/fullsend-poll-prs.yml`) without waiting for its `*/5`
+schedule. It only wakes the poll: it sends one `workflow_dispatch` with no
+inputs, and no webhook field reaches a job. Setup and troubleshooting:
+[Mint administration](mint-administration.md#github-webhook-for-fork-pr-reviews).
+
+- **Configuration:** off unless `FULLSEND_WEBHOOK_SECRET` is set. While it is
+  unset, the path answers `404` like an unknown path. Set it as an env var
+  (standalone, GCF) or a Worker secret (Cloudflare), and give the App's webhook
+  the same secret.
+- **Authentication:** the signature only. The body (at most 1 MiB, otherwise
+  `413`) must match `X-Hub-Signature-256`, which is `sha256=` followed by the
+  hex HMAC-SHA256 of the raw body keyed with the secret. The mint compares it
+  in constant time. A missing, wrong or non-`sha256` signature returns `401`,
+  and nothing else is read.
+- **Sender:** `X-GitHub-Hook-Installation-Target-Type` must be `integration` and
+  `X-GitHub-Hook-Installation-Target-ID` must equal the `fullsend` App ID in
+  `ROLE_APP_IDS`. Otherwise `202`, ignored.
+- **Filter:** a `ping` returns `200`. A delivery is acted on only when
+  `X-GitHub-Event` is `pull_request`, `action` is `opened`, `synchronize`,
+  `reopened` or `ready_for_review`, `pull_request.head.repo` is present and
+  differs from `pull_request.base.repo` (a fork PR), and the base repository is
+  in `PER_REPO_WIF_REPOS` (every repository when it is `*`). Anything else
+  returns `202` with `{"dispatched": false, "reason": "..."}` and makes no
+  GitHub call.
+- **Dispatch:** the mint signs an App JWT for `fullsend`, finds the App's
+  installation on the base repository, and creates an installation token with
+  only `actions: write` and `metadata: read`, limited to that repository. With
+  it the mint sends `{"ref": "<base default branch>"}` to
+  `POST /repos/{owner}/{repo}/actions/workflows/fullsend-poll-prs.yml/dispatches`.
+  The token is never returned, logged or cached, and `POST /v1/token` does not
+  serve this permission set.
+- **Response:** `202` `{"dispatched": true}` when GitHub accepts the dispatch.
+  `202` `{"dispatched": false, "reason": "workflow_not_dispatchable"}` when
+  GitHub answers `404` or `422` (no poll workflow, no `workflow_dispatch`
+  trigger, Actions off, bad ref).
+  `202` `{"dispatched": false, "reason": "app_not_installed"}` when the App is
+  not installed on the repository. `502`
+  for any other GitHub failure, so GitHub records a failed delivery that can be
+  redelivered.
+- **Logs:** one line per request with the delivery ID (`X-GitHub-Delivery`),
+  event, action, repository and outcome. Never the body, the signature or the
+  token.
+
 ---
 
 ## Inference — Agent Platform with Workload Identity Federation

@@ -38,7 +38,8 @@ internal/dispatch/gcf/
 **internal/mintcore/** contains all token-minting logic: request
 parsing, OIDC verification, claims validation, authorization (org,
 workflow-ref, repos scope), GitHub App token creation, bot-role lookup
-(`POST /v1/bot-role`), and status endpoints. It compiles to both native (`!js`) and WASM (`js`) targets.
+(`POST /v1/bot-role`), the GitHub webhook route that starts the fork PR
+review poll (`POST /v1/webhooks/github`, `webhook.go`), and status endpoints. It compiles to both native (`!js`) and WASM (`js`) targets.
 It is a nested module with a local-only `replace`; packages reachable
 from `pkg/behaviourtest` must not import it (including `mintconsts`).
 See [Go Code](go-code.md).
@@ -69,8 +70,8 @@ Reads environment/configuration values.
 
 `NewHandler` reads all configuration variables (`ROLE_APP_IDS`,
 `ALLOWED_WORKFLOW_FILES`, `PER_REPO_WIF_REPOS`,
-`WORKFLOW_HOST_REPOS`, `CUSTOM_ROLE_PERMISSIONS`, `ALLOWED_ROLES`)
-via `mintEnv` at construction time.
+`WORKFLOW_HOST_REPOS`, `CUSTOM_ROLE_PERMISSIONS`, `ALLOWED_ROLES`,
+`FULLSEND_WEBHOOK_SECRET`) via `mintEnv` at construction time.
 
 ### `mintHTTP(req *http.Request) (*http.Response, error)`
 
@@ -228,6 +229,8 @@ call `mintHTTP` include:
 - `github.go` — GitHub App installation token creation
 - `bot_role.go` — GitHub App lookup and installation verification for
   `POST /v1/bot-role`
+- `webhook.go` — `workflow_dispatch` of the fork PR review poll for
+  `POST /v1/webhooks/github`
 - `jwks_verifier.go` — JWKS key fetching
 - `sts_verifier.go` — GCP STS token exchange
 - `gcp_pem.go` — GCP Secret Manager access (`AccessGCPSecret` is the
@@ -285,6 +288,21 @@ type PEMAccessor interface {
     AccessPEM(ctx context.Context, role string) ([]byte, error)
 }
 ```
+
+## GitHub webhook route
+
+`POST /v1/webhooks/github` (`webhook.go`) is off, and answers `404` like an
+unknown path, until `FULLSEND_WEBHOOK_SECRET` is set. Its only
+authentication is the `X-Hub-Signature-256` HMAC of the raw body, checked
+with the standard library (`crypto/hmac`) because mintcore cannot import
+`internal/poll`. It acts only on deliveries for the `fullsend` App ID in
+`ROLE_APP_IDS`, and only on fork `pull_request` events of repositories that
+pass `IsPerRepoMode`. It then sends one `workflow_dispatch` of
+`fullsend-poll-prs.yml` with no inputs, using an installation token limited
+to that repository with `actions: write` and `metadata: read`. The token is
+created per request and never returned, logged or cached. Operator setup is
+in
+[Mint administration](../guides/infrastructure/mint-administration.md#github-webhook-for-fork-pr-reviews).
 
 ## Tracing
 

@@ -117,6 +117,7 @@ The standalone mint is configured entirely through environment variables:
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
 | `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint. Applies to every admitted caller; the upstream `fullsend-ai/fullsend` is always accepted. Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
 | `PORT` | HTTP listen port | `8080` (default) |
+| `FULLSEND_WEBHOOK_SECRET` | HMAC secret shared with the orchestrator (`fullsend`) App's webhook. Turns on `POST /v1/webhooks/github`, which starts a repository's fork PR review poll when a fork PR is pushed. Unset leaves the route off (`404`). Also turn on the App's webhook by hand; see [GitHub webhook for fork PR reviews](mint-administration.md#github-webhook-for-fork-pr-reviews). | `$(cat webhook-secret)` |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | Full OTLP/HTTP traces URL for mint spans. Takes precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`. Unset (with no base endpoint) disables tracing. See [Tracing](#tracing). | `https://collector.example/v1/traces` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Base OTLP/HTTP URL; `/v1/traces` is appended | `https://collector.example` |
 | `MINT_OTLP_HEADERS_FILE` | Path to a file of collector authentication headers. Must be mode `0600` or stricter. | `/etc/fullsend-mint/otlp-headers` |
@@ -313,6 +314,7 @@ When `FALLBACK_MINT_URL` is set, the standalone mint acts as a transparent proxy
 | `GET /health` | Always handled locally |
 | `GET /v1/status` | Always handled locally |
 | `POST /v1/bot-role` | Always handled locally |
+| `POST /v1/webhooks/github` | Always handled locally |
 
 The proxy forwards the original OIDC bearer token and request body to the upstream mint, and returns the upstream response verbatim. The upstream mint performs its own OIDC validation — the shared public GitHub Apps must be installed in your organization for proxied requests to succeed.
 

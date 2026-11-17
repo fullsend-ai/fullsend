@@ -129,6 +129,18 @@ Authentication (one of):
 - `CLOUDFLARE_API_TOKEN` env var (+ `CLOUDFLARE_ACCOUNT_ID`) — API token with Workers write permission
 - Wrangler OAuth session (`wrangler login`, then `wrangler whoami`) — when `CLOUDFLARE_API_TOKEN` is unset, the CLI falls back to the Wrangler login session. If `CLOUDFLARE_ACCOUNT_ID` is also unset, the CLI discovers the account from `wrangler whoami`.
 
+#### Webhook secret
+
+`mint deploy` has no flag for `FULLSEND_WEBHOOK_SECRET`, which turns on the
+mint's `POST /v1/webhooks/github` route (the fast path that starts a fork PR
+review poll). Set it by hand: as an env var of the mint service on GCP (kept
+by redeploys), with `wrangler secret put FULLSEND_WEBHOOK_SECRET` on
+Cloudflare (kept by durable redeploys, not inherited by previews), or in the
+environment of the standalone mint. Then turn on the orchestrator App's
+webhook. See
+[GitHub webhook for fork PR reviews](../guides/infrastructure/mint-administration.md#github-webhook-for-fork-pr-reviews)
+for the steps, what success looks like, and troubleshooting.
+
 #### Omit-vs-empty semantics for config flags on redeploy
 
 **Durable deploys** use `--keep-vars` so existing Worker bindings are preserved when a flag is omitted:
