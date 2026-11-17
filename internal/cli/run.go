@@ -3039,6 +3039,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			HooksSettingsPath: hooksSettings,
 			Timeout:           timeout,
 			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
+			// Beside output.jsonl, so the artifact rules (ADR 0161) treat
+			// the quiet-level stderr file as they treat the stream.
+			StderrPath:        filepath.Join(iterDir, agentruntime.AgentStderrFile),
 			Prompt:            agentPrompt,
 			Forge:             forgePlatform,
 			ModelAliases:      configModelAliases,

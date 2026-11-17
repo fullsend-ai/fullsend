@@ -415,7 +415,7 @@ func fakeOpenshellOpenCodeStream(t *testing.T, streamFixture string) {
 if [ "$2" = "exec" ]; then
   for last; do :; done
   case "$last" in
-    *"--format json"*) cat '` + streamFixture + `'; exit 0 ;;
+    *"--format json"*) ` + fakeAgentStderrArm + `cat '` + streamFixture + `'; exit 0 ;;
   esac
   exit 0
 fi

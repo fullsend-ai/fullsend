@@ -421,6 +421,11 @@ func (r ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pr
 		innerHandler(evt)
 	}
 
+	// Every model attempt writes to the same stderr sink, so at quiet a
+	// fallback run keeps one file and prints one count line.
+	agentStderr, endAgentStderr := openAgentStderr(params, printer)
+	defer endAgentStderr()
+
 	chain := claudeModelChain(params, gw != nil)
 	// lastSession is the session of the attempt that just ended. It is
 	// removed only in onFallback, once the loop has decided a fallback
@@ -430,7 +435,7 @@ func (r ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pr
 		attemptParams := params
 		attemptParams.Model = model
 		attemptParams.Timeout = timeout
-		res := r.runAttempt(ctx, attemptParams, mayFallBack, handler, printer)
+		res := r.runAttempt(ctx, attemptParams, mayFallBack, agentStderr, handler, printer)
 		lastSession = res.sessionID
 		return res
 	}
@@ -482,7 +487,7 @@ func (r ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pr
 // params.Timeout. When mayFallBack is set, its events are withheld until
 // the model produces output (see attemptGate), so an attempt abandoned
 // for a fallback leaves nothing behind in the run's output.
-func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFallBack bool, handler func(AgentEvent), printer *ui.Printer) (res claudeAttemptResult) {
+func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFallBack bool, agentStderr io.Writer, handler func(AgentEvent), printer *ui.Printer) (res claudeAttemptResult) {
 	// synthetic is set while the assistant message being read is one
 	// Claude Code wrote itself: the parser emits an InitEvent with the
 	// message's model ahead of its content, and text under
@@ -498,7 +503,7 @@ func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFall
 	defer func() { res.model, res.held, res.answered = params.Model, gate.held, gate.answered }()
 
 	cmd := buildRunCommand(params)
-	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, os.Stderr)
+	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, agentStderr)
 	if err != nil {
 		return claudeAttemptResult{exitCode: -1, execErr: err}
 	}

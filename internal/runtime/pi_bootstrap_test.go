@@ -57,7 +57,7 @@ if [ "$2" = "exec" ]; then
     "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
     *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
-    *"--print --mode json"*) cat '` + streamFixture + `'; exit 0 ;;
+    *"--print --mode json"*) ` + fakeAgentStderrArm + `cat '` + streamFixture + `'; exit 0 ;;
   esac
   exit 0
 fi

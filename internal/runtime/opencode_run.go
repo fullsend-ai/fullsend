@@ -445,7 +445,9 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 	}
 	cmd := buildOpenCodeRunCommand(params, agentName, trustedEnv)
 
-	fallback := &openCodeFallbackWatcher{w: os.Stderr}
+	agentStderr, endAgentStderr := openAgentStderr(params, printer)
+	defer endAgentStderr()
+	fallback := &openCodeFallbackWatcher{w: agentStderr}
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, fallback)
 	if err != nil {
 		return -1, err
@@ -544,7 +546,7 @@ func (r OpenCodeRuntime) Run(ctx context.Context, params RunParams, printer *ui.
 		if msg == "" {
 			msg = "subtype " + lastResult.Subtype
 		}
-		printer.StepWarn("opencode exited 0 but the stream reports an error: " + sanitizeOutput(msg))
+		printer.StepWarn(exitedZeroStreamError("opencode", msg, lastResult.Subtype, params.ProgressVerbosity))
 		return 1, nil
 	}
 	return exitCode, nil

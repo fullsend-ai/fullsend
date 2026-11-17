@@ -110,6 +110,11 @@ type RunParams struct {
 	// full. A caller that sets OnEvent applies the level in its own
 	// renderer instead.
 	ProgressVerbosity string
+	// StderrPath is where the agent CLI's stderr goes at the quiet progress
+	// level, instead of the job log. The runner sets it to AgentStderrFile
+	// beside OutputPath. Other levels ignore it. Empty at quiet drops the
+	// stderr.
+	StderrPath string
 	// Prompt overrides DefaultAgentPrompt. The validation loop sets it on a
 	// retry iteration to inject the previous iteration's failure so the agent
 	// can self-correct instead of re-running blindly. See #1050, #6494.

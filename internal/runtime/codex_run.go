@@ -591,7 +591,9 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 
 	cmd := buildCodexRunCommand(params, model, effort, hooksEnabled, digests)
 
-	stderr := &codexStderrDrops{w: os.Stderr}
+	agentStderr, endAgentStderr := openAgentStderr(params, printer)
+	defer endAgentStderr()
+	stderr := &codexStderrDrops{w: agentStderr}
 	stdout, execCmd, cancel, err := sandbox.ExecStreamReader(ctx, params.SandboxName, cmd, params.Timeout, stderr)
 	if err != nil {
 		return -1, err
@@ -747,7 +749,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		if msg == "" {
 			msg = "stream ended without a completed turn (" + lastResult.Subtype + ")"
 		}
-		printer.StepWarn("codex exited 0 but the stream reports an error: " + sanitizeOutput(msg))
+		printer.StepWarn(exitedZeroStreamError("codex", msg, lastResult.Subtype, params.ProgressVerbosity))
 		return 1, nil
 	}
 	return exitCode, nil

@@ -262,7 +262,7 @@ func fakeOpenshellClaude(t *testing.T, logPath string, streams map[string]string
 		if strings.Contains(stream, `"is_error":true`) {
 			code = "1"
 		}
-		fmt.Fprintf(&cases, "  *\"--model '%s'\"*) cat '%s'; exit %s ;;\n", model, f, code)
+		fmt.Fprintf(&cases, "  *\"--model '%s'\"*) %scat '%s'; exit %s ;;\n", model, fakeAgentStderrArm, f, code)
 	}
 	script := "#!/bin/sh\necho \"$*\" >> '" + logPath + "'\ncase \"$*\" in\n" + cases.String() + "esac\nexit 0\n"
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
