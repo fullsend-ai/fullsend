@@ -26,6 +26,10 @@ Supersedes the trigger-variable control direction left open in
 The webhook/poller topology, shared dispatch spine, identity pin, HMAC
 verification, and protected-branch isolation remain unchanged.
 
+[ADR 0175](0175-run-gitlab-jobs-in-a-companion-project.md) scopes the
+`no_one_allowed` requirement to the project where the Fullsend jobs run.
+A target project that cannot set it can use a companion project.
+
 ## Context
 
 GitLab can be configured so only project Owners may pass or override

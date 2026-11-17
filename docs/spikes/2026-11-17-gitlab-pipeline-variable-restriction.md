@@ -87,7 +87,8 @@ role must not be larger than the exposure at write access on GitHub.
 
 This target does not use the approval rules or branch settings of an
 adopter. The test results show that controls in the job cannot meet this
-target (see the `BASH_ENV` test). A follow on ADR decides that the
+target (see the `BASH_ENV` test). The decision is
+[ADR 0175](../ADRs/0175-run-gitlab-jobs-in-a-companion-project.md): the
 fullsend jobs run in a companion project.
 
 ## Configuration of adopter A
