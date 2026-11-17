@@ -325,6 +325,16 @@ func TestEnsureTraceSigningKeys_NilProgress(t *testing.T) {
 	assert.Equal(t, []string{"acme/api"}, planNames(plans))
 }
 
+// A missing manifest is refused, as EnsureManagedConfigDefaults refuses it.
+func TestEnsureTraceSigningKeys_NilManifest(t *testing.T) {
+	fc, _ := traceFixture(t, false, "acme/api")
+
+	plans, refused, err := EnsureTraceSigningKeys(context.Background(), TraceKeysConfig{}, newTestClientFactory(fc), nil)
+	require.EqualError(t, err, "manifest is required")
+	assert.Empty(t, plans)
+	assert.Empty(t, refused)
+}
+
 // A repository that only a glob covers gets its own GitHub entry, copied
 // from the glob entry that selected it, and progress names that entry and
 // that glob, since later edits to the glob no longer reach it; the globs and

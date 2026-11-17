@@ -124,6 +124,9 @@ var (
 // RequireInferenceAuth are skipped. Progress names installation and key IDs,
 // and the glob a new entry was copied from, never the seed.
 func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients ForgeClientFactory, progress ProgressFunc) (map[string]*TraceKeyPlan, []TraceKeyRefusal, error) {
+	if cfg.Manifest == nil {
+		return nil, nil, fmt.Errorf("manifest is required")
+	}
 	if progress == nil {
 		progress = func(_, _, _ string) {}
 	}
