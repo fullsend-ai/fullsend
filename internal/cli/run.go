@@ -1097,7 +1097,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 	}
-	runtimeBackend, runtimeConfigSource, runtimeErr := resolveBackendFrom(overrides, runCfg, agentName)
+	runtimeBackend, runtimeConfigSource, runtimeErr := resolveRunBackendFn(overrides, runCfg, agentName)
 	if runtimeErr != nil {
 		switch {
 		case errors.Is(runtimeErr, errParsingConfigRuntime):
@@ -5591,6 +5591,10 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 // deleteSandboxFn deletes a sandbox (sandbox.Delete). Override in tests to
 // record the deletion or return an error without a gateway.
 var deleteSandboxFn = sandbox.Delete
+
+// resolveRunBackendFn resolves runAgent's runtime backend; tests wrap it
+// to observe what runAgent hands the runtime.
+var resolveRunBackendFn = resolveBackendFrom
 
 // collectOpenshellLogsFn copies a sandbox's OpenShell logs into the run
 // directory (collectOpenshellLogs). Override in tests to record the call
