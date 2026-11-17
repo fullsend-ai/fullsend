@@ -238,3 +238,14 @@ func TestScanOutputFiles_QuietPrintsCountsOnly(t *testing.T) {
 		})
 	}
 }
+
+func TestFailureLine(t *testing.T) {
+	err := fmt.Errorf("copy SECRET-NAME.json: denied")
+	for _, level := range []string{"", config.ProgressVerbosityFull, config.ProgressVerbosityTools} {
+		assert.Equal(t, "Failed to extract output files: copy SECRET-NAME.json: denied",
+			failureLine("Failed to extract output files", err, level), "level %q prints as before", level)
+	}
+	for _, level := range []string{config.ProgressVerbosityQuiet, "bogus"} {
+		assert.Equal(t, "Failed to extract output files", failureLine("Failed to extract output files", err, level))
+	}
+}

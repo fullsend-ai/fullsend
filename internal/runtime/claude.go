@@ -563,7 +563,8 @@ func (r ClaudeRuntime) ClearIterationArtifacts(sandboxName string) error {
 	return err
 }
 
-func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string) error {
+func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir, progressVerbosity string) error {
+	rep := newTranscriptReport(agentLabel, progressVerbosity)
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
@@ -582,10 +583,11 @@ func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir str
 	if err != nil {
 		return fmt.Errorf("finding transcripts: %w", err)
 	}
+	defer rep.end()
 
 	trimmed := strings.TrimSpace(stdout)
 	if trimmed == "" {
-		fmt.Fprintf(os.Stderr, "  [%s] No transcripts found\n", agentLabel)
+		rep.noneFound("No transcripts found")
 		return nil
 	}
 
@@ -598,7 +600,7 @@ func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir str
 
 		f, createErr := root.Create(localName)
 		if createErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentLabel, localName, createErr)
+			rep.skip("Skipping (path rejected): %s: %v", localName, createErr)
 			continue
 		}
 		f.Close()
@@ -606,10 +608,10 @@ func (r ClaudeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir str
 		localPath := filepath.Join(outputDir, localName)
 		os.Remove(localPath)
 		if dlErr := sandbox.DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
-			fmt.Fprintf(os.Stderr, "  [%s] Failed to copy transcript: %v\n", agentLabel, dlErr)
+			rep.skip("Failed to copy transcript: %v", dlErr)
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "  [%s] Saved transcript: %s\n", agentLabel, localName)
+		rep.saved("Saved transcript: %s", localName)
 	}
 
 	return nil

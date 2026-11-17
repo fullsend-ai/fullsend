@@ -303,7 +303,7 @@ func (r DummyPlaybackRuntime) ClearIterationArtifacts(sandboxName string) error 
 	return nil
 }
 
-func (DummyPlaybackRuntime) ExtractTranscripts(_ string, _ string, _ string) error { return nil }
+func (DummyPlaybackRuntime) ExtractTranscripts(_, _, _, _ string) error { return nil }
 
 func (DummyPlaybackRuntime) ExtractDebugLog(_ string, _ string, _ string) error { return nil }
 

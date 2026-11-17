@@ -340,7 +340,7 @@ func TestOpenCodeExtractTranscripts_NoneFound(t *testing.T) {
 	fakeOpenshellOpenCode(t, logPath, store)
 
 	outDir := filepath.Join(work, "out")
-	err := OpenCodeRuntime{}.ExtractTranscripts("sb", "triage", outDir)
+	err := OpenCodeRuntime{}.ExtractTranscripts("sb", "triage", outDir, "")
 	require.NoError(t, err)
 	// The output dir is created even when nothing is downloaded.
 	_, statErr := os.Stat(outDir)
@@ -376,7 +376,7 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	out := filepath.Join(work, "transcripts")
-	require.NoError(t, OpenCodeRuntime{}.ExtractTranscripts("sb", "triage", out))
+	require.NoError(t, OpenCodeRuntime{}.ExtractTranscripts("sb", "triage", out, ""))
 
 	// The tee'd transcript is downloaded as <agentLabel>-output.jsonl.
 	saved := filepath.Join(out, "triage-"+openCodeOutputFile)

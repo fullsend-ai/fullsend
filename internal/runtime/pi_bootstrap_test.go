@@ -639,7 +639,7 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	out := filepath.Join(work, "transcripts")
-	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "triage", out))
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "triage", out, ""))
 	entries, err := os.ReadDir(out)
 	require.NoError(t, err)
 	var names []string
@@ -685,7 +685,7 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	out := filepath.Join(work, "transcripts")
-	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "review", out))
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "review", out, ""))
 	entries, err := os.ReadDir(out)
 	require.NoError(t, err)
 	var names []string
@@ -732,7 +732,7 @@ exit 0
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	out := filepath.Join(work, "artifacts", "transcripts")
-	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "../../escaped", out),
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "../../escaped", out, ""),
 		"a rejected name is reported and skipped, not an extraction failure")
 
 	// The usage file and a session transcript go through the same check,

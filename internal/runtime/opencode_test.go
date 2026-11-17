@@ -1052,7 +1052,7 @@ func TestOpenCodeExtractTranscripts_ProbeExecError(t *testing.T) {
 	t.Setenv("PATH", t.TempDir()) // empty PATH → openshell not found
 
 	outDir := filepath.Join(t.TempDir(), "out")
-	err := OpenCodeRuntime{}.ExtractTranscripts("sb", "triage", outDir)
+	err := OpenCodeRuntime{}.ExtractTranscripts("sb", "triage", outDir, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking transcript")
 }
@@ -1074,7 +1074,7 @@ exit 0
 
 	outDir := filepath.Join(t.TempDir(), "out")
 	// A label with "../" triggers root.Create rejection (path containment).
-	err := OpenCodeRuntime{}.ExtractTranscripts("sb", "../escape", outDir)
+	err := OpenCodeRuntime{}.ExtractTranscripts("sb", "../escape", outDir, "")
 	// Should not error (prints a warning instead), but should not create
 	// any file outside the output dir.
 	assert.NoError(t, err)

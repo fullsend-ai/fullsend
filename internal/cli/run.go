@@ -2960,7 +2960,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				return rt.ClearIterationArtifacts(sandboxName)
 			})
 			if clearErr != nil {
-				printer.StepWarn("Failed to clear sandbox output: " + clearErr.Error())
+				printer.StepWarn(failureLine("Failed to clear sandbox output", clearErr, progressVerbosity))
 			}
 		}
 
@@ -2992,7 +2992,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout), agentTraceparent); err != nil {
 			// The deadline is advisory; a stale one from the previous
 			// iteration is the only harmful state, so clear it and go on.
-			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
+			printer.StepWarn(failureLine("Could not export the iteration deadline", err, progressVerbosity))
 			if rmErr := clearIterationEnv(execCtx, sandboxName); rmErr != nil {
 				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
 					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
@@ -3174,9 +3174,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		extractStart := time.Now()
 		printer.StepStart("Extracting output files")
 		remoteSrc := fmt.Sprintf("%s/output", sandbox.SandboxWorkspace)
-		extracted, extractErr := sandbox.ExtractOutputFiles(sandboxName, remoteSrc, iterOutputDir)
+		extracted, extractErr := sandbox.ExtractOutputFiles(sandboxName, remoteSrc, iterOutputDir, config.ProgressIsQuiet(progressVerbosity))
 		if extractErr != nil {
-			printer.StepWarn("Failed to extract output files: " + extractErr.Error())
+			printer.StepWarn(failureLine("Failed to extract output files", extractErr, progressVerbosity))
 		} else if len(extracted) == 0 {
 			printer.StepInfo("No output files found")
 		} else {
@@ -3186,8 +3186,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// 9c. Extract transcripts for this iteration.
 		transcriptStart := time.Now()
 		printer.StepStart("Extracting transcripts")
-		if err := tx.ExtractTranscripts(sandboxName, agentName, iterTranscriptDir); err != nil {
-			printer.StepWarn("Failed to extract transcripts: " + err.Error())
+		if err := tx.ExtractTranscripts(sandboxName, agentName, iterTranscriptDir, progressVerbosity); err != nil {
+			printer.StepWarn(failureLine("Failed to extract transcripts", err, progressVerbosity))
 		} else {
 			printer.StepDone(fmt.Sprintf("Transcripts extracted (%.1fs)", time.Since(transcriptStart).Seconds()))
 		}
@@ -3197,7 +3197,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			debugLogName := agentruntime.DebugLogNameFor(rt, tx)
 			debugDst := filepath.Join(iterDir, debugLogName)
 			if err := tx.ExtractDebugLog(sandboxName, debugDst, debug); err != nil {
-				printer.StepWarn("Failed to extract debug log: " + err.Error())
+				printer.StepWarn(failureLine("Failed to extract debug log", err, progressVerbosity))
 			} else {
 				printer.StepInfo("Extracted " + debugLogName)
 			}
@@ -3227,7 +3227,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// unknown provenance.
 		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
 			if h.ValidationLoop != nil {
-				printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration): %v", hostRepositoryDownloadDir, clearErr))
+				printer.StepWarn(failureLine(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration)", hostRepositoryDownloadDir), clearErr, progressVerbosity))
 				repoExtractedOK = false
 				if lastIterTimedOut {
 					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
@@ -3251,9 +3251,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Clean up to prevent unsanitized content from reaching
 				// validation or the post-script. Output files (extracted in
 				// 9b) are unaffected.
-				printer.StepWarn(fmt.Sprintf("Failed to extract target repo (cleaning up): %v", err))
+				printer.StepWarn(failureLine("Failed to extract target repo (cleaning up)", err, progressVerbosity))
 				if rmErr := forceRemoveAll(hostRepositoryDownloadDir); rmErr != nil {
-					printer.StepWarn(fmt.Sprintf("Failed to clean up repo dir after extraction failure: %v", rmErr))
+					printer.StepWarn(failureLine("Failed to clean up repo dir after extraction failure", rmErr, progressVerbosity))
 				}
 				repoExtractedOK = false
 				validationFailed := errors.Is(err, sandbox.ErrRepositoryValidation)
@@ -3383,7 +3383,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.SecurityEnabled() {
 		printer.StepStart("Running post-agent output scan")
 		if err := scanOutputFiles(runDir, securityTraceID, progressVerbosity, printer); err != nil {
-			printer.StepWarn("Output scan error: " + err.Error())
+			printer.StepWarn(failureLine("Output scan error", err, progressVerbosity))
 		}
 
 		// Extract sandbox-side security findings for audit trail.
@@ -3401,7 +3401,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if _, statErr := os.Stat(findingsJSONL); statErr == nil {
 			cv, verifyErr := security.VerifyChain(findingsJSONL)
 			if verifyErr != nil {
-				printer.StepWarn("Audit log verification error: " + verifyErr.Error())
+				printer.StepWarn(failureLine("Audit log verification error", verifyErr, progressVerbosity))
 			} else if !cv.Valid {
 				printer.StepFail(fmt.Sprintf("Audit log integrity check FAILED: %s", cv.BrokenMsg))
 				return fmt.Errorf("audit log integrity check failed: %s", cv.BrokenMsg)
@@ -5025,6 +5025,17 @@ func validationFailedLine(label, feedback, progressVerbosity string) string {
 		return label
 	}
 	return label + ": " + feedback
+}
+
+// failureLine is the console line for a step that failed with err: the
+// label and the error text. At the quiet progress level (ADR 0163) only
+// the label prints, since the error can quote file names or text from the
+// sandbox. Other levels print what they always have.
+func failureLine(label string, err error, progressVerbosity string) string {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		return label
+	}
+	return label + ": " + err.Error()
 }
 
 // emitTranscriptErrorsAt writes the transcript error annotations at the
