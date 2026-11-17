@@ -6,7 +6,6 @@ accept entity work without changing existing invocations. It implements the
 planning step of [issue #9589](https://github.com/fullsend-ai/fullsend/issues/9589)
 under [ADR 0098](../../../ADRs/0098-entity-first-harness-evaluation.md) and
 [ADR 0144](../../../ADRs/0144-reuse-poll-and-entity-bound-run-processes.md).
-MUST, SHOULD, and MAY express requirements for conforming implementations.
 
 > **Target contract, not implemented:** No shipped command accepts the
 > entity flags, the `entity-sources` poll driver, or the lifecycle flags below.
@@ -223,15 +222,15 @@ the entity that the event identifies. The first check uses both `entity` and
 | No binding input, `--lifecycle poll` or `timed` | Any | Usage error: a resident lifecycle requires a binding |
 | Event input | Event-only | Unchanged event-only run |
 | Event input, `--lifecycle poll` or `timed` | Event-only | `unsupported`: resident event-only runs need a wake path outside v1 |
-| Event input for an enabled pair | Entity-source | Event-bound check, then at most one cycle (#9598, #9585) |
+| Event input for an enabled pair | Entity-source | Event-bound check, then at most one cycle when the effective lifecycle is once (#9598, #9585) |
 | Event input for a pair outside the scope, such as a Jira or GitLab event | Entity-source | `unsupported` before any entity read |
-| `--entity` or `--entity-source` for an enabled pair | Entity-source | Direct binding with `event == null`, then at most one cycle (#9598) |
+| `--entity` or `--entity-source` for an enabled pair | Entity-source | Direct binding with `event == null`, then at most one cycle when the effective lifecycle is once (#9598) |
 | `--entity` or `--entity-source` for a pair or scope outside the first scope | Entity-source | `unsupported` before any entity read |
 | `--entity` or `--entity-source` | Event-only | Usage error: entity binding requires an entity-source harness |
 | `--entity` or `--entity-source` together with `--event-file` | Any | Usage error: conflicting binding inputs |
 | `--entity` or `--entity-source` while a dispatch payload carries a normalized event | Any | Usage error: conflicting binding inputs |
 | `--entity` together with `--entity-source`, or `--entity-source` without `--entity-number`, or the reverse | Any | Usage error |
-| Bound run, `--lifecycle poll` or `timed` | Entity-source | Resident checks on the bound entity only (#9599). Eventless checks need trusted provenance, policy, and `fullsend poll` coverage. Without coverage, an explicit choice fails closed and the automatic default stays once |
+| Bound run, effective lifecycle poll or timed, whether explicit or the automatic timed default in CI | Entity-source | Resident checks on the bound entity only (#9599). Eventless checks need trusted provenance, policy, and `fullsend poll` coverage. Without coverage, an explicit choice fails closed and the automatic default stays once |
 | `--deadline` with a lifecycle other than timed | Any | Usage error |
 
 Existing flags such as `--target-repo`, `--status-number`, and the runtime
