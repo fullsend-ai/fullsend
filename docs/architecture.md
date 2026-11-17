@@ -658,9 +658,11 @@ The existing design principle is that [the repo is the coordinator](problems/age
   possible matches locally. A bound `run` rechecks source-query membership
   before event-backed or eventless sandbox cycles
   ([ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)).
-  Implementation and the normative query protocol are tracked in
-  [#8418](https://github.com/fullsend-ai/fullsend/issues/8418) and
-  [#8421](https://github.com/fullsend-ai/fullsend/issues/8421).
+  [Entity-source discovery v1](normative/entity-source-discovery/v1/README.md)
+  is the normative query protocol: source declarations, operators, routing
+  facts, provider mappings and limits, coverage evidence, retry, and adapter
+  conformance cases. Implementation is tracked in
+  [#8418](https://github.com/fullsend-ai/fullsend/issues/8418).
 
 **Open questions:**
 
@@ -670,8 +672,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0147](ADRs/0147-evaluate-entity-cel-over-selectively-acquired-data.md)
   for selective acquisition and its authorization rules, and
   [ADR 0149](ADRs/0149-coalesce-entity-source-discovery-queries.md)
-  for query combination and local routing. The normative discovery protocol,
-  including query syntax, adapter mappings, and discovery coverage evidence,
+  for query combination and local routing.
+  [Entity-source discovery v1](normative/entity-source-discovery/v1/README.md)
+  defines the logical query model, adapter mappings, and discovery coverage
+  evidence; a concrete harness-configuration syntax for source queries
   remains open.
 - Is GitHub's event system sufficient for forge-native duplicate protection, or
   do we need additional coordination beyond label/state conventions and agent

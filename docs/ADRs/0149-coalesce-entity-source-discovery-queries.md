@@ -25,6 +25,10 @@ candidate and to let a harness act on it.
 poll and bound-run lifecycles. This ADR adds a local source check before each
 sandbox cycle for an entity-driven harness.
 
+Living contract:
+[Entity-source discovery v1](../normative/entity-source-discovery/v1/README.md)
+is the versioned query protocol this ADR requires.
+
 ## Context
 
 ADR 0098 lets harnesses declare entity sources, but allows sharing only when
