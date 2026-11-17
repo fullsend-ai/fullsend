@@ -60,6 +60,7 @@ func maybeConvergeGitLabTriggerAccount(ctx context.Context, opts *reposInstallCo
 	}
 	lifecycleOpts.ReactivateSchedules = gitlabReactivateSchedules(ctx, opts, client, printer, owner, repo)
 	lifecycleOpts.DeferRetirement = deferRetirement
+	lifecycleOpts.ScheduleSpecs = opts.pollScheduleSpecs[repoFullName]
 	var result repos.GitLabTriggerAccountResult
 	diag := repos.DiagnoseGitLabTriggerAccount(ctx, client, nil, owner, repo, "")
 	if rotate && diag.State == repos.GitLabTriggerStateReady {
@@ -138,6 +139,7 @@ func finishGitLabTriggerAccountRetirement(ctx context.Context, opts *reposInstal
 	if err != nil {
 		return err
 	}
+	lifecycleOpts.ScheduleSpecs = opts.pollScheduleSpecs[owner+"/"+repo]
 	return repos.RetireGitLabTriggerAccount(ctx, lifecycleOpts)
 }
 

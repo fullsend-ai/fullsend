@@ -405,6 +405,16 @@ func (op *gitLabTriggerAccountOp) accountSchedules(ctx context.Context) (managed
 	return managed, all, foreign, nil
 }
 
+// scheduleSpecs returns the managed polling schedules the account's
+// schedules must match: the caller's effective specs (ScheduleSpecs), or
+// the compiled-in ones when none were given.
+func (op *gitLabTriggerAccountOp) scheduleSpecs() []ScheduleSpec {
+	if op.opts.ScheduleSpecs != nil {
+		return op.opts.ScheduleSpecs
+	}
+	return PipelineScheduleSpecs()
+}
+
 // compareScheduleID orders schedules oldest first.
 func compareScheduleID(a, b forge.PipelineSchedule) int {
 	return cmp.Compare(a.ID, b.ID)
@@ -445,7 +455,7 @@ func (op *gitLabTriggerAccountOp) planAccountSchedules(ctx context.Context) ([]a
 	var creates []accountScheduleCreate
 	var removals []int64
 	removalTargets := map[int64]scheduleDeleteTarget{}
-	for _, spec := range PipelineScheduleSpecs() {
+	for _, spec := range op.scheduleSpecs() {
 		var mine, others []forge.PipelineSchedule
 		for _, s := range all {
 			if s.Description != spec.Description {
@@ -776,7 +786,7 @@ func (op *gitLabTriggerAccountOp) releaseSchedules(ctx context.Context, recreate
 	removalTargets := map[int64]scheduleDeleteTarget{}
 	for _, s := range owned {
 		var spec ScheduleSpec
-		for _, candidate := range PipelineScheduleSpecs() {
+		for _, candidate := range op.scheduleSpecs() {
 			if candidate.Description == s.Description {
 				spec = candidate
 				break

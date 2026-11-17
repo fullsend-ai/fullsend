@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/gitlablifecycle"
@@ -58,7 +59,7 @@ func TestSetupGitLabPipelineSchedules(t *testing.T) {
 
 		// Poll mode is selected from the schedule description, so
 		// schedules must stay variable-free.
-		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", nil)
 		require.NoError(t, err)
 		require.Len(t, fake.CreatedSchedules, 2)
 
@@ -72,6 +73,20 @@ func TestSetupGitLabPipelineSchedules(t *testing.T) {
 		assert.Equal(t, "fullsend event poll", fake.CreatedSchedules[1].Description)
 		assert.Empty(t, fake.CreatedSchedules[1].Variables)
 	})
+
+	t.Run("uses the crons poll_schedules sets", func(t *testing.T) {
+		fake := forge.NewFakeClient()
+		printer := ui.New(&bytes.Buffer{})
+
+		specs := repos.PipelineScheduleSpecsFor(config.PollSchedulesConfig{SlashPoll: "*/30 * * * *", EventPoll: "7 * * * *"})
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", specs)
+		require.NoError(t, err)
+		require.Len(t, fake.CreatedSchedules, 2)
+		assert.Equal(t, "fullsend slash poll", fake.CreatedSchedules[0].Description)
+		assert.Equal(t, "*/30 * * * *", fake.CreatedSchedules[0].Cron)
+		assert.Equal(t, "fullsend event poll", fake.CreatedSchedules[1].Description)
+		assert.Equal(t, "7 * * * *", fake.CreatedSchedules[1].Cron)
+	})
 }
 
 func TestSetupGitLabPipelineSchedules_ScheduleError(t *testing.T) {
@@ -82,7 +97,7 @@ func TestSetupGitLabPipelineSchedules_ScheduleError(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating fullsend slash poll schedule")
 }
@@ -97,7 +112,7 @@ func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testi
 		var buf bytes.Buffer
 		printer := ui.New(&buf)
 
-		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "creating fullsend event poll schedule")
 		require.Len(t, fake.CreatedSchedules, 1, "only slash schedule should have been created")
@@ -112,7 +127,7 @@ func TestSetupGitLabPipelineSchedules_EventScheduleError_RollsBackSlash(t *testi
 		var buf bytes.Buffer
 		printer := ui.New(&buf)
 
-		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+		err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "creating fullsend event poll schedule")
 		assert.Contains(t, buf.String(), "Failed to clean up schedule")
@@ -127,7 +142,7 @@ func TestSetupGitLabPipelineSchedules_ListError(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", nil)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "Could not list existing schedules")
 }
@@ -166,7 +181,7 @@ func TestSetupGitLabPipelineSchedules_DeletesExisting(t *testing.T) {
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 
-	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main")
+	err := setupGitLabPipelineSchedules(ctx, fake, printer, "group", "project", "main", nil)
 	require.NoError(t, err)
 	assert.Equal(t, []int64{5}, fake.DeletedScheduleIDs, "should delete existing fullsend schedule")
 	require.Len(t, fake.CreatedSchedules, 2)
@@ -190,7 +205,7 @@ func TestGitLabPipelineSchedules_JiraPollSchedule(t *testing.T) {
 	}
 
 	setup := newFake()
-	require.NoError(t, setupGitLabPipelineSchedules(ctx, setup, ui.New(&bytes.Buffer{}), "group", "project", "main"))
+	require.NoError(t, setupGitLabPipelineSchedules(ctx, setup, ui.New(&bytes.Buffer{}), "group", "project", "main", nil))
 	assert.Equal(t, []int64{5}, setup.DeletedScheduleIDs, "the Jira poll schedule survives schedule setup")
 	for _, s := range setup.CreatedSchedules {
 		assert.NotEqual(t, jira, s.Description, "schedule setup never creates the Jira poll schedule")

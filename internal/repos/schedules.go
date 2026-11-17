@@ -1,5 +1,18 @@
 package repos
 
+import (
+	"fmt"
+
+	"github.com/fullsend-ai/fullsend/internal/config"
+)
+
+// Component names of the managed polling schedules. poll_schedules keys
+// map onto them in PipelineScheduleSpecsFor.
+const (
+	slashPollComponent = "schedule:slash-poll"
+	eventPollComponent = "schedule:event-poll"
+)
+
 // ScheduleSpec defines a fullsend pipeline schedule for GitLab repos.
 // All sites that create, detect, or match pipeline schedules must use
 // PipelineScheduleSpecs() to stay in sync.
@@ -22,12 +35,12 @@ type ScheduleSpec struct {
 // used by requiredSecrets/requiredVariables in install.go.
 var pipelineScheduleSpecs = []ScheduleSpec{
 	{
-		ComponentName: "schedule:slash-poll",
+		ComponentName: slashPollComponent,
 		Description:   "fullsend slash poll",
 		Cron:          "*/5 * * * *",
 	},
 	{
-		ComponentName: "schedule:event-poll",
+		ComponentName: eventPollComponent,
 		Description:   "fullsend event poll",
 		Cron:          "2,17,32,47 * * * *",
 	},
@@ -55,9 +68,69 @@ func JiraPollScheduleDescription() string {
 }
 
 // PipelineScheduleSpecs returns the canonical list of fullsend pipeline
-// schedules for GitLab repos.
+// schedules for GitLab repos, with their compiled-in crons. Sites that
+// create schedules or compare a schedule's cron use the repository's
+// effective list instead (PipelineScheduleSpecsFor).
 func PipelineScheduleSpecs() []ScheduleSpec {
 	return pipelineScheduleSpecs
+}
+
+// PipelineScheduleSpecsFor returns the managed polling schedules with each
+// cron that poll_schedules sets replacing the compiled-in one (#9527). The
+// returned slice is a copy; descriptions, component names and variables
+// are never changed.
+func PipelineScheduleSpecsFor(cfg config.PollSchedulesConfig) []ScheduleSpec {
+	specs := make([]ScheduleSpec, len(pipelineScheduleSpecs))
+	copy(specs, pipelineScheduleSpecs)
+	for i := range specs {
+		var cron string
+		switch specs[i].ComponentName {
+		case slashPollComponent:
+			cron = cfg.SlashPoll
+		case eventPollComponent:
+			cron = cfg.EventPoll
+		}
+		if cron != "" {
+			specs[i].Cron = config.NormalizeCron(cron)
+		}
+	}
+	return specs
+}
+
+// effectivePollScheduleSpecs returns a repository's managed polling
+// schedules with the crons its effective configuration (the managed
+// overlay over the configuration preset) sets in poll_schedules, and the
+// subset of them whose cron poll_schedules sets explicitly. Only that
+// subset has its existing schedules moved to the configured cron, so a
+// cron an operator edited by hand is kept while its key is unset.
+func effectivePollScheduleSpecs(resolved ResolvedConfig, preset []byte) (specs, configured []ScheduleSpec, err error) {
+	layered, err := config.LayerOnBase(resolved.Managed, preset)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s/%s: reading the effective configuration: %w", resolved.Owner, resolved.Repo, err)
+	}
+	cfg := layered.ConfigPollSchedules()
+	if err := config.ValidatePollSchedules(&cfg); err != nil {
+		return nil, nil, fmt.Errorf("%s/%s: %w", resolved.Owner, resolved.Repo, err)
+	}
+	specs = PipelineScheduleSpecsFor(cfg)
+	for _, spec := range specs {
+		if (spec.ComponentName == slashPollComponent && cfg.SlashPoll != "") ||
+			(spec.ComponentName == eventPollComponent && cfg.EventPoll != "") {
+			configured = append(configured, spec)
+		}
+	}
+	return specs, configured, nil
+}
+
+// specByComponent returns the spec in specs with the given component name,
+// or nil if there is none.
+func specByComponent(specs []ScheduleSpec, name string) *ScheduleSpec {
+	for i := range specs {
+		if specs[i].ComponentName == name {
+			return &specs[i]
+		}
+	}
+	return nil
 }
 
 // scheduleSpecByComponent returns the ScheduleSpec for the given

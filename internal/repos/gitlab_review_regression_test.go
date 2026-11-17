@@ -519,7 +519,7 @@ func TestConvergeSchedulesGatesOnRestrictionBeforeMutating(t *testing.T) {
 		{Name: specs[1].ComponentName, Present: false}, // missing — creation candidate
 	}
 
-	actions := convergeSchedules(context.Background(), resolved, components, false, true, noopProgress)
+	actions := convergeSchedules(context.Background(), resolved, PipelineScheduleSpecs(), components, false, true, noopProgress)
 
 	require.NotEmpty(t, actions)
 	for _, a := range actions {

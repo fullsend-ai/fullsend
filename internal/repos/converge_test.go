@@ -3731,7 +3731,7 @@ func TestConvergeSchedules_UnrecognizedMissing(t *testing.T) {
 			Client: fc,
 		},
 	}
-	actions := convergeSchedules(ctx, resolved, []ComponentStatus{
+	actions := convergeSchedules(ctx, resolved, PipelineScheduleSpecs(), []ComponentStatus{
 		{Name: "schedule:unknown", Present: false, Match: false},
 	}, false, false, noopProgress)
 	var found bool

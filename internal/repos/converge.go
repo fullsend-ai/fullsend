@@ -174,6 +174,13 @@ type ConvergeResult struct {
 	// not delete and recreate them.
 	NeedsGitLabPipelineSchedules bool
 
+	// PollScheduleSpecs is the repository's managed polling schedules
+	// with the crons its effective poll_schedules sets (#9527). GitLab
+	// post-install schedule setup and the trigger-account schedule stage
+	// create and compare schedules against it. nil when discovery did not
+	// resolve it; callers then use PipelineScheduleSpecs.
+	PollScheduleSpecs []ScheduleSpec
+
 	// NeedsGitLabWebhook is true when the GitLab webhook fast-path (the
 	// project webhook and its pipeline trigger token, ADR 0125) is
 	// missing or misconfigured. It is a convergence signal, not an enable
@@ -316,6 +323,13 @@ type convergeDiscovery struct {
 	// tracker.jira mapping, whether polling is enabled, and whether the
 	// Jira credential secrets exist (#9076).
 	jira jiraPollState
+
+	// pollSchedules is the repository's managed polling schedules with
+	// the crons its effective poll_schedules sets (#9527). pollCadence is
+	// the subset whose cron poll_schedules sets explicitly: only those
+	// have existing schedules moved to the configured cron.
+	pollSchedules []ScheduleSpec
+	pollCadence   []ScheduleSpec
 }
 
 // withVertexInputs returns cfg with this repository's effective Vertex
@@ -986,6 +1000,15 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 				return
 			}
 			jiraState := jiraPollState{jira: jiraTracking, enabled: jiraTracking.PollEnabled()}
+			var pollSchedules, pollCadence []ScheduleSpec
+			if resolved.Forge == ForgeGitLab {
+				var pollErr error
+				pollSchedules, pollCadence, pollErr = effectivePollScheduleSpecs(resolved, presetData)
+				if pollErr != nil {
+					discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, configErr: pollErr}
+					return
+				}
+			}
 			repoFullName := rr.Owner + "/" + rr.Repo
 			progress(repoFullName, "discover", "Checking installation status")
 
@@ -1085,6 +1108,8 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 
 			discoveries[idx] = convergeDiscovery{
 				jira:              jiraState,
+				pollSchedules:     pollSchedules,
+				pollCadence:       pollCadence,
 				repo:              rr,
 				resolved:          resolved,
 				components:        probed,
@@ -1506,9 +1531,10 @@ func convergeRepo(ctx context.Context,
 	repoFullName := rr.Owner + "/" + rr.Repo
 
 	cr := ConvergeResult{
-		Owner:       rr.Owner,
-		Repo:        rr.Repo,
-		WIFProvider: wifProvider,
+		Owner:             rr.Owner,
+		Repo:              rr.Repo,
+		WIFProvider:       wifProvider,
+		PollScheduleSpecs: d.pollSchedules,
 	}
 	if resolved.Forge == ForgeGitLab {
 		if resolved.Vendor {
@@ -2529,8 +2555,12 @@ func scheduleDeferredActions(names []string, detail string) []ComponentAction {
 	return actions
 }
 
+// convergeSchedules creates missing managed polling schedules from specs
+// (the repository's effective schedules, PipelineScheduleSpecsFor) and, with
+// reactivate set, reactivates disabled ones.
 func convergeSchedules(ctx context.Context,
 	resolved ResolvedConfig,
+	specs []ScheduleSpec,
 	components []ComponentStatus,
 	dryRun bool,
 	reactivate bool,
@@ -2689,7 +2719,7 @@ func convergeSchedules(ctx context.Context,
 	}
 
 	for _, name := range missingSchedules {
-		spec := scheduleSpecByComponent(name)
+		spec := specByComponent(specs, name)
 		if spec == nil {
 			actions = append(actions, ComponentAction{
 				Component: name,
@@ -3753,8 +3783,15 @@ func convergeRepoCredentials(ctx context.Context, d convergeDiscovery, wifProvid
 
 	// 2c: Converge pipeline schedules (GitLab only).
 	if resolved.Forge == ForgeGitLab {
-		schedActions := convergeSchedules(ctx, resolved, d.components, cfg.DryRun, cfg.ReactivateSchedules, progress)
+		specs := d.pollSchedules
+		if specs == nil {
+			specs = PipelineScheduleSpecs()
+		}
+		schedActions := convergeSchedules(ctx, resolved, specs, d.components, cfg.DryRun, cfg.ReactivateSchedules, progress)
 		actions = append(actions, schedActions...)
+		if len(d.pollCadence) > 0 {
+			actions = append(actions, convergeScheduleCadence(ctx, resolved, d.pollCadence, cfg.DryRun, progress)...)
+		}
 	}
 
 	// Bail out before scaffold commit if variable, secret, or schedule writes failed.

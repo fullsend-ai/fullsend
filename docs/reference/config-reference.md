@@ -139,6 +139,11 @@ artifacts:
   by_source:                         # Per run source (event.source.system); stricter level wins
     jira: metadata                   # e.g. runs started from a Jira issue
 
+# ── GitLab polling schedules ─────────────────────────────────
+poll_schedules:                      # GitLab only: cron of each polling schedule (UTC)
+  slash_poll: "*/5 * * * *"          # "fullsend slash poll" (default shown)
+  event_poll: "2,17,32,47 * * * *"   # "fullsend event poll" (default shown)
+
 # ── Trace context ────────────────────────────────────────────
 trace_context:                       # Trace-context keys of this repository (ADR 0154)
   installation_id: 0f1e2d3c4b5a69788796a5b4c3d2e1f0  # 32 lowercase hex characters, not all zero
@@ -1042,6 +1047,42 @@ repository's normal review and CODEOWNERS.
 `by_source` looks only at where the run started. For when to choose each
 level, what `metadata` still publishes and what follow-up workflows lose, see
 [Run artifacts and private data](../guides/user/run-artifacts-and-private-data.md).
+
+### `poll_schedules`
+
+GitLab only. Sets how often `fullsend repos install` schedules fullsend's
+polling pipelines. Each run of a schedule spends CI compute minutes on
+GitLab-hosted runners, so a namespace with a small quota, such as GitLab.com
+Free, can poll less often:
+
+```yaml
+poll_schedules:
+  slash_poll: "0 * * * *"            # Pick up slash commands once an hour
+  event_poll: "30 */4 * * *"         # Discover issue and merge request events every four hours
+```
+
+- **`slash_poll`** — The cron of the `fullsend slash poll` schedule, which
+  picks up slash commands such as `/fs-triage`. Default `*/5 * * * *`. A slash
+  command waits up to this interval before an agent starts.
+- **`event_poll`** — The cron of the `fullsend event poll` schedule, which
+  discovers issue and merge request events. Default `2,17,32,47 * * * *`.
+
+Each value is a five-field cron expression (minute, hour, day of month, month,
+day of week) evaluated in UTC; validation rejects any other shape, and GitLab
+checks the values when it creates the schedule. Each key layers separately: a
+key set in `config.yaml` overrides the same key from `config.base.yaml` or a
+broader `repos.yaml` layer, and a key it leaves unset inherits from them.
+
+Install creates missing schedules on the configured cron, or on the default
+when the key is unset. For a key that is set, a later run also replaces an
+existing schedule whose cron differs: it creates a schedule on the configured
+cron with the same ref and active state, then deletes the old one, so a
+schedule an operator disabled stays disabled. While a key is unset, install
+leaves an existing installer-owned schedule's cron as it is, including a cron
+edited by hand in GitLab. Schedules owned by the GitLab trigger account
+are replaced by the trigger-account stage of the same run. The Jira poll
+schedule (`tracker.jira.poll`) is not covered. GitHub repositories ignore the
+block, and the agent runtime never reads it.
 
 ### `trace_context`
 

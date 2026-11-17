@@ -1009,6 +1009,10 @@ type perRepoConfig struct {
 	// Go forbids a field and method sharing a name on the same type.
 	TraceContextBlock *TraceContextConfig `yaml:"trace_context,omitempty"`
 
+	// PollSchedules sets the cron of each GitLab polling schedule (#9527).
+	// Each key merges per field through the layers.
+	PollSchedules *PollSchedulesConfig `yaml:"poll_schedules,omitempty"`
+
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
 	// serialization so Marshal emits only locally-set values.
@@ -1144,6 +1148,7 @@ type perRepoConfigMarshal struct {
 	Models                 *ModelsConfig             `yaml:"models,omitempty"`
 	Artifacts              *ArtifactsConfig          `yaml:"artifacts,omitempty"`
 	TraceContext           *TraceContextConfig       `yaml:"trace_context,omitempty"`
+	PollSchedules          *PollSchedulesConfig      `yaml:"poll_schedules,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -1174,6 +1179,9 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	}
 	if !c.Artifacts.IsZero() {
 		h.Artifacts = c.Artifacts
+	}
+	if !c.PollSchedules.IsZero() {
+		h.PollSchedules = c.PollSchedules
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -1255,8 +1263,8 @@ func ValidateRuntimeAuthorization(r ConfigReader) error {
 
 // validateLocalFields checks the fields that do not need a resolved
 // parent chain: version, roles, tracker, runtime, trace_context,
-// status_notifications, inference provider, authorization providers,
-// and model aliases. It is split out of Validate so a repos.yaml config
+// poll_schedules, status_notifications, inference provider, authorization
+// providers, and model aliases. It is split out of Validate so a repos.yaml config
 // managed-configuration layer (ADR 0122) can be checked without pulling in
 // the agent-allowlist / override-only-custom-agent checks below, which need
 // information (the other repos.yaml config layers, config.base.yaml) that isn't
@@ -1315,6 +1323,9 @@ func (c *perRepoConfig) validateLocalFields() error {
 		return err
 	}
 	if err := ValidateTraceContext(c.TraceContextBlock); err != nil {
+		return err
+	}
+	if err := ValidatePollSchedules(c.PollSchedules); err != nil {
 		return err
 	}
 	// Validate the merged view, as ValidateAgentEntries does above: a bad

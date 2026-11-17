@@ -128,3 +128,7 @@ func (d *perRepoDefaults) ConfigArtifactsContentSet() bool { return false }
 
 // ConfigArtifactsBySource returns the default per-source levels (none).
 func (d *perRepoDefaults) ConfigArtifactsBySource() map[string]string { return nil }
+
+// ConfigPollSchedules returns an empty block: every GitLab polling schedule
+// keeps its compiled-in cron.
+func (d *perRepoDefaults) ConfigPollSchedules() PollSchedulesConfig { return PollSchedulesConfig{} }

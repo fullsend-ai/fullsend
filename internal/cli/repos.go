@@ -417,6 +417,13 @@ type reposInstallConfig struct {
 	fullsendBinary string
 	fullsendSource string
 
+	// pollScheduleSpecs maps "owner/repo" to the repository's managed
+	// polling schedules with the crons its effective poll_schedules sets
+	// (#9527), as convergence resolved them. The trigger-account stages
+	// create and compare the account's schedules against it. A repository
+	// without an entry uses the compiled-in crons.
+	pollScheduleSpecs map[string][]repos.ScheduleSpec
+
 	// Test overrides
 	testClient               forge.Client
 	testFactory              repos.ForgeClientFactory
@@ -1028,6 +1035,13 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	alreadyCurrent := result.AlreadyCurrent()
 	failed := result.Failed()
 
+	opts.pollScheduleSpecs = make(map[string][]repos.ScheduleSpec, len(result.Results))
+	for _, r := range result.Results {
+		if r.PollScheduleSpecs != nil {
+			opts.pollScheduleSpecs[r.Owner+"/"+r.Repo] = r.PollScheduleSpecs
+		}
+	}
+
 	// Writeback: when platform-level fullsend_ref was empty and repos
 	// were installed, write the binary's version back to repos.yaml
 	// so future installs and status checks have a baseline.
@@ -1160,7 +1174,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 					continue
 				}
 
-				schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo, targetRepo.DefaultBranch)
+				schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo, targetRepo.DefaultBranch, r.PollScheduleSpecs)
 				if schedErr != nil {
 					printer.StepWarn(fmt.Sprintf("[%s] Pipeline schedule setup failed: %v", repoFullName, schedErr))
 					r.Error = schedErr

@@ -144,7 +144,13 @@ and typed pins predating the secured contract are unsupported.
 > `2,17,32,47 * * * *`). GitLab.com Free allows schedules, but limits each
 > schedule to 24 pipeline triggers per day, so the five-minute schedules
 > are effectively throttled to about once per hour; this is separate from
-> the project-access-token restriction. Treat manual role-token enrollment and
+> the project-access-token restriction. Each poll run also spends CI compute
+> minutes when it runs on GitLab-hosted runners, and two schedules at the
+> Free trigger cap can use a Free namespace's monthly quota within days. Set
+> [`poll_schedules`](../../reference/config-reference.md#poll_schedules) in
+> the repository's managed configuration to poll less often (for example
+> `slash_poll: "0 * * * *"` and `event_poll: "30 */4 * * *"`); slash
+> commands then wait up to the slash-poll interval. Treat manual role-token enrollment and
 > off-system polling below as fallbacks for when PAT provisioning or the
 > resulting schedule behavior is unsuitable on your instance, not as the
 > default path for every Free/CE install. When personal tokens are needed,
@@ -256,7 +262,11 @@ Install then converges the project:
   leftover shared token from a repository installed before the role-only
   rollout — that requires manual cleanup.
 * Creates two pipeline schedules: `fullsend slash poll` (every 5 minutes)
-  and `fullsend event poll` (at minutes 2, 17, 32, 47). When
+  and `fullsend event poll` (at minutes 2, 17, 32, 47). The
+  [`poll_schedules`](../../reference/config-reference.md#poll_schedules)
+  config setting changes either cron; for a key that is set, later install
+  runs move existing schedules to the configured cron, keeping a disabled
+  schedule disabled. When
   `tracker.jira.poll.enabled` is true it also manages a third schedule,
   `fullsend jira poll` (cron `1-59/5 * * * *`), created only when Jira polling
   is enabled. Re-running install

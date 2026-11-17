@@ -65,6 +65,9 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 	if tc := r.TraceContext(); tc != nil {
 		out["trace_context"] = tc
 	}
+	if ps := r.ConfigPollSchedules(); !ps.IsZero() {
+		out["poll_schedules"] = ps
+	}
 	var authProviders []any
 	if r.IsOwnersFileAuthEnabled() {
 		authProviders = append(authProviders, AuthProviderOwnersFile)

@@ -191,6 +191,11 @@ type GitLabTriggerAccountOptions struct {
 	// The installer cannot edit a schedule the account owns, so the install's
 	// schedule repair, which runs first, leaves those for this stage.
 	ReactivateSchedules bool
+	// ScheduleSpecs is the repository's managed polling schedules with the
+	// crons its effective poll_schedules sets (#9527). The schedules the
+	// account owns, and the copies handed back to the installer, run on
+	// these crons. nil means PipelineScheduleSpecs.
+	ScheduleSpecs []ScheduleSpec
 	// Now and Rand are injectable for tests.
 	Now  func() time.Time
 	Rand io.Reader

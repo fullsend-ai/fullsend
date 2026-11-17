@@ -55,13 +55,18 @@ func provisionGitLabPollState(ctx context.Context, client forge.Client, printer 
 }
 
 // setupGitLabPipelineSchedules creates two independent pipeline schedules
-// for polling: a fast slash-command poll (every 5 min) and an offset
-// event-discovery poll (at minutes 2,17,32,47). Each schedule has its own
+// for polling: a fast slash-command poll (every 5 min by default) and an
+// offset event-discovery poll (at minutes 2,17,32,47 by default). specs is
+// the repository's effective schedule list, whose crons poll_schedules can
+// change (#9527); nil means the compiled-in crons. Each schedule has its own
 // resource group so they never cancel each other. Schedules are
 // variable-free: the typed templates select poll mode from the schedule
 // description. The Jira poll schedule is left alone: repos install
 // converges it from tracker.jira.poll.enabled (#9108).
-func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, defaultBranch string) error {
+func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, defaultBranch string, specs []repos.ScheduleSpec) error {
+	if specs == nil {
+		specs = repos.PipelineScheduleSpecs()
+	}
 	// Delete existing fullsend schedules to avoid duplicates on re-install.
 	existing, listErr := client.ListPipelineSchedules(ctx, owner, repo)
 	if listErr != nil {
@@ -80,7 +85,7 @@ func setupGitLabPipelineSchedules(ctx context.Context, client forge.Client, prin
 
 	printer.StepStart("Creating pipeline schedules")
 	var createdIDs []int64
-	for _, spec := range repos.PipelineScheduleSpecs() {
+	for _, spec := range specs {
 		id, err := client.CreatePipelineSchedule(ctx, owner, repo, defaultBranch,
 			spec.Description, spec.Cron, spec.Variables)
 		if err != nil {

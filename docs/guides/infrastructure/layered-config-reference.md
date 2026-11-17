@@ -158,6 +158,7 @@ the overlay → base → code defaults chain.
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
 | `artifacts.content` | `string` (nested) | Scalar override | `"all"` |
 | `artifacts.by_source` | `map[string]string` (nested) | Per-key merge | `nil` (no per-source levels) |
+| `poll_schedules.slash_poll` / `poll_schedules.event_poll` | `string` (nested) | Scalar override per key | `""` (compiled-in GitLab schedule cron) |
 | `tracker` | `*TrackingConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 | `authorization` | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |
@@ -588,6 +589,7 @@ compiled-in defaults apply:
 | `inference.wif_audience` | `""` (empty — `aud: "fullsend"`) |
 | `inference.service_account` | `""` (empty — no impersonation) |
 | `models.aliases` | `nil` (fleet alias table compiled into the runtimes) |
+| `poll_schedules` | empty (GitLab schedules keep `*/5 * * * *` and `2,17,32,47 * * * *`) |
 | `tracker` | `nil` (no provider — `--tracker` is required unless set) |
 | `status_notifications` | `nil` |
 | `authorization` | `nil` |

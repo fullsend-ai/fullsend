@@ -100,6 +100,10 @@ type PerRepoConfigReader interface {
 	// map, merged per key through the parent chain. nil means no
 	// per-source levels.
 	ConfigArtifactsBySource() map[string]string
+	// ConfigPollSchedules returns the effective poll_schedules block,
+	// merged per key through the parent chain (#9527). An empty field
+	// means the schedule keeps its compiled-in cron.
+	ConfigPollSchedules() PollSchedulesConfig
 	// IsOwnersFileAuthEnabled reports whether the owners_file
 	// authorization provider is listed.
 	IsOwnersFileAuthEnabled() bool
