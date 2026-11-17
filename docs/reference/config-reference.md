@@ -1067,7 +1067,21 @@ progress:
 |---|---|
 | `full` | Everything, as before. This is the default, so an unset block leaves the log unchanged. |
 | `tools` | Everything except the model's reasoning and replies: tool lines, task and status progress, token counts, errors, validation output and the result. Tool lines and task labels can still carry text from the source, so use `quiet` for a source that isn't public. |
-| `quiet` | Only lines fullsend writes from its own fields: the heartbeat, the model, event kinds and states (`Task — running`, `Status: hook — running`), token counts, cost, error types, transcript error types, validation passed or failed, and the result. Reasoning, replies, tool lines, task labels, status details, error messages, plugin and retry messages, and validation output are left out. No `::notice::` annotations are written, and transcript `::error::` annotations carry the error type only. |
+| `quiet` | Only lines fullsend writes from its own fields: the heartbeat, the model, event kinds and states (`Task — running`, `Status: hook — running`), token counts, cost, error types, transcript error types, validation passed or failed, output file and scan finding counts, and the result. Reasoning, replies, tool lines, task labels, status details, error messages, plugin and retry messages, validation output, output file names and the agent CLI's stderr are left out. No notice carries agent or source text: the notices that remain hold fullsend's own fields, such as `Agent completed (4m12s)`. Transcript `::error::` annotations carry the error type only. |
+
+**Agent CLI stderr at `quiet`.** The agent CLI (Claude Code, pi, Codex or
+OpenCode) writes its own diagnostics to stderr, and they can quote what the
+agent read. At `quiet`, fullsend writes that stderr to `agent-stderr.log` in
+the iteration directory, next to `output.jsonl`, instead of the job log. The
+log gets one line with the count, never the text, even when the run fails:
+
+```text
+Agent CLI stderr: 3 line(s) kept out of the log at quiet, in agent-stderr.log
+```
+
+The file follows the same [`artifacts`](#artifacts) rule as the transcripts:
+`all` uploads it, while `metadata` and `none` leave it out. At `full` and
+`tools`, stderr goes to the job log as before.
 
 Only the printed log changes. Telemetry spans, Level 3 content capture
 ([ADR 0050](../ADRs/0050-distributed-tracing-instrumentation.md)), the
@@ -1090,11 +1104,17 @@ set [`artifacts`](#artifacts) separately for the run artifact.
 [`artifacts`](#artifacts) (a valid normalized event, else a native GitHub
 event). A run whose source is unknown gets the strictest of `verbosity` and
 every `by_source` entry. When the level isn't `full`, the run prints one line
-naming the level and how it was chosen.
+naming the level and how it was chosen, for example:
+
+```text
+Progress log: quiet (run source "jira" from the normalized event)
+```
 
 **Fails closed.** If the level can't be resolved, for example because of an
-invalid level, a `by_source` key that isn't lowercase, or an unreadable event
-file, the run logs at `quiet`.
+invalid level or a `by_source` key that isn't lowercase, the run logs at
+`quiet`. An event file that can't be read or parsed doesn't get that far: the
+run stops before it starts the agent, with `reading event file ...` or
+`parsing event file ...`.
 
 **Layers.** Across `config.base.yaml` and `config.yaml`, an explicit
 `verbosity` overrides and `by_source` merges per key. The `fullsend repos`

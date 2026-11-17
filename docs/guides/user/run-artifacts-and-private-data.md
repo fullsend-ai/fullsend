@@ -183,25 +183,63 @@ over OTLP to a backend you control
 ([How to emit traces](how-to-emit-traces.md)). OTLP export works at every
 level.
 
-## The job log is a separate setting
+## Keep Jira text out of the job log
 
 `artifacts` does not change the job log. While the agent runs, the log prints
 the model's reasoning and replies, tool lines, error messages and validation
-output, and on GitHub Actions some of these become annotations on the run
-summary page. To keep that text out of the log for Jira-started runs, also
-add:
+output. On GitHub Actions some of these also become annotations on the run
+summary page. Anyone can read the job log of a public repository.
 
-```yaml
-progress:
-  by_source:
-    jira: quiet         # heartbeat, counts, error types and the result only
+1. In `.fullsend/config.yaml`, next to the `artifacts` block, add:
+
+   ```yaml
+   progress:
+     by_source:
+       jira: quiet         # heartbeat, counts, error types and the result only
+   ```
+
+2. Commit the change and merge it the way you merge other config changes.
+
+3. Start a run from a Jira issue.
+
+### Check that it worked
+
+Open the run's job log. Near the top, before the agent starts, you should see:
+
+```text
+Progress log: quiet (run source "jira" from the normalized event)
 ```
 
-`tools` hides only reasoning and replies. Tool lines and task labels can still
-carry text from the source, so use `quiet` for a source that isn't public. The
-level changes only what is printed; OTLP export and Level 3 content capture
-still receive everything. See
-[`progress`](../../reference/config-reference.md#progress).
+A run started from a GitHub issue in the same repository prints no
+`Progress log` line, because it still logs at `full`.
+
+While the agent runs, the log shows the heartbeat, event states such as
+`Task — running`, token counts, error types, `Validation passed` or
+`Validation failed`, and the result. It does not show reasoning, replies,
+tool lines or validation output. A stuck or failed run still shows the
+heartbeat, the error type and the exit code.
+
+If the agent CLI wrote anything to stderr, you also see one line like:
+
+```text
+Agent CLI stderr: 3 line(s) kept out of the log at quiet, in agent-stderr.log
+```
+
+The stderr itself is in `agent-stderr.log` in the iteration directory, next
+to `output.jsonl`. The run artifact includes that file only when
+`artifacts` is `all` for the run, just like the transcripts. With
+`jira: metadata` from the steps above, it stays on the runner.
+
+### What else to know
+
+- `tools` hides only reasoning and replies. Tool lines and task labels can
+  still carry text from the source, so use `quiet` for a source that isn't
+  public.
+- The level changes only what is printed. The next iteration still gets the
+  full validation feedback, and OTLP export and Level 3 content capture still
+  receive everything ([Keep conversation content privately](#keep-conversation-content-privately)).
+- For every level and for how the level is chosen, see
+  [`progress`](../../reference/config-reference.md#progress).
 
 ## Troubleshooting
 
