@@ -178,8 +178,16 @@ func TestGitHubForgeSandboxEnvLines(t *testing.T) {
 
 	assert.Equal(t, []string{
 		"export GH_HOST='ghemu.localhost'",
-		`if [ -n "${GH_TOKEN:-}" ]; then export GH_ENTERPRISE_TOKEN="$GH_TOKEN"; fi`,
+		`export GH_ENTERPRISE_TOKEN="${GH_TOKEN:-}"`,
 	}, githubForgeSandboxEnvLines(envOf(map[string]string{"GITHUB_SERVER_URL": "https://ghemu.localhost:443"})))
+
+	// An IPv6 literal keeps its brackets, with and without a port.
+	lines6 := githubForgeSandboxEnvLines(envOf(map[string]string{"GITHUB_SERVER_URL": "https://[2001:db8::1]"}))
+	require.NotEmpty(t, lines6)
+	assert.Equal(t, "export GH_HOST='[2001:db8::1]'", lines6[0])
+	lines6 = githubForgeSandboxEnvLines(envOf(map[string]string{"GITHUB_SERVER_URL": "https://[2001:db8::1]:8443"}))
+	require.NotEmpty(t, lines6)
+	assert.Equal(t, "export GH_HOST='[2001:db8::1]:8443'", lines6[0])
 
 	lines := githubForgeSandboxEnvLines(envOf(map[string]string{"GITHUB_SERVER_URL": "https://ghes.example.com:8443"}))
 	require.NotEmpty(t, lines)
@@ -187,4 +195,96 @@ func TestGitHubForgeSandboxEnvLines(t *testing.T) {
 
 	assert.Nil(t, githubForgeSandboxEnvLines(envOf(map[string]string{"GITHUB_SERVER_URL": "https://bad'host.example"})),
 		"a host that is not a concrete hostname gets no lines")
+}
+
+func TestAddGitHubForgeEndpointsDropsGitHubComPortsAndAddresses(t *testing.T) {
+	in := []byte(`id: custom
+credentials:
+  - name: t
+    env_vars: [GH_TOKEN]
+endpoints:
+  - host: api.github.com
+    port: 443
+    ports: [443, 8443]
+    allowed_ips: [140.82.112.0/20]
+    protocol: rest
+    access: read-only
+`)
+	out, changed, err := addGitHubForgeEndpoints(in, "ghes.example.com", 443)
+	require.NoError(t, err)
+	require.True(t, changed)
+	var doc struct {
+		Endpoints []map[string]any `yaml:"endpoints"`
+	}
+	require.NoError(t, yaml.Unmarshal(out, &doc))
+	require.Len(t, doc.Endpoints, 2)
+	clone := doc.Endpoints[1]
+	assert.Equal(t, "ghes.example.com", clone["host"])
+	assert.NotContains(t, clone, "ports", "github.com's extra ports must not reach the server")
+	assert.NotContains(t, clone, "allowed_ips", "github.com's addresses must not restrict the server")
+	assert.Contains(t, doc.Endpoints[0], "allowed_ips", "the github.com endpoint itself is unchanged")
+}
+
+func TestAddGitHubForgeEndpointsAddsOnlyWhatIsMissing(t *testing.T) {
+	in := []byte(`id: partial
+credentials:
+  - name: t
+    env_vars: [GH_TOKEN]
+endpoints:
+  - host: api.github.com
+    port: 443
+    protocol: rest
+    access: read-only
+  - host: api.github.com
+    port: 443
+    protocol: graphql
+    path: /graphql
+    access: read-only
+  - host: ghes.example.com
+    port: 443
+    protocol: rest
+    access: read-only
+`)
+	out, changed, err := addGitHubForgeEndpoints(in, "ghes.example.com", 443)
+	require.NoError(t, err)
+	require.True(t, changed, "the missing GraphQL endpoint is added although REST is already there")
+	var added []testEndpoint
+	for _, ep := range endpointsOf(t, out) {
+		if ep.Host == "ghes.example.com" {
+			added = append(added, ep)
+		}
+	}
+	assert.ElementsMatch(t, []testEndpoint{
+		{Host: "ghes.example.com", Port: 443, Protocol: "rest", Access: "read-only"},
+		{Host: "ghes.example.com", Port: 443, Protocol: "graphql", Access: "read-only", Path: "/api/graphql"},
+	}, added)
+}
+
+func TestAddGitHubForgeEndpointsPrefersReadOnlyAndResolvesAliases(t *testing.T) {
+	in := []byte(`id: mixed
+credentials:
+  - name: t
+    env_vars: [GH_TOKEN]
+api: &api api.github.com
+endpoints:
+  - host: *api
+    port: 443
+    protocol: rest
+    access: read-write
+  - host: github.com
+    port: 443
+    protocol: rest
+    access: read-only
+`)
+	out, changed, err := addGitHubForgeEndpoints(in, "ghes.example.com", 443)
+	require.NoError(t, err)
+	require.True(t, changed, "an aliased api.github.com host is still a template")
+	var added []testEndpoint
+	for _, ep := range endpointsOf(t, out) {
+		if ep.Host == "ghes.example.com" {
+			added = append(added, ep)
+		}
+	}
+	assert.Equal(t, []testEndpoint{{Host: "ghes.example.com", Port: 443, Protocol: "rest", Access: "read-only"}}, added,
+		"two github.com policies for one protocol and path collapse to the read-only one")
 }

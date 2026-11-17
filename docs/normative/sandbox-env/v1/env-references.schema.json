@@ -281,8 +281,12 @@
           "description": "trace-ID injection succeeds; the run warns and continues when it fails"
         },
         {
+          "const": "GH_ENTERPRISE_TOKEN",
+          "description": "GITHUB_SERVER_URL points to a GitHub server other than github.com; it carries the same GH_TOKEN placeholder, since gh reads only GH_ENTERPRISE_TOKEN on such a host"
+        },
+        {
           "const": "GH_HOST",
-          "description": "GITHUB_SERVER_URL points to a GitHub server other than github.com (GitHub Enterprise Server or a GitHub-compatible API); GH_ENTERPRISE_TOKEN then gets the GH_TOKEN placeholder"
+          "description": "GITHUB_SERVER_URL points to a GitHub server other than github.com (GitHub Enterprise Server or a GitHub-compatible API)"
         },
         {
           "const": "TIRITH_FAIL_ON",

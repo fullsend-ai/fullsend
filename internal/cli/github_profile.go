@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -65,25 +66,28 @@ func githubForgeSandboxEnvLines(getenv func(string) string) []string {
 	if host == "" {
 		return nil
 	}
-	if err := validateForgeDestination(host, mustAtoi(port)); err != nil {
+	portNum, err := strconv.Atoi(port)
+	if err != nil {
 		return nil
 	}
+	if err := validateForgeDestination(host, portNum); err != nil {
+		return nil
+	}
+	// gh takes GH_HOST as an authority: an IPv6 literal needs its brackets,
+	// with or without a port.
 	ghHost := host
 	if port != "443" {
-		ghHost = host + ":" + port
+		ghHost = net.JoinHostPort(host, port)
+	} else if strings.Contains(host, ":") {
+		ghHost = "[" + host + "]"
 	}
+	// A plain export, not a conditional: the sandbox .env loader and the
+	// env manifest collector read assignments and exports only. An empty
+	// GH_TOKEN leaves GH_ENTERPRISE_TOKEN empty, which gh treats as unset.
 	return []string{
 		fmt.Sprintf("export GH_HOST='%s'", ghHost),
-		`if [ -n "${GH_TOKEN:-}" ]; then export GH_ENTERPRISE_TOKEN="$GH_TOKEN"; fi`,
+		`export GH_ENTERPRISE_TOKEN="${GH_TOKEN:-}"`,
 	}
-}
-
-func mustAtoi(s string) int {
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return -1
-	}
-	return n
 }
 
 // bindGitHubForgeHost returns profiles with the configured GitHub server
@@ -171,9 +175,14 @@ func bindGitHubForgeHostBytes(data []byte, getenv func(string) string) ([]byte, 
 }
 
 // addGitHubForgeEndpoints adds host:port endpoints, cloned from the
-// github.com endpoints of a profile that issues GH_TOKEN. It reports
-// changed == false, with the input returned as is, when the profile does not
-// issue GH_TOKEN, names no github.com endpoint, or already names host:port.
+// github.com endpoints of a profile that issues GH_TOKEN. A clone keeps the
+// template's protocol, path, access and enforcement; its ports and
+// allowed_ips are dropped, since they describe github.com, not this server.
+// A clone whose protocol and path the profile already names for host:port is
+// skipped. When api.github.com and github.com give the same protocol and path
+// different policies, the read-only one wins. It reports changed == false,
+// with the input returned as is, when the profile does not issue GH_TOKEN,
+// names no github.com endpoint, or already names every clone.
 func addGitHubForgeEndpoints(data []byte, host string, port int) ([]byte, bool, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
@@ -192,24 +201,55 @@ func addGitHubForgeEndpoints(data []byte, host string, port int) ([]byte, bool, 
 		return data, false, nil
 	}
 	portStr := strconv.Itoa(port)
+	endpointKey := func(ep *yaml.Node) string {
+		return scalarValue(yamlMappingValue(ep, "protocol")) + " " + scalarValue(yamlMappingValue(ep, "path"))
+	}
 	var templates []*yaml.Node
+	present := map[string]bool{}
 	for _, ep := range endpoints.Content {
 		ep = resolveYAMLAlias(ep)
 		if ep == nil || ep.Kind != yaml.MappingNode {
 			continue
 		}
-		h, p := yamlMappingValue(ep, "host"), yamlMappingValue(ep, "port")
-		if h == nil {
+		h := strings.ToLower(scalarValue(yamlMappingValue(ep, "host")))
+		if h == "" {
 			continue
 		}
-		if strings.EqualFold(h.Value, host) && p != nil && p.Value == portStr {
-			return data, false, nil
+		if h == strings.ToLower(host) && scalarValue(yamlMappingValue(ep, "port")) == portStr {
+			present[endpointKey(ep)] = true
+			continue
 		}
-		if githubPublicHosts[strings.ToLower(h.Value)] {
+		if githubPublicHosts[h] {
 			templates = append(templates, ep)
 		}
 	}
-	if len(templates) == 0 {
+	// api.github.com and github.com collapse onto one host: one clone per
+	// protocol and path, the read-only one when their access differs.
+	var clones []*yaml.Node
+	byKey := map[string]int{}
+	for _, t := range templates {
+		ep := cloneYAMLNode(t)
+		setYAMLMappingScalar(ep, "host", host, "!!str")
+		setYAMLMappingScalar(ep, "port", portStr, "!!int")
+		deleteYAMLMappingKey(ep, "ports")
+		deleteYAMLMappingKey(ep, "allowed_ips")
+		if scalarValue(yamlMappingValue(ep, "path")) == "/graphql" {
+			setYAMLMappingScalar(ep, "path", "/api/graphql", "!!str")
+		}
+		key := endpointKey(ep)
+		if present[key] {
+			continue
+		}
+		if i, ok := byKey[key]; ok {
+			if scalarValue(yamlMappingValue(ep, "access")) == "read-only" {
+				clones[i] = ep
+			}
+			continue
+		}
+		byKey[key] = len(clones)
+		clones = append(clones, ep)
+	}
+	if len(clones) == 0 {
 		return data, false, nil
 	}
 	if rawEndpoints != endpoints {
@@ -218,23 +258,7 @@ func addGitHubForgeEndpoints(data []byte, host string, port int) ([]byte, bool, 
 		endpoints = cloneYAMLNode(endpoints)
 		setYAMLMappingNode(root, "endpoints", endpoints)
 	}
-	seen := map[string]bool{}
-	for _, t := range templates {
-		ep := cloneYAMLNode(t)
-		setYAMLMappingScalar(ep, "host", host, "!!str")
-		setYAMLMappingScalar(ep, "port", portStr, "!!int")
-		if path := yamlMappingValue(ep, "path"); path != nil && path.Value == "/graphql" {
-			setYAMLMappingScalar(ep, "path", "/api/graphql", "!!str")
-		}
-		// api.github.com and github.com collapse onto one host: keep one
-		// endpoint per protocol and path.
-		key := scalarValue(yamlMappingValue(ep, "protocol")) + " " + scalarValue(yamlMappingValue(ep, "path"))
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-		endpoints.Content = append(endpoints.Content, ep)
-	}
+	endpoints.Content = append(endpoints.Content, clones...)
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)

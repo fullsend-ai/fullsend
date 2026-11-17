@@ -36,8 +36,9 @@ const (
 	// HTTPTimeout is the per-request timeout of the default client.
 	HTTPTimeout = 30 * time.Second
 
-	// oidcHostSuffix is where GitHub serves ACTIONS_ID_TOKEN_REQUEST_URL
-	// (github.com only; GHES is not supported by fullsend).
+	// oidcHostSuffix is where github.com serves ACTIONS_ID_TOKEN_REQUEST_URL.
+	// On another GitHub server the token service is that server itself
+	// (see RequireGitHubOIDCHost).
 	oidcHostSuffix = ".actions.githubusercontent.com"
 )
 
