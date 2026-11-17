@@ -96,6 +96,17 @@ func (s *quietAgentStderr) end(printer *ui.Printer) {
 	}
 }
 
+// detailWarning is a runtime warning whose detail is text the runner did
+// not write: sandbox stderr, an openshell error, or a file the agent can
+// write. At quiet (ADR 0163) only the label prints; other levels print
+// label: detail, as they always have.
+func detailWarning(label, detail, progressVerbosity string) string {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		return label
+	}
+	return label + ": " + detail
+}
+
 // exitedZeroStreamError is the warning when an agent CLI exits 0 but its
 // stream ends in an error. detail is the stream's error text. At quiet
 // (ADR 0163) the line names the result subtype only, since the error text

@@ -370,7 +370,7 @@ func claudeShouldFallBack(res claudeAttemptResult) bool {
 // abandoned for a fallback, within timeout. The transcript would otherwise
 // be extracted and reported as an error on a run that went on to succeed;
 // a failure to remove it is only reported.
-func (r ClaudeRuntime) claudeRemoveTranscript(sandboxName, sessionID string, timeout time.Duration, printer *ui.Printer) {
+func (r ClaudeRuntime) claudeRemoveTranscript(sandboxName, sessionID string, timeout time.Duration, progressVerbosity string, printer *ui.Printer) {
 	if !claudeSessionIDPattern.MatchString(sessionID) {
 		return
 	}
@@ -380,7 +380,7 @@ func (r ClaudeRuntime) claudeRemoveTranscript(sandboxName, sessionID string, tim
 		if cerr != nil {
 			msg = cerr.Error()
 		}
-		printer.StepWarn("Could not remove the abandoned attempt's transcript: " + sanitizeOutput(msg))
+		printer.StepWarn(detailWarning("Could not remove the abandoned attempt's transcript", sanitizeOutput(msg), progressVerbosity))
 	}
 }
 
@@ -441,7 +441,7 @@ func (r ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pr
 	}
 	onFallback := func(prev, next string, budget time.Duration) bool {
 		printer.StepWarn(modelFallbackWarning(prev, next, fallbackReasonNotServed))
-		r.claudeRemoveTranscript(params.SandboxName, lastSession, min(10*time.Second, budget), printer)
+		r.claudeRemoveTranscript(params.SandboxName, lastSession, min(10*time.Second, budget), params.ProgressVerbosity, printer)
 		return true
 	}
 	var result claudeAttemptResult

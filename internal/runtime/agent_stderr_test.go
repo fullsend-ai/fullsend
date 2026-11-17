@@ -412,3 +412,41 @@ func TestClaudeRun_AgentStderrCountOnNonZeroExit(t *testing.T) {
 	assert.NotEqual(t, 0, exit)
 	assertQuietStderrRouted(t, jobLog, out.String(), path, agentStderrText, 2)
 }
+
+// A runtime warning that ends in sandbox stderr, an openshell error or an
+// agent-writable file prints the label only at quiet; other levels print
+// the detail as before.
+func TestDetailWarning(t *testing.T) {
+	for _, level := range []string{"", config.ProgressVerbosityFull, config.ProgressVerbosityTools} {
+		assert.Equal(t, "Could not read X: SECRET-DETAIL", detailWarning("Could not read X", "SECRET-DETAIL", level), "level %q", level)
+	}
+	for _, level := range []string{config.ProgressVerbosityQuiet, "bogus"} {
+		assert.Equal(t, "Could not read X", detailWarning("Could not read X", "SECRET-DETAIL", level), "level %q", level)
+	}
+}
+
+// Codex at quiet: a failed read of the children's rollouts and of the
+// agent-writable debug log warn without quoting the failure.
+func TestCodexRun_ReadFailureWarningsAtQuiet(t *testing.T) {
+	t.Setenv("FULLSEND_TEST_CHILD_READ_FAIL", "1")
+	t.Setenv("FULLSEND_TEST_DEBUG_LOG_READ_FAIL", "1")
+	captureAgentStderrLog(t)
+	storeDir := t.TempDir()
+	r := CodexRuntime{}
+	seedCodexManifest(t, storeDir, r, nil)
+	sessions := writeCodexChildRollouts(t, codexChildSameModelID, codexChildOtherModelID, codexChildFailedID)
+	writeCodexSpawnAdmissions(t, sessions, 4)
+	fakeOpenshellCodexChildren(t, filepath.Join(t.TempDir(), "openshell.log"), storeDir, filepath.Join("testdata", "codex", "collab_spawn.ndjson"), sessions)
+	params := codexChildrenRunParams
+	params.Debug = "1"
+	params.ProgressVerbosity = config.ProgressVerbosityQuiet
+	params.StderrPath = filepath.Join(t.TempDir(), AgentStderrFile)
+
+	var out bytes.Buffer
+	exit, err := r.Run(context.Background(), params, ui.New(&out), time.Now(), &RunMetrics{})
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+	assert.Contains(t, out.String(), "! Sub-agent usage not fully counted\n")
+	assert.Contains(t, out.String(), "! Could not read codex's log for dropped stream notifications\n")
+	assert.NotContains(t, out.String(), "fake openshell", "the openshell stderr stays out of the log")
+}

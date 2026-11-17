@@ -1293,7 +1293,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 			cerr = fmt.Errorf("exit %d: %s", code, strings.TrimSpace(stderr))
 		}
 		if cerr != nil {
-			printer.StepWarn(fmt.Sprintf("model %s is not available (%s); not falling back to %s because the abandoned attempt's session files could not be cleared: %s", sanitizeOutput(piBareModelID(prev)), fallbackReasonText(fallbackReasonNotServed), sanitizeOutput(piBareModelID(next)), sanitizeOutput(cerr.Error())))
+			printer.StepWarn(detailWarning(fmt.Sprintf("model %s is not available (%s); not falling back to %s because the abandoned attempt's session files could not be cleared", sanitizeOutput(piBareModelID(prev)), fallbackReasonText(fallbackReasonNotServed), sanitizeOutput(piBareModelID(next))), sanitizeOutput(cerr.Error()), params.ProgressVerbosity))
 			return false
 		}
 		printer.StepWarn(modelFallbackWarning(piBareModelID(prev), piBareModelID(next), fallbackReasonNotServed))
@@ -1336,7 +1336,7 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		// only record of what they spent. A read failure is not fatal —
 		// losing the breakdown must not fail an iteration that succeeded.
 		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
-			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
+			printer.StepWarn(detailWarning("Could not read the sub-agent usage file", sanitizeOutput(uerr.Error()), params.ProgressVerbosity))
 		} else {
 			// Unconditional: the parent's own entry belongs in the
 			// breakdown even when this iteration dispatched nothing, or

@@ -664,7 +664,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		// Under --debug codex's stderr went to the sandbox log instead.
 		dropped, backfillFailed, derr := codexCountDroppedInLog(params.SandboxName)
 		if derr != nil {
-			printer.StepWarn("Could not read codex's log for dropped stream notifications: " + redactSummary(sanitizeOutput(derr.Error())))
+			printer.StepWarn(detailWarning("Could not read codex's log for dropped stream notifications", redactSummary(sanitizeOutput(derr.Error())), params.ProgressVerbosity))
 		}
 		stderr.Dropped += dropped
 		stderr.BackfillFailed += backfillFailed
@@ -701,7 +701,7 @@ func (r CodexRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 	if digests.delegating() || len(foldIDs) > 0 {
 		n, ferr := r.foldCodexChildUsage(params.SandboxName, foldIDs, metrics)
 		if ferr != nil {
-			printer.StepWarn("Sub-agent usage not fully counted: " + redactSummary(sanitizeOutput(ferr.Error())))
+			printer.StepWarn(detailWarning("Sub-agent usage not fully counted", redactSummary(sanitizeOutput(ferr.Error())), params.ProgressVerbosity))
 		}
 		if n > 0 {
 			printer.StepInfo(fmt.Sprintf("%d sub-agent thread(s) folded into the run metrics", n))
