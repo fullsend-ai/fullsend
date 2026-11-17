@@ -184,10 +184,6 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 			case "json_field":
 				minLen = 8
 			}
-			if len(secret) < minLen {
-				continue
-			}
-
 			// If the matched secret ends with a backslash and is immediately
 			// followed by a quote delimiter, the trailing backslash was escaping
 			// that delimiter (e.g. \" in JSON or code strings). Preserve the
@@ -197,7 +193,7 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 				for k := len(secret) - 1; k >= 0 && secret[k] == '\\'; k-- {
 					numBackslashes++
 				}
-				if numBackslashes%2 == 1 {
+				if numBackslashes%2 == 1 && p.name == "json_field" {
 					secret = secret[:len(secret)-1]
 					end--
 				}
@@ -205,8 +201,21 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 			if len(secret) == 0 {
 				continue
 			}
-
 			masked := Mask(secret)
+			if len(secret) < minLen {
+				continue
+			}
+			if p.name != "json_field" && end < len(current) && (current[end] == '"' || current[end] == '\'') {
+				numBackslashes := 0
+				for k := len(secret) - 1; k >= 0 && secret[k] == '\\'; k-- {
+					numBackslashes++
+				}
+				if numBackslashes%2 == 1 {
+					// The quote is escaped in the source. Keep the escaping
+					// backslash outside the redacted span.
+					masked += "\\"
+				}
+			}
 			result.Findings = append(result.Findings, Finding{
 				Scanner:  "secret_redactor",
 				Name:     p.name,
@@ -292,7 +301,7 @@ func defaultStructuralPatterns() []secretPattern {
 		// the mask keeps it visible. A bare value still ends at the first
 		// space, as in the PostToolUse hook.
 		{"env_assignment", `(?i)(?:^|\s)(?:export\s+)?((?:[A-Za-z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)(?:_[A-Za-z0-9]+)*)\s*=\s*(?:['"](?:(?:basic|bearer|token)[ \t]+)?)?([^\s"'}\]),;]{8,})['"]?`},
-		{"json_field", `(?:"[^"]*(?i:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?i:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"((?:\\.|[^"\\]){8,})"|'((?:\\.|[^'\\]){8,})')`},
+		{"json_field", `(?i)(?:"[^"]*(?:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"((?:\\.|[^"\\]){8,})"|'((?:''|[^']){8,})'|` + "'" + `([^\r\n]{8,}\\)` + "'" + `|'((?:\\.|[^']){8,})')`},
 		// The optional quote covers YAML: authorization: "Bearer <token>".
 		{"auth_header", `(?i)(?:Authorization|X-Api-Key|X-Auth-Token)\s*:\s*['"]?(?:(?:Basic|Bearer|Token)\s+)?([^\s"'}\]),;]{12,})`},
 		{"private_key", `-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----`},

@@ -6841,55 +6841,17 @@ func scanOutputFilesWithWriter(outputDir, traceID string, printer *ui.Printer, w
 							// Fall through to plain text scan below instead of failing open.
 						} else {
 							marshaled := buf.Bytes()
-							// Backstop check: verify marshaled text contains no unredacted secrets.
-							backstop := pipeline.Scan(string(marshaled))
-							if len(backstop.Findings) > 0 {
-								findingCount += len(backstop.Findings)
-								for _, f := range backstop.Findings {
-									printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s (backstop): %s", f.Name, relPath, f.Detail))
-									security.AppendFinding(findingsPath,
-										security.TracedFinding{
-											TraceID:   traceID,
-											Timestamp: time.Now().UTC().Format(time.RFC3339),
-											Phase:     "host_output",
-											Finding:   f,
-										})
-								}
-								if backstop.Sanitized != "" {
-									marshaled = []byte(backstop.Sanitized)
-								}
-							}
+							// Structural scanning is authoritative here. A raw-text
+							// backstop can match escaped syntax across value boundaries
+							// and double-redact an already-masked value.
 							if writeErr := writeFile(path, marshaled, 0o644); writeErr != nil {
 								return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 							}
 							return nil
 						}
 					} else {
-						// A raw whole-document scan can match across JSON value
-						// boundaries (notably BEGIN/END private-key markers). Such
-						// patterns must still be considered within each decoded string
-						// value, but must never be applied across JSON framing.
-						rawScan := pipeline.Scan(string(content))
-						if len(rawScan.Findings) == 0 {
-							return nil
-						}
-						// A whole-document match that is not found in any individual
-						// key/value cannot safely be attributed to a JSON value.
-						// Fail closed without emitting malformed JSON.
-						findings := make([]security.Finding, 0, len(rawScan.Findings))
-						for _, finding := range rawScan.Findings {
-							printer.StepWarn(fmt.Sprintf("Removed JSON output %s after an unscoped text-scan finding [%s]", relPath, finding.Name))
-							security.AppendFinding(findingsPath, security.TracedFinding{
-								TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
-								Phase: "host_output", Finding: finding,
-							})
-							findings = append(findings, finding)
-						}
-						findingCount += len(findings)
-						marker := []byte(`{"error":"output removed because a text-scan finding could not be attributed to a JSON value"}`)
-						if writeErr := writeFile(path, marker, 0o644); writeErr != nil {
-							return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
-						}
+						// Every value and key has been scanned independently. Do not
+						// apply a raw whole-document pattern that can cross values.
 						return nil
 					}
 				}

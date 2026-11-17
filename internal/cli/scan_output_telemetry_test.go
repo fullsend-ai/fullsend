@@ -128,7 +128,7 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	// raw text, even though neither value contains a complete key block.
 	// Structural scanning must not let such a cross-value match corrupt JSON.
 	jsonFile7 := filepath.Join(dir, "private_key_markers.json")
-	validJSON7 := `["see -----BEGIN RSA PRIVATE` + ` KEY----- marker", {"note": "and -----END RSA PRIVATE` + ` KEY----- marker"}]`
+	validJSON7 := `["see -----BEGIN RSA` + ` PRIVATE KEY----- marker", {"note": "and -----END RSA` + ` PRIVATE KEY----- marker"}]`
 	require.NoError(t, os.WriteFile(jsonFile7, []byte(validJSON7), 0o644))
 
 	var buf bytes.Buffer
@@ -210,7 +210,8 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	content7, err := os.ReadFile(jsonFile7)
 	require.NoError(t, err)
 	assert.True(t, json.Valid(content7), "cross-value private-key match must not corrupt JSON")
-	assert.Contains(t, string(content7), "output removed", "ambiguous whole-document match must fail closed")
+	assert.Contains(t, string(content7), "-----BEGIN RSA"+" PRIVATE KEY-----")
+	assert.Contains(t, string(content7), "-----END RSA"+" PRIVATE KEY-----")
 
 	// jq is the parser implicated by the original incident; exercise it when
 	// available, while keeping the Go validity assertions portable.
@@ -281,6 +282,29 @@ func TestScanOutputFiles_ReturnsErrorWhenSanitizedWriteFails(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not write sanitized secret.txt")
+}
+
+func TestScanOutputFiles_BackstopDoesNotRemaskExistingMask(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-result.json")
+	content := "{\n  \"body\": \"Guard against null values with token_usage = metrics.get(\\\"token_usage\\\") or {}\"\n}"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	var output bytes.Buffer
+	require.NoError(t, scanOutputFiles(dir, "trace-id", ui.New(&output)))
+	first, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(first), "metr...", "the first redaction should retain its informative prefix")
+	assert.NotContains(t, output.String(), "(backstop)", "the structural mask should not be redacted again")
+
+	assert.Equal(t, 1, strings.Count(output.String(), "Sanitized [env_assignment]"), "one secret should create one finding")
+
+	// Rescanning the already-sanitized document must be idempotent.
+	var secondOutput bytes.Buffer
+	require.NoError(t, scanOutputFiles(dir, "trace-id", ui.New(&secondOutput)))
+	second, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, first, second)
 }
 
 // TestScanOutputFiles_CleanJSON verifies that clean JSON files with no findings
