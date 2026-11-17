@@ -34,9 +34,14 @@ func TestPreflightGitHubTimeout(t *testing.T) {
 	require.LessOrEqual(t, preflightGitHubTimeout.Seconds(), float64(60))
 }
 
-func TestPreflightGitHubRetryDelays(t *testing.T) {
-	require.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second}, preflightGitHubRetryDelays,
-		"three attempts total: initial plus one retry after each delay")
+func TestPreflightGitHubWaitTimeout(t *testing.T) {
+	// The sandbox network can take 7 to 15 seconds to become ready under
+	// load (#9612), so the wait must comfortably exceed that.
+	require.GreaterOrEqual(t, preflightGitHubWaitTimeout, 30*time.Second)
+	require.LessOrEqual(t, preflightGitHubWaitTimeout, 2*time.Minute)
+	require.Greater(t, preflightGitHubInitialDelay, time.Duration(0))
+	require.LessOrEqual(t, preflightGitHubInitialDelay, preflightGitHubMaxDelay)
+	require.Less(t, preflightGitHubMaxDelay, preflightGitHubWaitTimeout)
 }
 
 type fakeExecResult struct {
@@ -66,13 +71,76 @@ func connectivityExec(t *testing.T, checks []fakeExecResult) sandboxExecFunc {
 	}
 }
 
+// fakePreflightClock is a simulated clock for the connectivity check. It
+// only moves when the check sleeps or a test advances it explicitly.
+type fakePreflightClock struct {
+	start, now time.Time
+}
+
+func (c *fakePreflightClock) elapsed() time.Duration { return c.now.Sub(c.start) }
+
+// useNoSleepPreflightGitHub replaces the sleep with one that records each
+// wait and advances a fake clock, so the wait timeout is enforced without
+// real delays.
 func useNoSleepPreflightGitHub(t *testing.T) *[]time.Duration {
 	t.Helper()
+	slept, _ := useFakePreflightGitHubClock(t)
+	return slept
+}
+
+func useFakePreflightGitHubClock(t *testing.T) (*[]time.Duration, *fakePreflightClock) {
+	t.Helper()
 	var slept []time.Duration
-	orig := preflightGitHubSleep
-	preflightGitHubSleep = func(d time.Duration) { slept = append(slept, d) }
-	t.Cleanup(func() { preflightGitHubSleep = orig })
-	return &slept
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clock := &fakePreflightClock{start: start, now: start}
+	origSleep, origNow := preflightGitHubSleep, preflightGitHubNow
+	preflightGitHubSleep = func(d time.Duration) {
+		slept = append(slept, d)
+		clock.now = clock.now.Add(d)
+	}
+	preflightGitHubNow = func() time.Time { return clock.now }
+	t.Cleanup(func() {
+		preflightGitHubSleep = origSleep
+		preflightGitHubNow = origNow
+	})
+	return &slept, clock
+}
+
+// alwaysFailingConnectivityExec succeeds the GH_TOKEN/gh probe, then fails
+// every gh api /rate_limit call with the same result and counts the calls.
+func alwaysFailingConnectivityExec(t *testing.T, r fakeExecResult, calls *int) sandboxExecFunc {
+	t.Helper()
+	return func(_, cmd string, _ time.Duration) (string, string, int, error) {
+		if strings.Contains(cmd, "echo NOTOKEN") {
+			return "OK", "", 0, nil
+		}
+		if !strings.Contains(cmd, "gh api /rate_limit") {
+			t.Fatalf("unexpected sandbox command: %s", cmd)
+		}
+		*calls++
+		return r.stdout, r.stderr, r.exitCode, r.err
+	}
+}
+
+func sumDurations(ds []time.Duration) time.Duration {
+	var total time.Duration
+	for _, d := range ds {
+		total += d
+	}
+	return total
+}
+
+// assertWaitedOutTimeout checks the wait schedule of a check that never
+// succeeded: capped backoff that ends exactly at the wait timeout.
+func assertWaitedOutTimeout(t *testing.T, slept []time.Duration, calls int) {
+	t.Helper()
+	require.NotEmpty(t, slept)
+	assert.Equal(t, preflightGitHubInitialDelay, slept[0])
+	for _, d := range slept {
+		assert.LessOrEqual(t, d, preflightGitHubMaxDelay)
+	}
+	assert.Equal(t, preflightGitHubWaitTimeout, sumDurations(slept))
+	assert.Equal(t, len(slept)+1, calls, "one attempt before each wait plus the final attempt")
 }
 
 func usePreflightGitHubExec(t *testing.T, execFn sandboxExecFunc) {
@@ -129,29 +197,101 @@ func TestCheckSandboxGitHubConnectivity_RetriesOnTransient403(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.False(t, result.Skipped)
-	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second}, *slept)
+	assert.Equal(t, []time.Duration{2 * time.Second, 4 * time.Second}, *slept)
 	logs := buf.String()
-	assert.Contains(t, logs, "attempt 1/3")
-	assert.Contains(t, logs, "attempt 2/3")
+	assert.Contains(t, logs, "attempt 1)")
+	assert.Contains(t, logs, "attempt 2)")
 	assert.Contains(t, logs, "HTTP 403")
 	assert.Contains(t, logs, "retrying in 2s")
-	assert.Contains(t, logs, "retrying in 5s")
+	assert.Contains(t, logs, "retrying in 4s")
+	assert.Contains(t, logs, "gives up after 1m0s")
 }
 
-func TestCheckSandboxGitHubConnectivity_FailsAfterMaxRetriesOnPersistent403(t *testing.T) {
+func TestCheckSandboxGitHubConnectivity_FailsAfterWaitTimeoutOnPersistent403(t *testing.T) {
 	slept := useNoSleepPreflightGitHub(t)
-	usePreflightGitHubExec(t, connectivityExec(t, []fakeExecResult{
-		{stderr: "HTTP 403", exitCode: 1},
-		{stderr: "HTTP 403", exitCode: 1},
-		{stderr: "HTTP 403", exitCode: 1},
-	}))
+	calls := 0
+	usePreflightGitHubExec(t, alwaysFailingConnectivityExec(t, fakeExecResult{stderr: "HTTP 403", exitCode: 1}, &calls))
 	result, err := checkSandboxGitHubConnectivity("sb", nil)
 
 	require.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "failed after 3 attempts")
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed after %d attempts over 1m0s", calls))
+	assert.Contains(t, err.Error(), "wait timeout 1m0s exceeded")
 	assert.Contains(t, err.Error(), "HTTP 403")
-	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second}, *slept)
+	assertWaitedOutTimeout(t, *slept, calls)
+}
+
+// The sandbox network can refuse connections for several seconds after the
+// sandbox starts (#9612). The check waits it out instead of failing.
+func TestCheckSandboxGitHubConnectivity_WaitsForSandboxNetwork(t *testing.T) {
+	slept, clock := useFakePreflightGitHubClock(t)
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	calls := 0
+	usePreflightGitHubExec(t, func(_, cmd string, _ time.Duration) (string, string, int, error) {
+		if strings.Contains(cmd, "echo NOTOKEN") {
+			return "OK", "", 0, nil
+		}
+		calls++
+		if clock.elapsed() < 12*time.Second {
+			return "", "dial tcp 127.0.0.1:3128: connect: Connection refused", 1, nil
+		}
+		return "", "", 0, nil
+	})
+	result, err := checkSandboxGitHubConnectivity("sb", printer)
+
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.False(t, result.Skipped)
+	// Attempts at 0s, 2s, 6s and 11s are refused; the one at 16s succeeds.
+	assert.Equal(t, []time.Duration{2 * time.Second, 4 * time.Second, 5 * time.Second, 5 * time.Second}, *slept)
+	assert.Equal(t, 5, calls)
+	assert.Less(t, sumDurations(*slept), preflightGitHubWaitTimeout)
+	logs := buf.String()
+	assert.Contains(t, logs, "connection refused")
+	assert.Contains(t, logs, "attempt 4)")
+}
+
+func TestCheckSandboxGitHubConnectivity_FailsAfterWaitTimeoutOnPersistentConnectionRefused(t *testing.T) {
+	slept := useNoSleepPreflightGitHub(t)
+	calls := 0
+	usePreflightGitHubExec(t, alwaysFailingConnectivityExec(t,
+		fakeExecResult{stderr: "dial tcp: Connection refused", exitCode: 1}, &calls))
+	result, err := checkSandboxGitHubConnectivity("sb", nil)
+
+	require.Error(t, err)
+	assert.Nil(t, result)
+	assert.Contains(t, err.Error(), "wait timeout 1m0s exceeded")
+	assert.Contains(t, err.Error(), "connection failed")
+	assert.Contains(t, err.Error(), "Connection refused")
+	assertWaitedOutTimeout(t, *slept, calls)
+}
+
+// Time spent inside slow attempts counts toward the wait timeout, so a
+// check whose attempts each hang until the per-attempt timeout stops after
+// the deadline instead of retrying on a fixed attempt count.
+func TestCheckSandboxGitHubConnectivity_WaitTimeoutCountsAttemptTime(t *testing.T) {
+	slept, clock := useFakePreflightGitHubClock(t)
+	calls := 0
+	timeoutErr := fmt.Errorf("command timed out after %s", preflightGitHubTimeout)
+	usePreflightGitHubExec(t, func(_, cmd string, timeout time.Duration) (string, string, int, error) {
+		if strings.Contains(cmd, "echo NOTOKEN") {
+			return "OK", "", 0, nil
+		}
+		calls++
+		clock.now = clock.now.Add(timeout)
+		return "", "", 124, timeoutErr
+	})
+	result, err := checkSandboxGitHubConnectivity("sb", nil)
+
+	require.Error(t, err)
+	assert.Nil(t, result)
+	// Attempt 1 ends at 30s; after a 2s wait, attempt 2 ends at 62s, past
+	// the 60s wait timeout.
+	assert.Equal(t, 2, calls)
+	assert.Equal(t, []time.Duration{2 * time.Second}, *slept)
+	assert.Contains(t, err.Error(), "failed after 2 attempts over 1m2s")
+	assert.ErrorIs(t, err, timeoutErr)
 }
 
 func TestCheckSandboxGitHubConnectivity_DoesNotRetryOn401(t *testing.T) {
@@ -218,21 +358,18 @@ func TestCheckSandboxGitHubConnectivity_RetriesOnEOF(t *testing.T) {
 	assert.Equal(t, []time.Duration{2 * time.Second}, *slept)
 }
 
-func TestCheckSandboxGitHubConnectivity_FailsAfterMaxRetriesOnPersistentEOF(t *testing.T) {
+func TestCheckSandboxGitHubConnectivity_FailsAfterWaitTimeoutOnPersistentEOF(t *testing.T) {
 	slept := useNoSleepPreflightGitHub(t)
+	calls := 0
 	eof := `Get "https://api.github.com/rate_limit": EOF`
-	usePreflightGitHubExec(t, connectivityExec(t, []fakeExecResult{
-		{stderr: eof, exitCode: 1},
-		{stderr: eof, exitCode: 1},
-		{stderr: eof, exitCode: 1},
-	}))
+	usePreflightGitHubExec(t, alwaysFailingConnectivityExec(t, fakeExecResult{stderr: eof, exitCode: 1}, &calls))
 	result, err := checkSandboxGitHubConnectivity("sb", nil)
 
 	require.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "failed after 3 attempts")
+	assert.Contains(t, err.Error(), "wait timeout 1m0s exceeded")
 	assert.Contains(t, err.Error(), "connection closed before a response")
-	assert.Equal(t, []time.Duration{2 * time.Second, 5 * time.Second}, *slept)
+	assertWaitedOutTimeout(t, *slept, calls)
 }
 
 func TestCheckSandboxGitHubConnectivity_RetriesOnConnectionReset(t *testing.T) {

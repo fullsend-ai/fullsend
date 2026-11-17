@@ -22,24 +22,38 @@ var (
 )
 
 const (
-	// preflightGitHubTimeout is the maximum time to wait for the GitHub API
-	// connectivity check inside the sandbox. Short because this is a fast
-	// pre-flight — if the proxy is blocking, the connection attempt fails
-	// quickly (HTTP 403 on CONNECT).
+	// preflightGitHubTimeout is the maximum time to wait for a single GitHub
+	// API connectivity check inside the sandbox. Short because this is a
+	// fast pre-flight — if the proxy is blocking, the connection attempt
+	// fails quickly (HTTP 403 on CONNECT).
 	preflightGitHubTimeout = 30 * time.Second
-)
 
-// preflightGitHubRetryDelays is the wait after each retryable failure of
-// the sandbox GitHub API connectivity check, before the next attempt.
-// Three attempts total: the initial try plus one retry after each delay.
-var preflightGitHubRetryDelays = []time.Duration{
-	2 * time.Second,
-	5 * time.Second,
-}
+	// preflightGitHubWaitTimeout bounds how long retryable failures of the
+	// connectivity check are retried before the pre-flight gives up. Under
+	// load the sandbox network can take 7 to 15 seconds to accept
+	// connections after the sandbox starts, so connection-refused right
+	// after start is expected and must be waited out. No new attempt starts once this
+	// much time has passed since the first attempt; an attempt already
+	// running may still take up to preflightGitHubTimeout. See #9612.
+	preflightGitHubWaitTimeout = 60 * time.Second
+
+	// preflightGitHubInitialDelay is the wait after the first retryable
+	// failure. Each later wait doubles, up to preflightGitHubMaxDelay.
+	preflightGitHubInitialDelay = 2 * time.Second
+
+	// preflightGitHubMaxDelay caps the wait between attempts so the check
+	// notices a newly ready sandbox network promptly.
+	preflightGitHubMaxDelay = 5 * time.Second
+)
 
 // preflightGitHubSleep is the wait between retryable connectivity-check
 // failures. Tests replace it to skip real delays and to record the waits.
 var preflightGitHubSleep = time.Sleep
+
+// preflightGitHubNow is the clock used to enforce
+// preflightGitHubWaitTimeout. Tests replace it with a fake clock that
+// advances when preflightGitHubSleep is called.
+var preflightGitHubNow = time.Now
 
 // preflightGitHubExec runs commands inside the sandbox for the connectivity
 // check. Tests replace it with a fake runner.
@@ -64,10 +78,12 @@ type preflightGitHubResult struct {
 // single low-cost API call.
 //
 // Transient proxy 403s, connection-refused, timeout, connection-level EOF,
-// and connection-reset failures are retried with backoff (see
-// preflightGitHubRetryDelays). Auth and config failures (HTTP 401/404) fail
-// immediately. printer, when non-nil, logs each retry so self-resolving
-// transients remain visible in the run log.
+// and connection-reset failures are retried with capped backoff until
+// preflightGitHubWaitTimeout has passed, so a sandbox network that is still
+// coming up is waited for rather than treated as unreachable. Auth and
+// config failures (HTTP 401/404) fail immediately. printer, when non-nil,
+// logs each retry so self-resolving transients remain visible in the run
+// log.
 //
 // Returns a non-nil error when the API is unreachable (proxy 403, connection
 // refused, DNS failure, etc.). Returns a nil error with Skipped=true when the
@@ -106,9 +122,13 @@ func checkSandboxGitHubConnectivity(sandboxName string, printer *ui.Printer) (*p
 	// GH_TOKEN is set and gh is available — test actual connectivity.
 	// Use /rate_limit as the lightest authenticated endpoint.
 	checkCmd := envLoad + " && " + trustedPath + " gh api /rate_limit --silent 2>&1"
-	maxAttempts := len(preflightGitHubRetryDelays) + 1
+	start := preflightGitHubNow()
+	deadline := start.Add(preflightGitHubWaitTimeout)
+	delay := preflightGitHubInitialDelay
 	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
+	attempt := 0
+	for {
+		attempt++
 		stdout, stderr, exitCode, err := preflightGitHubExec(sandboxName, checkCmd, preflightGitHubTimeout)
 		if err == nil && exitCode == 0 {
 			return &preflightGitHubResult{}, nil
@@ -118,18 +138,23 @@ func checkSandboxGitHubConnectivity(sandboxName string, printer *ui.Printer) (*p
 		if !isRetryablePreflightGitHubFailure(exitCode, err, output) {
 			return nil, lastErr
 		}
-		if attempt == maxAttempts {
+		remaining := deadline.Sub(preflightGitHubNow())
+		if remaining <= 0 {
 			break
 		}
-		delay := preflightGitHubRetryDelays[attempt-1]
+		wait := min(delay, remaining)
 		if printer != nil {
 			printer.StepWarn(fmt.Sprintf(
-				"GitHub API connectivity check failed (attempt %d/%d): %s — retrying in %s",
-				attempt, maxAttempts, preflightGitHubRetryReason(exitCode, err, output), delay))
+				"GitHub API connectivity check failed (attempt %d): %s — retrying in %s (gives up after %s)",
+				attempt, preflightGitHubRetryReason(exitCode, err, output), wait, preflightGitHubWaitTimeout))
 		}
-		preflightGitHubSleep(delay)
+		preflightGitHubSleep(wait)
+		delay = min(delay*2, preflightGitHubMaxDelay)
 	}
-	return nil, fmt.Errorf("GitHub API connectivity check failed after %d attempts: %w", maxAttempts, lastErr)
+	waited := preflightGitHubNow().Sub(start).Round(time.Second)
+	return nil, fmt.Errorf(
+		"GitHub API connectivity check failed after %d attempts over %s (wait timeout %s exceeded): %w",
+		attempt, waited, preflightGitHubWaitTimeout, lastErr)
 }
 
 // diagnosePreflightGitHubFailure turns a failed gh api /rate_limit invocation
