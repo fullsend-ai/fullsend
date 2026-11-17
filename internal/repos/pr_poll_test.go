@@ -33,13 +33,13 @@ var (
 	prPollTestSince = "2026-11-17T07:30:15Z"
 )
 
-// withPRPollClock makes prPollNow return prPollTestNow for the duration of
+// withPRPollClock makes prPollNowFn return prPollTestNow for the duration of
 // the test. Tests using it must not run in parallel.
 func withPRPollClock(t *testing.T) {
 	t.Helper()
-	prev := prPollNow
-	prPollNow = func() time.Time { return prPollTestNow }
-	t.Cleanup(func() { prPollNow = prev })
+	prev := prPollNowFn
+	prPollNowFn = func() time.Time { return prPollTestNow }
+	t.Cleanup(func() { prPollNowFn = prev })
 }
 
 // stagedPRCaller returns the fork PR review poll caller entry the spy
@@ -128,7 +128,7 @@ func TestConverge_PRPoll_EstablishedInstallAddsThenIsIdempotent(t *testing.T) {
 	// The commit landed: a later run, at a later time, writes nothing and
 	// keeps the original stamp.
 	fc.FileContents[prCallerKey] = f.Content
-	prPollNow = func() time.Time { return prPollTestNow.Add(48 * time.Hour) }
+	prPollNowFn = func() time.Time { return prPollTestNow.Add(48 * time.Hour) }
 	cr, spy = runJiraConverge(t, fc, prPollEnabledConfig, nil)
 	require.NoError(t, cr.Error)
 	_, ok = stagedPRCaller(t, spy)

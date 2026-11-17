@@ -31,9 +31,9 @@ type prPollClient interface {
 	APICalls() map[string]int64
 }
 
-// newPRPollClient builds the poll's GitHub client from GITHUB_TOKEN. Tests
-// replace it with a client against a fake server.
-var newPRPollClient = func(token string) prPollClient {
+// newPRPollClientFn builds the poll's GitHub client from GITHUB_TOKEN.
+// Override in tests to supply a fake client.
+var newPRPollClientFn = func(token string) prPollClient {
 	return newConfiguredHostGitHubClient(token)
 }
 
@@ -107,6 +107,11 @@ func runGitHubPRPoll(cmd *cobra.Command, flags prPollFlags) error {
 		fmt.Fprintln(stderr, "the review agent is disabled; skipping the fork PR review poll cycle")
 		return writePRPollDispatches(flags.outputPath, nil)
 	}
+	// Config loading does not run per-repo validation, so enforce the
+	// documented bounds here before they size a cycle.
+	if err := config.ValidateForkPRReviewPoll(pollCfg); err != nil {
+		return fmt.Errorf("--input-driver %s: %w", prPollInputDriver, err)
+	}
 
 	if flags.since == "" {
 		return fmt.Errorf("--since is required for --input-driver %s: it is the time the poll was enabled, stamped in the poll caller workflow", prPollInputDriver)
@@ -131,7 +136,7 @@ func runGitHubPRPoll(cmd *cobra.Command, flags prPollFlags) error {
 	if err != nil {
 		return fmt.Errorf("--input-driver %s: %w", prPollInputDriver, err)
 	}
-	client := newPRPollClient(token)
+	client := newPRPollClientFn(token)
 
 	opts := prpoll.Options{
 		Owner:             owner,

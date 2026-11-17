@@ -16,9 +16,9 @@ import (
 // managed fork PR review poll caller (ADR 0171).
 const prPollComponent = "pr-poll"
 
-// prPollNow is the clock that stamps a new caller's since value. Tests
-// replace it so the stamp is deterministic.
-var prPollNow = time.Now
+// prPollNowFn is the clock that stamps a new caller's since value.
+// Override in tests to supply a deterministic timestamp.
+var prPollNowFn = time.Now
 
 // prPollState is a repository's fork PR review poll state, read during
 // discovery before any write.
@@ -135,7 +135,7 @@ func ensurePRPollCaller(ctx context.Context, req prPollRequest) ([]ComponentActi
 		since, ok = scaffold.PRPollCallerSince(have)
 	}
 	if !ok {
-		since = prPollNow().UTC().Format(time.RFC3339)
+		since = prPollNowFn().UTC().Format(time.RFC3339)
 	}
 	want, err := scaffold.RenderPRPollCaller(req.Render, since)
 	if err != nil {

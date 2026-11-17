@@ -34,9 +34,9 @@ func prPollTestEnv(t *testing.T) {
 	}
 	origAuth := ghAuthTokenFn
 	ghAuthTokenFn = func() ([]byte, error) { return nil, errors.New("no gh auth") }
-	orig := newPRPollClient
-	t.Cleanup(func() { newPRPollClient = orig; ghAuthTokenFn = origAuth })
-	newPRPollClient = func(string) prPollClient {
+	orig := newPRPollClientFn
+	t.Cleanup(func() { newPRPollClientFn = orig; ghAuthTokenFn = origAuth })
+	newPRPollClientFn = func(string) prPollClient {
 		t.Fatal("the poll must not contact GitHub")
 		return nil
 	}
@@ -108,6 +108,12 @@ func TestRunGitHubPRPoll_ArgumentErrors(t *testing.T) {
 			want: "FULLSEND_REVIEW_CLIENT_ID",
 		},
 		"invalid config": {config: "fork_pr_review_poll:\n  enabled: [\n", want: "load config"},
+		// Config loading does not validate, so the driver enforces the bounds.
+		"max starts out of range": {
+			config: "fork_pr_review_poll:\n  enabled: true\n  max_starts_per_cycle: 1000\n",
+			flags:  prPollFlags{since: "2026-11-17T18:00:00Z"},
+			want:   "max_starts_per_cycle must be between",
+		},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -172,7 +178,7 @@ func TestRunGitHubPRPoll_DispatchesThroughCommand(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	newPRPollClient = func(token string) prPollClient {
+	newPRPollClientFn = func(token string) prPollClient {
 		assert.Equal(t, "tok", token)
 		return gh.New(token).WithBaseURL(srv.URL)
 	}
@@ -237,7 +243,7 @@ func TestRunGitHubPRPoll_StateFile(t *testing.T) {
 	t.Setenv(forge.VarReviewClientID, "Iv1.review")
 	repoLookups := 0
 	srv := prPollServer(t, &repoLookups)
-	newPRPollClient = func(token string) prPollClient { return gh.New(token).WithBaseURL(srv.URL) }
+	newPRPollClientFn = func(token string) prPollClient { return gh.New(token).WithBaseURL(srv.URL) }
 
 	fullsendDir := writeJiraPollConfig(t, "fork_pr_review_poll:\n  enabled: true\n  max_attempts_per_head: 1\n")
 	statePath := filepath.Join(t.TempDir(), "state.json")
@@ -288,7 +294,7 @@ func TestRunGitHubPRPoll_DefaultBranchFromRepository(t *testing.T) {
 	t.Setenv(forge.VarReviewClientID, "Iv1.review")
 	repoLookups := 0
 	srv := prPollServer(t, &repoLookups)
-	newPRPollClient = func(token string) prPollClient { return gh.New(token).WithBaseURL(srv.URL) }
+	newPRPollClientFn = func(token string) prPollClient { return gh.New(token).WithBaseURL(srv.URL) }
 	_, stderr, err := runPRPoll(t, enabledPRPollConfig, prPollFlags{since: "2026-11-17T18:00:00Z"})
 	require.NoError(t, err, stderr)
 	assert.Equal(t, 1, repoLookups)
@@ -301,7 +307,7 @@ func TestRunGitHubPRPoll_StateErrors(t *testing.T) {
 		t.Setenv(forge.VarReviewClientID, "Iv1.review")
 		repoLookups := 0
 		srv := prPollServer(t, &repoLookups)
-		newPRPollClient = func(token string) prPollClient { return gh.New(token).WithBaseURL(srv.URL) }
+		newPRPollClientFn = func(token string) prPollClient { return gh.New(token).WithBaseURL(srv.URL) }
 		statePath := filepath.Join(t.TempDir(), "state.json")
 		require.NoError(t, os.WriteFile(statePath, []byte("{garbage"), 0o600))
 		out, stderr, err := runPRPoll(t, enabledPRPollConfig, prPollFlags{since: "2026-11-17T18:00:00Z", stateFile: statePath, defaultBranch: "main"})
