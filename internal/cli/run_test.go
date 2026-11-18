@@ -2586,6 +2586,40 @@ func TestSandboxDeniedKeys_VaultEligibleStandaloneSecrets(t *testing.T) {
 	}
 }
 
+// TestSandboxDeniedKeys_BotRoleHelperVars verifies that the bot-role helper's
+// runner-owned address and credential cannot be aliased into sandbox-bound
+// sites by ${VAR} expansion (#9602). The literal env.sandbox names are
+// reserved, so the leak path is a nested fullsend run: a pre- or post-script
+// that starts one inherits the outer run's helper variables in its process
+// environment, and the nested harness could otherwise expand them into a
+// different env.sandbox key or staged host-file content.
+func TestSandboxDeniedKeys_BotRoleHelperVars(t *testing.T) {
+	t.Setenv("FULLSEND_BOT_ROLE_URL", "http://127.0.0.1:1/bot-role")
+	t.Setenv("FULLSEND_BOT_ROLE_TOKEN", "outer-run-helper-token")
+
+	for _, key := range []string{"FULLSEND_BOT_ROLE_URL", "FULLSEND_BOT_ROLE_TOKEN"} {
+		value := os.Getenv(key)
+		assert.True(t, sandboxDeniedKeys[key], key)
+		assert.True(t, isBotRoleHelperEnvKey(key), key)
+
+		// A nested run's env.sandbox cannot alias the inherited value
+		// under another key.
+		assert.Equal(t, "x--y", expandSandboxEnvValue("x-${"+key+"}-y", harnessEnvExpand))
+		assert.NotContains(t, expandSandboxEnvValue("${"+key+"}", harnessEnvExpand), value)
+		// Expanded host_files content refuses it too.
+		assert.NotContains(t, shellSafeExpandEnv("export V=\"${"+key+"}\""), value)
+		// FULLSEND_OUTPUT_FILE, the runner entry exported verbatim into
+		// the sandbox, cannot carry it either.
+		got := expandRunnerEntry("FULLSEND_OUTPUT_FILE", "out-${"+key+"}.json", harnessEnvExpand)
+		assert.Equal(t, "out-.json", got)
+		assert.NotContains(t, got, value)
+	}
+
+	// Unrelated variables keep expanding at the same sites.
+	t.Setenv("OTHER_VAR", "kept")
+	assert.Equal(t, "kept", expandSandboxEnvValue("${OTHER_VAR}", harnessEnvExpand))
+}
+
 // TestExpandRunnerEntry_OutputFileRefusesJiraSecrets verifies that
 // FULLSEND_OUTPUT_FILE, the runner entry exported verbatim into the sandbox,
 // cannot carry the Jira repository secrets from runner_env or env.runner,
