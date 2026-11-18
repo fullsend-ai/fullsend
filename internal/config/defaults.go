@@ -103,6 +103,10 @@ func (d *perRepoDefaults) ConfigInferenceServiceAccount() string { return "" }
 // blocks, preserving the pre-existing behavior).
 func (d *perRepoDefaults) ConfigKeepHistory() bool { return true }
 
+// ConfigResolveFixedThreads returns the default resolve-fixed-threads state
+// (false — opt-in feature).
+func (d *perRepoDefaults) ConfigResolveFixedThreads() bool { return false }
+
 // ConfigInferenceOpenAI returns the default OpenAI WIF identifiers (none —
 // set by `fullsend github setup --openai-*` or the FULLSEND_OPENAI_*
 // runner variables).

@@ -128,6 +128,15 @@ func TestPerRepoConfig_ConfigKeepHistory(t *testing.T) {
 	assert.True(t, cfg.ConfigKeepHistory())
 }
 
+func TestPerRepoConfig_ConfigResolveFixedThreads(t *testing.T) {
+	f := false
+	cfg := &perRepoConfig{ResolveFixedThreads: &f}
+	assert.False(t, cfg.ConfigResolveFixedThreads())
+	tr := true
+	cfg.ResolveFixedThreads = &tr
+	assert.True(t, cfg.ConfigResolveFixedThreads())
+}
+
 func TestPerRepoConfig_AllowedResources(t *testing.T) {
 	resources := []string{"https://example.com/"}
 	cfg := &perRepoConfig{AllowedRemoteResources: resources}
@@ -203,6 +212,16 @@ func TestPerRepoConfig_SetKeepHistory(t *testing.T) {
 	cfg.SetKeepHistory(true)
 	require.NotNil(t, cfg.KeepHistory)
 	assert.True(t, *cfg.KeepHistory)
+}
+
+func TestPerRepoConfig_SetResolveFixedThreads(t *testing.T) {
+	cfg := &perRepoConfig{}
+	cfg.SetResolveFixedThreads(false)
+	require.NotNil(t, cfg.ResolveFixedThreads)
+	assert.False(t, *cfg.ResolveFixedThreads)
+	cfg.SetResolveFixedThreads(true)
+	require.NotNil(t, cfg.ResolveFixedThreads)
+	assert.True(t, *cfg.ResolveFixedThreads)
 }
 
 func TestPerRepoConfig_SetAgents(t *testing.T) {

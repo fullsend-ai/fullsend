@@ -76,6 +76,7 @@ type PerRepoConfigReader interface {
 	// warn-and-skip-minting fallback) use this instead of ConfigMintURL.
 	ConfigMintURLFromFile() string
 	ConfigKeepHistory() bool
+	ConfigResolveFixedThreads() bool
 	ConfigInferenceProvider() string
 	ConfigInferenceProject() string
 	ConfigInferenceRegion() string
@@ -145,6 +146,7 @@ type PerRepoConfigWriter interface {
 	SetRuntime(string)
 	SetMintURL(string)
 	SetKeepHistory(bool)
+	SetResolveFixedThreads(bool)
 	SetInferenceProvider(string)
 	SetInferenceProject(string)
 	SetInferenceRegion(string)
@@ -479,6 +481,19 @@ func (c *perRepoConfig) ConfigKeepHistory() bool {
 	return true
 }
 
+// ConfigResolveFixedThreads reports whether review runs should resolve
+// fixed review threads. ResolveFixedThreads is a *bool: nil falls through
+// to parent, non-nil is the local decision. Code default is false (opt-in).
+func (c *perRepoConfig) ConfigResolveFixedThreads() bool {
+	if c.ResolveFixedThreads != nil {
+		return *c.ResolveFixedThreads
+	}
+	if c.parent != nil {
+		return c.parent.ConfigResolveFixedThreads()
+	}
+	return false
+}
+
 // ConfigTracker returns the provider selected by the tracker mapping
 // ("github", "gitlab", "jira"), or "" when none is selected. It is the
 // default for `fullsend issues` commands' --tracker flag when that flag
@@ -700,6 +715,10 @@ func (c *perRepoConfig) SetRuntime(runtime string) { c.Runtime = runtime }
 // Stores a *bool so that an explicit false is distinguishable from
 // unset (nil) across layers.
 func (c *perRepoConfig) SetKeepHistory(v bool) { c.KeepHistory = &v }
+
+// SetResolveFixedThreads sets whether review runs resolve fixed review threads.
+// Stores a *bool so that explicit values are distinguishable from unset (nil).
+func (c *perRepoConfig) SetResolveFixedThreads(v bool) { c.ResolveFixedThreads = &v }
 
 // SetMintURL sets the token mint URL.
 func (c *perRepoConfig) SetMintURL(mintURL string) { c.MintURL = mintURL }

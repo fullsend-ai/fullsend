@@ -18,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
@@ -43,6 +44,34 @@ var hunkHeaderRe = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 // alphanumeric). Anything else is left off the comment so a crafted id
 // cannot inject markup. The resolved-thread fetch matches this form (#7907).
 var findingIDRe = regexp.MustCompile(`^f_[a-zA-Z0-9]+$`)
+
+// findingMarkerRe matches finding ID markers embedded on the first line of an inline review comment.
+var findingMarkerRe = regexp.MustCompile(`^<!-- finding:(f_[a-zA-Z0-9]+) -->(\r?\n|$)`)
+
+// findingMarkerOpenerRe matches finding marker openers case-insensitively.
+var findingMarkerOpenerRe = regexp.MustCompile(`(?i)<(!--\s*finding\s*:)`)
+
+// neutralizeFindingMarkers escapes the "<" of every finding marker opener in s.
+func neutralizeFindingMarkers(s string) string {
+	return findingMarkerOpenerRe.ReplaceAllString(s, "&lt;$1")
+}
+
+// formatFindingStamp formats a finding ID as the leading HTML comment stamp.
+func formatFindingStamp(id string) string {
+	if findingIDRe.MatchString(id) {
+		return fmt.Sprintf("<!-- finding:%s -->\n", id)
+	}
+	return ""
+}
+
+// parseFindingStamp extracts the finding ID from the first line of a comment body.
+func parseFindingStamp(body string) string {
+	matches := findingMarkerRe.FindStringSubmatch(body)
+	if len(matches) >= 2 {
+		return matches[1]
+	}
+	return ""
+}
 
 // reviewProjectionMarkerPattern is the review-findings-v2 projection marker
 // pattern, including its base64 payload.
@@ -70,16 +99,17 @@ func reviewTrustedLeadingLineReForHash(diffHash, headSHA string) *regexp.Regexp 
 
 func newPostReviewCmd() *cobra.Command {
 	var (
-		repo        string
-		pr          int
-		result      string
-		token       string
-		headSHA     string
-		dryRun      bool
-		forgeName   string
-		baseURL     string
-		keepHistory bool
-		fullsendDir string
+		repo                string
+		pr                  int
+		result              string
+		token               string
+		headSHA             string
+		dryRun              bool
+		forgeName           string
+		baseURL             string
+		keepHistory         bool
+		resolveFixedThreads bool
+		fullsendDir         string
 	)
 
 	cmd := &cobra.Command{
@@ -177,6 +207,18 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 				KeepHistory: resolvedKeepHistory,
 			}
 
+			// Resolve resolve_fixed_threads: explicit --resolve-fixed-threads flag
+			// takes precedence, otherwise fall back to config.yaml via --fullsend-dir.
+			resolvedResolveFixed := resolveFixedThreads
+			if !cmd.Flags().Changed("resolve-fixed-threads") {
+				var rfFlag *bool // nil = not explicitly set
+				resolved, resolveErr := resolveFixedThreadsConfig(rfFlag, fullsendDir, nil)
+				if resolveErr != nil {
+					printer.StepWarn(fmt.Sprintf("Warning: %v; defaulting to resolve_fixed_threads=false", resolveErr))
+				}
+				resolvedResolveFixed = resolved
+			}
+
 			// Stale-head check: refuse to post a review against code
 			// that has changed since the agent reviewed it.
 			if parsed.HeadSHA != "" {
@@ -195,7 +237,7 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 				return postFailureNotice(cmd.Context(), client, owner, repoName, pr, parsed, cfg, printer)
 			}
 
-			return postReviewContent(cmd.Context(), client, owner, repoName, pr, parsed, cfg, dryRun, printer)
+			return postReviewContent(cmd.Context(), client, owner, repoName, pr, parsed, cfg, resolvedResolveFixed, dryRun, printer)
 		},
 	}
 
@@ -206,6 +248,7 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 	cmd.Flags().StringVar(&headSHA, "head-sha", "", "expected PR HEAD SHA (skips review if HEAD has moved)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be posted without making API calls")
 	cmd.Flags().BoolVar(&keepHistory, "keep-history", true, "append previous content as collapsed history blocks (set false to replace in-place)")
+	cmd.Flags().BoolVar(&resolveFixedThreads, "resolve-fixed-threads", false, "resolve review threads when findings are fixed (default: false; sources from config.yaml when flag is omitted)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", os.Getenv("FULLSEND_DIR"), "path to .fullsend config directory (default: $FULLSEND_DIR; sources defaults from its config.yaml when flags are omitted)")
 	cmd.Flags().StringVar(&forgeName, "forge", "", "forge backend: github (default) or gitlab")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "forge instance URL (e.g. https://gitlab.example.com)")
@@ -217,11 +260,19 @@ GITLAB_TOKEN for GitLab and GH_TOKEN / GITHUB_TOKEN for GitHub.`,
 
 // ReviewResult represents a parsed review result file.
 type ReviewResult struct {
-	Body     string          `json:"body"`
-	Action   string          `json:"action"`   // "approve", "request-changes", "comment", "reject", "failure"
-	HeadSHA  string          `json:"head_sha"` // commit SHA the agent reviewed
-	Reason   string          `json:"reason"`   // failure reason (when action is "failure")
-	Findings []ReviewFinding `json:"findings"`
+	Body             string              `json:"body"`
+	Action           string              `json:"action"`   // "approve", "request-changes", "comment", "reject", "failure"
+	HeadSHA          string              `json:"head_sha"` // commit SHA the agent reviewed
+	Reason           string              `json:"reason"`   // failure reason (when action is "failure")
+	Findings         []ReviewFinding     `json:"findings"`
+	ResolvedFindings []string            `json:"resolved_findings,omitempty"`
+	Dispositions     []ReviewDisposition `json:"dispositions,omitempty"`
+}
+
+// ReviewDisposition represents a finding disposition emitted by the review agent.
+type ReviewDisposition struct {
+	ID     string `json:"id"`
+	Status string `json:"status"` // "open", "resolved_by_change", "reclassified", "dismissed_by_human"
 }
 
 // ReviewFinding is the structured form emitted by the review agent.
@@ -365,7 +416,7 @@ This PR was NOT reviewed. Do not count this as an approval.`, reason)
 // formal PR/MR review. Once the sticky comment is on the PR, formal
 // review submission is best-effort: a forge API failure must not turn
 // a posted verdict into a workflow Failure (#3548).
-func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, dryRun bool, printer *ui.Printer) error {
+func postReviewContent(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, cfg sticky.Config, resolveFixed bool, dryRun bool, printer *ui.Printer) error {
 	cfg.TrustedLeadingLine = reviewProjectionMarkerRe
 	cfg.MaxTrustedLeadingLines = 1
 	var diffHash string
@@ -407,6 +458,10 @@ func postReviewContent(ctx context.Context, client forge.Client, owner, repo str
 		if _, hashErr := sticky.Post(ctx, client, owner, repo, pr, hashBody, hashCfg, printer); hashErr != nil {
 			printer.StepWarn(fmt.Sprintf("Could not publish review diff hash after approval; re-review deduplication will be unavailable: %v", hashErr))
 		}
+	}
+
+	if resolveFixed {
+		resolveFixedReviewThreads(ctx, client, owner, repo, pr, parsed, dryRun, printer)
 	}
 
 	return postApprovedFollowUpIssues(ctx, owner, repo, pr, parsed, printer)
@@ -473,6 +528,105 @@ func pullRequestDiffHashFromDiffs(diffs []forge.PullRequestFileDiff, err error) 
 	}
 	sum := sha256.Sum256(bytes.TrimSuffix(canonicalJSON.Bytes(), []byte("\n")))
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// resolveFixedThreadsConfig returns the explicit flag value if non-nil,
+// otherwise falls back to config.yaml in fullsendDir or testConfigReader.
+// Defaults to false (opt-in).
+func resolveFixedThreadsConfig(flag *bool, fullsendDir string, testConfigReader config.PerRepoConfigReader) (bool, error) {
+	if flag != nil {
+		return *flag, nil
+	}
+	prc := testConfigReader
+	if prc == nil && fullsendDir != "" {
+		reader, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
+		if err != nil {
+			return false, fmt.Errorf("loading config for resolve_fixed_threads: %w", err)
+		}
+		prc, _ = reader.(config.PerRepoConfigReader)
+	}
+	if prc != nil {
+		return prc.ConfigResolveFixedThreads(), nil
+	}
+	return false, nil
+}
+
+// resolveFixedReviewThreads fetches unresolved review threads and resolves
+// those corresponding to findings explicitly reported as resolved by change
+// in the review result (via resolved_findings or dispositions).
+//
+// Fail-closed safeguards:
+//   - Skips thread listing entirely on dry-run or when no resolved findings are supplied.
+//   - Requires a non-empty reviewed HeadSHA.
+//   - Only threads whose comments were all authored by a bot and whose root
+//     comment is stamped on line 1 with a valid finding marker are eligible.
+//   - Threads containing any human comments or truncated comments remain open.
+//   - Only findings explicitly confirmed resolved by change are eligible.
+func resolveFixedReviewThreads(ctx context.Context, client forge.Client, owner, repo string, pr int, parsed ReviewResult, dryRun bool, printer *ui.Printer) {
+	if dryRun || parsed.HeadSHA == "" {
+		return
+	}
+
+	resolvedIDs := make(map[string]struct{})
+	for _, id := range parsed.ResolvedFindings {
+		if findingIDRe.MatchString(id) {
+			resolvedIDs[id] = struct{}{}
+		}
+	}
+	for _, d := range parsed.Dispositions {
+		if d.Status == "resolved_by_change" && findingIDRe.MatchString(d.ID) {
+			resolvedIDs[d.ID] = struct{}{}
+		}
+	}
+	if len(resolvedIDs) == 0 {
+		return
+	}
+
+	page, err := client.ListPullRequestReviewThreads(ctx, owner, repo, pr)
+	if err != nil {
+		if errors.Is(err, forge.ErrNotSupported) {
+			return
+		}
+		printer.StepWarn(fmt.Sprintf("Failed to list review threads for resolution check: %v", err))
+		return
+	}
+
+	resolvedCount := 0
+	for _, thread := range page.Threads {
+		if thread.IsResolved || thread.CommentsTruncated || len(thread.Comments) == 0 {
+			continue
+		}
+		// Fail closed: only threads with exclusively bot-authored comments are resolvable.
+		hasNonBot := false
+		for _, c := range thread.Comments {
+			if c.AuthorType != "Bot" {
+				hasNonBot = true
+				break
+			}
+		}
+		if hasNonBot {
+			continue
+		}
+
+		root := thread.Comments[0]
+		findingID := parseFindingStamp(root.Body)
+		if findingID == "" {
+			continue
+		}
+		if _, isResolved := resolvedIDs[findingID]; !isResolved {
+			continue
+		}
+
+		if err := client.ResolvePullRequestReviewThread(ctx, owner, repo, pr, thread.ID); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to resolve review thread %s (%s): %v", thread.ID, findingID, err))
+			continue
+		}
+		resolvedCount++
+	}
+
+	if resolvedCount > 0 {
+		printer.StepDone(fmt.Sprintf("Resolved %d fixed review thread(s)", resolvedCount))
+	}
 }
 
 // submitFormalReview minimizes stale reviews by the same user, then
@@ -706,15 +860,15 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 // File-level comments use this same helper, so they carry the stamp too.
 func formatFindingComment(f ReviewFinding) string {
 	var b strings.Builder
-	if findingIDRe.MatchString(string(f.ID)) {
-		fmt.Fprintf(&b, "<!-- finding:%s -->\n", f.ID)
+	if stamp := formatFindingStamp(string(f.ID)); stamp != "" {
+		b.WriteString(stamp)
 	}
 	fmt.Fprintf(&b, "**[%s]** %s", f.Severity, f.Category)
 	b.WriteString("\n\n")
-	b.WriteString(strings.TrimSpace(f.Description))
+	b.WriteString(strings.TrimSpace(neutralizeFindingMarkers(f.Description)))
 	if f.Remediation != "" {
 		b.WriteString("\n\n**Suggested fix:** ")
-		b.WriteString(strings.TrimSpace(f.Remediation))
+		b.WriteString(strings.TrimSpace(neutralizeFindingMarkers(f.Remediation)))
 	}
 	return b.String()
 }

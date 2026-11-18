@@ -53,6 +53,29 @@ func TestFakeClient_ListPullRequestReviewThreads(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestFakeClient_ResolvePullRequestReviewThread(t *testing.T) {
+	page := ReviewThreadPage{
+		Threads: []ReviewThread{
+			{ID: "thread-1", IsResolved: false, Path: "main.go"},
+			{ID: "thread-2", IsResolved: false, Path: "util.go"},
+		},
+	}
+	f := NewFakeClient()
+	f.PRReviewThreads = map[string]ReviewThreadPage{"o/r/7": page}
+
+	err := f.ResolvePullRequestReviewThread(context.Background(), "o", "r", 7, "thread-1")
+	require.NoError(t, err)
+	require.Len(t, f.ResolvedPRReviewThreads, 1)
+	assert.Equal(t, ResolvedReviewThreadRecord{Owner: "o", Repo: "r", Number: 7, ThreadID: "thread-1"}, f.ResolvedPRReviewThreads[0])
+	assert.True(t, f.PRReviewThreads["o/r/7"].Threads[0].IsResolved)
+	assert.False(t, f.PRReviewThreads["o/r/7"].Threads[1].IsResolved)
+
+	f.Errors["ResolvePullRequestReviewThread"] = errors.New("boom")
+	err = f.ResolvePullRequestReviewThread(context.Background(), "o", "r", 7, "thread-2")
+	require.Error(t, err)
+	assert.Equal(t, "boom", err.Error())
+}
+
 func TestFakeClient_ListOrgRepos(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{
@@ -991,6 +1014,9 @@ func fakeClientCalls(ctx context.Context) map[string]func(fc *FakeClient) []any 
 		},
 		"ListPullRequestReviewThreads": func(fc *FakeClient) []any {
 			return pack(fc.ListPullRequestReviewThreads(ctx, "o", "r", 1))
+		},
+		"ResolvePullRequestReviewThread": func(fc *FakeClient) []any {
+			return pack(fc.ResolvePullRequestReviewThread(ctx, "o", "r", 1, "t1"))
 		},
 		"DismissPullRequestReview": func(fc *FakeClient) []any {
 			return pack(fc.DismissPullRequestReview(ctx, "o", "r", 1, 1, "m"))

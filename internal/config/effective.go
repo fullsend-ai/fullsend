@@ -22,9 +22,10 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 		return nil, fmt.Errorf("configuration is required")
 	}
 	out := map[string]any{
-		"kill_switch":  r.IsKillSwitchActive(),
-		"keep_history": r.ConfigKeepHistory(),
-		"roles":        r.ConfigRoles(),
+		"kill_switch":           r.IsKillSwitchActive(),
+		"keep_history":          r.ConfigKeepHistory(),
+		"resolve_fixed_threads": r.ConfigResolveFixedThreads(),
+		"roles":                 r.ConfigRoles(),
 	}
 	for key, val := range map[string]string{
 		"version":  r.ConfigVersion(),

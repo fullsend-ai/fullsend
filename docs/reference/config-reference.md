@@ -26,6 +26,7 @@ forge: github                        # Hosting platform: github, gitlab (auto-de
 # ── Operations ───────────────────────────────────────────────
 kill_switch: false                   # Emergency stop — disables all agent dispatch when true
 keep_history: true                   # Append previous sticky-comment content as collapsed "Previous run" blocks
+resolve_fixed_threads: false         # Resolve review threads when agent confirms findings are fixed (opt-in)
 
 # ── Runtime ──────────────────────────────────────────────────
 runtime: claude                      # Default agent runtime: claude, pi, codex, opencode
@@ -186,6 +187,14 @@ issues post-comment) append the previous comment body as a collapsed "Previous
 run" `<details>` block. Default is `true` (history appended). Set to `false`
 when accumulated "Previous run" blocks add unwanted noise — for example, when
 comments are synced to Jira where `<details>` does not render as collapsible.
+
+### `resolve_fixed_threads`
+
+Controls whether `post-review` resolves inline pull request review threads when
+the review agent explicitly reports findings as resolved by change (via
+`resolved_findings` or `dispositions`). Default is `false` (threads remain open).
+Can be overridden on the command line via `--resolve-fixed-threads`. Uses pointer
+semantics in the layered config system — `nil` (omitted) falls through to parent.
 
 ### `runtime`
 

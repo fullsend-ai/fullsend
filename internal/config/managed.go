@@ -408,6 +408,10 @@ func clonePerRepo(src *perRepoConfig) *perRepoConfig {
 		v := *src.KeepHistory
 		out.KeepHistory = &v
 	}
+	if src.ResolveFixedThreads != nil {
+		v := *src.ResolveFixedThreads
+		out.ResolveFixedThreads = &v
+	}
 	if src.Roles != nil {
 		out.Roles = cloneStringSlice(src.Roles)
 	}
@@ -468,6 +472,10 @@ func applyManagedLayer(out, child *perRepoConfig) {
 	if child.KeepHistory != nil {
 		v := *child.KeepHistory
 		out.KeepHistory = &v
+	}
+	if child.ResolveFixedThreads != nil {
+		v := *child.ResolveFixedThreads
+		out.ResolveFixedThreads = &v
 	}
 	if child.Roles != nil {
 		out.Roles = cloneStringSlice(child.Roles)

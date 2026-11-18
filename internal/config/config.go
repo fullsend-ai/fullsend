@@ -1051,6 +1051,11 @@ type perRepoConfig struct {
 	// in-place with no history.
 	KeepHistory *bool `yaml:"keep_history,omitempty"`
 
+	// ResolveFixedThreads controls whether review agent runs resolve fixed
+	// inline review threads when a finding is resolved by change. When nil
+	// (omitted), falls through to parent (code default false — opt-in).
+	ResolveFixedThreads *bool `yaml:"resolve_fixed_threads,omitempty"`
+
 	Roles  []string     `yaml:"roles,omitempty"`
 	Agents []AgentEntry `yaml:"agents,omitempty"`
 	// AllowedRemoteResources holds the locally-set allowed remote
@@ -1216,6 +1221,7 @@ type perRepoConfigMarshal struct {
 	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
 	Runtime                string                    `yaml:"runtime,omitempty"`
 	KeepHistory            *bool                     `yaml:"keep_history,omitempty"`
+	ResolveFixedThreads    *bool                     `yaml:"resolve_fixed_threads,omitempty"`
 	Roles                  *[]string                 `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
@@ -1243,6 +1249,7 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		KillSwitch:          c.KillSwitch,
 		Runtime:             c.Runtime,
 		KeepHistory:         c.KeepHistory,
+		ResolveFixedThreads: c.ResolveFixedThreads,
 		Agents:              c.Agents,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
