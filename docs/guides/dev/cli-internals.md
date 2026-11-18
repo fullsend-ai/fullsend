@@ -153,6 +153,7 @@ fullsend
 │   ├── --status-number <int>                #   Issue/PR number for status comments
 │   └── --mint-url <url>                     #   Mint service URL for agent and status tokens (default: layered mint_url, then $FULLSEND_MINT_URL)
 ├── fetch-skill      <url>                    # Fetch a skill at runtime (in-sandbox)
+├── bot-role       <login>                   # Resolve a bot's registered role (pre-/post-script helper)
 ├── scan                                     # Run security scanner on input/output
 │   ├── input                                # Scan event payload for prompt injection
 │   ├── output                               # Scan agent output for leaked secrets

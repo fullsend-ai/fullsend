@@ -934,6 +934,80 @@ untrusted input:
 - **Limit string lengths** in the JSON schema (`maxLength`) to prevent
   resource exhaustion when posting to external APIs.
 
+#### Resolving a bot's registered role
+
+Pre- and post-scripts often need to know whether the author of a comment or
+review is a registered Fullsend bot — for example, to trust an earlier
+triage or review analysis only when a registered triage or review bot wrote
+it. Do not recognise bots by their GitHub App name or login spelling: anyone
+who can register an App with a matching slug passes that check. Ask for the
+[ADR 0107](../../ADRs/0107-bot-identity-resolution-for-dispatch-authorization.md)
+bot-role result instead:
+
+```bash
+# $login is the verified author login, e.g. "fullsend-ai-triage[bot]"
+if ! ROLE=$(fullsend bot-role "$login"); then
+  # The lookup could not be completed (mint unreachable, no mint configured
+  # for this deployment, or the command ran outside a fullsend run). Fail
+  # closed: treat the author as unknown.
+  echo "::error::Bot-role lookup failed for ${login}; failing closed."
+  exit 1
+fi
+
+case "$ROLE" in
+  triage)  # a registered bot with the triage role — trust its analysis
+    ;;
+  review)  # a registered bot with the review role
+    ;;
+  no_match)
+    # The lookup completed: this login is not a registered bot.
+    ;;
+  *)
+    # A registered bot with another role.
+    ;;
+esac
+```
+
+`fullsend run` exports `FULLSEND_BOT_ROLE_URL` and
+`FULLSEND_BOT_ROLE_TOKEN` to every pre- and post-script; `fullsend bot-role`
+reads them and needs nothing else, so scripts never handle a credential
+themselves. The semantics:
+
+- On success the command prints the registered canonical role (`triage`,
+  `review`, …) or `no_match` to stdout and exits 0.
+- A lookup that cannot be completed fails with a non-zero exit and empty
+  stdout — never `no_match` — so a failed lookup stays distinguishable from
+  a no-match and the caller can fail closed, as above.
+- The lookup is bound to the run's target repository (`$REPO_FULL_NAME`);
+  a script cannot ask about another repository, and the command accepts no
+  repository flag. The mint also checks that target against the job's OIDC
+  repository claim, so the lookup only completes when `REPO_FULL_NAME` is
+  the repository the workflow itself runs in — a run targeting a different
+  repository fails every lookup.
+- The Actions OIDC credentials the lookup authenticates with stay
+  runner-side (`fullsend run` withholds `ACTIONS_ID_TOKEN_*` from child
+  scripts) and the mint's answer carries role names only.
+- The mint-backed lookup is GitHub-only: it authenticates with the job's
+  Actions OIDC token, so it completes on any run a GitHub Actions job
+  executes with a mint — Jira-tracked runs included — and stays bound to
+  `$REPO_FULL_NAME`. On GitLab CI runs (or a deployment with no
+  mint) the variables are exported but every lookup that reaches the
+  mint fails, so a script following the fail-closed example above
+  hard-fails only for `[bot]`-suffixed logins — a login without the
+  suffix answers `no_match` without touching the mint — and GitLab and
+  Jira scripts keep using their own credential's identity lookup
+  (`GET /api/v4/user`, `GET /rest/api/3/myself`), which is an exact
+  identity.
+
+Host-side pre- and post-scripts can use this to replace their App-name
+lists — the trusted-bot checks in a triage or review pre-script and in
+`scripts/lib/review-ops.lib.sh` — with `bot_role == "triage"` /
+`bot_role == "review"` comparisons on the output of `fullsend bot-role`.
+The command is not available inside the agent sandbox (the helper listens
+on the runner's loopback): an agent-side step, such as a triage step or a
+prior-risk lookup, gets the answer from the pre-script, which can resolve
+each author's role and stage it for the sandbox.
+
 ### Dispatch inputs
 
 When an event triggers an agent, the dispatch workflow exports these
