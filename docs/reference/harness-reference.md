@@ -248,6 +248,15 @@ Outside `env.runner`, the Jira repository secrets expand as follows:
   reach only the provider proxy and never the sandbox. `FULLSEND_JIRA_EMAIL`,
   `FULLSEND_JIRA_CLIENT_ID` and `FULLSEND_JIRA_CLIENT_SECRET` expand empty.
 
+The runner-owned bot-role helper names `FULLSEND_BOT_ROLE_URL` and
+`FULLSEND_BOT_ROLE_TOKEN` expand empty at the same sandbox-bound sites
+(`env.sandbox` values, expanded `host_files` content, `FULLSEND_OUTPUT_FILE`)
+and in provider values: a nested `fullsend run` started by a pre- or
+post-script inherits the outer run's helper variables in its process
+environment, and the alias path — a different `env.sandbox` key or staged
+host-file content referencing them — must not carry the outer run's helper
+credential to the inner agent.
+
 For a Jira-sourced run, `fullsend run` sets three connection variables before env expansion,
 replacing any inherited value:
 

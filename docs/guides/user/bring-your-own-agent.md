@@ -945,7 +945,7 @@ who can register an App with a matching slug passes that check. Ask for the
 bot-role result instead:
 
 ```bash
-# $login is the verified author login, e.g. "fullsend-ai-triage[bot]"
+# $login is the verified author login in REST form, e.g. "fullsend-ai-triage[bot]"
 if ! ROLE=$(fullsend bot-role "$login"); then
   # The lookup could not be completed (mint unreachable, no mint configured
   # for this deployment, or the command ran outside a fullsend run). Fail
@@ -975,6 +975,17 @@ themselves. The semantics:
 
 - On success the command prints the registered canonical role (`triage`,
   `review`, …) or `no_match` to stdout and exits 0.
+- The login must be in REST form, `slug[bot]` — for example
+  `fullsend-ai-triage[bot]`. Raw GraphQL `author.login` and `gh --json`
+  comment and review authors return App bot authors **without** the
+  `[bot]` suffix (for example `fullsend-ai-triage` with
+  `__typename: "Bot"`); pass `--bot` with such a login so the suffix is
+  appended before the lookup, or a genuine registered bot is answered a
+  confident `no_match`. `gh`'s top-level `--json` `author` field is
+  different: it reports Bot authors as `app/<slug>` with `is_bot` true —
+  strip the leading `app/` before passing `--bot`, or read the REST form
+  (`slug[bot]`) straight from `gh api`. A login that already carries the
+  suffix is sent unchanged.
 - A lookup that cannot be completed fails with a non-zero exit and empty
   stdout — never `no_match` — so a failed lookup stays distinguishable from
   a no-match and the caller can fail closed, as above.
