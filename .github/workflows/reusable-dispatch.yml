@@ -2981,7 +2981,6 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}
           status-number: ${{ matrix.status_number }}
-          status-comment-id: ${{ matrix.event_payload.comment.id }}
           source-system: ${{ fromJSON(matrix.event_payload)._normalized_event.source.system || 'github' }}
           status-comment-id: ${{ fromJSON(matrix.event_payload).comment.id }}
           failure-trusted-bots: ${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}
