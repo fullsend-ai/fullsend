@@ -562,26 +562,49 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f .fullsend/bin/fullsend ]]; then
+          if [[ -f .fullsend/bin/fullsend ]] && .fullsend/bin/fullsend review-dedup --help >/dev/null 2>&1; then
             echo "mode=vendored" >> "${GITHUB_OUTPUT}"
           else
             echo "mode=upstream" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Install review dedup CLI (vendored)
-        if: steps.review-cli-mode.outputs.mode == 'vendored'
+      - name: Restore fullsend CLI cache for review dedup
+        id: review-cli-cache
+        if: steps.review-cli-mode.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+
+      - name: Validate cached fullsend CLI for review dedup
+        id: review-cli-cache-validation
+        if: steps.review-cli-cache.outputs.cache-hit == 'true'
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/fullsend-review-dedup"
-          cp .fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
-          chmod +x "${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
-          echo "${RUNNER_TEMP}/fullsend-review-dedup" >> "${GITHUB_PATH}"
+          if [[ -x "${RUNNER_TEMP}/fullsend-cache/fullsend" ]] && "${RUNNER_TEMP}/fullsend-cache/fullsend" review-dedup --help >/dev/null 2>&1; then
+            echo "valid=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "valid=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Install review dedup CLI (vendored)
+        if: steps.review-cli-mode.outputs.mode == 'vendored' && (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true')
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/fullsend"
+          cp .fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
+          chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
+          echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
       - name: Checkout review dedup CLI installer
-        if: steps.review-cli-mode.outputs.mode == 'upstream'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
+        timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
@@ -593,14 +616,45 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Install review dedup CLI (upstream)
-        if: steps.review-cli-mode.outputs.mode == 'upstream'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
+        timeout-minutes: 5
         uses: ./.review-dedup-actions/.github/actions/install-fullsend-cli
         with:
           mode: upstream
           workflow_repository: ${{ job.workflow_repository }}
           workflow_sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
+
+      - name: Expose cached fullsend CLI for review dedup
+        if: steps.review-cli-cache-validation.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/fullsend"
+          mkdir -p "${install_dir}"
+          cp "${RUNNER_TEMP}/fullsend-cache/fullsend" "${install_dir}/fullsend"
+          chmod +x "${install_dir}/fullsend"
+          echo "${install_dir}" >> "${GITHUB_PATH}"
+
+      - name: Prepare fullsend CLI cache artifact for review dedup
+        id: review-cli-cache-prepare
+        if: steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/fullsend-cache"
+          cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+
+      - name: Save fullsend CLI cache for review dedup
+        if: (steps.review-cli-cache.outputs.cache-hit != 'true' || steps.review-cli-cache-validation.outputs.valid != 'true') && steps.review-cli-cache-prepare.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
 
       # A synchronize event can be caused by merging the base branch into a
       # PR without changing its effective diff. Missing or incomplete
@@ -809,7 +863,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f cel-route/.defaults/action.yml || -f cel-route/.fullsend/.defaults/action.yml ]]; then
+          if [[ -f cel-route/.defaults/action.yml || -f cel-route/.fullsend/.defaults/action.yml ]] \
+            && [[ -x cel-route/.fullsend/bin/fullsend ]] \
+            && cel-route/.fullsend/bin/fullsend dispatch --help >/dev/null 2>&1 \
+            && cel-route/.fullsend/bin/fullsend review-dedup --help >/dev/null 2>&1; then
             echo "mode=vendored" >> "${GITHUB_OUTPUT}"
           else
             echo "mode=upstream" >> "${GITHUB_OUTPUT}"
@@ -824,13 +881,26 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('cel-route/.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+
+      - name: Validate cached fullsend CLI for CEL route
+        id: cel-cli-cache-validation
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x "${RUNNER_TEMP}/fullsend-cache/fullsend" ]] && "${RUNNER_TEMP}/fullsend-cache/fullsend" dispatch --help >/dev/null 2>&1 && "${RUNNER_TEMP}/fullsend-cache/fullsend" review-dedup --help >/dev/null 2>&1; then
+            echo "valid=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "valid=false" >> "${GITHUB_OUTPUT}"
+          fi
 
       # Vendored installs copy the committed binary directly, so the step does
       # not depend on where the vendored defaults (.defaults/ or
       # .fullsend/.defaults/) live.
       - name: Install fullsend CLI for CEL route (vendored)
-        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'vendored' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'vendored' && (steps.cel-cli-cache.outputs.cache-hit != 'true' || steps.cel-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
         shell: bash
         run: |
@@ -845,7 +915,7 @@ jobs:
           echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
       - name: Checkout upstream install action for CEL route
-        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && (steps.cel-cli-cache.outputs.cache-hit != 'true' || steps.cel-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -862,7 +932,7 @@ jobs:
       # the trigger can come from a different agents ref than the one the
       # agent's job runs.
       - name: Install fullsend CLI for CEL route (upstream workflow)
-        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-mode.outputs.mode == 'upstream' && (steps.cel-cli-cache.outputs.cache-hit != 'true' || steps.cel-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
         uses: ./.workflow-actions/.github/actions/install-fullsend-cli
         with:
@@ -872,7 +942,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI for CEL route
-        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit == 'true'
+        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache-validation.outputs.valid == 'true'
         continue-on-error: true
         shell: bash
         run: |
@@ -884,21 +954,24 @@ jobs:
           echo "${install_dir}" >> "${GITHUB_PATH}"
 
       - name: Prepare fullsend CLI cache artifact for CEL route
-        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        id: cel-cli-cache-prepare
+        if: steps.cel-config.outcome == 'success' && (steps.cel-cli-cache.outputs.cache-hit != 'true' || steps.cel-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/fullsend-cache"
           cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+          "${RUNNER_TEMP}/fullsend-cache/fullsend" dispatch --help >/dev/null 2>&1
+          "${RUNNER_TEMP}/fullsend-cache/fullsend" review-dedup --help >/dev/null 2>&1
 
       - name: Save fullsend CLI cache for CEL route
-        if: steps.cel-config.outcome == 'success' && steps.cel-cli-cache.outputs.cache-hit != 'true'
+        if: steps.cel-config.outcome == 'success' && (steps.cel-cli-cache.outputs.cache-hit != 'true' || steps.cel-cli-cache-validation.outputs.valid != 'true') && steps.cel-cli-cache-prepare.outcome == 'success'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          key: fullsend-cli-${{ steps.cel-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('cel-route/.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
 
       - name: Evaluate CEL route
         id: cel-route
@@ -1745,26 +1818,48 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -f .fullsend/bin/fullsend ]]; then
+          if [[ -f .fullsend/bin/fullsend ]] && .fullsend/bin/fullsend review-dedup --help >/dev/null 2>&1; then
             echo "mode=vendored" >> "${GITHUB_OUTPUT}"
           else
             echo "mode=upstream" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: Install review dedup CLI (vendored)
-        if: steps.review-cli-mode.outputs.mode == 'vendored'
+      - name: Restore fullsend CLI cache for review job
+        id: review-job-cli-cache
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+
+      - name: Validate cached fullsend CLI for review job
+        id: review-job-cli-cache-validation
+        if: steps.review-job-cli-cache.outputs.cache-hit == 'true'
         continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "${RUNNER_TEMP}/fullsend-review-dedup"
-          cp .fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
-          chmod +x "${RUNNER_TEMP}/fullsend-review-dedup/fullsend"
-          echo "${RUNNER_TEMP}/fullsend-review-dedup" >> "${GITHUB_PATH}"
+          if [[ -x "${RUNNER_TEMP}/fullsend-cache/fullsend" ]] && "${RUNNER_TEMP}/fullsend-cache/fullsend" review-dedup --help >/dev/null 2>&1; then
+            echo "valid=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "valid=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Install review dedup CLI (vendored)
+        if: steps.review-cli-mode.outputs.mode == 'vendored' && (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true')
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/fullsend"
+          cp .fullsend/bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
+          chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
+          echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
       - name: Checkout review dedup CLI installer
-        if: steps.review-cli-mode.outputs.mode == 'upstream'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
+        timeout-minutes: 5
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
@@ -1776,14 +1871,45 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Install review dedup CLI (upstream)
-        if: steps.review-cli-mode.outputs.mode == 'upstream'
+        if: steps.review-cli-mode.outputs.mode == 'upstream' && (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true')
         continue-on-error: true
+        timeout-minutes: 5
         uses: ./.review-dedup-actions/.github/actions/install-fullsend-cli
         with:
           mode: upstream
           workflow_repository: ${{ job.workflow_repository }}
           workflow_sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
+
+      - name: Expose cached fullsend CLI for review job
+        if: steps.review-job-cli-cache-validation.outputs.valid == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/fullsend"
+          mkdir -p "${install_dir}"
+          cp "${RUNNER_TEMP}/fullsend-cache/fullsend" "${install_dir}/fullsend"
+          chmod +x "${install_dir}/fullsend"
+          echo "${install_dir}" >> "${GITHUB_PATH}"
+
+      - name: Prepare fullsend CLI cache artifact for review job
+        id: review-job-cli-cache-prepare
+        if: steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/fullsend-cache"
+          cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+
+      - name: Save fullsend CLI cache for review job
+        if: (steps.review-job-cli-cache.outputs.cache-hit != 'true' || steps.review-job-cli-cache-validation.outputs.valid != 'true') && steps.review-job-cli-cache-prepare.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.review-cli-mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
 
       - name: Prepare workspace
         id: workspace
@@ -2623,10 +2749,23 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
+
+      - name: Validate cached fullsend CLI
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.cli-cache.outputs.cache-hit == 'true'
+        id: cli-cache-validation
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -x "${RUNNER_TEMP}/fullsend-cache/fullsend" ]] && "${RUNNER_TEMP}/fullsend-cache/fullsend" dispatch --help >/dev/null 2>&1; then
+            echo "valid=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "valid=false" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Install fullsend CLI (vendored defaults)
-        if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'vendored' && steps.cli-cache.outputs.cache-hit != 'true'
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'vendored' && (steps.cli-cache.outputs.cache-hit != 'true' || steps.cli-cache-validation.outputs.valid != 'true')
         uses: ./.defaults/.github/actions/install-fullsend-cli
         with:
           mode: vendored
@@ -2634,7 +2773,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Checkout upstream install action
-        if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'upstream' && steps.cli-cache.outputs.cache-hit != 'true'
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'upstream' && (steps.cli-cache.outputs.cache-hit != 'true' || steps.cli-cache-validation.outputs.valid != 'true')
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
@@ -2646,7 +2785,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Install fullsend CLI (upstream workflow)
-        if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'upstream' && steps.cli-cache.outputs.cache-hit != 'true'
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'upstream' && (steps.cli-cache.outputs.cache-hit != 'true' || steps.cli-cache-validation.outputs.valid != 'true')
         uses: ./.workflow-actions/.github/actions/install-fullsend-cli
         with:
           mode: upstream
@@ -2655,7 +2794,7 @@ jobs:
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI
-        if: steps.triggers.outputs.has_triggers == 'true' && steps.cli-cache.outputs.cache-hit == 'true'
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.cli-cache-validation.outputs.valid == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -2666,19 +2805,21 @@ jobs:
           echo "${install_dir}" >> "${GITHUB_PATH}"
 
       - name: Prepare fullsend CLI cache artifact
-        if: steps.triggers.outputs.has_triggers == 'true' && steps.cli-cache.outputs.cache-hit != 'true'
+        if: steps.triggers.outputs.has_triggers == 'true' && (steps.cli-cache.outputs.cache-hit != 'true' || steps.cli-cache-validation.outputs.valid != 'true')
+        id: cli-cache-prepare
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/fullsend-cache"
           cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+          "${RUNNER_TEMP}/fullsend-cache/fullsend" dispatch --help >/dev/null 2>&1
 
       - name: Save fullsend CLI cache
-        if: steps.triggers.outputs.has_triggers == 'true' && steps.cli-cache.outputs.cache-hit != 'true'
+        if: steps.triggers.outputs.has_triggers == 'true' && (steps.cli-cache.outputs.cache-hit != 'true' || steps.cli-cache-validation.outputs.valid != 'true') && steps.cli-cache-prepare.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/fullsend-cache
-          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ (github.event_name == 'pull_request' && job.workflow_sha == github.sha && github.event.pull_request.base.sha || job.workflow_sha) }}
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ runner.arch }}-${{ hashFiles('.fullsend/bin/fullsend') }}-${{ job.workflow_sha }}
 
       - name: Run fullsend dispatch
         id: dispatch

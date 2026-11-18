@@ -3998,27 +3998,26 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 		}
 
 		for _, r := range raw {
+			appClientID := ""
+			if r.PerformedViaGitHubApp != nil {
+				appClientID = r.PerformedViaGitHubApp.ClientID
+			}
 			result = append(result, forge.IssueComment{
-				ID:      r.ID,
-				NodeID:  r.NodeID,
-				HTMLURL: r.HTMLURL,
-				Body:    r.Body,
-				Author:  r.User.Login,
-				AppClientID: func() string {
-					if r.PerformedViaGitHubApp != nil {
-						return r.PerformedViaGitHubApp.ClientID
-					}
-					return ""
-				}(),
-				CreatedAt: r.CreatedAt,
+				ID:          r.ID,
+				NodeID:      r.NodeID,
+				HTMLURL:     r.HTMLURL,
+				Body:        r.Body,
+				Author:      r.User.Login,
+				AppClientID: appClientID,
+				CreatedAt:   r.CreatedAt,
 			})
 		}
 
 		if len(raw) < 100 {
-			break
+			return result, nil
 		}
 	}
-	return result, nil
+	return nil, fmt.Errorf("list issue comments exceeded pagination limit")
 }
 
 // GetIssueComment fetches a single comment by its numeric ID. GitHub
@@ -4612,20 +4611,14 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 				Body:        r.Body,
 				SubmittedAt: r.SubmittedAt,
 				CommitID:    r.CommitID,
-				AppClientID: func() string {
-					if r.PerformedViaGitHubApp != nil {
-						return r.PerformedViaGitHubApp.ClientID
-					}
-					return ""
-				}(),
 			})
 		}
 
 		if len(raw) < 100 {
-			break
+			return result, nil
 		}
 	}
-	return result, nil
+	return nil, fmt.Errorf("list pull request reviews exceeded pagination limit")
 }
 
 // ListPullRequestReviewThreads returns the pull request's review threads and

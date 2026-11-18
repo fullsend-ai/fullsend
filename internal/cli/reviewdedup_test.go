@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"testing"
 
@@ -9,6 +10,52 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
+
+func TestReviewDedupHelpers(t *testing.T) {
+	assert.Equal(t, "owner", func() string { owner, _, _ := splitReviewRepo("owner/repo"); return owner }())
+	_, _, err := splitReviewRepo("invalid")
+	assert.Error(t, err)
+
+	var stdout, stderr bytes.Buffer
+	cmd := newReviewDedupCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	writeReviewDedupOutput(cmd, reviewDedupResult{Skip: true, PriorURL: "https://example.test/review"})
+	assert.Contains(t, stdout.String(), "prior_url=https://example.test/review")
+	assert.Contains(t, stdout.String(), "skip=true")
+}
+
+func TestPublishReviewSkip_CreatesAndUpdatesVerifiedNote(t *testing.T) {
+	ctx := context.Background()
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
+	fc.IssueComments = map[string][]forge.IssueComment{}
+	require.NoError(t, publishReviewSkip(ctx, fc, "o", "r", 1, "https://example.test/review", "fullsend-ai", "client"))
+	require.Len(t, fc.IssueComments["o/r/1"], 1)
+	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "unchanged")
+
+	fc.IssueComments["o/r/1"][0].AppClientID = "client"
+	require.NoError(t, publishReviewSkip(ctx, fc, "o", "r", 1, "", "fullsend-ai", "client"))
+	require.Len(t, fc.IssueComments["o/r/1"], 1)
+	assert.NotContains(t, fc.IssueComments["o/r/1"][0].Body, "https://example.test/review")
+}
+
+func TestPublishReviewSkip_UpdatesNewestVerifiedNote(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-ai-review[bot]"
+	fc.IssueComments = map[string][]forge.IssueComment{
+		"o/r/1": {
+			{ID: 10, Author: "fullsend-ai-review[bot]", AppClientID: "client", CreatedAt: "2026-01-01T00:00:00Z", Body: reviewSkipMarker + "\nold"},
+			{ID: 11, Author: "fullsend-ai-review[bot]", AppClientID: "client", CreatedAt: "2026-01-02T00:00:00Z", Body: reviewSkipMarker + "\nnewest"},
+		},
+	}
+
+	require.NoError(t, publishReviewSkip(context.Background(), fc, "o", "r", 1, "", "fullsend-ai", "client"))
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Equal(t, 11, fc.UpdatedComments[0].CommentID)
+	assert.Contains(t, fc.IssueComments["o/r/1"][1].Body, "unchanged")
+	assert.Contains(t, fc.IssueComments["o/r/1"][0].Body, "old")
+}
 
 type reviewDedupInfoSequenceClient struct {
 	*forge.FakeClient
@@ -68,15 +115,13 @@ func TestDecideReviewDedup_SkipsMatchingApprovedReview(t *testing.T) {
 		{Number: 1, BaseSHA: base, HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ChangedFiles: 1},
 		{Number: 1, BaseSHA: base, HeadSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ChangedFiles: 1},
 	}}
-	var result reviewDedupResult
-	require.NoError(t, decideReviewDedup(context.Background(), client, "o", "r", 1, "fullsend-ai", "client", &result))
+	result := decideReviewDedup(context.Background(), client, "o", "r", 1, "fullsend-ai", "client")
 	assert.True(t, result.Skip)
 	assert.Equal(t, "https://github.com/o/r/issues/1#issuecomment-1", result.PriorURL)
 
 	client.index = 0
 	client.infos[2].HeadSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	result = reviewDedupResult{}
-	require.NoError(t, decideReviewDedup(context.Background(), client, "o", "r", 1, "fullsend-ai", "client", &result))
+	result = decideReviewDedup(context.Background(), client, "o", "r", 1, "fullsend-ai", "client")
 	assert.False(t, result.Skip, "a head change before the final check must fail open")
 }
 
@@ -100,8 +145,7 @@ func TestDecideReviewDedup_FailsOpenWhenModesAreUnverified(t *testing.T) {
 	fc.PullRequestInfos["o/r/1"] = forge.PullRequestInfo{Number: 1, BaseSHA: "base", HeadSHA: head, ChangedFiles: 1}
 	fc.PRFileDiffs["o/r/1"] = []forge.PullRequestFileDiff{{Path: "file.go", Status: "modified", Patch: "@@ -1 +1 @@", ModesVerified: false}}
 
-	var result reviewDedupResult
-	require.NoError(t, decideReviewDedup(context.Background(), fc, "o", "r", 1, "fullsend-ai", "client", &result))
+	result := decideReviewDedup(context.Background(), fc, "o", "r", 1, "fullsend-ai", "client")
 	assert.False(t, result.Skip)
 }
 
@@ -116,7 +160,7 @@ func TestSupersedeReviewSkip_UpdatesOnlyVerifiedBotNotes(t *testing.T) {
 	}
 
 	require.NoError(t, supersedeReviewSkip(context.Background(), fc, "o", "r", 1,
-		"0123456789012345678901234567890123456789", "o", "fullsend-ai", "client"))
+		"0123456789012345678901234567890123456789", "fullsend-ai", "client"))
 
 	comments := fc.IssueComments["o/r/1"]
 	assert.Contains(t, comments[0].Body, "superseded by a full review")

@@ -752,9 +752,8 @@ type PullRequestReview struct {
 	Body        string
 	SubmittedAt string
 	// CommitID is the commit the review was submitted against, when the forge
-	// reports it. AppClientID identifies the GitHub App that authored it.
-	CommitID    string
-	AppClientID string
+	// reports it.
+	CommitID string
 }
 
 // ReviewComment represents an inline comment on a specific line of a

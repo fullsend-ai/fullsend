@@ -306,7 +306,7 @@ func TestListIssueComments_SinglePage(t *testing.T) {
 		assert.Equal(t, "1", r.URL.Query().Get("page"))
 
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"id": 1, "body": "first", "user": map[string]any{"login": "alice"}, "created_at": "2026-01-01T00:00:00Z"},
+			{"id": 1, "body": "first", "user": map[string]any{"login": "alice"}, "created_at": "2026-01-01T00:00:00Z", "performed_via_github_app": map[string]any{"client_id": "app-client"}},
 			{"id": 2, "body": "second", "user": map[string]any{"login": "bob"}, "created_at": "2026-01-02T00:00:00Z"},
 		})
 	}))
@@ -319,9 +319,11 @@ func TestListIssueComments_SinglePage(t *testing.T) {
 	assert.Equal(t, 1, comments[0].ID)
 	assert.Equal(t, "first", comments[0].Body)
 	assert.Equal(t, "alice", comments[0].Author)
+	assert.Equal(t, "app-client", comments[0].AppClientID)
 	assert.Equal(t, 2, comments[1].ID)
 	assert.Equal(t, "second", comments[1].Body)
 	assert.Equal(t, "bob", comments[1].Author)
+	assert.Empty(t, comments[1].AppClientID)
 }
 
 func TestListIssueComments_Pagination(t *testing.T) {
@@ -657,6 +659,7 @@ func TestListPullRequestReviews(t *testing.T) {
 				"state":        "APPROVED",
 				"body":         "LGTM",
 				"submitted_at": "2026-01-01T00:00:00Z",
+				"commit_id":    "deadbeef",
 			},
 		})
 	}))
@@ -671,6 +674,7 @@ func TestListPullRequestReviews(t *testing.T) {
 	assert.Equal(t, "reviewer", reviews[0].User)
 	assert.Equal(t, "APPROVED", reviews[0].State)
 	assert.Equal(t, "LGTM", reviews[0].Body)
+	assert.Equal(t, "deadbeef", reviews[0].CommitID)
 }
 
 func TestAddIssueReaction(t *testing.T) {
