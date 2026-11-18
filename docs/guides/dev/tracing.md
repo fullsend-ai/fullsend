@@ -119,7 +119,7 @@ run (root)
 ├── sandbox_create    (gen_ai.operation.name=create_agent)
 └── agent             (one per iteration; gen_ai.operation.name=invoke_agent)
     ├── execute_tool  (one per id-bearing tool call; gen_ai.operation.name=execute_tool)
-    └── usage <model> (mixed-model Pi only; one per PerModelUsage entry)
+    └── usage <model> (mixed-model iterations only; one per PerModelUsage entry)
 ```
 
 ### Root span
@@ -160,7 +160,7 @@ value), model, token counts, `fullsend.usage.input_includes_cache`,
 `fullsend.cost_usd`, `fullsend.runtime`, `fullsend.tool_calls`.
 Multi-provider runtimes resolve the provider from the effective model via
 `runtime.GenAISystemFor`; `System()` is only the fallback.
-On a mixed-model Pi iteration (`len(PerModelUsage) > 1`) the agent span is
+On a mixed-model iteration (`len(PerModelUsage) > 1`) the agent span is
 marked `fullsend.usage.rollup` and omits `gen_ai.usage.*` token attributes;
 those move to the usage children so a backend that auto-sums them cannot
 double-count. Single-model runs and runtimes without `PerModelUsage` are

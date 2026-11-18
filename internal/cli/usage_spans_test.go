@@ -124,7 +124,8 @@ func TestAgentSpanEndAttrs_SingleModelPerModelUsageKeepsGenAIUsage(t *testing.T)
 	}
 
 	a := agentSpanEndAttrs(1, 0, "anthropic-vertex", "pi", &m)
-	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 11))
+	// input_tokens includes the cache counters (11 + 3 + 4); see #9532.
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 18))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 22))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation.input_tokens", 3))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read.input_tokens", 4))

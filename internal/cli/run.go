@@ -5263,7 +5263,7 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 		attribute.Float64("fullsend.cost_usd", roundUSD(m.TotalCostUSD)),
 		attribute.Int("fullsend.tool_calls", int(m.ToolCalls.Load())),
 	}
-	// Mixed-model Pi iterations emit gen_ai.usage.* on per-model usage
+	// Mixed-model iterations emit gen_ai.usage.* on per-model usage
 	// children instead of here, so a backend that auto-sums those keys
 	// (MLflow) cannot add this rollup to the components (#7550). The
 	// parent identity and fullsend.cost_usd stay; reasoning_tokens has

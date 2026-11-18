@@ -197,7 +197,7 @@ The rest of the model's input is not recorded
 ([reference](../guides/infrastructure/distributed-tracing.md#content-capture-level-3)).
 The gate and the carrier are unchanged.
 
-**2026-09-22 — Per-model usage components (#7550):** mixed-model Pi iterations
+**2026-09-22 — Per-model usage components (#7550):** mixed-model iterations
 export one `usage <model>` child of the `agent` span per `per_model_usage`
 entry so child-provider tokens and cost are not attributed to the parent.
 This is usage attribution (near-zero-duration, keyed by model spec), not the
