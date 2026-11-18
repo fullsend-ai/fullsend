@@ -74,9 +74,17 @@ function bashCommands(command, allowParameterExpansion = false) {
       if (first === "printf") {
         // Bash parses options before the format. An unknown expansion here can
         // become -v and assign PATH (or another shell variable) before the next
-        // allowlisted command. Expansions after a literal format or -- are data.
+        // allowlisted command. The format after -- must also be known: Bash's
+        // %n conversion assigns a variable even without an assignment option.
         if (expandedWords[1]) deny("Bash policy rejects printf option expansion");
         if (words[1]?.startsWith("-v")) deny("Bash policy rejects printf variable assignment");
+        const formatIndex = words[1] === "--" ? 2 : 1;
+        if (expandedWords[formatIndex]) deny("Bash policy rejects printf option expansion");
+        // Consume %% pairs first, and include Bash's flags, widths, precisions
+        // and ignored C length modifiers so forms such as %10n and %hn fail too.
+        for (const conversion of (words[formatIndex] ?? "").matchAll(/%%|%[-+ #0'*.\dhljztL]*n/g)) {
+          if (conversion[0] !== "%%") deny("Bash policy rejects printf variable assignment");
+        }
       }
       commands.push(words.join(" "));
       words = [];
