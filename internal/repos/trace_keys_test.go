@@ -446,6 +446,69 @@ func TestEnsureTraceSigningKeys_SkippedReposGetNoKey(t *testing.T) {
 	}
 }
 
+// A repository whose inference.gateway route comes wholly or partly from its
+// declared preset needs no inference.auth, so convergence accepts it and it
+// gets a key: both on a fresh install and on an explicit rotation. A preset
+// that cannot be loaded fails the repository in convergence before any
+// write, so it gets none.
+func TestEnsureTraceSigningKeys_GatewayFromPreset(t *testing.T) {
+	const presetHeader = "version: \"1\"\n"
+	cases := []struct {
+		name string
+		// preset is the config_base content; managed is the managed layer.
+		preset  string
+		managed string
+		missing bool
+		want    bool
+	}{
+		{name: "complete gateway in the preset", preset: presetHeader + gatewayManagedYAML, want: true},
+		{name: "url in the preset, audience managed", preset: presetHeader + gatewayPartialYAML,
+			managed: "inference:\n  gateway:\n    audience: fullsend-gateway\n", want: true},
+		{name: "preset without a gateway", preset: presetHeader + "runtime: pi\n"},
+		{name: "unloadable preset", missing: true},
+	}
+	for _, tc := range cases {
+		for _, rotate := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/rotate=%t", tc.name, rotate), func(t *testing.T) {
+				source := filepath.Join(t.TempDir(), "missing.yaml")
+				if !tc.missing {
+					source = writePresetFile(t, tc.preset)
+				}
+				var fc *forge.FakeClient
+				var cfg ConvergeConfig
+				if rotate {
+					fc, cfg = traceFixture(t, true, "acme/api")
+				} else {
+					fc, cfg = traceFixture(t, false, "acme/api")
+				}
+				m := cfg.Manifest
+				m.Defaults.Inference = InferenceSettings{}
+				m.GitHub.Repos[0].ConfigBase = ConfigBase{Source: source}
+				if rotate {
+					a, r := newTraceKey(1), newTraceKey(2)
+					healthyTrace(t, m, fc, "acme/api", traceBlock(traceInstallA, a, r), a)
+				}
+				if tc.managed != "" {
+					m.Defaults.Config = mustManagedConfig(t, tc.managed)
+				}
+
+				plans, err := ensureTrace(t, fc, TraceKeysConfig{Manifest: m, Rotate: rotate})
+				require.NoError(t, err)
+				if !tc.want {
+					assert.Empty(t, planNames(plans))
+					return
+				}
+				require.Equal(t, []string{"acme/api"}, planNames(plans))
+				wantReason := reasonFreshInstall
+				if rotate {
+					wantReason = reasonRotation
+				}
+				assert.Equal(t, wantReason, plans["acme/api"].Reason)
+			})
+		}
+	}
+}
+
 // GitLab repositories get no key yet, with or without Rotate and with or
 // without inference authentication: the preflight reads nothing for them,
 // edits nothing, writes nothing and prints one line per repository.

@@ -121,7 +121,7 @@ var (
 // edited manifest (repos install does so through its compare-before-write
 // guard). Deferred reports that the caller persists it, so progress says
 // Persisted rather than Would persist. Repositories that fail
-// RequireInferenceAuth are skipped. Progress names installation and key IDs,
+// RequireInferenceAuth, with the declared preset loaded, are skipped. Progress names installation and key IDs,
 // and the glob a new entry was copied from, never the seed.
 func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients ForgeClientFactory, progress ProgressFunc) (map[string]*TraceKeyPlan, []TraceKeyRefusal, error) {
 	if cfg.Manifest == nil {
@@ -140,14 +140,27 @@ func EnsureTraceSigningKeys(ctx context.Context, cfg TraceKeysConfig, clients Fo
 	var gitlab []string
 	var errs []error
 	var refused []TraceKeyRefusal
+	presets := newPresetCache()
 	for _, rr := range withoutRepos(selected, cfg.ExcludeRepos) {
 		if rr.Forge == ForgeGitLab {
 			gitlab = append(gitlab, rr.Owner+"/"+rr.Repo)
 			continue
 		}
 		// Convergence fails a repository without inference
-		// authentication before its key writes, so it gains no key.
-		if m.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry).RequireInferenceAuth() != nil {
+		// authentication (and without a complete inference.gateway route)
+		// before its key writes, so it gains no key. The declared preset
+		// may supply the gateway route, so load it first, as convergence
+		// does. A preset that cannot be loaded fails that repository in
+		// convergence before any write, so it gains no key here either.
+		resolved := m.ResolveConfigForEntry(rr.Owner, rr.Repo, rr.Forge, rr.Entry)
+		if resolved.Config != "" {
+			data, loadErr := presets.Load(ctx, resolved.Config, resolved.ConfigHash)
+			if loadErr != nil {
+				continue
+			}
+			resolved.ProposedBase = data
+		}
+		if resolved.RequireInferenceAuth() != nil {
 			continue
 		}
 		t, err := readTraceRepo(ctx, m, clients, rr, cfg.Rotate)

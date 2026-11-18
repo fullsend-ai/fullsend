@@ -342,12 +342,17 @@ type DeclaredInfrastructure struct {
 	// token audience and the service account it impersonates.
 	InferenceWIFAudience    string
 	InferenceServiceAccount string
+	// InferenceGateway is the layered inference.gateway block (trimmed).
+	// It is zero when no layer declares one; a partial block is returned
+	// as declared so callers can report what is missing.
+	InferenceGateway InferenceGatewayConfig
 }
 
-// DeclaredInfrastructureValues returns the mint URL and Vertex inference
-// values declared by overlay (which wins) or by baseYAML. baseYAML may be
-// empty. Code defaults are deliberately not consulted, so callers can tell
-// a declared value from an inherited default.
+// DeclaredInfrastructureValues returns the mint URL, Vertex inference and
+// inference gateway values declared by overlay (which wins) or by
+// baseYAML. baseYAML may be empty. Code defaults are deliberately not
+// consulted, so callers can tell a declared value from an inherited
+// default.
 func DeclaredInfrastructureValues(overlay PerRepoConfigWriter, baseYAML []byte) (DeclaredInfrastructure, error) {
 	layered := clonePerRepo(asPerRepo(overlay))
 	if layered == nil {
@@ -369,6 +374,7 @@ func DeclaredInfrastructureValues(overlay PerRepoConfigWriter, baseYAML []byte) 
 		InferenceWIFProvider:    layered.ConfigInferenceWIFProvider(),
 		InferenceWIFAudience:    layered.ConfigInferenceWIFAudience(),
 		InferenceServiceAccount: layered.ConfigInferenceServiceAccount(),
+		InferenceGateway:        layered.ConfigInferenceGateway().Trimmed(),
 	}, nil
 }
 

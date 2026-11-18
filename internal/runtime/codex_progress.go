@@ -74,11 +74,13 @@ type codexThreadStartedEvent struct {
 //  2. Its categories are **nested**, following the OpenAI Responses API:
 //     input_tokens is the whole input including the cached and cache-write
 //     parts, and output_tokens is the whole output including the reasoning
-//     part. Claude Code and pi report cache and reasoning as counters
-//     *disjoint* from input/output (Anthropic's convention), which is what
-//     RunMetrics means and what the renderer sums for its total. Passing
-//     codex's numbers through unchanged double-counts every cached and
-//     reasoning token. codexUsage.counters() subtracts the subsets.
+//     part. RunMetrics keeps the cache counters *disjoint* from input, as
+//     Claude Code and pi report them (Anthropic's convention), and the
+//     renderer sums the counters for its total. Passing codex's numbers
+//     through unchanged double-counts every cached and reasoning token.
+//     codexUsage.counters() subtracts the subsets. Claude Code and pi do
+//     not keep reasoning out of output the way this parser does: they count
+//     it inside output (see OutputExcludesReasoning).
 type codexUsage struct {
 	InputTokens           int `json:"input_tokens"`
 	CachedInputTokens     int `json:"cached_input_tokens"`
@@ -91,9 +93,9 @@ type codexTurnCompletedEvent struct {
 	Usage codexUsage `json:"usage"`
 }
 
-// codexCounters is a usage snapshot in fullsend's normalized shape: five
-// disjoint counters, as Claude Code and pi report them and as the renderer
-// and RunMetrics sum them.
+// codexCounters is a usage snapshot in the shape the renderer sums: five
+// disjoint counters. Claude Code and pi report cache the same way, but count
+// reasoning inside output (see OutputExcludesReasoning).
 type codexCounters struct {
 	Input      int
 	Output     int
