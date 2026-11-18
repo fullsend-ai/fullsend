@@ -367,6 +367,31 @@ func TestListIssueComments_Pagination(t *testing.T) {
 	assert.Equal(t, "last", comments[100].Body)
 }
 
+func TestListIssueComments_PaginationLimitFailsOpen(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		assert.LessOrEqual(t, page, 100)
+		comments := make([]map[string]any, 100)
+		for i := range comments {
+			comments[i] = map[string]any{
+				"id":         i + 1,
+				"body":       "comment",
+				"user":       map[string]any{"login": "bot"},
+				"created_at": "2026-01-01T00:00:00Z",
+			}
+		}
+		json.NewEncoder(w).Encode(comments)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	comments, err := client.ListIssueComments(context.Background(), "owner", "repo", 5)
+	assert.Error(t, err)
+	assert.Nil(t, comments)
+	assert.Equal(t, 100, page)
+}
+
 func TestListIssueComments_APIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -675,6 +700,32 @@ func TestListPullRequestReviews(t *testing.T) {
 	assert.Equal(t, "APPROVED", reviews[0].State)
 	assert.Equal(t, "LGTM", reviews[0].Body)
 	assert.Equal(t, "deadbeef", reviews[0].CommitID)
+}
+
+func TestListPullRequestReviews_PaginationLimitFailsOpen(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		assert.LessOrEqual(t, page, 100)
+		reviews := make([]map[string]any, 100)
+		for i := range reviews {
+			reviews[i] = map[string]any{
+				"id":           i + 1,
+				"user":         map[string]any{"login": "bot"},
+				"state":        "APPROVED",
+				"submitted_at": "2026-01-01T00:00:00Z",
+				"commit_id":    "head",
+			}
+		}
+		json.NewEncoder(w).Encode(reviews)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	reviews, err := client.ListPullRequestReviews(context.Background(), "owner", "repo", 3)
+	assert.Error(t, err)
+	assert.Nil(t, reviews)
+	assert.Equal(t, 100, page)
 }
 
 func TestAddIssueReaction(t *testing.T) {
