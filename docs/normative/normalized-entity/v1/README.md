@@ -73,7 +73,11 @@ as recorded; do not include the repository or project path or ID. For example,
 `github`, `github.com`, `work_item`, and `I_kwDOExample53` yield
 `fullsend:entity:v1:github:github.com:work_item:I_kwDOExample53`. GitLab
 record IDs are unique across projects within a kind; Jira issue IDs are
-site-wide; GitHub node IDs are host-wide. Including the system, host, and
+site-wide; GitHub node IDs are host-wide. GitHub `source_id` producers send
+the `X-Github-Next-Global-ID: 1` header on their GraphQL queries so node
+IDs come back in the new global format on old and new entities alike;
+GraphQL `node()` accepts either input format, so a legacy-format node ID
+still resolves. Including the system, host, and
 kind prevents cross-source and cross-kind collisions while preserving identity
 through a repository or Jira project move. A source migrated to a different
 host is a different identity unless a separate migration mapping relates it.
