@@ -9,7 +9,8 @@ import (
 )
 
 func TestEffectiveYAML_LayersOverlayBaseAndDefaults(t *testing.T) {
-	overlay, err := ParsePerRepoConfigWriter([]byte("kill_switch: true\nruntime: pi\nauthorization:\n  - provider: owners_file\n"))
+	overlay, err := ParsePerRepoConfigWriter([]byte("kill_switch: true\nruntime: pi\nauthorization:\n  - provider: owners_file\n" +
+		"agents:\n  - name: review\n    harness: { timeout_minutes: 90 }\n  - name: code\n    effort: high\n"))
 	require.NoError(t, err)
 	base := []byte(`version: "1"
 keep_history: false
@@ -34,6 +35,11 @@ inference:
 models:
   aliases:
     fast: some-model
+agents:
+  - name: review
+    harness: { timeout_minutes: 30 }
+  - name: code
+    harness: { timeout_minutes: 60 }
 `)
 	layered, err := LayerOnBase(overlay, base)
 	require.NoError(t, err)
@@ -59,6 +65,11 @@ models:
 	assert.Equal(t, "us-east5", inference["region"])
 	assert.Contains(t, inference, "wif_provider")
 	assert.Contains(t, inference, "openai")
+	// Blocks set in both layers compose as two layers, so both are shown, base first.
+	assert.Equal(t, []any{
+		map[string]any{"name": "review", "harness": []any{map[string]any{"timeout_minutes": 30}, map[string]any{"timeout_minutes": 90}}},
+		map[string]any{"name": "code", "effort": "high", "harness": map[string]any{"timeout_minutes": 60}},
+	}, got["agents"])
 }
 
 func TestEffectiveYAML_InheritsInferenceGateway(t *testing.T) {

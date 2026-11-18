@@ -24,7 +24,7 @@ var _ ProjectLeaser = (*FakeClient)(nil)
 // config.ManagedConfigSchemaVersion by a test in internal/repos.
 func fakeUpstreamAnyRefFiles() map[string][]byte {
 	return map[string][]byte{
-		"fullsend-ai/fullsend/internal/config/managed-config-schema": []byte("2\n"),
+		"fullsend-ai/fullsend/internal/config/managed-config-schema": []byte("3\n"),
 	}
 }
 

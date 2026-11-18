@@ -22,10 +22,14 @@
 > `human_min_role` field at the top level and in guarded overlays, with its
 > overlay selected before actor admission and pinned through the run. Legacy
 > `forge:` blocks cannot set it; the tables below remain current behavior.
-> [ADR 0162](../ADRs/0162-agent-entries-may-carry-harness-overrides.md) lets an
-> `agents:` entry in `config.yaml` carry a `harness:` block, a harness layer
-> built on the agent's harness and merged by the `base:` composition rules
-> below. The ADR lists the few fields it does not take.
+
+An `agents:` entry in `config.yaml` may carry a `harness:` block
+([ADR 0162](../ADRs/0162-agent-entries-may-carry-harness-overrides.md)). The
+block is a harness layer built on the agent's harness. It merges by the
+`base:` composition rules below. It takes every field except `base`, `forge`
+and `runner_env`. It cannot add an `env` variable that the harness does not
+declare. See the [config reference](../reference/config-reference.md#agents)
+for the details.
 
 ## Field classification
 
