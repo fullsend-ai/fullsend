@@ -7322,7 +7322,7 @@ func sanitizeJSONLines(content []byte, pipeline *security.Pipeline) ([]byte, int
 		}
 		trimmed := bytes.TrimSpace(line)
 		if len(trimmed) > 0 {
-			if streamHasPrivateKey && json.Valid(trimmed) {
+			if streamHasPrivateKey {
 				line = []byte(`{"error":"output removed because output contained a cross-record private key"}`)
 				if len(allFindings) == 0 {
 					findings += len(streamScan.Findings)
@@ -7347,12 +7347,16 @@ func sanitizeJSONLines(content []byte, pipeline *security.Pipeline) ([]byte, int
 				allFindings = append(allFindings, fs...)
 				if hasDuplicateJSONKeys(trimmed) {
 					result := pipeline.Scan(string(line))
-					findings += len(result.Findings)
-					allFindings = append(allFindings, result.Findings...)
-					if len(result.Findings) > 0 && result.Sanitized != "" {
-						line = []byte(result.Sanitized)
-						if !json.Valid(line) {
-							line = []byte(`{"error":"output removed because text redaction would invalidate JSON"}`)
+					if len(fs) > 0 {
+						line = []byte(`{"error":"output removed because structural findings cannot be safely applied to duplicate-key JSON"}`)
+					} else if len(result.Findings) > 0 {
+						findings += len(result.Findings)
+						allFindings = append(allFindings, result.Findings...)
+						if result.Sanitized != "" {
+							line = []byte(result.Sanitized)
+							if !json.Valid(line) {
+								line = []byte(`{"error":"output removed because text redaction would invalidate JSON"}`)
+							}
 						}
 					}
 				} else {
@@ -7364,7 +7368,8 @@ func sanitizeJSONLines(content []byte, pipeline *security.Pipeline) ([]byte, int
 						if err := enc.Encode(value); err != nil {
 							return nil, findings, allFindings, err
 						}
-						originalBackstop := pipeline.Scan(encodedOriginal.String())
+						encodedBytes := bytes.TrimSuffix(encodedOriginal.Bytes(), []byte("\n"))
+						originalBackstop := pipeline.Scan(string(encodedBytes))
 						hasNewFinding := false
 						privateKey := false
 						for _, f := range originalBackstop.Findings {
@@ -7381,7 +7386,7 @@ func sanitizeJSONLines(content []byte, pipeline *security.Pipeline) ([]byte, int
 							if privateKey || originalBackstop.Sanitized == "" || !json.Valid([]byte(originalBackstop.Sanitized)) {
 								line = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
 							} else {
-								line = []byte(originalBackstop.Sanitized)
+								line = bytes.TrimSuffix([]byte(originalBackstop.Sanitized), []byte("\n"))
 							}
 						}
 					}

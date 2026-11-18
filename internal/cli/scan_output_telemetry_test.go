@@ -139,7 +139,7 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	require.NoError(t, os.WriteFile(jsonFile7, []byte(validJSON7), 0o644))
 
 	jsonFile9 := filepath.Join(dir, "split_pem_lines.json")
-	validJSON9 := `["-----BEGIN RSA PRIVATE KEY-----","BASE64_KEY_MATERIAL_REDACTED","-----END RSA PRIVATE KEY-----"]`
+	validJSON9 := `["-----BEGIN RSA` + ` PRIVATE KEY-----","BASE64_KEY_MATERIAL_REDACTED","-----END RSA` + ` PRIVATE KEY-----"]`
 	require.NoError(t, os.WriteFile(jsonFile9, []byte(validJSON9), 0o644))
 
 	var buf bytes.Buffer
@@ -345,6 +345,93 @@ func TestSanitizeJSONLinesFailsClosedForPrivateKeyAcrossRecords(t *testing.T) {
 		assert.True(t, json.Valid([]byte(line)))
 		assert.Contains(t, line, "output removed")
 	}
+}
+
+func TestSanitizeJSONLinesFailsClosedForRawMultilinePEM(t *testing.T) {
+	pipeline := security.OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	content := []byte(fmt.Sprintf("%s\nMIIEpAIBAAKCAQEA0123456789abcdefghijklmnop\n%s\n", begin, end))
+	got, findings, details, err := sanitizeJSONLines(content, pipeline)
+	require.NoError(t, err)
+	assert.Positive(t, findings)
+	require.NotEmpty(t, details)
+	assert.Equal(t, "private_key", details[0].Name)
+	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
+	require.Len(t, lines, 3)
+	for _, line := range lines {
+		assert.True(t, json.Valid([]byte(line)))
+		assert.Contains(t, line, "output removed")
+		assert.NotContains(t, line, "MIIEpAIBAAKCAQEA")
+	}
+}
+
+func TestScanOutputFiles_JSONLRawMultilinePEMRemainsValid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "raw_pem.jsonl")
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	content := fmt.Sprintf("%s\nMIIEpAIBAAKCAQEA0123456789abcdefghijklmnop\n%s\n", begin, end)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{})))
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
+	require.Len(t, lines, 3)
+	for _, line := range lines {
+		assert.True(t, json.Valid([]byte(line)), "each line must be valid JSON: %s", line)
+		assert.Contains(t, line, "output removed")
+		assert.NotContains(t, line, "MIIEpAIBAAKCAQEA")
+	}
+}
+
+func TestSanitizeJSONLines_DuplicateKeyRecordWithStructuralFindingsFailsClosed(t *testing.T) {
+	pipeline := security.OutputPipeline()
+	// A secret encoded with JSON Unicode escapes in a record that also has duplicate keys.
+	// Raw text scanner doesn't match the unicode escapes, but structural scan decodes and finds it.
+	content := []byte("{\"a\":\"first\",\"a\":\"second\",\"password\":\"\\u0073\\u0065\\u0063\\u0072\\u0065\\u0074_password_1234\"}\n")
+	got, findings, details, err := sanitizeJSONLines(content, pipeline)
+	require.NoError(t, err)
+	assert.Positive(t, findings)
+	require.NotEmpty(t, details)
+	line := strings.TrimSpace(string(got))
+	assert.True(t, json.Valid([]byte(line)))
+	assert.Contains(t, line, "output removed")
+	assert.NotContains(t, line, "password_1234")
+}
+
+func TestSanitizeJSONLines_BackstopNoStructuralFindingsPreservesLineCount(t *testing.T) {
+	const secretVal = `","field2":"`
+	security.ResetRuntimeSecretsForTest()
+	t.Cleanup(security.ResetRuntimeSecretsForTest)
+	require.True(t, security.RegisterRuntimeSecret(secretVal))
+
+	pipeline := security.OutputPipeline()
+	content := []byte("{\"field1\":\"foo\",\"field2\":\"bar\"}\n{\"field3\":\"second record\"}\n")
+	got, findings, details, err := sanitizeJSONLines(content, pipeline)
+	require.NoError(t, err)
+	assert.Positive(t, findings)
+	require.NotEmpty(t, details)
+	assert.Equal(t, 2, strings.Count(string(got), "\n"), "line count must remain exactly 2, no extra blank lines")
+	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
+	require.Len(t, lines, 2)
+	assert.True(t, json.Valid([]byte(lines[0])))
+	assert.True(t, json.Valid([]byte(lines[1])))
+	assert.NotContains(t, lines[0], secretVal)
+}
+
+func TestSanitizeJSONLines_NeedsRewriteWithBackstopPrivateKeyFailsClosed(t *testing.T) {
+	pipeline := security.OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	content := []byte(fmt.Sprintf("{\"token\":\"ghp_FAKEtesttoken000000000000000000000000\",\"pem\":\"%s\\n%s\"}\n", begin, end))
+	got, findings, details, err := sanitizeJSONLines(content, pipeline)
+	require.NoError(t, err)
+	assert.Positive(t, findings)
+	require.NotEmpty(t, details)
+	line := strings.TrimSpace(string(got))
+	assert.True(t, json.Valid([]byte(line)))
+	assert.Contains(t, line, "output removed")
 }
 
 func TestScanOutputFiles_QuietJSONFallbackDoesNotPrintPath(t *testing.T) {

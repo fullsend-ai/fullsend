@@ -529,6 +529,21 @@ func TestSecretRedactor(t *testing.T) {
 		assert.NotContains(t, result.Sanitized, "ijklmnop")
 	})
 
+	t.Run("json_field handles adjacent sensitive YAML fields with trailing backslash", func(t *testing.T) {
+		input := "'password': 'abcdefgh\\'\n'secret': 'ijklmnop'"
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		findings := 0
+		for _, f := range result.Findings {
+			if f.Name == "json_field" {
+				findings++
+			}
+		}
+		assert.Equal(t, 2, findings, "both adjacent fields must be detected and redacted")
+		assert.NotContains(t, result.Sanitized, "abcdefgh")
+		assert.NotContains(t, result.Sanitized, "ijklmnop")
+	})
+
 	t.Run("mask does not leave dangling escape sequence", func(t *testing.T) {
 		input1 := `Authorization: Bearer abc\ndefghijkl`
 		result1 := r.Scan(input1)
