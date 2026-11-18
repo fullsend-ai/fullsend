@@ -173,15 +173,6 @@ SPAWN_GUARD_PASS = frozenset(
 # A spawn without agent_type asks codex for its `default` role.
 SPAWN_DEFAULT_ROLE = "default"
 
-# The waits among the pass-throughs, and the longest timeout_ms the guard
-# lets them pass. Codex itself accepted a 3600000 ms wait, and a parent that
-# waited that long at once outlasted its run budget and ran no time-budget
-# check between waits (#9657). The Go side's codexWaitTimeoutMaxMS, which
-# the dispatch note quotes. A wait without timeout_ms takes codex's default,
-# which is under the cap.
-WAIT_TOOLS = frozenset({"multi_agent_v1wait_agent", "collaborationwait_agent"})
-WAIT_TIMEOUT_MAX_MS = 120000
-
 # Logged for every admitted spawn. Codex keeps no record of hook outcomes,
 # so this line is the only one, and the runner reconciles it against the
 # spawns that completed.
@@ -852,27 +843,6 @@ def spawn_policy(hook_input: dict[str, Any], registered: dict[str, str]) -> str 
     return None
 
 
-def wait_policy(hook_input: dict[str, Any]) -> str | None:
-    """The reason a wait's timeout_ms is over WAIT_TIMEOUT_MAX_MS, or None.
-
-    Only a numeric timeout_ms is judged. Anything else is left to codex,
-    which rejects arguments it cannot parse; a wait has no other argument
-    that could start or reach a child."""
-    if hook_input.get("tool_name") not in WAIT_TOOLS:
-        return None
-    args = hook_input.get("tool_input")
-    timeout = args.get("timeout_ms") if isinstance(args, dict) else None
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
-        return None
-    if timeout <= WAIT_TIMEOUT_MAX_MS:
-        return None
-    return (
-        f"fullsend: wait_agent timeout_ms {timeout} is over the {WAIT_TIMEOUT_MAX_MS} the "
-        f"runner allows; pass timeout_ms of at most {WAIT_TIMEOUT_MAX_MS} and wait again, "
-        "running the skill's time-budget checks between waits"
-    )
-
-
 def run_spawn_guard(hook_input: dict[str, Any]) -> None:
     """Admit (exit 0) or deny (exit 2, reason on stderr) a multi-agent tool
     call. Every path but the admit path ends in block()."""
@@ -882,10 +852,6 @@ def run_spawn_guard(hook_input: dict[str, Any]) -> None:
             denied = f"fullsend: {tool!r} is not allowed from a child (fail closed)"
             log_finding("codex_spawn_guard_block", "critical", denied, "block")
             block(denied)
-        too_long = wait_policy(hook_input)
-        if too_long is not None:
-            log_finding("codex_spawn_guard_block", "critical", too_long, "block")
-            block(too_long)
         sys.exit(0)
     deadline = arm_spawn_guard_deadline()
     if deadline is not None:

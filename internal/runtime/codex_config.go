@@ -132,11 +132,14 @@ const codexAuthTimeoutMS = 5000
 // parent with a roster (ADR 0159 decision 1), brings
 // `disable_direct_message = true` (no send_message or followup_task) and
 // `expose_spawn_agent_model_overrides = false` (no model or
-// reasoning_effort in the spawn schema) with it, and only then: the table
-// is `deny_unknown_fields` (MultiAgentV2ConfigToml), so a bump that drops
-// either key would otherwise refuse every run's config, V1 and
-// single-context ones included. `max_concurrent_threads_per_session` is
-// never rendered here: codex derives the V2 cap from the `[agents]` key
+// reasoning_effort in the spawn schema) with it, and `max_wait_timeout_ms`
+// (codexWaitTimeoutMaxMS, #9657), which sets the max in the V2 wait's schema
+// and makes the V2 wait refuse a longer `timeout_ms`, and only then: the
+// table is `deny_unknown_fields` (MultiAgentV2ConfigToml), so a bump that
+// drops any of the keys would otherwise refuse every run's config, V1 and
+// single-context ones included. V1 has no such setting (its wait limits are
+// constants in codex), so on V1 the dispatch note's rule is the only one.
+// `max_concurrent_threads_per_session` is never rendered here: codex derives the V2 cap from the `[agents]` key
 // plus one for the root, so `[agents]` at 4 already yields four children.
 //
 // `[model_providers.fullsend-gateway]` is rendered only when an
@@ -178,6 +181,7 @@ plugins = false
 [features.multi_agent_v2]
 enabled = {{ .MultiAgentV2 }}{{ if .MultiAgentV2 }}
 disable_direct_message = true
+max_wait_timeout_ms = {{ .WaitTimeoutMaxMS }}
 expose_spawn_agent_model_overrides = false{{ end }}
 
 {{ .AgentsBlock }}
@@ -222,9 +226,12 @@ type codexConfigData struct {
 	ProjectKey            string
 	// AgentsBlock arrives rendered by codexAgentsBlock, its strings quoted.
 	AgentsBlock string
-	// MultiAgentV2 turns the collaboration V2 table on, with its two
+	// MultiAgentV2 turns the collaboration V2 table on, with its
 	// restriction keys; false renders the table at codex's default.
-	MultiAgentV2      bool
+	MultiAgentV2 bool
+	// WaitTimeoutMaxMS is the V2 wait's `max_wait_timeout_ms`, rendered only
+	// when MultiAgentV2 is on (codexWaitTimeoutMaxMS).
+	WaitTimeoutMaxMS  int
 	RefreshIntervalMS int
 	TimeoutMS         int
 	// GatewayProviderID, GatewayBaseURL and GatewayAuthCommand render the
@@ -262,6 +269,7 @@ func renderCodexConfig(configDir, repoDir, developerInstructions, gatewayBaseURL
 		ProjectKey:            codexTOMLKey(repoDir),
 		AgentsBlock:           codexAgentsBlock(configDir, roles, defaultSubagentModel, childEffort),
 		MultiAgentV2:          multiAgentV2,
+		WaitTimeoutMaxMS:      codexWaitTimeoutMaxMS,
 		RefreshIntervalMS:     codexAuthRefreshIntervalMS,
 		TimeoutMS:             codexAuthTimeoutMS,
 	}

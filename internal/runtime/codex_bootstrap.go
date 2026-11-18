@@ -440,19 +440,22 @@ const codexChunkedReadNote = "When reading a SKILL.md or other instruction file,
 	"then `sed -n '<start>,<end>p'` in contiguous ranges of at most 200 lines, one range per " +
 	"tool call, including a short final chunk so the last line is covered — do not round the " +
 	"line count down to a multiple of 200 (a 425-line file is three ranges: `1,200p`, " +
-	"`201,400p`, `401,425p`). Read every range through the last line before acting on the file: " +
-	"a rule near the end binds as much as one near the start, so never stop early because the " +
-	"part already read seems enough. Never combine files or ranges in one exec. Inspect the returned " +
+	"`201,400p`, `401,425p`). Read every range through the last line before acting on the file, " +
+	"and never stop early because the part already read seems enough. Never combine files or ranges in one exec. Inspect the returned " +
 	"output for a truncation warning before advancing; if a range is truncated, split it into " +
 	"smaller contiguous windows that together still cover its start through end — never skip " +
 	"the back half — and read those windows before moving on to the next range.\n"
 
-// codexWaitTimeoutMaxMS is the longest `wait_agent` timeout the spawn guard
-// passes through (the adapter's WAIT_TIMEOUT_MAX_MS). Codex itself accepted
-// a 3600000 ms wait, and a parent that waited that long at once outlasted the
-// review's 45-minute run budget and ran none of the skill's time-budget
-// checks between waits (#9657). 120000 is the cap the agents repository's
-// pr-review skill already gives its Codex roster.
+// codexWaitTimeoutMaxMS is the longest `wait_agent` timeout the runtime asks
+// of a parent. It is used twice: the dispatch note quotes it on V1 and V2,
+// and on V2 the config renders it as `max_wait_timeout_ms` in
+// `[features.multi_agent_v2]`, so Codex itself refuses a longer wait. V1 has
+// no such setting (its wait limits are constants in Codex, max 3600000), so
+// on V1 the note's rule is the only one. Codex accepts a wait of up to
+// 3600000 ms, longer than the review's 45-minute budget. In the Fedora review
+// on #6970 every wait passed 3600000, and the parent ran none of the skill's
+// time-budget checks between waits (#9657). 120000 is the cap the agents
+// repository's pr-review skill already gives its Codex roster.
 const codexWaitTimeoutMaxMS = 120000
 
 // codexDispatchFidelityNote is the paragraph both dispatch notes carry after
@@ -460,19 +463,24 @@ const codexWaitTimeoutMaxMS = 120000
 // departed from their skills: they skipped the time-budget checks before
 // each wait, left out a selected persona without saying so, dropped a part
 // of a persona's prompt, spawned `explore` where the agent definition said
-// to pass no agent_type, and overruled the findings a challenger kept. Of
-// these only the wait timeout is enforced (wait_policy in the adapter); the
-// rest is instruction.
-var codexDispatchFidelityNote = "Follow the skill's dispatch steps as written; this note adds to them and " +
-	"replaces none. Run every check the skill places before a spawn or a `wait_agent`, time-budget " +
-	"checks included, each time it comes up. Pass a `timeout_ms` of at most " +
-	strconv.Itoa(codexWaitTimeoutMaxMS) + " on every `wait_agent`: the runner denies a longer wait, " +
-	"so wait again instead of waiting longer. Spawn every sub-agent the skill's selection rules " +
-	"pick; for each one that does not run, name it and say why in your result. Build each " +
-	"`message` from every part the skill lists for that sub-agent's prompt, flags included. Pass " +
-	"the `agent_type` your instructions name: where they say to pass no `agent_type`, omit it, " +
-	"even for a search or read-only task. Use each child's result the way the skill says to, and " +
-	"do not overrule a result the skill tells you to keep with your own check.\n\n"
+// to pass no agent_type, and overruled the findings a challenger kept. None
+// of these is enforced; the wait cap is, on V2 only, by Codex's own config
+// (codexWaitTimeoutMaxMS). The opening sentence does not say the skill's
+// dispatch steps stand as written: on V2 the agents repository's review
+// agent says the V2 note's rules replace the pr-review skill's V1-shaped
+// Codex lines.
+var codexDispatchFidelityNote = "Follow the dispatch steps your instructions give for this runtime; this " +
+	"paragraph adds to them. Run every check your instructions place before a spawn or a " +
+	"`wait_agent`, time-budget checks included, each time it comes up. Pass a `timeout_ms` of at " +
+	"most " + strconv.Itoa(codexWaitTimeoutMaxMS) + " on every `wait_agent`; if a wait is refused " +
+	"for its timeout, wait again with a shorter one instead of waiting longer. Spawn every " +
+	"sub-agent your instructions' selection rules pick; for each one that does not run, record " +
+	"it where your instructions say to record a sub-agent that did not run, and add no body to a " +
+	"time-budget failure result. Build each `message` from every part your instructions list " +
+	"for that sub-agent's prompt, flags included. Pass the `agent_type` your instructions name: " +
+	"where they say to pass no `agent_type`, omit it, even for a search or read-only task. Use " +
+	"each child's result the way your instructions say to, and do not overrule a result they " +
+	"tell you to keep with your own check.\n\n"
 
 // codexV2DispatchMarker is the sentence that marks a V2 note: it comes right
 // after "Sub-agents are native Codex children.", the sentence after the

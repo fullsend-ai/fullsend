@@ -713,8 +713,6 @@ func TestCodexAdapterPhasesMatchHookPlan(t *testing.T) {
 	assert.Contains(t, src, `PHASE_SUBAGENT_STOP = "`+codexSubagentStopEvent+`"`)
 	assert.Contains(t, src, `WITHHELD_NOTICE = "`+codexWithheldNotice+`"`,
 		"the notice the V2 runtime note quotes is the one a blocked child is told to reply with")
-	assert.Contains(t, src, "WAIT_TIMEOUT_MAX_MS = "+strconv.Itoa(codexWaitTimeoutMaxMS)+"\n",
-		"the wait cap the dispatch note quotes is the one the spawn guard enforces")
 }
 
 func sortedKeys(m map[string]any) []string {
@@ -1450,7 +1448,7 @@ func TestCodexAdapter_SpawnGuardAdmits(t *testing.T) {
 	codexSpawnArgs(spacedNone)["fork_turns"] = " None "
 	upperNone := codexSpawnInputV2("correctness")
 	codexSpawnArgs(upperNone)["fork_turns"] = "NONE"
-	// Of a pass-through's arguments the guard reads only a wait's timeout_ms.
+	// The guard reads nothing of a pass-through's arguments.
 	passThroughV2 := func(tool string, input map[string]any) map[string]any {
 		in := codexSpawnInputV2("correctness")
 		in["tool_name"] = tool
@@ -1474,10 +1472,6 @@ func TestCodexAdapter_SpawnGuardAdmits(t *testing.T) {
 		{"V2 fork_turns trimmed as codex trims it", spacedNone, []string{"correctness"}, "admitted spawn tool_use_id=call_1_0 agent_type=correctness"},
 		{"V2 fork_turns compared case-insensitively", upperNone, []string{"correctness"}, "admitted spawn tool_use_id=call_1_0 agent_type=correctness"},
 		{"V2 wait_agent passes through, no role registered", passThroughV2("collaborationwait_agent", map[string]any{"timeout_ms": 60000}), nil, ""},
-		{"V2 wait_agent at the timeout cap passes through", passThroughV2("collaborationwait_agent", map[string]any{"timeout_ms": 120000}), nil, ""},
-		{"V2 wait_agent without timeout_ms passes through", passThroughV2("collaborationwait_agent", map[string]any{}), nil, ""},
-		{"V1 wait_agent at the timeout cap passes through", passThroughV2("multi_agent_v1wait_agent", map[string]any{"targets": []string{"01a0ee84-2a04-7d03-b84f-ad297f46b50e"}, "timeout_ms": 120000}), nil, ""},
-		{"V2 interrupt_agent with a large timeout_ms is not a wait", passThroughV2("collaborationinterrupt_agent", map[string]any{"timeout_ms": 3600000}), nil, ""},
 		{"V2 list_agents passes through", passThroughV2("collaborationlist_agents", map[string]any{}), []string{"correctness"}, ""},
 		{"V2 interrupt_agent passes through", passThroughV2("collaborationinterrupt_agent", map[string]any{}), []string{"correctness"}, ""},
 	}
@@ -1596,18 +1590,6 @@ func TestCodexAdapter_SpawnGuardDenies(t *testing.T) {
 			in["agent_type"] = "correctness"
 			return h.spawnGuard(in, "correctness")
 		}, "a child may not spawn"},
-		{"V2 wait_agent over the timeout cap (#9657)", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
-			return h.spawnGuard(namedV2("collaborationwait_agent", map[string]any{"timeout_ms": 3600000}), "correctness")
-		}, "timeout_ms 3600000 is over the 120000 the runner allows"},
-		{"V2 wait_agent one past the timeout cap", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
-			return h.spawnGuard(namedV2("collaborationwait_agent", map[string]any{"timeout_ms": 120001}), "correctness")
-		}, "pass timeout_ms of at most 120000 and wait again"},
-		{"V1 wait_agent over the timeout cap", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
-			in := codexSpawnInput("correctness")
-			in["tool_name"] = "multi_agent_v1wait_agent"
-			in["tool_input"] = map[string]any{"targets": []string{"01a0ee84-2a04-7d03-b84f-ad297f46b50e"}, "timeout_ms": 3600000}
-			return h.spawnGuard(in, "correctness")
-		}, "timeout_ms 3600000 is over the 120000 the runner allows"},
 		{"V2 pass-through name from a child, agent_type only", func(t *testing.T, h *codexAdapterHarness) codexAdapterResult {
 			in := namedV2("collaborationwait_agent", map[string]any{"timeout_ms": 60000})
 			in["agent_type"] = "correctness"

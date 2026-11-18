@@ -1324,7 +1324,10 @@ func TestCodexSubagentNote_V2CarriesTheDispatchContract(t *testing.T) {
 // TestCodexSubagentNote_CarriesTheDispatchFidelityRules pins the rules
 // added after Codex parents departed from their skills (#9657): both
 // dispatch notes carry them once, right before the chunked-read paragraph,
-// quote the wait cap the adapter enforces, and the chunked-read paragraph
+// quote the wait cap the V2 config renders, open by deferring to the
+// dispatch steps the parent's instructions give for its runtime (on V2 those
+// replace the pr-review skill's V1-shaped Codex lines, so the note must not
+// say the skill's steps stand as written), and the chunked-read paragraph
 // every note and role file shares says to read through the last line.
 func TestCodexSubagentNote_CarriesTheDispatchFidelityRules(t *testing.T) {
 	t.Parallel()
@@ -1338,15 +1341,22 @@ func TestCodexSubagentNote_CarriesTheDispatchFidelityRules(t *testing.T) {
 				"the fidelity paragraph comes right before the chunked-read paragraph")
 			assert.Equal(t, 1, strings.Count(got, codexDispatchFidelityNote), "the fidelity paragraph appears once")
 			for _, want := range []string{
-				"Run every check the skill places before a spawn or a `wait_agent`, time-budget checks included",
+				"Follow the dispatch steps your instructions give for this runtime; this paragraph adds to them.",
+				"Run every check your instructions place before a spawn or a `wait_agent`, time-budget checks included",
 				"Pass a `timeout_ms` of at most " + strconv.Itoa(codexWaitTimeoutMaxMS) + " on every `wait_agent`",
-				"Spawn every sub-agent the skill's selection rules pick; for each one that does not run, name it and say why in your result",
-				"every part the skill lists for that sub-agent's prompt, flags included",
+				"Spawn every sub-agent your instructions' selection rules pick; for each one that does not run, record it where your instructions say to record a sub-agent that did not run",
+				"add no body to a time-budget failure result",
+				"every part your instructions list for that sub-agent's prompt, flags included",
 				"where they say to pass no `agent_type`, omit it, even for a search or read-only task",
-				"do not overrule a result the skill tells you to keep with your own check",
+				"do not overrule a result they tell you to keep with your own check",
 				"Read every range through the last line before acting on the file",
 			} {
 				assert.Contains(t, got, want)
+			}
+			// Neither version's note says the skill's steps stand as written:
+			// on V2 the V2 note replaces the skill's V1-shaped Codex lines.
+			for _, unwanted := range []string{"replaces none", "dispatch steps as written", "the skill's dispatch steps", "a rule near the end binds"} {
+				assert.NotContains(t, got, unwanted)
 			}
 		})
 	}
