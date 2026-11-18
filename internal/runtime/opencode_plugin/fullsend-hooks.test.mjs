@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const plugin = (await import(pathToFileURL(process.env.FULLSEND_TEST_ADAPTER))).default;
@@ -97,8 +98,48 @@ test("printf cannot obtain its assignment option through an unknown expansion", 
   ]) await assert.rejects(h.before("bash", { command }), /printf option expansion/, command);
   for (const command of [
     'printf "%s" "$VALUE"', 'printf "%s" "${VALUE}"',
-    "printf '$FLAGS' PATH", "printf '*' PATH", "printf -- * PATH",
+    "printf '$FLAGS' PATH", "printf '*' PATH", "printf -- '%s' * PATH",
   ]) await h.before("bash", { command });
+});
+
+test("restricted printf formats cannot write shell variables", async (t) => {
+  const shellPath = "/usr/bin:/bin";
+  const shell = (command) => {
+    const result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c",
+      `${command}; builtin printf '%s' "$PATH"`], {
+      cwd: process.cwd(), env: { PATH: shellPath }, encoding: "utf8",
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout;
+  };
+  assert.equal(shell("printf '%n' PATH"), "0", "Bash %n writes PATH without -v");
+  for (const policy of [
+    { bashAllowlist: ["printf"] },
+    { permission: { bash: { "*": "deny", "printf *": "allow" } } },
+  ]) {
+    const h = await setup(t, policy);
+    for (const command of [
+      "printf '%n' PATH", "printf -- '%n' PATH", "printf '%10n' PATH",
+      "printf '%.2n' PATH", "printf '%+n' PATH", "printf '%hn' PATH",
+      "printf '%lln' PATH", "printf '%zn' PATH", "printf '%*n' 0 PATH",
+      "printf '%%%n' PATH", "printf '%%s%n' PATH",
+    ]) {
+      await assert.rejects(h.before("bash", { command }), /printf variable assignment/, command);
+    }
+    for (const [command, output] of [
+      ["printf '%%n' PATH", "%n"], ["printf '%%%%n' PATH", "%%n"],
+      ["printf -- '%s' '%n'", "%n"], ["printf '%s' -v PATH", "-vPATH"],
+      ["printf '\\045n' PATH", "%n"],
+    ]) {
+      await h.before("bash", { command });
+      assert.equal(shell(command), output + shellPath, command);
+    }
+  }
+  const h = await setup(t, { bashAllowlist: ["printf"] });
+  for (const command of [
+    'printf -- "$FORMAT" PATH', "printf -- * PATH", "printf -- %? PATH",
+  ]) await assert.rejects(h.before("bash", { command }), /printf option expansion/, command);
 });
 
 test("parent tool and trusted policy ceilings apply to every session", async (t) => {

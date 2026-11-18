@@ -131,9 +131,10 @@ example above.
   chains, redirections, and backgrounding.
   The restricted grammar also rejects the variable-setting builtins `read`,
   `getopts`, `mapfile`, and `readarray`, and the shell-state builtins `shopt`
-  and `ulimit`. `printf -v` is rejected, including attached and quoted forms.
-  Give `printf` a literal format or `--` before expanded arguments so an
-  expansion cannot become a variable-assignment option.
+  and `ulimit`. `printf -v` and variable-writing `%n` conversions are rejected,
+  including attached, quoted, and length-modified forms. Give `printf` a literal
+  format, including after `--`, before expanded data arguments so an expansion
+  cannot become a variable-assignment option or conversion.
   Trusted Bash pattern maps use the same restricted shell grammar, even without
   a program-name allowlist. The adapter checks each command separately and
   removes argument quotes before matching, including inside Task children with
