@@ -161,13 +161,13 @@ effective model via `runtime.GenAISystemFor`; `System()` is only the fallback.
 
 ### execute_tool spans
 
-One per id-bearing tool call the runtime reports (Claude Code and pi), up to
-1,024 per iteration, a child of that iteration's agent span, named
+One per id-bearing tool call the runtime reports (Claude Code, pi and codex),
+up to 1,024 per iteration, a child of that iteration's agent span, named
 `execute_tool <tool name>`. `toolSpanTracker`
 (`internal/cli/tool_spans.go`) starts the span when it handles the
-`ToolUseEvent`, or at the event's `StartedAt` on pi (when the parser read
-`tool_execution_start`), and ends it when it handles the matching
-`ToolResultEvent`.
+`ToolUseEvent`, or at the event's `StartedAt` on pi and codex (when the
+parser read `tool_execution_start` or `item.started`), and ends it when it
+handles the matching `ToolResultEvent`.
 `iterationEventHandler` runs the console renderer first, then the tracker,
 then the Level 3 collector, so both timestamps are runner-side
 instants on one clock, each trailing the sandbox by the pipe latency and the

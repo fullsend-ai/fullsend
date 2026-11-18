@@ -656,15 +656,18 @@ func parseCodexStream(r io.Reader, onEvent func(AgentEvent)) (threadID string, e
 				return
 			}
 			text, isError, partial := codexMcpResultText(item)
-			// A failure surfaces its text, as a failed command does. A tool
-			// that flags its own result as an error arrives with status
-			// failed, its text in result and no error (live capture).
+			// codex's own error message is the summary, as before #7414. A
+			// tool that flags its own result as an error (status failed, its
+			// text in result, error null: live capture) reads "failed": its
+			// text goes only into the ToolResultEvent, which the collector
+			// redacts whole before any cut, while a summary is cut by the
+			// parser first, so a secret straddling the cut could survive the
+			// collector's literal pass in part.
 			summary := ""
-			if isError {
-				summary = piSummarize(text)
-				if summary == "" {
-					summary = "failed"
-				}
+			if item.Error != nil && item.Error.Message != "" {
+				summary = piSummarize(item.Error.Message)
+			} else if isError {
+				summary = "failed"
 			}
 			call(head.ID, ToolUseEvent{
 				Name:      codexMcpToolName(item.Server, item.Tool),

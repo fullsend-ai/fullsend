@@ -663,7 +663,8 @@ func TestParseCodexStream_McpCallsFromLiveCapture(t *testing.T) {
 	// error null.
 	assert.Equal(t, "backend unavailable for beta", results[1].Result)
 	assert.True(t, results[1].IsError)
-	assert.Equal(t, "backend unavailable for beta", uses[1].Summary, "a failure surfaces its text")
+	assert.Equal(t, "failed", uses[1].Summary,
+		"the tool's own text stays out of the summary, which is cut before full redaction")
 
 	// A JSON-RPC error: result null, the message in error.
 	assert.True(t, results[2].IsError)
