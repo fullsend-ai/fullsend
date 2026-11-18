@@ -3926,7 +3926,8 @@ func harnessEnvExpand(key string) string {
 // sandboxDeniedKeys are host-only credentials that env.runner may declare
 // but no sandbox-bound site (env.sandbox values, expanded host_files content)
 // may expand: the Jira repository secrets the
-// composite action passes to the fullsend run step (#9079). They stay out of
+// composite action passes to the fullsend run step (#9079), and the
+// bot-role helper's runner-owned pair (#9602). They stay out of
 // harnessExpansionDenied because that map also gates env.runner, where a
 // harness declares them on purpose.
 //
@@ -3941,6 +3942,17 @@ var sandboxDeniedKeys = map[string]bool{
 	"JIRA_TOKEN":                        true,
 	"OTEL_EXPORTER_OTLP_HEADERS":        true,
 	"OTEL_EXPORTER_OTLP_TRACES_HEADERS": true,
+	// The bot-role helper's address and credential are runner-owned and
+	// host-side only (#9602): reservedSandboxKeys blocks the literal
+	// env.sandbox names, and these entries close the alias path — a ${VAR}
+	// reference in a sandbox-bound value (an env.sandbox entry under
+	// another key, expanded host_files content, FULLSEND_OUTPUT_FILE)
+	// expands empty, so a nested run cannot leak the outer run's inherited
+	// helper token to its agent. The runner-side export to pre- and
+	// post-scripts (botRoleHelperEnv.exports through childScriptEnv) never
+	// goes through ${VAR} expansion and is unaffected.
+	"FULLSEND_BOT_ROLE_URL":   true,
+	"FULLSEND_BOT_ROLE_TOKEN": true,
 }
 
 // providerCredentialJiraKeys are the sandboxDeniedKeys that provider
@@ -4040,7 +4052,7 @@ func init() {
 	for k := range oidcDenyKeys {
 		reservedSandboxKeys[k] = true
 	}
-	// The Jira repository secrets are host-script-only (#9079): provider
+	// The sandboxDeniedKeys are host-script-only (#9079, #9602): provider
 	// definitions may not expand them in config values (argv) or credential
 	// values, the same as the sandbox-bound harness sites above. The one
 	// exception is FULLSEND_JIRA_TOKEN in provider credential values: they

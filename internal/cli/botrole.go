@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -34,7 +35,8 @@ type botRoleScriptRequest struct {
 }
 
 func newBotRoleCmd() *cobra.Command {
-	return &cobra.Command{
+	var asBot bool
+	cmd := &cobra.Command{
 		Use:   "bot-role <login>",
 		Short: "Resolve a bot's registered Fullsend role for this run's target repository",
 		Long: `Resolves whether a login is a registered Fullsend bot, and with which
@@ -46,6 +48,15 @@ A lookup that cannot be completed fails with an error and empty stdout —
 never no_match — so a caller can fail closed and keep a failed lookup apart
 from a no-match.
 
+The login must be in REST form, slug[bot] (for example
+fullsend-ai-triage[bot]). Raw GraphQL author.login and gh --json comment
+and review authors return App bot authors without the [bot] suffix; pass
+--bot with such a login so the suffix is appended before the lookup and a
+registered bot is not answered a confident no_match. gh's top-level
+--json author field is different: it reports Bot authors as app/<slug>
+with is_bot true — strip the leading app/ before passing --bot, or read
+the REST form (slug[bot]) straight from gh api.
+
 This command is intended to be called by harness pre- and post-scripts. It
 requires the FULLSEND_BOT_ROLE_URL and FULLSEND_BOT_ROLE_TOKEN environment
 variables, which fullsend run sets automatically for those scripts. The
@@ -55,9 +66,23 @@ are never exported to scripts.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runBotRole(cmd.Context(), args[0], cmd.OutOrStdout())
+			login := args[0]
+			// A --bot login comes from a source that identifies GitHub App
+			// bot authors without the REST form's [bot] suffix (GraphQL
+			// __typename == "Bot", gh --json comment and review authors).
+			// Append the suffix so the helper resolves the real bot login
+			// instead of answering its certain no-match for the suffixless
+			// form; a login that already carries the suffix is sent
+			// unchanged. gh's top-level --json author field reports Bot
+			// authors as app/<slug>: the caller strips that prefix first.
+			if asBot && !strings.HasSuffix(strings.ToLower(login), "[bot]") {
+				login += "[bot]"
+			}
+			return runBotRole(cmd.Context(), login, cmd.OutOrStdout())
 		},
 	}
+	cmd.Flags().BoolVar(&asBot, "bot", false, "the login is a GitHub App bot author whose source (raw GraphQL, gh --json comment/review authors) omits the [bot] suffix; append it before the lookup (gh's top-level --json author field reports app/<slug>: strip the prefix first)")
+	return cmd
 }
 
 // runBotRole asks the runner-side helper service for the login's registered
