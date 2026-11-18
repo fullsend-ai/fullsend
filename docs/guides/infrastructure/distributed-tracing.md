@@ -597,7 +597,7 @@ the process dies before an `agent` span ends, the file may lack that span.
 | Kind | `agent` span attribute | `metrics.json` `token_usage` |
 |------|------------------------|------------------------------|
 | Total input (uncached + cache creation + cache read) | `gen_ai.usage.input_tokens` | — (sum `input`, `cache_creation`, and `cache_read`) |
-| Uncached input | — (`input_tokens` minus the two cache attributes) | `input` |
+| Uncached input | — (`input_tokens` minus the two cache attributes, on spans that carry `fullsend.usage.input_includes_cache`) | `input` |
 | Output | `gen_ai.usage.output_tokens` (includes reasoning) | `output` (excludes reasoning on Codex and OpenCode) |
 | Cache creation | `gen_ai.usage.cache_creation.input_tokens` | `cache_creation` |
 | Cache read | `gen_ai.usage.cache_read.input_tokens` | `cache_read` |
@@ -624,14 +624,14 @@ On `agent` spans, `gen_ai.usage.input_tokens` follows the
 [GenAI semantic convention](https://github.com/open-telemetry/semantic-conventions/blob/v1.41.0/model/gen-ai/registry.yaml#L192-L214):
 it includes cached tokens, so it is uncached input plus cache creation plus
 cache read. `metrics.json` `token_usage.input` is uncached input only; cache
-creation and cache read are separate counters there. To price uncached input
-from a span, subtract both cache attributes from `input_tokens`.
+creation and cache read are separate counters there.
 
 A span written with this rule also carries
-`fullsend.usage.input_includes_cache` set to `true`. A span that has
-`gen_ai.usage.input_tokens` but no marker was written by a build that
-predates the change, and its `input_tokens` is uncached input. Do not
-subtract the cache attributes there: the result is wrong and can be
+`fullsend.usage.input_includes_cache` set to `true`. To price uncached
+input from such a span, subtract both cache attributes from `input_tokens`.
+A span that has `gen_ai.usage.input_tokens` but no marker was written by a
+build that predates the change, and its `input_tokens` is uncached input.
+Do not subtract the cache attributes there: the result is wrong and can be
 negative. Test for the marker, not for `service.version`. A build from
 source reports `dev` or a `git describe` string there, which is a bare
 commit id on a shallow clone. The version therefore does not say which
