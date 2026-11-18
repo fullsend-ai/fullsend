@@ -86,6 +86,11 @@ func preflightEnv(runnerEnv map[string]string, fullsendDir string) map[string]st
 		if preflightCredentialRefused(k) {
 			continue
 		}
+		// The bot-role helper vars are runner-owned (#9602): a harness
+		// entry for one of them must not reach a preflight command.
+		if isBotRoleHelperEnvKey(k) {
+			continue
+		}
 		switch k {
 		case "FULLSEND_DIR", "PYTHONDONTWRITEBYTECODE":
 			continue
