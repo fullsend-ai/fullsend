@@ -46,7 +46,7 @@ type fakeGitHubComment struct {
 
 // useFakeGitHubGraphQL serves the two GitHub GraphQL questions the
 // bot-role helper asks — the node ID and kind of the run's issue or pull
-// request, and a comment node's author, editor and parent — and points
+// request, and a comment node's author, edit history and parent — and points
 // GITHUB_API_URL at it. entityNodeID is an Issue node ID ("I_…") or a
 // PullRequest node ID ("PR_…").
 func useFakeGitHubGraphQL(t *testing.T, entityNodeID string, comments map[string]fakeGitHubComment) {
@@ -84,19 +84,25 @@ func useFakeGitHubGraphQL(t *testing.T, entityNodeID string, comments map[string
 			return
 		}
 		node := map[string]any{
-			"__typename":   "IssueComment",
-			"author":       actor(c.authorType, c.authorLogin),
-			"editor":       actor(c.editorType, c.editorLogin),
-			"lastEditedAt": nil,
-			"issue":        map[string]any{"id": c.issueID},
-			"pullRequest":  nil,
+			"__typename":       "IssueComment",
+			"author":           actor(c.authorType, c.authorLogin),
+			"lastEditedAt":     nil,
+			"userContentEdits": nil,
+			"issue":            map[string]any{"id": c.issueID},
+			"pullRequest":      nil,
 		}
 		if c.reviewThread {
 			node["__typename"] = "PullRequestReviewComment"
 			delete(node, "issue")
 		}
 		if c.editorLogin != "" {
+			// The newest edit-history entry is the revision
+			// lastEditedAt names, as GitHub reports it.
 			node["lastEditedAt"] = "2026-11-18T12:00:00Z"
+			node["userContentEdits"] = map[string]any{"nodes": []any{map[string]any{
+				"editor":   actor(c.editorType, c.editorLogin),
+				"editedAt": "2026-11-18T12:00:00Z",
+			}}}
 		}
 		if c.pullRequestID != "" {
 			node["pullRequest"] = map[string]any{"id": c.pullRequestID}
