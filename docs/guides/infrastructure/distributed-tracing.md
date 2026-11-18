@@ -99,12 +99,13 @@ its `summary` when redaction found a secret in its arguments, the dropped
 members included, masked a URL's userinfo, query or fragment in them,
 stripped an escape sequence or tag characters from them, or could not
 judge them at all (invalid UTF-8 or the replacement character): the parser cut the summary out of them before anything scanned it,
-so the secret could be there as a beginning. Where a runtime reports a summary and no
-arguments (codex, OpenCode), its parser has already run the patterns
-over the summary and, for codex, cut it: a value that straddles a
-cut stays in part, and one a pattern recognised stays as that pattern's
-mask. The same holds for the result text the pi parser appends to a failed
-call's summary. The agent runtime's own
+so the secret could be there as a beginning. Where a call has a summary and no
+arguments (every OpenCode call, and a codex `Agent` call), its parser has
+already run the patterns over the summary and, for codex, cut it: a value
+that straddles a cut stays in part, and one a pattern recognised stays as
+that pattern's mask. The same holds for the result text the pi parser
+appends to a failed call's summary, and for the error message the codex
+parser makes a failed MCP call's summary. The agent runtime's own
 content-logging variables (`OTEL_LOG_USER_PROMPTS`,
 `OTEL_LOG_ASSISTANT_RESPONSES`, etc.) are never set.
 
