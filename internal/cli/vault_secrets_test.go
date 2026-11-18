@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/security"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 // withVaultEnv replaces the Vault environment lookup with env for the test.
@@ -579,5 +581,112 @@ func TestApplyVaultRunnerSecrets_OTLPShortEntryValues(t *testing.T) {
 func TestVaultIDTokenIsRunnerOnly(t *testing.T) {
 	if !oidcDenyKeys[vaultIDTokenEnv] {
 		t.Fatalf("%s must be in oidcDenyKeys", vaultIDTokenEnv)
+	}
+}
+
+// runAgent resolves Vault selections before parsing the native bundle: a
+// Vault-supplied bundle replaces a malformed native one and standalone
+// values reach their environment consumer, while a malformed native bundle
+// still fails the run when Vault supplies only a standalone value.
+func TestRunAgent_VaultResolveThenApply(t *testing.T) {
+	const (
+		jiraToken = "vault-run-agent-jira-token"
+		repoPath  = "kv/data/fullsend/repos/github.com/acme/repo/"
+	)
+	for _, tc := range []struct {
+		name        string
+		secrets     map[string]map[string]any
+		selectYAML  string
+		wantErr     string
+		wantNoErr   string
+		wantMessage string
+		wantJira    string
+	}{
+		{
+			name: "Vault bundle replaces a malformed native bundle",
+			secrets: map[string]map[string]any{
+				repoPath + "jira":   {"JIRA_TOKEN": jiraToken},
+				repoPath + "bundle": {"FULLSEND_GITHUB_RUNNER_SECRETS": `{"DEPLOY_KEY":"vault-run-agent-deploy-key"}`},
+			},
+			selectYAML: `  FULLSEND_GITHUB_RUNNER_SECRETS:
+    connection: corp
+    vault_secrets: [` + repoPath + `bundle]
+`,
+			wantNoErr:   "runner secrets bundle",
+			wantMessage: "Resolved runner secrets from Vault: FULLSEND_GITHUB_RUNNER_SECRETS, JIRA_TOKEN",
+			wantJira:    jiraToken,
+		},
+		{
+			name:        "malformed native bundle still fails without a Vault bundle",
+			secrets:     map[string]map[string]any{repoPath + "jira": {"JIRA_TOKEN": jiraToken}},
+			wantErr:     "FULLSEND_GITHUB_RUNNER_SECRETS",
+			wantMessage: "Invalid runner secrets bundle",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usePreScriptStub(t)
+			t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+			t.Setenv("FULLSEND_RUNTIME", "")
+			t.Setenv("JIRA_TOKEN", "")
+			t.Setenv(runnerSecretsEnv, "not a json bundle")
+			t.Setenv(runnerSecretsFileEnv, "")
+
+			f := &cliFakeVault{secrets: tc.secrets}
+			addr := f.start(t)
+			oidcJWT := testJWT(t, map[string]any{"aud": "https://vault.example.com/fullsend", "iat": 1700000000, "exp": 1700000600})
+			oidc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]string{"value": oidcJWT})
+			}))
+			defer oidc.Close()
+			withVaultEnv(t, map[string]string{
+				"GITHUB_ACTIONS":                 "true",
+				"GITHUB_REPOSITORY":              "acme/repo",
+				"ACTIONS_ID_TOKEN_REQUEST_URL":   oidc.URL + "/token?api-version=2.0",
+				"ACTIONS_ID_TOKEN_REQUEST_TOKEN": "request-token",
+			})
+
+			marker := filepath.Join(t.TempDir(), "pre-script-ran")
+			dir := newVertexChildDir(t, marker, "dummy", "openai/gpt-5.6-luna", "", "")
+			cfgPath := filepath.Join(dir, "config.yaml")
+			base, err := os.ReadFile(cfgPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vaultYAML := `connections:
+  corp:
+    kind: vault
+    vault_address: ` + addr + `
+    vault_audience: https://vault.example.com/fullsend
+secrets:
+  JIRA_TOKEN:
+    connection: corp
+    vault_secrets: [` + repoPath + `jira]
+` + tc.selectYAML
+			if err := os.WriteFile(cfgPath, append(base, []byte(vaultYAML)...), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			var out bytes.Buffer
+			err = runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "github", "",
+				resolveFlags{maxDepth: 10, maxResources: 50}, statusOpts{}, ui.New(&out), false, runOverrideFlags{})
+			if err == nil {
+				t.Fatal("the stub never creates a sandbox, so runAgent must return an error")
+			}
+			if tc.wantErr != "" && !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want it to mention %q", err, tc.wantErr)
+			}
+			if tc.wantNoErr != "" && strings.Contains(err.Error(), tc.wantNoErr) {
+				t.Fatalf("error = %v, must not mention %q", err, tc.wantNoErr)
+			}
+			if !strings.Contains(out.String(), tc.wantMessage) {
+				t.Fatalf("output lacks %q:\n%s", tc.wantMessage, out.String())
+			}
+			if got := os.Getenv("JIRA_TOKEN"); got != tc.wantJira {
+				t.Fatalf("JIRA_TOKEN consumer value = %q, want %q", got, tc.wantJira)
+			}
+			if _, err := os.Stat(marker); tc.wantJira == "" && err == nil {
+				t.Fatal("the pre-script ran after the bundle failed validation")
+			}
+		})
 	}
 }
