@@ -7222,11 +7222,8 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 				out = `{"error":"output removed because text redaction would invalidate JSON"}`
 			}
 			if writeErr := writeFile(path, []byte(out), 0o644); writeErr != nil {
-				if quiet && isJSONL {
+				if quiet {
 					return fmt.Errorf("could not write sanitized output file")
-				}
-				if isJSONL {
-					return fmt.Errorf("could not write sanitized output file: %w", writeErr)
 				}
 				return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 			}
@@ -7261,6 +7258,15 @@ func sanitizeJSONLines(content []byte, pipeline *security.Pipeline) ([]byte, int
 	var out bytes.Buffer
 	findings := 0
 	var allFindings []security.Finding
+	// Keep a whole-stream pass for multiline patterns such as PEM private keys
+	// that can span otherwise-valid JSONL records. We only use it as a detector:
+	// raw replacement would consume JSON framing, so matching streams are
+	// replaced record-by-record with valid fail-closed JSON markers.
+	streamScan := pipeline.Scan(string(content))
+	streamHasPrivateKey := false
+	for _, finding := range streamScan.Findings {
+		streamHasPrivateKey = streamHasPrivateKey || finding.Name == "private_key"
+	}
 	for len(content) > 0 {
 		line := content
 		newline := bytes.IndexByte(content, '\n')
@@ -7273,7 +7279,13 @@ func sanitizeJSONLines(content []byte, pipeline *security.Pipeline) ([]byte, int
 		}
 		trimmed := bytes.TrimSpace(line)
 		if len(trimmed) > 0 {
-			if !json.Valid(trimmed) {
+			if streamHasPrivateKey && json.Valid(trimmed) {
+				line = []byte(`{"error":"output removed because output contained a cross-record private key"}`)
+				if len(allFindings) == 0 {
+					findings += len(streamScan.Findings)
+					allFindings = append(allFindings, streamScan.Findings...)
+				}
+			} else if !json.Valid(trimmed) {
 				result := pipeline.Scan(string(line))
 				if len(result.Findings) > 0 {
 					findings += len(result.Findings)
@@ -7294,9 +7306,11 @@ func sanitizeJSONLines(content []byte, pipeline *security.Pipeline) ([]byte, int
 					result := pipeline.Scan(string(line))
 					findings += len(result.Findings)
 					allFindings = append(allFindings, result.Findings...)
-					line = []byte(result.Sanitized)
-					if !json.Valid(line) {
-						line = []byte(`{"error":"output removed because text redaction would invalidate JSON"}`)
+					if len(result.Findings) > 0 && result.Sanitized != "" {
+						line = []byte(result.Sanitized)
+						if !json.Valid(line) {
+							line = []byte(`{"error":"output removed because text redaction would invalidate JSON"}`)
+						}
 					}
 				} else {
 					needsRewrite := len(fs) > 0

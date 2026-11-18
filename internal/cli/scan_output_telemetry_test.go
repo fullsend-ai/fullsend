@@ -128,7 +128,7 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	// Regression for #5705: an env assignment mentioned in ordinary prose is
 	// redacted structurally without corrupting JSON syntax.
 	jsonFile6 := filepath.Join(dir, "scribe_secret_backend.json")
-	validJSON6 := `{"body":"Changed SCRIBE_SECRET_BACKEND=env"}`
+	validJSON6 := `{"body":"Changed SCRIBE_SECRET_BACKEND=environment_backend"}`
 	require.NoError(t, os.WriteFile(jsonFile6, []byte(validJSON6), 0o644))
 
 	// The private-key pattern can match across separate JSON string values in
@@ -227,7 +227,8 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	assert.True(t, json.Valid(content6), "sanitized #5705 fixture must remain valid JSON")
 	var scribeResult map[string]string
 	require.NoError(t, json.Unmarshal(content6, &scribeResult))
-	assert.Contains(t, scribeResult["body"], "SCRIBE_SECRET_BACKEND=env", "incident-shaped wording should remain parseable and intact")
+	assert.NotContains(t, scribeResult["body"], "SCRIBE_SECRET_BACKEND=environment_backend", "incident-shaped assignment should be redacted")
+	assert.Contains(t, scribeResult["body"], "SCRIBE_SECRET_BACKEND=", "assignment context should remain visible")
 
 	content7, err := os.ReadFile(jsonFile7)
 	require.NoError(t, err)
@@ -313,6 +314,37 @@ func TestScanOutputFiles_JSONLCrossValuePrivateKeyRemainsValid(t *testing.T) {
 	line := strings.TrimSpace(string(got))
 	assert.True(t, json.Valid([]byte(line)), "each JSONL record must remain valid JSON: %s", line)
 	assert.Contains(t, line, "output removed", "cross-value private-key content should fail closed")
+}
+
+func TestSanitizeJSONLinesKeepsCleanDuplicateRecordWhenAnotherRecordChanges(t *testing.T) {
+	pipeline := security.OutputPipeline()
+	content := []byte("{\"a\":1,\"a\":2}\n{\"token\":\"ghp_FAKEtesttoken000000000000000000000000\"}\n")
+	got, findings, _, err := sanitizeJSONLines(content, pipeline)
+	require.NoError(t, err)
+	assert.Positive(t, findings)
+	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, `{"a":1,"a":2}`, lines[0], "clean duplicate-key record must remain unchanged")
+	assert.True(t, json.Valid([]byte(lines[1])))
+	assert.NotContains(t, lines[1], "ghp_FAKEtesttoken")
+}
+
+func TestSanitizeJSONLinesFailsClosedForPrivateKeyAcrossRecords(t *testing.T) {
+	pipeline := security.OutputPipeline()
+	begin := "-----BEGIN RSA" + " PRIVATE KEY-----"
+	end := "-----END RSA" + " PRIVATE KEY-----"
+	content := []byte(fmt.Sprintf("[%q]\n[%q]\n[%q]\n", begin, "MIIEpAIBAAKCAQEA0123456789abcdefghijklmnop", end))
+	got, findings, details, err := sanitizeJSONLines(content, pipeline)
+	require.NoError(t, err)
+	assert.Positive(t, findings)
+	require.NotEmpty(t, details)
+	assert.Equal(t, "private_key", details[0].Name)
+	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
+	require.Len(t, lines, 3)
+	for _, line := range lines {
+		assert.True(t, json.Valid([]byte(line)))
+		assert.Contains(t, line, "output removed")
+	}
 }
 
 func TestScanOutputFiles_QuietJSONFallbackDoesNotPrintPath(t *testing.T) {

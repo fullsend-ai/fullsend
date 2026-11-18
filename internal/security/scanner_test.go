@@ -522,6 +522,13 @@ func TestSecretRedactor(t *testing.T) {
 		assert.NotContains(t, result.Sanitized, "remaining_secret")
 	})
 
+	t.Run("json_field handles backslash followed by physical newline", func(t *testing.T) {
+		result := r.Scan("'password': 'abcdefgh\\\nijklmnop'")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "ijklmnop")
+	})
+
 	t.Run("mask does not leave dangling escape sequence", func(t *testing.T) {
 		input1 := `Authorization: Bearer abc\ndefghijkl`
 		result1 := r.Scan(input1)
