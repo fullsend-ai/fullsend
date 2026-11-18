@@ -201,7 +201,7 @@ func TestRunReposInstall_GlobCoveredRepoMissingSelectionLeavesManifestUnchanged(
 	require.NoError(t, readErr)
 	assert.Equal(t, noAuthGlobManifestYAML, string(data), "a repository without an effective inference.auth gains no entry")
 	assert.Empty(t, fc.Variables)
-	assert.Empty(t, fc.CreatedSecrets)
+	assert.Zero(t, len(fc.CreatedSecrets))
 }
 
 // mixedInferenceAuthManifestYAML has one repository with a valid selection

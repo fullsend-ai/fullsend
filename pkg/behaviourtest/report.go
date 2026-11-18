@@ -13,6 +13,7 @@ import (
 	"unicode"
 
 	"github.com/fullsend-ai/fullsend/internal/behaviourfail"
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/failclass"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/retryselect"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/steps"
@@ -91,6 +92,18 @@ func failRun(t *testing.T, w *world.World, suite string, err error) {
 	// only that the run failed before it could start.
 	report, reportPath := writeCompletionReport(w, suite, err, 1)
 	t.Fatalf("%s", bootstrapFailureMessage(suite, report.Class, err, reportPath))
+}
+
+// failInstallDriver reports a failed install-driver construction. A
+// local run whose driver needs a GitHub token and has none is skipped,
+// as the suites did before the check moved into the drivers; any other
+// error fails the run.
+func failInstallDriver(t *testing.T, suite, environment string, err error) {
+	t.Helper()
+	if errors.Is(err, e2etest.ErrNoLocalGitHubToken) {
+		t.Skipf("%v, skipping %s tests", err, suite)
+	}
+	failRun(t, nil, suite, fmt.Errorf("creating install driver (env=%s): %w", environment, err))
 }
 
 // recordBootstrapFailure classifies err and records it on the run's

@@ -414,6 +414,34 @@ if [ "$marker" = yes ] && [ -n "$TARGET_REPO_DIR" ]; then exit 1; fi
 	assert.Contains(t, out, "Validation passed (iteration 1)")
 }
 
+// TestRunAgent_RelativeTargetRepoExportsAbsoluteDir proves a relative
+// --target-repo reaches the post-script as an absolute TARGET_REPO_DIR. The
+// post-script runs in the run directory, so a relative value would name a
+// different directory there than in the pre-script (#9537).
+func TestRunAgent_RelativeTargetRepoExportsAbsoluteDir(t *testing.T) {
+	repoDir := newShallowTestRepo(t)
+	useFakeOpenshellRepoDownload(t, "cp -R "+shellQuoteForTest(repoDir)+"/. \"$dest\"/", "")
+	t.Setenv("TARGET_REPO_DIR", "original")
+
+	postRecords := filepath.Join(t.TempDir(), "post-records")
+	postScript := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$TARGET_REPO_DIR\" >> %s\n",
+		shellQuoteForTest(postRecords))
+	dir := writeValidationLoopFullsendDir(t, passingValidationScript, postScript, 1, "")
+
+	t.Chdir(filepath.Dir(repoDir))
+	wantDir, err := filepath.Abs(filepath.Base(repoDir))
+	require.NoError(t, err)
+
+	_, err = runValidationLoopAgent(t, dir, t.TempDir(), filepath.Base(repoDir))
+	require.NoError(t, err)
+
+	post := readLines(t, postRecords)
+	require.Len(t, post, 1)
+	assert.True(t, filepath.IsAbs(post[0]), "TARGET_REPO_DIR must be absolute, got %q", post[0])
+	assert.Equal(t, wantDir, post[0])
+	assert.Equal(t, "original", os.Getenv("TARGET_REPO_DIR"), "the original value is restored after the run")
+}
+
 // readLines returns the non-empty lines of a test record file.
 func readLines(t *testing.T, path string) []string {
 	t.Helper()

@@ -1315,6 +1315,18 @@ func codexRolloutLine(id, parent string) string {
 	return `{"timestamp":"2026-09-29T15:46:31.000Z","type":"session_meta","payload":{"id":"` + id + `","cwd":"/sandbox/workspace/repo"` + extra + `,"base_instructions":{"text":"quoted \"parent_thread_id\":\"` + codexRootThreadID + `\" stays inert"}}}` + "\n"
 }
 
+// codexV2RolloutLine is the session_meta first line of a collaboration V2
+// child at 0.166.0, modelled on a harness capture with synthetic ids: the
+// parent is named at the top level and again under
+// source.subagent.thread_spawn, beside the spawn's depth and agent_path.
+func codexV2RolloutLine(id, parent string) string {
+	return `{"timestamp":"2026-11-03T10:00:00.000Z","type":"session_meta","payload":{"session_id":"` + parent + `","id":"` + id + `",` +
+		`"parent_thread_id":"` + parent + `","timestamp":"2026-11-03T10:00:00.000Z","cwd":"/sandbox/workspace/repo",` +
+		`"originator":"codex_exec","cli_version":"0.166.0","source":{"subagent":{"thread_spawn":{"parent_thread_id":"` + parent + `",` +
+		`"depth":1,"agent_path":"/root/child","agent_role":"default"}}},"thread_source":"subagent","agent_role":"default",` +
+		`"multi_agent_version":"v2"}}` + "\n"
+}
+
 // writeCodexRollout writes one more rollout under sessions/<day>.
 func writeCodexRollout(t *testing.T, sessions, day, id, content string) {
 	t.Helper()
@@ -1449,7 +1461,8 @@ func TestCountCodexChildRollouts_NameKnownParentNeedsTheStream(t *testing.T) {
 // per file, a quoted key inside a string inert, an empty, undecodable or
 // unreadable first line, or a session_meta line cut before its parent, known
 // by its file name's thread id, an unclosed line that names its parent read
-// by content, a revert's second
+// by content, a V2 child's head, which names its parent twice, counted
+// once, a revert's second
 // file of a thread counted once, a name that carries no thread id read by
 // content, a missing directory empty, and a find that cannot read a directory
 // exits 3.
@@ -1459,17 +1472,19 @@ func TestCodexChildRolloutsReadCommand_UnderSh(t *testing.T) {
 		torn, empty, spaced = "01a06300-0000-7000-8000-0000000000ee", "01a06300-0000-7000-8000-0000000000e1", "01a06300-0000-7000-8000-0000000000e2"
 		locked, revert      = "01a06300-0000-7000-8000-0000000000e3", "01a06300-0000-7000-8000-0000000000e4"
 		cutMeta, unclosed   = "01a06300-0000-7000-8000-0000000000e5", "01a06300-0000-7000-8000-0000000000e6"
+		v2Child             = "01a06300-0000-7000-8000-0000000000e7"
 	)
 	sessions := writeCodexChildRollouts(t)
 	writeCodexRollout(t, sessions, "2026/09/29", codexChildSameModelID, codexRolloutLine(codexChildSameModelID, codexRootThreadID))
 	writeCodexRollout(t, sessions, "2026/09/30", codexChildOtherModelID, codexRolloutLine(codexChildOtherModelID, codexRootThreadID))
+	writeCodexRollout(t, sessions, "2026/11/03", v2Child, codexV2RolloutLine(v2Child, codexRootThreadID))
 	writeCodexRollout(t, sessions, "2026/09/30", torn, "not json\n")
 	writeCodexRollout(t, sessions, "2026/09/30", empty, "")
 	writeCodexRollout(t, sessions, "2026/09/30", codexChildSameModelID+"_"+revert, "")
 	writeCodexRollout(t, sessions, "2026/09/30", spaced+" copy", codexRolloutLine(spaced, codexRootThreadID))
 	writeCodexRollout(t, sessions, "2026/09/30", cutMeta, `{"timestamp":"2026-09-29T15:46:31.000Z","type":"session_meta","payload":{"id":"`+cutMeta+`"`)
 	writeCodexRollout(t, sessions, "2026/09/30", unclosed, strings.TrimSuffix(codexRolloutLine(unclosed, codexRootThreadID), "\n"))
-	want := []string{codexChildSameModelID, codexChildOtherModelID, torn, empty, spaced, cutMeta, unclosed}
+	want := []string{codexChildSameModelID, codexChildOtherModelID, v2Child, torn, empty, spaced, cutMeta, unclosed}
 	if os.Geteuid() != 0 {
 		writeCodexRollout(t, sessions, "2026/09/30", locked, codexRolloutLine(locked, ""))
 		lockedPath := filepath.Join(sessions, "2026/09/30", "rollout-2026-09-29T15-46-40-"+locked+".jsonl")
@@ -1481,7 +1496,7 @@ func TestCodexChildRolloutsReadCommand_UnderSh(t *testing.T) {
 	require.NoError(t, err)
 	n, ids, err := countCodexChildRollouts(parseCodexRolloutHeads(out), codexRootThreadID, nil)
 	require.NoError(t, err)
-	assert.Equal(t, len(want), n, "two children across two date directories, the cut, empty and unreadable files by name, the spaced name by content, the revert's file once; the root is not counted")
+	assert.Equal(t, len(want), n, "three children across three date directories, the V2 one once, though its head names its parent twice, the cut, empty and unreadable files by name, the spaced name by content, the revert's file once; the root is not counted")
 	assert.ElementsMatch(t, want, ids)
 
 	out, err = exec.Command("/bin/sh", "-c", codexChildRolloutsReadCommand(filepath.Join(t.TempDir(), "missing"))).Output()
