@@ -26,18 +26,21 @@ func assertNoInstallWrites(t *testing.T, fc *forge.FakeClient) {
 	assert.Empty(t, fc.ForceCommittedFiles, "no forced commits")
 	assert.Empty(t, fc.CreatedBranches, "no branches")
 	assert.Empty(t, fc.CreatedProposals, "no PR/MR")
-	assert.Empty(t, fc.CreatedSecrets, "no secret writes")
+	// Counted, not printed: a secret value must not reach the test log.
+	assert.Zero(t, len(fc.CreatedSecrets), "no secret writes")
 	assert.Empty(t, fc.DeletedSecrets, "no secret deletions")
 	assert.Empty(t, fc.Variables, "no variable writes")
 	assert.Empty(t, fc.UpdatedVariables, "no variable updates")
+	assert.Empty(t, fc.DeletedVariables, "no variable deletions")
 }
 
 // A layered safety rejection stops `repos install` before repos.yaml is
-// persisted or the forge is written to. The only manifest edit install still
-// plans (the install defaults recorded for a pending install) is applied in
-// memory and compared with the installed layers first, for an overlay
-// relaxation and for a preset replacement alike; selecting a glob-covered
-// repository plans no edit at all (#8219).
+// persisted or the forge is written to. The manifest edits install plans
+// (here the install defaults and the trace_context of a pending install) are
+// applied in memory and compared with the installed layers first, for an
+// overlay relaxation and for a preset replacement alike; selecting an
+// installed glob-covered repository plans no edit at all (#8219). The
+// refused run reports no repos.yaml edit either.
 func TestRunReposInstall_SafetyRejectionLeavesManifestByteIdentical(t *testing.T) {
 	const header = `version: 1
 %DEFAULTS%github:
@@ -122,10 +125,14 @@ func TestRunReposInstall_SafetyRejectionLeavesManifestByteIdentical(t *testing.T
 
 				opts := githubManagedInstallOpts(manifestPath, fc)
 				sc.edit(opts)
-				err := runReposInstall(context.Background(), opts)
+				var err error
+				out := captureStdout(t, func() { err = runReposInstall(context.Background(), opts) })
 
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), rej.want)
+				// Compared without printing: a seed the refused run generated is
+				// never written, so none can be checked for first.
+				assert.False(t, strings.Contains(out, "Persisted"), "a refused run reports no repos.yaml edit")
 				data, readErr := os.ReadFile(manifestPath)
 				require.NoError(t, readErr)
 				assert.Equal(t, manifestYAML, string(data), "repos.yaml must be byte-identical after a rejection")
@@ -139,7 +146,8 @@ func TestRunReposInstall_SafetyRejectionLeavesManifestByteIdentical(t *testing.T
 // mint_url and the declared configuration disagree on, or a Vertex flag
 // that contradicts the declared value) are rejected before the planned
 // tracking writeback is persisted, so repos.yaml stays byte-identical
-// — including for a pristine glob-covered repository.
+// — including for a pristine glob-covered repository — and the refused run
+// reports no repos.yaml edit.
 func TestRunReposInstall_InfrastructureConflictLeavesManifestByteIdentical(t *testing.T) {
 	const manifestHeader = `version: 1
 defaults:
@@ -188,10 +196,14 @@ defaults:
 
 			opts := githubManagedInstallOpts(manifestPath, fc)
 			opts.repoFilter = sc.filter
-			err := runReposInstall(context.Background(), opts)
+			var err error
+			out := captureStdout(t, func() { err = runReposInstall(context.Background(), opts) })
 
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), sc.want)
+			// Compared without printing: a seed the refused run generated is
+			// never written, so none can be checked for first.
+			assert.False(t, strings.Contains(out, "Persisted"), "a refused run reports no repos.yaml edit")
 			data, readErr := os.ReadFile(manifestPath)
 			require.NoError(t, readErr)
 			assert.Equal(t, manifestYAML, string(data), "repos.yaml must be byte-identical after a rejection")

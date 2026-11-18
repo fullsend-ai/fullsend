@@ -348,6 +348,25 @@ func TestDeclaredInfrastructureValues_NothingDeclaredIsEmpty(t *testing.T) {
 	assert.Equal(t, DeclaredInfrastructure{}, got)
 }
 
+func TestDeclaredInfrastructureValues_InferenceGatewayLayers(t *testing.T) {
+	var overlay ManagedConfig
+	require.NoError(t, yaml.Unmarshal([]byte(`
+inference:
+  gateway:
+    audience: overlay-aud
+`), &overlay))
+	base := []byte(`
+inference:
+  gateway:
+    url: " https://gateway.example.com "
+    audience: base-aud
+`)
+	got, err := DeclaredInfrastructureValues(overlay.Writer(), base)
+	require.NoError(t, err)
+	assert.Equal(t, InferenceGatewayConfig{URL: "https://gateway.example.com", Audience: "overlay-aud"}, got.InferenceGateway,
+		"url comes from the base, audience from the overlay, trimmed")
+}
+
 func TestDeclaredInfrastructureValues_InvalidBase(t *testing.T) {
 	_, err := DeclaredInfrastructureValues(nil, []byte("mint_url: [unterminated"))
 	require.Error(t, err)

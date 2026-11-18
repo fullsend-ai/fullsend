@@ -742,7 +742,7 @@ func TestClaudeRuntime_ExtractTranscripts_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 
 	outputDir := t.TempDir()
-	err := ClaudeRuntime{}.ExtractTranscripts("test-sandbox", "test-agent", outputDir)
+	err := ClaudeRuntime{}.ExtractTranscripts("test-sandbox", "test-agent", outputDir, "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "finding transcripts")
 }

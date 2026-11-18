@@ -11,9 +11,10 @@ Connect fullsend to a Jira project so that Jira issue activity — comments, lab
 >
 > An agent run that starts from a Jira issue reads the issue's title,
 > description, comments, and other fields, including custom fields. By
-> default, the run artifact holds JSONL files that record what the agent
-> read: the raw conversation stream (`output.jsonl`), the agent transcripts
-> (`transcripts/*.jsonl`), and, when content capture is on,
+> default, the run artifact holds files that record what the agent read: the
+> raw conversation stream (`output.jsonl`), the agent transcripts
+> (`transcripts/*.jsonl`), the agent CLI's stderr (`agent-stderr.log`, plain
+> text, written only at progress level `quiet`), and, when content capture is on,
 > `run-telemetry.jsonl`.
 >
 > - On a public GitHub repository, any signed-in GitHub user can download the
@@ -858,6 +859,25 @@ Use `none` if issue keys and branch names must stay private too. To check
 that it worked, and to see what each level keeps, follow
 [Run artifacts and private data](run-artifacts-and-private-data.md).
 
+To keep Jira issue text out of the job log, set `progress` for Jira-started
+runs. The job log is separate from the artifact: by default it prints the
+model's reasoning and replies, tool lines and error messages, and anyone can
+read the job log of a public repository. Add:
+
+```yaml
+progress:
+  by_source:
+    jira: quiet         # heartbeat, counts, error types and the result only
+```
+
+With `quiet`, monitor runs through OTLP export to a backend you control, such
+as MLflow (see [Distributed tracing](../infrastructure/distributed-tracing.md)).
+Level 3 content capture (the tracing level that adds conversation content to
+spans, see [Content capture](../infrastructure/distributed-tracing.md#content-capture-level-3))
+sends reasoning and tool content only to that backend.
+See [`progress`](../../reference/config-reference.md#progress) for what each
+level prints.
+
 ### Letting the assignee start Code
 
 The developer who works a Jira issue is usually its **assignee**, while a
@@ -1142,13 +1162,17 @@ same oversized payload — so the refused record never holds the checkpoint
 back; the checkpoint advances past it once the issue's other records have
 dispatched. That event's activity is lost, not repeated: an
 oversized `/fs-*` command, for example, never runs and leaves only the
-WARNING log line. The largest `/fs-*` command that still dispatches is about
-3,000 ASCII characters — fewer when the text is escape-heavy, since JSON
-encoding expands `<`, `>`, and `&` sixfold — because the complete event
-carries the command text twice (as `comment.body` and as the re-derived
-`comment.instruction`); commands between that boundary and the roughly
-6,550 ASCII characters the comment-only fallback used to carry whole on the
-GitLab transport are now refused instead of dispatched.
+WARNING log line. The largest one-line `/fs-*` command that still dispatches
+is about 3,000 ASCII characters — fewer when the text is escape-heavy, since
+JSON encoding expands `<`, `>`, and `&` sixfold — because the event carries a
+one-line command's text twice (as `comment.body` and as the re-derived
+`comment.instruction`, which is the first line only); a multi-line command
+with a short first line can be about twice as long. Earlier releases
+shortened every `/fs-*` command
+longer than 800 characters with the shortening ladder — 800, 400, 200, 100,
+then only the `[…truncated]` marker — and ran it shortened. A one-line
+command up to about 3,000 ASCII characters now runs whole, and a longer one
+is refused instead of dispatched.
 
 GitLab targets keep their lock and checkpoint properties in their own
 namespace, `fullsend.poll.gitlab.{instance}.{group path}.{project}.*`, where

@@ -21,7 +21,8 @@ const openCodeOutputFile = "output.jsonl"
 // ExtractTranscripts downloads the tee'd output.jsonl into outputDir as
 // <agentLabel>-output.jsonl, with the same path containment as the Claude and
 // pi handlers.
-func (r OpenCodeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string) error {
+func (r OpenCodeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir, progressVerbosity string) error {
+	rep := newTranscriptReport(agentLabel, progressVerbosity)
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
@@ -39,25 +40,26 @@ func (r OpenCodeRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir s
 	if err != nil {
 		return fmt.Errorf("checking transcript: %w", err)
 	}
+	defer rep.end()
 	if strings.TrimSpace(stdout) != "found" {
-		fmt.Fprintf(os.Stderr, "  [%s] No transcript found\n", agentLabel)
+		rep.noneFound("No transcript found")
 		return nil
 	}
 
 	localName := fmt.Sprintf("%s-%s", agentLabel, openCodeOutputFile)
 	f, createErr := root.Create(localName)
 	if createErr != nil {
-		fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentLabel, localName, createErr)
+		rep.skip("Skipping (path rejected): %s: %v", localName, createErr)
 		return nil
 	}
 	f.Close()
 	localPath := filepath.Join(outputDir, localName)
 	os.Remove(localPath)
 	if dlErr := sandbox.DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
-		fmt.Fprintf(os.Stderr, "  [%s] Failed to copy transcript: %v\n", agentLabel, dlErr)
+		rep.skip("Failed to copy transcript: %v", dlErr)
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "  [%s] Saved transcript: %s\n", agentLabel, localName)
+	rep.saved("Saved transcript: %s", localName)
 	return nil
 }
 

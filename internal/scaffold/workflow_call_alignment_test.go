@@ -2469,3 +2469,47 @@ func TestWorkflowDispatchInputsHaveDescriptions(t *testing.T) {
 	}
 	require.Greater(t, checked, 1, "expected to scan scaffold and repo workflows")
 }
+
+// TestTriageAgentStepExportsAppSet verifies the triage job's "Run triage
+// agent" step exports FULLSEND_APP_SET with the same expression as the
+// review job's run step (#9568). agents/triage.md trusts an earlier triage
+// comment only when its GitHub App is one of the install's triage App names
+// (fullsend-ai/agents#2037), which includes ${FULLSEND_APP_SET}-triage when
+// the variable is set; without the export, an install with a custom App set
+// matches none of its own triage comments.
+func TestTriageAgentStepExportsAppSet(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string            `yaml:"name"`
+				Env  map[string]string `yaml:"env"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(content, &workflow))
+
+	agentStepEnv := func(job, stepName string) map[string]string {
+		for _, step := range workflow.Jobs[job].Steps {
+			if step.Name == stepName {
+				return step.Env
+			}
+		}
+		t.Fatalf("job %q must have a %q step", job, stepName)
+		return nil
+	}
+
+	const wantExpr = "${{ vars.FULLSEND_APP_SET || 'fullsend-ai' }}"
+
+	reviewEnv := agentStepEnv("review", "Run review agent")
+	require.Contains(t, reviewEnv, "FULLSEND_APP_SET",
+		"reference: the review job's run step exports FULLSEND_APP_SET")
+
+	triageEnv := agentStepEnv("triage", "Run triage agent")
+	require.Contains(t, triageEnv, "FULLSEND_APP_SET",
+		`the triage job's "Run triage agent" step must export FULLSEND_APP_SET`)
+	assert.Equal(t, wantExpr, triageEnv["FULLSEND_APP_SET"],
+		"the triage step's FULLSEND_APP_SET must match the review step's entry")
+}

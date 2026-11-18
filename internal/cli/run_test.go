@@ -3841,7 +3841,7 @@ func TestPostLoopValidationSweep_LatestIterPasses(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	result := postLoopValidationSweep(h, runDir, 3, true, printer)
+	result := postLoopValidationSweep(h, runDir, 3, true, "", printer)
 	assert.True(t, result.passed, "sweep should pass when latest iteration passes")
 	assert.Equal(t, 3, result.validatedIter, "validated iteration should be runCount")
 	assert.True(t, result.repoExtractedOK, "repoExtractedOK should stay true when i == runCount")
@@ -3865,7 +3865,7 @@ func TestPostLoopValidationSweep_EarlierIterPasses(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	result := postLoopValidationSweep(h, runDir, 3, true, printer)
+	result := postLoopValidationSweep(h, runDir, 3, true, "", printer)
 	assert.True(t, result.passed, "sweep should pass when earlier iteration passes")
 	assert.Equal(t, 1, result.validatedIter, "validated iteration should be 1")
 	assert.False(t, result.repoExtractedOK, "repoExtractedOK must be false when i != runCount")
@@ -3888,7 +3888,7 @@ func TestPostLoopValidationSweep_NonePass(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	result := postLoopValidationSweep(h, runDir, 2, false, printer)
+	result := postLoopValidationSweep(h, runDir, 2, false, "", printer)
 	assert.False(t, result.passed, "sweep should not pass when no iteration passes")
 	assert.Equal(t, 0, result.validatedIter, "validatedIter should be 0 when none pass")
 	assert.False(t, result.repoExtractedOK, "repoExtractedOK should propagate input value")
@@ -3918,7 +3918,7 @@ func TestPostLoopValidationSweep_EarlierIterClearsRepoOK(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	// currentRepoExtractedOK=true simulates a successful last SafeDownload.
-	result := postLoopValidationSweep(h, runDir, 2, true, printer)
+	result := postLoopValidationSweep(h, runDir, 2, true, "", printer)
 	assert.True(t, result.passed)
 	assert.Equal(t, 1, result.validatedIter)
 	assert.False(t, result.repoExtractedOK,
@@ -3947,7 +3947,7 @@ func TestPostLoopValidationSweep_PassesEmptyTargetRepoDir(t *testing.T) {
 	}
 	printer := ui.New(io.Discard)
 
-	result := postLoopValidationSweep(h, runDir, 1, true, printer)
+	result := postLoopValidationSweep(h, runDir, 1, true, "", printer)
 	require.True(t, result.passed)
 
 	got, err := os.ReadFile(checkFile)
@@ -3973,14 +3973,14 @@ func TestSweepResult_RepoExtractedOK_PreservesWhenRunCount(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	// With currentRepoExtractedOK=false (last SafeDownload failed).
-	result := postLoopValidationSweep(h, runDir, 1, false, printer)
+	result := postLoopValidationSweep(h, runDir, 1, false, "", printer)
 	assert.True(t, result.passed)
 	assert.Equal(t, 1, result.validatedIter)
 	assert.False(t, result.repoExtractedOK,
 		"repoExtractedOK should remain false when input was false, even when i == runCount")
 
 	// With currentRepoExtractedOK=true (last SafeDownload succeeded).
-	result2 := postLoopValidationSweep(h, runDir, 1, true, printer)
+	result2 := postLoopValidationSweep(h, runDir, 1, true, "", printer)
 	assert.True(t, result2.passed)
 	assert.True(t, result2.repoExtractedOK,
 		"repoExtractedOK should remain true when input was true and i == runCount")

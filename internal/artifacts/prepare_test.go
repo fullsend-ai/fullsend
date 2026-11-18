@@ -4,12 +4,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 )
 
 const testRunDir = "fs-cod-0a1b2c"
@@ -253,4 +256,26 @@ func TestResetArtifactDir_RejectsOverlapThroughSymlink(t *testing.T) {
 
 func TestMetadataFiles(t *testing.T) {
 	assert.Equal(t, []string{"metrics.json", "eval-measurements.jsonl", "run-telemetry.jsonl"}, MetadataFiles())
+}
+
+// The agent CLI's stderr file the runner writes at the quiet progress
+// level (ADR 0163) sits beside output.jsonl, so every artifact level
+// treats it as it treats the transcripts: never more public.
+func TestPrepare_AgentStderrFollowsTranscripts(t *testing.T) {
+	stderrRel := testRunDir + "/iteration-1/" + agentruntime.AgentStderrFile
+	transcriptRel := testRunDir + "/iteration-1/transcripts/t.jsonl"
+	for _, level := range []string{"all", "metadata", "none"} {
+		t.Run(level, func(t *testing.T) {
+			out := t.TempDir()
+			artifactDir := filepath.Join(t.TempDir(), "artifact")
+			files := fullRun()
+			files[stderrRel] = "warn: private text\n"
+			writeTree(t, out, files)
+
+			require.NoError(t, Prepare(out, artifactDir, level))
+			got := listTree(t, artifactDir)
+			assert.Equal(t, slices.Contains(got, transcriptRel), slices.Contains(got, stderrRel),
+				"the stderr file is uploaded exactly when the transcripts are")
+		})
+	}
 }
