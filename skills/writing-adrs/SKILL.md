@@ -61,7 +61,7 @@ understand what is true *now*, without tracing a chain of ADRs.
 
 Do NOT use for open-ended exploration -- that belongs in problem docs.
 
-## Decide whether to write a new ADR
+## Decide Whether to Write a New ADR
 
 An ADR is most useful when it establishes an **invariant**: a durable rule that
 future designs, implementations, and reviews must preserve. Before writing one,
@@ -87,12 +87,17 @@ needs an ADR.
   forge, field, or workflow. For example,
   [ADR 0094](../../docs/ADRs/0094-pi-extensions-are-harness-resources.md)
   requires extension tools to obey the same tool allowlist as other
-  tools. With that in mind, the proposed ADR in
-  [PR#9265](https://github.com/fullsend-ai/fullsend/pull/9265) is unnecessary;
-  it just makes Pi select exact names from vetted extensions.
+  tools. Applying that rule to another extension does not establish a new
+  invariant.
+- A contract version change by itself does not establish a new invariant.
+  For example, [ADR 0170][entity-context-snapshot ADR] adopts snapshot v2 as
+  the model-facing field gate for every normalized-entity provider/kind pair.
+  Its expanded coverage and compatibility choices are the architectural
+  decision, not the version number.
 - The change fixes a bug, chooses an internal algorithm, tunes a limit, or
-  adds a test mechanism without changing a durable rule. Send a normal PR that explains the rationale
-  and update the relevant guide, reference, normative spec or user doc.
+  adds a test mechanism without changing a durable rule. Send a normal PR that
+  explains the rationale and update the relevant guide, reference, normative
+  spec or user doc.
 - The change only sets a local file location, internal naming convention, or
   documentation layout. Put the convention in contributor guidance and enforce
   it with linters where useful.
@@ -100,9 +105,13 @@ needs an ADR.
   decision. Use a minor annotation as allowed above, and keep living documents
   current.
 
+[entity-context-snapshot ADR]:
+  ../../docs/ADRs/0170-align-entity-context-snapshot-with-normalized-entity.md
+
 If the choice is still open, explore the alternatives in a problem doc. A new
-field, command, forge, agent, or security-sensitive implementation does not by itself
-establish a new invariant.
+field, command, forge, or agent does not by itself establish a new invariant.
+Implementing a security control under an existing boundary does not either;
+changing that boundary may.
 
 ## The Rules
 
