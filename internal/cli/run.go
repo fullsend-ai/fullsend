@@ -1431,6 +1431,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// (runner_env + env.runner), not just the declared runner_env entries.
 	h.RunnerEnv = effectiveRunnerEnv
 
+	// Resolve where the agent's input text comes from (#9509). An external
+	// source turns on the FULLSEND_DRY_RUN default for host-side scripts and
+	// needs allow_forge_write for a forge-write provider. Decided here, on
+	// the merged runner env, before any gateway change or the pre-script.
+	inputSourceReport, err := applyInputSource(h, absFullsendDir, result.Providers, os.LookupEnv)
+	if err != nil {
+		printer.StepFail("Input source check failed")
+		return err
+	}
+	printer.StepInfo(inputSourceReport)
+
 	// provider/id is pi's model form; Claude Code takes an alias or an
 	// Anthropic model id. The syntax is accepted for every runtime (ids are
 	// not a closed set), so flag the likely mismatch instead of rejecting it.

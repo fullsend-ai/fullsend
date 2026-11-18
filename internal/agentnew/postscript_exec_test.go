@@ -417,3 +417,107 @@ func TestGeneratedPostScriptRejectsANonStringComment(t *testing.T) {
 		t.Errorf("a non-string comment must be refused, got %v; stderr:\n%s", err, stderr)
 	}
 }
+
+// TestGeneratedPostScriptDryRunVariables pins which variable decides a dry
+// run (#9509): FULLSEND_DRY_RUN=1, which fullsend run sets for an external
+// input source, is a dry run when the per-agent variable is unset, and the
+// per-agent variable wins whenever it is set and not empty.
+func TestGeneratedPostScriptDryRunVariables(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	perAgent := DryRunEnvVar("lint-docs")
+	for _, tc := range []struct {
+		name       string
+		env        []string
+		wantDryRun bool
+	}{
+		{name: "neither set posts", wantDryRun: false},
+		{name: "FULLSEND_DRY_RUN=1 alone is a dry run", env: []string{"FULLSEND_DRY_RUN=1"}, wantDryRun: true},
+		{name: "FULLSEND_DRY_RUN=0 posts", env: []string{"FULLSEND_DRY_RUN=0"}, wantDryRun: false},
+		{name: "per-agent 1 alone is a dry run", env: []string{perAgent + "=1"}, wantDryRun: true},
+		{name: "per-agent 0 wins over FULLSEND_DRY_RUN=1", env: []string{perAgent + "=0", "FULLSEND_DRY_RUN=1"}, wantDryRun: false},
+		{name: "per-agent empty falls through to FULLSEND_DRY_RUN=1", env: []string{perAgent + "=", "FULLSEND_DRY_RUN=1"}, wantDryRun: true},
+		{name: "per-agent 1 wins over FULLSEND_DRY_RUN=0", env: []string{perAgent + "=1", "FULLSEND_DRY_RUN=0"}, wantDryRun: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			calledFile := filepath.Join(binDir, "called")
+			stub := "#!/usr/bin/env bash\ntouch " + calledFile + "\ncat >/dev/null\n"
+			if err := os.WriteFile(filepath.Join(binDir, "fullsend"), []byte(stub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			runDir := writeRunDir(t, map[string]any{
+				"iteration-1": map[string]any{"status": "findings", "summary": "one broken link", "comment": "- a.md"},
+			})
+			cmd := exec.Command("bash", script)
+			cmd.Dir = runDir
+			for _, e := range os.Environ() {
+				if !strings.HasPrefix(e, perAgent+"=") && !strings.HasPrefix(e, "FULLSEND_DRY_RUN=") {
+					cmd.Env = append(cmd.Env, e)
+				}
+			}
+			cmd.Env = append(cmd.Env,
+				"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"ISSUE_URL=https://github.com/fullsend-ai/demo/pull/99",
+				"GH_TOKEN=test-token",
+			)
+			cmd.Env = append(cmd.Env, tc.env...)
+			var stderr strings.Builder
+			cmd.Stderr = &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("post-script failed: %v; stderr:\n%s", err, stderr.String())
+			}
+			_, statErr := os.Stat(calledFile)
+			posted := statErr == nil
+			if dryRun := strings.Contains(stderr.String(), "dry run, not posting"); dryRun != tc.wantDryRun || posted == tc.wantDryRun {
+				t.Fatalf("dry run = %v, posted = %v, want dry run %v; stderr:\n%s", dryRun, posted, tc.wantDryRun, stderr.String())
+			}
+		})
+	}
+}
+
+// TestGeneratedPostScriptOkDryRunFromFullsendDryRun pins that the ok path
+// also honours FULLSEND_DRY_RUN=1 (#9509): it neither posts nor looks for an
+// earlier findings comment.
+func TestGeneratedPostScriptOkDryRunFromFullsendDryRun(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed; the generated post-script needs it")
+	}
+	binDir := t.TempDir()
+	calledFile := filepath.Join(binDir, "called")
+	stub := "#!/usr/bin/env bash\ntouch " + calledFile + "\ncat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(binDir, "fullsend"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := renderPostScriptTo(t, t.TempDir())
+	runDir := writeRunDir(t, map[string]any{
+		"iteration-1": map[string]any{"status": "ok", "summary": "All clear", "comment": "All added documentation links resolve."},
+	})
+	perAgent := DryRunEnvVar("lint-docs")
+	cmd := exec.Command("bash", script)
+	cmd.Dir = runDir
+	for _, e := range os.Environ() {
+		if !strings.HasPrefix(e, perAgent+"=") && !strings.HasPrefix(e, "FULLSEND_DRY_RUN=") {
+			cmd.Env = append(cmd.Env, e)
+		}
+	}
+	cmd.Env = append(cmd.Env,
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"ISSUE_URL=https://github.com/fullsend-ai/demo/pull/99",
+		"GH_TOKEN=test-token",
+		"FULLSEND_DRY_RUN=1",
+	)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("ok dry run must exit 0, got %v; stderr:\n%s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "nothing to post (dry run") {
+		t.Fatalf("expected the dry-run nothing-to-post notice, got:\n%s", stderr.String())
+	}
+	if _, err := os.Stat(calledFile); err == nil {
+		t.Fatalf("a dry run must not call fullsend on the ok path")
+	}
+}

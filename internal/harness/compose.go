@@ -975,6 +975,14 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	if child.Trigger == "" {
 		child.Trigger = base.Trigger
 	}
+	// InputSource (#9509) inherits only when the base declares external, so
+	// a base keeps its children external unless they say otherwise, but a
+	// base that declares maintainer cannot override FULLSEND_INPUT_SOURCE
+	// for a child that leaves the field unset. Top level only, not a
+	// ForgeConfig field, so mergeForgeConfig needs no matching slot.
+	if child.InputSource == "" && base.InputSource == InputSourceExternal {
+		child.InputSource = base.InputSource
+	}
 	if child.PreScript == "" {
 		child.PreScript = base.PreScript
 	}
@@ -1033,6 +1041,8 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	// NOT merged from base harnesses to prevent privilege escalation: a base
 	// cannot inject arbitrary URL prefixes or enable runtime fetching in the
 	// child. The child must declare its own allowlist and fetch settings.
+	// AllowForgeWrite (#9509) is not merged for the same reason: a base
+	// cannot grant an external-input child a forge-write provider.
 	// AllowCIVariableCredential is not merged either, so a base cannot
 	// silence the GitLab CI/CD-variable credential warning.
 	if base.APIServers != nil {
