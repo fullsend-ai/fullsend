@@ -62,6 +62,9 @@ const (
 	CodeTriggerInvalid             = "trigger-invalid"
 	CodePreflightCheckPath         = "preflight-check-path"
 	CodeGithubIssueURLDeprecated   = "github-issue-url-deprecated"
+	CodeBlockDropsRuntimeFetch     = "block-drops-runtime-fetch"
+	CodeBlockDropsCIVariableCred   = "block-drops-ci-variable-credential"
+	CodeBlockTriggerIgnored        = "block-trigger-ignored"
 )
 
 // Diagnostic represents a non-fatal issue found by Lint.
@@ -84,6 +87,33 @@ func (d Diagnostic) String() string {
 // Returns nil when no diagnostics are found.
 func (h *Harness) Lint() []Diagnostic {
 	var diags []Diagnostic
+
+	if len(h.blockDroppedFetch) > 0 {
+		diags = append(diags, Diagnostic{
+			Code:     CodeBlockDropsRuntimeFetch,
+			Severity: SeverityWarning,
+			Field:    "harness",
+			Message:  fmt.Sprintf("the agents entry's harness: block leaves out %s, set by a layer below it: like a base: child, a block does not inherit the runtime fetch fields (ADR 0158); set them in the block to keep them (in the config.yaml block when config.base.yaml has one too), or set allow_runtime_fetch: false to drop them on purpose", strings.Join(h.blockDroppedFetch, ", ")),
+		})
+	}
+
+	if h.blockDroppedCIVariableCredential {
+		diags = append(diags, Diagnostic{
+			Code:     CodeBlockDropsCIVariableCred,
+			Severity: SeverityWarning,
+			Field:    "harness",
+			Message:  "the agents entry's harness: block leaves out allow_ci_variable_credential, set by a layer below it: like a base: child, a block does not inherit it; set it in the block to keep it (in the config.yaml block when config.base.yaml has one too), or set it to false there to drop it on purpose",
+		})
+	}
+
+	if h.blockTriggerIgnored != "" {
+		diags = append(diags, Diagnostic{
+			Code:     CodeBlockTriggerIgnored,
+			Severity: SeverityWarning,
+			Field:    "harness.trigger",
+			Message:  fmt.Sprintf("agents entry %q: harness.trigger is not evaluated for a built-in agent until built-in agents are routed by CEL alone (ADR 0162, #2902)", h.blockTriggerIgnored),
+		})
+	}
 
 	if len(h.RunnerEnv) > 0 {
 		msg := "runner_env is deprecated; use env.runner instead (see ADR 0055)"
