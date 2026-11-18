@@ -7052,7 +7052,9 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 					if len(findings) > 0 {
 						findingCount += len(findings)
 						for _, f := range findings {
-							printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
+							if !quiet {
+								printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
+							}
 							security.AppendFinding(findingsPath,
 								security.TracedFinding{
 									TraceID:   traceID,
@@ -7077,25 +7079,27 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 							// JSON; otherwise discard the potentially malformed payload.
 							backstop := pipeline.Scan(string(marshaled))
 							if len(backstop.Findings) > 0 {
-								changed := len(findings) == 0
+								changed := false
+								privateKey := false
 								for _, finding := range backstop.Findings {
 									if finding.Name == "private_key" {
-										changed = true
-										marshaled = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
-										break
+										privateKey = true
 									}
 								}
+								changed = privateKey || len(findings) == 0
 								if changed {
 									findingCount += len(backstop.Findings)
 									for _, f := range backstop.Findings {
-										printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s (backstop): %s", f.Name, relPath, f.Detail))
+										if !quiet {
+											printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s (backstop): %s", f.Name, relPath, f.Detail))
+										}
 										security.AppendFinding(findingsPath, security.TracedFinding{
 											TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
 											Phase: "host_output", Finding: f,
 										})
 									}
 									if backstop.Sanitized != "" {
-										if !json.Valid([]byte(backstop.Sanitized)) {
+										if privateKey || !json.Valid([]byte(backstop.Sanitized)) {
 											marshaled = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
 										} else {
 											marshaled = []byte(backstop.Sanitized)
@@ -7105,16 +7109,49 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 							}
 							if writeErr := writeFile(path, marshaled, 0o644); writeErr != nil {
 								if quiet {
-									unwritable++
-								} else {
-									return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
+									return fmt.Errorf("could not write sanitized output file")
 								}
+								return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 							}
 							return nil
 						}
 					} else {
-						// Every value and key has been scanned independently. Do not
-						// apply a raw whole-document pattern that can cross values.
+						// Scan encoded JSON for patterns spanning separate leaves. Such a
+						// match cannot be safely applied as raw text, so replace the
+						// whole document with a valid fail-closed marker.
+						var buf bytes.Buffer
+						enc := json.NewEncoder(&buf)
+						enc.SetEscapeHTML(false)
+						if err := enc.Encode(jsonVal); err != nil {
+							return fmt.Errorf("could not encode JSON output for security scan")
+						}
+						backstop := pipeline.Scan(buf.String())
+						privateKey := false
+						for _, f := range backstop.Findings {
+							if f.Name == "private_key" {
+								privateKey = true
+							}
+						}
+						if !privateKey {
+							return nil
+						}
+						findingCount += len(backstop.Findings)
+						for _, f := range backstop.Findings {
+							if !quiet {
+								printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s (backstop): %s", f.Name, relPath, f.Detail))
+							}
+							security.AppendFinding(findingsPath, security.TracedFinding{
+								TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
+								Phase: "host_output", Finding: f,
+							})
+						}
+						marker := []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
+						if writeErr := writeFile(path, marker, 0o644); writeErr != nil {
+							if quiet {
+								return fmt.Errorf("could not write sanitized output file")
+							}
+							return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
+						}
 						return nil
 					}
 				}
@@ -7250,9 +7287,23 @@ func sanitizeJSONStructure(v any, pipeline *security.Pipeline) (any, []security.
 		return val, nil
 	case map[string]any:
 		newMap := make(map[string]any, len(val))
-		for k, item := range val {
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		// Reserve clean original names before assigning sanitized names so a
+		// secret key can never steal a legitimate key's name/value slot.
+		for _, k := range keys {
+			if keyRes := pipeline.Scan(k); len(keyRes.Findings) == 0 {
+				newMap[k] = nil
+			}
+		}
+		for _, k := range keys {
+			item := val[k]
 			sanitizedKey := k
 			keyRes := pipeline.Scan(k)
+			keyNeedsSanitization := len(keyRes.Findings) > 0
 			if len(keyRes.Findings) > 0 {
 				findings = append(findings, keyRes.Findings...)
 				if keyRes.Sanitized != "" {
@@ -7260,23 +7311,29 @@ func sanitizeJSONStructure(v any, pipeline *security.Pipeline) (any, []security.
 				}
 			}
 			targetKey := sanitizedKey
+			if !keyNeedsSanitization {
+				targetKey = k
+			}
 			if _, exists := newMap[targetKey]; exists {
-				for i := 1; ; i++ {
-					cand := fmt.Sprintf("%s_%d", sanitizedKey, i)
-					if _, exists := newMap[cand]; !exists {
-						targetKey = cand
-						break
+				if keyNeedsSanitization {
+					for i := 1; ; i++ {
+						cand := fmt.Sprintf("%s_%d", sanitizedKey, i)
+						if _, exists := newMap[cand]; !exists {
+							targetKey = cand
+							break
+						}
 					}
+				} else {
+					// The original key was reserved during the first pass.
 				}
 			}
 			if strVal, ok := item.(string); ok {
 				valRes := pipeline.Scan(strVal)
 				if len(valRes.Findings) > 0 {
 					findings = append(findings, valRes.Findings...)
-					newMap[targetKey] = valRes.Sanitized
-					continue
+					strVal = valRes.Sanitized
 				}
-				if sensitiveJSONKeyRegex.MatchString(k) && len(strVal) >= 8 {
+				if sensitiveJSONKeyRegex.MatchString(sanitizedKey) && len(strVal) >= 8 && !isAlreadyMasked(strVal) {
 					masked := security.Mask(strVal)
 					findings = append(findings, security.Finding{
 						Scanner:  "secret_redactor",
@@ -7284,8 +7341,7 @@ func sanitizeJSONStructure(v any, pipeline *security.Pipeline) (any, []security.
 						Severity: "high",
 						Detail:   fmt.Sprintf("Redacted json_field (%d chars) -> %s", len(strVal), masked),
 					})
-					newMap[targetKey] = masked
-					continue
+					strVal = masked
 				}
 				newMap[targetKey] = strVal
 				continue
@@ -7310,6 +7366,10 @@ func sanitizeJSONStructure(v any, pipeline *security.Pipeline) (any, []security.
 	default:
 		return val, nil
 	}
+}
+
+func isAlreadyMasked(value string) bool {
+	return value == "***" || strings.HasSuffix(value, "...") && len(value) == 7
 }
 
 // injectTraceID appends the FULLSEND_TRACE_ID to the sandbox .env file.

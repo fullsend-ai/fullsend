@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -137,6 +138,10 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	validJSON7 := `["see -----BEGIN RSA` + ` PRIVATE KEY----- marker", {"note": "and -----END RSA` + ` PRIVATE KEY----- marker"}]`
 	require.NoError(t, os.WriteFile(jsonFile7, []byte(validJSON7), 0o644))
 
+	jsonFile9 := filepath.Join(dir, "split_pem_lines.json")
+	validJSON9 := `["-----BEGIN RSA PRIVATE KEY-----","BASE64_KEY_MATERIAL_REDACTED","-----END RSA PRIVATE KEY-----"]`
+	require.NoError(t, os.WriteFile(jsonFile9, []byte(validJSON9), 0o644))
+
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	require.NoError(t, scanOutputFiles(dir, "trace-id", "", printer))
@@ -167,6 +172,17 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	}
 	require.NoError(t, json.Unmarshal(content3, &split))
 	assert.NotContains(t, split.Auth, "abc\ndefghijkl1234", "decoded credential must be redacted")
+	var escapedResult struct {
+		Findings []struct {
+			Password string `json:"password"`
+		} `json:"findings"`
+	}
+	escapedBytes, err := os.ReadFile(jsonFile2)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(escapedBytes, &escapedResult))
+	require.Len(t, escapedResult.Findings, 1)
+	assert.NotContains(t, escapedResult.Findings[0].Password, "secret_password_1234", "embedded secret must be redacted")
+	assert.Equal(t, "secr...", escapedResult.Findings[0].Password, "the value is wholly masked without changing surrounding JSON")
 
 	content4, err := os.ReadFile(jsonFile4)
 	require.NoError(t, err)
@@ -211,17 +227,20 @@ func TestScanOutputFiles_PreservesJSONStructuralValidity(t *testing.T) {
 	assert.True(t, json.Valid(content6), "sanitized #5705 fixture must remain valid JSON")
 	var scribeResult map[string]string
 	require.NoError(t, json.Unmarshal(content6, &scribeResult))
-	assert.Contains(t, scribeResult["body"], "SCRIBE_SECRET_BACKEND=env")
+	assert.Contains(t, scribeResult["body"], "SCRIBE_SECRET_BACKEND=env", "incident-shaped wording should remain parseable and intact")
 
 	content7, err := os.ReadFile(jsonFile7)
 	require.NoError(t, err)
 	assert.True(t, json.Valid(content7), "cross-value private-key match must not corrupt JSON")
-	assert.Contains(t, string(content7), "-----BEGIN RSA"+" PRIVATE KEY-----")
-	assert.Contains(t, string(content7), "-----END RSA"+" PRIVATE KEY-----")
+	assert.Contains(t, string(content7), "output removed", "cross-value private-key marker must fail closed")
 	content8, err := os.ReadFile(jsonFile8)
 	require.NoError(t, err)
 	assert.True(t, json.Valid(content8), "backstop handling must preserve valid JSON")
 	assert.Contains(t, string(content8), "output removed", "cross-value backstop match must fail closed")
+	content9, err := os.ReadFile(jsonFile9)
+	require.NoError(t, err)
+	assert.True(t, json.Valid(content9))
+	assert.Contains(t, string(content9), "output removed", "split PEM-like material must fail closed")
 
 	// jq is the parser implicated by the original incident; exercise it when
 	// available, while keeping the Go validity assertions portable.
@@ -294,6 +313,17 @@ func TestScanOutputFiles_ReturnsErrorWhenSanitizedWriteFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "could not write sanitized secret.txt")
 }
 
+func TestScanOutputFiles_QuietJSONWriteFailureIsFatal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secret.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"token":"ghp_FAKEtesttoken000000000000000000000000"}`), 0o644))
+	err := scanOutputFilesWithWriter(dir, "trace-id", "quiet", ui.New(&bytes.Buffer{}), func(string, []byte, os.FileMode) error {
+		return os.ErrPermission
+	})
+	require.Error(t, err)
+	assert.EqualError(t, err, "could not write sanitized output file")
+}
+
 func TestScanOutputFiles_BackstopDoesNotRemaskExistingMask(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-result.json")
@@ -315,6 +345,24 @@ func TestScanOutputFiles_BackstopDoesNotRemaskExistingMask(t *testing.T) {
 	second, err := os.ReadFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, first, second)
+}
+
+func TestSanitizeJSONStructure_CleanKeyWinsSanitizedCollision(t *testing.T) {
+	const sanitized = "ghp_..."
+	pipeline := security.OutputPipeline()
+	input := map[string]any{
+		"ghp_FAKEtesttoken000000000000000000000000": "secretkeyval",
+		sanitized: "plainval",
+	}
+	input["ghp_FAKEtesttoken000000000000000000000000"] = "secretkeyval"
+	for range 20 {
+		got, findings := sanitizeJSONStructure(input, pipeline)
+		require.NotEmpty(t, findings)
+		result := got.(map[string]any)
+		assert.Equal(t, "plainval", result[sanitized], "clean key must retain its name and value")
+		assert.NotContains(t, result, "ghp_FAKEtesttoken000000000000000000000000")
+		assert.Len(t, result, 2)
+	}
 }
 
 // TestScanOutputFiles_CleanJSON verifies that clean JSON files with no findings

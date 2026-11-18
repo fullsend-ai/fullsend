@@ -188,12 +188,13 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 			// followed by a quote delimiter, the trailing backslash was escaping
 			// that delimiter (e.g. \" in JSON or code strings). Preserve the
 			// escape by excluding the backslash from the redacted secret span.
+			originalLen := len(secret)
 			if end < len(current) && (current[end] == '"' || current[end] == '\'') {
 				numBackslashes := 0
 				for k := len(secret) - 1; k >= 0 && secret[k] == '\\'; k-- {
 					numBackslashes++
 				}
-				if numBackslashes%2 == 1 && p.name == "json_field" {
+				if numBackslashes%2 == 1 && p.name != "json_field" {
 					secret = secret[:len(secret)-1]
 					end--
 				}
@@ -202,7 +203,7 @@ func (s *SecretRedactor) Scan(text string) ScanResult {
 				continue
 			}
 			masked := Mask(secret)
-			if len(secret) < minLen {
+			if originalLen < minLen {
 				continue
 			}
 			if p.name != "json_field" && end < len(current) && (current[end] == '"' || current[end] == '\'') {
@@ -301,7 +302,7 @@ func defaultStructuralPatterns() []secretPattern {
 		// the mask keeps it visible. A bare value still ends at the first
 		// space, as in the PostToolUse hook.
 		{"env_assignment", `(?i)(?:^|\s)(?:export\s+)?((?:[A-Za-z0-9]+_)*(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|PASSWD|AUTH|API_KEY)(?:_[A-Za-z0-9]+)*)\s*=\s*(?:['"](?:(?:basic|bearer|token)[ \t]+)?)?([^\s"'}\]),;]{8,})['"]?`},
-		{"json_field", `(?i)(?:"[^"]*(?:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"((?:\\.|[^"\\])*)"|'((?:''|[^'])*)'|` + "'" + `([^\r\n]*\\)` + "'" + `|'((?:\\.|[^'])*)')`},
+		{"json_field", `(?i)(?:"[^"]*(?:key|token|secret|password|credential|auth)[^"]*"|'[^']*(?:key|token|secret|password|credential|auth)[^']*')\s*:\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*(?:\\.[^'\\]*)?)'|` + "'" + `([^\r\n]*\\)` + "'" + `)`},
 		// The optional quote covers YAML: authorization: "Bearer <token>".
 		{"auth_header", `(?i)(?:Authorization|X-Api-Key|X-Auth-Token)\s*:\s*['"]?(?:(?:Basic|Bearer|Token)\s+)?([^\s"'}\]),;]{12,})`},
 		{"private_key", `-----BEGIN\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA\s+|EC\s+|OPENSSH\s+)?PRIVATE KEY-----`},

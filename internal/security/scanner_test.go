@@ -504,6 +504,18 @@ func TestSecretRedactor(t *testing.T) {
 		assert.NotContains(t, result.Sanitized, `ab\\cdef`)
 	})
 
+	t.Run("json_field handles escaped apostrophe through the full value", func(t *testing.T) {
+		result := r.Scan(`'password': 'abcdefgh\'remaining_secret'`)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "remaining_secret")
+	})
+
+	t.Run("json_field counts literal trailing backslash toward minimum", func(t *testing.T) {
+		result := r.Scan("'password': 'abcdefg\\'")
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "abcdefg")
+	})
+
 	t.Run("mask does not leave dangling escape sequence", func(t *testing.T) {
 		input1 := `Authorization: Bearer abc\ndefghijkl`
 		result1 := r.Scan(input1)
