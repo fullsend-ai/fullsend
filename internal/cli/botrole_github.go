@@ -3,12 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/normentity"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -25,14 +25,15 @@ const githubGraphQLTimeout = 30 * time.Second
 // (GITHUB_API_URL, GitHub Enterprise Server included).
 type githubCommentActors struct {
 	// host is the source host the canonical entity ID names:
-	// GITHUB_SERVER_URL's host, default github.com.
+	// GITHUB_SERVER_URL's host (config.GitHubServerBaseURL), default
+	// github.com.
 	host string
 }
 
 func newGitHubCommentActors() *githubCommentActors {
 	host := "github.com"
-	if u, err := url.Parse(strings.TrimSpace(os.Getenv("GITHUB_SERVER_URL"))); err == nil && u.Host != "" {
-		host = strings.ToLower(u.Host)
+	if base := config.GitHubServerBaseURL(os.Getenv("GITHUB_SERVER_URL")); base != "" {
+		host = strings.TrimPrefix(base, "https://")
 	}
 	return &githubCommentActors{host: host}
 }
@@ -40,11 +41,11 @@ func newGitHubCommentActors() *githubCommentActors {
 // canonicalEntityID is the normalized-entity v1 ID of a GitHub issue
 // (work_item) or pull request (change_proposal) node.
 func (g *githubCommentActors) canonicalEntityID(onPullRequest bool, nodeID string) (string, error) {
-	kind := "work_item"
+	kind := normentity.KindWorkItem
 	if onPullRequest {
-		kind = "change_proposal"
+		kind = normentity.KindChangeProposal
 	}
-	id, err := normentity.NewID(string(normevent.SystemGitHub), g.host, kind, nodeID)
+	id, err := normentity.NewID(string(normevent.SystemGitHub), g.host, string(kind), nodeID)
 	return string(id), err
 }
 
