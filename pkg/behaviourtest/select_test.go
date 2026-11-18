@@ -22,7 +22,10 @@ import (
 )
 
 func TestInstallFactoryFor(t *testing.T) {
-	t.Parallel()
+	// The GitHub pool factories require a GitHub token before they check
+	// the layout; give them one so this test does not depend on the
+	// developer's gh login. t.Setenv forbids t.Parallel.
+	t.Setenv("GH_TOKEN", "test-token")
 
 	for _, tc := range []struct {
 		environment string
