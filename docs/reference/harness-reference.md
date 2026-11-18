@@ -226,8 +226,11 @@ process environment.) These names are **not** inherited from that environment:
   an inherited value — an outer run's helper, or a workflow-level environment
   variable — must not answer lookups for a run whose own helper did not start.
 
-A script receives one only when the harness declares it under `env.runner`, for example
-`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`. A script that reads the `JIRA_*` names gets them
+A script receives the Jira secrets, the reserved Jira names and the OTLP headers only when the
+harness declares them under `env.runner`, for example
+`FULLSEND_JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`. The bot-role helper names are the exception: an
+`env.runner` entry for one is dropped, and `fullsend run` injects the names itself when it starts
+the helper, so declaring one delivers nothing. A script that reads the `JIRA_*` names gets them
 mapped from the Jira repository secrets: `JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"`,
 `JIRA_USER_EMAIL: "${FULLSEND_JIRA_EMAIL}"`. `fullsend run` itself still reads these names for its
 own Jira client and trace export. Earlier releases passed them to every script. See
