@@ -7032,11 +7032,39 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 			printer.StepWarn(fmt.Sprintf("Could not read %s: %v", relPath, readErr))
 			return nil
 		}
+		isJSONL := strings.EqualFold(filepath.Ext(path), ".jsonl") || strings.EqualFold(filepath.Ext(path), ".ndjson")
+		if isJSONL {
+			out, jsonLineFindings, jsonLineDetails, scanErr := sanitizeJSONLines(content, pipeline)
+			if scanErr != nil {
+				return fmt.Errorf("could not sanitize JSONL output: %w", scanErr)
+			}
+			if jsonLineFindings > 0 {
+				findingCount += jsonLineFindings
+				for _, f := range jsonLineDetails {
+					if !quiet {
+						printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, filepath.Base(path), f.Detail))
+					}
+					security.AppendFinding(findingsPath, security.TracedFinding{
+						TraceID: traceID, Timestamp: time.Now().UTC().Format(time.RFC3339),
+						Phase: "host_output", Finding: f,
+					})
+				}
+				// JSONL record handling is complete above; preserve the writer
+				// error contract and quiet-mode path redaction.
+				if writeErr := writeFile(path, out, 0o644); writeErr != nil {
+					if quiet {
+						return fmt.Errorf("could not write sanitized output file")
+					}
+					return fmt.Errorf("could not write sanitized %s: %w", filepath.Base(path), writeErr)
+				}
+			}
+			return nil
+		}
 
 		relPath, _ := filepath.Rel(outputDir, path)
 
 		ext := strings.ToLower(filepath.Ext(path))
-		isJSONL := ext == ".jsonl" || ext == ".ndjson"
+		isJSONL = ext == ".jsonl" || ext == ".ndjson"
 
 		// If the file is valid JSON (and not JSONL or containing duplicate keys), structurally
 		// sanitize keys and string leaves to guarantee that redaction never breaks JSON syntax
@@ -7051,6 +7079,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 					sanitizedVal, findings := sanitizeJSONStructure(jsonVal, pipeline)
 					if len(findings) > 0 {
 						findingCount += len(findings)
+						structuralFindings := findings
 						for _, f := range findings {
 							if !quiet {
 								printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
@@ -7070,7 +7099,9 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 							enc.SetIndent("", "  ")
 						}
 						if err := enc.Encode(sanitizedVal); err != nil {
-							printer.StepWarn(fmt.Sprintf("Could not marshal sanitized JSON %s: %v; falling back to text scan", relPath, err))
+							if !quiet {
+								printer.StepWarn(fmt.Sprintf("Could not marshal sanitized JSON %s: %v; falling back to text scan", relPath, err))
+							}
 							// Fall through to plain text scan below instead of failing open.
 						} else {
 							marshaled := buf.Bytes()
@@ -7086,7 +7117,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 										privateKey = true
 									}
 								}
-								changed = privateKey || len(findings) == 0
+								changed = privateKey || len(structuralFindings) == 0 || backstopHasNewFinding(backstop.Findings, structuralFindings)
 								if changed {
 									findingCount += len(backstop.Findings)
 									for _, f := range backstop.Findings {
@@ -7098,7 +7129,7 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 											Phase: "host_output", Finding: f,
 										})
 									}
-									if backstop.Sanitized != "" {
+									if backstop.Sanitized != "" && (privateKey || len(structuralFindings) == 0 || backstopHasNewFinding(backstop.Findings, structuralFindings)) {
 										if privateKey || !json.Valid([]byte(backstop.Sanitized)) {
 											marshaled = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
 										} else {
@@ -7111,7 +7142,10 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 								if quiet {
 									return fmt.Errorf("could not write sanitized output file")
 								}
-								return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
+								if !isJSONL {
+									return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
+								}
+								return fmt.Errorf("could not write sanitized output file: %w", writeErr)
 							}
 							return nil
 						}
@@ -7181,11 +7215,19 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 			// fallback. If a valid JSON document reaches this path (for example,
 			// because it has duplicate keys), preserve the valid structure rather
 			// than writing a cross-value redaction that creates invalid JSON.
-			if !isJSONL && json.Valid(content) && !json.Valid([]byte(out)) {
-				printer.StepWarn(fmt.Sprintf("Text redaction would invalidate JSON in %s; replacing output with a redacted JSON marker", relPath))
+			if json.Valid(content) && !json.Valid([]byte(out)) {
+				if !quiet {
+					printer.StepWarn(fmt.Sprintf("Text redaction would invalidate JSON in %s; replacing output with a redacted JSON marker", relPath))
+				}
 				out = `{"error":"output removed because text redaction would invalidate JSON"}`
 			}
 			if writeErr := writeFile(path, []byte(out), 0o644); writeErr != nil {
+				if quiet && isJSONL {
+					return fmt.Errorf("could not write sanitized output file")
+				}
+				if isJSONL {
+					return fmt.Errorf("could not write sanitized output file: %w", writeErr)
+				}
 				return fmt.Errorf("could not write sanitized %s: %w", relPath, writeErr)
 			}
 		}
@@ -7213,6 +7255,119 @@ type jsonContainerFrame struct {
 	isObject     bool
 	expectingKey bool
 	keys         map[string]bool
+}
+
+func sanitizeJSONLines(content []byte, pipeline *security.Pipeline) ([]byte, int, []security.Finding, error) {
+	var out bytes.Buffer
+	findings := 0
+	var allFindings []security.Finding
+	for len(content) > 0 {
+		line := content
+		newline := bytes.IndexByte(content, '\n')
+		hasNewline := newline >= 0
+		if hasNewline {
+			line = content[:newline]
+			content = content[newline+1:]
+		} else {
+			content = nil
+		}
+		trimmed := bytes.TrimSpace(line)
+		if len(trimmed) > 0 {
+			if !json.Valid(trimmed) {
+				result := pipeline.Scan(string(line))
+				if len(result.Findings) > 0 {
+					findings += len(result.Findings)
+					allFindings = append(allFindings, result.Findings...)
+					line = []byte(result.Sanitized)
+				}
+			} else {
+				var value any
+				dec := json.NewDecoder(bytes.NewReader(trimmed))
+				dec.UseNumber()
+				if err := dec.Decode(&value); err != nil {
+					return nil, findings, allFindings, err
+				}
+				sanitized, fs := sanitizeJSONStructure(value, pipeline)
+				findings += len(fs)
+				allFindings = append(allFindings, fs...)
+				if hasDuplicateJSONKeys(trimmed) {
+					result := pipeline.Scan(string(line))
+					findings += len(result.Findings)
+					allFindings = append(allFindings, result.Findings...)
+					line = []byte(result.Sanitized)
+					if !json.Valid(line) {
+						line = []byte(`{"error":"output removed because text redaction would invalidate JSON"}`)
+					}
+				} else {
+					needsRewrite := len(fs) > 0
+					if !needsRewrite {
+						var encodedOriginal bytes.Buffer
+						enc := json.NewEncoder(&encodedOriginal)
+						enc.SetEscapeHTML(false)
+						if err := enc.Encode(value); err != nil {
+							return nil, findings, allFindings, err
+						}
+						originalBackstop := pipeline.Scan(encodedOriginal.String())
+						if len(originalBackstop.Findings) > 0 {
+							findings += len(originalBackstop.Findings)
+							allFindings = append(allFindings, originalBackstop.Findings...)
+							privateKey := false
+							for _, finding := range originalBackstop.Findings {
+								privateKey = privateKey || finding.Name == "private_key"
+							}
+							if privateKey {
+								line = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
+							} else {
+								line = bytes.TrimSuffix(encodedOriginal.Bytes(), []byte("\n"))
+							}
+						}
+					}
+					if needsRewrite {
+						var encoded bytes.Buffer
+						enc := json.NewEncoder(&encoded)
+						enc.SetEscapeHTML(false)
+						if err := enc.Encode(sanitized); err != nil {
+							return nil, findings, allFindings, err
+						}
+						line = bytes.TrimSuffix(encoded.Bytes(), []byte("\n"))
+						backstop := pipeline.Scan(string(line))
+						if len(backstop.Findings) > 0 {
+							findings += len(backstop.Findings)
+							allFindings = append(allFindings, backstop.Findings...)
+							privateKey := false
+							for _, finding := range backstop.Findings {
+								privateKey = privateKey || finding.Name == "private_key"
+							}
+							if privateKey || !json.Valid([]byte(backstop.Sanitized)) {
+								line = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
+							} else {
+								line = []byte(backstop.Sanitized)
+							}
+						}
+					}
+				}
+			}
+		}
+		out.Write(line)
+		if hasNewline {
+			out.WriteByte('\n')
+		}
+	}
+	return out.Bytes(), findings, allFindings, nil
+}
+
+func backstopHasNewFinding(backstop, structural []security.Finding) bool {
+	counts := make(map[string]int, len(structural))
+	for _, finding := range structural {
+		counts[finding.Name]++
+	}
+	for _, finding := range backstop {
+		if counts[finding.Name] == 0 {
+			return true
+		}
+		counts[finding.Name]--
+	}
+	return false
 }
 
 // hasDuplicateJSONKeys parses content token by token and returns true if any
@@ -7314,17 +7469,13 @@ func sanitizeJSONStructure(v any, pipeline *security.Pipeline) (any, []security.
 			if !keyNeedsSanitization {
 				targetKey = k
 			}
-			if _, exists := newMap[targetKey]; exists {
-				if keyNeedsSanitization {
-					for i := 1; ; i++ {
-						cand := fmt.Sprintf("%s_%d", sanitizedKey, i)
-						if _, exists := newMap[cand]; !exists {
-							targetKey = cand
-							break
-						}
+			if _, exists := newMap[targetKey]; exists && keyNeedsSanitization {
+				for i := 1; ; i++ {
+					cand := fmt.Sprintf("%s_%d", sanitizedKey, i)
+					if _, exists := newMap[cand]; !exists {
+						targetKey = cand
+						break
 					}
-				} else {
-					// The original key was reserved during the first pass.
 				}
 			}
 			if strVal, ok := item.(string); ok {

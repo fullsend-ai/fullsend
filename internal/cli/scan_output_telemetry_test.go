@@ -301,6 +301,30 @@ func TestScanOutputFiles_SingleRecordJSONL_PreservesLineCount(t *testing.T) {
 	assert.Len(t, lines, 1)
 }
 
+func TestScanOutputFiles_JSONLCrossValuePrivateKeyRemainsValid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "events.jsonl")
+	content := ` ["-----BEGIN RSA` + ` PRIVATE KEY-----","KEY_MATERIAL_BASE64_VALUE_1234567890","-----END RSA` + ` PRIVATE KEY-----"]` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{})))
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(string(got), "\n"))
+	line := strings.TrimSpace(string(got))
+	assert.True(t, json.Valid([]byte(line)), "each JSONL record must remain valid JSON: %s", line)
+	assert.Contains(t, line, "output removed", "cross-value private-key content should fail closed")
+}
+
+func TestScanOutputFiles_QuietJSONFallbackDoesNotPrintPath(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-chosen-secret-name.json")
+	content := `{"token":"ghp_FAKEtesttoken000000000000000000000000","token":"second"}`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	var output bytes.Buffer
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "quiet", ui.New(&output)))
+	assert.NotContains(t, output.String(), "agent-chosen-secret-name.json")
+}
+
 func TestScanOutputFiles_ReturnsErrorWhenSanitizedWriteFails(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret.txt")
