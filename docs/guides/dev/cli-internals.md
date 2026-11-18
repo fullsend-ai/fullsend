@@ -146,8 +146,7 @@ fullsend
 │   ├── --status-number <int>                #   Issue/PR number for status comments
 │   └── --mint-url <url>                     #   Mint service URL for agent and status tokens (default: layered mint_url, then $FULLSEND_MINT_URL)
 ├── fetch-skill      <url>                    # Fetch a skill at runtime (in-sandbox)
-├── bot-role       <login>                   # Resolve a bot's registered role (pre-/post-script helper)
-│   └── --bot                                #   The login is a Bot author whose source (raw GraphQL, gh --json comments/reviews) omits [bot]; append it (gh's top-level --json author field reports app/<slug>: strip it first)
+├── bot-role       --entity --comment       # Resolve the bot role of a comment's actor (pre-/post-script helper)
 ├── scan                                     # Run security scanner on input/output
 │   ├── input                                # Scan event payload for prompt injection
 │   ├── output                               # Scan agent output for leaked secrets
