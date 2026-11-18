@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
@@ -140,6 +140,28 @@ test("restricted printf formats cannot write shell variables", async (t) => {
   for (const command of [
     'printf -- "$FORMAT" PATH', "printf -- * PATH", "printf -- %? PATH",
   ]) await assert.rejects(h.before("bash", { command }), /printf option expansion/, command);
+});
+
+test("restricted test cannot execute an indexed-array subscript", async (t) => {
+  const command = "test -v 'BASH_VERSINFO[$(printf 0 >builtin-evaluated)]'";
+  for (const policy of [
+    { bashAllowlist: ["test"] },
+    { permission: { bash: { "*": "deny", "test *": "allow" } } },
+  ]) {
+    const h = await setup(t, policy);
+    const marker = path.join(h.workspace, "builtin-evaluated");
+    const result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", command], {
+      cwd: h.workspace, env: { PATH: "/usr/bin:/bin" }, encoding: "utf8",
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(marker, "utf8"), "0", "Bash evaluates the quoted subscript");
+    rmSync(marker);
+    for (const candidate of [command, "test ! -v 'BASH_VERSINFO[$(printf 0 >builtin-evaluated)]'"]) {
+      await assert.rejects(h.before("bash", { command: candidate }), /environment assignments and shell wrappers/, candidate);
+      assert.equal(existsSync(marker), false, "the denied call never executes Bash");
+    }
+  }
 });
 
 test("parent tool and trusted policy ceilings apply to every session", async (t) => {

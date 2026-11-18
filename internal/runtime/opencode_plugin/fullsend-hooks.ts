@@ -68,7 +68,7 @@ function bashCommands(command, allowParameterExpansion = false) {
           ["eval", "exec", "sh", "bash", "source", ".", "command", "builtin", "env", "nohup", "nice", "timeout", "xargs", "time",
             "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function", "select", "coproc",
             "export", "unset", "readonly", "set", "trap", "alias", "unalias", "declare", "typeset", "local", "let", "enable", "hash",
-            "read", "getopts", "mapfile", "readarray", "shopt", "ulimit"].includes(first)) {
+            "read", "getopts", "mapfile", "readarray", "shopt", "ulimit", "test"].includes(first)) {
         deny("Bash policy rejects environment assignments and shell wrappers");
       }
       if (first === "printf") {
