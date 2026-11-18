@@ -27,6 +27,9 @@ type CommentActor struct {
 
 // IssueOrPullRequestNodeID returns the GraphQL type ("Issue" or
 // "PullRequest") and node ID of issue or pull request number in owner/repo.
+// The node ID is in GitHub's new global-ID format (nextGlobalIDHeader), so
+// long-lived issues and pull requests report the same ID as newly created
+// ones and as every other producer of entity.source_id.
 func (c *LiveClient) IssueOrPullRequestNodeID(ctx context.Context, owner, repo string, number int) (string, string, error) {
 	var data struct {
 		Repository *struct {
@@ -37,7 +40,7 @@ func (c *LiveClient) IssueOrPullRequestNodeID(ctx context.Context, owner, repo s
 		} `json:"repository"`
 	}
 	const q = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issueOrPullRequest(number:$number){__typename ... on Issue{id} ... on PullRequest{id}}}}`
-	if err := c.graphqlQuery(ctx, q, map[string]any{"owner": owner, "name": repo, "number": number}, &data); err != nil {
+	if err := c.graphqlQuery(ctx, q, map[string]any{"owner": owner, "name": repo, "number": number}, &data, withHeader(nextGlobalIDHeader, "1")); err != nil {
 		return "", "", err
 	}
 	if data.Repository == nil || data.Repository.IssueOrPullRequest == nil {
@@ -56,22 +59,37 @@ type graphqlActor struct {
 	Login    string `json:"login"`
 }
 
-// CommentActor reads a comment's current-revision actor — its last editor
-// when it was edited, its author otherwise (ADR 0133, ADR 0141) — and the
-// issue or pull request it is on. It accepts the comments the normalized
-// entity lists: issue and pull-request conversation comments
-// (IssueComment) and pull-request review-thread comments
-// (PullRequestReviewComment). Any other node, and an edited comment whose
-// editor is unknown, is an error: its current revision cannot be
-// attributed.
+// nextGlobalIDHeader asks GitHub's GraphQL API to return node IDs in the
+// new global-ID format on every node, new or old, so the entity IDs this
+// package produces match every other producer of entity.source_id. node()
+// accepts either input format, so a caller holding a legacy-format comment
+// node ID still resolves.
+const nextGlobalIDHeader = "X-Github-Next-Global-ID"
+
+// CommentActor reads a comment's current-revision actor and the issue or
+// pull request it is on (ADR 0133, ADR 0141). For an edited comment the
+// actor is the editor of the newest edit-history entry, and only when that
+// entry's editedAt equals lastEditedAt: GitHub does not document whether
+// the top-level editor field is the first or the last editor, so the edit
+// history is read instead and anything that does not match lastEditedAt is
+// an error. An unedited comment's actor is its author. It accepts the
+// comments the normalized entity lists: issue and pull-request
+// conversation comments (IssueComment) and pull-request review-thread
+// comments (PullRequestReviewComment). Any other node, and an edited
+// comment whose current revision cannot be attributed, is an error.
 func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (CommentActor, error) {
 	var data struct {
 		Node *struct {
-			Typename     string        `json:"__typename"`
-			Author       *graphqlActor `json:"author"`
-			Editor       *graphqlActor `json:"editor"`
-			LastEditedAt *string       `json:"lastEditedAt"`
-			Issue        *struct {
+			Typename         string        `json:"__typename"`
+			Author           *graphqlActor `json:"author"`
+			LastEditedAt     *string       `json:"lastEditedAt"`
+			UserContentEdits *struct {
+				Nodes []struct {
+					Editor   *graphqlActor `json:"editor"`
+					EditedAt string        `json:"editedAt"`
+				} `json:"nodes"`
+			} `json:"userContentEdits"`
+			Issue *struct {
 				ID string `json:"id"`
 			} `json:"issue"`
 			PullRequest *struct {
@@ -80,9 +98,9 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (Commen
 		} `json:"node"`
 	}
 	const q = `query($id:ID!){node(id:$id){__typename ` +
-		`... on IssueComment{author{__typename login} editor{__typename login} lastEditedAt issue{id} pullRequest{id}} ` +
-		`... on PullRequestReviewComment{author{__typename login} editor{__typename login} lastEditedAt pullRequest{id}}}}`
-	if err := c.graphqlQuery(ctx, q, map[string]any{"id": commentID}, &data); err != nil {
+		`... on IssueComment{author{__typename login} lastEditedAt userContentEdits(first:1){nodes{editor{__typename login} editedAt}} issue{id} pullRequest{id}} ` +
+		`... on PullRequestReviewComment{author{__typename login} lastEditedAt userContentEdits(first:1){nodes{editor{__typename login} editedAt}} pullRequest{id}}}}`
+	if err := c.graphqlQuery(ctx, q, map[string]any{"id": commentID}, &data, withHeader(nextGlobalIDHeader, "1")); err != nil {
 		return CommentActor{}, err
 	}
 	n := data.Node
@@ -103,10 +121,18 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (Commen
 	}
 	actor := n.Author
 	if n.LastEditedAt != nil {
-		if n.Editor == nil {
+		// The current-revision actor is the newest edit's editor, and
+		// only when that edit is the revision lastEditedAt names:
+		// GitHub does not document the top-level editor field's
+		// meaning, so a mismatch or a missing editor fails closed.
+		edits := n.UserContentEdits
+		if edits == nil || len(edits.Nodes) == 0 || edits.Nodes[0].Editor == nil {
 			return CommentActor{}, fmt.Errorf("comment %q was edited by an unknown actor", commentID)
 		}
-		actor = n.Editor
+		if edits.Nodes[0].EditedAt != *n.LastEditedAt {
+			return CommentActor{}, fmt.Errorf("comment %q's newest edit does not match lastEditedAt", commentID)
+		}
+		actor = edits.Nodes[0].Editor
 	}
 	if actor != nil {
 		out.ActorType, out.ActorLogin = actor.Typename, actor.Login
@@ -116,9 +142,10 @@ func (c *LiveClient) CommentActor(ctx context.Context, commentID string) (Commen
 
 // graphqlQuery runs one GraphQL query against the client's GraphQL endpoint
 // and decodes its data into out. A transport error, a non-200 status or a
-// GraphQL error fails.
-func (c *LiveClient) graphqlQuery(ctx context.Context, query string, variables map[string]any, out any) error {
-	resp, err := c.do(ctx, http.MethodPost, c.graphqlEndpoint(), map[string]any{"query": query, "variables": variables})
+// GraphQL error fails. Extra headers (e.g. nextGlobalIDHeader) are set on
+// the request.
+func (c *LiveClient) graphqlQuery(ctx context.Context, query string, variables map[string]any, out any, headers ...requestHeader) error {
+	resp, err := c.do(ctx, http.MethodPost, c.graphqlEndpoint(), map[string]any{"query": query, "variables": variables}, headers...)
 	if err != nil {
 		return fmt.Errorf("graphql query: %w", err)
 	}
