@@ -3904,6 +3904,9 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 			User    struct {
 				Login string `json:"login"`
 			} `json:"user"`
+			PerformedViaGitHubApp *struct {
+				ClientID string `json:"client_id"`
+			} `json:"performed_via_github_app"`
 			CreatedAt string `json:"created_at"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
@@ -3912,11 +3915,17 @@ func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, 
 
 		for _, r := range raw {
 			result = append(result, forge.IssueComment{
-				ID:        r.ID,
-				NodeID:    r.NodeID,
-				HTMLURL:   r.HTMLURL,
-				Body:      r.Body,
-				Author:    r.User.Login,
+				ID:      r.ID,
+				NodeID:  r.NodeID,
+				HTMLURL: r.HTMLURL,
+				Body:    r.Body,
+				Author:  r.User.Login,
+				AppClientID: func() string {
+					if r.PerformedViaGitHubApp != nil {
+						return r.PerformedViaGitHubApp.ClientID
+					}
+					return ""
+				}(),
 				CreatedAt: r.CreatedAt,
 			})
 		}
@@ -4160,10 +4169,12 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		} `json:"head"`
 		Base struct {
 			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
 			Repo struct {
 				FullName string `json:"full_name"`
 			} `json:"repo"`
 		} `json:"base"`
+		ChangedFiles int `json:"changed_files"`
 	}
 	if err := decodeJSON(resp, &pr); err != nil {
 		return nil, fmt.Errorf("decode pull request #%d: %w", number, err)
@@ -4172,15 +4183,17 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 	baseRepo := pr.Base.Repo.FullName
 	isFork := headRepo == "" || baseRepo == "" || !strings.EqualFold(headRepo, baseRepo)
 	return &forge.PullRequestInfo{
-		Number:   pr.Number,
-		HTMLURL:  pr.HTMLURL,
-		HeadRepo: headRepo,
-		BaseRepo: baseRepo,
-		HeadRef:  pr.Head.Ref,
-		BaseRef:  pr.Base.Ref,
-		HeadSHA:  pr.Head.SHA,
-		AuthorID: pr.User.Login,
-		IsFork:   isFork,
+		Number:       pr.Number,
+		HTMLURL:      pr.HTMLURL,
+		HeadRepo:     headRepo,
+		BaseRepo:     baseRepo,
+		HeadRef:      pr.Head.Ref,
+		BaseRef:      pr.Base.Ref,
+		HeadSHA:      pr.Head.SHA,
+		BaseSHA:      pr.Base.SHA,
+		ChangedFiles: pr.ChangedFiles,
+		AuthorID:     pr.User.Login,
+		IsFork:       isFork,
 	}, nil
 }
 
@@ -4494,9 +4507,13 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 			User   struct {
 				Login string `json:"login"`
 			} `json:"user"`
-			State       string `json:"state"`
-			Body        string `json:"body"`
-			SubmittedAt string `json:"submitted_at"`
+			State                 string `json:"state"`
+			Body                  string `json:"body"`
+			SubmittedAt           string `json:"submitted_at"`
+			CommitID              string `json:"commit_id"`
+			PerformedViaGitHubApp *struct {
+				ClientID string `json:"client_id"`
+			} `json:"performed_via_github_app"`
 		}
 		if err := decodeJSON(resp, &raw); err != nil {
 			return nil, fmt.Errorf("decoding pull request reviews page %d: %w", page, err)
@@ -4510,6 +4527,13 @@ func (c *LiveClient) ListPullRequestReviews(ctx context.Context, owner, repo str
 				State:       r.State,
 				Body:        r.Body,
 				SubmittedAt: r.SubmittedAt,
+				CommitID:    r.CommitID,
+				AppClientID: func() string {
+					if r.PerformedViaGitHubApp != nil {
+						return r.PerformedViaGitHubApp.ClientID
+					}
+					return ""
+				}(),
 			})
 		}
 

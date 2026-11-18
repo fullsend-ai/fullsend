@@ -606,8 +606,12 @@ type PullRequestInfo struct {
 	HeadRef  string
 	BaseRef  string
 	HeadSHA  string
-	AuthorID string
-	IsFork   bool
+	BaseSHA  string
+	// ChangedFiles is the forge-reported total used to prove that a paginated
+	// file-diff listing is complete. Zero means the forge did not report it.
+	ChangedFiles int
+	AuthorID     string
+	IsFork       bool
 }
 
 // WorkflowRun represents a CI/CD workflow execution.
@@ -720,12 +724,15 @@ type GitHubCollaboratorPermissionDetail struct {
 
 // IssueComment represents a comment on an issue.
 type IssueComment struct {
-	ID        int
-	NodeID    string
-	HTMLURL   string
-	Body      string
-	Author    string
-	CreatedAt string
+	ID      int
+	NodeID  string
+	HTMLURL string
+	Body    string
+	Author  string
+	// AppClientID is populated when the forge identifies the GitHub App that
+	// authored the comment. It is empty for other forges or ordinary users.
+	AppClientID string
+	CreatedAt   string
 }
 
 // Reaction represents an emoji reaction on an issue, pull request,
@@ -744,6 +751,10 @@ type PullRequestReview struct {
 	State       string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED", "DISMISSED"
 	Body        string
 	SubmittedAt string
+	// CommitID is the commit the review was submitted against, when the forge
+	// reports it. AppClientID identifies the GitHub App that authored it.
+	CommitID    string
+	AppClientID string
 }
 
 // ReviewComment represents an inline comment on a specific line of a
