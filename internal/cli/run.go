@@ -7160,13 +7160,17 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 							return fmt.Errorf("could not encode JSON output for security scan")
 						}
 						backstop := pipeline.Scan(buf.String())
+						hasNewFinding := false
 						privateKey := false
 						for _, f := range backstop.Findings {
 							if f.Name == "private_key" {
 								privateKey = true
+								hasNewFinding = true
+							} else if f.Name == "runtime_secret" {
+								hasNewFinding = true
 							}
 						}
-						if !privateKey {
+						if !hasNewFinding {
 							return nil
 						}
 						findingCount += len(backstop.Findings)
@@ -7179,8 +7183,13 @@ func scanOutputFilesWithWriter(outputDir, traceID, progressVerbosity string, pri
 								Phase: "host_output", Finding: f,
 							})
 						}
-						marker := []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
-						if writeErr := writeFile(path, marker, 0o644); writeErr != nil {
+						var finalBytes []byte
+						if privateKey || backstop.Sanitized == "" || !json.Valid([]byte(backstop.Sanitized)) {
+							finalBytes = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
+						} else {
+							finalBytes = []byte(backstop.Sanitized)
+						}
+						if writeErr := writeFile(path, finalBytes, 0o644); writeErr != nil {
 							if quiet {
 								return fmt.Errorf("could not write sanitized output file")
 							}
@@ -7322,17 +7331,23 @@ func sanitizeJSONLines(content []byte, pipeline *security.Pipeline) ([]byte, int
 							return nil, findings, allFindings, err
 						}
 						originalBackstop := pipeline.Scan(encodedOriginal.String())
-						if len(originalBackstop.Findings) > 0 {
+						hasNewFinding := false
+						privateKey := false
+						for _, f := range originalBackstop.Findings {
+							if f.Name == "private_key" {
+								privateKey = true
+								hasNewFinding = true
+							} else if f.Name == "runtime_secret" {
+								hasNewFinding = true
+							}
+						}
+						if hasNewFinding {
 							findings += len(originalBackstop.Findings)
 							allFindings = append(allFindings, originalBackstop.Findings...)
-							privateKey := false
-							for _, finding := range originalBackstop.Findings {
-								privateKey = privateKey || finding.Name == "private_key"
-							}
-							if privateKey {
+							if privateKey || originalBackstop.Sanitized == "" || !json.Valid([]byte(originalBackstop.Sanitized)) {
 								line = []byte(`{"error":"output removed because backstop redaction would invalidate JSON"}`)
 							} else {
-								line = bytes.TrimSuffix(encodedOriginal.Bytes(), []byte("\n"))
+								line = []byte(originalBackstop.Sanitized)
 							}
 						}
 					}
@@ -7528,6 +7543,16 @@ func sanitizeJSONStructure(v any, pipeline *security.Pipeline) (any, []security.
 			newSlice[i] = newVal
 		}
 		return newSlice, findings
+	case json.Number:
+		res := pipeline.Scan(val.String())
+		if len(res.Findings) > 0 {
+			findings = append(findings, res.Findings...)
+			if res.Sanitized != "" {
+				return res.Sanitized, findings
+			}
+			return "", findings
+		}
+		return val, nil
 	default:
 		return val, nil
 	}

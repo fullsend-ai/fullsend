@@ -362,7 +362,7 @@ func TestScanOutputFiles_ReturnsErrorWhenSanitizedWriteFails(t *testing.T) {
 	path := filepath.Join(dir, "secret.txt")
 	require.NoError(t, os.WriteFile(path, []byte("Token: ghp_FAKEtesttoken000000000000000000000000"), 0o644))
 
-	err := scanOutputFilesWithWriter(dir, "trace-id", "normal", ui.New(&bytes.Buffer{}), func(string, []byte, os.FileMode) error {
+	err := scanOutputFilesWithWriter(dir, "trace-id", "", ui.New(&bytes.Buffer{}), func(string, []byte, os.FileMode) error {
 		return os.ErrPermission
 	})
 	require.Error(t, err)
@@ -436,6 +436,33 @@ func TestScanOutputFiles_CleanJSON(t *testing.T) {
 	got, err := os.ReadFile(cleanFile)
 	require.NoError(t, err)
 	assert.Equal(t, content, string(got), "clean JSON should remain byte-for-byte identical")
+}
+
+func TestScanOutputFiles_NumericRuntimeSecretRedacted(t *testing.T) {
+	const secretNum = "123456789012"
+	require.True(t, security.RegisterRuntimeSecret(secretNum))
+
+	dir := t.TempDir()
+	jsonPath := filepath.Join(dir, "numeric.json")
+	require.NoError(t, os.WriteFile(jsonPath, []byte(fmt.Sprintf(`{"id":%s}`, secretNum)), 0o644))
+
+	jsonlPath := filepath.Join(dir, "numeric.jsonl")
+	require.NoError(t, os.WriteFile(jsonlPath, []byte(fmt.Sprintf(`{"id":%s}`+"\n", secretNum)), 0o644))
+
+	var output bytes.Buffer
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&output)))
+
+	gotJSON, err := os.ReadFile(jsonPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(gotJSON), secretNum)
+	assert.True(t, json.Valid(gotJSON))
+
+	gotJSONL, err := os.ReadFile(jsonlPath)
+	require.NoError(t, err)
+	assert.NotContains(t, string(gotJSONL), secretNum)
+	lines := strings.Split(strings.TrimSpace(string(gotJSONL)), "\n")
+	require.Len(t, lines, 1)
+	assert.True(t, json.Valid([]byte(lines[0])))
 }
 
 func TestHasDuplicateJSONKeys(t *testing.T) {
