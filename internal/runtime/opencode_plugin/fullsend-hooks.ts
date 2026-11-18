@@ -43,7 +43,9 @@ function bashCommands(command, allowParameterExpansion = false) {
   if (typeof command !== "string" || !command.trim()) deny("empty Bash command");
   const commands = [];
   let words = [];
+  let expandedWords = [];
   let word = "";
+  let expandedWord = false;
   let started = false;
   let quotedProgram = false;
   let quote = null;
@@ -51,7 +53,9 @@ function bashCommands(command, allowParameterExpansion = false) {
     if (!started) return;
     if (!words.length && quotedProgram) deny("Bash policy rejects quoted program names");
     words.push(word);
+    expandedWords.push(expandedWord);
     word = "";
+    expandedWord = false;
     started = false;
     quotedProgram = false;
   };
@@ -63,11 +67,20 @@ function bashCommands(command, allowParameterExpansion = false) {
       if (!/^[A-Za-z0-9_./-]+$/.test(first) ||
           ["eval", "exec", "sh", "bash", "source", ".", "command", "builtin", "env", "nohup", "nice", "timeout", "xargs", "time",
             "if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "function", "select", "coproc",
-            "export", "unset", "readonly", "set", "trap", "alias", "unalias", "declare", "typeset", "local", "let", "enable", "hash"].includes(first)) {
+            "export", "unset", "readonly", "set", "trap", "alias", "unalias", "declare", "typeset", "local", "let", "enable", "hash",
+            "read", "getopts", "mapfile", "readarray", "shopt", "ulimit"].includes(first)) {
         deny("Bash policy rejects environment assignments and shell wrappers");
+      }
+      if (first === "printf") {
+        // Bash parses options before the format. An unknown expansion here can
+        // become -v and assign PATH (or another shell variable) before the next
+        // allowlisted command. Expansions after a literal format or -- are data.
+        if (expandedWords[1]) deny("Bash policy rejects printf option expansion");
+        if (words[1]?.startsWith("-v")) deny("Bash policy rejects printf variable assignment");
       }
       commands.push(words.join(" "));
       words = [];
+      expandedWords = [];
     }
   };
   for (let index = 0; index < command.length; index++) {
@@ -85,6 +98,7 @@ function bashCommands(command, allowParameterExpansion = false) {
         // patterns cannot safely authorize an expansion's unknown value.
         if (!allowParameterExpansion || !expansion) deny("Bash policy rejects parameter expansion with trusted patterns or unsupported substitutions");
         word += expansion[0];
+        expandedWord = true;
         index += expansion[0].length - 1;
       } else if (char === "`" || char === "\\") deny("Bash policy rejects substitutions and escapes");
       else word += char;
@@ -106,6 +120,7 @@ function bashCommands(command, allowParameterExpansion = false) {
       finishCommand();
       if (char === "|" && command[index + 1] === "|") index++;
     } else {
+      if (["*", "?", "["].includes(char)) expandedWord = true;
       word += char;
       started = true;
     }
