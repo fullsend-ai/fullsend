@@ -78,6 +78,8 @@ cat > "${SHIM_DIR}/gh" <<'EOF'
 #!/usr/bin/env bash
 S="${STUB_STATE}"
 echo "gh $*" >> "${S}/gh.log"
+# require_gh calls 'gh auth status'; the stub accepts it.
+[[ "${1:-}" == "auth" ]] && exit 0
 [[ "${1:-}" == "api" ]] || { echo "unexpected gh $*" >&2; exit 2; }
 shift
 method=GET path="" jq_filter="" put_role="member" f_value="" f_name="" f_visibility=""
@@ -117,6 +119,26 @@ roles_path="/orgs/${STUB_ORG}/organization-roles"
 case "${method} ${path}" in
   "GET ${roles_path}")
     out '{"total_count":3,"roles":[{"id":7,"name":"all_repo_read"},{"id":8,"name":"all_repo_write"},{"id":9,"name":"all_repo_triage"}]}' ;;
+  "GET /orgs/${STUB_ORG}")
+    out "{}" ;;
+  "GET /orgs/${STUB_ORG}/memberships/"*)
+    # Org membership: botsend is an active owner, the actors are active
+    # members, everyone else (the outsider) is a 404.
+    login="${path##*/}"
+    case "${login}" in
+      botsend) out '{"state":"active","role":"admin"}' ;;
+      fstest-write|fstest-triage) out '{"state":"active","role":"member"}' ;;
+      *) notfound ;;
+    esac ;;
+  "GET /repos/${STUB_ORG}/test-repo")
+    [[ -f "${S}/test-repo" ]] || notfound
+    out '{"name":"test-repo"}' ;;
+  "POST /orgs/${STUB_ORG}/repos"|"GET /orgs/${STUB_ORG}/repos")
+    # gh api sends no -X when -f fields imply POST; match both.
+    touch "${S}/test-repo"
+    out '{"name":"test-repo"}' ;;
+  "GET /orgs/${STUB_ORG}/installations")
+    out '{"installations":[{"app_slug":"fullsend-test-fullsend"},{"app_slug":"fullsend-test-triage"},{"app_slug":"fullsend-test-coder"},{"app_slug":"fullsend-test-review"},{"app_slug":"fullsend-test-retro"},{"app_slug":"fullsend-test-prioritize"},{"app_slug":"fullsend-ai-e2e"}]}' ;;
   "GET ${roles_path}/users/"*)
     # Unsupported per-user route: GitHub answers 404.
     notfound ;;
@@ -217,8 +239,9 @@ run_step() {
     "${LIB}" "${ORG}" "${WRITE}" 2>&1) || RC=$?
 }
 
-# mutations lists the non-GET gh calls made.
-mutations() { grep -E -- '-X (POST|PUT|DELETE)' "${STATE}/gh.log" || true; }
+# mutations lists the mutating gh calls made: explicit -X flags and
+# field-bearing calls (gh api turns -f/-F fields into a POST).
+mutations() { grep -E -- '-X (POST|PUT|DELETE)| -[fF] ' "${STATE}/gh.log" || true; }
 
 # --- 1. missing team: create, drop creator, add write actor ---------------
 new_state
@@ -570,6 +593,112 @@ if [[ "${RC}" -ne 0 ]] && grep -q "could not write" <<< "${OUT}"; then
   pass "foreign: write failure fails closed"
 else
   fail "foreign: write failure: rc=${RC}: ${OUT}"
+fi
+
+# --- 16. dry-run (--dry-run) ----------------------------------------------
+# run_dry is run_fn with DRY_RUN=1 in the environment.
+run_dry() {
+  RC=0
+  OUT=$(PATH="${SHIM_DIR}:${PATH}" STUB_STATE="${STATE}" STUB_ORG="${ORG}" \
+    STUB_TEAM="${TEAM}" STUB_OPERATOR="${OPERATOR}" DRY_RUN=1 \
+    bash -c 'source "$1"; shift; "$@"' _ "${LIB}" "$@" 2>&1) || RC=$?
+}
+
+# 16a. missing org role: reported, not assigned.
+new_state
+run_dry assign_all_repo_role "${ORG}" "${WRITE}" write
+if [[ "${RC}" -eq 0 && -z "$(mutations)" ]] \
+    && grep -q "DRY-RUN: would assign all-repository write" <<< "${OUT}" ; then
+  pass "dry-run org role: reported, not assigned"
+else
+  fail "dry-run org role: rc=${RC}, changes: $(mutations): ${OUT}"
+fi
+
+# 16b. absent foreign variable: reported, not written.
+new_state
+run_dry ensure_foreign_e2e_repos "${ORG}" "${CALLER}"
+if [[ "${RC}" -eq 0 && ! -e "${STATE}/foreign" ]] \
+    && grep -q "DRY-RUN: would add ${CALLER}" <<< "${OUT}" ; then
+  pass "dry-run foreign: reported, not written"
+else
+  fail "dry-run foreign: rc=${RC}: ${OUT}"
+fi
+
+# 16c. missing team: reported, not created.
+new_state
+run_dry ensure_status_team "${ORG}" "${WRITE}"
+if [[ "${RC}" -eq 0 && -z "$(mutations)" ]] \
+    && grep -q "DRY-RUN: would create team" <<< "${OUT}" ; then
+  pass "dry-run team: reported, not created"
+else
+  fail "dry-run team: rc=${RC}, changes: $(mutations): ${OUT}"
+fi
+
+# 16d. dry-run with the operator still on the team: the planned removal
+# must not fail the final member check.
+new_state
+provision
+echo "active maintainer" > "${STATE}/members/${OPERATOR}"
+run_dry ensure_status_team "${ORG}" "${WRITE}"
+if [[ "${RC}" -eq 0 && -z "$(mutations)" ]] \
+    && grep -q "DRY-RUN: would remove ${OPERATOR}" <<< "${OUT}" ; then
+  pass "dry-run creator removal: planned, member check passes"
+else
+  fail "dry-run creator removal: rc=${RC}, changes: $(mutations): ${OUT}"
+fi
+
+# --- 17. setup-org.sh end-to-end against the stub -------------------------
+# provisioned_state is a fully configured org except for test-repo.
+provisioned_state() {
+  new_state
+  provision
+  mkdir -p "${STATE}/roles/8" "${STATE}/roles/9"
+  touch "${STATE}/roles/8/${WRITE}" "${STATE}/roles/9/${TRIAGE}"
+  printf '{"value":"%s","visibility":"all"}\n' "${CALLER}" > "${STATE}/foreign"
+}
+
+# run_setup runs setup-org.sh with the stub; sets OUT and RC.
+run_setup() {
+  RC=0
+  OUT=$(PATH="${SHIM_DIR}:${PATH}" STUB_STATE="${STATE}" STUB_ORG="${ORG}" \
+    STUB_TEAM="${TEAM}" STUB_OPERATOR="${OPERATOR}" \
+    bash "${SETUP}" "$@" 2>&1) || RC=$?
+}
+
+# 17a. --dry-run: parses, verifies read-only, plans test-repo, mutates
+# nothing.
+provisioned_state
+run_setup --dry-run "${ORG}"
+if [[ "${RC}" -eq 0 && -z "$(mutations)" && ! -e "${STATE}/test-repo" ]] \
+    && grep -q "DRY-RUN: would create test-repo" <<< "${OUT}" \
+    && grep -q "is ready for e2e testing" <<< "${OUT}" ; then
+  pass "setup dry-run: plans changes, mutates nothing"
+else
+  fail "setup dry-run: rc=${RC}, changes: $(mutations): ${OUT}"
+fi
+
+# 17b. normal run: creates test-repo; a re-run mutates nothing.
+run_setup "${ORG}"
+if [[ "${RC}" -eq 0 && -e "${STATE}/test-repo" ]] \
+    && grep -q -- "-f name=test-repo" "${STATE}/gh.log" ; then
+  pass "setup run: creates test-repo"
+else
+  fail "setup run: rc=${RC}: ${OUT}"
+fi
+: > "${STATE}/gh.log"
+run_setup "${ORG}"
+if [[ "${RC}" -eq 0 && -z "$(mutations)" ]]; then
+  pass "setup re-run: idempotent"
+else
+  fail "setup re-run: rc=${RC}, changes: $(mutations): ${OUT}"
+fi
+
+# 17c. --dry-run without an org argument is a usage error.
+run_setup --dry-run
+if [[ "${RC}" -eq 1 ]] && grep -q "Usage" <<< "${OUT}" ; then
+  pass "setup dry-run: usage error without an org"
+else
+  fail "setup dry-run usage: rc=${RC}: ${OUT}"
 fi
 
 if [[ "${FAILURES}" -gt 0 ]]; then

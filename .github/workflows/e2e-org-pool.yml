@@ -1,0 +1,97 @@
+name: E2E Org Pool
+
+# Keeps the e2e pool orgs configured. Runs that touch GitHub (pushes to
+# main, manual dispatches, the weekly schedule) execute setup-org.sh for
+# real from main and correct drift. Pull requests never touch GitHub:
+# they run the stub-based setup-org_test.sh on the PR head, with no
+# secrets, so PR changes are exercised without exposing credentials.
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'e2e/org-pool/**'
+      - '.github/workflows/e2e-org-pool.yml'
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'e2e/org-pool/**'
+      - '.github/workflows/e2e-org-pool.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Verify only; print planned changes without mutating'
+        type: boolean
+        default: false
+  schedule:
+    # Weekly, so out-of-band drift is corrected even when nobody edits
+    # e2e/org-pool. Runs on the default branch (main).
+    - cron: '0 4 * * 1'
+
+# One shared group: configuring the pool orgs mutates shared state, so
+# runs must not overlap, and a queued run must not cancel a mutating run
+# mid-loop.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    # PR validation: stubbed gh, no secrets, PR-head code.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: e2e/org-pool
+          persist-credentials: false
+
+      - name: Run org pool setup tests
+        run: bash e2e/org-pool/setup-org_test.sh
+
+  configure:
+    # Drift correction. The PAT secrets live in the 'e2e-org-pool'
+    # environment, which must be restricted to the main branch, so
+    # pull_request runs can never reach the org-admin token.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: e2e-org-pool
+    steps:
+      # Main-branch scripts only: the org-admin token below must never
+      # run PR-head code.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          sparse-checkout: e2e/org-pool
+          persist-credentials: false
+
+      - name: Configure pool orgs
+        shell: bash
+        env:
+          # Org-admin token for botsend; runs main-branch setup-org.sh only.
+          TEST_BOTSEND_PAT: ${{ secrets.TEST_BOTSEND_PAT }}
+          TEST_ACTOR_WRITE_PAT: ${{ secrets.TEST_ACTOR_WRITE_PAT }}
+          TEST_ACTOR_TRIAGE_PAT: ${{ secrets.TEST_ACTOR_TRIAGE_PAT }}
+        run: |
+          : "${TEST_BOTSEND_PAT:?TEST_BOTSEND_PAT secret is not set}"
+          export GH_TOKEN="${TEST_BOTSEND_PAT}"
+          if [[ "${{ inputs.dry_run }}" == "true" ]]; then
+            dry_run="--dry-run"
+          else
+            dry_run=""
+          fi
+          # STAGE org halfsend plus the dev pool halfsend-01..halfsend-22;
+          # keep in sync with e2e/org-pool/README.md.
+          orgs="halfsend $(seq -f 'halfsend-%02g' 1 22)"
+          failed=()
+          for org in ${orgs}; do
+            e2e/org-pool/setup-org.sh ${dry_run} "${org}" || failed+=("${org}")
+          done
+          if (( ${#failed[@]} )); then
+            echo "::error::setup-org.sh failed for: ${failed[*]}"
+            exit 1
+          fi
