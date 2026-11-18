@@ -30,6 +30,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/binary"
+	"github.com/fullsend-ai/fullsend/internal/botidentity"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/envfile"
 	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
@@ -2171,6 +2172,31 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		tracingCleanup(flushCtx)
 	}()
 
+	// 3c. Start the runner-side bot-role helper service (#9602, ADR 0107)
+	// so host-side pre- and post-scripts can resolve a bot's registered
+	// role for the run's target repository through the mint with the
+	// runner's own OIDC token. The helper holds the OIDC credential and
+	// the target; scripts get only its loopback URL and a bearer token
+	// (FULLSEND_BOT_ROLE_URL / FULLSEND_BOT_ROLE_TOKEN, the same shape as
+	// the runtime fetch service's env), never the ACTIONS_ID_TOKEN_*
+	// variables child scripts are stripped of (#5832). A lookup that
+	// cannot be completed is reported to the script as a failure, kept
+	// apart from a no-match, so callers fail closed. The deferred shutdown
+	// is registered before the post-script's defer, so under LIFO the
+	// post-script still runs with the helper up.
+	var botRoleEnv botRoleHelperEnv
+	if h.PreScript != "" || h.PostScript != "" {
+		helperEnv, botRoleShutdown, helperErr := startBotRoleHelperService(
+			&botidentity.MintResolver{MintURL: mintURL, OIDCToken: actionsMintOIDCToken},
+			os.Getenv("REPO_FULL_NAME"))
+		if helperErr != nil {
+			printer.StepWarn("Bot-role helper service failed to start: " + helperErr.Error())
+		} else {
+			defer botRoleShutdown()
+			botRoleEnv = helperEnv
+		}
+	}
+
 	// 4. Run pre-script on the host (if configured). The pre-script may
 	// request a skip via the pre-script output protocol
 	// (FULLSEND_PRESCRIPT_OUTPUT, issue #4718), in which case the run
@@ -2204,7 +2230,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if remintErr != nil {
 			return fmt.Errorf("agent token minting for pre-script failed: %w", remintErr)
 		}
-		preResult, err = runPreScript(h, runDir, traceparent, printer)
+		preResult, err = runPreScript(h, runDir, traceparent, printer, botRoleEnv.exports()...)
 		for _, stop := range stopOpenAIRefreshers {
 			stop()
 		}
@@ -2433,7 +2459,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			defer remintCleanup()
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = withPersonasFile(postScriptEnv(h, traceparent), runDir)
+			postEnv := append(postScriptEnv(h, traceparent), botRoleEnv.exports()...)
+			postCmd.Env = withPersonasFile(postEnv, runDir)
 			// Override REPO_DIR from childScriptEnv: the harness value points to a fixed
 			// location, but sandbox output is now extracted to a temp dir. exec uses
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
@@ -3721,6 +3748,13 @@ var inheritedScriptDenyKeys = map[string]bool{
 	jira.EmailEnvVar:        true,
 	jira.ClientIDEnvVar:     true,
 	jira.ClientSecretEnvVar: true,
+	// The bot-role helper's address and credential are runner-owned too
+	// (#9602): an inherited value (an outer run's helper, or a
+	// workflow-level env) must not answer lookups for a run whose own
+	// helper failed to start. The run's own export is appended after
+	// childScriptEnv, so a running helper still wins.
+	"FULLSEND_BOT_ROLE_URL":   true,
+	"FULLSEND_BOT_ROLE_TOKEN": true,
 }
 
 // optionalHarnessEnvKeys are host variables a harness ${VAR} reference may
@@ -3881,15 +3915,20 @@ func harnessEnvLookup(key string) (string, bool) {
 // Entries are matched case-insensitively; every name in the map is uppercase.
 // NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
 var reservedSandboxKeys = map[string]bool{
-	"PATH":                        true,
-	"HOME":                        true,
-	"SHELL":                       true,
-	"LD_PRELOAD":                  true,
-	"LD_LIBRARY_PATH":             true,
-	"BASH_ENV":                    true,
-	"ENV":                         true,
-	"FULLSEND_FETCH_URL":          true,
-	"FULLSEND_FETCH_TOKEN":        true,
+	"PATH":                 true,
+	"HOME":                 true,
+	"SHELL":                true,
+	"LD_PRELOAD":           true,
+	"LD_LIBRARY_PATH":      true,
+	"BASH_ENV":             true,
+	"ENV":                  true,
+	"FULLSEND_FETCH_URL":   true,
+	"FULLSEND_FETCH_TOKEN": true,
+	// The bot-role helper's address and credential are runner-owned and
+	// host-side only (#9602): the sandbox never receives a genuine value,
+	// so an env.sandbox entry can only impersonate the helper.
+	"FULLSEND_BOT_ROLE_URL":       true,
+	"FULLSEND_BOT_ROLE_TOKEN":     true,
 	"FULLSEND_OUTPUT_DIR":         true,
 	"FULLSEND_OUTPUT_SCHEMA":      true,
 	"FULLSEND_OUTPUT_FILE":        true,
@@ -6084,7 +6123,10 @@ func otherGCPCredentialMounted(h *harness.Harness) bool {
 //
 // A malformed output file on exit 0 is a hard failure so a mistyped skip
 // cannot silently proceed.
-func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Printer) (prescript.Result, error) {
+//
+// extraEnv is appended to the script's environment after the runner env;
+// the run passes the bot-role helper's exports here (#9602).
+func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Printer, extraEnv ...string) (prescript.Result, error) {
 	preStart := time.Now()
 	printer.StepStart("Running pre-script: " + h.PreScript)
 	outPath, cleanup, err := prescript.Prepare(runDir)
@@ -6094,7 +6136,9 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 	}
 	defer cleanup()
 	preCmd := exec.Command(h.PreScript)
-	preCmd.Env = withPersonasFile(append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath), runDir)
+	scriptEnv := append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath)
+	scriptEnv = append(scriptEnv, extraEnv...)
+	preCmd.Env = withPersonasFile(scriptEnv, runDir)
 
 	// Tee stdout and stderr so skip-reason fallback (exit 78) and
 	// hard-failure diagnostics can recover the script's own message
@@ -6287,7 +6331,7 @@ func stripControlChars(s string) string {
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	merged := inheritedScriptEnv()
 	for _, e := range envToList(runnerEnv) {
-		if i := strings.IndexByte(e, '='); i > 0 && isPinnedGitLabRoleRoutingKey(e[:i]) {
+		if i := strings.IndexByte(e, '='); i > 0 && (isPinnedGitLabRoleRoutingKey(e[:i]) || isBotRoleHelperEnvKey(e[:i])) {
 			continue
 		}
 		merged = append(merged, e)
@@ -6354,6 +6398,20 @@ func isPinnedGitLabRoleRoutingKey(key string) bool {
 	return strings.HasPrefix(key, gitlabRoleRoutingKeyPrefix)
 }
 
+// isBotRoleHelperEnvKey reports whether key is one of the bot-role helper
+// address and credential vars the runner owns (#9602). A harness
+// runner_env/env.runner entry for one of them is dropped everywhere
+// RunnerEnv reaches a script (childScriptEnv, validationEnv, preflight):
+// the helper's own export, appended by runAgent, must be the only source
+// of the helper address a script can see, so a harness-supplied value
+// cannot impersonate the helper — least of all on the path where the
+// helper failed to start and no genuine export follows. Same
+// last-value-wins reasoning as the GitLab role-routing pin above
+// (#7499).
+func isBotRoleHelperEnvKey(key string) bool {
+	return key == "FULLSEND_BOT_ROLE_URL" || key == "FULLSEND_BOT_ROLE_TOKEN"
+}
+
 // postScriptEnv builds the environment for post-script execution.
 // It starts with childScriptEnv and conditionally appends
 // FULLSEND_OUTPUT_SCHEMA when the harness specifies a validation loop schema.
@@ -6388,7 +6446,16 @@ func validationScriptEnv(h *harness.Harness, hostRepoDir, runDir string) []strin
 // when the harness specifies a validation_loop.schema — FULLSEND_OUTPUT_SCHEMA
 // pointing to the host-side cached schema path.
 func validationEnv(h *harness.Harness, hostRepoDir, runDir string) []string {
-	env := append(envToList(h.RunnerEnv),
+	env := make([]string, 0, len(h.RunnerEnv)+2)
+	for _, e := range envToList(h.RunnerEnv) {
+		// The bot-role helper vars are runner-owned (#9602): a harness
+		// entry for one of them must not reach a validation script.
+		if i := strings.IndexByte(e, '='); i > 0 && isBotRoleHelperEnvKey(e[:i]) {
+			continue
+		}
+		env = append(env, e)
+	}
+	env = append(env,
 		fmt.Sprintf("TARGET_REPO_DIR=%s", hostRepoDir),
 		fmt.Sprintf("FULLSEND_RUN_DIR=%s", runDir),
 	)
