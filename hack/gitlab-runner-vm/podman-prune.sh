@@ -17,6 +17,10 @@
 #   set, protects one additional ref for that invocation only (gateway.sh's
 #   prune_unused_podman_storage uses this to protect the job's own image
 #   during prepare.sh's pre-pull prune).
+# - Images named only by digest (pulled as repo@sha256:..., so neither
+#   tagged nor dangling) are removed too (issue #9681). A keep-file or
+#   extra-keep entry pinned to the same digest (repo@sha256:... or
+#   repo:tag@sha256:...) protects them.
 # - Serializes against prepare.sh's own reclaim-then-pull-then-create window
 #   via a well-known flock (see acquire_podman_prune_lock in gateway.sh):
 #   this timer-driven run skips entirely, the same as the in-flight skip
@@ -101,6 +105,66 @@ prune_unused_tagged_images() {
   done < <(podman images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)
 }
 
+# True when a keep-file or extra-keep entry is pinned to the digest of ref
+# (repo@sha256:...). The digest identifies the image content, so an entry
+# such as repo@sha256:... or repo:tag@sha256:... protects the image whatever
+# repository name it was pulled under.
+is_keep_digest_ref() {
+  local ref="$1" digest line
+  digest="${ref##*@}"
+  [ -n "${digest}" ] && [ "${digest}" != "${ref}" ] || return 1
+  case "${FULLSEND_PODMAN_PRUNE_EXTRA_KEEP:-}" in
+    *"@${digest}") return 0 ;;
+  esac
+  [ -f "${KEEP_FILE}" ] || return 1
+  while IFS= read -r line || [ -n "${line}" ]; do
+    case "${line}" in
+      ''|\#*) continue ;;
+      *"@${digest}") return 0 ;;
+    esac
+  done < "${KEEP_FILE}"
+  return 1
+}
+
+# Remove unused images that have no tag but are still named by digest
+# (e.g. pulled as repo@sha256:...). They are not dangling, so `podman image
+# prune` keeps them, and the tagged pass skips their <none> tag (issue
+# #9681). `podman images` shows a <none> tag only when an image has no
+# tagged name, and a dangling image has no RepoDigests, so a <none> row
+# with digests is exactly a digest-only image. Each repo@digest name is
+# removed without -f: the image goes with its last name, and an image in
+# use by a container fails rmi and stays.
+prune_unused_digest_only_images() {
+  local tag digests ref kept
+  local -a refs
+  if [ ! -f "${KEEP_FILE}" ]; then
+    log "keep-file ${KEEP_FILE} missing — skipping digest-only image removal"
+    return 0
+  fi
+  while IFS='|' read -r tag digests; do
+    [ "${tag}" = '<none>' ] || continue
+    [ -n "${digests}" ] || continue
+    IFS=',' read -r -a refs <<< "${digests}"
+    kept=""
+    for ref in "${refs[@]}"; do
+      [ -n "${ref}" ] || continue
+      if is_keep_digest_ref "${ref}"; then
+        kept="${ref}"
+        break
+      fi
+    done
+    if [ -n "${kept}" ]; then
+      log "keeping ${kept}"
+      continue
+    fi
+    for ref in "${refs[@]}"; do
+      [ -n "${ref}" ] || continue
+      log "removing unused digest-only image ${ref}"
+      podman rmi -- "${ref}" 2>/dev/null || true
+    done
+  done < <(podman images --format '{{.Tag}}|{{range .RepoDigests}}{{.}},{{end}}' 2>/dev/null || true)
+}
+
 if ! command -v podman >/dev/null 2>&1; then
   echo "ERROR: podman not found in PATH" >&2
   exit 1
@@ -135,5 +199,8 @@ podman image prune -f || true
 
 log "pruning unused tagged images (preserving keep-file)"
 prune_unused_tagged_images
+
+log "pruning unused digest-only images (preserving keep-file)"
+prune_unused_digest_only_images
 
 log "podman prune complete"
