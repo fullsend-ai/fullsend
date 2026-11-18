@@ -730,7 +730,7 @@ func TestCodexOpenAIAuthSeed_Executes(t *testing.T) {
 }
 
 // TestCodexAuthScript_Executes runs the embedded auth.command script the way
-// codex runs it. A non-zero exit fails the model call with no fallback to the
+// codex runs it. A non-zero exit gives codex no token, with no fallback to the
 // environment, which is what makes the credential path fail closed.
 func TestCodexAuthScript_Executes(t *testing.T) {
 	dir := t.TempDir()

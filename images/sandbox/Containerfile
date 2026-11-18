@@ -264,14 +264,14 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # The native binary is a *version* of the same package —
 # `@openai/codex@${CODEX_VERSION}-linux-<arch>`, aliased as the
 # optionalDependency `@openai/codex-linux-<arch>` — and the launcher
-# bin/codex.js spawns that musl-static executable directly. So it is
+# bin/codex.js execs that musl-static executable in place of node. So it is
 # `codex`, not `node`, that makes the model calls, and an egress profile
 # serving codex must name `**/codex` in its `binaries:` rules. That wiring
 # lands with the OpenAI credential work, not here.
 #
 # To update: bump CODEX_VERSION; renovate tracks this ARG via a
 # customManagers regex entry in renovate.json.
-ARG CODEX_VERSION=0.166.0
+ARG CODEX_VERSION=0.170.0
 RUN npm install -g --ignore-scripts @openai/codex@${CODEX_VERSION} \
     && npm cache clean --force
 

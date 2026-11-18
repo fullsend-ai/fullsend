@@ -1,6 +1,56 @@
 {
   "models": [
     {
+      "slug": "gpt-6.2-sol",
+      "multi_agent_version": "v2",
+      "default_reasoning_level": "low",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "medium"
+        },
+        {
+          "effort": "high"
+        },
+        {
+          "effort": "xhigh"
+        },
+        {
+          "effort": "max"
+        },
+        {
+          "effort": "ultra"
+        }
+      ]
+    },
+    {
+      "slug": "gpt-6.2-astra",
+      "multi_agent_version": "v2",
+      "default_reasoning_level": "low",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low"
+        },
+        {
+          "effort": "medium"
+        },
+        {
+          "effort": "high"
+        },
+        {
+          "effort": "xhigh"
+        },
+        {
+          "effort": "max"
+        },
+        {
+          "effort": "ultra"
+        }
+      ]
+    },
+    {
       "slug": "gpt-6-astra",
       "multi_agent_version": "v2",
       "default_reasoning_level": "low",

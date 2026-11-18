@@ -5,8 +5,11 @@
 # iteration. codex runs it with stdin on /dev/null, caches the trimmed stdout
 # as the bearer token for `refresh_interval_ms`, and re-runs it on expiry and
 # on the 401 retry path (codex-rs/login/src/auth/external_bearer.rs). A
-# non-zero exit or empty stdout fails the model call — there is no fallback to
-# the environment, which is what makes this fail closed.
+# non-zero exit or empty stdout gives codex no token from this run, and there
+# is no fallback to the environment: codex never sends a value this script
+# refused, which is what makes this fail closed. After a success, codex
+# (0.170.0) keeps sending the last token this script printed until one of
+# those re-runs succeeds.
 #
 # What it prints is never a credential: it is the OpenShell gateway
 # placeholder for OPENAI_API_KEY that the runner seeded into the token file,

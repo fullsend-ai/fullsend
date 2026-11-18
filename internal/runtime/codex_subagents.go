@@ -500,7 +500,7 @@ const codexChildRolloutsMarker = "fullsend-rollout-heads"
 // Codex names a rollout rollout-<ts>-<thread id>.jsonl (with _<rollout id>
 // after a revert), creates it, and then writes its session_meta as the first
 // line, carrying parent_thread_id for a child; a root carries none (codex
-// rust-v0.166.0). So a child's file can be empty while that line waits, or
+// rust-v0.170.0). So a child's file can be empty while that line waits, or
 // start for good with a fragment a failed write left (codex closes it with a
 // newline and writes session_meta on the next line). Every field before
 // parent_thread_id is a scalar, so a line cut before its parent cannot end

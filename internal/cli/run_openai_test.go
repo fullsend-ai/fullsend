@@ -2312,7 +2312,7 @@ func TestReseedOpenAIAuth_WaitsForSandboxLock(t *testing.T) {
 // TestEmbeddedOpenAIProfileBinaries pins the `binaries:` rules of the
 // profile the runner imports for every fullsend-openai provider. The rule
 // list is what the gateway will let open a connection to api.openai.com:
-// pi issues its requests from node, and codex's npm launcher spawns a
+// pi issues its requests from node, and codex's npm launcher execs a
 // per-platform native binary that makes them itself (#6920), so both names
 // must be there or that runtime's first model call is refused by the proxy
 // with nothing in the agent's log to explain it.

@@ -837,7 +837,7 @@ func TestCodexRun_DelegatingWithoutSpawnHasParentEntry(t *testing.T) {
 
 	assert.Equal(t, 0, exit)
 	assert.Equal(t, map[string]ModelUsage{
-		"gpt-5.6-luna": {Requests: 1, InputTokens: 8298, OutputTokens: 274, CacheCreationInputTokens: 0, CacheReadInputTokens: 49024},
+		"gpt-5.6-luna": {Requests: 1, InputTokens: 28665, OutputTokens: 271, CacheCreationInputTokens: 0, CacheReadInputTokens: 50048},
 	}, metrics.PerModelUsage, "the numbers TestApplyCodexMetrics pins for basic_run.ndjson")
 	assertCodexUsageSumsToTotals(t, metrics)
 	assert.NotContains(t, log, codexChildUsageMarker, "no id, no sandbox command")
