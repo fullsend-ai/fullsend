@@ -359,7 +359,7 @@ jobs:
         (github.event_name == 'issue_comment' && inputs.head_sha != '')
       )
     # Keep mainline deployments distinct from PR and merge-queue test noise.
-    environment: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'forgejo-stage' || 'forgejo-dev' }}
+    environment: ${{ github.event_name == 'push' && 'forgejo-stage' || 'forgejo-dev' }}
     runs-on: ubuntu-24.04
     # Match behaviour-test's 45m attempt plus one bounded infrastructure retry.
     timeout-minutes: 90

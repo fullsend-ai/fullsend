@@ -107,8 +107,8 @@ jobs:
     needs: authorize
     if: needs.authorize.outputs.authorized == 'true'
     # Caller permissions are a ceiling for the reusable workflow — must grant
-    # the union of job perms in e2e.yml (gate / behaviour / playback / Forgejo),
-    # even for the gate job that skips on issue_comment.
+    # the union of job perms in e2e.yml (gate / behaviour / playback /
+    # forgejo-behaviour), even for the gate job that skips on issue_comment.
     permissions:
       contents: read
       pull-requests: write
@@ -157,10 +157,14 @@ jobs:
             IFS=: read -r name id result <<<"${pair}"
             [[ -n "${id}" ]] || { echo "::error::no ${name} check run id"; status=1; continue; }
             c=$(conclusion "${result}")
-            gh api -X PATCH "repos/${REPO}/check-runs/${id}" \
+            if ! gh api -X PATCH "repos/${REPO}/check-runs/${id}" \
               -f status=completed -f conclusion="${c}" \
               -f "output[title]=${name}: ${c}" \
-              -f "output[summary]=E2E ok-to-test run: ${RUN_URL}" --silent
+              -f "output[summary]=E2E ok-to-test run: ${RUN_URL}" --silent; then
+              echo "::error::failed to complete ${name} check run ${id}"
+              status=1
+              continue
+            fi
             echo "${name}: ${c}"
           done
           exit "${status}"
