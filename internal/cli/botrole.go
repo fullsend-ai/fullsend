@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -27,68 +26,63 @@ const botRoleCmdTimeout = 60 * time.Second
 const maxBotRoleResponseBytes = 64 << 10
 
 // botRoleScriptRequest is the JSON body a `fullsend bot-role` invocation
-// sends to the runner-side helper service: the login alone. The target
-// repository is the run's, bound by the helper — a script cannot ask about
-// another repository.
+// sends to the runner-side helper service: the canonical entity ID and the
+// comment's action ID. The target repository is the run's, bound by the
+// helper, and the helper answers only for the entity the run handles — a
+// script cannot ask about another repository or entity.
 type botRoleScriptRequest struct {
-	Login string `json:"login"`
+	Entity  string `json:"entity"`
+	Comment string `json:"comment"`
 }
 
 func newBotRoleCmd() *cobra.Command {
-	var asBot bool
+	var entity, comment string
 	cmd := &cobra.Command{
-		Use:   "bot-role <login>",
-		Short: "Resolve a bot's registered Fullsend role for this run's target repository",
-		Long: `Resolves whether a login is a registered Fullsend bot, and with which
-canonical role, for the target repository of the run that executes this
-command (ADR 0107), through the runner-side bot-role helper service.
+		Use:   "bot-role --entity <entity.id> --comment <action id>",
+		Short: "Resolve the registered Fullsend bot role of a comment's actor on this run's entity",
+		Long: `Resolves the registered Fullsend bot role (ADR 0107) of the actor that
+produced a comment on the entity this run handles, through the runner-side
+bot-role helper service.
+
+--entity is the canonical normalized-entity v1 ID of the entity the run
+handles (fullsend:entity:v1:<system>:<host>:<kind>:<source_id>), which
+fullsend run exports to the scripts as FULLSEND_ENTITY_ID. --comment is the
+comment's action ID: its GraphQL node ID on GitHub. The answer is for the
+comment's current-revision actor, so a comment last edited by someone other
+than its author answers for the editor.
 
 On success, prints the registered role, or no_match, to stdout and exits 0.
 A lookup that cannot be completed fails with an error and empty stdout —
-never no_match — so a caller can fail closed and keep a failed lookup apart
-from a no-match.
-
-The login must be in REST form, slug[bot] (for example
-fullsend-ai-triage[bot]). Raw GraphQL author.login and gh --json comment
-and review authors return App bot authors without the [bot] suffix; pass
---bot with such a login so the suffix is appended before the lookup and a
-registered bot is not answered a confident no_match. gh's top-level
---json author field is different: it reports Bot authors as app/<slug>
-with is_bot true — strip the leading app/ before passing --bot, or read
-the REST form (slug[bot]) straight from gh api.
+never no_match — so a caller can fail closed: the forge or the mint is
+unreachable, the comment is not on the run's entity, or the run has no
+trusted lookup (GitLab and Jira today).
 
 This command is intended to be called by harness pre- and post-scripts. It
 requires the FULLSEND_BOT_ROLE_URL and FULLSEND_BOT_ROLE_TOKEN environment
 variables, which fullsend run sets automatically for those scripts. The
 Actions OIDC credentials the lookup authenticates with stay runner-side and
 are never exported to scripts.`,
-		Args:          cobra.ExactArgs(1),
+		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			login := args[0]
-			// A --bot login comes from a source that identifies GitHub App
-			// bot authors without the REST form's [bot] suffix (GraphQL
-			// __typename == "Bot", gh --json comment and review authors).
-			// Append the suffix so the helper resolves the real bot login
-			// instead of answering its certain no-match for the suffixless
-			// form; a login that already carries the suffix is sent
-			// unchanged. gh's top-level --json author field reports Bot
-			// authors as app/<slug>: the caller strips that prefix first.
-			if asBot && !strings.HasSuffix(strings.ToLower(login), "[bot]") {
-				login += "[bot]"
-			}
-			return runBotRole(cmd.Context(), login, cmd.OutOrStdout())
+			return runBotRole(cmd.Context(), entity, comment, cmd.OutOrStdout())
 		},
 	}
-	cmd.Flags().BoolVar(&asBot, "bot", false, "the login is a GitHub App bot author whose source (raw GraphQL, gh --json comment/review authors) omits the [bot] suffix; append it before the lookup (gh's top-level --json author field reports app/<slug>: strip the prefix first)")
+	cmd.Flags().StringVar(&entity, "entity", "", "canonical entity ID of the entity the run handles (FULLSEND_ENTITY_ID)")
+	cmd.Flags().StringVar(&comment, "comment", "", "the comment's action ID (its GraphQL node ID on GitHub)")
+	_ = cmd.MarkFlagRequired("entity")
+	_ = cmd.MarkFlagRequired("comment")
 	return cmd
 }
 
-// runBotRole asks the runner-side helper service for the login's registered
-// role. Missing helper environment fails the command rather than answering,
-// so a caller outside a run fails closed too.
-func runBotRole(ctx context.Context, login string, stdout io.Writer) error {
+// runBotRole asks the runner-side helper service for the registered role of
+// a comment's actor. Missing helper environment fails the command rather
+// than answering, so a caller outside a run fails closed too.
+func runBotRole(ctx context.Context, entity, comment string, stdout io.Writer) error {
+	if entity == "" || comment == "" {
+		return fmt.Errorf("both --entity and --comment are required")
+	}
 	helperURL := os.Getenv("FULLSEND_BOT_ROLE_URL")
 	if helperURL == "" {
 		return fmt.Errorf("FULLSEND_BOT_ROLE_URL is not set (is this inside a fullsend run with a pre- or post-script?)")
@@ -98,7 +92,7 @@ func runBotRole(ctx context.Context, login string, stdout io.Writer) error {
 		return fmt.Errorf("FULLSEND_BOT_ROLE_TOKEN is not set")
 	}
 
-	body, err := json.Marshal(botRoleScriptRequest{Login: login})
+	body, err := json.Marshal(botRoleScriptRequest{Entity: entity, Comment: comment})
 	if err != nil {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
