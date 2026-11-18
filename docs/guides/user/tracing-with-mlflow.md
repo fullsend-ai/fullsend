@@ -1,7 +1,7 @@
 # Tracing with MLflow
 
 MLflow 3.6+ ingests OTLP/HTTP traces natively and provides experiment-based
-routing, a traces UI, and per-trace cost estimates. This guide covers
+routing, a traces UI, and, from 3.10, per-trace cost estimates. This guide covers
 MLflow-specific configuration on top of the general
 [How To Emit Traces](how-to-emit-traces.md) setup.
 
@@ -73,18 +73,37 @@ Two conventions keep a shared MLflow instance navigable as repos onboard:
 
 ## Cost column caveat
 
-MLflow's per-trace cost column is its own estimate: it prices the span's
-input, output, cache-creation, and cache-read token counts, through litellm
-when the MLflow server has it installed and through MLflow's own model table
-otherwise. It prices all of a span's usage at the rates of the single model
-the span names, so runs that use fallback or sub-agent models are priced
-approximately.
+MLflow's per-trace cost column is its own estimate. MLflow computes it
+from 3.10 on: 3.10 only when litellm is installed on the server, and 3.11
+and later through MLflow's own model table when it is not. From 3.12 the
+estimate covers the span's input, output, cache-creation, and cache-read
+token counts. It prices all of a span's usage at the rates of the single
+model the span names, so runs that use fallback or sub-agent models are
+priced approximately.
 
-Before the release that follows v0.56.1, fullsend emitted uncached input in
-`gen_ai.usage.input_tokens`. MLflow servers running litellm older than 1.83.10
-subtract the cache counters from that value and can show a negative cost for
-those traces. Spans from later releases include the cache counters in
-`input_tokens`, as the GenAI convention specifies.
+The estimate also depends on the versions on the MLflow server:
+
+- **MLflow 3.10 and 3.11** read only the input and output counts from the
+  span. Because `gen_ai.usage.input_tokens` includes cached tokens, they
+  price every cached token at the plain input rate instead of the cache
+  rates. The estimate is too high when cache reads outweigh cache writes.
+- **litellm before 1.77.3** (checked back to 1.75.8) subtracts cache-read
+  tokens from input but not cache-creation tokens, so it charges
+  cache-creation tokens twice.
+- **litellm before 1.83.10** does not floor that subtraction at zero. A
+  span written before fullsend included the cache counters in
+  `gen_ai.usage.input_tokens` has no
+  `fullsend.usage.input_includes_cache` attribute. On MLflow 3.12 or later
+  with such a litellm, it can show a negative cost.
+- **litellm long-context rates.** Where a model's price table has higher
+  rates above a prompt-size threshold, litellm applies them to the whole
+  span once the span's input count passes the threshold. A span covers a
+  whole iteration, usually many requests, so its input count can pass the
+  threshold when no single request did. The estimate is then too high.
+
+MLflow computes the cost when it stores a span. Upgrading MLflow or
+litellm changes the estimate for new traces only; traces already stored
+keep the cost they were given.
 
 The authoritative cost figure is the runtime-reported `fullsend.cost_usd`
 attribute on `agent` spans (also in `run-telemetry.jsonl`). When that value

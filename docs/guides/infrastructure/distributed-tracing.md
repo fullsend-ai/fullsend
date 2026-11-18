@@ -358,11 +358,19 @@ The `agent` span's provider identity reflects only the parent run's serving endp
 > must switch to `fullsend.runtime == "pi"` to identify Pi-originated spans,
 > or update their provider allowlist to include the resolved values above.
 
+> **Breaking change — input tokens:** `gen_ai.usage.input_tokens` on
+> `agent` spans used to be uncached input. It now includes the cache-read
+> and cache-creation counts, as the GenAI convention defines it. Consumers
+> that added the two cache attributes to it must stop doing so on spans
+> that carry `fullsend.usage.input_includes_cache`. See
+> [Persisted token fields](#persisted-token-fields).
+
 ### Fullsend-specific attributes
 
 | Attribute | Present on | Description |
 |-----------|------------|-------------|
 | `fullsend.runtime` | `agent` | Harness identity (`claude`, `pi`, …), distinct from `gen_ai.system` (the serving endpoint) |
+| `fullsend.usage.input_includes_cache` | `agent` | Emitted with `gen_ai.usage.input_tokens`, always `true`. Marks that count as including the two cache counters. Spans written before that change carry the count without it (see [Persisted token fields](#persisted-token-fields)) |
 | `fullsend.work_item_id` | `run` | Work item identity (e.g. `owner/repo#123`); primary cross-run correlation key |
 | `fullsend.agent` | `run` | Agent name |
 | `fullsend.cost_usd` | `run` (aggregated), `agent` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)) |
@@ -482,9 +490,9 @@ tokens, output tokens, cache-creation tokens, cache-read tokens, and
 reasoning tokens. Fullsend has no visibility into the provider's pricing
 breakdown; it accepts the reported total.
 
-Token counts (including `cache_creation_input_tokens` and
-`cache_read_input_tokens`) are recorded as separate telemetry attributes.
-They are not inputs to any fullsend-side cost calculation.
+Fullsend records token counts as telemetry attributes, with cache creation
+and cache read as counters of their own. They are not inputs to any
+fullsend-side cost calculation.
 
 ### Cross-iteration aggregation
 
@@ -532,11 +540,13 @@ for how to apply list-price rates to the persisted token fields.
 Tracing backends may display their own cost estimates alongside
 `fullsend.cost_usd`. These are independent calculations:
 
-- **MLflow** estimates cost from the span's token counts, including the
-  cache-creation and cache-read counters, priced through litellm when the
-  server has it installed and through MLflow's own model table otherwise.
-  The result is still an estimate: it prices all of a span's usage at the
-  rates of the single model the span names. See
+- **MLflow** (3.12 and later) estimates cost from the span's token counts,
+  including the cache-creation and cache-read counters. It prices them
+  through litellm when the server has it installed and through MLflow's
+  own model table otherwise. The result is still an estimate. It prices
+  all of a span's usage at the rates of the single model the span names,
+  and older MLflow and litellm versions handle the cache counters
+  differently. See
   [Tracing with MLflow — Cost column caveat](../user/tracing-with-mlflow.md#cost-column-caveat).
 - Other LLM-aware backends may apply similar token-based estimates.
 
@@ -580,8 +590,8 @@ the process dies before an `agent` span ends, the file may lack that span.
 | Cache read | `gen_ai.usage.cache_read.input_tokens` | `cache_read` |
 | Reasoning | `gen_ai.usage.reasoning_tokens` | `reasoning` |
 
-The first four span attributes are emitted even when zero. The reasoning
-attribute is omitted when zero; `metrics.json` always serializes
+Fullsend emits the input, output and two cache attributes even when zero.
+The reasoning attribute is omitted when zero; `metrics.json` always serializes
 `token_usage.reasoning`, including `0`. Treat a missing reasoning attribute
 on a fullsend `agent` span as zero recorded reasoning, not proof that the
 provider consumed none.
@@ -593,14 +603,21 @@ cache read. `metrics.json` `token_usage.input` is uncached input only; cache
 creation and cache read are separate counters there. To price uncached input
 from a span, subtract both cache attributes from `input_tokens`.
 
-Spans written by v0.56.1 and earlier emitted uncached input in
-`gen_ai.usage.input_tokens`; the value includes the cache counters starting
-with the release that follows v0.56.1. On a file written by an earlier release,
-the subtraction above can go negative — use `input_tokens` as uncached input
-there instead. The resource's `service.version` attribute tells the two apart.
+A span written with this rule also carries
+`fullsend.usage.input_includes_cache` set to `true`. A span that has
+`gen_ai.usage.input_tokens` but no marker was written by a build that
+predates the change, and its `input_tokens` is uncached input. Do not
+subtract the cache attributes there: the result is wrong and can be
+negative. Test for the marker, not for `service.version`. A build from
+source reports `dev` or a `git describe` string there, which is a bare
+commit id on a shallow clone. The version therefore does not say which
+rule a span follows.
 
-All four runtimes report uncached input upstream: for Claude, pi, and Codex
-the cache counters are reported separately, and the pinned OpenCode `1.19.1`
+`metrics.json` input is uncached input on all four runtimes, by different
+routes. Claude Code and pi report input and the cache counters as separate
+fields, and fullsend passes them through. Codex reports an input count
+that includes the cached parts, and fullsend subtracts them. The pinned
+OpenCode `1.19.1`
 [subtracts the cache counters from input](https://github.com/anomalyco/opencode/blob/v1.19.1/packages/opencode/src/session/session.ts#L361-L370)
 before fullsend reads it. The reasoning rule depends on the runtime:
 
@@ -629,23 +646,26 @@ reasoning; completion alone does not imply non-zero reasoning.
 
 Extract the relevant attributes from each `agent` span in the local OTLP
 JSONL file (see [Output file format](#output-file-format)). The `input`
-field below is uncached input, derived by subtracting the two cache
-attributes from `gen_ai.usage.input_tokens`; for files written by v0.56.1
-and earlier, use `gen_ai.usage.input_tokens` as `input` directly:
+field below is uncached input. On a span that carries
+`fullsend.usage.input_includes_cache` it is `gen_ai.usage.input_tokens`
+minus the two cache attributes. On an older span, which has no such
+attribute, it is `gen_ai.usage.input_tokens` unchanged:
 
 ```bash
 jq -c '
   .resourceSpans[]?.scopeSpans[]?.spans[]?
   | select(.name == "agent")
   | .attributes
-  | map({key: .key, value: (.value.intValue // .value.doubleValue // .value.stringValue)})
+  | map({key: .key, value: (.value.intValue // .value.doubleValue // .value.stringValue // .value.boolValue)})
   | from_entries
   | (.["gen_ai.usage.cache_creation.input_tokens"] | tonumber) as $cache_creation
   | (.["gen_ai.usage.cache_read.input_tokens"] | tonumber) as $cache_read
+  | (.["fullsend.usage.input_includes_cache"] == true) as $input_includes_cache
   | {
       runtime: .["fullsend.runtime"],
       model: .["gen_ai.request.model"],
-      input: ((.["gen_ai.usage.input_tokens"] | tonumber) - $cache_creation - $cache_read),
+      input: ((.["gen_ai.usage.input_tokens"] | tonumber)
+              - (if $input_includes_cache then $cache_creation + $cache_read else 0 end)),
       output: (.["gen_ai.usage.output_tokens"] | tonumber),
       cache_creation: $cache_creation,
       cache_read: $cache_read,
