@@ -85,7 +85,7 @@ func RunPlaybackSuite(t *testing.T, opts SuiteOptions) {
 	}
 	baseDriver, err := factory(pool)
 	if err != nil {
-		failRun(t, nil, playbackSuiteName, fmt.Errorf("creating install driver (env=%s): %w", cfg.Environment, err))
+		failInstallDriver(t, playbackSuiteName, cfg.Environment, err)
 	}
 	driver := install.NewPlaybackDriver(baseDriver)
 

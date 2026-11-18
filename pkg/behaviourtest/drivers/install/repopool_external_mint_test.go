@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/e2etest"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -52,4 +53,43 @@ func TestNewRepoPoolExternalMint_HappyPath(t *testing.T) {
 	env, err := d.(*composedDriver).setup(context.Background(), "halfsend-02", orgCredential{token: "t", client: forge.NewFakeClient()})
 	require.NoError(t, err)
 	assert.Equal(t, "https://mint.test", env.mintURL)
+}
+
+// --- GitHub token requirement ---
+
+// TestGitHubPoolFactories_RequireGitHubToken checks that every factory
+// that installs into GitHub pool orgs fails with ErrNoLocalGitHubToken
+// when a local run has no token, so the suite runner can skip.
+func TestGitHubPoolFactories_RequireGitHubToken(t *testing.T) {
+	factories := map[string]struct {
+		factory Factory
+		layout  PoolLayout
+	}{
+		"previews": {NewRepoPoolCFMintPreviews, DevPoolLayout(2)},
+		"stage":    {NewRepoPoolCFMintStage, StagePoolLayout(2)},
+		"external": {NewRepoPoolExternalMint, StagePoolLayout(1)},
+	}
+	for name, tc := range factories {
+		t.Run(name, func(t *testing.T) {
+			pool := testPoolConfig(t, tc.layout)
+			t.Setenv("GITHUB_ACTIONS", "")
+			t.Setenv("GH_TOKEN", "")
+			t.Setenv("GITHUB_TOKEN", "")
+			t.Setenv("PATH", t.TempDir()) // no gh to fall back on
+
+			_, err := tc.factory(pool)
+			require.ErrorIs(t, err, e2etest.ErrNoLocalGitHubToken)
+		})
+	}
+}
+
+func TestNewForgejoDev_DoesNotRequireGitHubToken(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("PATH", t.TempDir())
+
+	d, err := NewForgejoDev(PoolConfig{})
+	require.NoError(t, err)
+	require.NotNil(t, d)
 }

@@ -83,6 +83,7 @@ The drivers are minimal stubs for now:
 - `scm/forgejo` and `ci/forgejoactions` implement `scm.Driver` and `ci.Driver`. Every method returns an error. The CI stub implements none of the optional CI extensions.
 - `install.NewForgejoDev` returns an `install.Driver` that provisions nothing. `AllocateRepo` and `DeallocateRepo` return an error, `Finalize` is a no-op, and `Capacity` is `install.ForgejoDevCapacity` (2). It is not an `install.LeaseDriver`.
 - In `forgejo-dev`, the runner's `PoolConfig.TokenFor` returns an error and `NewClient` returns nil, so the run never mints GitHub tokens or builds GitHub clients.
+- The GitHub token check lives in the install drivers that need GitHub access (`NewRepoPoolCFMintPreviews`, `NewRepoPoolCFMintStage`, `NewRepoPoolExternalMint`), not in the runner's general env loading (`e2etest.LoadEnvConfig`). They fail with `e2etest.ErrNoLocalGitHubToken` when a local run has no token, and the suite runner skips the run on that error. `NewForgejoDev` does not need a GitHub token.
 
 Each stub error is a `*drivers.NotImplementedError` (package `pkg/behaviourtest/drivers`) that names the driver and the operation, for example `forgejo SCM driver: CreateIssue: not implemented`. It satisfies `errors.Is(err, drivers.ErrNotImplemented)`. Use the same sentinel for any other driver operation that is not supported yet.
 

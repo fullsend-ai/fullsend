@@ -70,7 +70,7 @@ func RunSuite(t *testing.T, opts SuiteOptions) {
 	}
 	driver, err := factory(pool)
 	if err != nil {
-		failRun(t, nil, behaviourSuiteName, fmt.Errorf("creating install driver (env=%s): %w", cfg.Environment, err))
+		failInstallDriver(t, behaviourSuiteName, cfg.Environment, err)
 	}
 
 	// Register Finalize as cleanup so mint resources are torn down
