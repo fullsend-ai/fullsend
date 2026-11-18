@@ -25,6 +25,24 @@ func TestReviewDedupHelpers(t *testing.T) {
 	assert.Contains(t, stdout.String(), "skip=true")
 }
 
+func TestReviewDedupCommandValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "invalid repository", args: []string{"--repo", "invalid", "--pr", "1"}},
+		{name: "non-positive pull request", args: []string{"--repo", "o/r", "--pr", "0"}},
+		{name: "unsupported forge", args: []string{"--repo", "o/r", "--pr", "1", "--forge", "unsupported"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newReviewDedupCmd()
+			cmd.SetArgs(tt.args)
+			assert.Error(t, cmd.Execute())
+		})
+	}
+}
+
 func TestPublishReviewSkip_CreatesAndUpdatesVerifiedNote(t *testing.T) {
 	ctx := context.Background()
 	fc := forge.NewFakeClient()
@@ -166,4 +184,13 @@ func TestSupersedeReviewSkip_UpdatesOnlyVerifiedBotNotes(t *testing.T) {
 	assert.Contains(t, comments[0].Body, "superseded by a full review")
 	assert.Equal(t, reviewSkipMarker+"\nleave me alone", comments[1].Body)
 	assert.Equal(t, reviewSkipMarker+"\nleave me alone", comments[2].Body)
+}
+
+func TestSupersedeReviewSkip_WithoutClientIDIsNoop(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors = map[string]error{"ListIssueComments": assert.AnError}
+
+	require.NoError(t, supersedeReviewSkip(context.Background(), fc, "o", "r", 1,
+		"0123456789012345678901234567890123456789", "fullsend-ai", ""))
+	assert.Empty(t, fc.UpdatedComments)
 }
