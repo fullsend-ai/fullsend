@@ -300,3 +300,35 @@ func TestIsTransientMintError(t *testing.T) {
 		})
 	}
 }
+
+func TestRequireGitHubToken(t *testing.T) {
+	t.Run("in GitHub Actions", func(t *testing.T) {
+		t.Setenv("GITHUB_ACTIONS", "true")
+		t.Setenv("GH_TOKEN", "")
+		t.Setenv("GITHUB_TOKEN", "")
+		t.Setenv("PATH", t.TempDir())
+		require.NoError(t, RequireGitHubToken())
+	})
+	t.Run("local token", func(t *testing.T) {
+		t.Setenv("GITHUB_ACTIONS", "")
+		t.Setenv("GH_TOKEN", "gh-token-value")
+		require.NoError(t, RequireGitHubToken())
+	})
+	t.Run("no token", func(t *testing.T) {
+		t.Setenv("GITHUB_ACTIONS", "")
+		t.Setenv("GH_TOKEN", "")
+		t.Setenv("GITHUB_TOKEN", "")
+		t.Setenv("PATH", t.TempDir())
+		require.ErrorIs(t, RequireGitHubToken(), ErrNoLocalGitHubToken)
+	})
+}
+
+func TestLoadEnvConfig_DoesNotRequireToken(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("PATH", t.TempDir())
+	// Reaching the end proves the loader did not t.Skip for a missing token.
+	cfg := LoadEnvConfig(t)
+	assert.False(t, cfg.UseMint)
+}
