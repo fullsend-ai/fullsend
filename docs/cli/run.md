@@ -194,7 +194,9 @@ depend on the process cwd.
 #### Per-model usage
 
 A map from model spec to
-`{requests, input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd}`.
+`{requests, input_tokens, output_tokens, reasoning_tokens, cache_creation_input_tokens, cache_read_input_tokens, cost_usd}`.
+`reasoning_tokens` is that model's reasoning share, kept out of `output_tokens` as in `token_usage`;
+only `codex` fills it, and it is omitted when zero.
 On `pi` the key is the pi model spec (`anthropic-vertex/claude-opus-4-6`); on `codex` it is the
 model id codex ran (`gpt-5.6-luna`, or the id after `gateway/`). It exists because a sub-agent's tokens never appear in the parent's
 stream: a pi sub-agent is a separate `pi` process, and a codex sub-agent is a separate thread whose

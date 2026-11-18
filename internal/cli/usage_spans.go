@@ -202,6 +202,13 @@ func recordUsageSpanOverflow(parent trace.Span, dropped int) {
 }
 
 func usageComponentSpanAttrs(spec, provider, model, runtimeName string, u agentruntime.ModelUsage) []attribute.KeyValue {
+	// Match agentSpanEndAttrs: input_tokens includes the cache counters
+	// (GenAI semconv v1.40.0+, #9532) and output_tokens includes reasoning,
+	// which codex and opencode keep out of OutputTokens (#9386).
+	outputTokens := u.OutputTokens
+	if agentruntime.OutputExcludesReasoning(runtimeName) {
+		outputTokens += u.ReasoningTokens
+	}
 	attrs := []attribute.KeyValue{
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
 		boundedStringAttr("gen_ai.system", provider),
@@ -211,8 +218,9 @@ func usageComponentSpanAttrs(spec, provider, model, runtimeName string, u agentr
 		attribute.Bool(attrUsageComponent, true),
 		boundedStringAttr(attrUsageModelSpec, spec),
 		attribute.Int(attrUsageRequests, u.Requests),
-		attribute.Int("gen_ai.usage.input_tokens", u.InputTokens),
-		attribute.Int("gen_ai.usage.output_tokens", u.OutputTokens),
+		attribute.Int("gen_ai.usage.input_tokens", u.InputTokens+u.CacheReadInputTokens+u.CacheCreationInputTokens),
+		attribute.Bool("fullsend.usage.input_includes_cache", true),
+		attribute.Int("gen_ai.usage.output_tokens", outputTokens),
 		attribute.Int("gen_ai.usage.cache_creation.input_tokens", u.CacheCreationInputTokens),
 		attribute.Int("gen_ai.usage.cache_read.input_tokens", u.CacheReadInputTokens),
 		attribute.Float64("fullsend.cost_usd", roundUSD(u.CostUSD)),

@@ -197,7 +197,9 @@ func TestEmitPerModelUsageSpans_MixedVertexXAIGoogle(t *testing.T) {
 	assert.Equal(t, "anthropic-vertex", parentAttrs["gen_ai.provider.name"].AsString())
 	assert.Equal(t, "claude-sonnet-5", parentAttrs["gen_ai.request.model"].AsString())
 	assert.Equal(t, int64(1), parentAttrs[attrUsageRequests].AsInt64())
-	assert.Equal(t, int64(400), parentAttrs["gen_ai.usage.input_tokens"].AsInt64())
+	assert.Equal(t, int64(400+50+80), parentAttrs["gen_ai.usage.input_tokens"].AsInt64(),
+		"input_tokens includes the cache counters, as on the single-model agent span (#9532)")
+	assert.True(t, parentAttrs["fullsend.usage.input_includes_cache"].AsBool())
 	assert.Equal(t, int64(80), parentAttrs["gen_ai.usage.output_tokens"].AsInt64())
 	assert.Equal(t, int64(50), parentAttrs["gen_ai.usage.cache_creation.input_tokens"].AsInt64())
 	assert.Equal(t, int64(80), parentAttrs["gen_ai.usage.cache_read.input_tokens"].AsInt64())
@@ -224,7 +226,8 @@ func TestEmitPerModelUsageSpans_MixedVertexXAIGoogle(t *testing.T) {
 	assert.Equal(t, int64(50), google["gen_ai.usage.output_tokens"].AsInt64())
 	assert.InDelta(t, 0.13, google["fullsend.cost_usd"].AsFloat64(), 1e-9)
 
-	assert.Equal(t, m.InputTokens, sumIn, "component input tokens must sum to the run total")
+	assert.Equal(t, m.InputTokens+m.CacheReadInputTokens+m.CacheCreationInputTokens, sumIn,
+		"component input tokens (cache included) must sum to the single-model agent span's input_tokens")
 	assert.Equal(t, m.OutputTokens, sumOut)
 	assert.Equal(t, m.CacheCreationInputTokens, sumCacheCreate)
 	assert.Equal(t, m.CacheReadInputTokens, sumCacheRead)
@@ -710,6 +713,47 @@ func TestFinalizeAgentSpan_MixedModelIDs(t *testing.T) {
 			}
 			assert.Equal(t, int64(m.InputTokens), tokens)
 			assert.Equal(t, map[string]bool{tc.parent: true, tc.child: true, "unknown": true}, models)
+		})
+	}
+}
+
+// A mixed-model codex iteration keeps reasoning out of OutputTokens, so each
+// component adds its own reasoning share back, the way agentSpanEndAttrs does
+// for the single-model agent span (#9386). Claude and pi count reasoning
+// inside output and must not add it twice.
+func TestEmitPerModelUsageSpans_OutputIncludesReasoning(t *testing.T) {
+	for _, tc := range []struct {
+		runtime string
+		wantOut map[string]int64
+	}{
+		{"codex", map[string]int64{"gpt-5.6-luna": 120, "gpt-5.6-terra": 270}},
+		{"claude", map[string]int64{"gpt-5.6-luna": 100, "gpt-5.6-terra": 200}},
+	} {
+		t.Run(tc.runtime, func(t *testing.T) {
+			pinSpanLimitEnv(t)
+			rec := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+			t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+			_, parent := tp.Tracer("test").Start(context.Background(), "agent")
+			m := &agentruntime.RunMetrics{
+				Model: "gpt-5.6-luna",
+				PerModelUsage: map[string]agentruntime.ModelUsage{
+					"gpt-5.6-luna":  {Requests: 1, InputTokens: 10, OutputTokens: 100, ReasoningTokens: 20},
+					"gpt-5.6-terra": {Requests: 1, InputTokens: 15, OutputTokens: 200, ReasoningTokens: 70},
+				},
+			}
+			emitPerModelUsageSpans(parent, "openai", tc.runtime, m, nil)
+			parent.End()
+
+			got := map[string]int64{}
+			for _, sp := range rec.Ended() {
+				if sp.Name() == "agent" {
+					continue
+				}
+				attrs := spanAttrMap(sp)
+				got[attrs["gen_ai.request.model"].AsString()] = attrs["gen_ai.usage.output_tokens"].AsInt64()
+			}
+			assert.Equal(t, tc.wantOut, got)
 		})
 	}
 }
