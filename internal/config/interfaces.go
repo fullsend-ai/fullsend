@@ -61,6 +61,7 @@ type ConfigReader interface {
 // the struct field names (Roles and Runtime).
 type PerRepoConfigReader interface {
 	ConfigReader
+	SecretSourcesReader
 	ConfigRoles() []string
 	ConfigRuntime() string
 	ConfigForge() string

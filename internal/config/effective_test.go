@@ -131,6 +131,34 @@ func TestEffectiveYAML_JiraPolicyChangesChangeOutput(t *testing.T) {
 		"a set but empty list differs from an unset one")
 }
 
+func TestEffectiveYAML_SecretSourceChangesChangeOutput(t *testing.T) {
+	render := func(doc string) string {
+		overlay, err := ParsePerRepoConfigWriter([]byte(doc))
+		require.NoError(t, err)
+		layered, err := LayerOnBase(overlay, nil)
+		require.NoError(t, err)
+		data, err := EffectiveYAML(layered)
+		require.NoError(t, err)
+		return string(data)
+	}
+	doc := func(addr, path string) string {
+		return "connections:\n  corp:\n    kind: vault\n    vault_address: " + addr + "\n" +
+			"secrets:\n  JIRA_TOKEN:\n    connection: corp\n    vault_secrets:\n      - " + path + "\n"
+	}
+	const addr = "https://vault.example.com"
+	const path = "secret/data/{{repo.host}}/{{repo.full_name}}"
+	got := render(doc(addr, path))
+	assert.Contains(t, got, "connections:")
+	assert.Contains(t, got, addr)
+	assert.Contains(t, got, "secrets:")
+	assert.Contains(t, got, path)
+	assert.NotEqual(t, got, render(doc("https://other.example.com", path)), "a changed Vault address renders differently")
+	assert.NotEqual(t, got, render(doc(addr, "secret/data/other")), "a changed secret path renders differently")
+	assert.NotEqual(t, got, render(""), "removing the sources renders differently")
+	assert.NotContains(t, render(""), "connections:")
+	assert.NotContains(t, render(""), "secrets:")
+}
+
 func TestCloneAuthorizationSlice_DeepCopiesJiraLists(t *testing.T) {
 	in := []AuthorizationProvider{{Provider: AuthProviderJira, Write: &JiraActorList{Groups: []string{"g"}}}}
 	out := cloneAuthorizationSlice(in)
