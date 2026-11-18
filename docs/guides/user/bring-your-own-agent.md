@@ -950,7 +950,7 @@ if ! ROLE=$(fullsend bot-role "$login"); then
   # The lookup could not be completed (mint unreachable, no mint configured
   # for this deployment, or the command ran outside a fullsend run). Fail
   # closed: treat the author as unknown.
-  echo "::error::Bot-role lookup failed for ${login}; failing closed."
+  echo "::error::Bot-role lookup failed; failing closed."
   exit 1
 fi
 
