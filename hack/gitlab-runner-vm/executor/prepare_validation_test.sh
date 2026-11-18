@@ -139,6 +139,138 @@ JOB_RESPONSE_OVERRIDE="${FAKE_HOME}/bad-json.json" \
 JOB_RESPONSE_OVERRIDE="" \
   run_case reject-identity CUSTOM_ENV_CI_BUILDS_DIR "${FAKE_HOME}/builds"
 
+echo "== podman secret store =="
+# An unreadable secret store makes OpenShell sandbox creation fail (#9675).
+# prepare.sh must fail as a runner system failure before pulling the image or
+# starting a gateway. Emptying secrets/secrets.json breaks every `podman
+# secret` command; emptying secrets/filedriver/secretsdata.json breaks only
+# `secret create`, while `secret ls` still exits 0. The probe must catch both.
+# The broken shims log every call and delegate everything else to the shims
+# above; SECRET_FAULT selects which secret commands fail:
+#   index  - ls and create fail (secrets.json emptied)
+#   data   - ls passes, create fails (secretsdata.json emptied)
+#   rm     - ls and create pass, rm fails
+#   stale  - a healthy store that keeps state: create fails while the probe
+#            secret exists (a leftover from an earlier attempt of the job),
+#            rm deletes it
+PROBE_STATE="${FAKE_HOME}/probe-secret-exists"
+BROKEN_DIR="${FAKE_HOME}/broken-shims"
+CALL_LOG="${FAKE_HOME}/calls.log"
+mkdir -p "${BROKEN_DIR}"
+cat > "${BROKEN_DIR}/podman" <<PODMAN
+#!/bin/sh
+echo "podman \$*" >> "${CALL_LOG}"
+if [ "\$1" = secret ]; then
+  case "\${SECRET_FAULT}:\$2" in
+    index:ls)
+      echo "Error: unexpected end of JSON input" >&2; exit 125 ;;
+    index:create)
+      echo "Error: unexpected end of JSON input" >&2; exit 125 ;;
+    data:create)
+      echo "Error: creating secret \$3: unexpected end of JSON input" >&2; exit 125 ;;
+    rm:rm)
+      echo "Error: removing secret \$3: permission denied" >&2; exit 125 ;;
+    stale:create)
+      if [ -e "${PROBE_STATE}" ]; then
+        echo "Error: creating secret \$3: secret name in use" >&2; exit 125
+      fi
+      : > "${PROBE_STATE}"; exit 0 ;;
+    stale:rm)
+      if [ ! -e "${PROBE_STATE}" ]; then
+        echo "Error: no secret with name or id \$3: no such secret" >&2; exit 125
+      fi
+      rm -f "${PROBE_STATE}"; exit 0 ;;
+  esac
+fi
+exec "${SHIM_DIR}/podman" "\$@"
+PODMAN
+cat > "${BROKEN_DIR}/openshell" <<OPENSHELL
+#!/bin/sh
+echo "openshell \$*" >> "${CALL_LOG}"
+exec "${SHIM_DIR}/openshell" "\$@"
+OPENSHELL
+chmod +x "${BROKEN_DIR}/podman" "${BROKEN_DIR}/openshell"
+
+# run_secret_case <label> <fault> <expected rc> <expected message>
+#   <last call prefix> [SYSTEM_FAILURE_EXIT_CODE value]
+run_secret_case() {
+  local label="$1" fault="$2" want_rc="$3" want_msg="$4" want_last="$5"
+  local rc=0 output problem="" last
+  local sys_env=(-u SYSTEM_FAILURE_EXIT_CODE)
+  [ "$#" -ge 6 ] && sys_env=("SYSTEM_FAILURE_EXIT_CODE=$6")
+  : > "${CALL_LOG}"
+  output=$(
+    cd "${FAKE_HOME}" && \
+    PATH="${BROKEN_DIR}:${SHIM_DIR}:${PATH}" \
+    HOME="${FAKE_HOME}" \
+    JOB_RESPONSE_FILE="${JOB_RESPONSE}" \
+    CUSTOM_ENV_CI_JOB_IMAGE="registry.example.com/img:latest" \
+    SECRET_FAULT="${fault}" \
+    env "${sys_env[@]}" bash "${PREPARE}" 2>&1
+  ) || rc=$?
+  last=$(tail -n 1 "${CALL_LOG}")
+
+  if [ "${rc}" -ne "${want_rc}" ]; then
+    problem="rc=${rc}, want ${want_rc}"
+  elif ! printf '%s' "${output}" | grep -qF "ERROR: Podman secret store is unusable on this runner VM: ${want_msg}"; then
+    problem="missing secret store error: $(printf '%s' "${output}" | tail -1)"
+  elif grep -q '^podman pull' "${CALL_LOG}"; then
+    problem="image was pulled"
+  elif [ "${last#"${want_last}"}" = "${last}" ]; then
+    # Leftover reaping may run first; nothing (gateway start included)
+    # may follow the failed probe call.
+    problem="last call is '${last}', want '${want_last}'"
+  fi
+
+  if [ -z "${problem}" ]; then
+    printf 'ok       %s\n' "${label}"
+  else
+    printf 'FAIL     %s: %s\n' "${label}" "${problem}"
+    failures=$((failures + 1))
+  fi
+}
+
+run_secret_case "secrets.json emptied -> SYSTEM_FAILURE_EXIT_CODE" \
+  index 42 "Error: unexpected end of JSON input" "podman secret create" 42
+run_secret_case "secrets.json emptied, SYSTEM_FAILURE_EXIT_CODE unset -> 1" \
+  index 1 "Error: unexpected end of JSON input" "podman secret create"
+# `secret ls` passes here; only the create probe catches the fault.
+run_secret_case "secretsdata.json emptied (secret ls passes) -> SYSTEM_FAILURE_EXIT_CODE" \
+  data 42 "Error: creating secret fullsend-secret-probe-1: unexpected end of JSON input" \
+  "podman secret create" 42
+run_secret_case "secret rm fails after create -> SYSTEM_FAILURE_EXIT_CODE" \
+  rm 42 "Error: removing secret fullsend-secret-probe-1: permission denied" \
+  "podman secret rm" 42
+
+# A probe secret left by an earlier attempt of the same job (create succeeded,
+# rm failed or prepare was killed in between) must not make a healthy store
+# look broken: prepare.sh removes the leftover before creating the probe.
+: > "${PROBE_STATE}"
+: > "${CALL_LOG}"
+stale_rc=0
+stale_output=$(
+  cd "${FAKE_HOME}" && \
+  PATH="${BROKEN_DIR}:${SHIM_DIR}:${PATH}" \
+  HOME="${FAKE_HOME}" \
+  JOB_RESPONSE_FILE="${JOB_RESPONSE}" \
+  CUSTOM_ENV_CI_JOB_IMAGE="registry.example.com/img:latest" \
+  SECRET_FAULT=stale \
+  bash "${PREPARE}" 2>&1
+) || stale_rc=$?
+if [ "${stale_rc}" -ne 0 ]; then
+  printf 'FAIL     leftover probe secret, healthy store: rc=%s: %s\n' \
+    "${stale_rc}" "$(printf '%s' "${stale_output}" | tail -1)"
+  failures=$((failures + 1))
+elif printf '%s' "${stale_output}" | grep -qF "Podman secret store is unusable"; then
+  printf 'FAIL     leftover probe secret, healthy store: reported unusable\n'
+  failures=$((failures + 1))
+elif [ -e "${PROBE_STATE}" ]; then
+  printf 'FAIL     leftover probe secret, healthy store: probe secret not removed\n'
+  failures=$((failures + 1))
+else
+  printf 'ok       leftover probe secret, healthy store -> prepare passes\n'
+fi
+
 if [ "${failures}" -ne 0 ]; then
   echo "${failures} case(s) failed" >&2
   exit 1
