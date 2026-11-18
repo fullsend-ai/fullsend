@@ -2173,12 +2173,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}()
 
 	// 3c. Start the runner-side bot-role helper service (#9602, ADR 0107)
-	// so host-side pre- and post-scripts can resolve a bot's registered
-	// role for the run's target repository through the mint with the
-	// runner's own OIDC token. The helper holds the OIDC credential and
-	// the target; scripts get only its loopback URL and a bearer token
-	// (FULLSEND_BOT_ROLE_URL / FULLSEND_BOT_ROLE_TOKEN, the same shape as
-	// the runtime fetch service's env), never the ACTIONS_ID_TOKEN_*
+	// so host-side pre- and post-scripts can resolve the registered role of
+	// a comment's actor on the entity the run handles, for the run's target
+	// repository, through the mint with the runner's own OIDC token. The
+	// helper holds the OIDC credential, the target and the entity; scripts
+	// get only its loopback URL, a bearer token and the entity's canonical
+	// ID (FULLSEND_BOT_ROLE_URL / FULLSEND_BOT_ROLE_TOKEN /
+	// FULLSEND_ENTITY_ID, the same shape as the runtime fetch service's
+	// env), never the ACTIONS_ID_TOKEN_*
 	// variables child scripts are stripped of (#5832). A lookup that
 	// cannot be completed is reported to the script as a failure, kept
 	// apart from a no-match, so callers fail closed. The deferred shutdown
@@ -2186,9 +2188,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// post-script still runs with the helper up.
 	var botRoleEnv botRoleHelperEnv
 	if h.PreScript != "" || h.PostScript != "" {
+		entityID, comments := botRoleCommentLookup(ctx, forgePlatform, sOpts.trackerSource, printer)
 		helperEnv, botRoleShutdown, helperErr := startBotRoleHelperService(
 			&botidentity.MintResolver{MintURL: mintURL, OIDCToken: actionsMintOIDCToken},
-			os.Getenv("REPO_FULL_NAME"))
+			os.Getenv("REPO_FULL_NAME"), entityID, comments)
 		if helperErr != nil {
 			printer.StepWarn("Bot-role helper service failed to start: " + helperErr.Error())
 		} else {
@@ -3748,13 +3751,14 @@ var inheritedScriptDenyKeys = map[string]bool{
 	jira.EmailEnvVar:        true,
 	jira.ClientIDEnvVar:     true,
 	jira.ClientSecretEnvVar: true,
-	// The bot-role helper's address and credential are runner-owned too
-	// (#9602): an inherited value (an outer run's helper, or a
-	// workflow-level env) must not answer lookups for a run whose own
-	// helper failed to start. The run's own export is appended after
-	// childScriptEnv, so a running helper still wins.
+	// The bot-role helper's address, credential and entity ID are
+	// runner-owned too (#9602): an inherited value (an outer run's helper,
+	// or a workflow-level env) must not answer lookups, or name the entity,
+	// for a run whose own helper failed to start. The run's own export is
+	// appended after childScriptEnv, so a running helper still wins.
 	"FULLSEND_BOT_ROLE_URL":   true,
 	"FULLSEND_BOT_ROLE_TOKEN": true,
+	"FULLSEND_ENTITY_ID":      true,
 }
 
 // optionalHarnessEnvKeys are host variables a harness ${VAR} reference may
@@ -6410,8 +6414,37 @@ func isPinnedGitLabRoleRoutingKey(key string) bool {
 	return strings.HasPrefix(key, gitlabRoleRoutingKeyPrefix)
 }
 
+// botRoleCommentLookup returns the canonical entity ID of the GitHub issue
+// or pull request the run handles and the comment lookup the bot-role
+// helper answers through (#9602). Only a GitHub run handling a GitHub issue
+// or pull request (REPO_FULL_NAME with ISSUE_NUMBER or PR_NUMBER) has one:
+// GitLab, Jira-tracked runs and a run whose entity cannot be resolved get
+// none, and the helper then refuses every lookup so a caller fails closed.
+func botRoleCommentLookup(ctx context.Context, forgePlatform, trackerSource string, printer *ui.Printer) (string, commentActorLookup) {
+	if forgePlatform != repos.ForgeGitHub || trackerSource == "jira" {
+		return "", nil
+	}
+	number := strings.TrimSpace(os.Getenv("ISSUE_NUMBER"))
+	if number == "" {
+		number = strings.TrimSpace(os.Getenv("PR_NUMBER"))
+	}
+	repo := strings.TrimSpace(os.Getenv("REPO_FULL_NAME"))
+	if repo == "" || number == "" {
+		return "", nil
+	}
+	g := newGitHubCommentActors()
+	lookupCtx, cancel := context.WithTimeout(ctx, githubGraphQLTimeout)
+	defer cancel()
+	entityID, err := g.EntityID(lookupCtx, repo, number)
+	if err != nil {
+		printer.StepWarn("Bot-role helper: could not resolve the run's entity, so it will refuse lookups: " + err.Error())
+		return "", nil
+	}
+	return entityID, g
+}
+
 // isBotRoleHelperEnvKey reports whether key is one of the bot-role helper
-// address and credential vars the runner owns (#9602). A harness
+// address, credential and entity vars the runner owns (#9602). A harness
 // runner_env/env.runner entry for one of them is dropped everywhere
 // RunnerEnv reaches a script (childScriptEnv, validationEnv, preflight):
 // the helper's own export, appended by runAgent, must be the only source
@@ -6421,7 +6454,7 @@ func isPinnedGitLabRoleRoutingKey(key string) bool {
 // last-value-wins reasoning as the GitLab role-routing pin above
 // (#7499).
 func isBotRoleHelperEnvKey(key string) bool {
-	return key == "FULLSEND_BOT_ROLE_URL" || key == "FULLSEND_BOT_ROLE_TOKEN"
+	return key == "FULLSEND_BOT_ROLE_URL" || key == "FULLSEND_BOT_ROLE_TOKEN" || key == "FULLSEND_ENTITY_ID"
 }
 
 // postScriptEnv builds the environment for post-script execution.

@@ -41,7 +41,7 @@ func TestRunBotRole_StdoutWriteErrorFailsCommand(t *testing.T) {
 	t.Setenv(botRoleScriptEnvURL, srv.URL)
 	t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
 
-	err := runBotRole(context.Background(), "fullsend-ai-triage[bot]", failingWriter{})
+	err := runBotRole(context.Background(), testEntityID, testCommentID, failingWriter{})
 	require.Error(t, err, "a failing stdout writer must fail the command instead of reporting success")
 	assert.Contains(t, err.Error(), "failed to print the bot-role outcome")
 }
@@ -55,7 +55,7 @@ func TestRunBotRole_StdoutWriteErrorOnNoMatchFailsCommand(t *testing.T) {
 	t.Setenv(botRoleScriptEnvURL, srv.URL)
 	t.Setenv(botRoleScriptEnvToken, "helper-bearer-token")
 
-	err := runBotRole(context.Background(), "fullsend-ai-triage[bot]", failingWriter{})
+	err := runBotRole(context.Background(), testEntityID, testCommentID, failingWriter{})
 	require.Error(t, err, "a failing stdout writer must fail the no-match answer too")
 	assert.Contains(t, err.Error(), "failed to print the bot-role outcome")
 }

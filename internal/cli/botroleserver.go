@@ -7,7 +7,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/botidentity"
@@ -19,38 +18,67 @@ import (
 const maxBotRoleRequestBytes = 1 << 20
 
 // botRoleHelperEnv holds the loopback URL and bearer token of the
-// runner-side bot-role helper service (#9602). When non-empty, the run
-// injects them as FULLSEND_BOT_ROLE_URL / FULLSEND_BOT_ROLE_TOKEN into the
-// environment of host-side harness pre- and post-scripts, so a script can
-// resolve a bot's registered role (ADR 0107) for the run's target
-// repository without ever seeing the Actions OIDC credentials the lookup
-// authenticates with (#5832, ADR 0073).
+// runner-side bot-role helper service (#9602), and the canonical ID of the
+// entity the run handles. When the URL is non-empty, the run injects them
+// as FULLSEND_BOT_ROLE_URL / FULLSEND_BOT_ROLE_TOKEN / FULLSEND_ENTITY_ID
+// into the environment of host-side harness pre- and post-scripts, so a
+// script can resolve the registered role (ADR 0107) of a comment's actor
+// on that entity without ever seeing the Actions OIDC credentials the
+// lookup authenticates with (#5832, ADR 0073).
 type botRoleHelperEnv struct {
-	url   string
-	token string
+	url    string
+	token  string
+	entity string
 }
 
 // exports returns the environment entries that carry the helper to a
-// host-side script, or nil when no helper is running.
+// host-side script, or nil when no helper is running. FULLSEND_ENTITY_ID is
+// left out when the run's entity could not be resolved: the helper then
+// refuses every lookup, and a script has no entity to name.
 func (e botRoleHelperEnv) exports() []string {
 	if e.url == "" {
 		return nil
 	}
-	return []string{"FULLSEND_BOT_ROLE_URL=" + e.url, "FULLSEND_BOT_ROLE_TOKEN=" + e.token}
+	out := []string{"FULLSEND_BOT_ROLE_URL=" + e.url, "FULLSEND_BOT_ROLE_TOKEN=" + e.token}
+	if e.entity != "" {
+		out = append(out, "FULLSEND_ENTITY_ID="+e.entity)
+	}
+	return out
+}
+
+// commentActor is the current-revision actor of one comment and the
+// canonical ID of the entity the comment is on. Login is the REST form a
+// mint lookup takes (slug[bot] for a bot).
+type commentActor struct {
+	Entity string
+	Bot    bool
+	Login  string
+}
+
+// commentActorLookup reads a comment's current-revision actor from the
+// forge: the last editor when the comment was edited, its author otherwise
+// (ADR 0133, ADR 0141).
+type commentActorLookup interface {
+	CommentActor(ctx context.Context, commentID string) (commentActor, error)
 }
 
 // botRoleHelper is the runner-side bot-role lookup service: it answers a
-// host-side script's `fullsend bot-role <login>` request with the ADR 0107
-// result of resolving that login for the run's target repository through
-// the mint (or an equivalent trusted resolver). The helper holds the OIDC
-// credential and the target; the script holds neither — it cannot choose
-// the repository it asks about.
+// host-side script's `fullsend bot-role --entity --comment` request with
+// the ADR 0107 result for the comment's current-revision actor, resolved
+// for the run's target repository through the mint. The helper holds the
+// OIDC credential, the target and the entity; the script holds none of
+// them — it cannot choose the repository or the entity it asks about.
+// With no comment lookup (GitLab, Jira, or a run whose entity could not be
+// resolved) every request is refused, so a caller fails closed.
 type botRoleHelper struct {
 	resolver botidentity.BotRoleResolver
 	target   string
+	entity   string
+	comments commentActorLookup
 	// errLog receives lookup-failure detail runner-side; the response a
 	// script sees carries a fixed message only, so wrapped transport
-	// errors (mint URL, OIDC fetch detail) never reach script logs.
+	// errors (mint URL, OIDC fetch detail, forge errors) never reach
+	// script logs.
 	errLog *log.Logger
 }
 
@@ -71,32 +99,42 @@ func (h *botRoleHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "invalid request body"})
 		return
 	}
-	if req.Login == "" {
-		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "login is required"})
+	if req.Entity == "" || req.Comment == "" {
+		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "entity and comment are required"})
 		return
 	}
-	// A login that cannot be a GitHub App bot login (the mint's
-	// botLoginPattern requires the "[bot]" suffix) can never match, so
-	// answer the completed no-match here instead of forwarding it to a
-	// certain 400: a human author is not a registered bot, not a lookup
-	// failure. This mirrors fullsend dispatch's ActorBot gate.
-	// shortcut: only the missing-suffix case is gated here; a login that
-	// is pattern-invalid another way (an empty slug, a "/" in the name,
-	// over-long) still reaches the mint and fails closed as a lookup
-	// failure.
-	if !strings.HasSuffix(strings.ToLower(req.Login), "[bot]") {
+	if h.comments == nil || h.entity == "" {
+		writeBotRoleJSON(w, http.StatusNotImplemented, botidentity.MintBotRoleResponse{Error: "no trusted bot-role lookup for this run"})
+		return
+	}
+	if req.Entity != h.entity {
+		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "entity is not the one this run handles"})
+		return
+	}
+	actor, err := h.comments.CommentActor(r.Context(), req.Comment)
+	if err != nil {
+		h.logf("comment lookup failed: %v", err)
+		writeBotRoleJSON(w, http.StatusBadGateway, botidentity.MintBotRoleResponse{Error: "bot-role lookup failed"})
+		return
+	}
+	if actor.Entity != h.entity {
+		writeBotRoleJSON(w, http.StatusBadRequest, botidentity.MintBotRoleResponse{Error: "comment is not on the entity this run handles"})
+		return
+	}
+	// A human actor, including a human who last edited a bot's comment,
+	// is not a registered bot: a completed no-match that never reaches
+	// the mint.
+	if !actor.Bot {
 		writeBotRoleJSON(w, http.StatusOK, botidentity.MintBotRoleResponse{Outcome: botidentity.MintOutcomeNoMatch})
 		return
 	}
 	res, err := h.resolver.ResolveBotRole(r.Context(), botidentity.BotRoleQuery{
 		Forge:  string(normevent.SystemGitHub),
 		Target: h.target,
-		Login:  req.Login,
+		Login:  actor.Login,
 	})
 	if err != nil {
-		if h.errLog != nil {
-			h.errLog.Printf("bot-role lookup failed: %v", err)
-		}
+		h.logf("bot-role lookup failed: %v", err)
 		writeBotRoleJSON(w, http.StatusBadGateway, botidentity.MintBotRoleResponse{Error: "bot-role lookup failed"})
 		return
 	}
@@ -105,6 +143,13 @@ func (h *botRoleHelper) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeBotRoleJSON(w, http.StatusOK, botidentity.MintBotRoleResponse{Outcome: botidentity.MintOutcomeNoMatch})
+}
+
+// logf records failure detail runner-side, when the helper has a log.
+func (h *botRoleHelper) logf(format string, args ...any) {
+	if h.errLog != nil {
+		h.errLog.Printf(format, args...)
+	}
 }
 
 // writeBotRoleJSON writes one helper response in the mint's bot-role
@@ -116,12 +161,13 @@ func writeBotRoleJSON(w http.ResponseWriter, status int, resp botidentity.MintBo
 }
 
 // startBotRoleHelperService starts the loopback bot-role helper service for
-// one run. It returns the helper's env (its URL and bearer token), a
-// shutdown function, and any error. Unlike the runtime fetch service, which
+// one run, answering for comments on entity through comments (nil when the
+// run has no trusted comment lookup). It returns the helper's env (its URL,
+// bearer token and entity), a shutdown function, and any error. Unlike the runtime fetch service, which
 // the sandbox container must reach and therefore binds all interfaces
 // (ADR-0046), the consumers here are host-side scripts, so the listener is
 // loopback-only.
-func startBotRoleHelperService(resolver botidentity.BotRoleResolver, target string) (botRoleHelperEnv, func(), error) {
+func startBotRoleHelperService(resolver botidentity.BotRoleResolver, target, entity string, comments commentActorLookup) (botRoleHelperEnv, func(), error) {
 	token, err := generateToken()
 	if err != nil {
 		return botRoleHelperEnv{}, nil, fmt.Errorf("generating bot-role helper token: %w", err)
@@ -133,7 +179,7 @@ func startBotRoleHelperService(resolver botidentity.BotRoleResolver, target stri
 	security.RegisterRuntimeSecret(token)
 
 	errLog := log.New(log.Writer(), "botrole: ", log.LstdFlags)
-	handler := withBearerAuth(token, &botRoleHelper{resolver: resolver, target: target, errLog: errLog})
+	handler := withBearerAuth(token, &botRoleHelper{resolver: resolver, target: target, entity: entity, comments: comments, errLog: errLog})
 	mux := http.NewServeMux()
 	mux.Handle("/bot-role", handler)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -164,5 +210,8 @@ func startBotRoleHelperService(resolver botidentity.BotRoleResolver, target stri
 		server.Shutdown(ctx)
 	}
 
-	return botRoleHelperEnv{url: "http://" + ln.Addr().String() + "/bot-role", token: token}, shutdownFn, nil
+	if comments == nil {
+		entity = ""
+	}
+	return botRoleHelperEnv{url: "http://" + ln.Addr().String() + "/bot-role", token: token, entity: entity}, shutdownFn, nil
 }
