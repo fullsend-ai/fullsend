@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 )
@@ -49,21 +50,18 @@ func newReviewDedupCmd() *cobra.Command {
 			}
 
 			if supersede {
-				if err := supersedeReviewSkip(cmd.Context(), client, owner, repoName, pr, headSHA, owner, appSet, appClientID); err != nil {
+				if err := supersedeReviewSkip(cmd.Context(), client, owner, repoName, pr, headSHA, appSet, appClientID); err != nil {
 					return err
 				}
 				fmt.Fprintln(cmd.OutOrStdout(), "superseded=true")
 				return nil
 			}
 
-			result := reviewDedupResult{}
-			if err := decideReviewDedup(cmd.Context(), client, owner, repoName, pr, appSet, appClientID, &result); err != nil {
-				return err
-			}
+			result := decideReviewDedup(cmd.Context(), client, owner, repoName, pr, appSet, appClientID)
 			writeReviewDedupOutput(cmd, result)
 			if publish && result.Skip {
 				if err := publishReviewSkip(cmd.Context(), client, owner, repoName, pr, result.PriorURL, appSet, appClientID); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "::warning::Could not publish review skip note; running review: %v\n", err)
+					fmt.Fprintln(cmd.ErrOrStderr(), "::warning::Could not publish review skip note; running review")
 					fmt.Fprintln(cmd.OutOrStdout(), "skipped=false")
 					return nil
 				}
@@ -78,7 +76,7 @@ func newReviewDedupCmd() *cobra.Command {
 	cmd.Flags().StringVar(&token, "token", "", "forge token (default: $GH_TOKEN / $GITHUB_TOKEN)")
 	cmd.Flags().StringVar(&forgeName, "forge", repos.ForgeGitHub, "forge backend")
 	cmd.Flags().StringVar(&baseURL, "base-url", "", "forge instance URL")
-	cmd.Flags().StringVar(&appSet, "app-set", "fullsend-ai", "review bot app-set name")
+	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "review bot app-set name")
 	cmd.Flags().StringVar(&appClientID, "app-client-id", "", "verified review GitHub App client ID")
 	cmd.Flags().BoolVar(&publish, "publish", false, "publish or update the skip note after a skip decision")
 	cmd.Flags().BoolVar(&supersede, "supersede", false, "mark existing app-verified skip notes as superseded")
@@ -112,69 +110,64 @@ func writeReviewDedupOutput(cmd *cobra.Command, result reviewDedupResult) {
 	}
 }
 
-func decideReviewDedup(ctx context.Context, client forge.Client, owner, repo string, pr int, appSet, appClientID string, result *reviewDedupResult) error {
+func decideReviewDedup(ctx context.Context, client forge.Client, owner, repo string, pr int, appSet, appClientID string) reviewDedupResult {
+	var result reviewDedupResult
 	before, err := client.GetPullRequestInfo(ctx, owner, repo, pr)
 	if err != nil {
-		return nil // fail open
+		return result // fail open
 	}
 	if before.BaseSHA == "" || before.HeadSHA == "" || before.ChangedFiles <= 0 || appClientID == "" {
-		return nil
+		return result
 	}
 
 	diffs, diffErr := client.ListPullRequestFileDiffs(ctx, owner, repo, pr)
 	if diffErr != nil || len(diffs) != before.ChangedFiles {
-		return nil
+		return result
 	}
 	currentHash, err := pullRequestDiffHashFromDiffs(diffs, diffErr)
 	if err != nil || currentHash == "" {
-		return nil
+		return result
 	}
 
 	after, err := client.GetPullRequestInfo(ctx, owner, repo, pr)
 	if err != nil || after.BaseSHA != before.BaseSHA || after.HeadSHA != before.HeadSHA {
-		return nil
+		return result
 	}
 
 	comments, err := client.ListIssueComments(ctx, owner, repo, pr)
 	if err != nil {
-		return nil
+		return result
 	}
 	prior := latestVerifiedReviewComment(comments, owner, appSet, appClientID)
 	if prior == nil {
-		return nil
+		return result
 	}
 	priorHash, priorHead := reviewHashAndHead(prior.Body)
 	if priorHash == "" || priorHead == "" {
-		return nil
+		return result
 	}
 
 	reviews, err := client.ListPullRequestReviews(ctx, owner, repo, pr)
 	if err != nil || !hasApprovedReview(reviews, owner, appSet, priorHead) {
-		return nil
+		return result
 	}
 	if priorHash != currentHash {
-		return nil
+		return result
 	}
 	// The review can be updated while comments and formal reviews are being
 	// read. Re-read both refs immediately before skipping so a concurrent push
 	// cannot turn a matching intermediate snapshot into a false skip.
 	final, err := client.GetPullRequestInfo(ctx, owner, repo, pr)
 	if err != nil || final.BaseSHA != after.BaseSHA || final.HeadSHA != after.HeadSHA {
-		return nil
+		return result
 	}
 	result.Skip = true
 	result.PriorURL = prior.HTMLURL
-	return nil
+	return result
 }
 
 func latestVerifiedReviewComment(comments []forge.IssueComment, owner, appSet, appClientID string) *forge.IssueComment {
-	logins := map[string]bool{
-		owner + "-review[bot]":    true,
-		"fullsend-ai-review[bot]": true,
-	}
-	if appSet != "" {
-		logins[appSet+"-review[bot]"] = true
-	}
+	logins := reviewBotLogins(owner, appSet)
 	var matches []forge.IssueComment
 	for _, comment := range comments {
 		if logins[comment.Author] && comment.AppClientID == appClientID && strings.Contains(comment.Body, reviewMarker) {
@@ -207,10 +200,7 @@ func reviewHashAndHead(body string) (string, string) {
 }
 
 func hasApprovedReview(reviews []forge.PullRequestReview, owner, appSet, head string) bool {
-	logins := map[string]bool{owner + "-review[bot]": true, "fullsend-ai-review[bot]": true}
-	if appSet != "" {
-		logins[appSet+"-review[bot]"] = true
-	}
+	logins := reviewBotLogins(owner, appSet)
 	var latest *forge.PullRequestReview
 	for i := range reviews {
 		review := &reviews[i]
@@ -245,28 +235,36 @@ func publishReviewSkip(ctx context.Context, client forge.Client, owner, repo str
 	if err != nil || botUser == "" {
 		return fmt.Errorf("cannot verify authenticated review bot")
 	}
-	for _, comment := range comments {
-		if comment.Author == botUser && comment.AppClientID == appClientID && strings.HasPrefix(comment.Body, reviewSkipMarker) {
-			return client.UpdateIssueComment(ctx, owner, repo, comment.ID, body)
+	var latest *forge.IssueComment
+	for i := range comments {
+		comment := &comments[i]
+		if comment.Author != botUser || comment.AppClientID != appClientID || !strings.HasPrefix(comment.Body, reviewSkipMarker) {
+			continue
 		}
+		if latest == nil || comment.CreatedAt > latest.CreatedAt || (comment.CreatedAt == latest.CreatedAt && comment.ID > latest.ID) {
+			latest = comment
+		}
+	}
+	if latest != nil {
+		return client.UpdateIssueComment(ctx, owner, repo, latest.ID, body)
 	}
 	_, err = client.CreateIssueComment(ctx, owner, repo, pr, body)
 	return err
 }
 
-func supersedeReviewSkip(ctx context.Context, client forge.Client, owner, repo string, pr int, headSHA, botOwner, appSet, appClientID string) error {
+func supersedeReviewSkip(ctx context.Context, client forge.Client, owner, repo string, pr int, headSHA, appSet, appClientID string) error {
 	if !hexSHARe.MatchString(headSHA) {
 		headSHA = "unknown head"
 	}
 	body := reviewSkipMarker + "\nFullsend's earlier unchanged-diff skip note was superseded by a full review for commit " + headSHA + "."
+	if appClientID == "" {
+		return nil
+	}
 	comments, err := client.ListIssueComments(ctx, owner, repo, pr)
 	if err != nil {
 		return err
 	}
-	if appClientID == "" {
-		return fmt.Errorf("cannot verify review app client ID")
-	}
-	logins := reviewBotLogins(botOwner, appSet)
+	logins := reviewBotLogins(owner, appSet)
 	for _, comment := range comments {
 		if logins[comment.Author] && comment.AppClientID == appClientID && strings.HasPrefix(comment.Body, reviewSkipMarker) {
 			if err := client.UpdateIssueComment(ctx, owner, repo, comment.ID, body); err != nil {
