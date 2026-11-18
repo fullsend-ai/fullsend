@@ -2,9 +2,11 @@ package repos
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -273,6 +275,30 @@ func TestManifestReadOnly_LocalFileWithoutWritePermission(t *testing.T) {
 	err := writeManifest(path, m)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read-only")
+
+	// Write bits that leave out the owner: only the open for writing tells.
+	require.NoError(t, os.Chmod(path, 0o464))
+	if os.Geteuid() != 0 {
+		assert.True(t, ManifestReadOnly(m, path))
+	}
+}
+
+// A file on a read-only file system (a Docker :ro bind mount or a
+// ConfigMap volume) keeps its write bits, so only the open for writing
+// tells.
+func TestIsWriteDenied(t *testing.T) {
+	for _, tc := range []struct {
+		errno syscall.Errno
+		want  bool
+	}{
+		{syscall.EROFS, true},
+		{syscall.EACCES, true},
+		{syscall.EPERM, true},
+		{syscall.ENOENT, false},
+	} {
+		err := &fs.PathError{Op: "open", Path: "repos.yaml", Err: tc.errno}
+		assert.Equal(t, tc.want, isWriteDenied(err), "%v", err)
+	}
 }
 
 func TestEnsureManagedConfigDefaults_ReadOnlyLocalManifestFailsBeforeWrite(t *testing.T) {

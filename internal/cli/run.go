@@ -582,6 +582,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// When --event-file is provided, the event is passed to ComposeOpts.Event
 	// so ResolveOverlays can evaluate overlay when expressions.
 	var eventMap map[string]any
+	// INVARIANT: the event file is read, and an unreadable one fails the
+	// run, before resolveRunProgressVerbosity runs below; that function
+	// still fails closed on its own when it cannot read the file.
 	if eventFile != "" {
 		eventData, readErr := os.ReadFile(eventFile)
 		if readErr != nil {
@@ -1097,7 +1100,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 	}
-	runtimeBackend, runtimeConfigSource, runtimeErr := resolveBackendFrom(overrides, runCfg, agentName)
+	runtimeBackend, runtimeConfigSource, runtimeErr := resolveRunBackendFn(overrides, runCfg, agentName)
 	if runtimeErr != nil {
 		switch {
 		case errors.Is(runtimeErr, errParsingConfigRuntime):
@@ -1152,6 +1155,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return fmt.Errorf("%s: %w", runCfg.source, err)
 		}
 	}
+	// The live progress log level (ADR 0163) gates what the renderer and
+	// the runner's own transcript-error and validation lines print. It
+	// fails closed to quiet, and leaves the log unchanged when it resolves
+	// to full.
+	progressVerbosity, progressRule := resolveRunProgressVerbosity(runCfg, absFullsendDir, eventFile)
+	if progressRule != "" {
+		printer.StepInfo(progressRule)
+	}
+	// At quiet the run's final error leaves as a fixed message (ADR 0163):
+	// main prints it as "Error: %v", and the wrapped text can quote sandbox
+	// output or paths the agent chose. This defer is registered before the
+	// telemetry and status defers, so it runs after them, and it swaps only
+	// an error the root span has recorded in full. Setup errors from before
+	// the root span starts carry no agent text and print as before.
+	var runErrRecorded bool
+	defer func() {
+		runErr = quietRunError(runErr, runErrRecorded, progressVerbosity)
+	}()
 	// resolvedModel is the alias-table target when models.aliases remaps
 	// h.Model, h.Model otherwise. It is what the echo and the Claude Code
 	// warning look at; pi still prefixes a bare id with its provider.
@@ -2141,6 +2162,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		finalizeRootSpan(rootSpan, runErr, exitCode, validationPassed)
+		runErrRecorded = true
 
 		flushCtx, cancel := context.WithTimeout(context.Background(), telemetry.FlushTimeout)
 		defer cancel()
@@ -2952,7 +2974,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				return rt.ClearIterationArtifacts(sandboxName)
 			})
 			if clearErr != nil {
-				printer.StepWarn("Failed to clear sandbox output: " + clearErr.Error())
+				printer.StepWarn(failureLine("Failed to clear sandbox output", clearErr, progressVerbosity))
 			}
 		}
 
@@ -2984,7 +3006,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err := writeIterationEnv(execCtx, sandboxName, effectiveTimeoutMinutes(h), agentStart.Add(timeout), agentTraceparent); err != nil {
 			// The deadline is advisory; a stale one from the previous
 			// iteration is the only harmful state, so clear it and go on.
-			printer.StepWarn("Could not export the iteration deadline: " + err.Error())
+			printer.StepWarn(failureLine("Could not export the iteration deadline", err, progressVerbosity))
 			if rmErr := clearIterationEnv(execCtx, sandboxName); rmErr != nil {
 				if mErr := writeMetricsJSON(runDir, aggMetrics); mErr != nil {
 					printer.StepWarn("Failed to write metrics.json: " + mErr.Error())
@@ -3005,6 +3027,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		toolSpans := newToolSpanTracker(tracer, agentCtx)
 		toolSpans.runnerEnv = h.RunnerEnv
 		renderer := agentruntime.NewEventRenderer(printer)
+		// The level gates printed lines only: iterationEventHandler still
+		// hands every event to the content collector and tool spans.
+		renderer.Verbosity = progressVerbosity
 		renderer.RedactProgress = func(text string) string {
 			return redactProgressSecretLiterals(text, h.RunnerEnv)
 		}
@@ -3028,11 +3053,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			HooksSettingsPath: hooksSettings,
 			Timeout:           timeout,
 			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
+			// Beside output.jsonl, so the artifact rules (ADR 0161) treat
+			// the quiet-level stderr file as they treat the stream.
+			StderrPath:        filepath.Join(iterDir, agentruntime.AgentStderrFile),
 			Prompt:            agentPrompt,
 			Forge:             forgePlatform,
 			ModelAliases:      configModelAliases,
 			ForgeClient:       playbackForgeClient,
 			OnEvent:           iterationEventHandler(renderer.Handle, collector, toolSpans),
+			ProgressVerbosity: progressVerbosity,
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 		lastIterElapsed = time.Since(agentStart)
@@ -3108,7 +3137,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				lastExitCode = 1
 				transcriptErrorOverride = true
 			}
-			printer.StepWarn(outcome.warnMsg)
+			// transcriptErrMsg still reaches the agent span below; at quiet
+			// the console line names the error type only.
+			warnMsg := outcome.warnMsg
+			if config.ProgressIsQuiet(progressVerbosity) {
+				warnMsg = classifyTranscriptError(te.QuietDisplayMessage(), te.Subtype, exitCode).warnMsg
+			}
+			printer.StepWarn(warnMsg)
 		}
 
 		// finish_reason reflects how the generation ended: a clean exit is
@@ -3153,23 +3188,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		extractStart := time.Now()
 		printer.StepStart("Extracting output files")
 		remoteSrc := fmt.Sprintf("%s/output", sandbox.SandboxWorkspace)
-		extracted, extractErr := sandbox.ExtractOutputFiles(sandboxName, remoteSrc, iterOutputDir)
+		extracted, extractErr := sandbox.ExtractOutputFiles(sandboxName, remoteSrc, iterOutputDir, config.ProgressIsQuiet(progressVerbosity))
 		if extractErr != nil {
-			printer.StepWarn("Failed to extract output files: " + extractErr.Error())
+			printer.StepWarn(failureLine("Failed to extract output files", extractErr, progressVerbosity))
 		} else if len(extracted) == 0 {
 			printer.StepInfo("No output files found")
 		} else {
-			for _, f := range extracted {
-				printer.StepInfo(f)
-			}
-			printer.StepDone(fmt.Sprintf("Extracted %d output file(s) (%.1fs)", len(extracted), time.Since(extractStart).Seconds()))
+			printExtractedOutputFiles(printer, extracted, time.Since(extractStart), progressVerbosity)
 		}
 
 		// 9c. Extract transcripts for this iteration.
 		transcriptStart := time.Now()
 		printer.StepStart("Extracting transcripts")
-		if err := tx.ExtractTranscripts(sandboxName, agentName, iterTranscriptDir); err != nil {
-			printer.StepWarn("Failed to extract transcripts: " + err.Error())
+		if err := tx.ExtractTranscripts(sandboxName, agentName, iterTranscriptDir, progressVerbosity); err != nil {
+			printer.StepWarn(failureLine("Failed to extract transcripts", err, progressVerbosity))
 		} else {
 			printer.StepDone(fmt.Sprintf("Transcripts extracted (%.1fs)", time.Since(transcriptStart).Seconds()))
 		}
@@ -3179,7 +3211,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			debugLogName := agentruntime.DebugLogNameFor(rt, tx)
 			debugDst := filepath.Join(iterDir, debugLogName)
 			if err := tx.ExtractDebugLog(sandboxName, debugDst, debug); err != nil {
-				printer.StepWarn("Failed to extract debug log: " + err.Error())
+				printer.StepWarn(failureLine("Failed to extract debug log", err, progressVerbosity))
 			} else {
 				printer.StepInfo("Extracted " + debugLogName)
 			}
@@ -3209,7 +3241,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// unknown provenance.
 		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
 			if h.ValidationLoop != nil {
-				printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration): %v", hostRepositoryDownloadDir, clearErr))
+				printer.StepWarn(failureLine(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration)", hostRepositoryDownloadDir), clearErr, progressVerbosity))
 				repoExtractedOK = false
 				if lastIterTimedOut {
 					printer.StepWarn(timeoutNoRetryMessage(lastIterElapsed, timeout))
@@ -3224,7 +3256,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Extracting target repo")
 		if err := sandbox.SafeDownload(sandboxName, remoteRepositoryDir, hostRepositoryDownloadDir, hostRepositorySnapshot); err != nil {
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
-				tx.EmitTranscriptErrors(os.Stderr, es)
+				emitTranscriptErrorsAt(tx, os.Stderr, es, progressVerbosity)
 			}
 			if h.ValidationLoop != nil {
 				// SafeDownload failed — the repo directory may contain
@@ -3233,9 +3265,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// Clean up to prevent unsanitized content from reaching
 				// validation or the post-script. Output files (extracted in
 				// 9b) are unaffected.
-				printer.StepWarn(fmt.Sprintf("Failed to extract target repo (cleaning up): %v", err))
+				printer.StepWarn(failureLine("Failed to extract target repo (cleaning up)", err, progressVerbosity))
 				if rmErr := forceRemoveAll(hostRepositoryDownloadDir); rmErr != nil {
-					printer.StepWarn(fmt.Sprintf("Failed to clean up repo dir after extraction failure: %v", rmErr))
+					printer.StepWarn(failureLine("Failed to clean up repo dir after extraction failure", rmErr, progressVerbosity))
 				}
 				repoExtractedOK = false
 				validationFailed := errors.Is(err, sandbox.ErrRepositoryValidation)
@@ -3292,7 +3324,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
-			printer.StepDone(fmt.Sprintf("Validation passed: %s (%.1fs)", strings.TrimSpace(redactFeedback(string(valOut), h.RunnerEnv)), time.Since(valStart).Seconds()))
+			printer.StepDone(validationPassedLine("Validation passed", valOut, h.RunnerEnv, time.Since(valStart), progressVerbosity))
 			validationPassed = true
 			validatedIterNum = iteration
 			break
@@ -3304,7 +3336,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// the same redacted text — the workflow log is a sink for this output
 		// too, and on a public repo it is a public one.
 		feedback := writeValidationFeedback(iterDir, valOut, valErr, h.RunnerEnv, printer)
-		printer.StepFail("Validation failed: " + feedback)
+		printer.StepFail(validationFailedLine("Validation failed", feedback, progressVerbosity))
 		if feedbackEnabled {
 			validationFeedback = feedback
 		}
@@ -3328,7 +3360,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// from the latest. This ensures a successful retry's output is
 	// found even when earlier steps in that iteration failed. See #5393.
 	if h.ValidationLoop != nil && !validationPassed {
-		sweep := postLoopValidationSweep(h, runDir, runCount, repoExtractedOK, printer)
+		sweep := postLoopValidationSweep(h, runDir, runCount, repoExtractedOK, progressVerbosity, printer)
 		validationPassed = sweep.passed
 		repoExtractedOK = sweep.repoExtractedOK
 		validatedIterNum = sweep.validatedIter
@@ -3358,14 +3390,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
 	if errorSummaries := tx.ParseTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
 		printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
-		tx.EmitTranscriptErrors(os.Stderr, errorSummaries)
+		emitTranscriptErrorsAt(tx, os.Stderr, errorSummaries, progressVerbosity)
 	}
 
 	// 9f. Post-agent output scan — redact secrets from extracted output.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running post-agent output scan")
-		if err := scanOutputFiles(runDir, securityTraceID, printer); err != nil {
-			printer.StepWarn("Output scan error: " + err.Error())
+		if err := scanOutputFiles(runDir, securityTraceID, progressVerbosity, printer); err != nil {
+			printer.StepWarn(failureLine("Output scan error", err, progressVerbosity))
 		}
 
 		// Extract sandbox-side security findings for audit trail.
@@ -3383,10 +3415,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if _, statErr := os.Stat(findingsJSONL); statErr == nil {
 			cv, verifyErr := security.VerifyChain(findingsJSONL)
 			if verifyErr != nil {
-				printer.StepWarn("Audit log verification error: " + verifyErr.Error())
+				printer.StepWarn(failureLine("Audit log verification error", verifyErr, progressVerbosity))
 			} else if !cv.Valid {
-				printer.StepFail(fmt.Sprintf("Audit log integrity check FAILED: %s", cv.BrokenMsg))
-				return fmt.Errorf("audit log integrity check failed: %s", cv.BrokenMsg)
+				line, chainErr := auditChainFailure(cv.BrokenMsg, progressVerbosity)
+				printer.StepFail(line)
+				return chainErr
 			} else if cv.Entries > 0 {
 				printer.StepDone(fmt.Sprintf("Audit log integrity verified (%d entries)", cv.Entries))
 			}
@@ -4957,8 +4990,10 @@ type sweepResult struct {
 // backwards. It returns the first iteration that passes, or signals that
 // none passed. When the passing iteration is not runCount, repoExtractedOK
 // is set to false because hostRepositoryDownloadDir holds a different
-// iteration's repo checkout — the post-script must not use it.
-func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, currentRepoExtractedOK bool, printer *ui.Printer) sweepResult {
+// iteration's repo checkout — the post-script must not use it. At the
+// quiet progress level (ADR 0163) the lines say passed or failed without
+// the script's output.
+func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, currentRepoExtractedOK bool, progressVerbosity string, printer *ui.Printer) sweepResult {
 	for i := runCount; i >= 1; i-- {
 		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
 		valStart := time.Now()
@@ -4972,16 +5007,153 @@ func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, cu
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
-			printer.StepDone(fmt.Sprintf("Validation passed (iteration %d): %s (%.1fs)", i, strings.TrimSpace(redactFeedback(string(valOut), h.RunnerEnv)), time.Since(valStart).Seconds()))
+			printer.StepDone(validationPassedLine(fmt.Sprintf("Validation passed (iteration %d)", i), valOut, h.RunnerEnv, time.Since(valStart), progressVerbosity))
 			repoOK := currentRepoExtractedOK
 			if i != runCount {
 				repoOK = false
 			}
 			return sweepResult{passed: true, validatedIter: i, repoExtractedOK: repoOK}
 		}
-		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, redactedValidationFailMessage(valOut, valErr, h.RunnerEnv)))
+		printer.StepWarn(validationFailedLine(fmt.Sprintf("Post-loop validation failed (iteration %d)", i),
+			redactedValidationFailMessage(valOut, valErr, h.RunnerEnv), progressVerbosity))
 	}
 	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
+}
+
+// validationPassedLine is the console line for a passing validation
+// script: the label, the script's redacted output and the elapsed time.
+// At the quiet progress level (ADR 0163) the output is left out, since it
+// can quote the agent's output files.
+func validationPassedLine(label string, valOut []byte, runnerEnv map[string]string, elapsed time.Duration, progressVerbosity string) string {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		return fmt.Sprintf("%s (%.1fs)", label, elapsed.Seconds())
+	}
+	return fmt.Sprintf("%s: %s (%.1fs)", label, strings.TrimSpace(redactFeedback(string(valOut), runnerEnv)), elapsed.Seconds())
+}
+
+// validationFailedLine is the console line for a failing validation
+// script: the label and the redacted feedback. At the quiet progress level
+// (ADR 0163) only the label prints; the feedback file and the next
+// iteration's prompt still get the full text.
+func validationFailedLine(label, feedback, progressVerbosity string) string {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		return label
+	}
+	return label + ": " + feedback
+}
+
+// failureLine is the console line for a step that failed with err: the
+// label and the error text. At the quiet progress level (ADR 0163) only
+// the label prints, since the error can quote file names or text from the
+// sandbox. Other levels print what they always have.
+func failureLine(label string, err error, progressVerbosity string) string {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		return label
+	}
+	return label + ": " + err.Error()
+}
+
+// auditChainFailure returns the failure line and the run error for a broken
+// security audit log. The broken-chain message quotes hash fields read from
+// a file the agent can write, so at quiet (ADR 0163) the line leaves it out.
+// The error keeps it at every level, so telemetry records it; at quiet
+// quietRunError replaces the error main prints.
+func auditChainFailure(brokenMsg, progressVerbosity string) (string, error) {
+	err := fmt.Errorf("audit log integrity check failed: %s", brokenMsg)
+	if config.ProgressIsQuiet(progressVerbosity) {
+		return "Audit log integrity check FAILED", err
+	}
+	return "Audit log integrity check FAILED: " + brokenMsg, err
+}
+
+// quietRunErrorMessage is what fullsend run prints as its final error at
+// the quiet progress level.
+const quietRunErrorMessage = "agent run failed (error details are not printed at progress level quiet; see telemetry or the run artifact)"
+
+// quietRunErr is the run's final error at quiet: it prints as
+// quietRunErrorMessage and keeps the original for errors.Is, errors.As and
+// the exit code.
+type quietRunErr struct{ err error }
+
+func (e *quietRunErr) Error() string { return quietRunErrorMessage }
+func (e *quietRunErr) Unwrap() error { return e.err }
+
+// ExitCode keeps the exit code the original error asks main for, and 1
+// otherwise, as main does for a plain error.
+func (e *quietRunErr) ExitCode() int {
+	var ec interface{ ExitCode() int }
+	if errors.As(e.err, &ec) {
+		return ec.ExitCode()
+	}
+	return 1
+}
+
+// quietRunError returns the error runAgent hands back to main. At quiet
+// (ADR 0163) an error the root span has recorded is replaced by a fixed
+// message; any other level, or an error telemetry has not recorded, is
+// returned unchanged.
+func quietRunError(err error, recorded bool, progressVerbosity string) error {
+	if err == nil || !recorded || !config.ProgressIsQuiet(progressVerbosity) {
+		return err
+	}
+	return &quietRunErr{err: err}
+}
+
+// emitTranscriptErrorsAt writes the transcript error annotations at the
+// run's progress level (ADR 0163): the runtime's full annotations, or at
+// quiet the error type only.
+func emitTranscriptErrorsAt(tx agentruntime.TranscriptHandler, w io.Writer, summaries []agentruntime.TranscriptError, progressVerbosity string) {
+	if config.ProgressIsQuiet(progressVerbosity) {
+		agentruntime.EmitQuietTranscriptErrors(w, summaries)
+		return
+	}
+	tx.EmitTranscriptErrors(w, summaries)
+}
+
+// resolveRunProgressVerbosity returns the live progress log level for the
+// run (ADR 0163) and, when the level is not full, a line saying how it was
+// chosen. The run source is read the way prepare-artifacts reads it
+// (artifactRunSource): a valid normalized event, else a native GitHub
+// event; an unknown source gets the strictest of progress.verbosity and
+// every progress.by_source entry. It fails closed: a level that cannot
+// be resolved logs at quiet, and so does a run whose event file cannot be
+// read when the repo has any progress setting. A run with no progress
+// setting gets full and no line, so it logs exactly as before. runAgent
+// reads the event file before it calls this and fails on an unreadable
+// one; this rule does not rely on that ordering.
+func resolveRunProgressVerbosity(rc runConfig, absFullsendDir, eventFile string) (level, rule string) {
+	source, how, err := artifactRunSource(absFullsendDir, eventFile)
+	if err != nil {
+		if !hasProgressSetting(rc.perRepo) {
+			return config.ProgressVerbosityFull, ""
+		}
+		return config.ProgressVerbosityQuiet, "Progress log: quiet (the run source could not be resolved: the event file could not be read)"
+	}
+	level, err = config.ResolveProgressVerbosity(rc.perRepo, source)
+	if err != nil {
+		return config.ProgressVerbosityQuiet, "Progress log: quiet (the progress setting could not be resolved: " +
+			agentruntime.SanitizeOutput(err.Error()) + ")"
+	}
+	if level == config.ProgressVerbosityFull {
+		return level, ""
+	}
+	if source != "" {
+		return level, fmt.Sprintf("Progress log: %s (run source %q %s)", level, agentruntime.SanitizeOutput(source), how)
+	}
+	return level, fmt.Sprintf("Progress log: %s (run source unknown: %s)", level, how)
+}
+
+// hasProgressSetting reports whether the effective config sets a progress
+// level other than the default: a progress.verbosity that is not full, or
+// any progress.by_source entry.
+func hasProgressSetting(r config.PerRepoConfigReader) bool {
+	if r == nil {
+		return false
+	}
+	if v := r.ConfigProgressVerbosity(); v != "" && v != config.ProgressVerbosityFull {
+		return true
+	}
+	return len(r.ConfigProgressBySource()) > 0
 }
 
 // stripOIDCEnv returns a copy of env with OIDC credential entries and
@@ -5028,6 +5200,15 @@ func rootSpanEndAttrs(agg aggregateMetrics, runCount int) []attribute.KeyValue {
 }
 
 func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *agentruntime.RunMetrics) []attribute.KeyValue {
+	// The GenAI semconv defines output_tokens as including reasoning tokens,
+	// and the reasoning key below as a subset of it. Codex and OpenCode
+	// metrics keep reasoning out of OutputTokens, so add it back here: a
+	// backend that subtracts the reasoning key from output would otherwise
+	// subtract it twice (#9386). RunMetrics and metrics.json are unchanged.
+	outputTokens := m.OutputTokens
+	if agentruntime.OutputExcludesReasoning(runtimeName) {
+		outputTokens += m.ReasoningTokens
+	}
 	attrs := []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.Int("exit_code", exitCode),
@@ -5048,14 +5229,21 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 		// stamps "dev" or a git describe string (a bare commit id on CI's
 		// shallow clone), not a release number.
 		attribute.Bool("fullsend.usage.input_includes_cache", true),
-		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
+		attribute.Int("gen_ai.usage.output_tokens", outputTokens),
 		attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
 		attribute.Int("gen_ai.usage.cache_read.input_tokens", m.CacheReadInputTokens),
 		attribute.Float64("fullsend.cost_usd", roundUSD(m.TotalCostUSD)),
 		attribute.Int("fullsend.tool_calls", int(m.ToolCalls.Load())),
 	}
 	if m.ReasoningTokens > 0 {
-		attrs = append(attrs, attribute.Int("gen_ai.usage.reasoning_tokens", m.ReasoningTokens))
+		// gen_ai.usage.reasoning.output_tokens is the semconv key (v1.41.0+).
+		// gen_ai.usage.reasoning_tokens is the deprecated fullsend key. It
+		// is emitted through the first release that has the new key so
+		// consumers can migrate; removing it is part of #9386.
+		attrs = append(attrs,
+			attribute.Int("gen_ai.usage.reasoning.output_tokens", m.ReasoningTokens),
+			attribute.Int("gen_ai.usage.reasoning_tokens", m.ReasoningTokens),
+		)
 	}
 	return attrs
 }
@@ -5520,6 +5708,10 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 // deleteSandboxFn deletes a sandbox (sandbox.Delete). Override in tests to
 // record the deletion or return an error without a gateway.
 var deleteSandboxFn = sandbox.Delete
+
+// resolveRunBackendFn resolves runAgent's runtime backend; tests wrap it
+// to observe what runAgent hands the runtime.
+var resolveRunBackendFn = resolveBackendFrom
 
 // collectOpenshellLogsFn copies a sandbox's OpenShell logs into the run
 // directory (collectOpenshellLogs). Override in tests to record the call
@@ -6760,10 +6952,25 @@ func scanRepoContextFiles(repoDir string) []security.Finding {
 	return allFindings
 }
 
+// printExtractedOutputFiles prints the output files extracted from the
+// sandbox: one line per file, then the count. At the quiet progress level
+// (ADR 0163) only the count prints, since the agent chooses the names.
+func printExtractedOutputFiles(printer *ui.Printer, extracted []string, elapsed time.Duration, progressVerbosity string) {
+	if !config.ProgressIsQuiet(progressVerbosity) {
+		for _, f := range extracted {
+			printer.StepInfo(f)
+		}
+	}
+	printer.StepDone(fmt.Sprintf("Extracted %d output file(s) (%.1fs)", len(extracted), elapsed.Seconds()))
+}
+
 // scanOutputFiles runs the output security pipeline (unicode normalization and
 // secret redaction) on extracted output files, recursively walking all
-// subdirectories (iteration-N/output/, etc.).
-func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
+// subdirectories (iteration-N/output/, etc.). At the quiet progress level
+// (ADR 0163) it prints counts only: file paths and finding details, which
+// can carry agent-chosen names and matched text, stay in findings.jsonl.
+func scanOutputFiles(outputDir, traceID, progressVerbosity string, printer *ui.Printer) error {
+	quiet := config.ProgressIsQuiet(progressVerbosity)
 	if _, err := os.Stat(outputDir); os.IsNotExist(err) {
 		printer.StepInfo("No output files to scan")
 		return nil
@@ -6771,6 +6978,8 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 
 	pipeline := security.OutputPipeline()
 	findingCount := 0
+	// At quiet, unreadable and unwritable files are counted, not named.
+	unreadable, unwritable := 0, 0
 	findingsPath := filepath.Join(outputDir, "security", "findings.jsonl")
 
 	err := filepath.WalkDir(outputDir, func(path string, d os.DirEntry, err error) error {
@@ -6802,6 +7011,10 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 		}
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
+			if quiet {
+				unreadable++
+				return nil
+			}
 			relPath, _ := filepath.Rel(outputDir, path)
 			printer.StepWarn(fmt.Sprintf("Could not read %s: %v", relPath, readErr))
 			return nil
@@ -6813,7 +7026,9 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			findingCount += len(result.Findings)
 			relPath, _ := filepath.Rel(outputDir, path)
 			for _, f := range result.Findings {
-				printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
+				if !quiet {
+					printer.StepWarn(fmt.Sprintf("Sanitized [%s] in %s: %s", f.Name, relPath, f.Detail))
+				}
 				security.AppendFinding(findingsPath,
 					security.TracedFinding{
 						TraceID:   traceID,
@@ -6825,7 +7040,11 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			// Sanitized may be empty when all content was invisible characters.
 			out := result.Sanitized
 			if writeErr := os.WriteFile(path, []byte(out), 0o644); writeErr != nil {
-				printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
+				if quiet {
+					unwritable++
+				} else {
+					printer.StepWarn(fmt.Sprintf("Could not write sanitized %s: %v", relPath, writeErr))
+				}
 			}
 		}
 		return nil
@@ -6834,6 +7053,12 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 		return err
 	}
 
+	if unreadable > 0 {
+		printer.StepWarn(fmt.Sprintf("Could not read %d output file(s)", unreadable))
+	}
+	if unwritable > 0 {
+		printer.StepWarn(fmt.Sprintf("Could not write %d sanitized output file(s)", unwritable))
+	}
 	if findingCount > 0 {
 		printer.StepWarn(fmt.Sprintf("Sanitized %d finding(s) in output files", findingCount))
 	} else {

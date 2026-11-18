@@ -62,6 +62,17 @@ func EffectiveYAML(r PerRepoConfigReader) ([]byte, error) {
 		}
 		out["artifacts"] = artifacts
 	}
+	// Rendered only when it differs from the default (verbosity: full, no
+	// per-source levels), so an unset block leaves the view unchanged.
+	progressVerbosity := StricterProgressVerbosity(r.ConfigProgressVerbosity(), "")
+	progressBySource := r.ConfigProgressBySource()
+	if progressVerbosity != ProgressVerbosityFull || len(progressBySource) > 0 {
+		progress := map[string]any{"verbosity": progressVerbosity}
+		if len(progressBySource) > 0 {
+			progress["by_source"] = progressBySource
+		}
+		out["progress"] = progress
+	}
 	if tc := r.TraceContext(); tc != nil {
 		out["trace_context"] = tc
 	}

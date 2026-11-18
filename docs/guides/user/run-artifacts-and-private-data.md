@@ -183,6 +183,90 @@ over OTLP to a backend you control
 ([How to emit traces](how-to-emit-traces.md)). OTLP export works at every
 level.
 
+## Keep Jira text out of the job log
+
+Set `progress` to keep Jira issue text out of the public job log and its
+annotations; `artifacts` filters only the uploaded artifact, not the log. By
+default the log prints the model's reasoning and replies, tool lines, error
+messages and validation output, and on GitHub Actions some of these become
+annotations on the run summary page. Anyone can read the job log of a public
+repository.
+
+1. In `.fullsend/config.yaml`, next to the `artifacts` block, add:
+
+   ```yaml
+   progress:
+     by_source:
+       jira: quiet         # heartbeat, counts, error types and the result only
+   ```
+
+2. Commit the change and merge it the way you merge other config changes.
+
+3. Start a run from a Jira issue.
+
+### Check that it worked
+
+Open the run's job log. Near the top, before the agent starts, you should see:
+
+```text
+Progress log: quiet (run source "jira" from the normalized event)
+```
+
+A run started from a GitHub issue in the same repository prints no
+`Progress log` line, because it still logs at `full`.
+
+While the agent runs, a quiet log looks like this (a triage run, trimmed):
+
+```text
+→ Agent: claude-sonnet-5-5 (v2.1.306)
+  ! Retry 1/10 (delay 522ms)
+  ⏳ Agent running (30s elapsed, 9m30s remaining)
+→ Result: success
+    Turns: 7
+    Cost: $0.1794
+    Tokens: in=10 out=1871 reasoning=49 cache_create=62561 cache_read=42757
+
+  ✓ Agent exited with code 0 (33.7s)
+  ...
+  ✓ Validation passed (1.5s)
+```
+
+The log keeps the heartbeat, event states such as `Task — running`, token
+counts, error types, `Validation passed` or `Validation failed`, and the
+result. It leaves out reasoning, replies, tool lines and validation output. A
+stuck or failed run still shows the heartbeat, the error type and the exit
+code.
+
+If the agent CLI wrote anything to stderr, you also see one line like:
+
+```text
+Agent CLI stderr: 3 line(s) kept out of the log at quiet, in agent-stderr.log
+```
+
+The stderr itself is in `agent-stderr.log` in the iteration directory, next
+to `output.jsonl`. The run artifact includes that file only when
+`artifacts` is `all` for the run, just like the transcripts. With
+`artifacts.by_source.jira: metadata` from
+[Stop Jira text from reaching the artifact](#stop-jira-text-from-reaching-the-artifact),
+it stays on the runner.
+
+### What else to know
+
+- `tools` hides only reasoning and replies. Tool lines and task labels can
+  still carry text from the source, so use `quiet` for a source that isn't
+  public.
+- The level changes only what is printed. The next iteration still gets the
+  full validation feedback, and OTLP export and Level 3 content capture (the
+  tracing level that adds conversation content to spans, see
+  [Content capture](../infrastructure/distributed-tracing.md#content-capture-level-3))
+  still receive everything ([Keep conversation content privately](#keep-conversation-content-privately)).
+- The level covers the live job log only. The status comment fullsend posts
+  on the issue or pull request when a run ends still carries the full run
+  error, and output from your own pre-scripts and post-scripts prints as
+  before.
+- For every level and for how the level is chosen, see
+  [`progress`](../../reference/config-reference.md#progress).
+
 ## Troubleshooting
 
 Find the message in the job log. On GitHub Actions the warnings also show as
@@ -198,6 +282,10 @@ annotations on the run.
 | `The installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded. Set the version input to at least the fullsend release that ships this action.` | The workflow pins an older fullsend CLI through the action's `version` input. | Raise `version`. See [Upgrading](#upgrading). |
 | `The fullsend CLI is not installed (check the install step), so no run artifact is uploaded.` | The install step failed earlier in the job. | Fix the install step. |
 | No artifact, no warning | The level is `none`, or on GitLab the job was cancelled or timed out before the end of the job script. | Check the `Run artifact level` line in the log. |
+| `Progress log: quiet (the progress setting could not be resolved: invalid progress.by_source key "Jira": ...)` | A `progress` level or source key is invalid, so the run logs at `quiet`. The text after `resolved:` names the cause. | Fix the key or level it names; see the next two rows. |
+| `invalid progress.by_source key "Jira": source keys are lowercase with no surrounding spaces; use "jira"` | A `progress.by_source` key is not lowercase. | Rename the key as the message says. |
+| `invalid progress.verbosity "loud": must be one of full, tools, quiet` or `invalid progress.by_source.jira "loud": must be one of full, tools, quiet` | A `progress` level is misspelled. | Use `full`, `tools` or `quiet`. |
+| `Progress log: quiet (run source unknown: no valid normalized event)` | The run has no source (manual, scheduled or local, or a dispatch without a valid event), so it got the strictest of `progress.verbosity` and every `progress.by_source` entry. The level in the line is the one applied. | Nothing, if that level is what you want. Otherwise loosen the strictest `by_source` entry; no key exempts these runs. |
 
 When fullsend cannot work out the level, it uploads nothing rather than the
 raw `output/`.
@@ -248,6 +336,7 @@ artifacts:
 By default the run artifact holds the run's whole `output/` directory:
 
 - the raw conversation stream and transcripts of every iteration;
+- `agent-stderr.log` beside them, written only at progress level `quiet`;
 - the agent's output files;
 - `run-telemetry.jsonl`, with conversation content when content capture is on;
 - `security/findings.jsonl`.

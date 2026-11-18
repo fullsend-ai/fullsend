@@ -36,7 +36,7 @@ func TestDummyPlaybackRuntimeNoopMethods(t *testing.T) {
 	t.Parallel()
 
 	rt := DummyPlaybackRuntime{}
-	assert.NoError(t, rt.ExtractTranscripts("", "", ""))
+	assert.NoError(t, rt.ExtractTranscripts("", "", "", ""))
 	assert.NoError(t, rt.ExtractDebugLog("", "", ""))
 	assert.Nil(t, rt.ParseTranscriptErrors(""))
 

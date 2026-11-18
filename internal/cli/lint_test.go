@@ -1574,6 +1574,79 @@ func TestLintCommand_ScopedSelectedAgentErrorsFail(t *testing.T) {
 	})
 }
 
+// A scoped lint validates the selected agent's entries on their own; its
+// errors must still name the entries' positions in config.yaml, as a full
+// lint's do.
+func TestLintCommand_ScopedReportsOriginalAgentIndex(t *testing.T) {
+	stubLintGitHubToken(t, "test-token")
+	cases := []struct {
+		name   string
+		agents string
+		want   string
+	}{
+		{
+			name: "invalid agent second",
+			agents: `  - name: triage
+    enabled: false
+  - name: review
+    runtime: made-up-runtime
+`,
+			want: `agents[1] (review): invalid runtime "made-up-runtime"`,
+		},
+		{
+			name: "invalid agent first",
+			agents: `  - name: review
+    runtime: made-up-runtime
+  - name: triage
+    enabled: false
+`,
+			want: `agents[0] (review): invalid runtime "made-up-runtime"`,
+		},
+		{
+			name: "non-adjacent duplicates",
+			agents: `  - name: review
+    source: harness/review.yaml
+  - name: triage
+    enabled: false
+  - name: review
+    source: harness/review.yaml
+`,
+			want: "agents[2] (review): duplicate agent name",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := writeScopedLintFixture(t, tc.agents, "review")
+
+			out, err := executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "--offline"})
+			require.Error(t, err)
+			assert.Contains(t, out+err.Error(), tc.want, "full lint, text")
+
+			out, err = executeCmd(newLintCmd(), []string{"--fullsend-dir", dir, "review", "--offline"})
+			require.Error(t, err)
+			assert.Contains(t, out+err.Error(), tc.want, "scoped lint, text")
+
+			for _, scoped := range []struct {
+				args []string
+				code string
+			}{
+				{args: nil, code: lintCodeConfigInvalid},
+				{args: []string{"review"}, code: lintCodeAgentUnavailable},
+			} {
+				args := append([]string{"--fullsend-dir", dir, "--offline", "--format", "json"}, scoped.args...)
+				stdout, _, jsonErr := executeLintStreams(newLintCmd(), args)
+				require.Error(t, jsonErr)
+				report := parseLintJSON(t, stdout)
+				assert.False(t, report.Success)
+				require.Len(t, report.Diagnostics, 1, "args %v", args)
+				assert.Equal(t, "config", report.Diagnostics[0].Agent)
+				assert.Equal(t, scoped.code, report.Diagnostics[0].Code)
+				assert.Contains(t, report.Diagnostics[0].Message, tc.want, "args %v, JSON", args)
+			}
+		})
+	}
+}
+
 func TestLintCommand_ScopedStillValidatesConfig(t *testing.T) {
 	stubLintGitHubToken(t, "test-token")
 

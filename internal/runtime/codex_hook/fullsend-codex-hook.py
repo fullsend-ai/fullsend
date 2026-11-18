@@ -4,10 +4,13 @@ sandbox tool hook scripts (internal/security/hooks/*.py; ADR 0090,
 docs/contributing/runtime-implementation.md "Sandbox hook contract").
 
 Invoked by codex from `$CODEX_HOME/hooks.json`, one handler per
-`security.HookPlan` group, plus one for the spawn policy of ADR 0126:
+`security.HookPlan` group, plus one for the spawn policy of ADR 0126 and, on
+a run that delegates from a V2 parent, one per PostToolUse group that covers
+Agent, on a child's final message (ADR 0159 decision 4):
 
     python3 <this file> <phase> <script.py> [<script.py> ...]
     python3 <this file> SpawnGuard
+    python3 <this file> SubagentStop <script.py> [<script.py> ...]
 
 The hook payload arrives as JSON on stdin. Everything else is derived from
 this file's own location, so nothing in the agent-writable environment can
@@ -128,19 +131,43 @@ MAX_SCRIPT_BYTES = 1 << 20
 
 PHASE_PRE = "PreToolUse"
 PHASE_POST = "PostToolUse"
+# The child-result gate (ADR 0159 decision 4). codex runs SubagentStop in a
+# thread-spawned child with the final message that would become the child's
+# result, before the parent is notified. A block (exit 2 + reason) makes the
+# child continue with the reason as its prompt instead of finishing. On this
+# phase that reason is always SUBAGENT_STOP_PROMPT, which asks for
+# WITHHELD_NOTICE and does not say what was flagged, and after a block only
+# the notice passes, so a flagged result is never delivered: the parent
+# receives the notice instead. WITHHELD_NOTICE is the Go side's
+# codexWithheldNotice, which the V2 runtime note quotes.
+PHASE_SUBAGENT_STOP = "SubagentStop"
+WITHHELD_NOTICE = "RESULT WITHHELD BY FULLSEND"
+SUBAGENT_STOP_PROMPT = (
+    "fullsend: your final message was withheld by the security chain and was "
+    "not delivered. Reply with exactly: " + WITHHELD_NOTICE
+)
 
 # argv[1] of the spawn guard handler, which takes no script.
 MODE_SPAWN_GUARD = "SpawnGuard"
-# The only multi-agent tool the guard admits.
+# The spawns the guard admits under policy: the V1 spawn, which codex
+# reports under its bare name, and the V2 spawn, reported as its
+# `collaboration` namespace joined with the name (ADR 0126, ADR 0159).
 SPAWN_TOOL_V1 = "spawn_agent"
+SPAWN_TOOL_V2 = "collaborationspawn_agent"
+SPAWN_TOOLS = frozenset({SPAWN_TOOL_V1, SPAWN_TOOL_V2})
 # Passed through from the root thread: each acts on an admitted child and
 # none can start or reopen one. Denied from a child, whose payload carries
-# agent_id or agent_type. Every other multi-agent tool is denied by name.
+# agent_id or agent_type. Every other multi-agent tool is denied by name:
+# the V1 resume, and the V2 send_message and followup_task, which reach a
+# child again.
 SPAWN_GUARD_PASS = frozenset(
     {
         "multi_agent_v1wait_agent",
         "multi_agent_v1close_agent",
         "multi_agent_v1send_input",
+        "collaborationwait_agent",
+        "collaborationlist_agents",
+        "collaborationinterrupt_agent",
     }
 )
 # A spawn without agent_type asks codex for its `default` role.
@@ -175,13 +202,14 @@ CLAUDE_TOOL_FOR_CODEX = {
     "multi_agent_v1close_agent": "Agent",
     "multi_agent_v1send_input": "Agent",
     # The V2 spawn and the control calls ADR 0159 decision 3 maps the same
-    # way are Agent too; the guard still denies them by name. No mapped call
-    # has the allowlist as a backstop: an allowlist that permits Agent passes
-    # them all and the spawn guard is their only name-level check. The V1
-    # spawn still sits under codex's agents.max_depth; the V2 spawn does not
-    # (#9085), so V2 admission needs a backstop of its own before
-    # CodexRuntime.Bootstrap accepts a V2 parent. send_message and
-    # followup_task stay unmapped like the resume.
+    # way are Agent too, admitted and passed through under the same policy.
+    # No mapped call has the allowlist as a backstop: an allowlist that
+    # permits Agent passes them all and the spawn guard is their only
+    # name-level check. The V1 spawn still sits under codex's
+    # agents.max_depth; the V2 spawn does not (#9085). Its backstop is that
+    # CodexRuntime.Bootstrap admits a V2 parent only when no child model
+    # selects V2, so a child the runner starts holds no spawn tool.
+    # send_message and followup_task stay unmapped like the resume.
     "collaborationspawn_agent": "Agent",
     "collaborationwait_agent": "Agent",
     "collaborationlist_agents": "Agent",
@@ -436,6 +464,13 @@ def log_finding(name: str, severity: str, detail: str, action: str) -> None:
             os.close(fd)
 
 
+# Sent in place of every block reason on SubagentStop (set in main()), where
+# stderr is the continuation prompt the child reads: a child told which stage
+# fired could reword its result until one passed. Every call site records
+# the reason in the findings log first.
+_BLOCK_PROMPT = ""
+
+
 def block(reason: str) -> None:
     """Exit 2 with a non-empty reason on stderr — codex's blocking contract.
 
@@ -481,7 +516,7 @@ def block(reason: str) -> None:
     # by signal, which codex does not treat as a block.
     signal.setitimer(signal.ITIMER_REAL, 0)
     text = (reason or "").strip() or "fullsend hook blocked this tool call"
-    truncated = text[:MAX_TEXT]
+    truncated = _BLOCK_PROMPT or text[:MAX_TEXT]
     with contextlib.suppress(BaseException):
         data = truncated.encode("utf-8", "replace")
         while data:
@@ -756,15 +791,24 @@ def verify_spawn_files(digests: dict[str, str]) -> str | None:
     return None
 
 
+def _is_none_fork(value: Any) -> bool:
+    """True for the fork_turns codex reads as no fork: a string that is "none"
+    once trimmed, compared case-insensitively. Python's strip() trims a
+    superset of Rust's trim() (U+001C to U+001F); a value the hook admits on
+    that difference is still rejected by codex, never forked."""
+    return isinstance(value, str) and value.strip().casefold() == "none"
+
+
 def spawn_policy(hook_input: dict[str, Any], registered: dict[str, str]) -> str | None:
-    """The reason a multi-agent call is outside policy, or None for a V1 spawn
-    from the root thread of a registered role with fork_context false and no
-    model or effort argument. Reads no file: agent_type is never a path."""
+    """The reason a multi-agent call is outside policy, or None for a spawn
+    from the root thread of a registered role that starts a fresh context
+    (V1: fork_context false; V2: fork_turns "none") with no model or effort
+    argument. Reads no file: agent_type is never a path."""
     tool = hook_input.get("tool_name")
-    if tool != SPAWN_TOOL_V1:
+    if tool not in SPAWN_TOOLS:
         return (
-            f"fullsend: {tool!r} is not the V1 spawn tool; resuming a child, V2 "
-            "tools and unknown multi-agent tools are not allowed"
+            f"fullsend: {tool!r} is not a spawn tool the runner admits; resuming "
+            "or messaging a child and unknown multi-agent tools are not allowed"
         )
     # Only a child's payload carries agent_id or agent_type.
     if "agent_id" in hook_input or "agent_type" in hook_input:
@@ -772,10 +816,20 @@ def spawn_policy(hook_input: dict[str, Any], registered: dict[str, str]) -> str 
     args = hook_input.get("tool_input")
     if not isinstance(args, dict):
         return "fullsend: spawn_agent arguments are not an object (fail closed)"
-    if args.get("fork_context") is not False:
+    if tool == SPAWN_TOOL_V1 and args.get("fork_context") is not False:
         return (
             "fullsend: spawn_agent must pass fork_context: false; a child starts "
             "without the parent's context"
+        )
+    # Under V2 an absent fork_turns forks the parent's whole history and "0"
+    # is invalid, so only "none" as codex reads it is a fresh context;
+    # fork_context is V1's key.
+    if tool == SPAWN_TOOL_V2 and (
+        "fork_context" in args or not _is_none_fork(args.get("fork_turns"))
+    ):
+        return (
+            'fullsend: spawn_agent must pass fork_turns: "none" and no fork_context; '
+            "a child starts without the parent's context"
         )
     for key in ("model", "reasoning_effort"):
         if key in args:
@@ -930,8 +984,68 @@ def run_post_tool_use(scripts: list[str], hook_input: dict[str, Any], tool_name:
     sys.exit(0)
 
 
+def run_subagent_stop(scripts: list[str], hook_input: dict[str, Any]) -> None:
+    """Run the PostToolUse chain on a child's final message.
+
+    The message is presented to the scripts as an Agent tool result, the shape
+    the other runtimes give a sub-agent's answer. Every block in the chain
+    leaves through block() (exit 2 with SUBAGENT_STOP_PROMPT in place of the
+    reason, which goes to the findings log), which SubagentStop reads as
+    "continue the child" (codex-rs/hooks/src/events/stop.rs), so the flagged
+    text is not delivered. `continue: false` is never emitted: codex would end
+    the child and deliver the flagged message.
+
+    After a block codex sets stop_hook_active for the rest of the child's
+    turn (core/src/session/turn.rs), and only fullsend renders stop handlers,
+    so the flag means this gate already blocked: from then on only the exact
+    withheld notice passes and the chain does not run, so a child cannot
+    reword a flagged result until one gets through.
+
+    codex always sends last_assistant_message, a string or null
+    (hooks/src/schema.rs SubagentStopCommandInput): null or "" has nothing
+    to screen, and a missing key or another type means the payload changed
+    shape, so it blocks. The exact withheld notice, with only ASCII
+    whitespace around it, carries no content and passes before the chain
+    runs, so a child that complies can always finish, even when the chain
+    blocks for a reason that is not the message. Any other padding goes
+    through the chain, whose unicode stage screens hidden characters.
+    """
+    message = hook_input.get("last_assistant_message")
+    if hook_input.get("stop_hook_active") is True:
+        if isinstance(message, str) and message.strip(" \t\r\n") == WITHHELD_NOTICE:
+            sys.exit(0)
+        reason = (
+            "fullsend: after a SubagentStop block the child's next final message "
+            "was not the withheld notice, so it was withheld"
+        )
+        log_finding("codex_subagent_stop_retry_block", "critical", reason, "block")
+        block(reason)
+    if "last_assistant_message" in hook_input and message in (None, ""):
+        sys.exit(0)
+    if not isinstance(message, str):
+        reason = (
+            "fullsend: the SubagentStop payload has no last_assistant_message string, "
+            "so the result cannot be scanned (fail closed)"
+        )
+        log_finding("codex_adapter_bad_payload", "critical", reason, "block")
+        block(reason)
+    if message.strip(" \t\r\n") == WITHHELD_NOTICE:
+        sys.exit(0)
+    synthetic = {
+        "tool_input": {},
+        "tool_response": message,
+        **_cwd(hook_input),
+    }
+    run_post_tool_use(scripts, synthetic, "Agent")
+
+
 def main() -> None:
     phase = sys.argv[1] if len(sys.argv) > 1 else ""
+    if phase == PHASE_SUBAGENT_STOP:
+        # Every block on this phase, a misconfiguration, a bad payload or a
+        # crash included, continues the child with the withheld-notice prompt.
+        global _BLOCK_PROMPT
+        _BLOCK_PROMPT = SUBAGENT_STOP_PROMPT
     if phase != MODE_SPAWN_GUARD and len(sys.argv) < 3:
         # Misconfiguration, not a tool decision. Fail closed on the phase that
         # can block and stay quiet on the one that cannot.
@@ -954,13 +1068,14 @@ def main() -> None:
         # about to happen, so an empty payload means the call cannot be
         # scanned, not that there is nothing to scan. On PostToolUse the call
         # has already run and there is nothing left to prevent, so the no-op
-        # stands there.
+        # stands there. On SubagentStop an empty payload leaves the child's
+        # result unscanned, so it blocks.
         empty = raw.strip() == ""
         if phase == PHASE_POST and empty:
             sys.exit(0)
+        event = PHASE_SUBAGENT_STOP if phase == PHASE_SUBAGENT_STOP else PHASE_PRE
         message = (
-            "fullsend: codex sent an empty PreToolUse payload, so the tool "
-            "call cannot be scanned (fail closed)"
+            f"fullsend: codex sent an empty {event} payload, so it cannot be scanned (fail closed)"
             if empty
             else "fullsend: codex hook payload was not a JSON object (fail closed)"
         )
@@ -971,6 +1086,9 @@ def main() -> None:
         # Before tool-name translation: the policy is written in codex's own
         # names and a child's payload is told apart by untranslated fields.
         run_spawn_guard(hook_input)
+
+    if phase == PHASE_SUBAGENT_STOP:
+        run_subagent_stop(scripts, hook_input)
 
     codex_tool = hook_input.get("tool_name")
     codex_tool = codex_tool if isinstance(codex_tool, str) else ""

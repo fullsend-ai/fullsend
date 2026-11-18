@@ -835,9 +835,13 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	assert.Contains(t, a, attribute.Float64("fullsend.cost_usd", 0.34))
 	assert.Contains(t, a, attribute.Int("fullsend.tool_calls", 11))
 
-	// reasoning_tokens should be absent when zero.
-	assert.NotContains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 0),
-		"reasoning_tokens attribute should be omitted when zero")
+	// Both reasoning keys should be absent when zero.
+	for _, kv := range a {
+		assert.NotEqual(t, "gen_ai.usage.reasoning.output_tokens", string(kv.Key),
+			"reasoning.output_tokens attribute should be omitted when zero")
+		assert.NotEqual(t, "gen_ai.usage.reasoning_tokens", string(kv.Key),
+			"reasoning_tokens attribute should be omitted when zero")
+	}
 }
 
 // TestAgentSpanEndAttrs_InputTokensIncludeCache pins gen_ai.usage.input_tokens
@@ -948,8 +952,65 @@ func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {
 
 	a := agentSpanEndAttrs(1, 0, "anthropic", "claude", &m)
 	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic"))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.reasoning.output_tokens", 42),
+		"semconv reasoning.output_tokens attribute should be present when non-zero")
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 42),
-		"reasoning_tokens attribute should be present when non-zero")
+		"deprecated reasoning_tokens attribute should be emitted alongside until it is removed")
+}
+
+// TestAgentSpanEndAttrs_OutputIncludesReasoning pins what the span does with
+// each runtime's counters so that gen_ai.usage.reasoning.output_tokens is a
+// subset of gen_ai.usage.output_tokens (#9386). Codex and OpenCode metrics
+// keep reasoning out of output, so the span adds it back. Claude Code and pi
+// metrics already count reasoning inside output, so the span passes their
+// output through unchanged; nothing here checks those two parsers.
+func TestAgentSpanEndAttrs_OutputIncludesReasoning(t *testing.T) {
+	intAttrs := func(kvs []attribute.KeyValue) map[attribute.Key]int64 {
+		out := map[attribute.Key]int64{}
+		for _, kv := range kvs {
+			if kv.Value.Type() == attribute.INT64 {
+				out[kv.Key] = kv.Value.AsInt64()
+			}
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		runtime    string
+		output     int
+		reasoning  int
+		wantOutput int64
+	}{
+		{runtime: "claude", output: 500, reasoning: 200, wantOutput: 500},
+		{runtime: "pi", output: 500, reasoning: 200, wantOutput: 500},
+		{runtime: "codex", output: 500, reasoning: 200, wantOutput: 700},
+		{runtime: "opencode", output: 500, reasoning: 200, wantOutput: 700},
+		// Reasoning larger than the visible output: a backend that subtracts
+		// the reasoning key from output must not be left with a negative.
+		{runtime: "codex", output: 100, reasoning: 5000, wantOutput: 5100},
+	} {
+		t.Run(fmt.Sprintf("%s/%d+%d", tc.runtime, tc.output, tc.reasoning), func(t *testing.T) {
+			m := agentruntime.RunMetrics{OutputTokens: tc.output, ReasoningTokens: tc.reasoning}
+			got := intAttrs(agentSpanEndAttrs(1, 0, "provider", tc.runtime, &m))
+
+			assert.Equal(t, tc.wantOutput, got["gen_ai.usage.output_tokens"])
+			assert.Equal(t, int64(tc.reasoning), got["gen_ai.usage.reasoning.output_tokens"])
+			assert.Equal(t, int64(tc.reasoning), got["gen_ai.usage.reasoning_tokens"])
+			if agentruntime.OutputExcludesReasoning(tc.runtime) {
+				assert.LessOrEqual(t, got["gen_ai.usage.reasoning.output_tokens"], got["gen_ai.usage.output_tokens"],
+					"once the span adds reasoning back, the reasoning key is a subset of output")
+			}
+			assert.Equal(t, tc.output, m.OutputTokens, "the metrics passed in must not be modified")
+		})
+	}
+
+	t.Run("codex without reasoning", func(t *testing.T) {
+		m := agentruntime.RunMetrics{OutputTokens: 500}
+		got := intAttrs(agentSpanEndAttrs(1, 0, "provider", "codex", &m))
+		assert.Equal(t, int64(500), got["gen_ai.usage.output_tokens"])
+		assert.NotContains(t, got, attribute.Key("gen_ai.usage.reasoning.output_tokens"))
+		assert.NotContains(t, got, attribute.Key("gen_ai.usage.reasoning_tokens"))
+	})
 }
 
 func TestAgentSpanEndAttrs_IdentityTuple(t *testing.T) {
@@ -1435,6 +1496,21 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		assert.Equal(t, codes.Ok, s.Status.Code)
 		_, hasMarker := attrsOf(s)["fullsend.transcript_error"]
 		assert.False(t, hasMarker, "no transcript marker on clean iterations")
+	})
+
+	t.Run("reasoning keys and inclusive output land on the span", func(t *testing.T) {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "agent")
+		m := &agentruntime.RunMetrics{Model: "example-model", OutputTokens: 500, ReasoningTokens: 200}
+		finalizeAgentSpan(span, nil, 1, 0, "openai", "codex", m, "", nil)
+		ended := rec.Ended()
+		require.Len(t, ended, 1)
+		attrs := attrsOf(tracetest.SpanStubFromReadOnlySpan(ended[0]))
+		assert.Equal(t, int64(700), attrs["gen_ai.usage.output_tokens"].AsInt64(),
+			"codex output on the span includes reasoning")
+		assert.Equal(t, int64(200), attrs["gen_ai.usage.reasoning.output_tokens"].AsInt64())
+		assert.Equal(t, int64(200), attrs["gen_ai.usage.reasoning_tokens"].AsInt64())
 	})
 
 	t.Run("invalid UTF-8 in the model attribute is repaired", func(t *testing.T) {
@@ -2048,6 +2124,65 @@ func TestContentCapture_EndToEndFileSink(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, content, string(escaped[1:len(escaped)-1]),
 		"the full content JSON must appear byte-intact in the file sink")
+}
+
+// TestAgentSpan_ReasoningKeysReachFileSink drives the real telemetry.Setup
+// file exporter and reads run-telemetry.jsonl back: an agent span with
+// reasoning tokens must carry both reasoning keys there, next to an output
+// count that includes them. It is the closest a unit test gets to the
+// "real run shows both keys" check in #9386.
+func TestAgentSpan_ReasoningKeysReachFileSink(t *testing.T) {
+	t.Setenv("OTEL_SDK_DISABLED", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+
+	dir := t.TempDir()
+	tracer, cleanup := telemetry.Setup(dir, "test")
+	_, span := tracer.Start(context.Background(), "agent")
+	m := &agentruntime.RunMetrics{Model: "example-model", OutputTokens: 500, ReasoningTokens: 200}
+	finalizeAgentSpan(span, nil, 1, 0, "openai", "codex", m, "", nil)
+	cleanup(context.Background())
+
+	raw, err := os.ReadFile(filepath.Join(dir, telemetry.TelemetryFile))
+	require.NoError(t, err)
+
+	type otlpLine struct {
+		ResourceSpans []struct {
+			ScopeSpans []struct {
+				Spans []struct {
+					Name       string `json:"name"`
+					Attributes []struct {
+						Key   string `json:"key"`
+						Value struct {
+							IntValue string `json:"intValue"`
+						} `json:"value"`
+					} `json:"attributes"`
+				} `json:"spans"`
+			} `json:"scopeSpans"`
+		} `json:"resourceSpans"`
+	}
+	ints := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var decoded otlpLine
+		require.NoError(t, json.Unmarshal([]byte(line), &decoded), "each line is one OTLP TracesData message")
+		for _, rs := range decoded.ResourceSpans {
+			for _, ss := range rs.ScopeSpans {
+				for _, s := range ss.Spans {
+					if s.Name != "agent" {
+						continue
+					}
+					for _, a := range s.Attributes {
+						if a.Value.IntValue != "" {
+							ints[a.Key] = a.Value.IntValue
+						}
+					}
+				}
+			}
+		}
+	}
+	assert.Equal(t, "700", ints["gen_ai.usage.output_tokens"])
+	assert.Equal(t, "200", ints["gen_ai.usage.reasoning.output_tokens"])
+	assert.Equal(t, "200", ints["gen_ai.usage.reasoning_tokens"])
 }
 
 // TestContentCapture_GateOffProducesNoContent is the negative control: with
