@@ -135,6 +135,8 @@ example above.
   including attached, quoted, and length-modified forms. Give `printf` a literal
   format, including after `--`, before expanded data arguments so an expansion
   cannot become a variable-assignment option or conversion.
+  `test` is also rejected because its array-variable predicates can evaluate
+  commands inside a quoted argument.
   Trusted Bash pattern maps use the same restricted shell grammar, even without
   a program-name allowlist. The adapter checks each command separately and
   removes argument quotes before matching, including inside Task children with
