@@ -1,0 +1,192 @@
+{
+  "schema_version": "normalized-entity/v1",
+  "entity": {
+    "kind": "work_item",
+    "source": {
+      "system": "jira",
+      "host": "acme.atlassian.net",
+      "project": "PROJ",
+      "project_id": "10010"
+    },
+    "id": "fullsend:entity:v1:jira:acme.atlassian.net:work_item:10042",
+    "source_id": "10042",
+    "number": 123,
+    "url": "https://acme.atlassian.net/browse/PROJ-123",
+    "state": "open",
+    "title": "Review Jira source data",
+    "author": {
+      "id": "557058:abc123",
+      "login": null,
+      "kind": "human",
+      "role": "write",
+      "role_verified": true
+    },
+    "created_at": "2026-10-12T09:00:00.000000000Z",
+    "updated_at": "2026-10-13T11:20:00.000000000Z",
+    "body": {
+      "$unknown": "consistency_unknown"
+    },
+    "comments": [
+      {
+        "id": "20015",
+        "created_at": "2026-10-12T10:00:00.000000000Z",
+        "revised_at": "2026-10-12T10:00:00.000000000Z",
+        "actor": {
+          "id": "557058:abc123",
+          "login": null,
+          "kind": "human",
+          "role": "write",
+          "role_verified": true
+        },
+        "text": "/fs-triage\nPlease review this issue.",
+        "command": "/fs-triage",
+        "thread_id": null,
+        "is_entity_author": true,
+        "extensions": {
+          "custom_fields": {},
+          "properties": {
+            "queue": {
+              "source_key": "my-app.queue",
+              "source_path": "/name",
+              "value": "triage",
+              "changed_by": {
+                "id": "557058:editor2",
+                "login": null,
+                "kind": "human",
+                "role": "write",
+                "role_verified": true
+              },
+              "changed_at": "2026-10-12T11:00:00.000000000Z"
+            }
+          }
+        }
+      }
+    ],
+    "label_applications": [],
+    "threads": [],
+    "labels": [],
+    "key": "PROJ-123",
+    "assignees": [],
+    "reactions": [],
+    "lifecycle": {
+      "closed_at": null,
+      "closed_by": null
+    },
+    "work_item": {
+      "source_status": {
+        "name": "In Progress",
+        "category": "indeterminate"
+      },
+      "issue_type": {
+        "id": "10001",
+        "name": "Story",
+        "is_subtask": false
+      },
+      "state_reason": {
+        "$unknown": "unsupported"
+      }
+    },
+    "extensions": {
+      "custom_fields": {
+        "story_points": {
+          "source_key": "customfield_10016",
+          "value": 5,
+          "changed_by": {
+            "id": "557058:editor2",
+            "login": null,
+            "kind": "human",
+            "role": "write",
+            "role_verified": true
+          },
+          "changed_at": "2026-10-12T12:00:00.000000000Z"
+        },
+        "approver": {
+          "source_key": "customfield_10234",
+          "value": {
+            "id": "557058:approver",
+            "login": null,
+            "kind": "human",
+            "role": {
+              "$unknown": "not_loaded"
+            },
+            "role_verified": {
+              "$unknown": "not_loaded"
+            },
+            "bot_role": null
+          },
+          "changed_by": {
+            "id": "557058:editor2",
+            "login": null,
+            "kind": "human",
+            "role": "write",
+            "role_verified": true
+          }
+        },
+        "tags": {
+          "source_key": "customfield_10300",
+          "value": [
+            "backend"
+          ],
+          "changed_by": {
+            "id": "557058:editor2",
+            "login": null,
+            "kind": "human",
+            "role": "write",
+            "role_verified": true
+          }
+        }
+      },
+      "properties": {
+        "external_marker": {
+          "source_key": "my-app.marker",
+          "source_path": "/marker",
+          "value": {
+            "$unknown": "consistency_unknown"
+          },
+          "changed_by": {
+            "$unknown": "consistency_unknown"
+          }
+        }
+      }
+    }
+  },
+  "coverage": {
+    "labels": {
+      "status": "complete"
+    },
+    "comments": {
+      "status": "complete"
+    },
+    "label_applications": {
+      "status": "partial",
+      "reason": "changelog_window"
+    },
+    "threads": {
+      "status": "complete"
+    },
+    "thread_comments": [],
+    "assignees": {
+      "status": "not_loaded"
+    },
+    "reactions": {
+      "status": "not_loaded"
+    },
+    "extension_lists": [
+      {
+        "owner_kind": "entity",
+        "owner_id": "10042",
+        "category": "custom_fields",
+        "alias": "tags",
+        "coverage": {
+          "status": "partial",
+          "reason": "remaining_items_not_loaded"
+        }
+      }
+    ]
+  },
+  "view": {
+    "human_min_role": "triage",
+    "resolved_at": "2026-10-14T06:00:02.000000000Z",
+    "filter_version": "example-filter-v1"
+  }
+}

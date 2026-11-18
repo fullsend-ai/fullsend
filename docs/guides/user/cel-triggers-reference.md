@@ -83,7 +83,8 @@ The `event` variable has the following top-level fields:
 | `event.actor.role_verified` | boolean | Optional lookup status. For humans, true means `actor.role` is a trusted forge permission; for bots, true means bot-role lookup completed, including a successful no-match result |
 | `event.actor.is_entity_author` | boolean | True when the actor is the author of the work item, change proposal, or conversation |
 | `event.actor.is_entity_assignee` | boolean | True when the actor is one of the entity's current assignees on GitHub, GitLab or Jira; false when it is unassigned, the actor is not an assignee, or the assignees are unknown. Reviewers are not assignees |
-| `event.state.labels` | list | Label names on the entity at event time |
+| `event.state.issue_type` | object | Optional current Jira issue type: `id` (string), `name` (string), `is_subtask` (boolean). Guard access with `has(event.state.issue_type)` |
+| `event.state.labels` | list | Label names on the entity at event time. On the GitLab and Jira dispatch transports the carried list is bounded to a 1024-byte JSON prefix (entries past the bound dropped, except fullsend's control labels `fullsend-fix` and `fullsend-no-fix`, which are kept) — see the caveat below |
 | `event.state.change_proposal` | object | Present when a change proposal is involved (includes `is_fork`, `head_ref`, `base_ref`) |
 | `event.state.conversation` | object | Required when `entity.kind == "conversation"` (includes `category.name`; optional `category.id` / `slug` / `format`) |
 | `event.source.system` | string | `"github"`, `"gitlab"`, `"jira"`, `"manual"`, or `"schedule"` |
@@ -241,6 +242,29 @@ trigger: >
     && "needs-analysis" in event.state.labels
 ```
 
+> **Dispatch-transport bound caveat.** On the GitLab and Jira dispatch
+> transports, `event.state.labels` is bounded to a 1024-byte JSON prefix
+> (entries past the bound are dropped, except fullsend's own control labels,
+> `fullsend-fix` and `fullsend-no-fix`, which the bound keeps), and on the
+> GitLab transport each other
+> attacker-shaped single string the event carries (branch refs, the
+> head_repo/base_repo paths, logins, the label name) is bounded to a
+> 258-byte JSON prefix — a same-project MR carries the project's own path
+> in head_repo/base_repo, and it stays cut there even though `repo`
+> travels whole. The
+> config-derived `repo`, `entity.url` and
+> `entity.linked_change_proposal.url` travel whole, so a trigger keyed on
+> them sees the full value.
+> A trigger keyed on a label past the labels bound — or on the tail of an
+> over-bound ref or login — therefore does not match there, silently. A label
+> past the bound is invisible to the trigger, so a negative-label guard such
+> as `!("hold" in event.state.labels)` is unsafe on these transports: any
+> label the forge returns before the guarded one can push it past the bound
+> and make the guard match. The control labels `fullsend-fix` and
+> `fullsend-no-fix` are never dropped, so guards keyed on them stay safe. See the
+> [GitLab dispatch payload](../../normative/normalized-event/v1/README.md#gitlab-dispatch-payload)
+> section of the normalized-event spec for the bounds and their rationale.
+
 ### Fork safety
 
 Write-capable agents that push commits or open PRs **must** guard against fork PRs. Use `!event.state.change_proposal.is_fork` in your trigger or rely on the platform authorization gate. Read-only agents (analysis, review) may run on fork PRs when policy allows.
@@ -379,7 +403,11 @@ the review entry is disabled.
 | `cel=skip reason=bot-role lookup failed` | The bot-role lookup could not complete, so the bot is denied | Check the route step's warning for the lookup error |
 | `cel=skip reason=harness unavailable; actor below write` | The review harness could not be fetched or loaded, so only write access passes | Check the route step's warning for the harness error |
 | `cel=skip reason=trigger evaluation failed: …` | The trigger compiles but failed on this event, for example it reads a field the event lacks without `has()`; this counts as no match | Guard optional fields with `has()` |
-| `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid, so the dispatch workflow decided | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
+| `CEL route failed; keeping the bash stage` | A CEL route step failed or the configuration is invalid; for events other than a closed pull request, the Bash stage remains selected | Open the failed "… CEL route" step for the error, for example an invalid `trigger` or another invalid `agents:` entry |
+| `CEL routing failed for a closed pull request; skipping retro` | CEL routing failed for a closed pull request, so retro is skipped instead of falling back to Bash | Open the failed "… CEL route" step for the error |
+| `CEL retro run denied because the Bash route did not authorize retro` | CEL selected retro, but the Bash route did not authorize retro for this event | Check the event actor's write access and use `/fs-retro` if an authorized manual run is needed |
+| `cel=skip reason=closed pull request retro requires write` | The actor closing or merging the pull request lacked write access | Have a write-authorized user close or merge the pull request, or run `/fs-retro` |
+| `cel=skip reason=retro command requires write` | The actor invoking `/fs-retro` lacked write access | Have a write-authorized user invoke `/fs-retro` |
 | `invalid agent config: agents[N] (review): invalid trigger` in any agent job | The `trigger` in `config.yaml` does not compile; every agent run validates the whole `agents:` list, so all agents fail, not only review | Fix the expression in `.fullsend/config.yaml`; see [Checking a trigger before you merge](#checking-a-trigger-before-you-merge) |
 
 ### Choosing when retro runs
@@ -422,11 +450,16 @@ and a bot's `/fs-retro` comment never starts a retro.
 
 A trigger decides which events start a retro, not who may start one:
 
-- **Closing a pull request:** anyone who closes or merges it, including its
-  read-only author and bots without a registered fullsend role, as with the
-  dispatch workflow. Only the retro agent gets this exception (the
-  [lifecycle-close exception](../../normative/authorization/v1/README.md#lifecycle-close-pull_request_targetclosed)).
-- **`/fs-retro`:** users with write access or above.
+- **Closing a pull request:** the closing actor needs write access. If the
+  permission lookup or CEL routing fails, the close event does not start retro.
+  A custom retro harness role cannot lower this write requirement.
+  Merge-queue events follow the same rule: the event sender needs write access.
+  Other automated senders without write access are denied; a write user can
+  run `/fs-retro` afterward. See the
+  [authorization contract](../../normative/authorization/v1/README.md#closed-pull-request-retro-pull_request_targetclosed).
+- **`/fs-retro`:** users with write access or above. A custom retro harness
+  role cannot lower this fixed floor, and CEL cannot start retro when the Bash
+  route denied the actor.
 
 ### Choosing when triage and prioritize run
 

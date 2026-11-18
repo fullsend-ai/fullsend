@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fullsend.ai/normative/entity-context-snapshot/v2/threads.schema.json",
+  "title": "ThreadRelationships",
+  "type": "object",
+  "required": ["threads"],
+  "properties": {
+    "threads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "thread_key", "created_at", "order_path", "record_keys", "replies"],
+        "properties": {
+          "id": {
+            "$ref": "common.schema.json#/$defs/structural_id",
+            "description": "Stable source thread ID; same value as Normalized entity v1 thread id."
+          },
+          "thread_key": { "$ref": "common.schema.json#/$defs/record_key" },
+          "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+          "order_path": { "type": "string", "pattern": "^threads/[0-9a-f]{64}[.]order$" },
+          "record_keys": {
+            "type": "array",
+            "items": { "$ref": "common.schema.json#/$defs/record_key" },
+            "uniqueItems": true,
+            "description": "Retained comment record keys in source thread order."
+          },
+          "replies": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["record_key", "parent_record_key"],
+              "properties": {
+                "record_key": { "$ref": "common.schema.json#/$defs/record_key" },
+                "parent_record_key": { "$ref": "common.schema.json#/$defs/record_key" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "review_id": { "$ref": "common.schema.json#/$defs/structural_id" },
+          "review_record_key": { "$ref": "common.schema.json#/$defs/record_key" },
+          "reviewed_sha": { "$ref": "common.schema.json#/$defs/git_oid" },
+          "location": {
+            "type": "object",
+            "required": ["path"],
+            "properties": {
+              "path": { "$ref": "common.schema.json#/$defs/repository_path" },
+              "line": { "type": "integer", "minimum": 1 },
+              "side": { "enum": ["left", "right"] },
+              "start_line": { "type": "integer", "minimum": 1 },
+              "start_side": { "enum": ["left", "right"] },
+              "original_line": { "type": "integer", "minimum": 1 },
+              "original_start_line": { "type": "integer", "minimum": 1 },
+              "original_side": { "enum": ["left", "right"] },
+              "old_line": { "type": "integer", "minimum": 1 },
+              "new_line": { "type": "integer", "minimum": 1 }
+            },
+            "additionalProperties": false,
+            "description": "Source-backed diff location; same field names as Normalized entity v1 thread location. Omitted for a general discussion thread."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

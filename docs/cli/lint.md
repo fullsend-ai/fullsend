@@ -195,13 +195,14 @@ Codes appear only in `--format json`.
 | `preflight-check-path` | `preflight_check` looks like a bare script path |
 | `github-issue-url-deprecated` | `GITHUB_ISSUE_URL` is set or referenced |
 | `reserved-sandbox-env` | `env.sandbox` keys the sandbox will drop |
-| `config-invalid` | `config.yaml` semantic validation failed |
+| `config-invalid` | `config.yaml` semantic validation failed, including an invalid `forge:` |
 | `agents-siblings-invalid` | scoped lint: other agents' `agents[]` entries are invalid |
 | `agent-unavailable` | scoped lint: the named agent is missing, disabled, or invalid |
 | `harness-failed` | resolving, loading, or validating a harness failed |
 
-A missing `config.yaml`, an unreadable config file, or an invalid
-`--format` value still fails before a document is written.
+A missing `config.yaml`, an unreadable config file, an invalid `--forge`
+flag, or an invalid `--format` value still fails before a document is
+written.
 
 ## Exit codes
 

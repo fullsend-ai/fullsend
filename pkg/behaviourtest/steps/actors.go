@@ -3,7 +3,6 @@ package steps
 import (
 	"context"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -44,6 +43,9 @@ func registerActorSteps(sc *godog.ScenarioContext) {
 	})
 	sc.Step(actorOpensPullRequestPattern, func(ctx context.Context, actor, linked string) (context.Context, error) {
 		return ctx, whenActorOpensPullRequest(world.FromContext(ctx), actor, linked != "")
+	})
+	sc.Step(`^the write actor closes the pull request$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenActorClosesPullRequest(world.FromContext(ctx), actorWrite)
 	})
 	sc.Step(`^the (`+actorAlternation+`) posts "([^"]+)" on the pull request$`, func(ctx context.Context, actor, body string) (context.Context, error) {
 		return ctx, whenActorPostsPRComment(world.FromContext(ctx), actor, body)
@@ -138,32 +140,18 @@ func whenActorLabelsIssue(w *world.World, actor, label string) error {
 
 // givenLabelExists creates label in the repository, so an actor without
 // the right to create labels (the triage actor) can still apply it. The
-// e2e installation identity creates it by opening a throwaway issue that
-// carries the label, and closes that issue again. The workflow runs the
-// issue starts finish before the scenario's trigger step sets
-// ScenarioStart, so they are not counted.
+// e2e installation identity creates it through the forge's label API.
+// Creating it fires no issue event, so no workflow run starts that the
+// scenario's later steps could count (#9350). A label left by an
+// earlier scenario in a reused repository is not an error.
 func givenLabelExists(w *world.World, label string) error {
 	if err := ensureScenarioRepo(w); err != nil {
 		return err
 	}
-	ctx := context.Background()
-	issue, err := w.SCM.CreateIssue(ctx, w.RepoOwner, w.RepoName,
-		fmt.Sprintf("behaviour-label-%d", time.Now().UnixNano()),
-		"Creates the label "+label+" for a behaviour scenario.", label)
-	if err != nil {
+	if err := w.SCM.EnsureLabel(context.Background(), w.RepoOwner, w.RepoName, label); err != nil {
 		return fmt.Errorf("creating label %q: %w", label, err)
 	}
-	// The forge's CreateIssue retries without labels when it rejects them
-	// and still succeeds, so check that the issue carries the label.
-	if !slices.Contains(issue.Labels, label) {
-		closeErr := w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, issue.Number)
-		err := fmt.Errorf("creating label %q: issue #%d was created without it (labels %v)", label, issue.Number, issue.Labels)
-		if closeErr != nil {
-			err = fmt.Errorf("%w; closing the throwaway issue: %v", err, closeErr)
-		}
-		return err
-	}
-	return w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, issue.Number)
+	return nil
 }
 
 // whenActorSubmitsReviewComment submits a COMMENT review on the scenario's
@@ -183,6 +171,19 @@ func whenActorSubmitsReviewComment(w *world.World, actor string) error {
 	w.ScenarioStart = time.Now().Truncate(time.Second)
 	return actorSCM.SubmitPullRequestReview(context.Background(),
 		w.RepoOwner, w.RepoName, w.PRNumber, "COMMENT")
+}
+
+// whenActorClosesPullRequest closes the scenario PR using the named actor's PAT.
+func whenActorClosesPullRequest(w *world.World, actor string) error {
+	actorSCM, _, err := actorIdentity(w, actor)
+	if err != nil {
+		return err
+	}
+	if w.PRNumber == 0 {
+		return fmt.Errorf("no pull request opened")
+	}
+	w.ScenarioStart = time.Now().Truncate(time.Second)
+	return actorSCM.CloseIssue(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber)
 }
 
 // whenActorOpensPullRequest opens a pull request as the named test actor,

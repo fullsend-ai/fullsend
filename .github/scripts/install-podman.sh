@@ -24,6 +24,10 @@
 #   .github/scripts/install-podman.sh
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=retry-with-backoff.sh
+source "${SCRIPT_DIR}/retry-with-backoff.sh"
+
 # Pinned podman-static release tag -- matches the version actions/runner-images
 # itself pins for the same bundle, so we're never fighting the image's own
 # install, just making it explicit and verified.
@@ -52,12 +56,21 @@ archive_path="$(mktemp)"
 trap 'rm -f "${archive_path}"' EXIT
 
 echo "Downloading podman static ${PODMAN_STATIC_TAG} (${arch})..."
-curl -fsSL --retry 3 --retry-delay 5 -o "${archive_path}" "${archive_url}"
+# Transient failures (5xx, timeouts) are retried with backoff (#9203).
+if ! download_with_retry "Podman ${PODMAN_STATIC_TAG} (${arch}) download" \
+  "${archive_url}" "${archive_path}"; then
+  echo "::error::Podman setup failed at stage 'download' for ${archive_url}" >&2
+  exit 1
+fi
 
 # Verify the downloaded archive against the pinned checksum before
-# extracting anything as root. Fail loudly on mismatch.
+# extracting anything as root. Fail closed on mismatch: a mismatch is
+# never retried or bypassed.
 expected="${EXPECTED_SHA256[${arch}]}"
-echo "${expected}  ${archive_path}" | sha256sum -c --strict
+if ! echo "${expected}  ${archive_path}" | sha256sum -c --strict; then
+  echo "::error::Podman ${PODMAN_STATIC_TAG} (${arch}) setup failed at stage 'verify checksum' (category: integrity); not retried" >&2
+  exit 1
+fi
 echo "SHA-256 checksum verified for podman-linux-${arch}.tar.gz"
 
 # The archive contains a top-level podman-linux-<arch>/ directory with

@@ -609,6 +609,9 @@ func (f *fakeCleanupSCM) CreateIssue(context.Context, string, string, string, st
 func (f *fakeCleanupSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
 	return nil
 }
+func (f *fakeCleanupSCM) EnsureLabel(context.Context, string, string, string) error {
+	return nil
+}
 
 func (f *fakeCleanupSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
 	return nil, nil
@@ -1305,6 +1308,9 @@ func (f *fakeRetryCleanupSCM) CreateIssue(context.Context, string, string, strin
 }
 
 func (f *fakeRetryCleanupSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
+	return nil
+}
+func (f *fakeRetryCleanupSCM) EnsureLabel(context.Context, string, string, string) error {
 	return nil
 }
 

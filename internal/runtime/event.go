@@ -4,7 +4,7 @@ import "time"
 
 // streamBufSize is the bufio.Reader buffer size used by every NDJSON stream
 // parser (Claude, pi, codex, OpenCode). Lines exceeding this size are
-// skipped; the Claude parser still reports an oversized tool_result line's
+// skipped; the Claude and pi parsers still report an oversized result line's
 // call id (ToolResultEvent.Oversized).
 const streamBufSize = 1024 * 1024 // 1 MiB
 
@@ -43,10 +43,10 @@ func (TextEvent) agentEvent() {}
 // it reads the line carrying the call's complete arguments (written ahead
 // of the call's result; the tool may already be running by then); the pi
 // parser holds it until tool_execution_end, because a failed call's summary
-// needs the result, and the codex and OpenCode parsers emit it when the call
-// has finished — codex
-// once per changed path of a file_change item, so one apply_patch can
-// yield several. Not every call yields one: a Claude Code server_tool_use
+// needs the result, or until the stream stops if no end came; the codex and
+// OpenCode parsers emit it when the call has finished — codex once per
+// changed path of a file_change item, so one apply_patch can yield several.
+// Not every call yields one: a Claude Code server_tool_use
 // block on an assistant line (the path production takes) and a tool_use
 // line beyond streamBufSize emit nothing.
 // ID is the tool call identifier from the runtime stream; it is empty
@@ -85,8 +85,8 @@ func (ToolUseEvent) agentEvent() {}
 // Result is a fragment of what the wire carried; Oversized reports that
 // the result's stream line exceeded streamBufSize and was skipped, so
 // only ID is known — Result is empty and IsError is unknown, not false.
-// The Claude and pi runtimes emit it; only Claude reports Oversized — see
-// the runtime support matrix in docs/runtimes.md.
+// The Claude and pi runtimes emit it — see the runtime support matrix in
+// docs/runtimes.md.
 type ToolResultEvent struct {
 	ID        string
 	Result    string

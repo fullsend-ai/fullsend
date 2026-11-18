@@ -26,7 +26,7 @@ func ProjectExecutionRef(agentName string, role string, event *normevent.Event) 
 		Role:         role,
 		SourceRepo:   event.Repo,
 		EventType:    event.Source.RawType,
-		EventPayload: string(payloadJSON),
+		EventPayload: payloadJSON,
 		StatusRepo:   event.Repo,
 		StatusNumber: fmt.Sprintf("%d", event.Entity.ID),
 	}

@@ -1,6 +1,7 @@
 package jira
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -143,4 +144,24 @@ func NewScoped(cfg ScopedConfig, creds Credentials, opts ...Option) (*LiveClient
 	}
 	all = append(all, WithEmail(creds.Email))
 	return New(creds.Token, append(all, opts...)...)
+}
+
+// GatewayBaseURL returns the per-site API gateway base URL
+// {APIURL}/ex/jira/{cloudId}, with no trailing slash: the base NewScoped
+// clients append /rest/api/3/... to. An empty cfg.APIURL means
+// DefaultAPIURL. The cloud ID is discovered from cfg.BaseURL with the same
+// lookup the shared client uses (GET {BaseURL}/_edge/tenant_info). That
+// endpoint is public, so no credentials are needed or sent. opts are
+// applied after the connection settings, for example WithHTTPClient.
+func GatewayBaseURL(ctx context.Context, cfg ScopedConfig, opts ...Option) (string, error) {
+	apiURL := cfg.APIURL
+	if apiURL == "" {
+		apiURL = DefaultAPIURL
+	}
+	all := append([]Option{WithBaseURL(cfg.BaseURL), WithAPIGateway(apiURL)}, opts...)
+	c := newLiveClient("", all)
+	if err := c.validateEndpoints(); err != nil {
+		return "", err
+	}
+	return c.gatewaySiteURL(ctx)
 }

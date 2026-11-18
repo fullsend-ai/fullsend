@@ -7,6 +7,34 @@
 
 set -euo pipefail
 
+# Temp files removed when the job shell exits, on every path (the many
+# early fail-closed exits below and a `set -e` failure included); persistent
+# runners keep RUNNER_TEMP between jobs. Later code adds files with
+# _FS_EXIT_CLEANUP+=(...) instead of installing its own EXIT trap, which
+# would replace this one.
+_FS_EXIT_CLEANUP=()
+# shellcheck disable=SC2317,SC2329  # invoked by the EXIT trap below
+_fs_exit_cleanup() {
+  if [ "${#_FS_EXIT_CLEANUP[@]}" -gt 0 ]; then
+    rm -f -- "${_FS_EXIT_CLEANUP[@]}"
+  fi
+  # The inference credential block below stays POSIX sh (its test runs it
+  # under /bin/sh), so its two temp files are removed by name here.
+  rm -f -- ${OIDC_TOKEN_FILE:+"${OIDC_TOKEN_FILE}"} ${GCP_CRED_CONFIG_FILE:+"${GCP_CRED_CONFIG_FILE}"}
+}
+trap '_fs_exit_cleanup' EXIT
+
+# The job uploads fullsend-artifact/ with `when: always` (ADR 0161). A
+# runner that keeps its workspace still holds the previous job's artifact
+# copy, so empty it before any early exit below (the CI_DEBUG_TRACE guard
+# included) can leave it for upload. Only an absolute CI_PROJECT_DIR is
+# trusted as the workspace root.
+case "${CI_PROJECT_DIR:-}" in
+  /*)
+    rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"
+    ;;
+esac
+
 # CI_DEBUG_TRACE guard — deny-before-admit. YAML rules also refuse to
 # start the job when debug tracing is enabled (secrets materialize at
 # job init, so a mid-script abort is too late). This script-level
@@ -74,7 +102,6 @@ FULLSEND_PINNED_API_V4_URL="${FULLSEND_PINNED_GITLAB_URL}/api/v4"
 if [ -n "${FULLSEND_GCP_WIF_PROVIDER:-}" ]; then
   OIDC_TOKEN_FILE=$(mktemp)
   GCP_CRED_CONFIG_FILE=$(mktemp)
-  trap 'rm -f "${OIDC_TOKEN_FILE}" "${GCP_CRED_CONFIG_FILE}"' EXIT
   echo "${FULLSEND_ID_TOKEN}" > "${OIDC_TOKEN_FILE}"
   if [ -n "${FULLSEND_GCP_SERVICE_ACCOUNT:-}" ]; then
     # The installer validates the email; recheck the shape here so the
@@ -412,14 +439,16 @@ print('true' if str(active).lower() in ('true', 'yes', '1', 'on') else 'false')
 fi
 
 # Authorization gate (ADR 0054) — check actor has Developer access.
-# Read-only stages (retro, prioritize) are exempt to match GitHub
-# behavior where any closer may trigger retro.
+# Prioritize is read-only. Retro requires Developer access, matching the
+# fixed write-level gate used for GitHub close-event and /fs-retro dispatch.
 # Runs here (not in dispatch) because the Members API requires the
 # bot PAT (from FULLSEND_JOB_TOKEN, selected by role).
 # Fail-closed: API failure → access_level 0 → reject.
-# ACTOR_ID is the generic actor identity, populated from MR_AUTHOR_ID
-# for MR events or NoteAuthorID for issue/note events. Falls back to
-# MR_AUTHOR_ID for backward compatibility with older dispatch pipelines.
+# ACTOR_ID is the generic actor identity, populated from the event actor
+# for MR events and issue/note events. Older dispatch pipelines may omit it;
+# MR_AUTHOR_ID is a safe fallback only for opened/synchronized events, where
+# the MR author is the actor. Close/merge events must identify the closer or
+# merger, and an absent or unreadable action cannot authorize the MR author.
 #
 # Jira work-item dispatches (EVENT_TYPE jira_*, #8919) carry no ACTOR_ID:
 # a Jira actor has no GitLab user ID. The Jira poller already authorized
@@ -433,8 +462,21 @@ case "${EVENT_TYPE:-}" in
 esac
 if [ "${JIRA_DISPATCH}" = "true" ]; then
   echo "Jira work-item dispatch — actor authorized by the Jira poller's project-role check"
-elif [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
-  AUTH_ACTOR_ID="${ACTOR_ID:-${MR_AUTHOR_ID:-}}"
+elif [ "${STAGE}" != "prioritize" ]; then
+  AUTH_ACTOR_ID="${ACTOR_ID:-}"
+  if [ "${EVENT_TYPE:-}" = "mr_event" ]; then
+    _FULLSEND_MR_ACTION=""
+    if [ -n "${EVENT_PAYLOAD_B64:-}" ]; then
+      _FULLSEND_MR_ACTION=$(printf '%s' "${EVENT_PAYLOAD_B64}" | base64 -d 2>/dev/null | jq -r '.action // empty' 2>/dev/null) || _FULLSEND_MR_ACTION=""
+    fi
+    case "${_FULLSEND_MR_ACTION}" in
+      opened|synchronized)
+        if [ -z "${AUTH_ACTOR_ID}" ]; then
+          AUTH_ACTOR_ID="${MR_AUTHOR_ID:-}"
+        fi
+        ;;
+    esac
+  fi
   if [ -z "${AUTH_ACTOR_ID}" ]; then
     echo "WARNING: No actor identity available — skipping stage (fail-closed)"
     exit 0
@@ -1081,6 +1123,10 @@ if [ "${STAGE}" = "fix" ]; then
   _FS_TARGET_REPO="${FIX_TARGET_REPO}"
 fi
 mkdir -p "${CI_PROJECT_DIR}/output"
+# A persistent runner may keep a previous job's artifact directory (built
+# at the end of this script); clear it so it never reaches this run's
+# sandbox or artifact.
+rm -rf -- "${CI_PROJECT_DIR}/fullsend-artifact"
 
 # Jira work-item dispatch (#8919): hand fullsend run the normalized Jira
 # event from the HMAC-verified payload. fullsend run validates it, exports
@@ -1091,12 +1137,21 @@ mkdir -p "${CI_PROJECT_DIR}/output"
 _FS_RUN_EVENT_ARGS=()
 if [ "${JIRA_DISPATCH}" = "true" ]; then
   JIRA_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-jira-event.XXXXXX")
+  _FS_EXIT_CLEANUP+=("${JIRA_EVENT_FILE}")
   if ! printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
     | jq -e '._normalized_event | select(type == "object" and .source.system == "jira")' > "${JIRA_EVENT_FILE}" 2>/dev/null; then
     echo "ERROR: Jira dispatch payload has no Jira normalized event — refusing to run (fail-closed)" >&2
     exit 1
   fi
   _FS_RUN_EVENT_ARGS=(--event-file "${JIRA_EVENT_FILE}")
+  # Hand the trigger comment to the pre-script the same way the GitHub
+  # code job does: COMMENT_BODY carries the canonical normalized comment
+  # body (see fullsend_payload_comment_body), so /fs-code --force reaches
+  # the Jira pre-script (#9187). Always assign it, so a label event runs
+  # with it empty rather than with an inherited pipeline variable. The
+  # body is untrusted text: never echo it.
+  COMMENT_BODY=$(fullsend_payload_comment_body "${EVENT_PAYLOAD_B64:-}")
+  export COMMENT_BODY
 else
   # GitLab dispatch (#9014): the poller embeds the event's full normalized
   # form when it validates and fits the transport budget. Hand it to
@@ -1105,6 +1160,7 @@ else
   # _normalized_event (an older poller, or an event that did not fit) has
   # no source.system, gets no --event-file, and runs as before.
   GITLAB_EVENT_FILE=$(mktemp "${RUNNER_TEMP}/fullsend-gitlab-event.XXXXXX")
+  _FS_EXIT_CLEANUP+=("${GITLAB_EVENT_FILE}")
   if printf '%s' "${EVENT_PAYLOAD_B64:-}" | base64 -d 2>/dev/null \
     | jq -e '._normalized_event | select(type == "object" and .source.system == "gitlab")' > "${GITLAB_EVENT_FILE}" 2>/dev/null; then
     _FS_RUN_EVENT_ARGS=(--event-file "${GITLAB_EVENT_FILE}")
@@ -1125,6 +1181,87 @@ set +e
 # the pin-validated API root so that resolution never falls through to
 # one of those instead.
 export FULLSEND_GITLAB_URL="${FULLSEND_PINNED_GITLAB_URL}"
+# BEGIN fullsend_check_ci_server_origin
+# fullsend_check_ci_server_origin checks CI_SERVER_URL and CI_SERVER_HOST
+# against the pinned GitLab API root, FULLSEND_PINNED_GITLAB_URL (#9465).
+#
+# The agent post-scripts send the forge token to the host named by
+# CI_SERVER_HOST (and the origin in CI_SERVER_URL). This check keeps that
+# token destination consistent with the pinned API root, so a partial
+# override (CI_SERVER_* changed, CI_API_V4_URL not) stops the job. It is
+# defence in depth, not a boundary: FULLSEND_PINNED_GITLAB_URL derives from
+# CI_API_V4_URL, which the same CI/CD variables can override.
+#
+# Out of scope: the agents post-script libraries build
+# https://${GITLAB_HOST}/api/v4 with no port or relative URL root, so they
+# do not reach an instance served on a non-default port or under a path.
+#
+# Comparison: scheme and authority (host[:port]) case-insensitively, the
+# path (relative URL root) byte-for-byte, one trailing "/" on either URL
+# ignored. CI_SERVER_HOST is the host only. Its brackets are dropped only
+# when the pinned host is an IPv6 literal; a DNS host given in brackets
+# fails. Empty values fail. On a mismatch the function prints one ERROR
+# line that names the variables, not their values, and returns 1. Neither
+# value is used as a fallback.
+#
+# Written for bash 3.2 (macOS /bin/bash): no ${var,,} expansions.
+# check_ci_server_origin_test.go runs the text between the BEGIN and END
+# marker lines on its own, so keep it self-contained.
+
+# _fs_ascii_lower prints $1 with ASCII upper-case letters lowered.
+_fs_ascii_lower() {
+  printf '%s' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]'
+}
+
+fullsend_check_ci_server_origin() {
+  local pinned server_url server_host
+  local p_scheme p_rest p_auth p_path p_host p_host_bare
+  local s_scheme s_rest s_auth s_path
+  pinned="${FULLSEND_PINNED_GITLAB_URL:-}"
+  pinned="${pinned%/}"
+  server_url="${CI_SERVER_URL:-}"
+  server_url="${server_url%/}"
+  server_host="${CI_SERVER_HOST:-}"
+
+  if [ -n "${pinned}" ] && [ -n "${server_url}" ] && [ -n "${server_host}" ] \
+    && [[ "${pinned}" == *://* ]] && [[ "${server_url}" == *://* ]]; then
+    p_scheme="${pinned%%://*}"
+    p_rest="${pinned#*://}"
+    p_auth="${p_rest%%/*}"
+    p_path="${p_rest#"${p_auth}"}"
+    s_scheme="${server_url%%://*}"
+    s_rest="${server_url#*://}"
+    s_auth="${s_rest%%/*}"
+    s_path="${s_rest#"${s_auth}"}"
+    p_auth="$(_fs_ascii_lower "${p_auth}")"
+    s_auth="$(_fs_ascii_lower "${s_auth}")"
+    server_host="$(_fs_ascii_lower "${server_host}")"
+
+    # Host without the port. An IPv6 literal keeps its colons inside the
+    # brackets, and CI_SERVER_HOST may carry it with or without them.
+    if [[ "${p_auth}" == \[* ]]; then
+      p_host="${p_auth%%\]*}]"
+      p_host_bare="${p_host#\[}"
+      p_host_bare="${p_host_bare%\]}"
+    else
+      p_host="${p_auth%%:*}"
+      p_host_bare="${p_host}"
+    fi
+
+    if [ -n "${p_auth}" ] \
+      && [ "$(_fs_ascii_lower "${s_scheme}")" = "$(_fs_ascii_lower "${p_scheme}")" ] \
+      && [ "${s_auth}" = "${p_auth}" ] \
+      && [ "${s_path}" = "${p_path}" ] \
+      && { [ "${server_host}" = "${p_host}" ] || [ "${server_host}" = "${p_host_bare}" ]; }; then
+      return 0
+    fi
+  fi
+
+  echo "ERROR: CI_SERVER_URL or CI_SERVER_HOST disagrees with the pinned GitLab URL (FULLSEND_PINNED_GITLAB_URL) — refusing to run the agent post-scripts against an unpinned GitLab origin (fail-closed)" >&2
+  return 1
+}
+# END fullsend_check_ci_server_origin
+if ! fullsend_check_ci_server_origin; then exit 1; fi
 fullsend run "${STAGE}" \
   --fullsend-dir .fullsend \
   --target-repo "${_FS_TARGET_REPO}" \
@@ -1136,10 +1273,6 @@ fullsend run "${STAGE}" \
   ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}
 RUN_STATUS=$?
 set -e
-# Persistent runners keep RUNNER_TEMP between jobs.
-if [ -n "${GITLAB_EVENT_FILE:-}" ]; then
-  rm -f "${GITLAB_EVENT_FILE}"
-fi
 
 MEASURE_ARGS=(--agent "${STAGE}" --output-dir "${CI_PROJECT_DIR}/output")
 if [ -n "${DEFAULT_BRANCH_SHA}" ]; then
@@ -1151,4 +1284,40 @@ if [ -n "${DEFAULT_BRANCH_SHA}" ]; then
 fi
 fullsend eval-measure "${MEASURE_ARGS[@]}" || true
 
+# Prepare the job artifact (ADR 0161): artifacts.content and
+# artifacts.by_source in .fullsend/config.yaml pick the level (all,
+# metadata or none) for this run's source, read from the same event file
+# fullsend run received. The job's artifacts: path is the copy CI
+# uploads, not output/, which stays untouched for the steps above. Fails
+# closed: when the level cannot be resolved the artifact directory is
+# removed, and GitLab finds no artifact files (a warning, not a job
+# failure).
+_FS_ARTIFACT_DIR="${CI_PROJECT_DIR}/fullsend-artifact"
+if _FS_ARTIFACT_LEVEL=$(fullsend prepare-artifacts \
+  --output-dir "${CI_PROJECT_DIR}/output" \
+  --artifact-dir "${_FS_ARTIFACT_DIR}" \
+  --fullsend-dir .fullsend \
+  ${_FS_RUN_EVENT_ARGS[@]+"${_FS_RUN_EVENT_ARGS[@]}"}); then
+  echo "Run artifact content level: ${_FS_ARTIFACT_LEVEL}"
+  # GitLab archives an empty directory that matches artifacts: paths, so
+  # remove it for none: the job then has no artifact at all.
+  if [ "${_FS_ARTIFACT_LEVEL}" = "none" ]; then
+    rm -rf -- "${_FS_ARTIFACT_DIR}"
+  fi
+else
+  rm -rf -- "${_FS_ARTIFACT_DIR}"
+  # Tell apart a missing binary (a failed install), a CLI that predates
+  # the command (cobra exits non-zero for an unknown subcommand even with
+  # --help) and a failed resolution.
+  if ! command -v fullsend >/dev/null 2>&1; then
+    echo "WARNING: the fullsend CLI is not installed (did install-fullsend-cli.sh fail?), so no run artifact is uploaded" >&2
+  elif ! fullsend prepare-artifacts --help >/dev/null 2>&1; then
+    echo "WARNING: the installed fullsend CLI predates prepare-artifacts, so no run artifact is uploaded; install-fullsend-cli.sh must pin a fullsend release at least as new as this script (re-sync the .fullsend scaffold)" >&2
+  else
+    echo "WARNING: run artifact level could not be resolved; no run artifact is uploaded" >&2
+  fi
+fi
+
+# The EXIT trap removes the event files (persistent runners keep
+# RUNNER_TEMP between jobs).
 exit "${RUN_STATUS}"

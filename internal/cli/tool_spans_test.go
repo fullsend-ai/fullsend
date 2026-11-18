@@ -660,3 +660,36 @@ func TestToolSpanTracker_PiStartAndEndIsANormalSpan(t *testing.T) {
 	assert.Equal(t, "execute_tool bash", spans[0].Name)
 	assert.NotContains(t, spans[0].Attributes, attribute.Bool("fullsend.tool.unmatched", true))
 }
+
+func TestToolSpanTracker_PiCutOffCallIsUnanswered(t *testing.T) {
+	// The real parser in front of the tracker: a start with no end must close
+	// as unanswered, spanning from when the start was read.
+	tr, rec, _ := toolSpanFixture(t)
+	before := time.Now()
+	wire := `{"type":"tool_execution_start","toolCallId":"c1","toolName":"bash","args":{"command":"sleep 999"}}` + "\n"
+	_, err := agentruntime.ParsePiStream(strings.NewReader(wire), tr.Handle)
+	require.NoError(t, err)
+	assert.Empty(t, endedToolSpans(rec), "still open until Finish")
+	tr.Finish()
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 1)
+	assert.Equal(t, "execute_tool bash", spans[0].Name)
+	assert.Contains(t, spans[0].Attributes, attribute.String("error.type", "unanswered"))
+	assert.False(t, spans[0].StartTime.Before(before))
+}
+
+func TestToolSpanTracker_PiOversizedEndIsAnsweredNotUnanswered(t *testing.T) {
+	tr, rec, _ := toolSpanFixture(t)
+	big := strings.Repeat("x", 1024*1024+10)
+	wire := `{"type":"tool_execution_start","toolCallId":"c1","toolName":"read","args":{"path":"/big"}}` + "\n" +
+		`{"type":"tool_execution_end","toolCallId":"c1","toolName":"read","result":{"content":[{"type":"text","text":"` + big + `"}]},"isError":false}` + "\n"
+	_, err := agentruntime.ParsePiStream(strings.NewReader(wire), tr.Handle)
+	require.NoError(t, err)
+	tr.Finish()
+
+	spans := endedToolSpans(rec)
+	require.Len(t, spans, 1)
+	assert.Contains(t, spans[0].Attributes, attribute.Bool("fullsend.tool.result_oversized", true))
+	assert.NotContains(t, spans[0].Attributes, attribute.String("error.type", "unanswered"))
+}

@@ -98,6 +98,28 @@ If no GitHub Apps exist for the app set, the setup command opens browser windows
 
 See [standalone commands](../getting-started/operations.md#standalone-commands) for the full command reference.
 
+### Runners that use a remote OpenShell gateway
+
+By default, the composite action turns each runner into a sandbox host. It
+installs and configures rootless Podman, writes a local OpenShell gateway
+configuration, and installs the OpenShell CLI. That suits GitHub-hosted
+runners, which start empty.
+
+A self-hosted runner can instead use an OpenShell gateway that runs
+elsewhere. Set `OPENSHELL_GATEWAY_ENDPOINT` in the runner's environment to
+that gateway's `https://` endpoint. When it is set, the action skips the
+Podman installation, the rootless Podman configuration, and the local gateway
+configuration, and sandboxes are created on the remote gateway. If the
+`openshell` CLI is already on the runner's `PATH`, the action also skips the
+OpenShell CLI installer, which needs `sudo` and starts a local gateway
+service. Install the CLI version pinned in
+`.github/scripts/openshell-version.sh` in the runner image.
+
+The action also needs the Python `jsonschema` package to validate agent
+output. It skips the install when `python3` can already import the package. On
+a container image whose Python is an externally managed environment, the
+action retries the install with `--break-system-packages`.
+
 ### Custom app sets
 
 By default, the installer creates GitHub Apps with the `fullsend-ai` prefix (e.g., `fullsend-ai-fullsend`, `fullsend-ai-coder`, `fullsend-ai-review`). Organizations that need their own set of apps — for example, to use org-specific permissions or to register multiple app sets on the same mint — can pass `--app-set` to override the prefix.

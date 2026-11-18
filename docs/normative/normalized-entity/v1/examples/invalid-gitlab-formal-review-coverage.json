@@ -1,0 +1,127 @@
+{
+  "schema_version": "normalized-entity/v1",
+  "entity": {
+    "kind": "change_proposal",
+    "source": {
+      "system": "gitlab",
+      "host": "gitlab.example.com",
+      "repository": "Group/Subgroup/Demo",
+      "repository_id": "101"
+    },
+    "id": "fullsend:entity:v1:gitlab:gitlab.example.com:change_proposal:987",
+    "source_id": "987",
+    "key": "!17",
+    "number": 17,
+    "url": "https://gitlab.example.com/Group/Subgroup/Demo/-/merge_requests/17",
+    "state": "open",
+    "title": {
+      "$unknown": "not_loaded"
+    },
+    "author": {
+      "id": "26",
+      "login": "alice",
+      "kind": "human",
+      "role": "write",
+      "role_verified": true
+    },
+    "created_at": "2026-10-12T09:00:00.000000000Z",
+    "updated_at": "2026-10-13T11:20:00.000000000Z",
+    "body": null,
+    "comments": [],
+    "label_applications": [],
+    "reviews": [],
+    "threads": [],
+    "labels": [],
+    "change_proposal": {
+      "base_repository": "Group/Subgroup/Demo",
+      "head_repository": "Fork/Demo",
+      "base_ref": "main",
+      "head_ref": {
+        "$unknown": "not_loaded"
+      },
+      "head_sha": {
+        "$unknown": "not_loaded"
+      },
+      "is_fork": {
+        "$unknown": "not_loaded"
+      },
+      "draft": false,
+      "approval": {
+        "gate": {
+          "$unknown": "not_loaded"
+        }
+      },
+      "changed_files": [],
+      "commits": []
+    },
+    "checks": [],
+    "reviewers": [],
+    "current_approvals": [],
+    "assignees": [],
+    "reactions": [],
+    "lifecycle": {
+      "closed_at": {
+        "$unknown": "not_loaded"
+      },
+      "closed_by": {
+        "$unknown": "not_loaded"
+      },
+      "merged_at": {
+        "$unknown": "not_loaded"
+      },
+      "merged_by": {
+        "$unknown": "not_loaded"
+      }
+    }
+  },
+  "coverage": {
+    "labels": {
+      "status": "complete"
+    },
+    "comments": {
+      "status": "complete"
+    },
+    "label_applications": {
+      "status": "complete"
+    },
+    "reviews": {
+      "status": "complete"
+    },
+    "threads": {
+      "status": "complete"
+    },
+    "thread_comments": [],
+    "checks": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "check_logs": [],
+    "check_annotations": [],
+    "reviewers": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "current_approvals": {
+      "status": "not_loaded",
+      "reason": "not_requested"
+    },
+    "changed_files": {
+      "status": "not_loaded"
+    },
+    "commits": {
+      "status": "not_loaded"
+    },
+    "assignees": {
+      "status": "not_loaded"
+    },
+    "reactions": {
+      "status": "not_loaded"
+    },
+    "extension_lists": []
+  },
+  "view": {
+    "human_min_role": "triage",
+    "resolved_at": "2026-10-14T06:00:02.000000000Z",
+    "filter_version": "example-filter-v1"
+  }
+}

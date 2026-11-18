@@ -100,6 +100,9 @@ RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
 # regex entry in renovate.json. pi releases ~weekly minors and has changed
 # its --mode json wire shape within a minor before (0.84.0) — the pi stream
 # parser fixtures must be re-verified when this pin moves.
+# CI runs all internal/runtime/pi_extension/*.test.mjs with this pin,
+# including offline MCP parent/child permission and agent dispatch tests.
+# Re-run that full glob locally with FULLSEND_TEST_PI_BIN on every bump.
 # Also run internal/runtime/pi_extension/fullsend-edit-repair.test.mjs with
 # FULLSEND_TEST_PI_BIN at the new pin. That extension works around pi
 # rejecting malformed edit arguments (earendil-works/pi#8521, #8962); once
@@ -429,12 +432,14 @@ RUN case "$TARGETARCH" in \
 # To update: bump the versions and refresh the SHA256s from
 #   https://github.com/BurntSushi/ripgrep/releases/download/<ver>/ripgrep-<ver>-<arch>-unknown-linux-musl.tar.gz.sha256
 #   sha256sum <(curl -fsSL https://github.com/sharkdp/fd/releases/download/v<ver>/fd-v<ver>-<arch>-unknown-linux-musl.tar.gz)
+# Renovate bumps FD_VERSION; postUpgradeTasks runs
+# scripts/renovate/update-fd-checksums.sh to refresh the FD_SHA256 ARGs.
 ARG RIPGREP_VERSION=15.2.0
 ARG RIPGREP_SHA256_AMD64=33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c
 ARG RIPGREP_SHA256_ARM64=800b1e7206afe799dfb5a6901f23147cfaabe0e52210538100f61e86e1740915
-ARG FD_VERSION=10.5.0
-ARG FD_SHA256_AMD64=761c72dc8e120d85b22292063be8a796e2eeb20eb3e4f38b8fa2343ccf3514a7
-ARG FD_SHA256_ARM64=d76c4317f7d5dba69f8a2a15856c90c777e7f0dd4e85f0de8c76de6992c374d4
+ARG FD_VERSION=10.5.2
+ARG FD_SHA256_AMD64=7e2d07fa2b8807642aaec67b7e2972a9fbe4db26fcb340a7372392db42b26694
+ARG FD_SHA256_ARM64=63ea52cb31586e6d98efa2f06d73d542f16c7d0c4af0f07b579aaf9714cf907a
 RUN case "$TARGETARCH" in \
       amd64) RS_ARCH="x86_64";  RG_SHA="$RIPGREP_SHA256_AMD64"; FD_SHA="$FD_SHA256_AMD64" ;; \
       arm64) RS_ARCH="aarch64"; RG_SHA="$RIPGREP_SHA256_ARM64"; FD_SHA="$FD_SHA256_ARM64" ;; \
@@ -477,9 +482,9 @@ RUN apt-get update \
 # Pinned version + sha256 checksum for supply chain safety.
 # Renovate bumps TIRITH_VERSION; postUpgradeTasks runs
 # scripts/renovate/update-tirith-checksums.sh to refresh the SHA256 ARGs.
-ARG TIRITH_VERSION=0.4.2
-ARG TIRITH_SHA256_AMD64=efa6bf414a83dba385d4f13137e8677f850ced9102fe74ebb14c72f31df0dc77
-ARG TIRITH_SHA256_ARM64=c550b1bfb0c8c872ab3421cd6ef756f260f7cf4981a18cedd49f141fa2d77569
+ARG TIRITH_VERSION=0.5.0
+ARG TIRITH_SHA256_AMD64=e2a87b1fbb967e8d37bc9c3c19bcd97f7979c9253e2f600d9293fce4d86d07ce
+ARG TIRITH_SHA256_ARM64=e9f3d685f0a5ba210c67e763749905915a1b34099a1419f9ce87a1ee60b9fc37
 RUN case "$TARGETARCH" in \
       amd64) TI_ARCH="x86_64";  TI_SHA="$TIRITH_SHA256_AMD64" ;; \
       arm64) TI_ARCH="aarch64"; TI_SHA="$TIRITH_SHA256_ARM64" ;; \

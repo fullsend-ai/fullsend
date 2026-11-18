@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -827,3 +828,63 @@ func TestFetchSourceTree_HTTPError(t *testing.T) {
 
 // Ensure io is used in download tests.
 var _ = io.Discard
+
+func TestFetchReleaseFile_EnforcesMaxSize(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Write([]byte("0123456789"))
+	}))
+	defer srv.Close()
+	origURL := ReleaseBaseURL
+	ReleaseBaseURL = srv.URL
+	defer func() { ReleaseBaseURL = origURL }()
+
+	got, err := FetchReleaseFile(context.Background(), "v1.0.0", "asset", 10)
+	require.NoError(t, err)
+	assert.Equal(t, "0123456789", string(got))
+	_, err = FetchReleaseFile(context.Background(), "1.0.0", "asset", 9)
+	require.ErrorContains(t, err, "exceeds maximum size")
+	assert.Equal(t, int32(2), calls.Load(), "handler was not called for each fetch")
+}
+
+func TestFetchReleaseFile_NotFound(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	origURL := ReleaseBaseURL
+	ReleaseBaseURL = srv.URL
+	defer func() { ReleaseBaseURL = origURL }()
+
+	_, err := FetchReleaseFile(context.Background(), "v9.9.9", "asset", 10)
+	require.ErrorIs(t, err, ErrReleaseFileNotFound)
+	assert.Equal(t, int32(1), calls.Load(), "handler was not called")
+}
+
+func TestFetchReleaseFile_StopsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		cancel()
+		<-r.Context().Done() // Stall until the client gives up.
+	}))
+	defer srv.Close()
+	origURL := ReleaseBaseURL
+	ReleaseBaseURL = srv.URL
+	defer func() { ReleaseBaseURL = origURL }()
+
+	_, err := FetchReleaseFile(ctx, "v1.0.0", "asset", 10)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, int32(1), calls.Load(), "handler was not called")
+}
+
+func TestResolveLatestReleaseTag_StopsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := ResolveLatestReleaseTag(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+}

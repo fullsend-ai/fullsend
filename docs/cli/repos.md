@@ -13,6 +13,34 @@ These flags are inherited by all `repos` subcommands:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--gitlab-token` | | GitLab personal or project access token (overrides `GITLAB_TOKEN` env var) |
+| `--verbose` | `false` | Show the underlying API error text (for example the GitLab HTTP status and server message) instead of `(server error text withheld)`, and log each GitLab API request to stderr as `gitlab api: <METHOD> <path> -> <status>` |
+
+### Verbose output
+
+By default, API failures from credential-bearing calls are reported without
+the server's error text (`... request failed (server error text withheld)`),
+because a failure can occur before Fullsend knows which credential values to
+redact. `--verbose` appends the underlying error text instead. Before it is
+shown, the text is scrubbed of the token flags and environment variables
+the command was given (`--gitlab-token`, `GITLAB_TOKEN`,
+`--gitlab-role-token`, `--openai-api-key`, `--jira-token`,
+`--jira-client-secret`), credential values Fullsend generated during the
+run, GitLab, GitHub and other known token shapes (for example `glpat-`,
+`glptt-` and `ghp_` tokens), `token=` URL parameters, URL user info, and hex strings
+of 32 or more characters (which also hides commit SHAs). The request log
+shows only the method, the API path without its query string, and the
+response status (`no response` when the request did not complete); it
+never includes headers or bodies. Only failed calls contribute error text,
+so newly minted credentials in successful responses are never shown.
+
+Even without `--verbose`, an error reporting that a supplied role
+credential's ownership is unresolved is shown in full: it contains recovery
+instructions such as "re-enroll the credential with `--gitlab-role-token`"
+and no server text.
+
+```bash
+fullsend repos install acme/api --verbose
+```
 
 ## Commands
 
@@ -60,8 +88,10 @@ Runs in two phases:
 `defaults.config`, `github.config`, `gitlab.config`, and per-repository `config`
 declare a sparse typed managed configuration for `.fullsend/config.yaml` ([ADR
 0122](../ADRs/0122-declarative-repo-configuration.md)). Each accepts every
-per-repo config field, including `runtime` and `allowed_remote_resources`. Each
-field resolves through code defaults, the selected `config_base` preset,
+per-repo config field, including `runtime` and `allowed_remote_resources`,
+except `trace_context`, which only a concrete repository entry accepts (see
+[Config Reference — `trace_context`](../reference/config-reference.md#trace_context)).
+Each field resolves through code defaults, the selected `config_base` preset,
 `defaults.config`, the repository's forge section `config` (`github.config` for
 GitHub repositories, `gitlab.config` for GitLab ones), and then the repository
 entry's `config` (glob entries included), using that field's normal layered
@@ -129,8 +159,10 @@ Before any write of a managed file, install and converge also compare the
 candidate and current effective configurations through the full runtime accessor
 chain (`kill_switch`, `roles`, `allowed_remote_resources`, agent `enabled:
 false` suppressions, the selected provider's
-`tracker.<provider>.allowed_targets`, `inference.gateway.url`, and
-`inference.gateway.audience`). A less-restrictive candidate is rejected unless
+`tracker.<provider>.allowed_targets`, `inference.gateway.url`,
+`inference.gateway.audience`, `artifacts.content`,
+`artifacts.by_source.<source>`, `progress.verbosity`, and
+`progress.by_source.<source>`). A less-restrictive candidate is rejected unless
 the manifest explicitly declares that relaxation; a change to either
 `inference.gateway` field, including a preset introducing a gateway where an
 established installation has none configured, must be declared in the manifest;
@@ -169,6 +201,30 @@ fullsend repos install acme/api acme/web
 fullsend repos install "acme/*" --direct --concurrency 8
 ```
 
+### Configuration schema of a pinned ref
+
+The managed `.fullsend/config.yaml` is read by the Fullsend runtime at the
+repository's effective `fullsend_ref`, which can be older than the CLI that
+renders it. For an explicitly pinned `fullsend_ref` (one that differs from the
+running release), install, converge and `repos status` use the configuration
+schema that ref declares in `internal/config/managed-config-schema` in
+fullsend-ai/fullsend. A ref without that file uses the legacy schema unless it
+contains the commit that introduced the `tracker` mapping. In the legacy schema
+the managed `tracker` mapping is rendered as the scalar `tracker: <provider>`
+key plus `create_issues.allow_targets`. A setting that schema cannot express
+(GitLab `allowed_targets.groups`, or any `tracker.jira` setting) fails that
+repository with an error that names the setting. The ownership marker is the
+same in every schema.
+
+The pinned ref is looked up only when the managed configuration or the
+installed file declares `tracker` or `create_issues`, the only keys whose shape
+differs between known schemas. Looking it up needs the upstream GitHub client.
+When the ref or its schema cannot be determined (the ref does not resolve, no
+upstream client is available, or the ref declares a schema version this CLI
+does not know), install leaves `.fullsend/config.yaml` unchanged and fails that
+repository with the ref and the reason, and `repos status` reports
+compatibility as `unknown`.
+
 ### Selecting repositories
 
 With no positional arguments, install converges every repository declared in the manifest. Positional arguments filter that set. Each one can be:
@@ -179,15 +235,70 @@ With no positional arguments, install converges every repository declared in the
 
 Selectors never add repositories. Every selector must match at least one declared repository, and the whole run fails before any manifest or forge write if any one does not, even when other selectors match: `repos install acme/api 'other/*'` fails for `other/*` when only `acme/*` is declared. An unrelated glob is never treated as declared merely because the manifest contains another glob. For a concrete name the error lists every undeclared selector and suggests the entry to add, for example `fullsend repos set 'github.repos["owner/repo"]' '{}'` or `fullsend repos set 'gitlab.repos["group/project"]' '{}'` (a GitLab entry needs `gitlab.url` first). Declare the repository, then re-run. A glob selector is checked against the repositories the declared entries resolve to, so a glob that lists no repository fails with a "matched no manifest entries" error. Live install, `--dry-run` and `repos status` select identically.
 
-A concrete repository named on the command line that a glob entry covers is installed with that glob entry's settings, even when the org listing omits it (for example a fork or an archived repository). No explicit entry is added for it. To give it different settings, declare an explicit entry.
+A concrete repository named on the command line that a glob entry covers is
+installed with that glob entry's settings, even when the org listing omits it
+(for example a fork or an archived repository). Naming it adds no explicit
+entry, but install gives it one, copied from the glob, when it writes the
+first-install `tracker` default or, on GitHub, the `trace_context` block to
+`repos.yaml`. Edits to the glob entry do not apply to a repository that has
+its own entry. To give it different settings, declare an explicit entry.
 
 Credentials are required only for the forges of the selected repos: a GitLab-only selection does not need `GH_TOKEN`, and a GitHub-only selection does not need `GITLAB_TOKEN`. An unfiltered run still requires credentials for every forge present in the manifest.
 
-Install writes to `repos.yaml` itself in only three cases: the first-install
+Install writes to `repos.yaml` itself in only four cases: the first-install
 `tracker` writeback described above; the conversion of legacy issue-tracking
-configuration described below; and, after a first install, the CLI's release
-written to `github.fullsend_ref` or `gitlab.fullsend_ref` when that key is
-unset. `--dry-run` writes none of them.
+configuration described below; the `trace_context` block of a GitHub
+repository's [trace signing keys](#trace-signing-keys); and, after a first
+install, the CLI's release written to `github.fullsend_ref` or
+`gitlab.fullsend_ref` when that key is unset. `--dry-run` writes none of them.
+Install writes the first three together. These checks run before that write,
+so a run they stop leaves `repos.yaml` unchanged:
+
+- the command-line flags, the manifest and the repository selection;
+- the existing configuration layers: an undeclared base stops the run, and a
+  repository that needs adoption is skipped;
+- the token's scopes;
+- the [trace signing keys](#trace-signing-keys): a repository whose keys
+  install refuses, or whose recovery a read-only manifest cannot record, is
+  skipped, and `--rotate-trace-signing-key` with a read-only manifest stops
+  the run;
+- a read-only manifest that must record the `tracker` default;
+- the proposed configuration, against the installed layers and against the
+  effective infrastructure;
+- the sign-off identity, and the check that a selected repository resolves
+  `vendor: true` when `--fullsend-binary` or `--fullsend-source` is given:
+  install resolves both from the edited manifest, because a new entry copied
+  from a glob takes that glob's settings. A repository install skips needs no
+  sign-off identity.
+
+Install also stops before that write when the file changed after the run
+loaded it, as when another install that uses the same file runs at the same
+time. Run install again once that install has finished. Install still
+overwrites a change that lands in the short window between that check and the
+write. When the rewritten file would exceed the 1 MB limit that loading a
+manifest enforces, install also stops before that write. `--dry-run` reports
+the same refusal. To install a larger fleet, split it across several
+manifests. Declare each repository in only one of them, including a
+repository that a glob covers.
+
+Some convergence input checks run only after that write: whether a selected
+repository uses each `--openai-api-key`, `--vertex-project`,
+`--vertex-wif-provider` and `--jira-*` value given, and the GCP project-number
+lookup that derives a repository's WIF provider. A failure there stops the
+run. A repository can also stop after that write and before its trace key
+step: at one of its own convergence checks, such as missing inference
+credentials or a malformed vendor manifest, at another convergence error
+before that step, or when the run is interrupted. Each of these leaves the new
+trace key that `repos.yaml` recorded for a repository without its seed. The
+next run replaces that key when the secret cannot hold it: when
+`FULLSEND_TRACE_SIGNING_KEY_ID` names a retained key and the committed
+configuration does not list the active key, or when neither the variable nor
+`FULLSEND_TRACE_SIGNING_KEY` exists and no block of the installation is
+committed. Otherwise it keeps that key as a retained key. So while the
+variable is absent and the secret exists, or after
+`repos uninstall --uninstall-only` of an install whose commit landed, each
+failed run adds one retained key whose seed no one holds, and install never
+removes a retained key.
 
 Legacy issue-tracking configuration in managed `config:` blocks (the scalar
 `tracker: github|gitlab|jira` form and the removed `create_issues` block) is
@@ -265,7 +376,7 @@ gitlab:
 
 A repo entry (or the glob entry that matches the repo) takes precedence over its forge section (`github` or `gitlab`), which takes precedence over `defaults`. Signoff is off when no level sets it. There is no command-line override: the former `--signoff` flag was removed, so set the level you want with, for example, `fullsend repos set defaults.signoff true`.
 
-When signoff is enabled for any selected repo, the identity is resolved once per forge before anything is committed. A missing identity, such as a GitHub App installation token that cannot read `/user`, or an identity without a name or email fails the install before any scaffold commit is made. `--dry-run` runs the same identity check and reports the trailer that would be added. When signoff is disabled, no trailer is added and no identity lookup is made. Uninstall commits (file deletions) do not add a trailer.
+When signoff is enabled for any selected repo, the identity is resolved once per forge before anything is committed. A repo that install skips, such as one that needs adoption or whose trace signing keys it refuses, gets no commit, so its signoff setting needs no identity, unless a glob entry with signoff may also select other repos. A missing identity, such as a GitHub App installation token that cannot read `/user`, or an identity without a name or email fails the install before any scaffold commit is made. `--dry-run` runs the same identity check and reports the trailer that would be added. When signoff is disabled, no trailer is added and no identity lookup is made. Uninstall commits (file deletions) do not add a trailer.
 
 ### Signed commits
 
@@ -416,7 +527,18 @@ Upgrade the scaffold and the poller or webhook dispatcher CLI together:
 
 The reverse skew behaves the same way: a new scaffold paired with an old poller finds no body at the canonical path and drops the instruction.
 
-A `/fs-*` command body is also no longer truncated to 800 characters in transport. The dispatcher refuses to dispatch a command whose payload exceeds the chunk budget instead of running the agent on a shortened instruction. Other bodies, such as bot review notes, keep the 800-character bound and the truncation marker.
+The payload's top-level `labels` key is form-dependent: the complete
+`_normalized_event` form drops it (labels travel only at
+`_normalized_event.state.labels`), while the comment-only fallback carries
+the bounded top-level `labels` list.
+
+A `/fs-*` command body is also no longer truncated to 800 characters in
+transport. The dispatcher refuses to dispatch a command whose payload exceeds
+the chunk budget instead of running the agent on a shortened instruction. Other
+bodies, such as bot review notes, are now bounded to 270 characters (down from
+the 800 of earlier releases), so less of a long review note reaches the agent;
+the `[…truncated]` marker is appended when it is cut (see the normalized event
+spec).
 
 #### `runtime` and `allowed_remote_resources` moved into `config` (breaking)
 
@@ -500,7 +622,7 @@ flag or environment variable supplies them.
   any write, until `--jira-token` is supplied or `FULLSEND_JIRA_TOKEN` already
   exists. Re-runs, CI jobs, and scripted installs that previously succeeded
   need the flag added, for example
-  `fullsend repos install --jira-token "$JIRA_TOKEN"`. Setting
+  `fullsend repos install --jira-token "$FULLSEND_JIRA_TOKEN"`. Setting
   `poll.enabled: false` also avoids the requirement.
 - **Disabled (`poll.enabled: false`, or `poll`/`poll.enabled` omitted).**
   Install removes the Fullsend-owned Jira poll resources. `FULLSEND_JIRA_TOKEN`
@@ -563,6 +685,127 @@ flag or environment variable supplies them.
   and `--jira-client-secret` are never written to `repos.yaml`, and the
   secret values are never logged.
 
+### Trace signing keys
+
+On GitHub, `repos install` provisions an Ed25519 key pair for signing
+trace-context envelopes
+([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)).
+No fullsend code reads the signing key yet. For the whole lifecycle, see
+[Trace Context Reference — Key lifecycle](../reference/trace-context.md#key-lifecycle).
+
+- **What install writes.** The installation ID and the public key go in the
+  repository's `repos.yaml` entry as
+  [`config.trace_context`](../reference/config-reference.md#trace_context),
+  and install renders them into the managed `.fullsend/config.yaml`. A
+  repository covered only by a glob gets its own entry, copied from the glob,
+  and install's output names the new entry and the glob. Later edits to the
+  glob entry no longer apply to it, including a glob-level `fullsend_ref` pin,
+  `kill_switch`, and role or resource restrictions: set such fleet-wide
+  controls in `github.config`, `defaults.config` or `github.fullsend_ref`
+  instead of on the glob. A copied entry keeps the values it copied, and they
+  override those levels, so also delete a copied `fullsend_ref`, `kill_switch`,
+  `roles` or `allowed_remote_resources` from each copied entry. The private
+  key, a 32-byte seed in standard base64, goes in the
+  `FULLSEND_TRACE_SIGNING_KEY` repository secret. Its key ID goes
+  in the `FULLSEND_TRACE_SIGNING_KEY_ID` repository variable: GitHub never
+  returns a secret's value, so the variable records which key the secret
+  holds. Install writes `repos.yaml` before the secret and the variable, and
+  writes them before it commits the managed configuration. On an existing
+  install, the default branch trusts the new key only once that commit lands,
+  by default when the install pull request merges.
+- **When install writes a key.** A fresh install, one whose fullsend workflow
+  is not on the default branch yet, gets an installation ID and a key pair. An
+  existing install whose entry has no `trace_context` gets none from a plain
+  run: its first run with `--rotate-trace-signing-key` provisions them. On
+  later runs, install writes no key while the secret exists and the variable
+  names the active key. When the secret is missing, or the variable is missing
+  or names a retained key, install writes a new key pair, keeps the
+  installation ID and moves the previous active key to `retained`. When the
+  secret cannot hold the previous active key, install replaces that key
+  instead and prints its key ID: when the variable names a retained key and
+  the committed configuration does not list the active key, or when neither
+  the variable nor the secret exists and no block of the installation is
+  committed. This recovers an interrupted run, retried with the `repos.yaml`
+  that run wrote, and a reinstall after `repos uninstall --uninstall-only`. A
+  repository that install skips, such as one whose `.fullsend/config.yaml`
+  needs adoption, gets no key.
+- **Rotation.** `--rotate-trace-signing-key` writes a new key pair even when
+  the install is healthy. The previous active key moves to `retained` unless,
+  as above, the secret cannot hold it. Within an installation, install never
+  removes a retained key. Enrolling a fully uninstalled repository again
+  replaces the ended installation's block, keys included (see
+  [`repos uninstall`](#repos-uninstall)).
+- **Checks before any write.** Before it writes `repos.yaml` or any key,
+  install compares each entry with the committed `.fullsend/config.yaml` and
+  with `FULLSEND_TRACE_SIGNING_KEY_ID`. When they contradict it, install
+  writes nothing for that repository, lists it as failed and converges the
+  others (see
+  [When install refuses an entry](../reference/trace-context.md#when-install-refuses-an-entry)).
+  A `FULLSEND_TRACE_SIGNING_KEY_ID` value that is not 16 lowercase hex
+  characters also fails the repository: delete the variable, then run install
+  again. A failed read of either still stops the run, as in the other
+  preflights, and so does `--rotate-trace-signing-key` with a read-only
+  manifest, which cannot record the rotation the run asks for.
+  Install cannot tell an older copy of `repos.yaml` from the one a run wrote
+  when that run failed after deleting the variable, at the seed or variable
+  write (a seed write that failed may still have landed), so keep and commit
+  the `repos.yaml` such a run wrote, and retry with it.
+- **Read-only manifest.** A manifest loaded from an HTTPS URL, read from a
+  pipe or FIFO, or a local file without write permission or on a read-only
+  file system cannot record a key. From such a manifest, a fresh install
+  without `--rotate-trace-signing-key` goes ahead without keys and says so. A
+  later run with the flag and a writable manifest provisions them. Any other
+  key write fails that repository, and with `--rotate-trace-signing-key` the
+  run stops before it writes any key.
+- **Concurrent installs.** Just before it writes a key, install reads
+  `FULLSEND_TRACE_SIGNING_KEY_ID` again. If that read fails, or the variable
+  appeared, disappeared or changed since the run first read it, install writes
+  no key and makes no commit for that repository, and fails it. GitHub
+  installs take no lease, so this check misses an install or uninstall that
+  writes after it. Overlapping runs can then leave the secret holding a key
+  that the variable does not name, which install cannot see. Run one install
+  of a repository at a time. `--rotate-trace-signing-key` writes a matching
+  key.
+- **Output.** Install and `--dry-run` name `FULLSEND_TRACE_SIGNING_KEY` and
+  `FULLSEND_TRACE_SIGNING_KEY_ID`, and show the installation ID, the new key ID
+  and the reason (fresh install, recovery or rotation) for each new key, and
+  the key ID of an active key that a recovery replaces. They never show the
+  seed. `--dry-run` writes nothing, and the IDs it shows belong to keys that
+  it discards.
+- **Uninstall and status.** On GitHub, `repos uninstall` deletes
+  `FULLSEND_TRACE_SIGNING_KEY` and `FULLSEND_TRACE_SIGNING_KEY_ID` (see
+  [`repos uninstall`](#repos-uninstall)), and `repos status` counts the
+  variable as managed, not as an orphan. Status does not report a missing
+  secret or variable.
+- **GitLab.** Install writes no key and no `FULLSEND_TRACE_SIGNING_KEY_ID` on
+  GitLab, even with `--rotate-trace-signing-key`, and prints that it does not
+  provision them on GitLab yet.
+- **Compatibility (breaking).** Fullsend v0.37.0 through v0.55.0 refuse a
+  `repos.yaml` that contains `trace_context`, and earlier releases cannot read
+  this manifest format. Releases from v0.56.0 without this change
+  accept it but do not manage `FULLSEND_TRACE_SIGNING_KEY_ID`: their
+  `repos status` reports the variable as orphan drift, and their
+  `repos uninstall` leaves it, after which this release refuses the
+  repository when you declare it again without keys, until you
+  delete the variable or restore the entry's `trace_context`. Use a release
+  with this change for every `repos` command on that manifest. Keep and commit
+  the `repos.yaml` edits install makes: a later install from a copy without
+  them fails that repository, except after a run that failed writing the
+  seed or `FULLSEND_TRACE_SIGNING_KEY_ID`, when it replaces the key that run
+  may have written without retaining it. If the copy with those edits is lost,
+  rebuild the entry's `trace_context` from the block in the
+  `.fullsend/config.yaml` that the last install committed (in its pull request
+  until that merges). An entry that already declares `trace_context` by hand
+  gets a new key pair on its first install with this release, as a recovery:
+  install replaces `FULLSEND_TRACE_SIGNING_KEY` and moves the declared active
+  key to `retained`, or replaces that key when neither the secret nor the
+  variable exists and no block of this installation is committed. From a
+  read-only manifest, that repository fails.
+
+```bash
+fullsend repos install acme/api --rotate-trace-signing-key
+```
+
 ### Flags
 
 Install flags supply only secrets and sensitive provisioning inputs, local vendoring artifacts, and controls for one run. None of their values is written to `repos.yaml`. Persistent settings live in the manifest; the flags that used to set them were removed (see [Removed configuration flags](#removed-configuration-flags-breaking)).
@@ -582,6 +825,7 @@ Install flags supply only secrets and sensitive provisioning inputs, local vendo
 | `--jira-email` | | Optional Jira account email written as `FULLSEND_JIRA_EMAIL` to selected repos whose effective `tracker.jira.poll.enabled` is `true`. If omitted, the existing secret is kept. Command-line only. See [Jira polling](#jira-polling). |
 | `--jira-client-id` | | Atlassian service account OAuth 2.0 client ID written as `FULLSEND_JIRA_CLIENT_ID`, instead of `--jira-token`, to selected repos whose effective `tracker.jira.poll.enabled` is `true`. If omitted, the existing secret is kept. Command-line only. See [Jira polling](#jira-polling). |
 | `--jira-client-secret` | | Atlassian service account OAuth 2.0 client secret written as `FULLSEND_JIRA_CLIENT_SECRET`, instead of `--jira-token`. If omitted, the existing secret is kept. Command-line only: never written to `repos.yaml` and never logged. See [Jira polling](#jira-polling). |
+| `--rotate-trace-signing-key` | `false` | Generate a new trace signing key pair for each selected GitHub repo: write the private key as `FULLSEND_TRACE_SIGNING_KEY`, record the public key as active in `repos.yaml`, and keep the previous key as retained unless the secret cannot hold it. On an existing install without `trace_context`, the first rotation provisions the keys. Needs a writable `repos.yaml`. GitLab repos get no key. See [Trace signing keys](#trace-signing-keys). |
 | `--fullsend-binary` | | Path to a pre-built Linux fullsend binary to upload when vendoring instead of auto-resolving it from the resolved `fullsend_ref`. Valid only when at least one selected repo resolves `vendor: true`; otherwise install fails and points at `fullsend repos set defaults.vendor true` |
 | `--fullsend-source` | | Path to a fullsend source checkout for vendored content and cross-compilation instead of auto-detecting or fetching from GitHub. Same `vendor: true` requirement as `--fullsend-binary` |
 | `--gitlab-role-registry` | | Path to administrator GitLab role registry JSON (custom roles: credential references and policy, never secret values). Written as the protected unmasked `FULLSEND_GITLAB_ROLE_REGISTRY` variable. |
@@ -671,10 +915,12 @@ reports the result of a containment as drift (the published trigger token was
 removed or revoked) until `repos install` publishes a replacement. The
 account lifecycle does not publish a replacement until those checks pass. If a
 Poller role stage fails, a requested trigger-account rotation waits so the
-existing webhook is not left pointing at a revoked token. The installer still
-refreshes the webhook after ordinary account repair in that failure path when
-the account route is active, because repair can replace its token. It does not
-move an account webhook onto an unverified Poller route. The poller,
+existing webhook is not left pointing at a revoked token. When the account
+route is active, the installer still provisions or converges the account's
+webhook in that same run: it creates a missing webhook and its secret from
+scratch, and repairs a stale one, on the trigger account's token. It never
+creates a webhook or trigger on the Poller route while the Poller stage has
+failed. The poller,
 dispatcher, and agent job scripts unset both trigger-token variables before
 running, and `fullsend run` excludes them from harness expansion.
 
@@ -933,8 +1179,11 @@ state may have been lost. Re-runs reuse compliant existing credentials and
 reconcile webhook configuration. Any project that is ineligible (no project
 service accounts, an unsafe or unverifiable trigger policy, or a protected
 default branch the replacement Poller cannot start pipelines on), or whose
-generation state is ambiguous, defers the fast path and keeps polling. The
-runtime role credentials stay Developer-level,
+generation state is ambiguous, defers the fast path and keeps polling. For a
+replacement Poller that cannot start pipelines, install names the account's
+username and the protected-branch setting to change; see
+[Letting the Poller start pipelines on the default branch](../guides/getting-started/configuring-gitlab.md#letting-the-poller-start-pipelines-on-the-default-branch).
+The runtime role credentials stay Developer-level,
 `ci_pipeline_variables_minimum_override_role` stays `no_one_allowed`, and
 dispatch continues to use typed inputs.
 
@@ -1010,7 +1259,19 @@ an error; polling stays in place) when the default branch has only a wildcard
 protected-branch rule, project service accounts are unavailable,
 `ci_pipeline_variables_minimum_override_role` is not `no_one_allowed`, or the
 default branch differs from the recorded one (run `repos uninstall`, then
-install). A deferral for the override role that is weakened or cannot be
+install). The service-account deferral names the minimum version: the
+trigger-account route needs GitLab 18.11 or later, where project service
+accounts (generally available on Free in 18.11) and protected-branch
+deploy-key push access (on Free since 18.10) exist on every tier. Upgrade an
+older self-managed instance; install does not promote an account or widen
+branch access in their place. GitLab offers no read-only probe for the
+deploy-key push capability, so install detects a missing capability when it
+adds the account's exact-branch deploy-key push entry: a refusal that says the
+feature is absent or gated by tier or license, or a request GitLab accepts but
+does not record, defers with the same upgrade message. The account then never
+becomes ready, so no route is activated and no other access is granted. The
+account, its key and its trigger stay recorded in the ledger for the next run
+or `repos uninstall`. A deferral for the override role that is weakened or cannot be
 read also removes an already published token variable and revokes the
 account's triggers; `repos status` reports the live role. Install fails, before the account is raised
 to Maintainer, when the account owns an SSH key, a pipeline schedule, or a
@@ -1027,8 +1288,8 @@ direct membership already says Developer.
 Whenever install leaves the trigger account ready, including after GitLab
 refuses the Poller protected-ref grant, it also rechecks the dispatch
 activation gate (`CheckGitLabTriggerDispatchGate`) and reports either
-`GitLab trigger dispatch activation deferred: <reasons>` or
-`GitLab trigger dispatch prerequisites verified`. The recheck lists every
+`GitLab trigger dispatch activation deferred`, followed by one line per
+unmet prerequisite, or `GitLab trigger dispatch prerequisites verified`. The recheck lists every
 unmet prerequisite: managed scheduled polling no longer uses
 pipeline variables (the canonical schedule specs and every live managed
 schedule; a failed schedule read defers), the live
@@ -1057,12 +1318,22 @@ overrides a dispatch or pre-authorization value such as `CI_PIPELINE_SOURCE`,
 `CI_PIPELINE_SCHEDULE_DESCRIPTION`, `FULLSEND_POLL_MODE`, or an agent input
 bridge, or when either
 inventory cannot be read (group and instance scopes the installing credential
-may not read are skipped). GitLab also requires a protected-branch schedule
-owner to have merge permission. If the Developer trigger account lacks it,
-the schedules stay installer-owned on the Poller route. GitLab Free cannot
-grant merge access to just that account; a project whose protected branch
-allows only Maintainers to merge therefore uses the fallback without widening
-merge access. An exact-name managed schedule left by a previous installer
+may not read are skipped). Schedule ownership is evaluated separately from
+activation ([#9343](https://github.com/fullsend-ai/fullsend/issues/9343)).
+GitLab requires a protected-branch schedule owner to have merge permission,
+but a pipeline the trigger account starts through its trigger token needs only
+push or merge access, which its recorded deploy-key push grant gives it. If
+the Developer trigger account lacks merge permission (or it cannot be
+verified), the schedules stay installer-owned on the Poller route, and
+install reports that without deferring activation or the webhook route.
+GitLab Free cannot grant merge access to just that account; a project whose
+protected branch allows only Maintainers to merge therefore uses the fallback
+without widening merge access. When the gate passes, install reports the
+trigger account's name and user ID, the protected branch, and the deploy key
+in that branch's push-access list. That grant also permits direct pushes to
+the branch through the key, and it grants no merge permission. While
+activation is recorded and the account lacks merge permission, `repos status`
+does not report the installer-owned schedules as drift. An exact-name managed schedule left by a previous installer
 credential remains eligible for adoption or hand-back when its reported owner
 still has project Maintainer access. An unknown or lower-privilege owner
 requires manual reconciliation.
@@ -1071,9 +1342,11 @@ Every converge, rotate, containment or uninstall run first deletes the
 When the gate passes, `repos install` records that variable, bound to the exact
 `FULLSEND_GITLAB_TRIGGER_ACCOUNT` ledger generation, which activates the
 CI_JOB_TOKEN child-pipeline (`source=pipeline`) dispatch route; install fails
-if recording the activation fails. Install then recreates the managed polling
+if recording the activation fails. When the account also has merge permission
+on the protected default branch, install then recreates the managed polling
 schedules (`fullsend slash poll`, `fullsend event poll`) under the trigger
-account, so scheduled polls run as the account and use that route. After this
+account, so scheduled polls run as the account and use that route; otherwise
+they stay installer-owned and poll through the Poller `api` route. After this
 ownership move, use this release or newer for `repos install`,
 `repos status`, and `repos uninstall`. Once this release writes the
 `trigger_token_digest` or `publication_pending` ledger key, older strict CLI
@@ -1459,6 +1732,17 @@ is reported when any active Poller identity is missing.
 For the service-account diagnostics, see
 [GitLab project service-account lifecycle § Service-account status](#service-account-status).
 
+Managed `.fullsend/config.yaml` is checked against the configuration schema of
+the repo's pinned `fullsend_ref` (see
+[Configuration schema of a pinned ref](#configuration-schema-of-a-pinned-ref)).
+A repo whose installed file that ref cannot read is listed with
+`config compatibility (fullsend_ref <ref>): incompatible` and the reason. A
+repo whose schema cannot be determined is listed as `unknown` with the ref and
+reason, and its `.fullsend/config.yaml` is reported as drift rather than
+current. JSON output carries the same result in `config_compatibility`
+(`compatible`, `incompatible`, or `unknown`), `config_compatibility_reason`,
+and `config_schema_ref`.
+
 **JSON output** (`--json`) returns the full `StatusResult` object with per-repo details and aggregate summary counts.
 
 ### Exit codes
@@ -1473,7 +1757,26 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (opening a PR to remove workflow files, then deleting variables and secrets via the API), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
 
-File deletions (workflow YAML, `.fullsend/config.yaml`, and GitLab `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. Variable and secret deletions are API-only operations and always happen immediately. For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches (a missing branch is ignored so older installs still uninstall cleanly) after deleting the fullsend-owned webhook fast-path project webhook (hooks fullsend does not own are left untouched) and revoking its managed Poller-owned pipeline trigger token before any scaffold file is removed, and deleting the wildcard-scoped `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables (a failure there fails uninstall and leaves the manifest entry in place for retry). On the trigger-account route, `FULLSEND_TRIGGER_TOKEN` was already deleted during install and the webhook's trigger is revoked during the trigger-account removal described below. Uninstall also deletes the retired poll-state CI/CD variables, registry/rotation-state variables (`FULLSEND_GITLAB_POLLER_GENERATIONS` is deleted last, only after every Poller account it records was verified and deleted; uninstall retains it when cleanup is incomplete or ambiguous, so the quarantine and retirement obligations it records survive until an administrator has reconciled them), built-in and custom `FULLSEND_GITLAB_*_TOKEN` secrets, and the corresponding `fullsend-poller` / `fullsend-analyst` / `fullsend-coder` / `fullsend-role-*` project access tokens. Uninstall does **not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a matching `fullsend-bot` project access token — a repository installed before the role-only rollout requires manual cleanup of those. Token revocation is part of uninstall success: if listing or revoking the role project access tokens fails, uninstall fails and the manifest entry is left in place for retry. Reinstall and converge do not revoke credentials that are already distributed. Before deleting anything, uninstall reads the rotation-state variable and fails closed, leaving every variable, secret, and token in place, if it is unreadable or malformed. The rotation-state variable is deleted last, after every other cleanup step succeeds; when it records administrator-supplied service-account exclusions, an exclusions-only document is retained so a later install or uninstall does not treat those accounts as fullsend-managed. When the rotation state records an administrator-supplied credential whose owner was never recorded and the CLI's token client cannot attribute it, uninstall does not guess: it leaves the supplied role's project access token and the whole rotation-state variable in place (reporting this in the cleanup diagnostics) and still removes everything else.
+A manifest loaded from an HTTPS URL, read from a pipe or FIFO (as `-f <(cmd)`
+gives), or a local file without write permission or on a read-only file
+system, is read-only, so uninstall cannot remove entries from it. Uninstall
+refuses such a manifest before it tears anything down, `--manifest-only`
+refuses it too, and `--dry-run` reports the same refusal. To uninstall from
+one, run with `--uninstall-only`, which tears down without editing the
+manifest, then remove each torn-down entry from its source.
+
+Uninstall rewrites the whole `repos.yaml` with its own formatting. When the
+rewritten file would exceed the 1 MB limit that loading a manifest enforces,
+uninstall fails after teardown and leaves the file unchanged. `--dry-run`
+reports the same refusal. A retry or `--manifest-only` fails the same way.
+Remove each torn-down entry with `repos set` instead, which changes only that
+entry's lines, for example:
+
+```bash
+fullsend repos set --unset 'github.repos["acme/api"]'
+```
+
+File deletions (workflow YAML, and on GitLab `.fullsend/config.yaml` and the `.gitlab-ci.yml` unmerge) are delivered as a pull request unless `--direct` is set, matching `repos install`. Variable and secret deletions are API-only operations and always happen immediately. For GitLab repos, uninstall also deletes the `fullsend-poll-state-slash` and `fullsend-poll-state-events` branches (a missing branch is ignored so older installs still uninstall cleanly) after deleting the fullsend-owned webhook fast-path project webhook (hooks fullsend does not own are left untouched) and revoking its managed Poller-owned pipeline trigger token before any scaffold file is removed, and deleting the wildcard-scoped `FULLSEND_TRIGGER_TOKEN` and `FULLSEND_WEBHOOK_SECRET` variables (a failure there fails uninstall and leaves the manifest entry in place for retry). On the trigger-account route, `FULLSEND_TRIGGER_TOKEN` was already deleted during install and the webhook's trigger is revoked during the trigger-account removal described below. Uninstall also deletes the retired poll-state CI/CD variables, registry/rotation-state variables (`FULLSEND_GITLAB_POLLER_GENERATIONS` is deleted last, only after every Poller account it records was verified and deleted; uninstall retains it when cleanup is incomplete or ambiguous, so the quarantine and retirement obligations it records survive until an administrator has reconciled them), built-in and custom `FULLSEND_GITLAB_*_TOKEN` secrets, and the corresponding `fullsend-poller` / `fullsend-analyst` / `fullsend-coder` / `fullsend-role-*` project access tokens. Uninstall does **not** delete a leftover `FULLSEND_FORGE_TOKEN` secret or revoke a matching `fullsend-bot` project access token — a repository installed before the role-only rollout requires manual cleanup of those. Token revocation is part of uninstall success: if listing or revoking the role project access tokens fails, uninstall fails and the manifest entry is left in place for retry. Reinstall and converge do not revoke credentials that are already distributed. Before deleting anything, uninstall reads the rotation-state variable and fails closed, leaving every variable, secret, and token in place, if it is unreadable or malformed. The rotation-state variable is deleted last, after every other cleanup step succeeds; when it records administrator-supplied service-account exclusions, an exclusions-only document is retained so a later install or uninstall does not treat those accounts as fullsend-managed. When the rotation state records an administrator-supplied credential whose owner was never recorded and the CLI's token client cannot attribute it, uninstall does not guess: it leaves the supplied role's project access token and the whole rotation-state variable in place (reporting this in the cleanup diagnostics) and still removes everything else.
 
 GitLab uninstall holds the `FULLSEND_GITLAB_INSTALL_LEASE` project lease for the whole teardown, from webhook removal through the final variable, secret, branch, and token deletions, so no concurrent installer can publish a replacement hook, trigger token, or role credential mid-teardown. It fails closed: if another installer holds the lease or the client cannot take it, uninstall stops before removing anything and the manifest entry is left in place for retry. See [Upgrade compatibility](#upgrade-compatibility) for stranded-lease recovery.
 
@@ -1503,6 +1806,32 @@ When multiple repos are targeted (via globs or explicit bulk lists), the command
 Uninstall removes every fullsend-managed inference credential, whatever the repo's `inference.auth` is (or whether it is set or valid at all): `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_GCP_WIF_PROVIDER`, and `FULLSEND_OPENAI_API_KEY`, plus the `FULLSEND_GCP_REGION` variable (and, on GitLab, `FULLSEND_GCP_SERVICE_ACCOUNT`). Leftovers from an earlier method and partially installed repos are cleaned up the same way. A credential that is already absent is skipped, so re-running uninstall is safe. Uninstall never deletes an unprefixed `OPENAI_API_KEY` secret or CI/CD variable, or any other credential fullsend does not manage. It also leaves the user-managed `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID` and `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` identifier variables in place. Remove `OPENAI_API_KEY` yourself if nothing else uses it.
 
 **Upgrade behavior change.** Uninstall also deletes `FULLSEND_JIRA_TOKEN`, `FULLSEND_JIRA_EMAIL`, `FULLSEND_JIRA_CLIENT_ID`, and `FULLSEND_JIRA_CLIENT_SECRET` on both forges, mirroring [Jira polling](#jira-polling) install. Earlier releases never touched these credentials, so a repo that provisioned them by hand for another Jira consumer loses them when you uninstall with this release. Back them up or re-provision them afterward if something else depends on them.
+
+Uninstall also deletes `FULLSEND_TRACE_SIGNING_KEY`, the trace signing key
+secret, on both forges
+([ADR 0154](../ADRs/0154-correlate-work-item-and-behaviour-scenario-traces.md)),
+and on GitHub its `FULLSEND_TRACE_SIGNING_KEY_ID` variable. A repository
+without them still uninstalls. On GitHub, uninstall leaves the committed
+`.fullsend/config.yaml`, `trace_context` block included, in place. With
+`--uninstall-only`, the `repos.yaml` entry keeps its block too, so the next
+install keeps the installation ID and writes a new key pair. Once a commit of
+the installation's block has landed, it moves the old active key to
+`retained`; before that, it replaces the old active key and prints its key ID.
+A fully uninstalled GitHub repository that you declare and install again is
+enrolled as a new installation: from a writable manifest, install generates a
+new installation ID and key pair. The uninstall counts as
+finished once the repository has no fullsend workflow,
+`FULLSEND_TRACE_SIGNING_KEY` or `FULLSEND_TRACE_SIGNING_KEY_ID` left, so merge
+the uninstall pull request first. Until then, install refuses the entry.
+`--manifest-only` removes the entry and leaves the variable, the secret, the
+workflow and the committed block in place. When you declare the repository
+again without keys, install refuses the entry until you restore its
+`trace_context` or a full uninstall finishes. A repository that a glob covers
+stays selected after uninstall removes its own entry, so while these
+refusals hold, any install that selects it, such as an unfiltered run or the
+glob, skips it and lists it as failed, and once a full uninstall finishes,
+the next such install enrolls it again. Narrow the glob to keep it out. See
+[Trace Context Reference — Uninstall](../reference/trace-context.md#uninstall).
 
 ```bash
 fullsend repos uninstall acme/old-api
@@ -1554,7 +1883,7 @@ fullsend repos set --unset <path>
 
 Paths are resolved against the manifest schema, so every field the manifest accepts can be set and there is no separate list of keys. After each edit the whole resulting manifest is validated with the same checks `repos install` uses. A rejected edit leaves the file byte-identical. A successful edit changes only the edited lines and keeps unrelated values, comments, blank lines, and ordering. If the manifest does not exist, `repos set` creates it with `version: 1`. Missing optional parent mappings (for example `defaults.config`) are created as needed.
 
-A manifest loaded from an HTTPS URL, or a local file without write permission, is read-only: `repos set` reports `manifest <path> is read-only; apply the equivalent edit to its source, then re-run` and writes nothing.
+A manifest loaded from an HTTPS URL, read from a pipe or FIFO (as `-f <(cmd)` gives), or a local file without write permission or on a read-only file system, is read-only: `repos set` reports `manifest <path> is read-only; apply the equivalent edit to its source, then re-run` and writes nothing.
 
 ### Path syntax
 

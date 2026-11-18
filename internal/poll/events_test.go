@@ -558,9 +558,9 @@ func TestDiscoverAllEvents_MRReopenedStaleClosedAtIgnored(t *testing.T) {
 func TestDiscoverAllEvents_MRClosedAbsentClosedBy(t *testing.T) {
 	// When GitLab omits closed_by, the close is attributed to no actor
 	// (empty NoteAuthor*, IsBot false) rather than falling back to the MR
-	// author. This keeps a human's close of a bot-authored MR from being
-	// misread as a bot event downstream. The MR author is still carried in
-	// MRAuthor* so toNormalizedEvent can resolve the actor.
+	// author. The MR author is still carried in MRAuthor* for event context,
+	// but normalization must reject the close without a closer identity, and
+	// the poll loop must observe it without recording a failure or dispatching.
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-time.Minute)
 	mc := newMockClient()
@@ -1116,12 +1116,10 @@ func TestFilterBotEvents_RemovesBotClosedMR(t *testing.T) {
 }
 
 func TestFilterBotEvents_RetainsClosedMRWithAbsentCloser(t *testing.T) {
-	// A human closing a bot-authored MR when GitLab omits closed_by: the
-	// closed event carries no actor identity (NoteAuthor* empty), so it must
-	// not be treated as a bot event even though the bot authored the MR.
-	// Dropping it here would skip retro on a human's close of the agent's
-	// own work — the case #7322 makes reliable. MRAuthorID is the bot but
-	// must not drive bot filtering.
+	// A closed event without closed_by has no attributable actor. Keep the
+	// event here so normalization can return the missing-closer sentinel;
+	// the poll loop then observes it without dispatch or retries. The MR
+	// author must not drive bot filtering or stand in for the closer.
 	mc := newMockClient()
 	p := newEventsPoller(mc) // botUserID = 100
 

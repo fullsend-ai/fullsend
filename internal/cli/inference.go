@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -69,12 +72,15 @@ func newInferenceProvisionCmd() *cobra.Command {
 	var pool string
 	var provider string
 	var dryRun bool
+	var forgeName string
+	var gitlabProjectID string
+	var gitlabURL string
 
 	cmd := &cobra.Command{
-		Use:   "provision <org|owner/repo>",
+		Use:   "provision <org|owner/repo|group/project>",
 		Short: "Create WIF infrastructure for inference",
 		Long: `Provisions Workload Identity Federation infrastructure in a GCP project
-for GitHub Actions to authenticate and access Agent Platform.
+for GitHub Actions or GitLab CI to authenticate and access Agent Platform.
 
 Org-scoped mode (e.g. 'fullsend inference provision acme'):
   Creates a WIF pool and provider scoped to all repos in the org.
@@ -82,19 +88,35 @@ Org-scoped mode (e.g. 'fullsend inference provision acme'):
 Repo-scoped mode (e.g. 'fullsend inference provision acme/widget'):
   Creates a WIF pool and a dedicated provider scoped to a single repo.
 
+GitLab mode (e.g. 'fullsend inference provision acme/team/app --forge gitlab
+--gitlab-project-id 12345'):
+  Creates a WIF pool and a dedicated provider (gl-<project-path>) trusting
+  the GitLab instance at --gitlab-url, with google.subject mapped to the
+  numeric project_id, allowed audience "fullsend", and a condition binding
+  both the project ID and the project path. Grants roles/aiplatform.user
+  on attribute.project_path/<project-path>. --gitlab-project-id is
+  required (Settings → General → Project ID); no GitLab token is needed.
+
 After provisioning, prints the WIF provider resource name for handoff
-to the GitHub admin who runs 'fullsend github setup'.
+to the admin who runs 'fullsend github setup' or 'fullsend repos install'.
 
 WIF pools are always created at locations/global.
 
-Required GCP APIs (gcloud services enable):
+Required GCP APIs (enabled automatically if missing):
   - iam.googleapis.com
   - cloudresourcemanager.googleapis.com
   - aiplatform.googleapis.com
 
+Before provisioning, the command checks these APIs and enables any that
+are disabled, then retries provisioning with backoff while the newly
+enabled APIs propagate. If the APIs cannot be checked or enabled (for
+example, the caller lacks Service Usage permissions), it prints the
+'gcloud services enable' command to run manually and continues.
+
 Required IAM roles on the target project:
   - roles/iam.workloadIdentityPoolAdmin        (create WIF pools and providers)
-  - roles/resourcemanager.projectIamAdmin      (grant roles/aiplatform.user to WIF principals)`,
+  - roles/resourcemanager.projectIamAdmin      (grant roles/aiplatform.user to WIF principals)
+  - roles/serviceusage.serviceUsageAdmin       (optional: enable missing APIs automatically)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if project == "" {
@@ -102,6 +124,32 @@ Required IAM roles on the target project:
 			}
 			if !gcpProjectPattern.MatchString(project) {
 				return fmt.Errorf("invalid GCP project ID %q: must be 6-30 lowercase letters, digits, and hyphens", project)
+			}
+
+			switch forgeName {
+			case "github":
+				if cmd.Flags().Changed("gitlab-project-id") || cmd.Flags().Changed("gitlab-url") {
+					return fmt.Errorf("--gitlab-project-id and --gitlab-url require --forge gitlab")
+				}
+			case "gitlab":
+				if cmd.Flags().Changed("provider") {
+					return fmt.Errorf("--provider is not supported with --forge gitlab (provider ID is auto-generated from the project path)")
+				}
+				if gitlabProjectID == "" {
+					return fmt.Errorf("--gitlab-project-id is required with --forge gitlab (Settings → General → Project ID)")
+				}
+				gl := gcf.GitLabProject{Path: args[0], ID: gitlabProjectID, IssuerURL: gitlabURL}
+				plan, err := gcf.PlanGitLabWIF(gl)
+				if err != nil {
+					return err
+				}
+				printer := ui.New(cmd.OutOrStdout())
+				if dryRun {
+					return runInferenceProvisionGitLabDryRun(printer, gl, plan, project, pool)
+				}
+				return runInferenceProvisionGitLab(cmd, printer, gl, project, pool, nil, nil)
+			default:
+				return fmt.Errorf("--forge must be one of: github, gitlab (got %q)", forgeName)
 			}
 
 			org, repo, err := parseOrgOrRepo(args[0])
@@ -123,16 +171,81 @@ Required IAM roles on the target project:
 				return runInferenceProvisionDryRun(cmd, printer, org, repo, project, pool, provider)
 			}
 
-			return runInferenceProvision(cmd, printer, org, repo, project, pool, provider)
+			return runInferenceProvision(cmd, printer, org, repo, project, pool, provider, nil, nil)
 		},
 	}
 
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID for Agent Platform (required)")
 	cmd.Flags().StringVar(&pool, "pool", gcf.DefaultInferencePool, "WIF pool name")
-	cmd.Flags().StringVar(&provider, "provider", "github-oidc", "WIF provider name (org-scoped only)")
+	cmd.Flags().StringVar(&provider, "provider", "github-oidc", "WIF provider name (GitHub org-scoped only)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
+	cmd.Flags().StringVar(&forgeName, "forge", "github", "forge whose CI identities the provider trusts: github or gitlab")
+	cmd.Flags().StringVar(&gitlabProjectID, "gitlab-project-id", "", "numeric GitLab project ID (required with --forge gitlab)")
+	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", gcf.DefaultGitLabURL, "GitLab instance URL used as the OIDC issuer (--forge gitlab only)")
 
 	return cmd
+}
+
+func runInferenceProvisionGitLabDryRun(printer *ui.Printer, gl gcf.GitLabProject, plan *gcf.GitLabProviderPlan, project, pool string) error {
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header("Dry run: provision WIF for GitLab project inference")
+	printer.Blank()
+	printer.StepInfo(fmt.Sprintf("GitLab project: %s (ID %s)", gl.Path, gl.ID))
+	printer.StepInfo(fmt.Sprintf("WIF provider:   %s", plan.ProviderID))
+	printer.StepInfo(fmt.Sprintf("Issuer:         %s", plan.Config.IssuerURI))
+	printer.StepInfo(fmt.Sprintf("Audience:       %s", strings.Join(plan.Config.AllowedAudiences, ",")))
+	printer.StepInfo("Subject:        google.subject=assertion.project_id")
+	printer.StepInfo(fmt.Sprintf("Condition:      %s", plan.Config.AttributeCondition))
+	printer.Blank()
+	printer.StepInfo(fmt.Sprintf("GCP project:    %s", project))
+	printer.StepInfo(fmt.Sprintf("WIF pool:       %s", pool))
+	printer.Blank()
+	printer.StepInfo("Would create/update:")
+	printer.StepInfo("  - GCP APIs (enabled if missing): " + strings.Join(gcf.RequiredInferenceAPIs, ", "))
+	printer.StepInfo(fmt.Sprintf("  - WIF pool: %s", pool))
+	printer.StepInfo(fmt.Sprintf("  - WIF OIDC provider: %s", plan.ProviderID))
+	printer.StepInfo(fmt.Sprintf("  - IAM binding: roles/aiplatform.user on %s", plan.PrincipalSetSuffix))
+	printer.Blank()
+	return nil
+}
+
+func runInferenceProvisionGitLab(cmd *cobra.Command, printer *ui.Printer, gl gcf.GitLabProject, project, pool string, client gcf.GCFClient, serviceUsage gcf.ServiceUsageClient) error {
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header("Provisioning WIF for GitLab project inference: " + gl.Path)
+	printer.Blank()
+
+	ctx := cmd.Context()
+	gcpClient, serviceUsage := inferenceClients(project, client, serviceUsage)
+	provisioner := gcf.NewProvisioner(gcf.Config{
+		ProjectID:   project,
+		WIFPoolName: pool,
+	}, gcpClient)
+
+	apisEnabled := ensureInferenceAPIs(ctx, printer, serviceUsage, project)
+
+	printer.StepStart("Provisioning WIF infrastructure")
+	wifProvider, err := provisionWithAPIRetry(ctx, printer, project, apisEnabled, func() (string, error) {
+		return provisioner.ProvisionGitLabWIF(ctx, gl)
+	})
+	if err != nil {
+		printer.StepFail("WIF provisioning failed")
+		return fmt.Errorf("provisioning WIF for inference: %w", err)
+	}
+	printer.StepDone("WIF infrastructure ready")
+	printer.Blank()
+
+	printer.KeyValue("WIF Provider", wifProvider)
+	printer.Blank()
+	printer.StepInfo("Pass this value to the GitLab install command:")
+	printer.StepInfo(fmt.Sprintf("  fullsend repos install %s \\", gl.Path))
+	printer.StepInfo(fmt.Sprintf("    --vertex-project=%s \\", project))
+	printer.StepInfo(fmt.Sprintf("    --vertex-wif-provider=%s", wifProvider))
+	printer.Blank()
+	printer.StepWarn("IAM policy changes may take up to 7 minutes to propagate")
+	printer.Blank()
+	return nil
 }
 
 func runInferenceProvisionDryRun(cmd *cobra.Command, printer *ui.Printer, org, repo, project, pool, provider string) error {
@@ -160,6 +273,7 @@ func runInferenceProvisionDryRun(cmd *cobra.Command, printer *ui.Printer, org, r
 	printer.StepInfo(fmt.Sprintf("WIF pool:     %s", pool))
 	printer.Blank()
 	printer.StepInfo("Would create/update:")
+	printer.StepInfo("  - GCP APIs (enabled if missing): " + strings.Join(gcf.RequiredInferenceAPIs, ", "))
 	printer.StepInfo(fmt.Sprintf("  - WIF pool: %s", pool))
 	printer.StepInfo("  - WIF OIDC provider")
 	printer.StepInfo("  - IAM binding: roles/aiplatform.user")
@@ -168,7 +282,7 @@ func runInferenceProvisionDryRun(cmd *cobra.Command, printer *ui.Printer, org, r
 	return nil
 }
 
-func runInferenceProvision(cmd *cobra.Command, printer *ui.Printer, org, repo, project, pool, provider string) error {
+func runInferenceProvision(cmd *cobra.Command, printer *ui.Printer, org, repo, project, pool, provider string, client gcf.GCFClient, serviceUsage gcf.ServiceUsageClient) error {
 	printer.Banner(Version())
 	printer.Blank()
 
@@ -181,7 +295,7 @@ func runInferenceProvision(cmd *cobra.Command, printer *ui.Printer, org, repo, p
 
 	ctx := cmd.Context()
 
-	gcpClient := gcf.NewLiveGCFClient(project)
+	gcpClient, serviceUsage := inferenceClients(project, client, serviceUsage)
 	provisioner := gcf.NewProvisioner(gcf.Config{
 		ProjectID:   project,
 		GitHubOrgs:  []string{org},
@@ -190,8 +304,12 @@ func runInferenceProvision(cmd *cobra.Command, printer *ui.Printer, org, repo, p
 		WIFProvider: provider,
 	}, gcpClient)
 
+	apisEnabled := ensureInferenceAPIs(ctx, printer, serviceUsage, project)
+
 	printer.StepStart("Provisioning WIF infrastructure")
-	wifProvider, err := provisioner.ProvisionWIF(ctx)
+	wifProvider, err := provisionWithAPIRetry(ctx, printer, project, apisEnabled, func() (string, error) {
+		return provisioner.ProvisionWIF(ctx)
+	})
 	if err != nil {
 		printer.StepFail("WIF provisioning failed")
 		return fmt.Errorf("provisioning WIF for inference: %w", err)
@@ -215,6 +333,114 @@ func runInferenceProvision(cmd *cobra.Command, printer *ui.Printer, org, repo, p
 	printer.Blank()
 
 	return nil
+}
+
+// inferenceAPIRetryDelays bounds how long provisioning is retried after
+// enabling GCP APIs: newly enabled APIs can take a few minutes to become
+// usable, during which calls fail with SERVICE_DISABLED.
+var inferenceAPIRetryDelays = []time.Duration{
+	15 * time.Second,
+	30 * time.Second,
+	60 * time.Second,
+	90 * time.Second,
+}
+
+// inferenceSleepFn waits for d or until ctx is done. Override in tests to
+// record delays and return immediately instead of sleeping.
+var inferenceSleepFn = func(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// inferenceClients fills in live GCP clients for any nil argument. Tests
+// pass fakes for both.
+func inferenceClients(project string, client gcf.GCFClient, serviceUsage gcf.ServiceUsageClient) (gcf.GCFClient, gcf.ServiceUsageClient) {
+	if client != nil && serviceUsage != nil {
+		return client, serviceUsage
+	}
+	live := gcf.NewLiveGCFClient(project)
+	if client == nil {
+		client = live
+	}
+	if serviceUsage == nil {
+		serviceUsage = live
+	}
+	return client, serviceUsage
+}
+
+// manualEnableAPIsCommand returns the gcloud command that enables apis on
+// project.
+func manualEnableAPIsCommand(project string, apis []string) string {
+	return fmt.Sprintf("gcloud services enable %s --project=%s", strings.Join(apis, " "), project)
+}
+
+func printManualEnableAPIs(printer *ui.Printer, project string, apis []string) {
+	printer.StepInfo("Enable the required APIs manually (needs roles/serviceusage.serviceUsageAdmin):")
+	printer.StepInfo("  " + manualEnableAPIsCommand(project, apis))
+}
+
+// ensureInferenceAPIs checks the GCP APIs inference provisioning needs and
+// enables any that are disabled. If the APIs cannot be checked or enabled,
+// it prints the manual gcloud command and lets provisioning proceed: the
+// APIs may already be enabled even when the caller cannot read their
+// state. Returns true when it enabled at least one API in this run.
+func ensureInferenceAPIs(ctx context.Context, printer *ui.Printer, client gcf.ServiceUsageClient, project string) bool {
+	printer.StepStart("Checking required GCP APIs")
+	var missing []string
+	for _, api := range gcf.RequiredInferenceAPIs {
+		enabled, err := client.ServiceEnabled(ctx, project, api)
+		if err != nil {
+			printer.StepWarn(fmt.Sprintf("Could not check GCP API status: %v", err))
+			printManualEnableAPIs(printer, project, gcf.RequiredInferenceAPIs)
+			return false
+		}
+		if !enabled {
+			missing = append(missing, api)
+		}
+	}
+	if len(missing) == 0 {
+		printer.StepDone("Required GCP APIs already enabled")
+		return false
+	}
+
+	printer.StepStart("Enabling GCP APIs: " + strings.Join(missing, ", "))
+	if err := client.EnableServices(ctx, project, missing); err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not enable GCP APIs: %v", err))
+		printManualEnableAPIs(printer, project, missing)
+		return false
+	}
+	printer.StepDone("Enabled GCP APIs: " + strings.Join(missing, ", "))
+	return true
+}
+
+// provisionWithAPIRetry runs provision. When this run enabled APIs
+// (apisEnabled) and provision fails because an API is not active yet, it
+// retries with bounded backoff. An API-not-enabled failure that is not
+// retried (or exhausts its retries) is annotated with the manual gcloud
+// command.
+func provisionWithAPIRetry(ctx context.Context, printer *ui.Printer, project string, apisEnabled bool, provision func() (string, error)) (string, error) {
+	for attempt := 0; ; attempt++ {
+		result, err := provision()
+		if err == nil || !gcf.IsAPINotEnabledError(err) {
+			return result, err
+		}
+		if !apisEnabled || attempt >= len(inferenceAPIRetryDelays) {
+			return "", fmt.Errorf("%w (required GCP APIs are not enabled; run: %s)",
+				err, manualEnableAPIsCommand(project, gcf.RequiredInferenceAPIs))
+		}
+		delay := inferenceAPIRetryDelays[attempt]
+		printer.StepWarn(fmt.Sprintf("GCP APIs not active yet, retrying in %s (attempt %d of %d)",
+			delay, attempt+2, len(inferenceAPIRetryDelays)+1))
+		if sleepErr := inferenceSleepFn(ctx, delay); sleepErr != nil {
+			return "", errors.Join(sleepErr, err)
+		}
+	}
 }
 
 // inferenceStatusResult holds the data returned by the status command.

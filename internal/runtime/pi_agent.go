@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -198,17 +199,21 @@ var piToolForClaude = map[string]string{
 	"LS":        "ls",
 }
 
-// claudeToolForPi is the inverse map, handed to the hook adapter so the hook
-// scripts keep seeing Claude-vocabulary tool names (security.HookGroup.Tools,
+// claudeToolForPi maps pi names (including resource expansions) back to Claude
+// names. The hook adapter uses it so scripts keep seeing Claude-vocabulary
+// tool names (security.HookGroup.Tools,
 // FULLSEND_TOOL_ALLOWLIST) regardless of the runtime (#608).
 var claudeToolForPi = map[string]string{
-	"bash":  "Bash",
-	"read":  "Read",
-	"write": "Write",
-	"edit":  "Edit",
-	"grep":  "Grep",
-	"find":  "Glob",
-	"ls":    "LS",
+	"bash":                        "Bash",
+	"read":                        "Read",
+	"write":                       "Write",
+	"edit":                        "Edit",
+	"grep":                        "Grep",
+	"find":                        "Glob",
+	"ls":                          "LS",
+	"list_mcp_resources":          "ListMcpResourcesTool",
+	"list_mcp_resource_templates": "ListMcpResourcesTool",
+	"read_mcp_resource":           "ReadMcpResourceTool",
 }
 
 // Sub-agent tool. Claude Code's Agent tool (legacy name Task) has no pi
@@ -243,6 +248,10 @@ func hasTool(tools []string, name string) bool {
 	return false
 }
 
+// --tools is comma-delimited inside pi, even after shell quoting. Accept
+// only one MCP name or wildcard selector, preserving extension-owned hyphens.
+var piMCPSelectorPattern = regexp.MustCompile(`^mcp__[A-Za-z0-9_*-]+$`)
+
 // piToolsFor translates Claude tool names to pi's. The returned tools list
 // is nil when claudeTools is nil (no restriction) and non-nil otherwise,
 // preserving order and dropping duplicates.
@@ -265,6 +274,38 @@ func piToolsFor(claudeTools []string) (tools, unsupported []string) {
 					seen[pt] = true
 					tools = append(tools, pt)
 				}
+			}
+			continue
+		}
+		// Claude's list operation covers both resources and templates in pi.
+		var resources []string
+		switch ct {
+		case "ListMcpResourcesTool":
+			resources = []string{"list_mcp_resources", "list_mcp_resource_templates"}
+		case "ReadMcpResourceTool":
+			resources = []string{"read_mcp_resource"}
+		}
+		if resources != nil {
+			for _, pt := range resources {
+				if !seen[pt] {
+					seen[pt] = true
+					tools = append(tools, pt)
+				}
+			}
+			continue
+		}
+		if piMCPSelectorPattern.MatchString(ct) || piMCPResourcePattern(ct) {
+			// Claude accepts a bare server selector; pi requires a wildcard
+			// for its tools. Preserve exact tool names and existing patterns.
+			if strings.HasPrefix(ct, "mcp__") {
+				server := strings.TrimPrefix(ct, "mcp__")
+				if server != "" && !strings.Contains(server, "__") && !strings.Contains(server, "*") {
+					ct += "__*"
+				}
+			}
+			if !seen[ct] {
+				seen[ct] = true
+				tools = append(tools, ct)
 			}
 			continue
 		}

@@ -2,11 +2,14 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 )
@@ -28,7 +31,7 @@ func TestRunFetchSkill_Success(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "test-token")
 
 	var stdout, stderr bytes.Buffer
-	err := runFetchSkill("https://github.com/org/repo/tree/abc/skills/my-skill#sha256=abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234", &stdout, &stderr)
+	err := runFetchSkill(context.Background(), "https://github.com/org/repo/tree/abc/skills/my-skill#sha256=abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234", &stdout, &stderr)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,7 +57,7 @@ func TestRunFetchSkill_Forbidden(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "test-token")
 
 	var stdout, stderr bytes.Buffer
-	err := runFetchSkill("https://github.com/evil/repo/tree/abc/skills/bad#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
+	err := runFetchSkill(context.Background(), "https://github.com/evil/repo/tree/abc/skills/bad#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for forbidden URL")
 	}
@@ -80,7 +83,7 @@ func TestRunFetchSkill_RateLimited(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "test-token")
 
 	var stdout, stderr bytes.Buffer
-	err := runFetchSkill("https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
+	err := runFetchSkill(context.Background(), "https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for rate-limited request")
 	}
@@ -103,7 +106,7 @@ func TestRunFetchSkill_ServerError(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "test-token")
 
 	var stdout, stderr bytes.Buffer
-	err := runFetchSkill("https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
+	err := runFetchSkill(context.Background(), "https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for server error")
 	}
@@ -123,7 +126,7 @@ func TestRunFetchSkill_NonJSONResponse(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "test-token")
 
 	var stdout, stderr bytes.Buffer
-	err := runFetchSkill("https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
+	err := runFetchSkill(context.Background(), "https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for non-JSON response")
 	}
@@ -144,7 +147,7 @@ func TestRunFetchSkill_ErrorWithEmptyMessage(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "test-token")
 
 	var stdout, stderr bytes.Buffer
-	err := runFetchSkill("https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
+	err := runFetchSkill(context.Background(), "https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for non-200 response")
 	}
@@ -158,7 +161,7 @@ func TestRunFetchSkill_MissingFetchURL(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "test-token")
 
 	var stdout, stderr bytes.Buffer
-	err := runFetchSkill("https://example.com/skill#sha256=aaa", &stdout, &stderr)
+	err := runFetchSkill(context.Background(), "https://example.com/skill#sha256=aaa", &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for missing FULLSEND_FETCH_URL")
 	}
@@ -172,7 +175,7 @@ func TestRunFetchSkill_MissingToken(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "")
 
 	var stdout, stderr bytes.Buffer
-	err := runFetchSkill("https://example.com/skill#sha256=aaa", &stdout, &stderr)
+	err := runFetchSkill(context.Background(), "https://example.com/skill#sha256=aaa", &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for missing FULLSEND_FETCH_TOKEN")
 	}
@@ -194,7 +197,7 @@ func TestRunFetchSkill_AuthTokenSent(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "secret-abc-123")
 
 	var stdout, stderr bytes.Buffer
-	_ = runFetchSkill("https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
+	_ = runFetchSkill(context.Background(), "https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
 
 	if receivedAuth != "Bearer secret-abc-123" {
 		t.Fatalf("Authorization header = %q, want %q", receivedAuth, "Bearer secret-abc-123")
@@ -215,7 +218,7 @@ func TestRunFetchSkill_RequestBody(t *testing.T) {
 
 	skillURL := "https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	var stdout, stderr bytes.Buffer
-	_ = runFetchSkill(skillURL, &stdout, &stderr)
+	_ = runFetchSkill(context.Background(), skillURL, &stdout, &stderr)
 
 	if receivedReq.URL != skillURL {
 		t.Fatalf("request URL = %q, want %q", receivedReq.URL, skillURL)
@@ -227,7 +230,7 @@ func TestRunFetchSkill_ConnectionRefused(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "t")
 
 	var stdout, stderr bytes.Buffer
-	err := runFetchSkill("https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
+	err := runFetchSkill(context.Background(), "https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for connection refused")
 	}
@@ -241,7 +244,7 @@ func TestRunFetchSkill_InvalidFetchURL(t *testing.T) {
 	t.Setenv("FULLSEND_FETCH_TOKEN", "t")
 
 	var stdout, stderr bytes.Buffer
-	err := runFetchSkill("https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
+	err := runFetchSkill(context.Background(), "https://github.com/org/repo/tree/abc/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &stdout, &stderr)
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
 	}
@@ -300,5 +303,91 @@ func TestNewFetchSkillCmd_ExecutesThroughRunE(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "/skill/path") {
 		t.Fatalf("stdout should contain skill path, got %q", stdout.String())
+	}
+}
+
+func TestNewFetchSkillCmd_CanceledContext(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("canceled command sent an HTTP request")
+		json.NewEncoder(w).Encode(fetchsvc.FetchResponse{LocalPath: "/skill/path"})
+	}))
+	defer srv.Close()
+
+	t.Setenv("FULLSEND_FETCH_URL", srv.URL)
+	t.Setenv("FULLSEND_FETCH_TOKEN", "test-token")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	var stdout bytes.Buffer
+	cmd := newFetchSkillCmd()
+	cmd.SetOut(&stdout)
+	cmd.SetArgs([]string{"https://example.com/skill#sha256=aaa"})
+
+	if err := cmd.ExecuteContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout should be empty on cancellation, got %q", stdout.String())
+	}
+}
+
+func TestNewFetchSkillCmd_CancelInFlight(t *testing.T) {
+	for _, flushHeaders := range []bool{false, true} {
+		name := "waiting for headers"
+		if flushHeaders {
+			name = "waiting for body"
+		}
+		t.Run(name, func(t *testing.T) {
+			started := make(chan struct{})
+			release := make(chan struct{})
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if flushHeaders {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					w.(http.Flusher).Flush()
+				}
+				close(started)
+				select {
+				case <-r.Context().Done():
+				case <-release:
+				}
+			}))
+			defer srv.Close()
+			defer close(release)
+
+			t.Setenv("FULLSEND_FETCH_URL", srv.URL)
+			t.Setenv("FULLSEND_FETCH_TOKEN", "test-token")
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			var stdout bytes.Buffer
+			cmd := newFetchSkillCmd()
+			cmd.SetOut(&stdout)
+			cmd.SetArgs([]string{"https://example.com/skill#sha256=aaa"})
+
+			done := make(chan error, 1)
+			go func() {
+				done <- cmd.ExecuteContext(ctx)
+			}()
+			select {
+			case <-started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("fetch request did not reach the server")
+			}
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("error = %v, want context.Canceled", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("fetch request did not stop after cancellation")
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout should be empty on cancellation, got %q", stdout.String())
+			}
+		})
 	}
 }

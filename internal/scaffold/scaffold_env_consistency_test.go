@@ -51,6 +51,8 @@ func canonicalForgeEnvVars() map[string]struct{} {
 		forge.SecretJiraEmail,
 		forge.SecretJiraClientID,
 		forge.SecretJiraClientSecret,
+		forge.SecretTraceSigningKey,
+		forge.VarTraceSigningKeyID,
 		forge.VarLegacyBotTokenSecret,
 		forge.VarLegacySA,
 		forge.VarLegacyWIFProvider,

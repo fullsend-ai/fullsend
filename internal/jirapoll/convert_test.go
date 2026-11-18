@@ -1062,3 +1062,119 @@ func TestResolveRole_AdminActor(t *testing.T) {
 		t.Errorf("actor.role = %q, want %q", ne.Actor.Role, "admin")
 	}
 }
+
+// TestToNormalizedEvent_CommandBodyCarriedWhole pins the adapter half of the
+// Jira door's command fail-closed on the GitLab target (the dispatch door's
+// half is TestEncodeJiraEventPayload_OversizedCommandBodyFailsClosed in
+// internal/poll): a /fs-* command body past the schema's 4096-code-point
+// adapter cap is carried untruncated, so the GitLab-target dispatch door
+// measures the complete body and refuses it with ErrTransportBudget instead
+// of running an agent on a silently shortened instruction; every other body
+// keeps the cap. The GitHub target has no fail-closed budget door, so it
+// keeps the cap for command bodies too
+// (TestToNormalizedEvent_GitHubTargetCommandBodyCapped).
+func TestToNormalizedEvent_CommandBodyCarriedWhole(t *testing.T) {
+	p := &Poller{
+		opts: Options{
+			TargetRepo:  "acme/platform",
+			TargetForge: TargetForgeGitLab,
+			JiraBaseURL: "https://acme.atlassian.net",
+		},
+		roleMembership: map[string]string{
+			"dev-user": "Developers",
+		},
+	}
+
+	commandBody := "/fs-triage review the acceptance criteria\n" +
+		strings.Repeat("plain ascii review notes, one line at a time\n", 300)
+	if got := len([]rune(commandBody)); got <= 4096 {
+		t.Fatalf("command body is %d runes, want more than the 4096-rune adapter cap", got)
+	}
+	ne := p.toNormalizedEvent(JiraEvent{
+		Type:        "comment_added",
+		IssueID:     "10042",
+		IssueKey:    "PROJ-123",
+		CommentBody: commandBody,
+		CommentAuthor: jira.User{
+			AccountID:   "dev-user",
+			AccountType: "atlassian",
+		},
+	})
+	if ne.Transition.Comment == nil {
+		t.Fatal("transition.comment is nil")
+	}
+	if ne.Transition.Comment.Command != "/fs-triage" {
+		t.Errorf("command = %q, want %q", ne.Transition.Comment.Command, "/fs-triage")
+	}
+	if ne.Transition.Comment.Body != commandBody {
+		t.Errorf("command body carried as %d runes, want the whole %d-rune body so the dispatch door can refuse it",
+			len([]rune(ne.Transition.Comment.Body)), len([]rune(commandBody)))
+	}
+
+	// Every other body keeps the schema's 4096-code-point adapter cap.
+	plainBody := strings.Repeat("x", 5000)
+	ne = p.toNormalizedEvent(JiraEvent{
+		Type:        "comment_added",
+		IssueID:     "10042",
+		IssueKey:    "PROJ-123",
+		CommentBody: plainBody,
+		CommentAuthor: jira.User{
+			AccountID:   "dev-user",
+			AccountType: "atlassian",
+		},
+	})
+	if ne.Transition.Comment == nil {
+		t.Fatal("transition.comment is nil for the non-command body")
+	}
+	if got, want := ne.Transition.Comment.Body, truncate(plainBody, 4096); got != want {
+		t.Errorf("non-command body carried as %d runes, want the %d-rune adapter cap", len([]rune(got)), len([]rune(want)))
+	}
+}
+
+// TestToNormalizedEvent_GitHubTargetCommandBodyCapped pins the GitHub
+// target's half of the command-body rule: the GitHub target has no
+// fail-closed chunk-budget door (its records travel whole through
+// dispatches.json into the reusable-poll-jira matrix output, and the
+// checkpoints advance before the shell dispatch step runs), so a /fs-*
+// command body past the schema's 4096-code-point adapter cap stays capped
+// there — the transported event remains inside the schema's machine-readable
+// comment.body maxLength and the matrix output stays bounded as before the
+// carried-whole rule existed.
+func TestToNormalizedEvent_GitHubTargetCommandBodyCapped(t *testing.T) {
+	p := &Poller{
+		opts: Options{
+			TargetRepo:  "acme/platform",
+			TargetForge: TargetForgeGitHub,
+			JiraBaseURL: "https://acme.atlassian.net",
+		},
+		roleMembership: map[string]string{
+			"dev-user": "Developers",
+		},
+	}
+
+	commandBody := "/fs-triage review the acceptance criteria\n" +
+		strings.Repeat("plain ascii review notes, one line at a time\n", 300)
+	if got := len([]rune(commandBody)); got <= 4096 {
+		t.Fatalf("command body is %d runes, want more than the 4096-rune adapter cap", got)
+	}
+	ne := p.toNormalizedEvent(JiraEvent{
+		Type:        "comment_added",
+		IssueID:     "10042",
+		IssueKey:    "PROJ-123",
+		CommentBody: commandBody,
+		CommentAuthor: jira.User{
+			AccountID:   "dev-user",
+			AccountType: "atlassian",
+		},
+	})
+	if ne.Transition.Comment == nil {
+		t.Fatal("transition.comment is nil")
+	}
+	if ne.Transition.Comment.Command != "/fs-triage" {
+		t.Errorf("command = %q, want %q", ne.Transition.Comment.Command, "/fs-triage")
+	}
+	if got, want := ne.Transition.Comment.Body, truncate(commandBody, 4096); got != want {
+		t.Errorf("GitHub-target command body carried as %d runes, want the %d-rune adapter cap",
+			len([]rune(got)), len([]rune(want)))
+	}
+}

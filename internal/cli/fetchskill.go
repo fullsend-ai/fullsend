@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,12 +35,12 @@ variables, which are set automatically during sandbox bootstrap.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runFetchSkill(args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
+			return runFetchSkill(cmd.Context(), args[0], cmd.OutOrStdout(), cmd.ErrOrStderr())
 		},
 	}
 }
 
-func runFetchSkill(skillURL string, stdout, stderr io.Writer) error {
+func runFetchSkill(ctx context.Context, skillURL string, stdout, stderr io.Writer) error {
 	fetchURL := os.Getenv("FULLSEND_FETCH_URL")
 	if fetchURL == "" {
 		return fmt.Errorf("FULLSEND_FETCH_URL is not set (is runtime fetch enabled in the harness?)")
@@ -55,7 +56,7 @@ func runFetchSkill(skillURL string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, fetchURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, fetchURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}

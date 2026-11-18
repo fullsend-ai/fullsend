@@ -12,14 +12,21 @@ agent runtimes.
 > bundle retains its observation/mutation-derived `triage` or `write` threshold;
 > snapshot producers need a v2 contract before applying the configurable
 > threshold or its expanded role values.
+> [Entity-context-snapshot v2](../v2/README.md)
+> ([ADR 0170](../../../ADRs/0170-align-entity-context-snapshot-with-normalized-entity.md))
+> is that contract. It also covers Jira issues and GitHub Discussions and
+> aligns field names with [Normalized entity v1](../../normalized-entity/v1/README.md).
+> New producers implement v2.
 
 Here, *entity-context-snapshot* means the staged data snapshot for a handled
 Git-forge entity. The qualified name distinguishes this data structure from
 the dispatch-layer routing category called *entity context* in
 [ADR 0076](../../../ADRs/0076-slash-command-entity-context-separation.md),
 which determines the agent or slash command that may handle an issue, change
-proposal, or conversation. Entity-context-snapshot v1 applies only to GitHub,
-GitLab, and Forgejo work items and change proposals. A non-forge `work_item`,
+proposal, or conversation. It is also distinct from the CEL-facing normalized
+entity value defined in [Normalized entity v1](../../normalized-entity/v1/README.md),
+which harness predicates evaluate. Entity-context-snapshot v1 applies only to
+GitHub, GitLab, and Forgejo work items and change proposals. A non-forge `work_item`,
 such as Jira, does not start v1
 snapshot assembly; the runner records an `unsupported_entity` diagnostic
 outside the tree and continues under that integration's existing input

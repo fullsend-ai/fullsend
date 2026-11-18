@@ -103,6 +103,13 @@ type ConvergeConfig struct {
 	JiraClientID     string
 	JiraClientSecret string
 
+	// TraceKeyPlans holds the trace signing key writes planned by
+	// EnsureTraceSigningKeys, keyed "owner/repo" (ADR 0154). A repository
+	// with a plan gets FULLSEND_TRACE_SIGNING_KEY and
+	// FULLSEND_TRACE_SIGNING_KEY_ID before its scaffold or config commit
+	// (convergeTraceSigningKey). Never logged or reported.
+	TraceKeyPlans map[string]*TraceKeyPlan
+
 	// ReviewAppClientID is the OAuth client ID of the review agent's
 	// GitHub App, pre-resolved by the caller for ReviewAppClientIDAppSet.
 	// It seeds the per-repo resolution cache so repos on that app set
@@ -263,6 +270,11 @@ type convergeDiscovery struct {
 	components    []ComponentStatus
 	preset        []byte
 	managedConfig []byte
+	// overlay is the installed .fullsend/config.yaml read once to select
+	// the pinned fullsend_ref's configuration schema (#9292); nil when the
+	// repository follows the running release, in which case the overlay
+	// gates read it themselves.
+	overlay *overlaySnapshot
 	// appSet is the effective FULLSEND_APP_SET value to persist (GitHub
 	// only). When app_set is explicitly configured it is the resolved
 	// value; otherwise it preserves an existing repo variable, falling
@@ -1223,6 +1235,29 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 		// Render the managed configuration before any writes so a
 		// validation failure fails the repo without applying changes.
 		if d.resolved.ConfigManaged {
+			// Render in the schema the repository's effective
+			// fullsend_ref reads (#9292).
+			// The installed overlay is read for a pinned ref only, as
+			// status does, so a schema-neutral desired config still
+			// resolves the schema when the overlay is schema-dependent.
+			// A read error fails the repo before any write.
+			// That read is kept as a snapshot the overlay gates reuse, so
+			// it adds no forge read.
+			var installedOverlay []byte
+			if pinnedFullsendRef(d.resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag) {
+				data, found, readErr := readManagedConfigOverlayFile(ctx, d.resolved)
+				if readErr != nil {
+					result.Results[i] = ConvergeResult{
+						Owner: d.repo.Owner,
+						Repo:  d.repo.Repo,
+						Error: fmt.Errorf("reading %s: %w", preset.OverlayPath, readErr),
+					}
+					continue
+				}
+				installedOverlay = data
+				d.overlay = &overlaySnapshot{data: data, found: found}
+			}
+			d.resolved.ConfigSchema = selectManagedConfigSchema(ctx, d.resolved, installedOverlay, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
 			body, _, configErr := desiredManagedConfig(d.resolved)
 			if configErr != nil {
 				result.Results[i] = ConvergeResult{
@@ -1239,7 +1274,7 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			// would fire only after they had changed the repository. A
 			// fresh install is gated before Install in its own path.
 			if workflowPresent(d.components) {
-				if gateErr := checkEstablishedOverlayGate(ctx, d.resolved, body); gateErr != nil {
+				if gateErr := checkEstablishedOverlayGateFrom(ctx, d.resolved, body, d.overlay); gateErr != nil {
 					result.Results[i] = ConvergeResult{
 						Owner: d.repo.Owner,
 						Repo:  d.repo.Repo,
@@ -1615,7 +1650,7 @@ func convergeRepo(ctx context.Context,
 		var configSafetyRejected *ComponentAction
 		var existingUnmanagedConfig []byte
 		if resolved.ConfigManaged {
-			existing, found, readErr := readExistingFile(ctx, resolved.ForgeConfig.Client, rr.Owner, rr.Repo, preset.OverlayPath)
+			existing, found, readErr := d.overlay.readOverlay(ctx, resolved)
 			if readErr != nil {
 				cr.Error = fmt.Errorf("reading existing %s: %w", preset.OverlayPath, readErr)
 				return cr
@@ -1772,6 +1807,17 @@ func convergeRepo(ctx context.Context,
 			_, staleVendoredActions = applyStaleVendoredPlan(installFiles, plan, cfg.DryRun, repoFullName, progress)
 		}
 
+		// The trace signing key is written before Install, so the seed never
+		// trails the commit that delivers the config naming its key
+		// (ADR 0154). A dry run reports it; a failure stops the repository
+		// before Install.
+		traceActions := convergeTraceSigningKey(ctx, d, cfg, progress)
+		cr.Actions = append(cr.Actions, traceActions...)
+		if actionsError(traceActions) != nil {
+			cr.Error = actionsError(cr.Actions)
+			return cr
+		}
+
 		if cfg.DryRun {
 			cr.Installed = true
 			if resolved.Forge == ForgeGitLab {
@@ -1909,6 +1955,17 @@ func convergeRepo(ctx context.Context,
 		jiraDelivery.render = scaffold.RenderOptions{UpstreamRef: rref.ref, UpstreamTag: rref.tag}
 	}
 	cr.Actions = append(cr.Actions, convergeJiraPoll(ctx, d, cfg, jiraDelivery, progress)...)
+
+	// 2d'': The trace signing key (ADR 0154), before the commit that delivers
+	// the config naming it. A failure stops the repository here. Until that
+	// commit is on the default branch, the default branch's config does not
+	// list the key the secret holds.
+	traceActions := convergeTraceSigningKey(ctx, d, cfg, progress)
+	cr.Actions = append(cr.Actions, traceActions...)
+	if actionsError(traceActions) != nil {
+		cr.Error = actionsError(cr.Actions)
+		return cr
+	}
 
 	// 2e: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;

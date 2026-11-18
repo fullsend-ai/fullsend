@@ -62,6 +62,10 @@ one combined logical search per source scope and local per-harness routing.
 For source-backed harnesses, even an event-supplied candidate must pass a
 current local source-query membership check before sandbox admission.
 
+The [Normalized entity v1 contract](../normative/normalized-entity/v1/README.md)
+specifies the logical `entity` value, coverage states, and partial-data
+invariants that this ADR requires.
+
 [ADR 0079](0079-bind-entity-execution-through-named-sources.md) refines source
 declarations into named, typed harness slots and repository-owned binding lists.
 It also permits native provider membership checks as a separate selection gate;

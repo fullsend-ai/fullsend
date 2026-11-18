@@ -268,6 +268,92 @@ func TestCrossBindingReplay(t *testing.T) {
 	}
 }
 
+// goldenConversationHex is the bound, no-provenance golden envelope with
+// kind 0x03 (GitHub conversation); every other byte before the signature
+// matches goldenBoundNoneHex. Independently constructed with Python struct
+// + cryptography Ed25519; the same construction with kind 0x01 reproduces
+// goldenBoundNoneHex.
+const goldenConversationHex = "46535443010165b60673d6ed884ba0a1a2a3a4a5a6a7a8a9aaabacadaeaf001268747470733a2f2f6769746875622e636f6d00000000105add9f03000000009328a1a24f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6da1b2c3d4e5f6071800101112131415161718191a1b1c1d1e1f8f818531da3fe5435756fde420aec3001d23d8266d3723194891aff293eb46c286ca92e261e0bc0fd639fdc1a0c70fbfc06870d834928f173a433ffd0be7fc05"
+
+func goldenConversationIdentity() Identity {
+	id := goldenIdentity()
+	id.Kind = KindConversation
+	return id
+}
+
+// TestAdmit_ConversationIdentity covers trace identity carried and
+// verified for a GitHub conversation: the wire vector, repeated launches,
+// distinct conversations, kind separation from the existing kinds, and
+// invalid or missing stored context falling back.
+func TestAdmit_ConversationIdentity(t *testing.T) {
+	t.Parallel()
+	key, keys := goldenKeys(t)
+	want := mustHex(t, goldenConversationHex)
+
+	env := goldenEnvelope(DomainBound, ProvenanceNone)
+	env.Kind = KindConversation
+	require.NoError(t, env.Sign(key))
+	require.Equal(t, want, env.Marshal(), "conversation wire bytes differ from the conformance vector")
+	parsed, err := Parse(want)
+	require.NoError(t, err)
+	assert.Equal(t, env, parsed)
+
+	// Repeated launches on one conversation admit the same context.
+	admitted := Result{Outcome: OutcomeAdmitted, TraceID: env.TraceID, ParentSpanID: env.ParentSpanID}
+	for range 2 {
+		assert.Equal(t, admitted, Admit(goldenConversationIdentity(), keys, want))
+	}
+
+	// A distinct conversation, or another kind with the same IDs, rejects
+	// the envelope; a work-item envelope never admits for a conversation.
+	other := goldenConversationIdentity()
+	other.Entity++
+	assert.Equal(t, fallback(ReasonBindingMismatch), Admit(other, keys, want))
+	other = goldenConversationIdentity()
+	other.Container++
+	assert.Equal(t, fallback(ReasonBindingMismatch), Admit(other, keys, want))
+	for _, kind := range []EntityKind{KindWorkItem, KindChangeProposal} {
+		other = goldenConversationIdentity()
+		other.Kind = kind
+		assert.Equal(t, fallback(ReasonBindingMismatch), Admit(other, keys, want), "kind %#02x", byte(kind))
+	}
+	workItem, _ := signedGolden(t, DomainBound, ProvenanceNone)
+	assert.Equal(t, fallback(ReasonBindingMismatch), Admit(goldenConversationIdentity(), keys, workItem))
+
+	badSignature := bytes.Clone(want)
+	badSignature[len(badSignature)-1] ^= 0x01
+	otherKey := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	otherPub := otherKey.Public().(ed25519.PublicKey)
+	unresolved := goldenConversationIdentity()
+	unresolved.Entity = 0
+
+	for _, tc := range []struct {
+		name       string
+		expected   Identity
+		keys       map[[8]byte]ed25519.PublicKey
+		candidates [][]byte
+		reason     string
+	}{
+		{"absent", goldenConversationIdentity(), keys, nil, ReasonAbsent},
+		{"malformed", goldenConversationIdentity(), keys, [][]byte{want[:len(want)-1]}, ReasonMalformed},
+		{"bad signature", goldenConversationIdentity(), keys, [][]byte{badSignature}, ReasonBadSignature},
+		{"unknown key", goldenConversationIdentity(), map[[8]byte]ed25519.PublicKey{KeyID(otherPub): otherPub}, [][]byte{want}, ReasonUnknownKey},
+		{"conflicting carrier", goldenConversationIdentity(), keys, [][]byte{want, workItem}, ReasonConflictingCarrier},
+		{"unresolved", unresolved, keys, [][]byte{want}, ReasonUnresolved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, fallback(tc.reason), Admit(tc.expected, tc.keys, tc.candidates...))
+		})
+	}
+
+	// A conversation-scoped pending marker grants only the pending wait.
+	pending := goldenEnvelope(DomainPending, ProvenanceNone)
+	pending.Kind = KindConversation
+	require.NoError(t, pending.Sign(key))
+	assert.Equal(t, Result{Outcome: OutcomePending, Reason: ReasonPending}, Admit(goldenConversationIdentity(), keys, pending.Marshal()))
+	assert.Equal(t, fallback(ReasonBindingMismatch), Admit(goldenIdentity(), keys, pending.Marshal()))
+}
+
 func TestResult_ZeroValueFallsBack(t *testing.T) {
 	t.Parallel()
 	var result Result

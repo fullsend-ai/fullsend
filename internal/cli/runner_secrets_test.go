@@ -318,6 +318,8 @@ func TestLoadRunnerSecrets_RefusedNames(t *testing.T) {
 		"CI_JOB_TOKEN",
 		"LD_PRELOAD",
 		"GH_TOKEN",
+		"GH_ENTERPRISE_TOKEN",
+		"GITHUB_ENTERPRISE_TOKEN",
 		"PUSH_TOKEN",
 		"PUSH_TOKEN_SOURCE",
 		"REVIEW_TOKEN",
@@ -348,8 +350,8 @@ func TestLoadRunnerSecrets_InvalidName(t *testing.T) {
 }
 
 // Every name the reusable workflows and the composite action set on a
-// fullsend run step is refused, so a runner secret never shadows a named
-// workflow secret (JIRA_TOKEN on harness-run) or a workflow-provided value.
+// fullsend run step is refused, so a runner secret never shadows a
+// workflow-provided value (JIRA_BASE_URL on harness-run).
 func TestRunnerSecretNameRefused_CoversWorkflowSetNames(t *testing.T) {
 	type step struct {
 		Name string            `yaml:"name"`
@@ -393,7 +395,9 @@ func TestRunnerSecretNameRefused_CoversWorkflowSetNames(t *testing.T) {
 	require.Contains(t, actionNames, "STATUS_RUN_URL", "action.yml must have a Run fullsend step with its env")
 	names = append(names, actionNames...)
 
-	require.Contains(t, names, "JIRA_TOKEN", "harness-run must still set the named JIRA_TOKEN secret")
+	require.Contains(t, names, "JIRA_BASE_URL", "harness-run must still set JIRA_BASE_URL")
+	require.NotContains(t, names, "JIRA_TOKEN", "the retired JIRA_TOKEN secret must not be forwarded")
+	require.NotContains(t, names, "JIRA_USER_EMAIL", "the retired JIRA_USER_EMAIL secret must not be forwarded")
 	for _, name := range names {
 		assert.True(t, runnerSecretNameRefused(name), "%s is set on a fullsend run step but not refused as a runner secret name", name)
 	}
@@ -515,6 +519,17 @@ func TestValidateRunnerSecretRefs(t *testing.T) {
 		assert.Contains(t, err.Error(), "env.runner[PUSH_TOKEN] receives runner secret X")
 	})
 
+	// #8952: the mint owns the enterprise token names, so a runner secret
+	// must not land in them and shadow the minted token in child scripts.
+	for _, name := range []string{"GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"} {
+		t.Run("refused env.runner key "+name, func(t *testing.T) {
+			h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{name: "${X}"}}}
+			err := validateRunnerSecretRefs(h, secrets)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "env.runner["+name+"] receives runner secret X")
+		})
+	}
+
 	t.Run("refused env.runner key without secret is unchanged", func(t *testing.T) {
 		h := &harness.Harness{Env: &harness.EnvConfig{Runner: map[string]string{"GH_TOKEN": "${GH_TOKEN}"}}}
 		require.NoError(t, validateRunnerSecretRefs(h, secrets))
@@ -613,7 +628,10 @@ func TestRunnerSecretRefusedNames_DerivedFromRoleTokens(t *testing.T) {
 			assert.True(t, runnerSecretRefusedNames[tv.Name], tv.Name)
 		}
 	}
-	for _, name := range []string{"GH_TOKEN", "GITLAB_TOKEN", "PATH"} {
+	for _, name := range agentTokenEnvVars {
+		assert.True(t, runnerSecretRefusedNames[name], name)
+	}
+	for _, name := range []string{"GH_TOKEN", "GH_ENTERPRISE_TOKEN", "GITLAB_TOKEN", "PATH"} {
 		assert.True(t, runnerSecretRefusedNames[name], name)
 	}
 }

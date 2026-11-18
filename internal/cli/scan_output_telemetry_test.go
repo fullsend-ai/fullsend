@@ -36,7 +36,7 @@ func TestScanOutputFiles_SkipsTelemetryArtifacts(t *testing.T) {
 		require.NoError(t, os.WriteFile(p, []byte(secret), 0o644))
 	}
 
-	err := scanOutputFiles(dir, "trace-id", ui.New(&bytes.Buffer{}))
+	err := scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{}))
 	require.NoError(t, err)
 
 	got, err := os.ReadFile(telem)
@@ -68,7 +68,7 @@ func TestScanOutputFiles_SkipsStagedSkillsAndPersonaManifest(t *testing.T) {
 		require.NoError(t, os.WriteFile(p, []byte(secret), 0o644))
 	}
 
-	require.NoError(t, scanOutputFiles(dir, "trace-id", ui.New(&bytes.Buffer{})))
+	require.NoError(t, scanOutputFiles(dir, "trace-id", "", ui.New(&bytes.Buffer{})))
 
 	for _, p := range []string{staged, manifest} {
 		got, err := os.ReadFile(p)

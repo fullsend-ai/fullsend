@@ -309,3 +309,48 @@ func TestCredentialsFromEnv_DefaultsToOSEnv(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, Credentials{Token: testToken}, creds)
 }
+
+func TestGatewayBaseURL(t *testing.T) {
+	t.Parallel()
+	f := newGatewayFixture(t)
+
+	// A trailing slash on either URL must not produce a double slash or a
+	// trailing slash in the result.
+	got, err := GatewayBaseURL(context.Background(), ScopedConfig{BaseURL: f.siteURL() + "/", APIURL: f.gatewayURL() + "/"})
+	require.NoError(t, err)
+	assert.Equal(t, f.gatewayURL()+"/ex/jira/"+testCloudID, got)
+	assert.Equal(t, "", f.tenantAuth.Load(), "tenant_info must not receive credentials")
+}
+
+func TestGatewayBaseURL_DefaultAPIURL(t *testing.T) {
+	t.Parallel()
+	f := newGatewayFixture(t)
+	got, err := GatewayBaseURL(context.Background(), ScopedConfig{BaseURL: f.siteURL()}, WithHTTPClient(f.srv.Client()))
+	require.NoError(t, err)
+	assert.Equal(t, DefaultAPIURL+"/ex/jira/"+testCloudID, got)
+}
+
+func TestGatewayBaseURL_Errors(t *testing.T) {
+	t.Parallel()
+	f := newGatewayFixture(t)
+	f.tenantStatus.Store(http.StatusNotFound)
+
+	tests := []struct {
+		name    string
+		cfg     ScopedConfig
+		wantErr string
+	}{
+		{name: "discovery fails", cfg: ScopedConfig{BaseURL: f.siteURL(), APIURL: f.gatewayURL()}, wantErr: "discover cloud ID"},
+		{name: "missing base URL", cfg: ScopedConfig{}, wantErr: "base URL must be set"},
+		{name: "insecure API URL", cfg: ScopedConfig{BaseURL: "https://example.atlassian.net", APIURL: "http://gateway.example.com"}, wantErr: "API gateway URL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := GatewayBaseURL(context.Background(), tt.cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Empty(t, got)
+		})
+	}
+}

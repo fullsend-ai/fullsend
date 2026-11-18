@@ -124,6 +124,12 @@ convention bump.
 
 ## Annotations
 
+**2026-11-07 — Cut-off pi calls ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
+the pi parser now emits a call with no `tool_execution_end` when its stream
+stops, so a call cut off by a kill or timeout closes as
+`error.type=unanswered` and counts in `fullsend.tool_calls`, as on Claude
+Code. The 2026-11-05 note that such a call has no span no longer holds.
+
 **2026-11-05 — pi ([#7414](https://github.com/fullsend-ai/fullsend/issues/7414)):**
 the pi parser now passes call ids, arguments and results through, so pi runs
 get `execute_tool` spans. The fullsend pi parser emits a call's `ToolUseEvent`

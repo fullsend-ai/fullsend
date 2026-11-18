@@ -61,6 +61,8 @@ changelog:
     - title: Others
       order: 999
 
+# `fullsend self-update` verifies this signature. Read the comment on the
+# GoReleaser step in .github/workflows/release.yml before changing it.
 signs:
   - cmd: cosign
     signature: "${artifact}.sigstore.json"

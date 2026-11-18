@@ -137,16 +137,29 @@ func registerMintStatusSteps(sc *godog.ScenarioContext) {
 }
 
 // mintStatusError is a classified mint status failure. Its message
-// starts with the class.
+// starts with the class. When it wraps an underlying failure, Unwrap
+// preserves the cause so failclass classifies the real error instead
+// of rendered message text.
 type mintStatusError struct {
 	Class string
 	Msg   string
+	cause error
 }
 
 func (e *mintStatusError) Error() string { return e.Class + ": " + e.Msg }
 
+func (e *mintStatusError) Unwrap() error { return e.cause }
+
 func mintStatusFailure(class, format string, args ...any) error {
 	return &mintStatusError{Class: class, Msg: fmt.Sprintf(format, args...)}
+}
+
+// mintStatusFailureWrap is mintStatusFailure with a preserved cause:
+// the message renders the cause for operators, and Unwrap carries it
+// for the classifier, so a known infrastructure cause stays
+// infrastructure and a product defect stays scenario.
+func mintStatusFailureWrap(class string, cause error, format string, args ...any) error {
+	return &mintStatusError{Class: class, Msg: fmt.Sprintf(format, args...), cause: cause}
 }
 
 // suiteMintURL returns the URL of the mint serving the leased repo's org
@@ -162,7 +175,7 @@ func suiteMintURL(ctx context.Context, w *world.World) (string, error) {
 	// records the mint's status group and workflow hosts in the World.
 	if _, ok := w.Driver.(install.LeaseDriver); ok && w.LeasedRepoName == "" {
 		if err := givenEnrolledTestRepository(ctx, w); err != nil {
-			return "", mintStatusFailure(mintStatusClassDeployment,
+			return "", mintStatusFailureWrap(mintStatusClassDeployment, err,
 				"suite mint address unknown: leasing a pool slot for its org's mint: %v", err)
 		}
 		if u := strings.TrimSpace(w.MintURL); u != "" {
@@ -268,7 +281,7 @@ func whenOperatorRunsMintStatus(ctx context.Context, w *world.World, credential 
 	if err != nil {
 		return err
 	}
-	registerRedactionLiterals(w)
+	RegisterRedactionLiterals(w)
 	registerSecretForms(token)
 
 	home, err := os.MkdirTemp("", "behaviour-mint-status-home-*")
@@ -290,7 +303,7 @@ func whenOperatorRunsMintStatus(ctx context.Context, w *world.World, credential 
 	ms.Credential = credential
 	ms.Ran = true
 	ms.CredentialInOutput = strings.Contains(raw, token)
-	ms.Output = strings.ReplaceAll(redactText(raw), token, "***")
+	ms.Output = strings.ReplaceAll(RedactText(raw), token, "***")
 	ms.TimedOut = errors.Is(runCtx.Err(), context.DeadlineExceeded)
 	ms.ExitCode = 0
 	if runErr != nil {
@@ -600,7 +613,7 @@ func thenMintStatusCredentialAbsent(w *world.World) error {
 	}
 	if len(found) > 0 {
 		return mintStatusFailure(mintStatusClassAssertion, "%s",
-			redactText(fmt.Sprintf("write actor PAT found in behaviour artifacts: %s", strings.Join(found, ", "))))
+			RedactText(fmt.Sprintf("write actor PAT found in behaviour artifacts: %s", strings.Join(found, ", "))))
 	}
 	return nil
 }

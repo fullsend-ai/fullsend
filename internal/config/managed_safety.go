@@ -245,6 +245,8 @@ func CheckManagedSafetyGate(current PerRepoConfigReader, candidate PerRepoConfig
 			Candidate: formatUnset(candidateGW.Audience),
 		})
 	}
+	out = append(out, artifactsRelaxations(current, candidate, local)...)
+	out = append(out, progressRelaxations(current, candidate, local)...)
 	return out
 }
 

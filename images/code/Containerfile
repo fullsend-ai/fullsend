@@ -152,5 +152,11 @@ ENV GOPATH="/sandbox/go" \
 # gopls — Go language server for Claude Code LSP code intelligence.
 # Installed as sandbox user so /sandbox/go is owned by sandbox at runtime,
 # allowing go build and go test to write the module cache.
+#
+# gopls version writes ~/.cache/gopls with mode 0700. OpenShell's
+# Kubernetes seed-workspace copies /sandbox as uid 10001 and cannot read
+# that directory, so the sandbox never reaches Ready. The cache is not
+# needed in the image; gopls recreates it at runtime.
 ARG GOPLS_VERSION=0.22.0
-RUN go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" && gopls version
+RUN go install "golang.org/x/tools/gopls@v${GOPLS_VERSION}" && gopls version \
+    && rm -rf /sandbox/.cache/gopls
