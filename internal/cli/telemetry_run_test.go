@@ -826,7 +826,9 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	assert.Contains(t, a, attribute.String("gen_ai.provider.name", "anthropic"))
 	assert.Contains(t, a, attribute.String("gen_ai.request.model", "claude-opus-4-6"))
 	assert.Contains(t, a, attribute.String("fullsend.runtime", "claude"))
-	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 11))
+	// input_tokens includes cached tokens: 11 + 109938 + 38832.
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 148781))
+	assert.Contains(t, a, attribute.Bool("fullsend.usage.input_includes_cache", true))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 1505))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation.input_tokens", 38832))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read.input_tokens", 109938))
@@ -840,6 +842,105 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 		assert.NotEqual(t, "gen_ai.usage.reasoning_tokens", string(kv.Key),
 			"reasoning_tokens attribute should be omitted when zero")
 	}
+}
+
+// TestAgentSpanEndAttrs_InputTokensIncludeCache pins gen_ai.usage.input_tokens
+// to the GenAI semconv meaning (cached tokens included). Backends that price
+// from the convention subtract the cache counters back out; emitting uncached
+// input there made MLflow report negative costs (#9532).
+func TestAgentSpanEndAttrs_InputTokensIncludeCache(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		input, cacheRead, cacheWrite int
+		wantInput                    int
+	}{
+		// Token counts from the first trace reported in #9532.
+		{name: "reported trace", input: 229, cacheRead: 4899982, cacheWrite: 909507, wantInput: 5809718},
+		{name: "no cache tokens", input: 500, wantInput: 500},
+		{name: "cache read only", input: 10, cacheRead: 2000, wantInput: 2010},
+		{name: "cache creation only", input: 10, cacheWrite: 3000, wantInput: 3010},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := agentruntime.RunMetrics{
+				Model:                    "claude-opus-4-6",
+				InputTokens:              tc.input,
+				OutputTokens:             118001,
+				CacheReadInputTokens:     tc.cacheRead,
+				CacheCreationInputTokens: tc.cacheWrite,
+			}
+			a := agentSpanEndAttrs(1, 0, "anthropic", "claude", &m)
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", tc.wantInput))
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 118001))
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read.input_tokens", tc.cacheRead))
+			assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation.input_tokens", tc.cacheWrite))
+			// The marker is unconditional: a span with no cache tokens is
+			// still a span written with the inclusive rule.
+			assert.Contains(t, a, attribute.Bool("fullsend.usage.input_includes_cache", true))
+			// Building the attributes must not change the input count they
+			// read.
+			assert.Equal(t, tc.input, m.InputTokens)
+		})
+	}
+}
+
+// TestAgentSpan_InputMarkerReachesFileSink reads an agent span back from
+// run-telemetry.jsonl. The tracing guide's jq example decides whether to
+// subtract the cache counters by testing for the marker attribute, so the
+// marker has to be present in the file, next to the inclusive input count.
+func TestAgentSpan_InputMarkerReachesFileSink(t *testing.T) {
+	t.Setenv("OTEL_SDK_DISABLED", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+
+	dir := t.TempDir()
+	tracer, cleanup := telemetry.Setup(dir, "test")
+	_, span := tracer.Start(context.Background(), "agent")
+	m := &agentruntime.RunMetrics{
+		Model:                    "example-model",
+		InputTokens:              1000,
+		CacheCreationInputTokens: 150000,
+		CacheReadInputTokens:     600000,
+	}
+	finalizeAgentSpan(span, nil, 1, 0, "anthropic", "claude", m, "", nil)
+	cleanup(context.Background())
+
+	raw, err := os.ReadFile(filepath.Join(dir, telemetry.TelemetryFile))
+	require.NoError(t, err)
+
+	type otlpLine struct {
+		ResourceSpans []struct {
+			ScopeSpans []struct {
+				Spans []struct {
+					Name       string `json:"name"`
+					Attributes []struct {
+						Key   string         `json:"key"`
+						Value map[string]any `json:"value"`
+					} `json:"attributes"`
+				} `json:"spans"`
+			} `json:"scopeSpans"`
+		} `json:"resourceSpans"`
+	}
+	values := map[string]map[string]any{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var decoded otlpLine
+		require.NoError(t, json.Unmarshal([]byte(line), &decoded), "each line is one OTLP TracesData message")
+		for _, rs := range decoded.ResourceSpans {
+			for _, ss := range rs.ScopeSpans {
+				for _, s := range ss.Spans {
+					if s.Name != "agent" {
+						continue
+					}
+					for _, a := range s.Attributes {
+						values[a.Key] = a.Value
+					}
+				}
+			}
+		}
+	}
+	assert.Equal(t, map[string]any{"boolValue": true}, values["fullsend.usage.input_includes_cache"])
+	assert.Equal(t, map[string]any{"intValue": "751000"}, values["gen_ai.usage.input_tokens"])
+	assert.Equal(t, map[string]any{"intValue": "150000"}, values["gen_ai.usage.cache_creation.input_tokens"])
+	assert.Equal(t, map[string]any{"intValue": "600000"}, values["gen_ai.usage.cache_read.input_tokens"])
 }
 
 func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {
