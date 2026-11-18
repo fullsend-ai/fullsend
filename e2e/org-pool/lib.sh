@@ -16,6 +16,10 @@ TEST_TRIAGE_USER="fstest-triage"
 TEST_OUTSIDER_USER="fstest-outsider"
 STATUS_TEAM_SLUG="mint-status"
 
+# DRY_RUN=1 (set by setup-org.sh --dry-run) replaces every mutation with a
+# "DRY-RUN: would ..." message. Default 0 so sourced tests see a value.
+DRY_RUN="${DRY_RUN:-0}"
+
 # require_gh exits when the gh CLI is missing or not authenticated.
 require_gh() {
   if ! command -v gh &>/dev/null; then
@@ -147,6 +151,10 @@ assign_all_repo_role() {
   fi
 
   echo "    Assigning all-repository ${perm} (role ${role_id}) to ${username}..."
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "    DRY-RUN: would assign all-repository ${perm} to ${username}"
+    return 0
+  fi
   if ! gh api -X PUT "/orgs/${org}/organization-roles/users/${username}/${role_id}" --silent; then
     echo "    ERROR: failed to assign all-repository ${perm} to ${username}." >&2
     return 1
@@ -208,20 +216,25 @@ team_membership() {
 ensure_status_team() {
   local org="$1" member="$2"
   local slug="${STATUS_TEAM_SLUG}"
-  local body creator state actual_slug username logins invited
+  local body creator state actual_slug username logins invited planned_removal=""
 
   if body=$(gh api "/orgs/${org}/teams/${slug}" 2>&1); then
     echo "    OK: team ${org}/${slug} exists"
   elif echo "${body}" | grep -q "HTTP 404"; then
-    echo "    Creating team ${org}/${slug}..."
-    if ! body=$(gh api -X POST "/orgs/${org}/teams" \
-        -f name="${slug}" \
-        -f privacy="closed" \
-        -f description="Allowlist for GitHub user-token auth on test mint status endpoints" 2>&1); then
-      echo "    ERROR: failed to create team ${org}/${slug}: ${body}" >&2
-      return 1
+    if [[ "${DRY_RUN}" == "1" ]]; then
+      echo "    DRY-RUN: would create team ${org}/${slug}"
+      return 0
+    else
+      echo "    Creating team ${org}/${slug}..."
+      if ! body=$(gh api -X POST "/orgs/${org}/teams" \
+          -f name="${slug}" \
+          -f privacy="closed" \
+          -f description="Allowlist for GitHub user-token auth on test mint status endpoints" 2>&1); then
+        echo "    ERROR: failed to create team ${org}/${slug}: ${body}" >&2
+        return 1
+      fi
+      echo "    OK: created team ${org}/${slug}"
     fi
-    echo "    OK: created team ${org}/${slug}"
   else
     echo "    ERROR: could not read team ${org}/${slug}: ${body}" >&2
     return 1
@@ -247,12 +260,18 @@ ensure_status_team() {
   if [[ "$(lower "${creator}")" != "$(lower "${member}")" ]]; then
     state=$(team_membership "${org}" "${slug}" "${creator}") || return 1
     if [[ "${state}" != "none" ]]; then
-      if ! body=$(gh api -X DELETE "/orgs/${org}/teams/${slug}/memberships/${creator}" 2>&1) \
+      if [[ "${DRY_RUN}" == "1" ]]; then
+        echo "    DRY-RUN: would remove ${creator} from ${org}/${slug}"
+        # The removal is only planned, so remember the creator: the
+        # member check below must not fail on them in dry-run.
+        planned_removal="${creator}"
+      elif ! body=$(gh api -X DELETE "/orgs/${org}/teams/${slug}/memberships/${creator}" 2>&1) \
           && ! echo "${body}" | grep -q "HTTP 404"; then
         echo "    ERROR: could not remove ${creator} from ${org}/${slug}: ${body}" >&2
         return 1
+      else
+        echo "    Removed ${creator} (the authenticated gh user) from ${org}/${slug}"
       fi
-      echo "    Removed ${creator} (the authenticated gh user) from ${org}/${slug}"
     fi
   fi
 
@@ -260,17 +279,21 @@ ensure_status_team() {
   # add others to the team, which would widen the allowlist.
   state=$(team_membership "${org}" "${slug}" "${member}") || return 1
   if [[ "${state}" != "active member" ]]; then
-    echo "    Setting ${member} on ${org}/${slug} as member (current: ${state})..."
-    if ! body=$(gh api -X PUT "/orgs/${org}/teams/${slug}/memberships/${member}" \
-        -f role="member" 2>&1); then
-      echo "    ERROR: failed to add ${member} to ${org}/${slug}: ${body}" >&2
-      return 1
-    fi
-    state=$(team_membership "${org}" "${slug}" "${member}") || return 1
-    if [[ "${state}" != "active member" ]]; then
-      echo "    ERROR: ${member} membership in ${org}/${slug} is '${state}', not 'active member'." >&2
-      echo "    ${member} must be an active member of ${org} first." >&2
-      return 1
+    if [[ "${DRY_RUN}" == "1" ]]; then
+      echo "    DRY-RUN: would set ${member} on ${org}/${slug} as member (current: ${state})"
+    else
+      echo "    Setting ${member} on ${org}/${slug} as member (current: ${state})..."
+      if ! body=$(gh api -X PUT "/orgs/${org}/teams/${slug}/memberships/${member}" \
+          -f role="member" 2>&1); then
+        echo "    ERROR: failed to add ${member} to ${org}/${slug}: ${body}" >&2
+        return 1
+      fi
+      state=$(team_membership "${org}" "${slug}" "${member}") || return 1
+      if [[ "${state}" != "active member" ]]; then
+        echo "    ERROR: ${member} membership in ${org}/${slug} is '${state}', not 'active member'." >&2
+        echo "    ${member} must be an active member of ${org} first." >&2
+        return 1
+      fi
     fi
   fi
   echo "    OK: ${member} is an active member of ${org}/${slug}"
@@ -292,6 +315,12 @@ ensure_status_team() {
   while IFS= read -r username; do
     [[ -n "${username}" ]] || continue
     if [[ "$(lower "${username}")" != "$(lower "${member}")" ]]; then
+      # In dry-run the creator's removal is planned but not applied, so
+      # the check below must not fail on them.
+      if [[ "${DRY_RUN}" == "1" && -n "${planned_removal}" \
+          && "$(lower "${username}")" == "$(lower "${planned_removal}")" ]]; then
+        continue
+      fi
       echo "    ERROR: ${username} is on ${org}/${slug}." >&2
       echo "    Remove them so the team stays a write-actor-only allowlist." >&2
       return 1
@@ -335,6 +364,10 @@ ensure_foreign_e2e_repos() {
   fi
 
   echo "    MISSING: ${var} does not authorize ${caller}"
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "    DRY-RUN: would add ${caller} to ${var} on ${org}"
+    return 0
+  fi
   local new_value="${caller}"
   [[ -n "${value}" ]] && new_value="${value}, ${caller}"
   echo "    Setting ${var} via gh api..."
