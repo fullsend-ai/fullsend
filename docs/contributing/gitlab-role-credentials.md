@@ -177,6 +177,47 @@ generic forge secret list; role provisioning repairs an existing
 shared-token installation by provisioning the missing role credentials.
 It does not touch the leftover shared secret.
 
+### Provider credentials from CI/CD variables
+
+In a GitLab CI job, `fullsend run` prints one line for each provider
+credential that comes from a CI/CD variable. A stock agent job with a role
+token prints:
+
+```text
+  ! provider "gitlab-rw": credential GITLAB_TOKEN comes from CI/CD variable FULLSEND_GITLAB_ANALYST_TOKEN (runner variable GITLAB_TOKEN), a long-lived value that masking hides only as an exact string; no keyless replacement on GitLab yet
+```
+
+The line never contains the value, and the run continues. It is there because
+a CI/CD variable is weaker than an `id_tokens:` OIDC token: masking misses a
+base64 or concatenated copy, `protected: true` does not help on the default
+branch, and the variable sets no expiry of its own: the value lives until its
+issuer expires it or someone rotates it.
+
+| Credential | CI/CD variable | Keyless `id_tokens:` replacement |
+| --- | --- | --- |
+| Vertex AI inference | none | already keyless: `FULLSEND_ID_TOKEN`, exchanged through the `gitlab-oidc` WIF provider ([configuring GitLab](../guides/getting-started/configuring-gitlab.md)) |
+| OpenAI | `FULLSEND_OPENAI_API_KEY` (runner variable `OPENAI_API_KEY`) | none on GitLab yet |
+| GitLab role tokens | `FULLSEND_GITLAB_POLLER_TOKEN`, `FULLSEND_GITLAB_ANALYST_TOKEN`, `FULLSEND_GITLAB_CODER_TOKEN`, `FULLSEND_GITLAB_ROLE_<NAME>_TOKEN` (runner variable `GITLAB_TOKEN`) | none yet |
+| Jira (static token) | `FULLSEND_JIRA_TOKEN` | none yet |
+| Inference gateway API key | `FULLSEND_INFERENCE_GATEWAY_API_KEY` | none yet; not reported, because it is not a provider `credentials:` value |
+
+What counts as a CI/CD-variable credential:
+
+- the run's forge is GitLab and `GITLAB_CI=true`;
+- a provider definition's `credentials:` value is exactly one `${VAR}` or
+  `$VAR`, or the credential is the OpenAI static key, read from the runner
+  variable `OPENAI_API_KEY`;
+- `VAR` is set and non-empty, and its value is not a GitLab `id_tokens` JWT (a
+  JWT whose `iss` claim equals `CI_SERVER_URL`; only the claims are decoded).
+
+Where the table says "none yet", there is nothing to change: the line stays
+until GitLab offers a keyless route for that credential. To print it as info
+instead of a warning, set `allow_ci_variable_credential: true` at the top
+level of the harness. It is ignored under `forge:` or `overlays:`, and it is
+not inherited from `base:`. For a stock agent, set it in a local child
+harness; see
+[Configuration with `base:` composition](../guides/user/customizing-agents.md#configuration-with-base-composition).
+
 ### Project access token names
 
 | Role | PAT name | Access | Scopes |

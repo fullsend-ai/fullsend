@@ -71,6 +71,7 @@ fullsend
 │   │   ├── --jira-email <email>             #   FULLSEND_JIRA_EMAIL for repos whose tracker.jira.poll.enabled is true (optional; CLI-only)
 │   │   ├── --jira-client-id <id>            #   FULLSEND_JIRA_CLIENT_ID instead of --jira-token (CLI-only)
 │   │   ├── --jira-client-secret <secret>    #   FULLSEND_JIRA_CLIENT_SECRET instead of --jira-token (CLI-only; never logged)
+│   │   ├── --rotate-trace-signing-key       #   New trace signing key pair for GitHub repos; the first rotation gives an existing install its keys
 │   │   ├── --fullsend-binary <path>         #   Pre-built binary to vendor (requires a selected repo with vendor: true)
 │   │   ├── --fullsend-source <path>         #   Source checkout to vendor from (requires a selected repo with vendor: true)
 │   │   ├── --gitlab-role-registry <path>    #   Administrator GitLab role registry JSON
@@ -313,7 +314,7 @@ The `mint`, `inference`, and `github` subcommands decompose setup into role-spec
 |---------------|--------------------|-----------------|
 | Phases 1-3: Mint deployment | `fullsend mint deploy` | GCP project (mint): `roles/iam.serviceAccountAdmin`, `roles/iam.workloadIdentityPoolAdmin`, `roles/cloudfunctions.developer`, `roles/run.admin`; with `--pem-dir` also `roles/secretmanager.admin`, `roles/resourcemanager.projectIamAdmin`; with `--otlp-headers-file` also `roles/secretmanager.admin` |
 | Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin` |
-| Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin` |
+| Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin`; optionally `roles/serviceusage.serviceUsageAdmin` to enable missing APIs |
 | Phases 5-7: GitHub setup + enrollment | `fullsend github setup` | GitHub only |
 
 The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Advanced setup](../infrastructure/advanced-setup.md).

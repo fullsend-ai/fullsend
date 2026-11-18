@@ -2222,6 +2222,40 @@ role: test
 	assert.Nil(t, h.MaxRuntimeFetches)
 }
 
+func TestLoad_AllowCIVariableCredential(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "set", content: "agent: agents/code.md\nrole: test\nallow_ci_variable_credential: true\n", want: true},
+		{name: "explicit false", content: "agent: agents/code.md\nrole: test\nallow_ci_variable_credential: false\n", want: false},
+		{name: "omitted defaults to false", content: "agent: agents/code.md\nrole: test\n", want: false},
+		{
+			name:    "ignored under overlays",
+			content: "agent: agents/code.md\nrole: test\noverlays:\n  - when: 'true'\n    allow_ci_variable_credential: true\n",
+			want:    false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "h.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o644))
+			h, err := Load(path)
+			require.NoError(t, err)
+			require.NoError(t, h.ResolveOverlays(nil, "gitlab", nil))
+			assert.Equal(t, tt.want, h.AllowCIVariableCredential)
+		})
+	}
+}
+
+func TestLoad_AllowCIVariableCredentialRejectsNonBool(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "h.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("agent: agents/code.md\nrole: test\nallow_ci_variable_credential: sometimes\n"), 0o644))
+	_, err := Load(path)
+	require.Error(t, err)
+}
+
 func TestLoad_ReadonlyRepoField(t *testing.T) {
 	content := `
 agent: agents/review.md

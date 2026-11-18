@@ -150,6 +150,18 @@ See
 
 ## Live progress
 
+Use `progress` in `.fullsend/config.yaml` to control how much the job log
+shows while an agent runs. The default, `full`, prints everything. `tools`
+hides the model's reasoning and replies. `quiet` prints only lines fullsend
+writes from its own fields, and leaves out text from the agent or the source.
+Set one level for every run with `progress.verbosity`. Set a level for one run
+source with `progress.by_source` (for example `jira: quiet`). If both apply,
+the stricter level wins. When the level isn't `full`, the run prints one line
+near the top, such as
+`Progress log: quiet (run source "jira" from the normalized event)`. See
+[`progress`](../reference/config-reference.md#progress) for what each level
+shows.
+
 Progress display depends on the selected runtime. See
 [Claude Workflow progress](../runtimes/claude.md#live-claude-workflow-progress)
 for Claude background tasks, agent lifecycle metadata and display limits.
@@ -165,6 +177,7 @@ depend on the process cwd.
 |------|-------------|
 | `metrics.json` | Behavioral metrics: tokens, cost, model, runtime, iterations |
 | `transcripts/` | Agent conversation transcripts |
+| `iteration-<n>/agent-stderr.log` | The agent CLI's stderr, written instead of the job log only at progress level `quiet` |
 | `personas.json` | Persona manifest of the personas found in the staged skills (by the rules the `pi` and `codex` runtimes use to discover them), written every run; its path is exported as `FULLSEND_PERSONAS_FILE` to the pre-script, post-script and validation script (see [Configuring with Skills § The persona list file](../guides/user/customizing-with-skills.md#the-persona-list-file)) |
 | `skills/<index>/<name>/` | Per-run copies of skills that have per-file overrides, with the overrides applied (see [Overriding single files in a skill](../guides/user/customizing-with-skills.md#overriding-single-files-in-a-skill)) |
 | `claude-debug.log`, `pi-debug.log` or `codex-debug.log` | Debug log (when `--debug` is set) |
@@ -180,7 +193,7 @@ depend on the process cwd.
 | `override_source` | Where `requested_model` came from (`--model flag`, `FULLSEND_MODEL`, `FULLSEND_PI_MODEL`, `FULLSEND_CODEX_MODEL`, `<config path> agents.<name>`, `harness`, `default`), suffixed `, remapped by <config path> models.aliases` when a per-repo alias override applied to it |
 | `runtime_source` | Where `requested_runtime` came from (`--runtime flag`, `FULLSEND_RUNTIME`, the config file path — suffixed ` agents.<name>` when the agent's entry decided — or `default (config not found)`) |
 | `total_cost_usd` | Total inference cost in USD, as reported by the runtime (raw floating-point aggregate across all iterations; no fullsend-side pricing-table fallback). See [Cost data contract](../guides/infrastructure/distributed-tracing.md#cost-data-contract) |
-| `token_usage` | Run-level token counts: `input`, `output`, `cache_creation`, `cache_read`, and `reasoning` (always serialized, `0` when none). Reasoning is separate from output for Codex and included in output for Claude and the pinned pi version. Counts can survive interruption even when reported cost is zero. Prefer per-iteration `run-telemetry.jsonl` for pricing; see [Computing dollar cost from token telemetry](../guides/infrastructure/distributed-tracing.md#computing-dollar-cost-from-token-telemetry). |
+| `token_usage` | Run-level token counts: `input`, `output`, `cache_creation`, `cache_read`, and `reasoning` (always serialized, `0` when none). `input` is uncached input; on the `agent` span, `gen_ai.usage.input_tokens` also includes the two cache counts. Reasoning is separate from output for Codex and the pinned OpenCode version, and included in output for Claude and the pinned pi version. The `agent` span differs: its `gen_ai.usage.output_tokens` includes reasoning on every runtime, as the GenAI convention defines it, and `gen_ai.usage.reasoning.output_tokens` is the breakdown (`gen_ai.usage.reasoning_tokens` is the deprecated key with the same value). Counts can survive interruption even when reported cost is zero. Prefer per-iteration `run-telemetry.jsonl` for pricing; see [Computing dollar cost from token telemetry](../guides/infrastructure/distributed-tracing.md#computing-dollar-cost-from-token-telemetry). |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of agent iterations run; an iteration killed at the budget is not retried (see [Budget and deadline](#budget-and-deadline)) |
 | `per_model_usage` | Per-model breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled, `claude` when Claude Code's result carries `modelUsage`, and `codex` for an agent with registered sub-agent roles or a spawn in its stream). See below |
@@ -416,6 +429,33 @@ After the last iteration, `fullsend run` returns an error, and so exits non-zero
 - `<code>` is the `Agent exit code` value in the Results block. It is `1` when the agent exited 0
   but its transcript reported an error.
 
+## Provider profiles in run output
+
+Once the providers exist, the run prints one line per provider the harness uses; a provider the
+run skips (for example `openai` when no model needs it) gets no line. Each line names the
+profile the provider uses and where it came from: `embedded` for the copy built into fullsend, or
+`harness` for a copy listed in `openshell.profiles`. It then lists what that profile permits: each
+endpoint's host, protocol and `access` (or the methods its allow rules list), and the binaries
+allowlist: a `**/` glob by its base name (`**/gh` as `gh`), an absolute path as written. A profile with more than three endpoints is summarised as
+`<n> endpoints: <hosts> (<access values>)`.
+
+```text
+    provider github: profile fullsend-github (embedded) -> api.github.com rest read-write, github.com rest read-write; binaries gh, git, node, pre-commit
+    provider github-ro: profile fullsend-github-ro (embedded) -> api.github.com rest read-only, api.github.com graphql read-only, github.com rest read-only; binaries gh, node
+```
+
+When the run cannot say what a profile permits, the line says so instead:
+
+- `provider <name>: profile <id> (not imported by this run; what it permits is not known to the runner)`
+  when the profile is neither built into fullsend nor listed by the harness.
+- `provider <name>: profile <id> (harness) could not be read: <error>` when the listed file cannot
+  be read or parsed.
+
+A profile is a declaration of what the gateway should allow. Whether the gateway enforces it
+depends on the deployment, and the run does not check that. If the harness also mounts a durable
+credential file, the run may print a warning before the sandbox starts; see
+[durable credentials next to write-capable providers](../reference/harness-reference.md#durable-credentials-next-to-write-capable-providers).
+
 ## OpenAI credentials on pi and codex
 
 A `fullsend-openai` provider (`providers: [openai]` on the harness, `openai/<id>` models on pi or codex)
@@ -424,7 +464,7 @@ gets its credential from the runner, never from the harness or the sandbox:
 | Runner environment | Effect |
 |---|---|
 | `FULLSEND_OPENAI_AUDIENCE`, `FULLSEND_OPENAI_IDENTITY_PROVIDER_ID`, `FULLSEND_OPENAI_SERVICE_ACCOUNT_ID` | Workload Identity Federation (GitHub Actions only): the run exchanges the job's OIDC token for a short-lived OpenAI token, refreshes it before expiry, and refuses a token whose mapping grants more than model access. All three must be set together; when unset, the `inference.openai` block of `config.yaml` (written by `fullsend github setup --openai-*`) supplies them — except on a machine without a GitHub OIDC endpoint where `OPENAI_API_KEY` is set, which then wins. |
-| `OPENAI_API_KEY` | Static key for local runs, or CI when supplied by the `FULLSEND_OPENAI_API_KEY` repository secret (used only when the three above are unset). In harness YAML, `env.sandbox` and provider definitions `${OPENAI_API_KEY}` expands to the empty string (like the other runner-only variables), and it is never passed to pre/post scripts; the sandbox sees only the gateway placeholder. In CI the runner warns and WIF remains preferred. |
+| `OPENAI_API_KEY` | Static key for local runs, or CI when supplied by the `FULLSEND_OPENAI_API_KEY` repository secret (used only when the three above are unset). In harness YAML, `env.sandbox` and provider definitions `${OPENAI_API_KEY}` expands to the empty string (like the other runner-only variables), and it is never passed to pre/post scripts; the sandbox sees only the gateway placeholder. On GitHub Actions the runner warns about the static key and recommends WIF. In a GitLab CI job it reports the key as a [CI/CD-variable credential](../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables). |
 
 A bare provider name that fullsend ships (`openai`, `github-ro`, `vertex-ai`, and the others listed
 in [`agent new`](agent.md#what-gets-written)) resolves to the

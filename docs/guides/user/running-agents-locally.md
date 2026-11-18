@@ -249,11 +249,16 @@ Each harness should report `1`:
 /tmp/fullsend-agents/harness/triage.yaml:1
 ```
 
-Each run then prints one warning for the key:
+Each run then prints a warning for the key:
 
 ```text
 host file ... (dest /tmp/.gcp-credentials.json): service_account key (lifetime not controlled by this run)
 ```
+
+If the harness also uses a provider that may write, such as `github`, the run prints a second
+warning before the sandbox starts, naming that provider. Both are expected with this setup and
+neither stops the run. See
+[durable credentials next to write-capable providers](../../reference/harness-reference.md#durable-credentials-next-to-write-capable-providers).
 
 Without this step, the run stops with `Host file credential validation failed`.
 
@@ -879,6 +884,7 @@ Its layout:
   iteration-1/
     output/                  # Agent output files (agent-result.json, etc.)
     transcripts/             # Agent conversation transcripts (.jsonl)
+    agent-stderr.log         # Agent CLI stderr, at progress level quiet only
   metrics.json               # Behavioral metrics (tokens, cost, duration)
   security/
     findings.jsonl           # Security scan findings

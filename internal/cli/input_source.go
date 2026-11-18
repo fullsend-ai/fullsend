@@ -186,22 +186,6 @@ func checkUndefinedProviders(h *harness.Harness, src inputSource, declared []str
 		src.origin, strings.Join(missing, ", "))
 }
 
-// durableHostFileDests returns the dest of each host_files entry whose
-// source checkHostFileCredentials classifies as a durable credential.
-func durableHostFileDests(h *harness.Harness) []string {
-	var dests []string
-	for _, hf := range h.HostFiles {
-		path, copied := hostFileSource(hf)
-		if !copied {
-			continue
-		}
-		if shape, err := classifyHostFile(path, hf.Expand); err == nil && shape.durable() {
-			dests = append(dests, hf.Dest)
-		}
-	}
-	return dests
-}
-
 // inputSourceLine is the run output line that records the input source and
 // the defaults it set.
 func inputSourceLine(src inputSource, dryRun string, forge []harness.ProviderDef, durableDests []string) string {

@@ -27,6 +27,7 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 model: opus                         # LLM model override
 effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
 # readonly_repo: true               # make the checkout read-only (chmod a-w, .git/ excluded); absent = inherit from base; false overrides a base true
+# allow_ci_variable_credential: true # GitLab: print the CI/CD-variable credential notice as info, not a warning (default false; not inherited)
 providers:                           # Network access via provider profiles
   - vertex-ai                       # Bare builtin name: resolves to fullsend's embedded definition
   - github                          # Same; or a providers/<name>.yaml path for a local/custom definition
@@ -372,6 +373,40 @@ host_files:
     allow_durable: true
 ```
 
+<a id="durable-credentials-next-to-write-capable-providers"></a>
+**Durable credentials next to write-capable providers** — The run prints a
+warning just before the sandbox is created when a durable credential mount
+sits next to a provider whose profile may permit a write method, or whose
+profile could not be checked (the run did not import it, or could not read
+it). A profile may permit a write method when an endpoint has an `access`
+other than `read-only`, an allow rule for a method other than `GET`, `HEAD`
+or `OPTIONS`, or neither an `access` preset nor any allow rule. Inference
+profiles (`category: inference`, such as `vertex-ai` and `openai`) are left
+out, since their writes are model calls. The warning does not fail the run,
+and it does not replace `allow_durable: true`. Shown wrapped here; the run
+prints it on one line:
+
+```text
+  ! host file dest /tmp/.gcp-credentials.json is a durable credential, and
+    provider github (profile fullsend-github) permits write methods. Prefer a
+    short-lived credential that does not need allow_durable or a provider
+    whose profile is access: read-only (for example github-ro instead of
+    github). A profile is a declaration: whether the gateway enforces it
+    depends on the deployment, and this run does not check that.
+```
+
+To clear it:
+
+- Mount a short-lived credential instead, for example a Workload Identity
+  Federation `external_account` file.
+- Or switch to a read-only provider, such as `github-ro`, if the agent does
+  not need to write.
+- For a profile that could not be checked, list it in `openshell.profiles`
+  so the run can read it.
+
+Each provider's resolved profile is printed earlier in the run; see
+[provider profiles in run output](../cli/run.md#provider-profiles-in-run-output).
+
 **`.env.d` host files** — A `host_files` entry with a `dest` in
 `/sandbox/workspace/.env.d/` ending in `.env` is read before the runtime starts.
 Claude, codex, pi and OpenCode launches, and the runner's own in-sandbox probes
@@ -551,6 +586,8 @@ A pi-format entry must also satisfy pi's own loader rule:
 `plugins` is a top-level field only: a `plugins:` key under `forge:` or `overlays:` is silently ignored. Walkthrough for the pi side: [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time mechanics: [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
+
+**`allow_ci_variable_credential`** — Set to `true` (default `false`) to print the GitLab CI/CD-variable credential line as info instead of a warning. Use it when a credential has no keyless replacement yet. Other forges ignore it. **Top level only**: a key under `overlays:`/`forge:` is silently ignored. **Not inherited** from `base:`, so a base harness cannot silence the warning for its children. For a stock agent, set it in a local child harness; see [Configuration with `base:` composition](../guides/user/customizing-agents.md#configuration-with-base-composition). For the message text and what counts, see [GitLab Role Credentials](../contributing/gitlab-role-credentials.md#provider-credentials-from-cicd-variables).
 
 **`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
 
@@ -738,6 +775,7 @@ More-specific entries go last so they override broader defaults.
 | `security` | Child replaces entirely |
 | `input_source` | Child wins if set; inherited when absent only if the base sets `external`. Top-level only — an `input_source` key under `overlays:`/`forge:` is silently ignored |
 | `allow_forge_write` | NOT inherited (the child must declare its own). Top-level only — a key under `overlays:`/`forge:` is silently ignored |
+| `allow_ci_variable_credential` | NOT inherited (child must declare its own). Top-level only — a key under `overlays:`/`forge:` is silently ignored |
 | `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own); however, the config-level `allowed_remote_resources` from repository-local configuration acts as a fallback for URL resolution and as the ceiling every harness-level `allowed_remote_resources` is validated against (see `allow_runtime_fetch` above) |
 
 ## Referencing resources: local vs. remote

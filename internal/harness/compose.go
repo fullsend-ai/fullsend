@@ -994,6 +994,8 @@ func mergeBaseIntoChild(base, child *Harness) error {
 	// child. The child must declare its own allowlist and fetch settings.
 	// AllowForgeWrite (#9509) is not merged for the same reason: a base
 	// cannot grant an external-input child a forge-write provider.
+	// AllowCIVariableCredential is not merged either, so a base cannot
+	// silence the GitLab CI/CD-variable credential warning.
 	if base.APIServers != nil {
 		merged := make([]APIServer, 0, len(base.APIServers)+len(child.APIServers))
 		merged = append(merged, base.APIServers...)

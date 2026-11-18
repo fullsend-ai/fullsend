@@ -2784,7 +2784,12 @@ func collectPodmanLogs(sandboxName string) string {
 // extracted returns an error, so the caller does not report either as "no
 // output". The remote find still runs with "2>/dev/null || true", so a missing
 // or unreadable remoteDir reads as an empty listing and returns nil, nil.
-func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, error) {
+//
+// Each file that is skipped or not copied prints a line with its path and
+// the error. With quiet set (the quiet progress level, ADR 0163) those
+// lines are left out, since the agent chose the names; one line gives the
+// count.
+func ExtractOutputFiles(sandboxName, remoteDir, localDir string, quiet bool) ([]string, error) {
 	if err := os.MkdirAll(localDir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating local output dir: %w", err)
 	}
@@ -2816,6 +2821,18 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 
 	var extracted []string
 	listed := 0
+	skipped := 0
+	skip := func(format string, args ...any) {
+		skipped++
+		if !quiet {
+			fmt.Fprintf(os.Stderr, format, args...)
+		}
+	}
+	defer func() {
+		if quiet && skipped > 0 {
+			fmt.Fprintf(os.Stderr, "  %d output file(s) skipped or failed to copy\n", skipped)
+		}
+	}()
 	for _, remotePath := range lines {
 		remotePath = strings.TrimSpace(remotePath)
 		if remotePath == "" {
@@ -2827,7 +2844,7 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 
 		if dir := filepath.Dir(relPath); dir != "." {
 			if mkErr := root.MkdirAll(dir, 0o755); mkErr != nil {
-				fmt.Fprintf(os.Stderr, "  Skipping (dir rejected): %s: %v\n", relPath, mkErr)
+				skip("  Skipping (dir rejected): %s: %v\n", relPath, mkErr)
 				continue
 			}
 		}
@@ -2836,7 +2853,7 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 		// the probe file so DownloadFile can write the actual content.
 		f, createErr := root.Create(relPath)
 		if createErr != nil {
-			fmt.Fprintf(os.Stderr, "  Skipping (path rejected): %s: %v\n", relPath, createErr)
+			skip("  Skipping (path rejected): %s: %v\n", relPath, createErr)
 			continue
 		}
 		f.Close()
@@ -2845,7 +2862,7 @@ func ExtractOutputFiles(sandboxName, remoteDir, localDir string) ([]string, erro
 		os.Remove(localPath)
 
 		if dlErr := DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
-			fmt.Fprintf(os.Stderr, "  Failed to copy %s: %v\n", relPath, dlErr)
+			skip("  Failed to copy %s: %v\n", relPath, dlErr)
 			continue
 		}
 		extracted = append(extracted, localPath)

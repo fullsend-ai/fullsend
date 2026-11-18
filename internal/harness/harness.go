@@ -429,6 +429,11 @@ type Harness struct {
 	// allow_runtime_fetch.
 	AllowForgeWrite bool `yaml:"allow_forge_write,omitempty"`
 
+	// AllowCIVariableCredential downgrades the GitLab CI/CD-variable
+	// provider credential warning to an info line. Top level only and not
+	// inherited from a base, so a base cannot silence it for its children.
+	AllowCIVariableCredential bool `yaml:"allow_ci_variable_credential,omitempty"`
+
 	// Runtime-only fields (not serialized to YAML)
 	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
 

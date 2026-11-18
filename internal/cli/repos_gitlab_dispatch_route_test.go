@@ -399,3 +399,30 @@ func TestReconcileGitLabWebhookSafety_ContainsElevatedTriggerAccount(t *testing.
 		assert.Zero(t, contained)
 	})
 }
+
+// A GitLab repository whose trigger-account containment failed is left out
+// of convergence and gets no commit, so its signoff setting needs no user
+// identity: the fake token has none, and the run still lists it as FAILED.
+func TestRunReposInstall_ContainmentFailureNeedsNoSignoffIdentity(t *testing.T) {
+	for _, signoff := range []bool{false, true} {
+		name, manifest := "signoff off", triggerInstallManifest
+		if signoff {
+			name = "signoff on"
+			manifest = strings.Replace(triggerInstallManifest, "    - name: group/project\n", "    - name: group/project\n      signoff: true\n", 1)
+		}
+		t.Run(name, func(t *testing.T) {
+			manifestPath := writeTestManifest(t, manifest)
+			fc := newTriggerInstallFake(t)
+			opts := gitlabInstallOpts(manifestPath, fc)
+			opts.testContainTriggerAccount = func(context.Context, forge.Client, string, string) error {
+				return errors.New("restoring Developer access")
+			}
+			opts.testConvergeTriggerAccount = func(context.Context, forge.Client, string, string, bool) error { return nil }
+			var runErr error
+			output := captureStdout(t, func() { runErr = runReposInstall(context.Background(), opts) })
+			require.EqualError(t, runErr, "1 repos failed")
+			assert.Equal(t, 1, strings.Count(output, "FAILED: group/project"))
+			assert.Empty(t, fc.CommittedFiles, "no scaffold is committed")
+		})
+	}
+}

@@ -48,11 +48,14 @@ repos:
   - repo: local
     hooks:
       # Explicit filenames bypass .semgrepignore; keep this exclude aligned with it.
+      # Only staged Go files are scanned; the hook is skipped when there are none.
+      # The CI semgrep job still scans the full repository.
       - id: semgrep
         name: semgrep security audit (pinned p/security-audit rules)
         entry: env SEMGREP_REQUIRED=0 ./scripts/semgrep-scan
         language: system
         verbose: true
+        types: [go]
         exclude: '(^|/)([^/]*_test\.[^/]+|[^/]*\.(test|spec)\.[^/]+|test_[^/]+\.py|tests?(/|$))|^\.semgrep/|^e2e/behaviour/(fixtures|results)/'
 
   - repo: https://github.com/zricethezav/gitleaks

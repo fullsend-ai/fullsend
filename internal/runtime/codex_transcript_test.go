@@ -29,7 +29,7 @@ func TestCodexExtractTranscripts_DownloadsRollouts(t *testing.T) {
 	fakeOpenshellCodex(t, logPath, storeDir, "codex-cli 0.152.1", "", rollout)
 
 	outDir := filepath.Join(t.TempDir(), "transcripts")
-	require.NoError(t, r.ExtractTranscripts("sb", "triage", outDir))
+	require.NoError(t, r.ExtractTranscripts("sb", "triage", outDir, ""))
 
 	log := readFileString(t, logPath)
 	// Only plain .jsonl, and only regular files: the sessions directory is
@@ -49,7 +49,7 @@ func TestCodexExtractTranscripts_NoSessionsIsNotAnError(t *testing.T) {
 	fakeOpenshellCodex(t, logPath, t.TempDir(), "codex-cli 0.152.1")
 
 	outDir := filepath.Join(t.TempDir(), "transcripts")
-	require.NoError(t, CodexRuntime{}.ExtractTranscripts("sb", "triage", outDir))
+	require.NoError(t, CodexRuntime{}.ExtractTranscripts("sb", "triage", outDir, ""))
 	assert.NotContains(t, readFileString(t, logPath), "download")
 }
 
@@ -379,7 +379,7 @@ func TestCodexExtractTranscripts_DiscardsSpoofedFiles(t *testing.T) {
 	fakeOpenshellCodex(t, logPath, storeDir, "codex-cli 0.152.1", "", spoof)
 
 	outDir := filepath.Join(t.TempDir(), "transcripts")
-	require.NoError(t, r.ExtractTranscripts("sb", "smoke", outDir))
+	require.NoError(t, r.ExtractTranscripts("sb", "smoke", outDir, ""))
 
 	// The fake writes a non-rollout body for a path containing "planted", so
 	// nothing is kept.
@@ -491,7 +491,7 @@ func TestCodexExtractTranscripts_FailurePaths(t *testing.T) {
 		blocked := filepath.Join(t.TempDir(), "transcripts")
 		require.NoError(t, os.WriteFile(blocked, []byte("x"), 0o644))
 
-		err := r.ExtractTranscripts("sb", "smoke", blocked)
+		err := r.ExtractTranscripts("sb", "smoke", blocked, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "creating output dir")
 	})
@@ -503,7 +503,7 @@ func TestCodexExtractTranscripts_FailurePaths(t *testing.T) {
 	t.Run("an unreachable sandbox is an error", func(t *testing.T) {
 		t.Setenv("PATH", t.TempDir())
 
-		err := r.ExtractTranscripts("sb", "smoke", filepath.Join(t.TempDir(), "out"))
+		err := r.ExtractTranscripts("sb", "smoke", filepath.Join(t.TempDir(), "out"), "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "finding transcripts")
 	})
@@ -516,7 +516,7 @@ func TestCodexExtractTranscripts_FailurePaths(t *testing.T) {
 			sandbox.SandboxWorkspace+"/.env")
 
 		outDir := filepath.Join(t.TempDir(), "out")
-		require.NoError(t, r.ExtractTranscripts("sb", "smoke", outDir))
+		require.NoError(t, r.ExtractTranscripts("sb", "smoke", outDir, ""))
 		assert.NotContains(t, readFileString(t, logPath), "download",
 			"a path outside the sessions directory must never reach a download")
 		entries, err := os.ReadDir(outDir)
@@ -531,7 +531,7 @@ func TestCodexExtractTranscripts_FailurePaths(t *testing.T) {
 		t.Setenv("FULLSEND_TEST_FAIL_MATCH", "download")
 
 		outDir := filepath.Join(t.TempDir(), "out")
-		require.NoError(t, r.ExtractTranscripts("sb", "smoke", outDir),
+		require.NoError(t, r.ExtractTranscripts("sb", "smoke", outDir, ""),
 			"one failed transcript must not fail the run")
 		entries, err := os.ReadDir(outDir)
 		require.NoError(t, err)
@@ -752,7 +752,7 @@ func TestCodexExtractTranscripts_NamesChildrenByRole(t *testing.T) {
 	})
 
 	outDir := filepath.Join(t.TempDir(), "transcripts")
-	require.NoError(t, r.ExtractTranscripts("sb", "review", outDir))
+	require.NoError(t, r.ExtractTranscripts("sb", "review", outDir, ""))
 
 	entries, err := os.ReadDir(outDir)
 	require.NoError(t, err)
@@ -795,7 +795,7 @@ func TestCodexExtractTranscripts_ChildNameRejected(t *testing.T) {
 	blocker := filepath.Join(outDir, "review-sub1-correctness.jsonl")
 	require.NoError(t, os.MkdirAll(blocker, 0o755))
 
-	require.NoError(t, r.ExtractTranscripts("sb", "review", outDir))
+	require.NoError(t, r.ExtractTranscripts("sb", "review", outDir, ""))
 
 	entries, err := os.ReadDir(outDir)
 	require.NoError(t, err)
@@ -818,7 +818,7 @@ func TestCodexExtractTranscripts_DownloadLandingNameSaved(t *testing.T) {
 		{day + "triage-sub1-correctness.jsonl", "not a rollout\n"},
 	})
 	outDir := filepath.Join(t.TempDir(), "transcripts")
-	require.NoError(t, r.ExtractTranscripts("sb", "triage", outDir))
+	require.NoError(t, r.ExtractTranscripts("sb", "triage", outDir, ""))
 
 	got, err := os.ReadFile(filepath.Join(outDir, "triage-sub1-correctness.jsonl"))
 	require.NoError(t, err, "the saved child survives a later file whose basename is its name")

@@ -6206,6 +6206,30 @@ base: base.yaml
 	assert.Empty(t, h.AllowedRemoteResources)
 }
 
+func TestLoadWithBase_AllowCIVariableCredential(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+allow_ci_variable_credential: true
+`)
+	inherit := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+`)
+	h, _, err := LoadWithBase(context.Background(), inherit, ComposeOpts{})
+	require.NoError(t, err)
+	assert.False(t, h.AllowCIVariableCredential, "a base cannot silence the warning for its children")
+
+	own := writeTestHarness(t, dir, "child-own.yaml", `
+base: base.yaml
+allow_ci_variable_credential: true
+`)
+	h, _, err = LoadWithBase(context.Background(), own, ComposeOpts{})
+	require.NoError(t, err)
+	assert.True(t, h.AllowCIVariableCredential)
+}
+
 func TestMergeBaseIntoChild_PanicsOnUnresolvedForge(t *testing.T) {
 	base := &Harness{Forge: map[string]*ForgeConfig{"github": {}}}
 	child := &Harness{}
