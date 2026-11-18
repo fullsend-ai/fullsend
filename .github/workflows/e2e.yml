@@ -1,7 +1,7 @@
 name: E2E Tests
 
-# Same-repo PRs run behaviour and playback on pull_request (secrets available;
-# the gate job authorizes the author before either suite checks out PR head).
+# Same-repo PRs run behaviour, playback, and Forgejo behaviour on pull_request
+# (the gate job authorizes the author before a suite checks out PR head).
 # Fork PRs get no secrets on pull_request: the suites skip until a maintainer
 # comments /ok-to-test, and e2e-ok-to-test.yml calls this workflow for the
 # authorized head sha (event_name issue_comment, inputs.head_sha) (#9245).
@@ -66,7 +66,7 @@ on:
         type: number
         required: true
       head_sha:
-        description: PR head sha the comment authorized (checked out by both suites)
+        description: PR head sha the comment authorized (checked out by each test job)
         type: string
         required: true
     outputs:
@@ -76,6 +76,9 @@ on:
       playback_result:
         description: playback job status (success, failure or cancelled)
         value: ${{ jobs.playback.outputs.result }}
+      forgejo_behaviour_result:
+        description: Forgejo behaviour job status (success, failure or cancelled)
+        value: ${{ jobs['forgejo-behaviour'].outputs.result }}
 
 concurrency:
   group: >-
@@ -334,6 +337,100 @@ jobs:
         with:
           name: behaviour-artifacts-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
           path: ${{ runner.temp }}/behaviour-artifacts/
+          if-no-files-found: ignore
+          retention-days: 5
+
+      - name: Record job result
+        id: result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: echo "result=${JOB_STATUS}" >> "$GITHUB_OUTPUT"
+
+  forgejo-behaviour:
+    # This check is informational; #9656 owns promotion to a required gate.
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'merge_group') ||
+        (github.event_name == 'pull_request' && needs.gate.outputs.authorized == 'true') ||
+        (github.event_name == 'issue_comment' && inputs.head_sha != '')
+      )
+    # Keep mainline deployments distinct from PR and merge-queue test noise.
+    environment: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'forgejo-stage' || 'forgejo-dev' }}
+    runs-on: ubuntu-24.04
+    # Match behaviour-test's 45m attempt plus one bounded infrastructure retry.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      # The /ok-to-test wrapper completes the corresponding check on the PR head.
+      result: ${{ steps.result.outputs.result }}
+    env:
+      # The Forgejo driver target is still forgejo-dev for every event.
+      ENVIRONMENT: forgejo-dev
+      GODOG_TAGS: '@forgejo'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: >-
+            ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha
+                || github.event_name == 'issue_comment' && inputs.head_sha
+                || github.sha }}
+          persist-credentials: false
+          # Fork code runs only after /ok-to-test authorizes this exact sha.
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'issue_comment' }}
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - name: Run Forgejo behaviour tests
+        id: tests
+        shell: bash
+        run: |
+          mkdir -p "${{ runner.temp }}/forgejo-behaviour-artifacts"
+          make behaviour-test 2>&1 | tee "${{ runner.temp }}/forgejo-behaviour-artifacts/behaviour-test.log"
+        env:
+          BEHAVIOUR_SCM: forgejo
+          BEHAVIOUR_CI: forgejoactions
+          BEHAVIOUR_INSTALL_MODE: per-repo
+          GODOG_CONCURRENCY: "2"
+          BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/forgejo-behaviour-artifacts
+          # Keep a full second 45m attempt inside the job timeout.
+          INFRA_RETRY_MAX_ATTEMPT1_SECONDS: "2400"
+
+      - name: Check out redaction script from base branch
+        if: always()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Keep artifact redaction controlled by the trusted base workflow.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          sparse-checkout: scripts/redact-behaviour-artifacts.sh
+          path: base-scripts
+          persist-credentials: false
+
+      - name: Redact secrets from Forgejo behaviour artifacts
+        id: redact
+        if: always()
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/forgejo-behaviour-artifacts
+        run: |
+          exec /usr/bin/env -i \
+            PATH=/usr/bin:/bin \
+            LC_ALL=C \
+            HOME="${{ runner.temp }}" \
+            ARTIFACT_DIR="${ARTIFACT_DIR}" \
+            /usr/bin/bash "${{ github.workspace }}/base-scripts/scripts/redact-behaviour-artifacts.sh"
+
+      - name: Upload Forgejo behaviour artifacts
+        if: always() && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: forgejo-behaviour-artifacts-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+          path: ${{ runner.temp }}/forgejo-behaviour-artifacts/
           if-no-files-found: ignore
           retention-days: 5
 
